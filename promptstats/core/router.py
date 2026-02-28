@@ -1,12 +1,13 @@
 """Central router for selecting the appropriate analysis pipeline.
 
-Inspects the 'shape' of a BenchmarkResult — number of models, prompt
-templates, input variables, and evaluators — and dispatches to the
-correct analysis functions. Raises informative errors for shapes that
-are not yet supported.
+Inspects the 'shape' of the input — number of models, prompt templates,
+input variables, and evaluators — and dispatches to the correct analysis
+functions. Raises informative errors for shapes that are not yet supported.
 
-Currently supported shape:
-    models=1, prompts>1, input_vars=1, evaluators>=1
+Supported shapes
+----------------
+* models=1, prompts>1, input_vars=1, evaluators>=1  →  AnalysisBundle
+* models>1, prompts>1, input_vars=1, evaluators>=1  →  MultiModelBundle
 """
 
 from __future__ import annotations
@@ -16,30 +17,34 @@ from typing import Dict, Literal, Mapping, Optional, Union
 
 import numpy as np
 
-from .types import BenchmarkResult
+from .types import BenchmarkResult, MultiModelBenchmark
 from .paired import PairwiseMatrix, all_pairwise
 from .ranking import RankDistribution, MeanAdvantageResult, bootstrap_ranks, bootstrap_mean_advantage
 from .variance import RobustnessResult, robustness_metrics
 
 
+# ---------------------------------------------------------------------------
+# Shape descriptor
+# ---------------------------------------------------------------------------
+
 @dataclass
 class BenchmarkShape:
-    """Detected structural properties of a BenchmarkResult.
+    """Detected structural properties of a benchmark input.
 
     Attributes
     ----------
     n_models : int
-        Number of distinct LLM models. Always 1 for the current
-        BenchmarkResult format; multi-model support is planned.
+        Number of distinct LLM models. 1 for BenchmarkResult; ≥2 for
+        MultiModelBenchmark.
     n_prompts : int
-        Number of prompt templates (axis 0 of the score matrix).
+        Number of prompt templates (templates per model).
     n_input_vars : int
         Number of independent input variables. 1 when each benchmark
         input is a single value; >1 when input_labels are tuples
         representing a cross-product of variables.
     n_evaluators : int
-        Number of evaluators/scorers. 1 when scores are 2D (already
-        aggregated); >1 when scores are 3D (axis 2 = evaluators).
+        Number of evaluators/scorers. 1 when scores are aggregated
+        (2D or 3D); >1 when an evaluator axis is present (3D or 4D).
     """
 
     n_models: int
@@ -54,9 +59,13 @@ class BenchmarkShape:
         )
 
 
+# ---------------------------------------------------------------------------
+# Result bundles
+# ---------------------------------------------------------------------------
+
 @dataclass
 class AnalysisBundle:
-    """Consolidated results from a full benchmark analysis run.
+    """Consolidated results from a single-model benchmark analysis run.
 
     Attributes
     ----------
@@ -83,11 +92,61 @@ class AnalysisBundle:
     rank_dist: RankDistribution
 
 
-AnalysisResult = Union[AnalysisBundle, Dict[str, AnalysisBundle]]
+@dataclass
+class MultiModelBundle:
+    """Consolidated results from a multi-model benchmark analysis run.
 
+    Contains three complementary views of the data:
+
+    * **per_model** — one AnalysisBundle per model, answering "which
+      prompt works best *within* each model?"
+    * **model_level** — models compared on their mean score across all
+      prompts, answering "which model is overall best?"
+    * **cross_model** — all (model, template) pairs ranked together,
+      answering "what is the single best model-prompt combination?"
+
+    Attributes
+    ----------
+    benchmark : MultiModelBenchmark
+        The underlying benchmark data.
+    shape : BenchmarkShape
+        Detected structural properties used for routing.
+    per_model : dict[str, AnalysisBundle]
+        One full analysis bundle per model, keyed by model label.
+        Each bundle uses the same inputs and templates as the overall
+        benchmark.
+    model_level : AnalysisBundle
+        Analysis where each 'template' is a model, scored by its mean
+        performance across all prompts. Use this to compare models
+        independent of any single prompt choice.
+    cross_model : AnalysisBundle
+        Analysis of all N_models * N_templates (model, template) pairs
+        treated as a flat list of 'templates'. Labels are formatted as
+        ``"<model> / <template>"``. Use rank_dist.p_best or
+        mean_advantage to identify the top-performing pair.
+    best_pair : tuple[str, str]
+        The (model_label, template_label) pair with the highest
+        probability of ranking first in the cross_model analysis.
+    """
+
+    benchmark: MultiModelBenchmark
+    shape: BenchmarkShape
+    per_model: Dict[str, AnalysisBundle]
+    model_level: AnalysisBundle
+    cross_model: AnalysisBundle
+    best_pair: tuple[str, str]
+
+
+# Type alias for the return type of analyze().
+AnalysisResult = Union[AnalysisBundle, Dict[str, AnalysisBundle], MultiModelBundle]
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
 
 def analyze(
-    result: BenchmarkResult,
+    result: Union[BenchmarkResult, MultiModelBenchmark],
     *,
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
@@ -101,23 +160,30 @@ def analyze(
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
-    Inspects the shape of the benchmark and dispatches to the
-    appropriate analysis pipeline. All four analyses (pairwise
-    comparisons, mean advantage, robustness metrics, and rank
-    distributions) share the same random state for reproducibility.
+    Inspects the shape of the input and dispatches to the appropriate
+    analysis pipeline. All sub-analyses share the same random state for
+    reproducibility.
 
-    Currently supported shape: models=1, prompts>1, input_vars=1,
-    evaluators>=1 (single-variable inputs, one model, multiple prompts).
+    Supported inputs
+    ----------------
+    BenchmarkResult (models=1, prompts>1, input_vars=1, evaluators>=1)
+        Returns an AnalysisBundle, or dict[str, AnalysisBundle] when
+        evaluator_mode='per_evaluator'.
+
+    MultiModelBenchmark (models>1, prompts>1, input_vars=1, evaluators>=1)
+        Returns a MultiModelBundle containing per-model bundles, a
+        model-level comparison, and a cross-model ranking of all
+        (model, template) pairs.
 
     Parameters
     ----------
-    result : BenchmarkResult
+    result : BenchmarkResult or MultiModelBenchmark
         The benchmark data to analyze.
     evaluator_mode : str
-        'aggregate' (default) analyzes the evaluator-aggregated 2D
-        score matrix, matching prior behavior. 'per_evaluator' runs
-        analyses separately for each evaluator and returns a dict
-        keyed by evaluator label.
+        'aggregate' (default) analyzes the evaluator-averaged score
+        matrix. 'per_evaluator' runs analyses separately for each
+        evaluator and returns a dict keyed by evaluator label.
+        Not supported for MultiModelBenchmark.
     reference : str
         Reference for mean advantage: 'grand_mean' (default) or a
         template label to compare all others against.
@@ -144,59 +210,71 @@ def analyze(
     Returns
     -------
     AnalysisResult
-        An AnalysisBundle when evaluator_mode='aggregate', otherwise
-        dict[str, AnalysisBundle] keyed by evaluator name.
+        AnalysisBundle, dict[str, AnalysisBundle], or MultiModelBundle
+        depending on input type and evaluator_mode.
 
     Raises
     ------
     ValueError
         If the benchmark has fewer than 2 prompt templates.
     NotImplementedError
-        If the benchmark shape requires a pipeline not yet implemented
-        (multi-model or cross-product inputs).
+        If the benchmark shape is not yet supported (cross-product
+        inputs, or evaluator_mode='per_evaluator' with
+        MultiModelBenchmark).
     """
-    shape = _detect_shape(result)
-    _validate_supported(shape)
-
     if rng is None:
         rng = np.random.default_rng()
 
+    kwargs = dict(
+        reference=reference,
+        method=method,
+        ci=ci,
+        n_bootstrap=n_bootstrap,
+        correction=correction,
+        spread_percentiles=spread_percentiles,
+        failure_threshold=failure_threshold,
+        rng=rng,
+    )
+
+    # ------------------------------------------------------------------
+    # Multi-model path
+    # ------------------------------------------------------------------
+    if isinstance(result, MultiModelBenchmark):
+        if evaluator_mode == "per_evaluator":
+            raise NotImplementedError(
+                "evaluator_mode='per_evaluator' is not yet supported for "
+                "MultiModelBenchmark. Use evaluator_mode='aggregate' instead."
+            )
+        if evaluator_mode not in {"aggregate", "per_evaluator"}:
+            raise ValueError(
+                f"Unknown evaluator_mode '{evaluator_mode}'. "
+                "Expected 'aggregate' or 'per_evaluator'."
+            )
+        shape = _detect_shape(result)
+        _validate_supported(shape)
+        return _analyze_multi_model(result=result, shape=shape, **kwargs)
+
+    # ------------------------------------------------------------------
+    # Single-model path (BenchmarkResult)
+    # ------------------------------------------------------------------
     if evaluator_mode not in {"aggregate", "per_evaluator"}:
         raise ValueError(
             f"Unknown evaluator_mode '{evaluator_mode}'. "
             "Expected 'aggregate' or 'per_evaluator'."
         )
 
-    if evaluator_mode == "aggregate":
-        return _analyze_single(
-            result=result,
-            shape=shape,
-            reference=reference,
-            method=method,
-            ci=ci,
-            n_bootstrap=n_bootstrap,
-            correction=correction,
-            spread_percentiles=spread_percentiles,
-            failure_threshold=failure_threshold,
-            rng=rng,
-        )
+    shape = _detect_shape(result)
+    _validate_supported(shape)
 
+    if evaluator_mode == "aggregate":
+        return _analyze_single(result=result, shape=shape, **kwargs)
+
+    # per_evaluator mode
     evaluator_names = result.evaluator_names if not result.is_aggregated else ["score"]
     outputs: Dict[str, AnalysisBundle] = {}
 
     if result.is_aggregated:
-        outputs["score"] = _analyze_single(
-            result=result,
-            shape=shape,
-            reference=reference,
-            method=method,
-            ci=ci,
-            n_bootstrap=n_bootstrap,
-            correction=correction,
-            spread_percentiles=spread_percentiles,
-            failure_threshold=failure_threshold,
-            rng=rng,
-        )
+        outputs["score"] = _analyze_single(result=result, shape=shape, **kwargs)
         return outputs
 
     for evaluator_idx, evaluator_name in enumerate(evaluator_names):
@@ -210,18 +288,15 @@ def analyze(
         outputs[evaluator_name] = _analyze_single(
             result=evaluator_result,
             shape=shape,
-            reference=reference,
-            method=method,
-            ci=ci,
-            n_bootstrap=n_bootstrap,
-            correction=correction,
-            spread_percentiles=spread_percentiles,
-            failure_threshold=failure_threshold,
-            rng=rng,
+            **kwargs,
         )
 
     return outputs
 
+
+# ---------------------------------------------------------------------------
+# Internal analysis runners
+# ---------------------------------------------------------------------------
 
 def _analyze_single(
     result: BenchmarkResult,
@@ -236,7 +311,6 @@ def _analyze_single(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
 ) -> AnalysisBundle:
-
     scores_2d = result.get_2d_scores()
     labels = result.template_labels
 
@@ -270,8 +344,164 @@ def _analyze_single(
     )
 
 
+def _analyze_multi_model(
+    result: MultiModelBenchmark,
+    shape: BenchmarkShape,
+    *,
+    reference: str,
+    method: Literal["bootstrap", "bca", "auto"],
+    ci: float,
+    n_bootstrap: int,
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
+    spread_percentiles: tuple[float, float],
+    failure_threshold: Optional[float],
+    rng: np.random.Generator,
+) -> MultiModelBundle:
+    kwargs = dict(
+        reference=reference,
+        method=method,
+        ci=ci,
+        n_bootstrap=n_bootstrap,
+        correction=correction,
+        spread_percentiles=spread_percentiles,
+        failure_threshold=failure_threshold,
+        rng=rng,
+    )
+
+    # Per-model bundles: one full analysis per model using existing pipeline.
+    per_model: Dict[str, AnalysisBundle] = {}
+    single_model_shape = BenchmarkShape(
+        n_models=1,
+        n_prompts=shape.n_prompts,
+        n_input_vars=shape.n_input_vars,
+        n_evaluators=shape.n_evaluators,
+    )
+    for model_label in result.model_labels:
+        model_result = result.get_model_result(model_label)
+        per_model[model_label] = _analyze_single(
+            result=model_result,
+            shape=single_model_shape,
+            **kwargs,
+        )
+
+    # Model-level bundle: models are treated as 'templates', each scored
+    # by its mean across all prompts. Answers "which model is best overall?"
+    model_mean_result = result.get_model_mean_result()
+    model_level_shape = BenchmarkShape(
+        n_models=shape.n_models,
+        n_prompts=shape.n_models,   # models play the role of templates here
+        n_input_vars=shape.n_input_vars,
+        n_evaluators=shape.n_evaluators,
+    )
+    model_level = _analyze_single(
+        result=model_mean_result,
+        shape=model_level_shape,
+        **kwargs,
+    )
+
+    # Cross-model bundle: all (model, template) pairs as a flat template list.
+    # Answers "what is the single best model-prompt combination?"
+    flat_result = result.get_flat_result()
+    flat_shape = BenchmarkShape(
+        n_models=shape.n_models,
+        n_prompts=shape.n_models * shape.n_prompts,
+        n_input_vars=shape.n_input_vars,
+        n_evaluators=shape.n_evaluators,
+    )
+    cross_model = _analyze_single(
+        result=flat_result,
+        shape=flat_shape,
+        **kwargs,
+    )
+
+    # Decode the winning flat index back to (model, template).
+    # get_flat_result() uses row-major order (all templates for model 0,
+    # then model 1, …), so: model_idx = flat_idx // n_templates.
+    best_flat_idx = int(np.argmax(cross_model.rank_dist.p_best))
+    best_model_idx = best_flat_idx // result.n_templates
+    best_template_idx = best_flat_idx % result.n_templates
+    best_pair = (
+        result.model_labels[best_model_idx],
+        result.template_labels[best_template_idx],
+    )
+
+    return MultiModelBundle(
+        benchmark=result,
+        shape=shape,
+        per_model=per_model,
+        model_level=model_level,
+        cross_model=cross_model,
+        best_pair=best_pair,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shape detection and validation
+# ---------------------------------------------------------------------------
+
+def _detect_shape(
+    result: Union[BenchmarkResult, MultiModelBenchmark],
+) -> BenchmarkShape:
+    """Infer the structural shape of a benchmark input.
+
+    For BenchmarkResult, n_models is always 1. For MultiModelBenchmark,
+    n_models reflects the actual number of models. n_input_vars is
+    inferred from input_labels: tuple labels signal a cross-product.
+    """
+    if isinstance(result, MultiModelBenchmark):
+        n_models = result.n_models
+        n_prompts = result.n_templates
+        n_evaluators = 1 if result.is_aggregated else result.scores.shape[3]
+        if result.input_labels and isinstance(result.input_labels[0], tuple):
+            n_input_vars = len(result.input_labels[0])
+        else:
+            n_input_vars = 1
+        return BenchmarkShape(
+            n_models=n_models,
+            n_prompts=n_prompts,
+            n_input_vars=n_input_vars,
+            n_evaluators=n_evaluators,
+        )
+
+    # BenchmarkResult
+    n_models = 1
+    n_prompts = result.n_templates
+    n_evaluators = 1 if result.is_aggregated else result.scores.shape[2]
+    if result.input_labels and isinstance(result.input_labels[0], tuple):
+        n_input_vars = len(result.input_labels[0])
+    else:
+        n_input_vars = 1
+    return BenchmarkShape(
+        n_models=n_models,
+        n_prompts=n_prompts,
+        n_input_vars=n_input_vars,
+        n_evaluators=n_evaluators,
+    )
+
+
+def _validate_supported(shape: BenchmarkShape) -> None:
+    """Raise if the shape is outside the currently supported pipelines."""
+    if shape.n_prompts < 2:
+        raise ValueError(
+            f"analyze() requires at least 2 prompt templates; got {shape.n_prompts}. "
+            "Add more templates to enable comparative analysis."
+        )
+
+    if shape.n_input_vars > 1:
+        raise NotImplementedError(
+            f"Cross-product input analysis (n_input_vars={shape.n_input_vars}) is "
+            "not yet supported. Flatten the input space to a single variable "
+            "(e.g., by joining variable values into one label) before calling "
+            "analyze()."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Console summary
+# ---------------------------------------------------------------------------
+
 def print_analysis_summary(
-    analysis: Union[AnalysisBundle, Mapping[str, AnalysisBundle]],
+    analysis: Union[AnalysisBundle, MultiModelBundle, Mapping[str, AnalysisBundle]],
     *,
     top_pairwise: int = 5,
     line_width: int = 41,
@@ -280,15 +510,22 @@ def print_analysis_summary(
 
     Parameters
     ----------
-    analysis : AnalysisBundle or Mapping[str, AnalysisBundle]
-        Output from analyze(). Either one aggregate bundle, or a dict
-        keyed by evaluator label when evaluator_mode='per_evaluator'.
+    analysis : AnalysisBundle, MultiModelBundle, or Mapping[str, AnalysisBundle]
+        Output from analyze(). Accepts any return type.
     top_pairwise : int
         Number of pairwise comparisons (sorted by p-value) to print.
     line_width : int
         Width of ASCII interval plots for mean advantage and pairwise
         comparisons.
     """
+    if isinstance(analysis, MultiModelBundle):
+        _print_multi_model_summary(
+            analysis,
+            top_pairwise=top_pairwise,
+            line_width=line_width,
+        )
+        return
+
     if isinstance(analysis, AnalysisBundle):
         _print_bundle_summary(
             analysis,
@@ -305,6 +542,53 @@ def print_analysis_summary(
             line_width=line_width,
         )
         print()
+
+
+def _print_multi_model_summary(
+    bundle: MultiModelBundle,
+    *,
+    top_pairwise: int,
+    line_width: int,
+) -> None:
+    print("=== Multi-Model Analysis Summary ===")
+    print(f"Shape: {bundle.shape}")
+    print(
+        f"Models: {bundle.benchmark.n_models} | "
+        f"Templates: {bundle.benchmark.n_templates} | "
+        f"Inputs: {bundle.benchmark.n_inputs}"
+    )
+    model_str = ", ".join(bundle.benchmark.model_labels)
+    print(f"Models: {model_str}")
+    best_model, best_template = bundle.best_pair
+    print(f"Best pair: model='{best_model}'  template='{best_template}'")
+    print()
+
+    print("--- Model-Level Comparison (mean across all prompts) ---")
+    _print_bundle_summary(
+        bundle.model_level,
+        top_pairwise=top_pairwise,
+        line_width=line_width,
+    )
+
+    for model_label, model_bundle in bundle.per_model.items():
+        print(f"\n--- Per-Model: '{model_label}' ---")
+        _print_bundle_summary(
+            model_bundle,
+            top_pairwise=top_pairwise,
+            line_width=line_width,
+        )
+
+    print("\n=== Cross-Model Ranking (all model/template pairs) ===")
+    print(
+        f"  {len(bundle.cross_model.rank_dist.labels)} pairs ranked. "
+        f"Top 5 by P(Best):"
+    )
+    p_best = bundle.cross_model.rank_dist.p_best
+    top_indices = np.argsort(-p_best)[:5]
+    for idx in top_indices:
+        label = bundle.cross_model.rank_dist.labels[idx]
+        print(f"    {label:<40s}  P(Best)={p_best[idx]:.1%}")
+    print()
 
 
 def _print_bundle_summary(
@@ -502,54 +786,3 @@ def _truncate_label(text: str, width: int) -> str:
     if width <= 3:
         return text[:width]
     return text[: width - 1] + "…"
-
-
-def _detect_shape(result: BenchmarkResult) -> BenchmarkShape:
-    """Infer the structural shape of a BenchmarkResult.
-
-    n_models is always 1 because BenchmarkResult does not yet encode
-    multiple models. n_input_vars is inferred from input_labels: tuple
-    labels indicate a cross-product of multiple variables.
-    """
-    n_models = 1  # BenchmarkResult does not yet encode multiple models
-
-    n_prompts = result.n_templates
-
-    n_evaluators = 1 if result.is_aggregated else result.scores.shape[2]
-
-    # Tuple input_labels signal a cross-product of multiple variables.
-    if result.input_labels and isinstance(result.input_labels[0], tuple):
-        n_input_vars = len(result.input_labels[0])
-    else:
-        n_input_vars = 1
-
-    return BenchmarkShape(
-        n_models=n_models,
-        n_prompts=n_prompts,
-        n_input_vars=n_input_vars,
-        n_evaluators=n_evaluators,
-    )
-
-
-def _validate_supported(shape: BenchmarkShape) -> None:
-    """Raise if the shape is outside the currently supported pipeline."""
-    if shape.n_prompts < 2:
-        raise ValueError(
-            f"analyze() requires at least 2 prompt templates; got {shape.n_prompts}. "
-            "Add more templates to enable comparative analysis."
-        )
-
-    if shape.n_models > 1:
-        raise NotImplementedError(
-            f"Multi-model analysis (n_models={shape.n_models}) is not yet supported. "
-            "Run analyze() separately for each model, or collapse scores to a "
-            "single model before calling analyze()."
-        )
-
-    if shape.n_input_vars > 1:
-        raise NotImplementedError(
-            f"Cross-product input analysis (n_input_vars={shape.n_input_vars}) is "
-            "not yet supported. Flatten the input space to a single variable "
-            "(e.g., by joining variable values into one label) before calling "
-            "analyze()."
-        )
