@@ -69,7 +69,7 @@ print()
 
 # --- Pairwise differences (A vs C as an interesting pair) ---
 diff_ac = bps.pairwise_differences(
-    scores, 0, 2, labels[0], labels[2], method="bootstrap", rng=rng,
+    scores, 0, 2, labels[0], labels[2], method="auto", rng=rng,
 )
 print(f"=== Pairwise: {diff_ac.template_a} vs {diff_ac.template_b} ===")
 print(f"  Mean diff: {diff_ac.mean_diff:+.3f}")

@@ -7,9 +7,11 @@ the paired structure of benchmark data (same inputs across all templates).
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
+
+from .resampling import bca_interval_1d, bootstrap_means_1d
 
 
 @dataclass
@@ -92,6 +94,7 @@ def bootstrap_ranks(
     labels: list[str],
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
+    method: Literal["bootstrap", "bca", "auto"] = "auto",
 ) -> RankDistribution:
     """Compute bootstrap distribution over template rankings.
 
@@ -107,6 +110,10 @@ def bootstrap_ranks(
         Template labels.
     n_bootstrap : int
         Number of bootstrap iterations.
+    method : str
+        Resampling method option for API consistency: 'bootstrap', 'bca',
+        or 'auto'. Rank distributions are computed from bootstrap
+        resamples in all cases.
     rng : np.random.Generator, optional
         Random number generator for reproducibility.
 
@@ -116,6 +123,9 @@ def bootstrap_ranks(
     """
     if rng is None:
         rng = np.random.default_rng()
+
+    if method not in {"bootstrap", "bca", "auto"}:
+        raise ValueError(f"Unknown method: {method}")
 
     n_templates, m_inputs = scores.shape
     rank_counts = np.zeros((n_templates, n_templates), dtype=np.int64)
@@ -150,6 +160,7 @@ def bootstrap_mean_advantage(
     ci: float = 0.95,
     spread_percentiles: tuple[float, float] = (10, 90),
     rng: Optional[np.random.Generator] = None,
+    method: Literal["bootstrap", "bca", "auto"] = "auto",
 ) -> MeanAdvantageResult:
     """Compute mean advantage over a reference with dual uncertainty bands.
 
@@ -174,6 +185,10 @@ def bootstrap_mean_advantage(
         Number of bootstrap iterations for CI estimation.
     ci : float
         Confidence level for the bootstrap CI (default 0.95).
+    method : str
+        CI method: 'auto' (default), 'bootstrap', or 'bca'.
+        If 'auto', uses BCa for 15 <= M_inputs <= 200 and regular
+        bootstrap otherwise.
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band (default (10, 90)).
     rng : np.random.Generator, optional
@@ -188,6 +203,9 @@ def bootstrap_mean_advantage(
 
     n_templates, m_inputs = scores.shape
     alpha = 1 - ci
+    resolved_method = method
+    if method == "auto":
+        resolved_method = "bca" if 15 <= m_inputs <= 200 else "bootstrap"
 
     # Compute per-input advantages
     if reference == "grand_mean":
@@ -208,14 +226,21 @@ def bootstrap_mean_advantage(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    # Bootstrap CI on the mean advantage
-    boot_means = np.empty((n_templates, n_bootstrap))
-    for b in range(n_bootstrap):
-        idx = rng.choice(m_inputs, size=m_inputs, replace=True)
-        boot_means[:, b] = advantages[:, idx].mean(axis=1)
+    ci_low = np.empty(n_templates)
+    ci_high = np.empty(n_templates)
 
-    ci_low = np.percentile(boot_means, 100 * alpha / 2, axis=1)
-    ci_high = np.percentile(boot_means, 100 * (1 - alpha / 2), axis=1)
+    for i in range(n_templates):
+        vals = advantages[i]
+        boot_means = bootstrap_means_1d(vals, n_bootstrap=n_bootstrap, rng=rng)
+        if resolved_method == "bootstrap":
+            ci_low[i] = np.percentile(boot_means, 100 * alpha / 2)
+            ci_high[i] = np.percentile(boot_means, 100 * (1 - alpha / 2))
+        elif resolved_method == "bca":
+            low, high = bca_interval_1d(vals, float(mean_adv[i]), boot_means, alpha)
+            ci_low[i] = low
+            ci_high[i] = high
+        else:
+            raise ValueError(f"Unknown method: {method}")
 
     return MeanAdvantageResult(
         labels=labels,

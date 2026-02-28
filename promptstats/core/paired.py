@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 import numpy as np
-from scipy import stats
+
+from .resampling import bca_interval_1d, bootstrap_means_1d
 
 
 @dataclass
@@ -88,7 +89,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "paired_t", "wilcoxon"] = "bootstrap",
+    method: Literal["bootstrap", "bca", "auto"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -104,8 +105,9 @@ def pairwise_differences(
     label_a, label_b : str
         Human-readable labels for the templates.
     method : str
-        Statistical test: 'bootstrap' (default, recommended), 'paired_t',
-        or 'wilcoxon'.
+        Statistical method: 'auto' (default), 'bootstrap', or 'bca'.
+        If 'auto', uses BCa for 15 <= M_inputs <= 200 and regular
+        bootstrap otherwise.
     ci : float
         Confidence level for the interval (default 0.95).
     n_bootstrap : int
@@ -126,7 +128,11 @@ def pairwise_differences(
     std_d = float(np.std(diffs, ddof=1))
     alpha = 1 - ci
 
-    if method == "bootstrap":
+    resolved_method = method
+    if method == "auto":
+        resolved_method = "bca" if 15 <= m <= 200 else "bootstrap"
+
+    if resolved_method == "bootstrap":
         centered_diffs = diffs - mean_d
         boot_centered_means = np.empty(n_bootstrap)
         for b in range(n_bootstrap):
@@ -142,32 +148,23 @@ def pairwise_differences(
         p_value = float((extreme_count + 1) / (n_bootstrap + 1))
         test_name = f"bootstrap (n={n_bootstrap})"
 
-    elif method == "paired_t":
-        t_stat, p_value = stats.ttest_rel(scores[idx_a], scores[idx_b])
-        se = std_d / np.sqrt(m)
-        t_crit = stats.t.ppf(1 - alpha / 2, df=m - 1)
-        ci_low = mean_d - t_crit * se
-        ci_high = mean_d + t_crit * se
-        p_value = float(p_value)
-        test_name = "paired t-test"
+    elif resolved_method == "bca":
+        boot_means = bootstrap_means_1d(diffs, n_bootstrap=n_bootstrap, rng=rng)
+        ci_low, ci_high = bca_interval_1d(diffs, mean_d, boot_means, alpha)
 
-    elif method == "wilcoxon":
-        if np.all(diffs == 0):
-            p_value = 1.0
-        else:
-            _, p_value = stats.wilcoxon(diffs, alternative="two-sided")
-            p_value = float(p_value)
-        # For Wilcoxon, use bootstrap CI anyway (Wilcoxon doesn't give one natively)
-        boot_means = np.empty(n_bootstrap)
-        for b in range(n_bootstrap):
-            idx = rng.choice(m, size=m, replace=True)
-            boot_means[b] = np.mean(diffs[idx])
-        ci_low = float(np.percentile(boot_means, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_means, 100 * (1 - alpha / 2)))
-        test_name = "wilcoxon signed-rank"
+        centered_diffs = diffs - mean_d
+        boot_centered_means = bootstrap_means_1d(
+            centered_diffs, n_bootstrap=n_bootstrap, rng=rng,
+        )
+        extreme_count = np.sum(np.abs(boot_centered_means) >= abs(mean_d))
+        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
+        test_name = f"bca bootstrap (n={n_bootstrap})"
 
     else:
         raise ValueError(f"Unknown method: {method}")
+
+    if method == "auto":
+        test_name = f"auto→{test_name}"
 
     return PairedDiffResult(
         template_a=label_a,
@@ -186,7 +183,7 @@ def pairwise_differences(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "paired_t", "wilcoxon"] = "bootstrap",
+    method: Literal["bootstrap", "bca", "auto"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -258,7 +255,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "paired_t", "wilcoxon"] = "bootstrap",
+    method: Literal["bootstrap", "bca", "auto"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
