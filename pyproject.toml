@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "promptstats"
+version = "0.1.0"
+description = "Statistical analysis and visualization for prompt benchmarking"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {text = "MIT"}
+dependencies = [
+    "numpy>=1.22",
+    "scipy>=1.9",
+    "pandas>=1.5",
+    "matplotlib>=3.6",
+]
+
+[project.optional-dependencies]
+interactive = ["plotly>=5.0"]
+models = ["statsmodels>=0.14", "choix>=0.3"]
+all = ["plotly>=5.0", "statsmodels>=0.14", "choix>=0.3", "seaborn>=0.12"]
+dev = ["pytest>=7.0", "pytest-cov"]
+
+[tool.setuptools.packages.find]
+include = ["promptstats*"]
