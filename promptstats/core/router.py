@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Dict, Literal, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Dict, Literal, Mapping, Optional, Union
 
 import numpy as np
 
@@ -25,6 +25,9 @@ from .paired import PairwiseMatrix, all_pairwise
 from .ranking import RankDistribution, MeanAdvantageResult, bootstrap_ranks, bootstrap_mean_advantage
 from .variance import RobustnessResult, SeedVarianceResult, robustness_metrics, seed_variance_decomposition
 from .tokens import TokenUsage, TokenAnalysisResult, analyze_tokens
+
+if TYPE_CHECKING:
+    from .mixed_effects import LMMInfo
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +106,7 @@ class AnalysisBundle:
     rank_dist: RankDistribution
     seed_variance: Optional[SeedVarianceResult] = None
     token_analysis: Optional[TokenAnalysisResult] = None
+    lmm_info: Optional[LMMInfo] = None
 
 
 @dataclass
@@ -159,7 +163,7 @@ def analyze(
     token_usage: Optional[TokenUsage] = None,
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
-    method: Literal["bootstrap", "bca", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "auto", "lmm"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -195,12 +199,25 @@ def analyze(
         Reference for mean advantage: ``'grand_mean'`` (default) or a
         template label to compare all others against.
     method : str
-        Statistical method for CIs and p-values: ``'auto'`` (default),
-        ``'bootstrap'``, or ``'bca'``.
+        Statistical method for CIs and p-values:
+
+        * ``'auto'`` (default) — BCa bootstrap for 15 ≤ M ≤ 200,
+          percentile bootstrap otherwise.
+        * ``'bootstrap'`` — percentile bootstrap.
+        * ``'bca'`` — bias-corrected and accelerated bootstrap.
+        * ``'lmm'`` — Linear Mixed Model via pymer4/lme4.  Fits
+          ``score ~ template + (1|input)`` on cell-mean scores.
+          Produces Wald CIs and emmeans-based pairwise contrasts.
+          Requires pymer4 and R (``pip install pymer4``).
+          Prefer this when M < ~15 (bootstrap unstable) or when an
+          ICC decomposition is desired.  ``AnalysisBundle.lmm_info``
+          is populated with variance components and the ICC.
     ci : float
-        Confidence level for bootstrap intervals (default 0.95).
+        Confidence level for intervals (default 0.95).
     n_bootstrap : int
-        Number of bootstrap resamples (default 10,000).
+        Number of bootstrap resamples (default 10,000).  When
+        ``method='lmm'`` this controls the number of parametric
+        simulations used for the rank distribution.
     correction : str
         Multiple comparisons correction: ``'holm'`` (default),
         ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
@@ -225,6 +242,8 @@ def analyze(
         If the benchmark has fewer than 2 prompt templates.
     NotImplementedError
         If the benchmark shape is not yet supported.
+    ImportError
+        If ``method='lmm'`` and pymer4 is not installed.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -337,7 +356,7 @@ def _analyze_single(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "auto"],
+    method: Literal["bootstrap", "bca", "auto", "lmm"],
     ci: float,
     n_bootstrap: int,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
@@ -345,9 +364,38 @@ def _analyze_single(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
 ) -> AnalysisBundle:
+    # ------------------------------------------------------------------
+    # LMM path — fit score ~ template + (1|input) via pymer4/lme4
+    # ------------------------------------------------------------------
+    if method == "lmm":
+        from .mixed_effects import lmm_analyze
+        pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info = lmm_analyze(
+            result,
+            reference=reference,
+            ci=ci,
+            correction=correction,
+            spread_percentiles=spread_percentiles,
+            failure_threshold=failure_threshold,
+            n_sim=n_bootstrap,
+            rng=rng,
+        )
+        return AnalysisBundle(
+            benchmark=result,
+            shape=shape,
+            pairwise=pairwise,
+            mean_advantage=mean_adv,
+            robustness=robustness,
+            rank_dist=rank_dist,
+            seed_variance=seed_var,
+            lmm_info=lmm_info,
+        )
+
+    # ------------------------------------------------------------------
+    # Bootstrap path (default)
     # Use get_run_scores() so that all analysis functions receive either
     # (N, M, R) with R >= 3 (seeded nested bootstrap) or (N, M, 1) which
     # they will collapse to (N, M) and treat as non-seeded.
+    # ------------------------------------------------------------------
     run_scores = result.get_run_scores()   # (N, M, R) or (N, M, 1)
     labels = result.template_labels
 

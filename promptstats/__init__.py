@@ -42,3 +42,12 @@ __all__ = [
     "print_analysis_summary",
     "plot_mean_advantage",
 ]
+
+# LMMInfo is exported lazily so that pymer4 is not a hard dependency.
+# Access via: from promptstats.core.mixed_effects import LMMInfo
+# or inspect bundle.lmm_info at runtime.
+try:
+    from promptstats.core.mixed_effects import LMMInfo
+    __all__ = __all__ + ["LMMInfo"]
+except ImportError:
+    pass
