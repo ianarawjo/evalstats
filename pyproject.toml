@@ -19,7 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 interactive = ["plotly>=5.0"]
 models = ["statsmodels>=0.14", "choix>=0.3"]
-lmm = ["pymer4>=0.8"]
+lmm = ["pymer4>=0.9", "pyarrow>=14.0"]
 xlsx = ["openpyxl>=3.0"]
 all = ["plotly>=5.0", "statsmodels>=0.14", "choix>=0.3", "seaborn>=0.12", "openpyxl>=3.0", "pymer4>=0.8"]
 dev = ["pytest>=7.0", "pytest-cov"]

@@ -121,8 +121,11 @@ class BenchmarkResult:
         if len(self.input_labels) != len(set(self.input_labels)):
             raise ValueError("input_labels must be unique")
 
-        if not np.all(np.isfinite(s)):
-            raise ValueError("scores contain NaN or infinite values")
+        if np.any(np.isinf(s)):
+            raise ValueError(
+                "scores contain infinite values. "
+                "Use np.nan to represent missing (not-evaluated) cells."
+            )
 
         if self.input_metadata is not None:
             if len(self.input_metadata) != n_inputs:
@@ -141,7 +144,8 @@ class BenchmarkResult:
         # Warn about zero-variance rows (using cell means for multi-run data).
         cell_means_2d = self.get_2d_scores()
         for i, label in enumerate(self.template_labels):
-            if np.std(cell_means_2d[i]) == 0:
+            row = cell_means_2d[i]
+            if not np.all(np.isnan(row)) and np.nanstd(row) == 0:
                 warnings.warn(
                     f"Template '{label}' has zero variance across inputs "
                     f"(all scores identical). This may indicate a problem.",
@@ -180,6 +184,11 @@ class BenchmarkResult:
     def is_seeded(self) -> bool:
         """True when scores carry a run axis with R >= 3 independent runs."""
         return self.n_runs >= 3
+
+    @property
+    def has_missing(self) -> bool:
+        """True when the score array contains NaN (missing) cells."""
+        return bool(np.any(np.isnan(self.scores)))
 
     # ------------------------------------------------------------------
     # Score accessors
@@ -341,8 +350,11 @@ class MultiModelBenchmark:
         if len(self.input_labels) != len(set(self.input_labels)):
             raise ValueError("input_labels must be unique")
 
-        if not np.all(np.isfinite(s)):
-            raise ValueError("scores contain NaN or infinite values")
+        if np.any(np.isinf(s)):
+            raise ValueError(
+                "scores contain infinite values. "
+                "Use np.nan to represent missing (not-evaluated) cells."
+            )
 
         if self.input_metadata is not None:
             if len(self.input_metadata) != n_inputs:
@@ -355,7 +367,8 @@ class MultiModelBenchmark:
         scores_3d = self._get_3d_cell_means()
         for m_idx, model_label in enumerate(self.model_labels):
             for t_idx, template_label in enumerate(self.template_labels):
-                if np.std(scores_3d[m_idx, t_idx]) == 0:
+                row = scores_3d[m_idx, t_idx]
+                if not np.all(np.isnan(row)) and np.nanstd(row) == 0:
                     warnings.warn(
                         f"Template '{template_label}' for model '{model_label}' "
                         f"has zero variance across inputs (all scores identical). "
@@ -399,6 +412,11 @@ class MultiModelBenchmark:
     def is_seeded(self) -> bool:
         """True when scores carry a run axis with R >= 3 independent runs."""
         return self.n_runs >= 3
+
+    @property
+    def has_missing(self) -> bool:
+        """True when the score array contains NaN (missing) cells."""
+        return bool(np.any(np.isnan(self.scores)))
 
     # ------------------------------------------------------------------
     # Internal helpers

@@ -396,6 +396,15 @@ def _analyze_single(
     # (N, M, R) with R >= 3 (seeded nested bootstrap) or (N, M, 1) which
     # they will collapse to (N, M) and treat as non-seeded.
     # ------------------------------------------------------------------
+    if result.has_missing:
+        n_missing = int(np.sum(np.isnan(result.scores)))
+        raise ValueError(
+            f"scores contain {n_missing} NaN (missing) cell(s), which are not "
+            "supported by the bootstrap analysis path. Either fill in missing "
+            "cells or use method='lmm' to analyse benchmarks with incomplete "
+            "designs."
+        )
+
     run_scores = result.get_run_scores()   # (N, M, R) or (N, M, 1)
     labels = result.template_labels
 

@@ -176,33 +176,38 @@ def robustness_metrics(
     RobustnessResult
     """
     if scores.ndim == 3:
-        scores = scores.mean(axis=2)  # (N, M) cell means
+        scores = np.nanmean(scores, axis=2)  # (N, M) cell means
 
     n_templates, m_inputs = scores.shape
 
-    mean = scores.mean(axis=1)
-    std = scores.std(axis=1, ddof=1)
+    mean = np.nanmean(scores, axis=1)
+    std = np.nanstd(scores, axis=1, ddof=1)
 
     with np.errstate(divide="ignore", invalid="ignore"):
         cv = np.where(mean != 0, std / np.abs(mean), np.nan)
 
-    p10 = np.percentile(scores, 10, axis=1)
-    p25 = np.percentile(scores, 25, axis=1)
-    p50 = np.percentile(scores, 50, axis=1)
-    p75 = np.percentile(scores, 75, axis=1)
-    p90 = np.percentile(scores, 90, axis=1)
+    p10 = np.nanpercentile(scores, 10, axis=1)
+    p25 = np.nanpercentile(scores, 25, axis=1)
+    p50 = np.nanpercentile(scores, 50, axis=1)
+    p75 = np.nanpercentile(scores, 75, axis=1)
+    p90 = np.nanpercentile(scores, 90, axis=1)
     iqr = p75 - p25
 
-    # CVaR (Expected Shortfall): mean of the worst 10% of scores
+    # CVaR (Expected Shortfall): mean of the worst 10% of valid scores
     cvar_10 = np.empty(n_templates)
-    k = max(1, int(np.floor(m_inputs * 0.10)))
     for i in range(n_templates):
-        sorted_scores = np.sort(scores[i])
-        cvar_10[i] = sorted_scores[:k].mean()
+        valid = scores[i][~np.isnan(scores[i])]
+        if len(valid) == 0:
+            cvar_10[i] = np.nan
+        else:
+            k = max(1, int(np.floor(len(valid) * 0.10)))
+            cvar_10[i] = np.sort(valid)[:k].mean()
 
     failure_rate = None
     if failure_threshold is not None:
-        failure_rate = (scores < failure_threshold).mean(axis=1)
+        n_valid = np.sum(~np.isnan(scores), axis=1)
+        n_failed = np.sum(~np.isnan(scores) & (scores < failure_threshold), axis=1)
+        failure_rate = np.where(n_valid > 0, n_failed / n_valid, np.nan)
 
     return RobustnessResult(
         labels=labels,
@@ -254,17 +259,17 @@ def seed_variance_decomposition(
             "Collect at least 3 repeated runs per (template, input) cell."
         )
 
-    cell_means = scores.mean(axis=2)           # (N, M) — E[X | template, input]
+    cell_means = np.nanmean(scores, axis=2)           # (N, M) — E[X | template, input]
 
     # Within-cell variance for each (template, input) pair.
-    per_cell_seed_var = scores.var(axis=2, ddof=1)    # (N, M)
-    per_cell_seed_std = np.sqrt(per_cell_seed_var)    # (N, M)
+    per_cell_seed_var = np.nanvar(scores, axis=2, ddof=1)    # (N, M)
+    per_cell_seed_std = np.sqrt(per_cell_seed_var)           # (N, M)
 
     # E_i[Var_r(X|i)]: average within-cell variance over inputs.
-    seed_var = per_cell_seed_var.mean(axis=1)         # (N,)
+    seed_var = np.nanmean(per_cell_seed_var, axis=1)         # (N,)
 
     # Var_i(E[X|i]): between-input variance of cell means.
-    input_var = cell_means.var(axis=1, ddof=1)        # (N,)
+    input_var = np.nanvar(cell_means, axis=1, ddof=1)        # (N,)
 
     total_var = seed_var + input_var                  # (N,)
 
@@ -274,7 +279,7 @@ def seed_variance_decomposition(
     # Mean over inputs of within-cell seed std: "on average across inputs,
     # how much do scores vary run-to-run?"  Does not inflate when total_var
     # is near zero, unlike the seed_fraction ratio.
-    instability = per_cell_seed_std.mean(axis=1)          # (N,)
+    instability = np.nanmean(per_cell_seed_std, axis=1)          # (N,)
 
     return SeedVarianceResult(
         labels=labels,

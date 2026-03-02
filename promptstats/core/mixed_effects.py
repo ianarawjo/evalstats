@@ -22,8 +22,10 @@ which exposes the ICC and variance components from the fitted model.
 
 Requirements
 ------------
-* ``pymer4`` (``pip install pymer4``)
-* R with the ``lme4`` and ``emmeans`` packages installed
+* ``pymer4 >= 0.9`` (``pip install pymer4``)
+* ``pyarrow`` (needed by pymer4's polars→pandas bridge: ``pip install pyarrow``)
+* R with the ``lme4``, ``lmerTest``, ``emmeans``, ``broom.mixed``, and
+  ``parameters`` packages installed
 
 When to prefer LMM over bootstrap
 -----------------------------------
@@ -41,6 +43,31 @@ Limitations (Phase 1)
   independently per model, exactly like the bootstrap path.
 * The ``method='lmm'`` option is not compatible with ``method='bca'`` or
   ``method='auto'``; it must be specified explicitly.
+
+Implementation note (pymer4 0.9)
+---------------------------------
+pymer4 0.9+ uses **Polars** DataFrames internally and dropped the old
+pandas-based API.  The key differences from pymer4 ≤ 0.8 are:
+
+* Data passed to ``lmer()`` must be a Polars DataFrame (we construct one
+  from the numpy score matrix).
+* ``model.set_factors({"template": labels})`` must be called *before*
+  ``model.fit()`` so that pymer4 tracks ``template`` as a categorical
+  predictor and routes ``model.emmeans()`` to marginal means rather than
+  marginal trends.
+* Fixed effects live in ``model.result_fit`` (Polars) instead of the
+  old ``model.coefs`` (pandas).  Column names are ``term``, ``estimate``,
+  ``std_error``, ``conf_low``, ``conf_high``, ``t_stat``, ``df``,
+  ``p_value``.
+* Random-effect variance components live in ``model.ranef_var`` (Polars)
+  with columns ``group``, ``term``, ``estimate``; **values are SDs not
+  variances** (broom.mixed returns ``sd__*`` terms by default).
+* There is no ``model.vcov``; we call R's ``stats::vcov()`` directly.
+* Convergence is reported via ``model.convergence_status`` (string).
+* Pairwise contrasts come from ``model.emmeans("template",
+  contrasts="pairwise", p_adjust="none")``, returning a Polars DataFrame
+  with columns ``contrast``, ``estimate``, ``SE``, ``df``, ``t_ratio``,
+  ``p_value``.  Contrast labels are plain "A - B", not "templateA - templateB".
 """
 
 from __future__ import annotations
@@ -50,7 +77,6 @@ from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
-import pandas as pd
 import scipy.stats
 
 from .paired import PairedDiffResult, PairwiseMatrix
@@ -79,7 +105,8 @@ class LMMInfo:
     sigma_resid : float
         Estimated residual standard deviation (within-cell SD).
     n_obs : int
-        Number of observations used to fit the model (N_templates × M_inputs).
+        Number of observations used to fit the model (N_templates × M_inputs,
+        minus any missing cells).
     formula : str
         The model formula used.
     converged : bool
@@ -99,33 +126,49 @@ class LMMInfo:
 # ---------------------------------------------------------------------------
 
 def _require_pymer4():
-    """Import and return ``pymer4.models.Lmer``, or raise a helpful ImportError."""
+    """Import and return ``pymer4.models.lmer``, or raise a helpful ImportError.
+
+    pymer4 0.9+ uses Polars internally.  Its Polars→pandas bridge calls
+    ``polars.DataFrame.to_pandas()`` which requires ``pyarrow``.  We check
+    for both dependencies here and give actionable error messages.
+    """
     try:
-        from pymer4.models import Lmer  # type: ignore[import]
-        return Lmer
+        from pymer4.models import lmer  # type: ignore[import]
     except ImportError:
         raise ImportError(
             "pymer4 is required for method='lmm'. Install it with:\n"
-            "    pip install pymer4\n\n"
-            "pymer4 also requires R with the lme4 and emmeans packages:\n"
-            "    install.packages(c('lme4', 'emmeans'))\n\n"
+            "    pip install pymer4 pyarrow\n\n"
+            "pymer4 also requires R with the lme4, lmerTest, emmeans, broom.mixed,\n"
+            "and parameters packages:\n"
+            "    install.packages(c('lme4', 'lmerTest', 'emmeans', 'broom.mixed',\n"
+            "                       'parameters', 'performance'))\n\n"
             "See https://eshinjolly.com/pymer4/ for full setup instructions."
         ) from None
 
+    try:
+        import pyarrow  # type: ignore[import]  # noqa: F401
+    except ImportError:
+        raise ImportError(
+            "pyarrow is required by pymer4 0.9+ for its Polars↔pandas bridge. "
+            "Install it with:\n    pip install pyarrow"
+        ) from None
 
-def _col(df: pd.DataFrame, candidates: list[str]) -> str:
+    return lmer
+
+
+def _col_pl(df, candidates: list[str]) -> str:
     """Return the first column name from *candidates* that exists in *df*.
 
+    Handles minor API differences across pymer4 / R package versions.
     Raises ``KeyError`` with a helpful message if none are found.
-    This handles minor API differences across pymer4 versions.
     """
     for c in candidates:
         if c in df.columns:
             return c
     raise KeyError(
         f"Could not find any of {candidates} in DataFrame columns {list(df.columns)}. "
-        "This may indicate a pymer4 version incompatibility. "
-        "Please open an issue with the output of `model.coefs` / `model.ranef_var`."
+        "This may indicate a pymer4 or R package version incompatibility. "
+        "Please open an issue with the output of `model.result_fit` / `model.ranef_var`."
     )
 
 
@@ -133,33 +176,61 @@ def _scores_to_long_df(
     scores_2d: np.ndarray,
     template_labels: list[str],
     input_labels: list[str],
-) -> pd.DataFrame:
-    """Convert an ``(N, M)`` cell-mean score matrix to a long-form DataFrame.
+):
+    """Convert an ``(N, M)`` cell-mean score matrix to a long-form Polars DataFrame.
 
-    Returns a DataFrame with columns ``'template'``, ``'input'``, ``'score'``.
-    The template column is stored as a pandas ``Categorical`` with categories
-    in the order given by *template_labels*, so lme4's treatment coding uses
-    ``template_labels[0]`` as the reference level.
+    Returns a Polars DataFrame with columns ``'template'``, ``'input'``,
+    ``'score'``.  Missing (NaN) cells are dropped so lme4 receives only
+    observed observations.  The ``'template'`` column uses ``pl.Enum`` with
+    categories in the order given by *template_labels* so that lme4's
+    treatment coding uses ``template_labels[0]`` as the reference level.
     """
+    import polars as pl
+
     N, M = scores_2d.shape
-    templates = np.repeat(template_labels, M)
-    inputs = np.tile(input_labels, N)
-    scores = scores_2d.ravel()
-    df = pd.DataFrame({"template": templates, "input": inputs, "score": scores})
-    # Explicit category order → first label is the reference in treatment coding.
-    df["template"] = pd.Categorical(df["template"], categories=template_labels, ordered=False)
+    templates = np.repeat(template_labels, M).tolist()
+    inputs = np.tile(input_labels, N).tolist()
+    scores_flat = scores_2d.ravel().tolist()
+
+    df = pl.DataFrame({"template": templates, "input": inputs, "score": scores_flat})
+    # Drop rows with missing scores so lme4 receives only observed observations.
+    df = df.filter(pl.col("score").is_not_nan())
+    # Explicit Enum category order → first label is the reference in treatment coding.
+    df = df.with_columns(pl.col("template").cast(pl.Enum(template_labels)))
     return df
 
 
-def _fit_lmm(df: pd.DataFrame, Lmer, alpha: float):
-    """Fit ``score ~ template + (1|input)`` with Wald confidence intervals.
+def _fit_lmm(df, lmer, template_labels: list[str]):
+    """Fit ``score ~ template + (1|input)`` with Satterthwaite DFs.
 
-    Uses REML estimation (better for variance components) and Wald CIs
-    (fast; appropriate given the balanced complete-block structure).
+    Uses REML estimation (better for variance components).  We call
+    ``model.set_factors`` *before* ``model.fit`` so that pymer4 correctly
+    identifies ``template`` as a categorical predictor when routing
+    ``model.emmeans()`` (otherwise it dispatches to ``emtrends``).
     """
-    model = Lmer("score ~ template + (1|input)", data=df)
-    model.fit(REML=True, conf_int="Wald", alpha=alpha, verbose=False)
+    model = lmer("score ~ template + (1|input)", data=df)
+    # Register template as a factor with explicit level ordering so that:
+    #   (a) emmeans dispatches to marginal means, not marginal trends, and
+    #   (b) the contrast coding (treatment, reference = template_labels[0]) is
+    #       set explicitly rather than inferred from the Polars Enum sort order.
+    model.set_factors({"template": template_labels})
+    model.fit()
     return model
+
+
+def _get_vcov(model) -> np.ndarray:
+    """Extract the fixed-effects variance–covariance matrix as a numpy array.
+
+    pymer4 0.9 does not expose ``model.vcov``; we call R's ``stats::vcov()``
+    directly and convert the resulting ``dpoMatrix`` to a plain numpy 2D array
+    via ``base::as.matrix()``.
+    """
+    from rpy2.robjects.packages import importr
+    base_r = importr("base")
+    stats_r = importr("stats")
+    vcov_r = stats_r.vcov(model.r_model)
+    mat_r = base_r.as_matrix(vcov_r)
+    return np.array(mat_r)   # (N, N)
 
 
 def _extract_template_means(model, labels: list[str]) -> np.ndarray:
@@ -172,9 +243,9 @@ def _extract_template_means(model, labels: list[str]) -> np.ndarray:
 
     Returns shape ``(N,)``.
     """
-    coefs = model.coefs
-    est_col = _col(coefs, ["Estimate", "estimate", "Coef", "coef"])
-    betas = coefs[est_col].values  # (N,): [intercept, β₁, …, β_{N-1}]
+    rf = model.result_fit
+    est_col = _col_pl(rf, ["estimate", "Estimate", "coefficient", "Coefficient"])
+    betas = rf[est_col].to_numpy()   # (N,): [intercept, β₁, …, β_{N-1}]
 
     N = len(labels)
     means = np.empty(N)
@@ -183,13 +254,12 @@ def _extract_template_means(model, labels: list[str]) -> np.ndarray:
     return means
 
 
-def _t_crit_from_coefs(coefs: pd.DataFrame, alpha: float) -> float:
+def _t_crit_from_result_fit(model, alpha: float) -> float:
     """Return the conservative t critical value from the fixed-effects DFs."""
-    df_col = next(
-        (c for c in ["DF", "df", "Df", "Ddf"] if c in coefs.columns), None
-    )
+    rf = model.result_fit
+    df_col = next((c for c in ["df", "DF", "df_error", "Df", "Ddf"] if c in rf.columns), None)
     if df_col is not None:
-        min_df = float(coefs[df_col].min())
+        min_df = float(rf[df_col].min())
         return float(scipy.stats.t.ppf(1 - alpha / 2, df=min_df))
     # Fall back to standard normal (conservative for large N)
     return float(scipy.stats.norm.ppf(1 - alpha / 2))
@@ -208,33 +278,36 @@ def _lmm_to_pairwise(
 ) -> PairwiseMatrix:
     """Build a ``PairwiseMatrix`` from LMM emmeans pairwise contrasts.
 
-    Uses ``model.post_hoc("template", p_adjust="none")`` which calls R's
-    ``emmeans::contrast()`` under the hood, giving Wald CIs and Satterthwaite
-    degrees of freedom for each pairwise contrast.
+    Uses ``model.emmeans("template", contrasts="pairwise", p_adjust="none")``
+    which calls R's ``emmeans::contrast()`` under the hood, giving Wald CIs
+    and Satterthwaite degrees of freedom for each pairwise contrast.
 
     Multiple-comparisons correction is applied afterwards using the same
     ``correct_pvalues()`` function used by the bootstrap path.
+
+    pymer4 0.9 note: emmeans returns a Polars DataFrame with columns
+    ``contrast``, ``estimate``, ``SE``, ``df``, ``t_ratio``, ``p_value``.
+    Contrast labels are plain "A - B" (not "templateA - templateB").
     """
     alpha = 1 - ci
-    M = cell_means_2d.shape[1]
 
-    _, contrasts_df = model.post_hoc(marginal_vars="template", p_adjust="none")
+    contrasts_df = model.emmeans("template", contrasts="pairwise", p_adjust="none")
 
-    # Defensive column name lookup — column names vary across pymer4 versions.
-    contrast_col = _col(contrasts_df, ["Contrast", "contrast"])
-    est_col      = _col(contrasts_df, ["Estimate", "estimate"])
-    se_col       = _col(contrasts_df, ["SE", "se", "Std. Error", "std.error"])
-    df_col       = _col(contrasts_df, ["DF", "df", "Df"])
-    pval_col     = _col(contrasts_df, ["P-val", "p.value", "p value", "Pr(>|t|)", "P.Value"])
+    # Defensive column name lookup — names may vary across pymer4 / R versions.
+    contrast_col = _col_pl(contrasts_df, ["contrast", "Contrast"])
+    est_col      = _col_pl(contrasts_df, ["estimate", "Estimate"])
+    se_col       = _col_pl(contrasts_df, ["SE", "se", "std_error", "std.error"])
+    df_col       = _col_pl(contrasts_df, ["df", "DF", "Df"])
+    pval_col     = _col_pl(contrasts_df, ["p_value", "p.value", "P-val", "P.Value"])
 
     results: dict[tuple[str, str], PairedDiffResult] = {}
     pairs: list[tuple[str, str]] = []
 
-    for _, row in contrasts_df.iterrows():
+    for row in contrasts_df.iter_rows(named=True):
         contrast_str = str(row[contrast_col])
 
-        # emmeans may prefix each level with the variable name ("templateA - templateB")
-        # or just use the level names ("A - B").  Strip known prefixes.
+        # pymer4 0.9 emmeans: labels are plain "A - B" (no "template" prefix).
+        # Guard against older versions that might prefix with the variable name.
         for label in labels:
             contrast_str = contrast_str.replace(f"template{label}", label)
             contrast_str = contrast_str.replace(f"template {label}", label)
@@ -264,7 +337,7 @@ def _lmm_to_pairwise(
         df_val   = float(row[df_col])
         p_val    = float(row[pval_col])
 
-        t_crit = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+        t_crit  = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
         ci_low  = estimate - t_crit * se
         ci_high = estimate + t_crit * se
 
@@ -272,16 +345,22 @@ def _lmm_to_pairwise(
         idx_b = labels.index(label_b)
         per_input_diffs = cell_means_2d[idx_a] - cell_means_2d[idx_b]
 
+        # Use NaN-safe std and count only inputs where both templates observed.
+        n_complete = int(np.sum(~np.isnan(per_input_diffs)))
+        std_diff = (
+            float(np.nanstd(per_input_diffs, ddof=1)) if n_complete > 1 else 0.0
+        )
+
         res = PairedDiffResult(
             template_a=label_a,
             template_b=label_b,
             mean_diff=estimate,
-            std_diff=float(np.std(per_input_diffs, ddof=1)),
+            std_diff=std_diff,
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_val,
             test_method=f"lmm wald (pymer4, df={df_val:.0f})",
-            n_inputs=M,
+            n_inputs=n_complete,
             per_input_diffs=per_input_diffs,
             n_runs=1,  # cell means are already run-averaged
         )
@@ -290,7 +369,7 @@ def _lmm_to_pairwise(
 
     if not results:
         raise RuntimeError(
-            "pymer4 post_hoc returned no usable contrasts. "
+            "pymer4 emmeans returned no usable contrasts. "
             "Check that template labels are simple strings without ' - '."
         )
 
@@ -402,9 +481,9 @@ def _lmm_to_mean_advantage(
     N = len(labels)
     alpha = 1 - ci
 
-    coefs = model.coefs
-    est_col = _col(coefs, ["Estimate", "estimate", "Coef", "coef"])
-    betas = coefs[est_col].values  # (N,)
+    rf = model.result_fit
+    est_col = _col_pl(rf, ["estimate", "Estimate", "coefficient", "Coefficient"])
+    betas = rf[est_col].to_numpy()   # (N,): [intercept, β₁, …, β_{N-1}]
 
     # Fitted template means
     template_means = np.empty(N)
@@ -421,33 +500,30 @@ def _lmm_to_mean_advantage(
         ref_value = template_means[ref_idx]
         ref_label = reference
 
-    mean_advantages = template_means - ref_value  # (N,)
+    mean_advantages = template_means - ref_value   # (N,)
 
     # --- Wald CIs via delta method -----------------------------------------
-    # vcov: (N × N) variance-covariance matrix of the fixed effects.
-    # pymer4 exposes this as model.vcov (pandas DataFrame or numpy array).
-    vcov = np.asarray(model.vcov)   # (N, N)
-
-    L = _build_advantage_contrast_matrix(N, ref_idx)   # (N, N)
+    vcov = _get_vcov(model)     # (N, N)
+    L    = _build_advantage_contrast_matrix(N, ref_idx)   # (N, N)
 
     # Variance of each advantage: var(L[i] @ beta) = L[i] @ vcov @ L[i].T
     cov_adv  = L @ vcov @ L.T          # (N, N)
     var_adv  = np.diag(cov_adv)        # (N,)
     se_adv   = np.sqrt(np.maximum(var_adv, 0.0))
 
-    t_crit   = _t_crit_from_coefs(coefs, alpha)
+    t_crit   = _t_crit_from_result_fit(model, alpha)
     ci_low   = mean_advantages - t_crit * se_adv
     ci_high  = mean_advantages + t_crit * se_adv
 
     # --- Raw cell-mean advantages for spread bands -------------------------
     if reference == "grand_mean":
-        cell_ref = cell_means_2d.mean(axis=0)     # (M,)
+        cell_ref = np.nanmean(cell_means_2d, axis=0)   # (M,) — NaN-safe grand mean
     else:
-        cell_ref = cell_means_2d[ref_idx]          # (M,)
+        cell_ref = cell_means_2d[ref_idx]               # (M,)
 
     raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]  # (N, M)
-    spread_low  = np.percentile(raw_advantages, spread_percentiles[0], axis=1)
-    spread_high = np.percentile(raw_advantages, spread_percentiles[1], axis=1)
+    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
+    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
 
     return MeanAdvantageResult(
         labels=labels,
@@ -470,25 +546,35 @@ def _lmm_to_mean_advantage(
 def _extract_variance_components(model) -> tuple[float, float]:
     """Return (sigma_input, sigma_resid) from the fitted LMM.
 
-    Handles minor differences in how pymer4 labels the rows of
-    ``model.ranef_var`` across versions.
+    In pymer4 0.9, ``model.ranef_var`` is a Polars DataFrame produced by
+    ``broom.mixed::tidy(effects="ran_pars")``.  The ``estimate`` column
+    contains **standard deviations** (not variances) — broom.mixed uses the
+    ``"sdcor"`` scale by default.  Column layout::
+
+        group     | term             | estimate
+        --------- | ---------------- | --------
+        input     | sd__(Intercept)  | σ_input
+        Residual  | sd__Observation  | σ_resid
     """
-    ranef_var = model.ranef_var
-    var_col  = _col(ranef_var, ["Var", "variance", "Variance", "var"])
-    name_col = _col(ranef_var, ["Name", "name", "Groups", "groups", "grp"])
+    rv = model.ranef_var
+    group_col = _col_pl(rv, ["group", "Group", "grp", "Groups"])
+    term_col  = _col_pl(rv, ["term", "Term", "name", "Name"])
+    est_col   = _col_pl(rv, ["estimate", "Estimate", "Var", "var", "variance"])
 
     sigma_input = 0.0
     sigma_resid = 0.0
 
-    for _, row in ranef_var.iterrows():
-        name    = str(row[name_col]).lower().strip()
-        var_val = float(row[var_col])
-        if "residual" in name or "error" in name or name in {"", "resid"}:
-            sigma_resid = np.sqrt(max(var_val, 0.0))
+    for row in rv.iter_rows(named=True):
+        group = str(row[group_col]).strip()
+        term  = str(row[term_col]).strip().lower()
+        val   = float(row[est_col])
+
+        if group.lower() in ("residual", "resid", "residuals") or "observation" in term:
+            # Already a standard deviation in pymer4 0.9
+            sigma_resid = max(val, 0.0)
         else:
-            # All non-residual rows are random-effect groups; we expect only
-            # one (input), but accumulate if multiple are present (future use).
-            sigma_input = np.sqrt(max(var_val, 0.0))
+            # Random-effect group (we expect "input"); also an SD in 0.9
+            sigma_input = max(val, 0.0)
 
     return sigma_input, sigma_resid
 
@@ -552,8 +638,8 @@ def _lmm_to_rank_dist(
 # LMM diagnostics
 # ---------------------------------------------------------------------------
 
-def _build_lmm_info(model, N: int, M: int) -> LMMInfo:
-    """Extract ``LMMInfo`` from a fitted pymer4 ``Lmer`` model."""
+def _build_lmm_info(model, n_obs: int) -> LMMInfo:
+    """Extract ``LMMInfo`` from a fitted pymer4 ``lmer`` model."""
     sigma_input, sigma_resid = _extract_variance_components(model)
 
     var_input = sigma_input ** 2
@@ -561,19 +647,20 @@ def _build_lmm_info(model, N: int, M: int) -> LMMInfo:
     total_var = var_input + var_resid
     icc = var_input / total_var if total_var > 0 else 0.0
 
-    # pymer4 stores convergence warnings in model.warnings (list of strings)
+    # pymer4 0.9 stores the convergence result in model.convergence_status
+    # as a string containing the R output; "TRUE" signals successful convergence.
     converged = True
-    if hasattr(model, "warnings") and model.warnings:
-        converged = not any(
-            "convergence" in str(w).lower() or "singular" in str(w).lower()
-            for w in model.warnings
-        )
+    status = getattr(model, "convergence_status", None)
+    if status is not None:
+        status_str = str(status).strip()
+        if "TRUE" not in status_str.upper():
+            converged = False
 
     return LMMInfo(
         icc=icc,
         sigma_input=sigma_input,
         sigma_resid=sigma_resid,
-        n_obs=N * M,
+        n_obs=n_obs,
         formula="score ~ template + (1|input)",
         converged=converged,
     )
@@ -630,11 +717,11 @@ def lmm_analyze(
     Raises
     ------
     ImportError
-        If pymer4 is not installed.
+        If pymer4 or pyarrow is not installed, or R/lme4 is not reachable.
     RuntimeError
         If the model fails to converge or returns unusable contrasts.
     """
-    Lmer = _require_pymer4()
+    lmer = _require_pymer4()
 
     if rng is None:
         rng = np.random.default_rng()
@@ -651,6 +738,19 @@ def lmm_analyze(
             stacklevel=3,
         )
 
+    if result.has_missing:
+        n_missing = int(np.sum(np.isnan(result.get_2d_scores())))
+        n_total = N * M
+        warnings.warn(
+            f"scores contain {n_missing} missing (NaN) cell(s) out of "
+            f"{n_total} total ({100 * n_missing / n_total:.1f}%). "
+            "LMM analysis will use available observations under the MAR "
+            "(Missing At Random) assumption. Results may be biased if "
+            "missingness is related to true score values (MNAR).",
+            UserWarning,
+            stacklevel=3,
+        )
+
     # Use cell means for model fitting; keep run scores for seed_var.
     cell_means_2d = result.get_2d_scores()   # (N, M)
     run_scores    = result.get_run_scores()  # (N, M, R)
@@ -659,8 +759,8 @@ def lmm_analyze(
 
     # Fit the LMM
     df    = _scores_to_long_df(cell_means_2d, labels, inputs)
-    alpha = 1.0 - ci
-    model = _fit_lmm(df, Lmer, alpha)
+    n_obs = len(df)   # observed rows after dropping NaN
+    model = _fit_lmm(df, lmer, labels)
 
     if not model.fitted:
         raise RuntimeError(
@@ -680,7 +780,7 @@ def lmm_analyze(
     if result.is_seeded:
         seed_var = seed_variance_decomposition(run_scores, labels)
 
-    lmm_info = _build_lmm_info(model, N, M)
+    lmm_info = _build_lmm_info(model, n_obs)
 
     if not lmm_info.converged:
         warnings.warn(
