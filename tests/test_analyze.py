@@ -422,3 +422,155 @@ def test_analyze_bca_and_bootstrap_are_consistent(n_inputs):
     ) / 2
     center_atol = 0.18 if n_inputs <= 20 else 0.08
     np.testing.assert_allclose(center_bca, center_bootstrap, atol=center_atol)
+
+
+def test_analyze_pathological_many_prompts_recovers_best_prompt():
+    # Stress case: many prompt templates in a single-model benchmark.
+    rng = np.random.default_rng(909)
+    n_templates = 81
+    n_inputs = 160
+
+    prompt_labels = [f"Prompt {i:02d}" for i in range(n_templates)]
+    input_labels = [f"item_{i:03d}" for i in range(n_inputs)]
+
+    # Prompt 0 is the true winner with a clear margin; others decay in quality.
+    target_means = 8.1 - 0.05 * np.arange(n_templates)
+    target_means[0] += 0.30
+    target_scales = 0.48 + 0.006 * np.arange(n_templates)
+
+    scores = np.empty((n_templates, n_inputs), dtype=float)
+    for template_idx in range(n_templates):
+        scores[template_idx] = rng.normal(
+            loc=target_means[template_idx],
+            scale=target_scales[template_idx],
+            size=n_inputs,
+        )
+    scores = np.clip(scores, 0.0, 10.0)
+
+    result = ps.BenchmarkResult(
+        scores=scores,
+        template_labels=prompt_labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=300,
+        rng=np.random.default_rng(17),
+    )
+
+    assert isinstance(analysis, ps.AnalysisBundle)
+
+    best_idx = int(np.argmax(analysis.rank_dist.p_best))
+    assert analysis.rank_dist.labels[best_idx] == "Prompt 00"
+    assert best_idx == int(np.argmax(target_means))
+
+    # Even with many templates, the top-ranked expected rank should be near 1.
+    top_expected_rank = float(analysis.rank_dist.expected_ranks[best_idx])
+    assert top_expected_rank < 2.5
+
+
+def test_analyze_pathological_many_models_recovers_best_model_and_pair():
+    # Stress case: many models and many prompts.
+    rng = np.random.default_rng(910)
+    n_models = 12
+    n_prompts = 20
+    n_inputs = 40
+
+    model_labels = [f"Model {i:02d}" for i in range(n_models)]
+    prompt_labels = [f"Prompt {i:02d}" for i in range(n_prompts)]
+    input_labels = [f"item_{i:03d}" for i in range(n_inputs)]
+
+    # Model 00 has the strongest base quality; Prompt 00 is globally strongest.
+    model_offsets = 0.9 - 0.10 * np.arange(n_models)
+    prompt_offsets = 0.35 - 0.02 * np.arange(n_prompts)
+    prompt_offsets[0] += 0.30
+
+    target_means = 7.2 + model_offsets[:, np.newaxis] + prompt_offsets[np.newaxis, :]
+    target_scales = 0.55 + 0.02 * np.arange(n_models)[:, np.newaxis]
+
+    scores = np.empty((n_models, n_prompts, n_inputs), dtype=float)
+    for model_idx in range(n_models):
+        for prompt_idx in range(n_prompts):
+            scores[model_idx, prompt_idx] = rng.normal(
+                loc=target_means[model_idx, prompt_idx],
+                scale=target_scales[model_idx, 0],
+                size=n_inputs,
+            )
+    scores = np.clip(scores, 0.0, 10.0)
+
+    result = ps.MultiModelBenchmark(
+        scores=scores,
+        model_labels=model_labels,
+        template_labels=prompt_labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=8,
+        rng=np.random.default_rng(21),
+    )
+
+    assert isinstance(analysis, ps.MultiModelBundle)
+
+    model_best_idx = int(np.argmax(analysis.model_level.rank_dist.p_best))
+    assert analysis.model_level.rank_dist.labels[model_best_idx] == "Model 00"
+
+    expected_best_pair = ("Model 00", "Prompt 00")
+    assert analysis.best_pair == expected_best_pair
+
+
+def test_analyze_pathological_many_runs_detects_seed_noise_and_winner():
+    # Stress case: many runs per cell with distinct run-noise profiles.
+    rng = np.random.default_rng(911)
+    n_inputs = 120
+    n_runs = 28
+
+    prompt_labels = ["Winner Stable", "RunnerUp Noisy", "Middle"]
+    input_labels = [f"item_{i:03d}" for i in range(n_inputs)]
+
+    target_means = np.array([8.25, 8.05, 7.85])
+    run_noise_scales = np.array([0.07, 0.72, 0.22])
+
+    base_by_input = rng.normal(loc=0.0, scale=0.42, size=n_inputs)
+    scores = np.empty((len(prompt_labels), n_inputs, n_runs), dtype=float)
+
+    for template_idx in range(len(prompt_labels)):
+        for run_idx in range(n_runs):
+            run_noise = rng.normal(
+                loc=0.0,
+                scale=run_noise_scales[template_idx],
+                size=n_inputs,
+            )
+            scores[template_idx, :, run_idx] = (
+                target_means[template_idx] + base_by_input + run_noise
+            )
+
+    scores = np.clip(scores, 0.0, 10.0)
+
+    result = ps.BenchmarkResult(
+        scores=scores,
+        template_labels=prompt_labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=260,
+        rng=np.random.default_rng(31),
+    )
+
+    assert isinstance(analysis, ps.AnalysisBundle)
+    assert analysis.seed_variance is not None
+
+    best_idx = int(np.argmax(analysis.rank_dist.p_best))
+    assert analysis.rank_dist.labels[best_idx] == "Winner Stable"
+
+    seed_var = analysis.seed_variance
+    assert seed_var.n_runs == n_runs
+
+    most_stable_idx = int(np.argmin(seed_var.instability))
+    most_noisy_idx = int(np.argmax(seed_var.instability))
+    assert seed_var.labels[most_stable_idx] == "Winner Stable"
+    assert seed_var.labels[most_noisy_idx] == "RunnerUp Noisy"
