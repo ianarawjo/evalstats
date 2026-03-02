@@ -2,8 +2,27 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import numpy as np
 from scipy import stats
+
+
+def resolve_resampling_method(
+    method: Literal["bootstrap", "bca", "auto"],
+    sample_size: int,
+    *,
+    bca_min_n: int = 15,
+    bca_max_n: int = 200,
+) -> Literal["bootstrap", "bca"]:
+    """Resolve ``method='auto'`` to a concrete bootstrap method.
+
+    Uses BCa for moderate sample sizes where acceleration/bias correction is
+    typically beneficial, and percentile bootstrap otherwise.
+    """
+    if method == "auto":
+        return "bca" if bca_min_n <= sample_size <= bca_max_n else "bootstrap"
+    return method
 
 
 def bootstrap_means_1d(
@@ -18,6 +37,24 @@ def bootstrap_means_1d(
         idx = rng.choice(m, size=m, replace=True)
         boot_means[b] = np.mean(values[idx])
     return boot_means
+
+
+def bootstrap_ci_1d(
+    values: np.ndarray,
+    observed_mean: float,
+    method: Literal["bootstrap", "bca"],
+    n_bootstrap: int,
+    alpha: float,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Bootstrap or BCa CI for the mean of a 1-D array."""
+    boot_means = bootstrap_means_1d(values, n_bootstrap, rng)
+    if method == "bca":
+        return bca_interval_1d(values, observed_mean, boot_means, alpha)
+    return (
+        float(np.percentile(boot_means, 100 * alpha / 2)),
+        float(np.percentile(boot_means, 100 * (1 - alpha / 2))),
+    )
 
 
 def bca_interval_1d(
@@ -119,3 +156,22 @@ def bootstrap_diffs_nested(
     # Cell means and per-input paired differences.
     diffs = resampled_a.mean(axis=2) - resampled_b.mean(axis=2)  # (B, M)
     return diffs.mean(axis=1)                                     # (B,)
+
+
+def nested_resample_cell_means_once(
+    scores: np.ndarray,
+    rng: np.random.Generator,
+) -> np.ndarray:
+    """One nested resample of per-input cell means for ``scores`` of shape ``(N, M, R)``.
+
+    Outer level resamples inputs; inner level resamples runs within each
+    selected input. Returns resampled cell means of shape ``(N, M)``.
+    """
+    N, M, R = scores.shape
+    input_idx = rng.integers(0, M, size=M)      # (M,)
+    run_idx = rng.integers(0, R, size=(M, R))   # (M, R)
+
+    sel = scores[:, input_idx, :]               # (N, M, R)
+    m_range = np.arange(M)[:, np.newaxis]       # (M, 1)
+    resampled = sel[:, m_range, run_idx]        # (N, M, R)
+    return resampled.mean(axis=2)               # (N, M)

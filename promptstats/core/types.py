@@ -1,4 +1,4 @@
-"""Core data types for benchpress."""
+"""Core data types for promptstats."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import pandas as pd
 class BenchmarkResult:
     """Container for benchmark scores across templates and inputs.
 
-    The fundamental input to all benchpress analyses. Wraps a score matrix
+    The fundamental input to all promptstats analyses. Wraps a score matrix
     where every template has been evaluated on every input (complete design).
 
     Score array shape convention

@@ -13,12 +13,13 @@ rather than being silently discarded.
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Literal, Optional
 
 import numpy as np
 
-from .resampling import bca_interval_1d, bootstrap_diffs_nested, bootstrap_means_1d
+from .resampling import bca_interval_1d, bootstrap_diffs_nested, bootstrap_means_1d, resolve_resampling_method
+from .stats_utils import correct_pvalues
 
 
 @dataclass
@@ -154,9 +155,7 @@ def pairwise_differences(
     std_d = float(np.std(diffs, ddof=1))
     alpha = 1 - ci
 
-    resolved_method = method
-    if method == "auto":
-        resolved_method = "bca" if 15 <= m <= 200 else "bootstrap"
+    resolved_method = resolve_resampling_method(method, m)
 
     if resolved_method == "bootstrap":
         centered_diffs = diffs - mean_d
@@ -238,9 +237,7 @@ def _pairwise_diffs_seeded(
     std_d = float(cell_diffs.std(ddof=1))
     alpha = 1 - ci
 
-    resolved_method = method
-    if method == "auto":
-        resolved_method = "bca" if 15 <= M <= 200 else "bootstrap"
+    resolved_method = resolve_resampling_method(method, M)
 
     # Nested bootstrap replicates of the mean paired cell-mean difference.
     boot_means = bootstrap_diffs_nested(scores_a, scores_b, n_bootstrap, rng)
@@ -336,7 +333,7 @@ def all_pairwise(
     # Apply multiple comparisons correction to p-values
     if correction != "none" and len(pairs) > 1:
         p_values = np.array([results[p].p_value for p in pairs])
-        adjusted = _correct_pvalues(p_values, correction)
+        adjusted = correct_pvalues(p_values, correction)
         for pair, adj_p in zip(pairs, adjusted):
             r = results[pair]
             results[pair] = PairedDiffResult(
@@ -402,7 +399,7 @@ def vs_baseline(
     # Apply correction
     if correction != "none" and len(results) > 1:
         p_values = np.array([r.p_value for r in results])
-        adjusted = _correct_pvalues(p_values, correction)
+        adjusted = correct_pvalues(p_values, correction)
         results = [
             PairedDiffResult(
                 template_a=r.template_a,
@@ -422,39 +419,3 @@ def vs_baseline(
 
     return results
 
-
-def _correct_pvalues(
-    p_values: np.ndarray,
-    method: str,
-) -> np.ndarray:
-    """Apply multiple comparisons correction to p-values."""
-    n = len(p_values)
-    if n <= 1:
-        return p_values.copy()
-
-    if method == "bonferroni":
-        return np.minimum(p_values * n, 1.0)
-
-    elif method == "holm":
-        order = np.argsort(p_values)
-        adjusted = np.empty(n)
-        cummax = 0.0
-        for rank, idx in enumerate(order):
-            corrected = p_values[idx] * (n - rank)
-            cummax = max(cummax, corrected)
-            adjusted[idx] = min(cummax, 1.0)
-        return adjusted
-
-    elif method == "fdr_bh":
-        order = np.argsort(p_values)
-        adjusted = np.empty(n)
-        cummin = 1.0
-        for rank in range(n - 1, -1, -1):
-            idx = order[rank]
-            corrected = p_values[idx] * n / (rank + 1)
-            cummin = min(cummin, corrected)
-            adjusted[idx] = min(cummin, 1.0)
-        return adjusted
-
-    else:
-        raise ValueError(f"Unknown correction method: {method}")

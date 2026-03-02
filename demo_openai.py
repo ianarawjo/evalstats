@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from openai import OpenAI
 
-import promptstats as bps
+import promptstats as pstats
 
 
 # ---------------------------------------------------------------------------
@@ -309,7 +309,7 @@ def main():
     # raw_scores shape: (N_templates, N_inputs, 1, N_evaluators) — the unit
     # runs axis is already in place from run_benchmark.
     # -----------------------------------------------------------------------
-    result_3d = bps.BenchmarkResult(
+    result_3d = pstats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -327,7 +327,7 @@ def main():
     # -----------------------------------------------------------------------
     # Robustness metrics
     # -----------------------------------------------------------------------
-    rob = bps.robustness_metrics(scores_2d, TEMPLATE_LABELS, failure_threshold=0.5)
+    rob = pstats.robustness_metrics(scores_2d, TEMPLATE_LABELS, failure_threshold=0.5)
     print("=== Robustness Metrics (averaged evaluators) ===")
     print(rob.summary_table().to_string())
     print()
@@ -342,7 +342,7 @@ def main():
     for label_a, label_b in pairs:
         idx_a = TEMPLATE_LABELS.index(label_a)
         idx_b = TEMPLATE_LABELS.index(label_b)
-        diff = bps.pairwise_differences(
+        diff = pstats.pairwise_differences(
             scores_2d, idx_a, idx_b, label_a, label_b,
             method="bootstrap", rng=rng,
         )
@@ -357,7 +357,7 @@ def main():
     # -----------------------------------------------------------------------
     # Bootstrap ranking
     # -----------------------------------------------------------------------
-    ranks = bps.bootstrap_ranks(scores_2d, TEMPLATE_LABELS, n_bootstrap=5_000, rng=rng)
+    ranks = pstats.bootstrap_ranks(scores_2d, TEMPLATE_LABELS, n_bootstrap=5_000, rng=rng)
     print("=== Bootstrap Rank Probabilities ===")
     print(f"  {'Template':<18s} {'P(Best)':>9s} {'E[Rank]':>9s}")
     for i, label in enumerate(TEMPLATE_LABELS):
@@ -367,12 +367,12 @@ def main():
     # -----------------------------------------------------------------------
     # Mean advantage plot — composite (average evaluators)
     # -----------------------------------------------------------------------
-    result_2d = bps.BenchmarkResult(
+    result_2d = pstats.BenchmarkResult(
         scores=scores_2d,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = bps.plot_mean_advantage(
+    fig = pstats.plot_mean_advantage(
         result_2d,
         reference="grand_mean",
         title=(
@@ -389,12 +389,12 @@ def main():
     # -----------------------------------------------------------------------
     for e_idx, e_name in enumerate(EVALUATOR_NAMES):
         ev_scores = raw_scores[:, :, 0, e_idx]
-        ev_result = bps.BenchmarkResult(
+        ev_result = pstats.BenchmarkResult(
             scores=ev_scores,
             template_labels=TEMPLATE_LABELS,
             input_labels=INPUT_LABELS,
         )
-        fig_e = bps.plot_mean_advantage(
+        fig_e = pstats.plot_mean_advantage(
             ev_result,
             reference="grand_mean",
             title=f"Template Advantage — evaluator: {e_name}\n({MODEL})",

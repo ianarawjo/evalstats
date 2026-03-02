@@ -24,7 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from openai import OpenAI
 
-import promptstats as bps
+import promptstats as pstats
 
 
 # ---------------------------------------------------------------------------
@@ -285,7 +285,7 @@ def main():
     print(f"\nCompleted in {elapsed:.1f}s\n")
 
     # raw_scores shape: (N_templates, N_inputs, N_runs, N_evaluators)
-    result = bps.BenchmarkResult(
+    result = pstats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -298,7 +298,7 @@ def main():
     )
 
     print("=== analyze(..., evaluator_mode='aggregate') ===")
-    analysis_agg = bps.analyze(
+    analysis_agg = pstats.analyze(
         result,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -308,11 +308,11 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    bps.print_analysis_summary(analysis_agg, top_pairwise=8)
+    pstats.print_analysis_summary(analysis_agg, top_pairwise=8)
     print()
 
     print("=== analyze(..., evaluator_mode='per_evaluator') ===")
-    analysis_by_eval = bps.analyze(
+    analysis_by_eval = pstats.analyze(
         result,
         evaluator_mode="per_evaluator",
         reference="grand_mean",
@@ -322,14 +322,14 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    bps.print_analysis_summary(analysis_by_eval, top_pairwise=4)
+    pstats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
 
-    result_2d = bps.BenchmarkResult(
+    result_2d = pstats.BenchmarkResult(
         scores=result.get_2d_scores(),
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = bps.plot_mean_advantage(
+    fig = pstats.plot_mean_advantage(
         result_2d,
         reference="grand_mean",
         title=(

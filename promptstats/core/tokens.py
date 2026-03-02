@@ -12,8 +12,8 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from .paired import PairwiseMatrix, PairedDiffResult, all_pairwise
-from .resampling import bootstrap_means_1d, bca_interval_1d
+from .paired import PairwiseMatrix, all_pairwise
+from .resampling import bootstrap_ci_1d, resolve_resampling_method
 
 
 @dataclass
@@ -239,10 +239,7 @@ def _compute_token_stats(
     mean_input = input_tokens.mean(axis=1) if input_tokens is not None else None
 
     M = out_cell.shape[1]
-    if method == "auto":
-        resolved = "bca" if 15 <= M <= 200 else "bootstrap"
-    else:
-        resolved = method
+    resolved = resolve_resampling_method(method, M)
 
     ci_low_output = np.empty(N)
     ci_high_output = np.empty(N)
@@ -250,10 +247,10 @@ def _compute_token_stats(
     ci_high_total = np.empty(N)
 
     for i in range(N):
-        ci_low_output[i], ci_high_output[i] = _bootstrap_ci_1d(
+        ci_low_output[i], ci_high_output[i] = bootstrap_ci_1d(
             out_cell[i], float(mean_output[i]), resolved, n_bootstrap, alpha, rng,
         )
-        ci_low_total[i], ci_high_total[i] = _bootstrap_ci_1d(
+        ci_low_total[i], ci_high_total[i] = bootstrap_ci_1d(
             tot_cell[i], float(mean_total[i]), resolved, n_bootstrap, alpha, rng,
         )
 
@@ -268,24 +265,6 @@ def _compute_token_stats(
         mean_input=mean_input,
         n_bootstrap=n_bootstrap,
         ci=ci,
-    )
-
-
-def _bootstrap_ci_1d(
-    values: np.ndarray,
-    observed_mean: float,
-    method: str,
-    n_bootstrap: int,
-    alpha: float,
-    rng: np.random.Generator,
-) -> tuple[float, float]:
-    """Bootstrap or BCa CI for the mean of a 1-D array."""
-    boot_means = bootstrap_means_1d(values, n_bootstrap, rng)
-    if method == "bca":
-        return bca_interval_1d(values, observed_mean, boot_means, alpha)
-    return (
-        float(np.percentile(boot_means, 100 * alpha / 2)),
-        float(np.percentile(boot_means, 100 * (1 - alpha / 2))),
     )
 
 

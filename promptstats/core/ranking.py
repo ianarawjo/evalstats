@@ -17,7 +17,7 @@ from typing import Literal, Optional
 
 import numpy as np
 
-from .resampling import bca_interval_1d, bootstrap_means_1d
+from .resampling import bca_interval_1d, bootstrap_means_1d, nested_resample_cell_means_once, resolve_resampling_method
 
 
 @dataclass
@@ -173,26 +173,12 @@ def _bootstrap_ranks_seeded(
     rng: np.random.Generator,
 ) -> RankDistribution:
     """Rank distribution via nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
-    N, M, R = scores.shape
+    N, _, _ = scores.shape
     rank_counts = np.zeros((N, N), dtype=np.int64)
-    m_range = np.arange(M)[:, np.newaxis]   # (M, 1) — used for run-axis gather
 
     for _ in range(n_bootstrap):
-        # Outer: resample inputs.
-        input_idx = rng.integers(0, M, size=M)          # (M,)
-        # Inner: resample runs for each selected input.
-        run_idx = rng.integers(0, R, size=(M, R))        # (M, R)
-
-        # scores[:, input_idx, :] → (N, M, R) gathering along input axis.
-        sel = scores[:, input_idx, :]                    # (N, M, R)
-
-        # For each (k, r): pick sel[:, k, run_idx[k, r]].
-        # m_range (M, 1) and run_idx (M, R) broadcast to (M, R).
-        # The leading ':' (axis 0, all N templates) is basic; the advanced
-        # block (M, R) is placed at position 1 → result shape (N, M, R).
-        resampled = sel[:, m_range, run_idx]             # (N, M, R)
-
-        means = resampled.mean(axis=2).mean(axis=1)      # (N,)
+        boot_cell_means = nested_resample_cell_means_once(scores, rng)  # (N, M)
+        means = boot_cell_means.mean(axis=1)                            # (N,)
         order = np.argsort(-means)
         for rank, template_idx in enumerate(order):
             rank_counts[template_idx, rank] += 1
@@ -279,9 +265,7 @@ def bootstrap_mean_advantage(
 
     n_templates, m_inputs = scores.shape
     alpha = 1 - ci
-    resolved_method = method
-    if method == "auto":
-        resolved_method = "bca" if 15 <= m_inputs <= 200 else "bootstrap"
+    resolved_method = resolve_resampling_method(method, m_inputs)
 
     if reference == "grand_mean":
         ref_scores = scores.mean(axis=0)
@@ -338,11 +322,9 @@ def _bootstrap_mean_advantage_seeded(
     method: Literal["bootstrap", "bca", "auto"],
 ) -> MeanAdvantageResult:
     """Mean advantage with nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
-    N, M, R = scores.shape
+    N, M, _ = scores.shape
     alpha = 1 - ci
-    resolved_method = method
-    if method == "auto":
-        resolved_method = "bca" if 15 <= M <= 200 else "bootstrap"
+    resolved_method = resolve_resampling_method(method, M)
 
     # ---- Point estimates from cell means --------------------------------
     cell_means = scores.mean(axis=2)   # (N, M)
@@ -364,16 +346,10 @@ def _bootstrap_mean_advantage_seeded(
     # ---- Nested bootstrap replicates of mean advantages -----------------
     # Shape (n_bootstrap, N): for each iteration, the mean advantage of
     # every template after resampling inputs and runs.
-    m_range = np.arange(M)[:, np.newaxis]   # (M, 1)
     boot_mean_advs = np.empty((n_bootstrap, N))
 
     for b in range(n_bootstrap):
-        input_idx = rng.integers(0, M, size=M)          # (M,)
-        run_idx = rng.integers(0, R, size=(M, R))        # (M, R)
-
-        sel = scores[:, input_idx, :]                    # (N, M, R)
-        resampled = sel[:, m_range, run_idx]             # (N, M, R)
-        boot_cell_means = resampled.mean(axis=2)         # (N, M)
+        boot_cell_means = nested_resample_cell_means_once(scores, rng)  # (N, M)
 
         if ref_idx is None:
             boot_ref = boot_cell_means.mean(axis=0)      # (M,) grand mean

@@ -6,7 +6,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(__file__))
 
-import promptstats as bps
+import promptstats as pstats
 
 # --- Synthetic benchmark data ---
 # 6 templates, 100 inputs, designed to illustrate different behaviors
@@ -52,7 +52,7 @@ labels = [
 input_labels = [f"input_{i:03d}" for i in range(M)]
 
 # --- Create BenchmarkResult ---
-result = bps.BenchmarkResult(
+result = pstats.BenchmarkResult(
     scores=scores,
     template_labels=labels,
     input_labels=input_labels,
@@ -62,13 +62,13 @@ print(f"Created BenchmarkResult: {result.n_templates} templates × {result.n_inp
 print()
 
 # --- Robustness metrics ---
-rob = bps.robustness_metrics(scores, labels, failure_threshold=4.0)
+rob = pstats.robustness_metrics(scores, labels, failure_threshold=4.0)
 print("=== Robustness Summary ===")
 print(rob.summary_table().to_string())
 print()
 
 # --- Pairwise differences (A vs C as an interesting pair) ---
-diff_ac = bps.pairwise_differences(
+diff_ac = pstats.pairwise_differences(
     scores, 0, 2, labels[0], labels[2], method="auto", rng=rng,
 )
 print(f"=== Pairwise: {diff_ac.template_a} vs {diff_ac.template_b} ===")
@@ -80,7 +80,7 @@ print(f"  Significant: {diff_ac.significant}")
 print()
 
 # --- Bootstrap ranking ---
-ranks = bps.bootstrap_ranks(scores, labels, n_bootstrap=10_000, rng=rng)
+ranks = pstats.bootstrap_ranks(scores, labels, n_bootstrap=10_000, rng=rng)
 print("=== Bootstrap Rank Probabilities ===")
 print(f"{'Template':<25s} {'P(Best)':>8s} {'E[Rank]':>8s}")
 for i, label in enumerate(labels):
@@ -88,7 +88,7 @@ for i, label in enumerate(labels):
 print()
 
 # --- Mean advantage (the key computation for the plot) ---
-adv = bps.bootstrap_mean_advantage(
+adv = pstats.bootstrap_mean_advantage(
     scores, labels, reference="grand_mean", n_bootstrap=10_000, rng=rng,
 )
 print("=== Mean Advantage over Grand Mean ===")
@@ -105,12 +105,12 @@ for i in range(len(labels)):
 print()
 
 # --- Generate the plot ---
-fig = bps.plot_mean_advantage(result, reference="grand_mean", rng=np.random.default_rng(42))
+fig = pstats.plot_mean_advantage(result, reference="grand_mean", rng=np.random.default_rng(42))
 fig.savefig("mean_advantage_plot.png", dpi=150, bbox_inches="tight")
 print("Saved: mean_advantage_plot.png")
 
 # Also generate a version comparing against a specific baseline
-fig2 = bps.plot_mean_advantage(
+fig2 = pstats.plot_mean_advantage(
     result,
     reference="A: Reliable Winner",
     title="Advantage over 'A: Reliable Winner'",

@@ -1,6 +1,6 @@
 """Mean advantage plot with dual uncertainty bands.
 
-The signature benchpress visualization. For each template, shows:
+The signature promptstats visualization. For each template, shows:
 
 - A point for the mean advantage over a reference
 - A thin inner band for the bootstrap CI on the mean (epistemic uncertainty:

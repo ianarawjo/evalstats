@@ -38,7 +38,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from openai import OpenAI
 
-import promptstats as bps
+import promptstats as pstats
 
 
 # ---------------------------------------------------------------------------
@@ -307,7 +307,7 @@ def demo_compare_models() -> None:
     print(f"\nCompleted in {elapsed:.1f}s\n")
 
     # raw_scores shape: (N_models, N_templates, N_inputs, N_runs, N_evaluators)
-    multi_result = bps.MultiModelBenchmark(
+    multi_result = pstats.MultiModelBenchmark(
         scores=raw_scores,
         model_labels=model_labels,
         template_labels=TEMPLATE_LABELS,
@@ -322,7 +322,7 @@ def demo_compare_models() -> None:
     )
 
     print("=== analyze(..., evaluator_mode='aggregate') ===")
-    analysis = bps.analyze(
+    analysis = pstats.analyze(
         multi_result,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -332,7 +332,7 @@ def demo_compare_models() -> None:
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    bps.print_analysis_summary(analysis, top_pairwise=8)
+    pstats.print_analysis_summary(analysis, top_pairwise=8)
 
     print("\nDone!")
 
