@@ -4,3 +4,6 @@
 *.png
 !docs/*.png
 *.egg-info/
+*.pytest_cache/
+*.ipynb_checkpoints/
+*.venv/
