@@ -40,6 +40,8 @@ promptstats analyze results.csv
 
 The input file should have columns `template`, `input`, and `score` (run and evaluator columns are optional). Run `promptstats analyze --help` for the full list of options and supported column aliases.
 
+For more complex statistical analysis with mixed effects models, see below for install instructions. R and pymer4 are required dependencies. 
+
 ## Python API
 
 `promptstats` main use case is as a Python API, which provides a similar entry point, the `analyze()` function. Simply pass your benchmark data in the correct format, and pass it to `analyze` to get a battery of results:
@@ -102,6 +104,36 @@ In this run, multiple prompt template variations were considered, making this re
 LLMs are stochastic at temperature>0. Will the performance stay similar, even upon multiple runs for the same inputs? `promptstats` offers a helpful "noise plot" which visualizes (in)stability across runs:
 
 ![Per-input noise across runs](docs/per-input-noise.png)
+
+## Optional: Complex statistical analysis with mixed effects models
+
+`promptstats` can support more complex analyses for:
+- Missing data in inputs (some score cells are `NaN`)
+- Factor decomposition when multiple input factors are present
+
+For mixed-effects models, `promptstats` relies on `pymer4`, which wraps R's `lmer` and `emmeans` functions. We chose `pymer4` because it offers strong forward compatibility for more advanced statistical methods, many of which are most robustly supported (or only available) in R.
+
+`pymer4` is an optional dependency and will require additional system setup, outside of Python itself. On macOS, installation involved the following steps. In R, install packages:
+
+```r
+install.packages(c(
+    "lme4",
+    "emmeans",
+    "tibble",
+    "broom",
+    "broom.mixed",
+    "lmerTest",
+    "report"
+))
+```
+
+In Python, install with `pip` or `pip3`:
+
+```bash
+pip install "pymer4>=0.9" great_tables joblib rpy2 polars scikit-learn formulae pyarrow
+```
+
+Installation details may differ on your system.
 
 ## Future
 
