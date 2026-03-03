@@ -346,7 +346,7 @@ def test_cmd_analyze_rejects_reference_not_in_templates(tmp_path):
             cli._cmd_analyze(args)
 
 
-def test_cmd_analyze_rejects_per_evaluator_for_multimodel(tmp_path):
+def test_cmd_analyze_allows_per_evaluator_for_multimodel(tmp_path, monkeypatch):
     csv_path = tmp_path / "data.csv"
     csv_path.write_text("x,y\n1,2\n", encoding="utf-8")
 
@@ -365,11 +365,69 @@ def test_cmd_analyze_rejects_per_evaluator_for_multimodel(tmp_path):
 
     df = pd.DataFrame({"prompt": ["Prompt A"], "input": ["i1"], "score": [1.0]})
 
-    with pytest.raises(SystemExit, match="1"):
-        with pytest.MonkeyPatch.context() as mp:
-            mp.setattr(cli, "_load_file", lambda path, sheet: df)
-            mp.setattr(cli, "_load_long", lambda input_df: _make_multi_model_result())
-            cli._cmd_analyze(args)
+    analysis_call = {}
+
+    def fake_analyze(
+        benchmark,
+        evaluator_mode,
+        ci,
+        n_bootstrap,
+        correction,
+        reference,
+        failure_threshold,
+    ):
+        analysis_call["benchmark"] = benchmark
+        analysis_call["evaluator_mode"] = evaluator_mode
+        return {"accuracy": {"ok": True}}
+
+    monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
+    monkeypatch.setattr(cli, "_load_long", lambda input_df: _make_multi_model_result())
+    monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
+    monkeypatch.setattr("promptstats.core.router.print_analysis_summary", lambda *a, **k: None)
+
+    cli._cmd_analyze(args)
+
+    assert isinstance(analysis_call["benchmark"], MultiModelBenchmark)
+    assert analysis_call["evaluator_mode"] == "per_evaluator"
+
+
+def test_cmd_analyze_writes_requested_outputs(tmp_path, monkeypatch):
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("x,y\n1,2\n", encoding="utf-8")
+    df = pd.DataFrame({"input": ["i1", "i2"], "Prompt A": [1.0, 1.1], "Prompt B": [0.9, 1.0]})
+
+    out_md = tmp_path / "report.md"
+    out_json = tmp_path / "report.json"
+
+    args = argparse.Namespace(
+        file=csv_path,
+        format="wide",
+        sheet="0",
+        evaluator_mode="aggregate",
+        ci=0.95,
+        n_bootstrap=100,
+        correction="holm",
+        reference="grand_mean",
+        failure_threshold=None,
+        top_pairwise=5,
+        out=[str(out_md), str(out_json)],
+    )
+
+    monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
+    monkeypatch.setattr(cli, "_load_wide", lambda input_df: _make_single_model_result())
+    monkeypatch.setattr("promptstats.core.router.analyze", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr(
+        "promptstats.core.router.print_analysis_summary",
+        lambda *a, **k: print("mock summary"),
+    )
+
+    cli._cmd_analyze(args)
+
+    assert out_md.exists()
+    assert out_json.exists()
+    assert "mock summary" in out_md.read_text(encoding="utf-8")
+    payload = out_json.read_text(encoding="utf-8")
+    assert "promptstats.analysis" in payload
 
 
 @pytest.mark.parametrize(

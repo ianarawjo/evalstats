@@ -5,10 +5,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "promptstats"
 version = "0.1.0"
-description = "Statistical analysis and visualization for prompt benchmarking"
+description = "Statistically sane analysis methods for comparing prompt and LLM performance."
 readme = "README.md"
 requires-python = ">=3.9"
 license = "MIT"
+authors = [
+    { name = "Ian Arawjo" }
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",

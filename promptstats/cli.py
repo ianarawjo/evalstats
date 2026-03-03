@@ -16,7 +16,11 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import io
+import json
 import sys
+from contextlib import redirect_stdout
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Optional, Union
 
@@ -197,6 +201,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="INT",
         help="Number of pairwise comparisons to show in summary (default: 5).",
     )
+    analyze.add_argument(
+        "--out",
+        nargs="+",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Optional output artifact paths. Supported suffixes: .md/.txt (summary), "
+            ".json (structured analysis), and .png (mean-advantage plot)."
+        ),
+    )
     return parser
 
 
@@ -266,11 +280,6 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     # --- Validate --evaluator-mode ---
     evaluator_mode = args.evaluator_mode
-    if evaluator_mode == "per_evaluator" and isinstance(result, MultiModelBenchmark):
-        _die(
-            "--evaluator-mode per_evaluator is not yet supported for multi-model "
-            "benchmarks.  Use --evaluator-mode aggregate instead."
-        )
 
     # --- Validate --reference ---
     if args.reference != "grand_mean":
@@ -300,7 +309,22 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         _die(str(exc))
 
     print()
-    print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
+    summary_buffer = io.StringIO()
+    with redirect_stdout(summary_buffer):
+        print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
+    summary_text = summary_buffer.getvalue()
+    print(summary_text, end="")
+
+    out_paths = getattr(args, "out", None)
+    if out_paths:
+        _write_outputs(
+            out_paths=out_paths,
+            summary_text=summary_text,
+            analysis=analysis,
+            reference=args.reference,
+            n_bootstrap=args.n_bootstrap,
+            ci=args.ci,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -720,6 +744,108 @@ def _die(msg: str) -> None:
     sys.stdout.flush()
     print(f"promptstats error: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+def _to_builtin(value):
+    if is_dataclass(value):
+        return _to_builtin(asdict(value))
+    if isinstance(value, dict):
+        return {str(k): _to_builtin(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_to_builtin(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def _write_outputs(
+    *,
+    out_paths: list[str],
+    summary_text: str,
+    analysis,
+    reference: str,
+    n_bootstrap: int,
+    ci: float,
+) -> None:
+    from promptstats.core.router import AnalysisBundle, MultiModelBundle
+    from promptstats.vis.advantage import plot_mean_advantage
+
+    for raw in out_paths:
+        out_path = Path(raw).expanduser().resolve()
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        suffix = out_path.suffix.lower()
+
+        if suffix in {".txt", ".md"}:
+            if suffix == ".md":
+                content = "# promptstats analysis\n\n```text\n" + summary_text.rstrip() + "\n```\n"
+            else:
+                content = summary_text
+            out_path.write_text(content, encoding="utf-8")
+            print(f"Wrote summary: {out_path}")
+            continue
+
+        if suffix == ".json":
+            payload = {
+                "type": "promptstats.analysis",
+                "summary": summary_text,
+                "analysis": _to_builtin(analysis),
+            }
+            out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            print(f"Wrote JSON: {out_path}")
+            continue
+
+        if suffix == ".png":
+            if isinstance(analysis, AnalysisBundle):
+                fig = plot_mean_advantage(
+                    analysis.benchmark,
+                    reference=reference,
+                    n_bootstrap=n_bootstrap,
+                    ci=ci,
+                )
+                fig.savefig(out_path, dpi=150, bbox_inches="tight")
+                print(f"Wrote plot: {out_path}")
+                continue
+            if isinstance(analysis, MultiModelBundle):
+                fig = plot_mean_advantage(
+                    analysis.model_level.benchmark,
+                    reference="grand_mean",
+                    n_bootstrap=n_bootstrap,
+                    ci=ci,
+                    title="Model-Level Mean Advantage",
+                )
+                fig.savefig(out_path, dpi=150, bbox_inches="tight")
+                print(f"Wrote plot: {out_path}")
+                continue
+            if isinstance(analysis, dict):
+                base = out_path.with_suffix("")
+                for evaluator_name, evaluator_analysis in analysis.items():
+                    target = base.with_name(f"{base.name}_{evaluator_name}").with_suffix(".png")
+                    if isinstance(evaluator_analysis, MultiModelBundle):
+                        fig = plot_mean_advantage(
+                            evaluator_analysis.model_level.benchmark,
+                            reference="grand_mean",
+                            n_bootstrap=n_bootstrap,
+                            ci=ci,
+                            title=f"Model-Level Mean Advantage ({evaluator_name})",
+                        )
+                    else:
+                        fig = plot_mean_advantage(
+                            evaluator_analysis.benchmark,
+                            reference=reference,
+                            n_bootstrap=n_bootstrap,
+                            ci=ci,
+                            title=f"Mean Advantage ({evaluator_name})",
+                        )
+                    fig.savefig(target, dpi=150, bbox_inches="tight")
+                    print(f"Wrote plot: {target}")
+                continue
+
+        _die(
+            f"unsupported output file extension for '{out_path.name}'. "
+            "Use one of: .txt, .md, .json, .png"
+        )
 
 
 if __name__ == "__main__":

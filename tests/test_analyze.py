@@ -264,6 +264,42 @@ def test_analyze_seeded_multirun_populates_seed_variance_and_ordering():
     )
 
 
+def test_analyze_multimodel_per_evaluator_returns_mapping():
+    rng = np.random.default_rng(99)
+    n_models = 2
+    n_prompts = 2
+    n_inputs = 120
+    n_runs = 3
+    n_evaluators = 2
+
+    scores = rng.normal(
+        loc=0.7,
+        scale=0.2,
+        size=(n_models, n_prompts, n_inputs, n_runs, n_evaluators),
+    )
+    scores = np.clip(scores, 0.0, 1.0)
+
+    result = ps.MultiModelBenchmark(
+        scores=scores,
+        model_labels=["Model A", "Model B"],
+        template_labels=["Prompt A", "Prompt B"],
+        input_labels=[f"item_{i:03d}" for i in range(n_inputs)],
+        evaluator_names=["accuracy", "format"],
+    )
+
+    analysis = ps.analyze(
+        result,
+        evaluator_mode="per_evaluator",
+        n_bootstrap=400,
+        rng=np.random.default_rng(5),
+    )
+
+    assert isinstance(analysis, dict)
+    assert set(analysis.keys()) == {"accuracy", "format"}
+    for bundle in analysis.values():
+        assert isinstance(bundle, ps.MultiModelBundle)
+
+
 def test_analyze_per_evaluator_returns_expected_winners():
     # Evaluator-aware benchmark: (templates, inputs, runs, evaluators).
     # Each evaluator is given a different "true" best prompt.

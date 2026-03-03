@@ -52,7 +52,19 @@ From the command line, `promptstats` can read a CSV or Excel file directly and p
 promptstats analyze results.csv
 ```
 
+To save shareable artifacts in one pass:
+
+```bash
+promptstats analyze results.csv --out report.md report.json mean_advantage.png
+```
+
 The input file should have columns `template`, `input`, and `score` (run and evaluator columns are optional). Run `promptstats analyze --help` for the full list of options and supported column aliases.
+
+## Choose your path
+
+- **Fastest path (CLI):** You already have eval scores in CSV/XLSX and want a summary + exports quickly.
+- **Flexible path (Python API):** You want custom preprocessing, notebook workflows, or tighter integration into eval pipelines.
+- **Messy-data path (`from_dataframe`)**: You have duplicates, mixed score types, or partial runs and want explicit coercion/load reporting.
 
 For more complex statistical analysis with mixed effects models, see below for install instructions. R and pymer4 are required dependencies.
 
@@ -86,6 +98,25 @@ result = pstats.BenchmarkResult(
 
 analysis = pstats.analyze(result, reference="grand_mean", n_bootstrap=5_000)
 pstats.print_analysis_summary(analysis)
+```
+
+If your source data is already in a pandas DataFrame (possibly with noisy values), you can parse it directly and inspect a coercion report:
+
+```python
+import promptstats as pstats
+
+benchmark, load_report = pstats.from_dataframe(
+    df,
+    format="auto",                  # auto / wide / long
+    repair=True,                     # average duplicate cells + fill partial run slots
+    strict_complete_design=True,     # set False to keep NaNs
+    return_report=True,
+)
+
+for line in load_report.to_lines():
+    print(line)
+
+analysis = pstats.analyze(benchmark)
 ```
 
 To visualize mean advantage relative to the grand mean, with bootstrapped confidence intervals:
@@ -140,14 +171,17 @@ python examples/synthetic_mean_advantage.py
 Additional examples:
 
 ```bash
-# OpenAI sentiment benchmark + promptstats router analysis
-python examples/sentiment_router.py
+# OpenAI sentiment benchmark (single run)
+python examples/sentiment.py
 
 # Multi-run variant (captures run-to-run variability)
-python examples/sentiment_router_multirun.py
+python examples/sentiment_multirun.py
 
 # Multi-model comparison across prompt templates
 python examples/compare_models_multirun.py
+
+# Manual API call walkthrough
+python examples/sentiment_manual_api_calls.py
 ```
 
 OpenAI-powered examples require `OPENAI_API_KEY` set in your environment. But, you can easily swap out the model calls to whatever model you prefer. 

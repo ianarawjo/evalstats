@@ -149,8 +149,15 @@ class MultiModelBundle:
     best_pair: tuple[str, str]
 
 
-# Type alias for the return type of analyze().
-AnalysisResult = Union[AnalysisBundle, Dict[str, AnalysisBundle], MultiModelBundle]
+# Type aliases for the return type of analyze().
+PerEvaluatorSingleModel = Dict[str, AnalysisBundle]
+PerEvaluatorMultiModel = Dict[str, MultiModelBundle]
+AnalysisResult = Union[
+    AnalysisBundle,
+    PerEvaluatorSingleModel,
+    MultiModelBundle,
+    PerEvaluatorMultiModel,
+]
 
 
 # ---------------------------------------------------------------------------
@@ -270,16 +277,38 @@ def analyze(
                 UserWarning,
                 stacklevel=2,
             )
-        if evaluator_mode == "per_evaluator":
-            raise NotImplementedError(
-                "evaluator_mode='per_evaluator' is not yet supported for "
-                "MultiModelBenchmark. Use evaluator_mode='aggregate' instead."
-            )
         if evaluator_mode not in {"aggregate", "per_evaluator"}:
             raise ValueError(
                 f"Unknown evaluator_mode '{evaluator_mode}'. "
                 "Expected 'aggregate' or 'per_evaluator'."
             )
+        if evaluator_mode == "per_evaluator":
+            has_evaluator_axis = result.scores.ndim == 5
+            if not has_evaluator_axis:
+                shape = _detect_shape(result)
+                _validate_supported(shape)
+                return {
+                    "score": _analyze_multi_model(result=result, shape=shape, **kwargs)
+                }
+
+            outputs: PerEvaluatorMultiModel = {}
+            for evaluator_idx, evaluator_name in enumerate(result.evaluator_names):
+                evaluator_result = MultiModelBenchmark(
+                    scores=result.scores[:, :, :, :, evaluator_idx],
+                    model_labels=result.model_labels,
+                    template_labels=result.template_labels,
+                    input_labels=result.input_labels,
+                    input_metadata=result.input_metadata,
+                )
+                evaluator_shape = _detect_shape(evaluator_result)
+                _validate_supported(evaluator_shape)
+                outputs[evaluator_name] = _analyze_multi_model(
+                    result=evaluator_result,
+                    shape=evaluator_shape,
+                    **kwargs,
+                )
+            return outputs
+
         shape = _detect_shape(result)
         _validate_supported(shape)
         return _analyze_multi_model(result=result, shape=shape, **kwargs)
@@ -645,7 +674,12 @@ def _validate_supported(shape: BenchmarkShape) -> None:
 # ---------------------------------------------------------------------------
 
 def print_analysis_summary(
-    analysis: Union[AnalysisBundle, MultiModelBundle, Mapping[str, AnalysisBundle]],
+    analysis: Union[
+        AnalysisBundle,
+        MultiModelBundle,
+        Mapping[str, AnalysisBundle],
+        Mapping[str, MultiModelBundle],
+    ],
     *,
     top_pairwise: int = 5,
     line_width: int = 41,
@@ -669,11 +703,18 @@ def print_analysis_summary(
 
     for evaluator_name, bundle in analysis.items():
         _print_loud_section(f"Evaluator: {evaluator_name}")
-        _print_bundle_summary(
-            bundle,
-            top_pairwise=top_pairwise,
-            line_width=line_width,
-        )
+        if isinstance(bundle, MultiModelBundle):
+            _print_multi_model_summary(
+                bundle,
+                top_pairwise=top_pairwise,
+                line_width=line_width,
+            )
+        else:
+            _print_bundle_summary(
+                bundle,
+                top_pairwise=top_pairwise,
+                line_width=line_width,
+            )
         print()
 
 

@@ -18,6 +18,7 @@ from promptstats.core.router import (
     print_analysis_summary,
 )
 from promptstats.vis.advantage import plot_mean_advantage
+from promptstats.io import from_dataframe, DataLoadReport
 
 __version__ = "0.1.0"
 
@@ -41,6 +42,8 @@ __all__ = [
     "MultiModelBundle",
     "print_analysis_summary",
     "plot_mean_advantage",
+    "from_dataframe",
+    "DataLoadReport",
 ]
 
 # LMMInfo is exported lazily so that pymer4 is not a hard dependency.
