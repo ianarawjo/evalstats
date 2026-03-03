@@ -246,6 +246,8 @@ Installation details may differ on your system.
 ## Future
 
 We aim to continue to contribute to `promptstats`. Ideas for future features:
+- Operate over the median rather than the mean by default, as LLMs provide non-parametric outputs, and allow the user to pick one or the other
+- Add support for Wilcoxon signed-rank test output as additional reported statistics, for complete data
 - Mixed-effects models (LMMs and potentially GLMMs) for multi-input data. Currently, `promptstats` only supports the case of one input per prompt template, rather than a grid search (cross product) of different prompt variations.
 - A default "report" mode that outputs a PDF summarizing findings and diving into the details
 - Integration with ChainForge as a front-end, to bring statistical analyses to plotted evals
