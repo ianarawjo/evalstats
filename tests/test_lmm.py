@@ -78,6 +78,8 @@ def _make_result(
     return BenchmarkResult(scores=scores, template_labels=labels, input_labels=inputs)
 
 
+
+
 def _make_result_with_missing(
     rng,
     n_templates: int = 3,
@@ -106,6 +108,56 @@ def _make_result_with_missing(
         template_labels=result.template_labels,
         input_labels=result.input_labels,
     )
+
+
+def _make_full_result_parametrized(
+    rng,
+    n_templates: int,
+    n_inputs: int,
+    n_runs: int,
+    sigma_input: float = 0.45,
+    sigma_run: float = 0.05,
+    sigma_resid: float = 0.15,
+) -> BenchmarkResult:
+    """Synthetic complete-data benchmark for bootstrap-vs-LMM parity checks."""
+    template_effects = np.linspace(0.6, -0.6, n_templates)
+    intercept = 5.0
+    input_effects = rng.normal(0.0, sigma_input, size=n_inputs)
+
+    if n_runs <= 1:
+        resid = rng.normal(0.0, sigma_resid, size=(n_templates, n_inputs))
+        scores = (
+            intercept
+            + template_effects[:, None]
+            + input_effects[None, :]
+            + resid
+        )
+    else:
+        run_effects = rng.normal(0.0, sigma_run, size=n_runs)
+        resid = rng.normal(0.0, sigma_resid, size=(n_templates, n_inputs, n_runs))
+        scores = (
+            intercept
+            + template_effects[:, None, None]
+            + input_effects[None, :, None]
+            + run_effects[None, None, :]
+            + resid
+        )
+
+    return BenchmarkResult(
+        scores=scores,
+        template_labels=[f"T{i}" for i in range(n_templates)],
+        input_labels=[f"inp_{j:03d}" for j in range(n_inputs)],
+    )
+
+
+def _pairwise_mean_diffs(bundle: ps.AnalysisBundle) -> np.ndarray:
+    """Return pairwise mean differences in a deterministic label order."""
+    labels = list(bundle.pairwise.labels)
+    diffs = []
+    for i in range(len(labels)):
+        for j in range(i + 1, len(labels)):
+            diffs.append(bundle.pairwise.get(labels[i], labels[j]).mean_diff)
+    return np.asarray(diffs, dtype=float)
 
 
 # ---------------------------------------------------------------------------
@@ -206,6 +258,93 @@ def test_lmm_labels_preserved():
 # ---------------------------------------------------------------------------
 # Statistical correctness
 # ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "n_templates,n_inputs,n_runs",
+    [
+        (2, 20, 1),
+        (3, 24, 1),
+        (3, 24, 4),
+        (5, 32, 4),
+    ],
+)
+def test_bootstrap_and_lmm_are_similar_on_complete_data(
+    n_templates: int,
+    n_inputs: int,
+    n_runs: int,
+):
+    """Bootstrap and LMM should agree closely on complete (no-NaN) designs."""
+    data_rng = np.random.default_rng(6000 + 100 * n_templates + 10 * n_inputs + n_runs)
+    result = _make_full_result_parametrized(
+        data_rng,
+        n_templates=n_templates,
+        n_inputs=n_inputs,
+        n_runs=n_runs,
+    )
+
+    bootstrap_bundle = analyze(
+        result,
+        method="bootstrap",
+        reference="grand_mean",
+        n_bootstrap=600,
+        rng=np.random.default_rng(7000 + n_templates + n_inputs + n_runs),
+    )
+    lmm_bundle = analyze(
+        result,
+        method="lmm",
+        reference="grand_mean",
+        n_bootstrap=600,
+        rng=np.random.default_rng(8000 + n_templates + n_inputs + n_runs),
+    )
+
+    np.testing.assert_allclose(
+        bootstrap_bundle.mean_advantage.mean_advantages,
+        lmm_bundle.mean_advantage.mean_advantages,
+        atol=0.10,
+    )
+    np.testing.assert_allclose(
+        _pairwise_mean_diffs(bootstrap_bundle),
+        _pairwise_mean_diffs(lmm_bundle),
+        atol=0.10,
+    )
+
+    np.testing.assert_allclose(
+        bootstrap_bundle.robustness.mean,
+        lmm_bundle.robustness.mean,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        bootstrap_bundle.robustness.std,
+        lmm_bundle.robustness.std,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        bootstrap_bundle.robustness.iqr,
+        lmm_bundle.robustness.iqr,
+        atol=1e-12,
+    )
+
+    assert int(np.argmax(bootstrap_bundle.rank_dist.p_best)) == int(
+        np.argmax(lmm_bundle.rank_dist.p_best)
+    )
+    max_rank_gap = float(
+        np.max(
+            np.abs(
+                bootstrap_bundle.rank_dist.expected_ranks
+                - lmm_bundle.rank_dist.expected_ranks
+            )
+        )
+    )
+    assert max_rank_gap <= 1.0, f"Expected-rank gap too large: {max_rank_gap:.3f}"
+
+    if n_runs >= 3:
+        assert bootstrap_bundle.seed_variance is not None
+        assert lmm_bundle.seed_variance is not None
+        np.testing.assert_allclose(
+            bootstrap_bundle.seed_variance.instability,
+            lmm_bundle.seed_variance.instability,
+            atol=1e-12,
+        )
 
 def test_lmm_mean_advantages_sum_to_zero_for_grand_mean_reference():
     """Mean advantages relative to the grand mean must sum to zero (by construction)."""
