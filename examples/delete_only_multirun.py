@@ -19,18 +19,16 @@ Requirements:
     export OPENAI_API_KEY="sk-..."
 
 Usage:
-    python demo_analyze_multirun_delete_words.py
+    python examples/delete_only_multirun.py
 """
 
 import math
 import os
-import re
 import sys
+import re
 import time
 
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from openai import OpenAI
 

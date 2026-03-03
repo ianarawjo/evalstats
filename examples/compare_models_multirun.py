@@ -1,9 +1,9 @@
 """Demo: compare two small models using promptstats multi-model analysis.
 
-Copies the workflow of demo_analyze.py, but runs two models and routes through
+Copies the workflow of llm_sentiment_router.py, but runs two models and routes through
 the MultiModelBenchmark path in `promptstats.core.router.analyze`.
 
-Like demo_analyze_multirun.py, this version runs each (model, template, input)
+Like sentiment_multirun.py, this version runs each (model, template, input)
 triple multiple times (N_RUNS=3) with temperature > 0 so the runs axis is
 populated and within-template variability is captured.
 
@@ -23,18 +23,16 @@ Optional environment overrides:
     OPENROUTER_APP_NAME
 
 Usage:
-    python demo_compare_models.py
+    python examples/compare_models_multirun.py
 """
 
 import math
 import os
-import re
 import sys
+import re
 import time
 
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from openai import OpenAI
 

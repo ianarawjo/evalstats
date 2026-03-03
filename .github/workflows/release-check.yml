@@ -1,0 +1,48 @@
+name: Release Check
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  package-and-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.12"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install build/test tools
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine pytest
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Validate package metadata
+        run: python -m twine check dist/*
+
+      - name: Install wheel in clean venv (smoke test)
+        run: |
+          python -m venv .pkgtest-venv
+          . .pkgtest-venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install dist/promptstats-*.whl
+          python -c "import promptstats as p; print(p.__version__)"
+          promptstats analyze --help
+
+      - name: Run tests (no LMM/R required)
+        run: |
+          python -m pip install -e .[dev]
+          pytest -q tests/test_cli.py tests/test_analyze.py tests/test_resampling.py

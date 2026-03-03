@@ -2,9 +2,6 @@
 mean advantage plot with dual uncertainty bands."""
 
 import numpy as np
-import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
 
 import promptstats as pstats
 

@@ -8,7 +8,11 @@ version = "0.1.0"
 description = "Statistical analysis and visualization for prompt benchmarking"
 readme = "README.md"
 requires-python = ">=3.9"
-license = {text = "MIT"}
+license = "MIT"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
 dependencies = [
     "numpy>=1.22",
     "scipy>=1.9",
@@ -16,13 +20,39 @@ dependencies = [
     "matplotlib>=3.6",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ianarawjo/promptstats"
+Repository = "https://github.com/ianarawjo/promptstats"
+
 [project.optional-dependencies]
 interactive = ["plotly>=5.0"]
 models = ["statsmodels>=0.14", "choix>=0.3"]
-lmm = ["pymer4>=0.9", "pyarrow>=14.0"]
+lmm = [
+    "pymer4>=0.9",
+    "pyarrow>=14.0",
+    "great_tables",
+    "joblib",
+    "rpy2",
+    "polars",
+    "scikit-learn",
+    "formulae",
+]
 xlsx = ["openpyxl>=3.0"]
-all = ["plotly>=5.0", "statsmodels>=0.14", "choix>=0.3", "seaborn>=0.12", "openpyxl>=3.0", "pymer4>=0.8"]
-dev = ["pytest>=7.0", "pytest-cov"]
+all = [
+    "plotly>=5.0",
+    "statsmodels>=0.14",
+    "choix>=0.3",
+    "openpyxl>=3.0",
+    "pymer4>=0.9",
+    "pyarrow>=14.0",
+    "great_tables",
+    "joblib",
+    "rpy2",
+    "polars",
+    "scikit-learn",
+    "formulae",
+]
+dev = ["pytest>=7.0", "pytest-cov", "build>=1.0", "twine>=5.0"]
 
 [project.scripts]
 promptstats = "promptstats.cli:main"

@@ -9,18 +9,16 @@ Requirements:
     export OPENAI_API_KEY="sk-..."
 
 Usage:
-    python demo_openai.py
+    python examples/sentiment_manual_api_calls.py
 """
 
 import math
 import os
-import re
 import sys
+import re
 import time
 
 import numpy as np
-
-sys.path.insert(0, os.path.dirname(__file__))
 
 from openai import OpenAI
 

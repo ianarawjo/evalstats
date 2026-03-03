@@ -29,7 +29,19 @@ You can also plot within notebook environments (although this feature is being a
 ## Installation and Quick start CLI
 
 ```bash
-pip install promptstats[all]
+pip install promptstats
+```
+
+For Excel (`.xlsx`) input support:
+
+```bash
+pip install "promptstats[xlsx]"
+```
+
+For all optional extras (including mixed-effects/LMM support):
+
+```bash
+pip install "promptstats[all]"
 ```
 
 From the command line, `promptstats` can read a CSV or Excel file directly and print a statistical summary:
@@ -40,7 +52,30 @@ promptstats analyze results.csv
 
 The input file should have columns `template`, `input`, and `score` (run and evaluator columns are optional). Run `promptstats analyze --help` for the full list of options and supported column aliases.
 
-For more complex statistical analysis with mixed effects models, see below for install instructions. R and pymer4 are required dependencies. 
+For more complex statistical analysis with mixed effects models, see below for install instructions. R and pymer4 are required dependencies.
+
+## Running Examples
+
+From the repository root, run any example script directly:
+
+```bash
+python examples/synthetic_mean_advantage.py
+```
+
+Additional examples:
+
+```bash
+# OpenAI sentiment benchmark + promptstats router analysis
+python examples/sentiment_router.py
+
+# Multi-run variant (captures run-to-run variability)
+python examples/sentiment_router_multirun.py
+
+# Multi-model comparison across prompt templates
+python examples/compare_models_multirun.py
+```
+
+OpenAI-powered examples require `OPENAI_API_KEY` set in your environment. But, you can easily swap out the model calls to whatever model you prefer. 
 
 ## Python API
 
@@ -49,6 +84,16 @@ For more complex statistical analysis with mixed effects models, see below for i
 ```python
 import numpy as np
 import promptstats as pstats
+
+# Example raw scores for 4 templates × 3 inputs (single run, single evaluator)
+your_scores = [
+    [0.91, 0.88, 0.86],
+    [0.90, 0.89, 0.84],
+    [0.85, 0.82, 0.80],
+    [0.79, 0.76, 0.74],
+]
+n_templates = 4
+n_inputs = 3
 
 # scores shape: (n_templates, n_inputs, n_runs, n_evaluators)
 # For a single evaluator and single run, shape is (N, M, 1, 1)
@@ -93,11 +138,11 @@ When you have scores for multiple prompt templates across a set of inputs, `prom
 
 A common failure mode in LLM benchmarking, both in academic papers and practitioner evaluations, is testing each model with a single prompt template and reporting the resulting scores as if they reflect stable model capabilities. In reality, model rankings can flip under semantically equivalent paraphrases of the same instruction. A benchmark result that says "Model A beats Model B" may be an artifact of prompt phrasing, not a meaningful capability difference. 
 
-Here, we can see the difference between OpenAI's `gpt-4.1-nano` and MistalAI's `ministral-8b-2512` on a small sentiment classification benchmark, quantified by bootstrapped confidence intervals:
+Here, we can see the difference between OpenAI's `gpt-4.1-nano` and MistralAI's `ministral-8b-2512` on a small sentiment classification benchmark, quantified by bootstrapped confidence intervals:
 
 ![Comparing across models output](docs/compare-models-output.png)
 
-In this run, multiple prompt template variations were considered, making this result more robust than trying a single prompt and calling it at day. 
+In this run, multiple prompt template variations were considered, making this result more robust than trying a single prompt and calling it a day.
 
 ### How stable is the performance across runs?
 
@@ -133,11 +178,18 @@ install.packages(c(
 ))
 ```
 
-In Python, install with `pip` or `pip3`:
+In Python, install the packaged LMM extra:
 
 ```bash
-pip install "pymer4>=0.9" great_tables joblib rpy2 polars scikit-learn formulae pyarrow
+pip install "promptstats[lmm]"
 ```
+
+> [!NOTE]
+> If your environment needs manual dependency pinning, this is the tested equivalent:
+> 
+> ```bash
+> pip install "pymer4>=0.9" great_tables joblib rpy2 polars scikit-learn formulae pyarrow
+> ```
 
 Installation details may differ on your system.
 
@@ -147,6 +199,10 @@ We aim to continue to contribute to `promptstats`. Ideas for future features:
 - Mixed-effects models (LMMs and potentially GLMMs) for more complex data. Currently, `promptstats` only supports the case of one input per prompt template, rather than a grid search (cross product) of different prompt variations.
 - A default "report" mode that outputs a PDF summarizing findings and diving into the details
 - Help developers quantify the "semantic variance" of the provided prompt templates, and perhaps even factor this into the calculation in an intelligent way. This is important because the current implementation doesn't know about the diversity/representativity of the input dataset and prompts. 
+
+## Development
+
+For package build, release validation, and maintainer workflows, see [DEVELOPMENT.md](DEVELOPMENT.md).
 
 ## License
 

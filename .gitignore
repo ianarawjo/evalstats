@@ -7,3 +7,7 @@
 *.pytest_cache/
 *.ipynb_checkpoints/
 *.venv/
+*.pkgtest-venv/
+*.vscode/
+dist/
+build/
