@@ -107,7 +107,7 @@ def bootstrap_ranks(
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
     method: Literal["bootstrap", "bca", "auto"] = "auto",
-    statistic: Literal["mean", "median"] = "median",
+    statistic: Literal["mean", "median"] = "mean",
 ) -> RankDistribution:
     """Compute bootstrap distribution over template rankings.
 
@@ -190,7 +190,7 @@ def _bootstrap_ranks_seeded(
     labels: list[str],
     n_bootstrap: int,
     rng: np.random.Generator,
-    statistic: Literal["mean", "median"] = "median",
+    statistic: Literal["mean", "median"] = "mean",
 ) -> RankDistribution:
     """Rank distribution via nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
     N, _, _ = scores.shape
@@ -228,7 +228,7 @@ def bootstrap_point_advantage(
     spread_percentiles: tuple[float, float] = (10, 90),
     rng: Optional[np.random.Generator] = None,
     method: Literal["bootstrap", "bca", "auto"] = "auto",
-    statistic: Literal["mean", "median"] = "median",
+    statistic: Literal["mean", "median"] = "mean",
 ) -> PointAdvantageResult:
     """Compute point advantage over a reference with dual uncertainty bands.
 
@@ -262,7 +262,7 @@ def bootstrap_point_advantage(
     rng : np.random.Generator, optional
         Random number generator.
     statistic : str
-        Point-estimate and bootstrap statistic: ``'median'`` (default) or
+        Point-estimate and bootstrap statistic: ``'mean'`` (default) or
         ``'mean'``.
 
     Returns

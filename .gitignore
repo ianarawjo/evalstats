@@ -9,5 +9,6 @@
 *.venv/
 *.pkgtest-venv/
 *.vscode/
+*.deepeval/
 dist/
 build/

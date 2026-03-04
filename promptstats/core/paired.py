@@ -121,7 +121,7 @@ def pairwise_differences(
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
-    statistic: Literal["mean", "median"] = "median",
+    statistic: Literal["mean", "median"] = "mean",
 ) -> PairedDiffResult:
     """Compute paired differences between two templates.
 
@@ -146,7 +146,7 @@ def pairwise_differences(
     rng : np.random.Generator, optional
         Random number generator for reproducibility.
     statistic : str
-        Point-estimate and bootstrap statistic: ``'median'`` (default) or
+        Point-estimate and bootstrap statistic: ``'mean'`` (default) or
         ``'mean'``.  Median is preferred for LLM score distributions, which
         are frequently non-normal.
 
@@ -335,7 +335,7 @@ def all_pairwise(
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
     rng: Optional[np.random.Generator] = None,
-    statistic: Literal["mean", "median"] = "median",
+    statistic: Literal["mean", "median"] = "mean",
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -426,7 +426,7 @@ def vs_baseline(
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
     rng: Optional[np.random.Generator] = None,
-    statistic: Literal["mean", "median"] = "median",
+    statistic: Literal["mean", "median"] = "mean",
 ) -> list[PairedDiffResult]:
     """Compare all templates against a designated baseline.
 
