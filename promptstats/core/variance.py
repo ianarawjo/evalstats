@@ -35,7 +35,11 @@ class RobustnessResult:
     std : np.ndarray
         Standard deviation per template (between-input, on cell means).
     cv : np.ndarray
-        Coefficient of variation (std / mean). NaN if mean is zero.
+        Coefficient of variation (std / |mean|).  NaN when |mean| is zero or
+        below ``cv_min_mean`` (see ``robustness_metrics``).  CV is only
+        meaningful for ratio-scale metrics anchored well above zero; for
+        templates that mostly fail or score near the scale minimum, prefer
+        ``std``, ``iqr``, or ``cvar_10`` as variability measures.
     iqr : np.ndarray
         Interquartile range per template.
     cvar_10 : np.ndarray
@@ -160,6 +164,7 @@ def robustness_metrics(
     scores: np.ndarray,
     labels: list[str],
     failure_threshold: Optional[float] = None,
+    cv_min_mean: float = 0.0,
 ) -> RobustnessResult:
     """Compute robustness metrics for each template.
 
@@ -174,6 +179,13 @@ def robustness_metrics(
         Template labels.
     failure_threshold : float, optional
         If provided, computes the fraction of inputs scoring below this value.
+    cv_min_mean : float, optional
+        Templates whose ``|mean|`` is at or below this threshold receive
+        ``cv = NaN``.  Default ``0.0`` only suppresses the division-by-zero
+        case.  Set to a positive value (e.g. ``0.05`` for a 0–1 accuracy
+        scale) to also suppress CV when the mean is so close to zero that the
+        ratio becomes numerically large and practically uninterpretable.  In
+        that regime ``std``, ``iqr``, or ``cvar_10`` are more informative.
 
     Returns
     -------
@@ -189,7 +201,7 @@ def robustness_metrics(
     std = np.nanstd(scores, axis=1, ddof=1)
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        cv = np.where(mean != 0, std / np.abs(mean), np.nan)
+        cv = np.where(np.abs(mean) > cv_min_mean, std / np.abs(mean), np.nan)
 
     p10 = np.nanpercentile(scores, 10, axis=1)
     p25 = np.nanpercentile(scores, 25, axis=1)

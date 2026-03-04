@@ -61,11 +61,24 @@ class PairedDiffResult:
     wilcoxon_p: Optional[float] = None  # Wilcoxon signed-rank p-value (two-sided, on per_input_diffs)
 
     @property
-    def effect_size(self) -> float:
-        """Paired effect size: point_diff / std_diff."""
+    def cohens_d(self) -> float:
+        """Cohen's d_z for paired designs: point_diff / std_diff.
+
+        Computed as the mean (or median) of within-pair differences divided by
+        the standard deviation of those differences — the standard
+        paired-samples effect size (Cohen, 1988).  Interpretation guidelines:
+        small ≈ 0.2, medium ≈ 0.5, large ≈ 0.8.  Returns ±inf when
+        std_diff == 0 and point_diff != 0 (constant advantage across all
+        inputs).
+        """
         if self.std_diff == 0:
             return float("inf") if self.point_diff != 0 else 0.0
         return self.point_diff / self.std_diff
+
+    @property
+    def effect_size(self) -> float:
+        """Alias for ``cohens_d``."""
+        return self.cohens_d
 
 
 @dataclass
