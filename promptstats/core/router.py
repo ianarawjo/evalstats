@@ -938,13 +938,22 @@ def _print_bundle_summary(
     print()
 
     print("--- Rank Probabilities ---")
-    print(f"  {item_singular_title:<24s} {'P(Best)':>9s} {'E[Rank]':>9s}")
+    rank_bar_width = 14
+    n_ranked_items = len(bundle.rank_dist.labels)
+    print(
+        f"  {item_singular_title:<24s} "
+        f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
+        f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
+    )
     for i, label in enumerate(bundle.rank_dist.labels):
+        p_best = float(bundle.rank_dist.p_best[i])
+        expected_rank = float(bundle.rank_dist.expected_ranks[i])
         print(
             f"  {label:<24s} "
-            f"{bundle.rank_dist.p_best[i]:>8.1%} "
-            f"{bundle.rank_dist.expected_ranks[i]:>8.2f}"
+            f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)} "
+            f"{expected_rank:>8.2f} {_rank_hump_lane(expected_rank, n_ranked_items, width=rank_bar_width)}"
         )
+    print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
     print()
 
     stat_label = bundle.point_advantage.statistic.capitalize()
@@ -1505,6 +1514,65 @@ def _truncate_label(text: str, width: int) -> str:
     if width <= 3:
         return text[:width]
     return text[: width - 1] + "…"
+
+
+def _ratio_bar(value: float, width: int = 12) -> str:
+    """Render a fixed-width progress bar for values in [0, 1]."""
+    width = max(1, int(width))
+    if np.isnan(value):
+        return "░" * width
+    clamped = float(np.clip(value, 0.0, 1.0))
+    filled = int(round(clamped * width))
+    filled = max(0, min(filled, width))
+    return "█" * filled + "░" * (width - filled)
+
+
+def _rank_hump_lane(expected_rank: float, n_items: int, width: int = 14) -> str:
+    """Render rank position as a horizontal lane with an adaptive hump.
+
+    Left corresponds to rank #1 (best). The hump is sharper when
+    ``expected_rank`` is near an integer and softer when it is near the
+    midpoint between integers. Output looks like:
+
+    E[Rank]               
+    1.54 ▄▆▄▁──────────
+    2.80 ───▂▅▇▅▂──────
+    1.79 ▂▅▇▅▂─────────
+    6.00 ───────────▃▆█
+    4.31 ───────▂▅▇▅▂──
+    """
+    width = max(3, int(width))
+    if n_items <= 1 or np.isnan(expected_rank):
+        center = width // 2
+        lane = ["─"] * width
+        lane[center] = "█"
+        return "".join(lane)
+
+    clamped_rank = float(np.clip(expected_rank, 1.0, float(n_items)))
+    pos = (clamped_rank - 1.0) / (float(n_items) - 1.0)
+    center = int(round(pos * (width - 1)))
+
+    frac_to_int = abs(clamped_rank - round(clamped_rank))
+    # 1.0 when near integer (sharp), 0.0 when near half-step (soft).
+    sharpness = 1.0 - min(frac_to_int, 0.5) / 0.5
+
+    if sharpness >= 0.67:
+        profile = {0: "█", 1: "▆", 2: "▃"}
+    elif sharpness >= 0.33:
+        profile = {0: "▇", 1: "▅", 2: "▂"}
+    else:
+        profile = {0: "▆", 1: "▄", 2: "▁"}
+
+    lane = ["─"] * width
+    for offset, char in profile.items():
+        left = center - offset
+        right = center + offset
+        if 0 <= left < width:
+            lane[left] = char
+        if 0 <= right < width:
+            lane[right] = char
+
+    return "".join(lane)
 
 
 def _p_value_stars(p_value: Optional[float]) -> str:

@@ -1038,3 +1038,67 @@ def test_pairwise_wilcoxon_respects_multiple_testing_correction():
         corr_p = analysis_bonf.pairwise.get(a, b).wilcoxon_p
         expected_corr = min(float(raw_p) * n_pairs, 1.0)
         np.testing.assert_allclose(corr_p, expected_corr, atol=1e-12)
+
+
+def test_rank_distribution_splits_mass_evenly_when_all_templates_tie():
+    n_templates = 4
+    n_inputs = 30
+    labels = [f"T{i+1}" for i in range(n_templates)]
+    input_labels = [f"item_{i}" for i in range(n_inputs)]
+
+    # All templates are exactly tied on every input.
+    scores = np.ones((n_templates, n_inputs), dtype=float)
+    result = ps.BenchmarkResult(
+        scores=scores,
+        template_labels=labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=600,
+        rng=np.random.default_rng(2026),
+    )
+
+    expected_p_best = np.full(n_templates, 1.0 / n_templates)
+    expected_rank = np.full(n_templates, (n_templates + 1) / 2)
+    np.testing.assert_allclose(analysis.rank_dist.p_best, expected_p_best, atol=1e-12)
+    np.testing.assert_allclose(analysis.rank_dist.expected_ranks, expected_rank, atol=1e-12)
+
+
+def test_rank_distribution_splits_top_tie_between_templates():
+    labels = ["A", "B", "C"]
+    n_inputs = 40
+    input_labels = [f"item_{i}" for i in range(n_inputs)]
+
+    # A and B are tied for best on every input; C is always lower.
+    scores = np.array(
+        [
+            np.full(n_inputs, 1.0),
+            np.full(n_inputs, 1.0),
+            np.full(n_inputs, 0.0),
+        ],
+        dtype=float,
+    )
+    result = ps.BenchmarkResult(
+        scores=scores,
+        template_labels=labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=600,
+        rng=np.random.default_rng(2027),
+    )
+
+    np.testing.assert_allclose(
+        analysis.rank_dist.p_best,
+        np.array([0.5, 0.5, 0.0]),
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        analysis.rank_dist.expected_ranks,
+        np.array([1.5, 1.5, 3.0]),
+        atol=1e-12,
+    )

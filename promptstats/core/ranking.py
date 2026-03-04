@@ -20,6 +20,30 @@ import numpy as np
 from .resampling import _stat, bca_interval_1d, bootstrap_means_1d, nested_resample_cell_means_once, resolve_resampling_method
 
 
+def _accumulate_tie_aware_rank_mass(rank_counts: np.ndarray, agg: np.ndarray) -> None:
+    """Accumulate one bootstrap draw of rank mass with fair tie handling.
+
+    For each tie block of size ``t`` occupying ranks ``[r, r+t-1]``, each tied
+    template receives ``1/t`` mass at each occupied rank. This removes the
+    deterministic first-index tie bias introduced by ``np.argsort``.
+    """
+    order = np.argsort(-agg, kind="mergesort")
+    sorted_scores = agg[order]
+
+    start = 0
+    n_templates = len(order)
+    while start < n_templates:
+        end = start + 1
+        while end < n_templates and sorted_scores[end] == sorted_scores[start]:
+            end += 1
+
+        tie_indices = order[start:end]
+        tie_size = end - start
+        share = 1.0 / tie_size
+        rank_counts[tie_indices, start:end] += share
+        start = end
+
+
 @dataclass
 class RankDistribution:
     """Bootstrap distribution over template rankings.
@@ -155,22 +179,18 @@ def bootstrap_ranks(
         scores = scores.mean(axis=2)  # collapse small run axis
 
     n_templates, m_inputs = scores.shape
-    rank_counts = np.zeros((n_templates, n_templates), dtype=np.int64)
+    rank_counts = np.zeros((n_templates, n_templates), dtype=float)
 
     if statistic == "median":
         for _ in range(n_bootstrap):
             idx = rng.choice(m_inputs, size=m_inputs, replace=True)
             agg = np.median(scores[:, idx], axis=1)
-            order = np.argsort(-agg)
-            for rank, template_idx in enumerate(order):
-                rank_counts[template_idx, rank] += 1
+            _accumulate_tie_aware_rank_mass(rank_counts, agg)
     else:
         for _ in range(n_bootstrap):
             idx = rng.choice(m_inputs, size=m_inputs, replace=True)
             agg = scores[:, idx].mean(axis=1)
-            order = np.argsort(-agg)
-            for rank, template_idx in enumerate(order):
-                rank_counts[template_idx, rank] += 1
+            _accumulate_tie_aware_rank_mass(rank_counts, agg)
 
     rank_probs = rank_counts / n_bootstrap
     expected_ranks = (rank_probs * np.arange(1, n_templates + 1)).sum(axis=1)
@@ -194,7 +214,7 @@ def _bootstrap_ranks_seeded(
 ) -> RankDistribution:
     """Rank distribution via nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
     N, _, _ = scores.shape
-    rank_counts = np.zeros((N, N), dtype=np.int64)
+    rank_counts = np.zeros((N, N), dtype=float)
 
     for _ in range(n_bootstrap):
         boot_cell_means = nested_resample_cell_means_once(scores, rng)  # (N, M)
@@ -202,9 +222,7 @@ def _bootstrap_ranks_seeded(
             agg = np.median(boot_cell_means, axis=1)                   # (N,)
         else:
             agg = boot_cell_means.mean(axis=1)                         # (N,)
-        order = np.argsort(-agg)
-        for rank, template_idx in enumerate(order):
-            rank_counts[template_idx, rank] += 1
+        _accumulate_tie_aware_rank_mass(rank_counts, agg)
 
     rank_probs = rank_counts / n_bootstrap
     expected_ranks = (rank_probs * np.arange(1, N + 1)).sum(axis=1)
