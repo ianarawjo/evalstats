@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import pandas as pd
@@ -490,6 +490,64 @@ class MultiModelBenchmark:
         return BenchmarkResult(
             scores=self._get_3d_cell_means().mean(axis=1),  # (P, M)
             template_labels=self.model_labels,
+            input_labels=self.input_labels,
+            evaluator_names=self.evaluator_names,
+            input_metadata=self.input_metadata,
+        )
+
+    def get_template_mean_result(
+        self,
+        *,
+        collapse_models: Literal["mean", "as_runs"] = "mean",
+    ) -> BenchmarkResult:
+        """Aggregate each template across models.
+
+        Parameters
+        ----------
+        collapse_models : {"mean", "as_runs"}
+            - ``"mean"`` (default): average model axis directly.
+            - ``"as_runs"``: treat models as repeated runs so cross-model
+              variation is retained in the run axis for downstream bootstrap
+              and seed-variance style summaries.
+
+        Returns
+        -------
+        BenchmarkResult
+            One prompt template per row, aligned to the original inputs.
+        """
+        if collapse_models == "mean":
+            collapsed_scores = self.scores.mean(axis=0)
+        elif collapse_models == "as_runs":
+            s = self.scores
+            if s.ndim == 3:
+                # (P, N, M) -> (N, M, P)
+                collapsed_scores = np.transpose(s, (1, 2, 0))
+            elif s.ndim == 4:
+                # (P, N, M, R) -> (N, M, R, P) -> (N, M, R*P)
+                transposed = np.transpose(s, (1, 2, 3, 0))
+                collapsed_scores = transposed.reshape(
+                    self.n_templates,
+                    self.n_inputs,
+                    self.n_runs * self.n_models,
+                )
+            else:
+                # (P, N, M, R, K) -> (N, M, R, P, K) -> (N, M, R*P, K)
+                transposed = np.transpose(s, (1, 2, 3, 0, 4))
+                collapsed_scores = transposed.reshape(
+                    self.n_templates,
+                    self.n_inputs,
+                    self.n_runs * self.n_models,
+                    self.n_evaluators,
+                )
+        else:
+            raise ValueError(
+                f"Unknown collapse_models '{collapse_models}'. "
+                "Expected 'mean' or 'as_runs'."
+            )
+
+        return BenchmarkResult(
+            scores=collapsed_scores,
+            template_labels=self.template_labels,
             input_labels=self.input_labels,
             evaluator_names=self.evaluator_names,
             input_metadata=self.input_metadata,

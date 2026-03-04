@@ -192,6 +192,109 @@ def test_analyze_multimodel_single_prompt_warns_and_runs():
     assert analysis.best_pair == ("Model 2", "Prompt A")
 
 
+def test_print_multimodel_summary_includes_collapsed_template_level_section(capsys):
+    model_labels = ["Model 1", "Model 2"]
+    prompt_labels = ["Prompt A", "Prompt B", "Prompt C"]
+    input_labels = ["i1", "i2", "i3"]
+
+    # Prompt C is worst regardless of model, so it should be called out.
+    scores = np.array(
+        [
+            [
+                [0.90, 0.88, 0.91],
+                [0.80, 0.79, 0.78],
+                [0.52, 0.50, 0.49],
+            ],
+            [
+                [0.89, 0.87, 0.90],
+                [0.77, 0.76, 0.75],
+                [0.45, 0.47, 0.46],
+            ],
+        ],
+        dtype=float,
+    )
+
+    result = ps.MultiModelBenchmark(
+        scores=scores,
+        model_labels=model_labels,
+        template_labels=prompt_labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=300,
+        rng=np.random.default_rng(123),
+        template_model_collapse="mean"
+    )
+
+    ps.print_analysis_summary(analysis, top_pairwise=3)
+    out = capsys.readouterr().out
+
+    assert "CROSS-MODEL PER-TEMPLATE COMPARISON " in out
+    assert "Best-performing prompt across models (by mean score)" in out
+    assert "'Prompt A'" in out
+
+
+def test_analyze_multimodel_template_collapse_as_runs_preserves_model_variance():
+    model_labels = ["m1", "m2", "m3"]
+    prompt_labels = ["Prompt A", "Prompt B"]
+    input_labels = ["i1", "i2"]
+
+    # Shape: (models, templates, inputs) with model-to-model spread.
+    scores = np.array(
+        [
+            [[0.9, 0.8], [0.5, 0.4]],
+            [[0.7, 0.6], [0.55, 0.45]],
+            [[0.8, 0.7], [0.6, 0.5]],
+        ],
+        dtype=float,
+    )
+    result = ps.MultiModelBenchmark(
+        scores=scores,
+        model_labels=model_labels,
+        template_labels=prompt_labels,
+        input_labels=input_labels,
+    )
+
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=300,
+        rng=np.random.default_rng(99),
+        template_model_collapse="as_runs",
+    )
+
+    # Model axis is retained as run replicates in template-level benchmark.
+    assert analysis.template_level.benchmark.n_runs == 3
+    assert analysis.template_level.benchmark.scores.shape == (2, 2, 3)
+
+    # Mean still matches direct average across models.
+    expected = scores.mean(axis=0).mean(axis=1)
+    np.testing.assert_allclose(analysis.template_level.robustness.mean, expected, atol=1e-12)
+
+    # Effective runs >= 3 should expose seed variance decomposition.
+    assert analysis.template_level.seed_variance is not None
+
+
+def test_analyze_rejects_unknown_template_model_collapse():
+    scores = np.array(
+        [
+            [[0.9, 0.8], [0.7, 0.6]],
+            [[0.8, 0.7], [0.6, 0.5]],
+        ],
+        dtype=float,
+    )
+    result = ps.MultiModelBenchmark(
+        scores=scores,
+        model_labels=["m1", "m2"],
+        template_labels=["Prompt A", "Prompt B"],
+        input_labels=["i1", "i2"],
+    )
+
+    with pytest.raises(ValueError, match="Unknown template_model_collapse"):
+        ps.analyze(result, template_model_collapse="median")
+
+
 def test_analyze_seeded_multirun_populates_seed_variance_and_ordering():
     # Seeded benchmark: (templates, inputs, runs) with R >= 3
     # so analyze() should populate seed_variance.

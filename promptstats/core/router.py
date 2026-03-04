@@ -119,6 +119,8 @@ class MultiModelBundle:
       prompt works best *within* each model?"
     * **model_level** — models compared on their mean score across all
       prompts, answering "which model is overall best?"
+    * **template_level** — templates compared on their mean score across
+      all models, answering "which prompt is best/worst overall?"
     * **cross_model** — all (model, template) pairs ranked together,
       answering "what is the single best model-prompt combination?"
 
@@ -133,6 +135,9 @@ class MultiModelBundle:
     model_level : AnalysisBundle
         Analysis where each 'template' is a model, scored by its mean
         performance across all prompts.
+    template_level : AnalysisBundle
+        Analysis where each 'template' is a prompt template, scored by
+        its mean performance across all models.
     cross_model : AnalysisBundle
         Analysis of all N_models * N_templates (model, template) pairs
         treated as a flat list of 'templates'.
@@ -145,6 +150,7 @@ class MultiModelBundle:
     shape: BenchmarkShape
     per_model: Dict[str, AnalysisBundle]
     model_level: AnalysisBundle
+    template_level: AnalysisBundle
     cross_model: AnalysisBundle
     best_pair: tuple[str, str]
 
@@ -178,6 +184,7 @@ def analyze(
     failure_threshold: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
+    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -256,6 +263,13 @@ def analyze(
         (common with clustered or ceiling-bounded scores).  All
         bootstrap CIs and p-values are computed using the same
         statistic.  Not compatible with ``method='lmm'``.
+    template_model_collapse : str
+        Multi-model only. Controls how the per-template (model-agnostic)
+        view collapses the model axis:
+
+        * ``'mean'`` averages over models.
+        * ``'as_runs'`` (default) treats models as additional runs to preserve
+            cross-model variation in uncertainty estimates.
 
     Returns
     -------
@@ -279,6 +293,11 @@ def analyze(
     if statistic not in {"mean", "median"}:
         raise ValueError(
             f"Unknown statistic '{statistic}'. Expected 'mean' or 'median'."
+        )
+    if template_model_collapse not in {"mean", "as_runs"}:
+        raise ValueError(
+            f"Unknown template_model_collapse '{template_model_collapse}'. "
+            "Expected 'mean' or 'as_runs'."
         )
 
     kwargs = dict(
@@ -315,7 +334,12 @@ def analyze(
                 shape = _detect_shape(result)
                 _validate_supported(shape)
                 return {
-                    "score": _analyze_multi_model(result=result, shape=shape, **kwargs)
+                    "score": _analyze_multi_model(
+                        result=result,
+                        shape=shape,
+                        template_model_collapse=template_model_collapse,
+                        **kwargs,
+                    )
                 }
 
             outputs: PerEvaluatorMultiModel = {}
@@ -332,13 +356,19 @@ def analyze(
                 outputs[evaluator_name] = _analyze_multi_model(
                     result=evaluator_result,
                     shape=evaluator_shape,
+                    template_model_collapse=template_model_collapse,
                     **kwargs,
                 )
             return outputs
 
         shape = _detect_shape(result)
         _validate_supported(shape)
-        return _analyze_multi_model(result=result, shape=shape, **kwargs)
+        return _analyze_multi_model(
+            result=result,
+            shape=shape,
+            template_model_collapse=template_model_collapse,
+            **kwargs,
+        )
 
     # ------------------------------------------------------------------
     # Single-model path (BenchmarkResult)
@@ -524,6 +554,7 @@ def _analyze_multi_model(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
+    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
 ) -> MultiModelBundle:
     kwargs = dict(
         reference=reference,
@@ -567,6 +598,22 @@ def _analyze_multi_model(
         **kwargs,
     )
 
+    template_mean_result = result.get_template_mean_result(
+        collapse_models=template_model_collapse,
+    )
+    template_level_shape = BenchmarkShape(
+        n_models=1,
+        n_prompts=shape.n_prompts,
+        n_input_vars=shape.n_input_vars,
+        n_evaluators=shape.n_evaluators,
+        n_runs=template_mean_result.n_runs,
+    )
+    template_level = _analyze_single(
+        result=template_mean_result,
+        shape=template_level_shape,
+        **kwargs,
+    )
+
     flat_result = result.get_flat_result()
     flat_shape = BenchmarkShape(
         n_models=shape.n_models,
@@ -594,6 +641,7 @@ def _analyze_multi_model(
         shape=shape,
         per_model=per_model,
         model_level=model_level,
+        template_level=template_level,
         cross_model=cross_model,
         best_pair=best_pair,
     )
@@ -787,13 +835,30 @@ def _print_multi_model_summary(
     print(f"Best pair: model='{best_model}'  template='{best_template}'")
     print()
 
-    print("Model-level comparison (mean across all prompts):")
+    _print_loud_section("Model-level comparison (across all prompts):")
     _print_bundle_summary(
         bundle.model_level,
         top_pairwise=top_pairwise,
         line_width=line_width,
         item_singular="model",
         item_plural="models",
+    )
+
+    print()
+    _print_loud_section("Cross-model per-template comparison (models collapsed):")
+    _print_bundle_summary(
+        bundle.template_level,
+        top_pairwise=top_pairwise,
+        line_width=line_width,
+        item_singular="template",
+        item_plural="templates",
+    )
+    best_idx = int(np.argmax(bundle.template_level.robustness.mean))
+    best_template = bundle.template_level.benchmark.template_labels[best_idx]
+    best_mean = float(bundle.template_level.robustness.mean[best_idx])
+    print(
+        "  -> Best-performing prompt across models (by mean score): "
+        f"'{best_template}' (mean={best_mean:.3f})"
     )
 
     # Instability across runs across models 
@@ -846,7 +911,7 @@ def _print_bundle_summary(
     pair_p_boot_col_width = 10
     pair_p_wsr_col_width = 9
 
-    print("=== Analysis Summary ===")
+    # print("=== Analysis Summary ===")
     print(f"Shape: {bundle.shape}")
     n_runs = bundle.benchmark.n_runs
     item_singular_title = item_singular.capitalize()

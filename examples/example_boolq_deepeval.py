@@ -99,7 +99,7 @@ class OpenRouterModel(DeepEvalBaseLLM):
 # ---------------------------------------------------------------------------
 
 N_PROBLEMS = 50
-N_SHOTS_OPTIONS = [3, 0]  # compare 3-shot vs 0-shot performance
+N_SHOTS_OPTIONS = [5, 3, 0]  # compare 5-shot, 3-shot, and 0-shot performance
 
 openai_model_name = "gpt-4.1-nano"
 openrouter_model_A = "mistralai/ministral-8b-2512"
