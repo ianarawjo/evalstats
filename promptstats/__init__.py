@@ -19,6 +19,7 @@ from promptstats.core.router import (
 )
 from promptstats.vis.advantage import plot_point_advantage
 from promptstats.io import from_dataframe, DataLoadReport
+from promptstats.compare import compare_prompts, ComparePromptsReport, PromptStats
 
 __version__ = "0.1.0"
 
@@ -44,6 +45,9 @@ __all__ = [
     "plot_point_advantage",
     "from_dataframe",
     "DataLoadReport",
+    "compare_prompts",
+    "ComparePromptsReport",
+    "PromptStats",
 ]
 
 # LMMInfo is exported lazily so that pymer4 is not a hard dependency.
