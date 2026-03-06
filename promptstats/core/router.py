@@ -1092,6 +1092,7 @@ def _print_bundle_summary(
     pair_sigma_col_width = 8
     pair_p_boot_col_width = 10
     pair_p_wsr_col_width = 9
+    pair_p_nem_col_width = 9
 
     # print("=== Analysis Summary ===")
     print(f"Shape: {bundle.shape}")
@@ -1189,6 +1190,14 @@ def _print_bundle_summary(
         key=lambda r: (r.p_value, -abs(r.point_diff)),
     )
     max_pairs = max(0, min(top_pairwise, len(pair_results)))
+    # Friedman omnibus line (printed before the interval plot when pairs exist).
+    if max_pairs > 0 and bundle.pairwise.friedman is not None:
+        fr = bundle.pairwise.friedman
+        fr_p_str = _format_p_value(fr.p_value)
+        print(f"  Friedman omnibus: χ²({fr.df}) = {fr.statistic:.3f}, p = {fr_p_str}")
+        if fr.p_value > 0.05:
+            print(f"  [!] Friedman p > 0.05: no significant omnibus effect — treat pairwise results with caution.")
+
     if max_pairs > 0:
         pair_max_abs = max(
             1e-12,
@@ -1214,7 +1223,7 @@ def _print_bundle_summary(
             f"{pair_stat_label:>{pair_stat_col_width}s} "
             f"{'CI Low':>{pair_ci_col_width}s} {'CI High':>{pair_ci_col_width}s} "
             f"{'r_rb':>{pair_sigma_col_width}s} "
-            f"{'p (boot)':>{pair_p_boot_col_width}s} {'p (wsr)':>{pair_p_wsr_col_width}s}"
+            f"{'p (boot)':>{pair_p_boot_col_width}s} {'p (wsr)':>{pair_p_wsr_col_width}s} {'p (nem)':>{pair_p_nem_col_width}s}"
         )
 
     for result in pair_results[:max_pairs]:
@@ -1234,6 +1243,8 @@ def _print_bundle_summary(
         )
         p_boot_str = _format_p_value(result.p_value)
         wsr_str = _format_p_value(result.wilcoxon_p)
+        nem_p = bundle.pairwise.friedman.get_nemenyi_p(result.template_a, result.template_b) if bundle.pairwise.friedman is not None else None
+        nem_str = _format_p_value(nem_p)
         d_val = result.rank_biserial
         d_str = f"{d_val:>{pair_sigma_col_width}.3f}"
         print(
@@ -1244,15 +1255,17 @@ def _print_bundle_summary(
             f"{result.ci_high:+{pair_ci_col_width}.4f} "
             f"{d_str} "
             f"{p_boot_str:>{pair_p_boot_col_width}s} "
-            f"{wsr_str:>{pair_p_wsr_col_width}s}"
+            f"{wsr_str:>{pair_p_wsr_col_width}s} "
+            f"{nem_str:>{pair_p_nem_col_width}s}"
         )
 
     if max_pairs == 0:
         print("  (no pairwise comparisons)")
     elif max_pairs > 0:
-        print(f"  r_rb = rank biserial effect size (small≈0.1, medium≈0.3, large≈0.5)")
+        print(f"  r_rb = rank biserial correlation (effect size: small≈0.1, medium≈0.3, large≈0.5)")
         print(f"  p (boot) = bootstrap {bundle.pairwise.correction_method}-corrected; "
-              f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected")
+              f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
+              f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
         print("  stars: * p<0.05, ** p<0.01, *** p<0.001")
     
     # Seed variance section (only when seeded data is present).

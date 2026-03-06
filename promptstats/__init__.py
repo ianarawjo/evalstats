@@ -1,7 +1,7 @@
 """promptstats: Statistical analysis and visualization for prompt benchmarking."""
 
 from promptstats.core.types import BenchmarkResult, MultiModelBenchmark
-from promptstats.core.paired import pairwise_differences, all_pairwise, vs_baseline
+from promptstats.core.paired import pairwise_differences, all_pairwise, vs_baseline, friedman_nemenyi, FriedmanResult
 from promptstats.core.ranking import bootstrap_ranks, bootstrap_point_advantage
 from promptstats.core.variance import (
     robustness_metrics,
@@ -34,6 +34,8 @@ __all__ = [
     "pairwise_differences",
     "all_pairwise",
     "vs_baseline",
+    "friedman_nemenyi",
+    "FriedmanResult",
     "bootstrap_ranks",
     "bootstrap_point_advantage",
     "robustness_metrics",

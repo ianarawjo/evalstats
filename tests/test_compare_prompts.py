@@ -62,6 +62,98 @@ def test_compare_prompts_wrong_ndim():
         )
 
 
+def test_friedman_nemenyi_all_ties_returns_stable_values():
+    scores = np.array(
+        [
+            [1.0, 1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0, 1.0],
+            [1.0, 1.0, 1.0, 1.0, 1.0],
+        ]
+    )
+    result = ps.friedman_nemenyi(scores, ["a", "b", "c"])
+    assert result.statistic == pytest.approx(0.0, abs=1e-12)
+    assert result.p_value == pytest.approx(1.0, abs=1e-12)
+    assert all(p == pytest.approx(1.0, abs=1e-12) for p in result.nemenyi_p.values())
+
+
+def test_friedman_nemenyi_label_length_must_match_templates():
+    scores = np.array(
+        [
+            [0.9, 0.8, 0.7],
+            [0.8, 0.7, 0.6],
+            [0.7, 0.6, 0.5],
+        ]
+    )
+    with pytest.raises(ValueError, match="labels length"):
+        ps.friedman_nemenyi(scores, ["a", "b"])
+
+
+def test_friedman_nemenyi_matches_r_reference_values():
+    """
+        Example matrix and output from R's friedman.test and frdAllPairsNemenyiTest:
+        > scores <- matrix(c(
+        +   0.82, 0.79, 0.76,
+        +   0.91, 0.88, 0.86,
+        +   0.73, 0.71, 0.69,
+        +   0.65, 0.67, 0.63,
+        +   0.84, 0.82, 0.80,
+        +   0.77, 0.74, 0.72
+        + ), nrow = 6, byrow = TRUE)
+        > 
+        > colnames(scores) <- c("template_A","template_B","template_C")
+        > 
+        > # Convert to long format
+        > df <- data.frame(
+        +   score = as.vector(scores),
+        +   template = factor(rep(colnames(scores), each=nrow(scores))),
+        +   input = factor(rep(1:nrow(scores), times=ncol(scores)))
+        + )
+        > 
+        > # Friedman test
+        > friedman_res <- friedman.test(score ~ template | input, data=df)
+        > 
+        > # Nemenyi posthoc
+        > nemenyi_res <- frdAllPairsNemenyiTest(score ~ template | input, data=df)
+        > 
+        > print(friedman_res)
+
+            Friedman rank sum test
+
+        data:  score and template and input
+        Friedman chi-squared = 10.333, df = 2, p-value = 0.005704
+
+        > print(nemenyi_res$p.value)
+                    template_A template_B
+        template_B 0.480432575         NA
+        template_C 0.004269786  0.1072232
+    """
+    scores = np.array(
+        [
+            [0.82, 0.79, 0.76],
+            [0.91, 0.88, 0.86],
+            [0.73, 0.71, 0.69],
+            [0.65, 0.67, 0.63],
+            [0.84, 0.82, 0.80],
+            [0.77, 0.74, 0.72],
+        ],
+        dtype=float,
+    )
+    labels = ["template_A", "template_B", "template_C"]
+
+    # R matrix is (N inputs, k templates); API expects (k, N).
+    result = ps.friedman_nemenyi(scores.T, labels)
+
+    # We expect the Friedman statistic, df, and p-value to match R's output
+    assert result.statistic == pytest.approx(10.333333333333329, abs=1e-6)
+    assert result.df == 2
+    assert result.p_value == pytest.approx(0.005703548998007417, abs=1e-6)
+
+    # We expect the Nemenyi pairwise p-values to match R's output (with some tolerance for floating-point differences)
+    assert result.get_nemenyi_p("template_A", "template_B") == pytest.approx(0.480432575, abs=1e-6)
+    assert result.get_nemenyi_p("template_A", "template_C") == pytest.approx(0.004269786, abs=1e-6)
+    assert result.get_nemenyi_p("template_B", "template_C") == pytest.approx(0.1072232, abs=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # Return type and attribute shapes
 # ---------------------------------------------------------------------------

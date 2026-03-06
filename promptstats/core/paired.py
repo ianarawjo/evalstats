@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 import numpy as np
-from scipy.stats import rankdata
+from scipy.stats import rankdata, friedmanchisquare, studentized_range
 
 from .resampling import bca_interval_1d, bootstrap_diffs_nested, bootstrap_means_1d, resolve_resampling_method, _stat
 from .stats_utils import correct_pvalues
@@ -100,12 +100,111 @@ class PairedDiffResult:
 
 
 @dataclass
+class FriedmanResult:
+    """Friedman omnibus test + Nemenyi pairwise post-hoc.
+
+    The Friedman test is a non-parametric alternative to repeated-measures
+    ANOVA.  It ranks treatments within each block (input) and tests whether
+    any treatment's average rank differs from the others.
+
+    The Nemenyi post-hoc uses the Studentized range distribution to compare
+    all pairs of average ranks simultaneously (FWER-controlled at the family
+    level — no additional correction needed).
+    """
+
+    statistic: float                          # Friedman χ² statistic
+    df: int                                   # degrees of freedom = k - 1
+    p_value: float                            # omnibus p-value
+    nemenyi_p: dict[tuple[str, str], float]  # upper-triangle pairwise p-values
+    n_inputs: int                             # N blocks
+    n_templates: int                          # k treatments
+
+    def get_nemenyi_p(self, a: str, b: str) -> Optional[float]:
+        """Return Nemenyi p for a pair regardless of storage order."""
+        if (a, b) in self.nemenyi_p:
+            return self.nemenyi_p[(a, b)]
+        if (b, a) in self.nemenyi_p:
+            return self.nemenyi_p[(b, a)]
+        return None
+
+
+def friedman_nemenyi(scores: np.ndarray, labels: list[str]) -> FriedmanResult:
+    """Friedman omnibus test + Nemenyi pairwise post-hoc (scipy only).
+    NOTE: This function is verified to match R's friedman.test and 
+    PMCMRplus::frdAllPairsNemenyiTest on a reference matrix in the tests/.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(k, N)`` — k templates × N inputs.  If 3-D ``(k, N, R)``,
+        cell means are taken over runs before ranking.
+    labels : list[str]
+        Template labels, length k.
+
+    Returns
+    -------
+    FriedmanResult
+    """
+    scores = np.asarray(scores)
+    if scores.ndim not in (2, 3):
+        raise ValueError("scores must have shape (k, N) or (k, N, R)")
+
+    if scores.ndim == 3:
+        scores = scores.mean(axis=2)  # (k, N) cell means
+
+    k, N = scores.shape
+
+    if len(labels) != k:
+        raise ValueError(f"labels length ({len(labels)}) must match number of templates ({k})")
+    if k < 3:
+        raise ValueError("Friedman test requires at least 3 templates (k >= 3)")
+    if N < 1:
+        raise ValueError("scores must include at least one input (N >= 1)")
+    if not np.all(np.isfinite(scores)):
+        raise ValueError("scores must contain only finite values")
+
+    # Friedman omnibus test.
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        stat, p_val = friedmanchisquare(*[scores[i] for i in range(k)])
+    if not (np.isfinite(stat) and np.isfinite(p_val)):
+        # Degenerate case (e.g., all treatments tied for every input).
+        stat, p_val = 0.0, 1.0
+
+    # Average ranks: rank across k treatments within each input, then average.
+    # rank_matrix[i, j] = rank of template i for input j.
+    rank_matrix = np.apply_along_axis(rankdata, 0, scores)  # (k, N)
+    avg_ranks = rank_matrix.mean(axis=1)  # (k,)
+
+    # Nemenyi post-hoc: compare pairs via the Studentized range distribution.
+    # Standard error of average-rank differences under H0.
+    se = np.sqrt(k * (k + 1) / (6.0 * N))
+    nemenyi_p: dict[tuple[str, str], float] = {}
+    for i in range(k):
+        for j in range(i + 1, k):
+            q = abs(avg_ranks[i] - avg_ranks[j]) / se
+            # Convert to Studentized range statistic (factor sqrt(2) per Demšar 2006).
+            p = float(studentized_range.sf(q * np.sqrt(2), k, np.inf))
+            nemenyi_p[(labels[i], labels[j])] = p
+
+    return FriedmanResult(
+        statistic=float(stat),
+        df=k - 1,
+        p_value=float(p_val),
+        nemenyi_p=nemenyi_p,
+        n_inputs=N,
+        n_templates=k,
+    )
+
+
+@dataclass
 class PairwiseMatrix:
     """Results of all pairwise comparisons."""
 
     labels: list[str]
     results: dict[tuple[str, str], PairedDiffResult]
     correction_method: str
+    friedman: Optional[FriedmanResult] = None
 
     def get(self, a: str, b: str) -> PairedDiffResult:
         """Get the comparison result for templates a vs b."""
@@ -445,7 +544,15 @@ def all_pairwise(
                 wilcoxon_p=float(adj_wsr) if adj_wsr is not None else None,
             )
 
-    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+    # Friedman omnibus + Nemenyi post-hoc (only meaningful for k >= 2).
+    friedman: Optional[FriedmanResult] = None
+    if len(labels) >= 2:
+        try:
+            friedman = friedman_nemenyi(scores, labels)
+        except Exception:
+            pass
+
+    return PairwiseMatrix(labels=labels, results=results, correction_method=correction, friedman=friedman)
 
 
 def vs_baseline(
