@@ -1,13 +1,16 @@
 """Demo: Real LLM evaluation using promptstats analyze router (Ollama).
 
-Calls a locally running Ollama model (gpt-oss:20b) to classify the sentiment
+Calls a locally running Ollama model (e.g., gpt-oss:20b) to classify the sentiment
 of customer reviews using prompt template variants, scores outputs with
 code-based evaluators, and then runs `promptstats.analyze` in both aggregate
 and per-evaluator modes.
 
+Change MODEL to switch between different local Ollama models.
+Make sure to pull the model you want to use with `ollama pull` before running this script.
+
 Requirements:
     - Install Ollama and start it: `ollama serve`
-    - Pull model once: `ollama pull gpt-oss:20b`
+    - Pull model once, e.g.: `ollama pull gpt-oss:20b`
 
 Usage:
     python examples/sentiment_ollama.py
@@ -23,6 +26,11 @@ import numpy as np
 
 import promptstats as pstats
 
+# ---------------------------------------------------------------------------
+# The model and Ollama API URL
+# ---------------------------------------------------------------------------
+MODEL = "gemma3:1b"  # e.g., gpt-oss:20b, gemma3:4b, etc.
+OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 
 # ---------------------------------------------------------------------------
 # Task: sentiment classification with known ground truth labels
@@ -198,10 +206,6 @@ EVALUATOR_NAMES = [name for name, _ in EVALUATORS]
 # ---------------------------------------------------------------------------
 # Ollama call
 # ---------------------------------------------------------------------------
-
-MODEL = "gemma3:4b" # gpt-oss:20b
-OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
-
 
 def call_model(prompt: str) -> str:
     payload = {

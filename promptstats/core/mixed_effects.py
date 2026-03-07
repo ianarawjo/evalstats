@@ -316,6 +316,86 @@ def _t_crit_from_result_fit(model: Any, alpha: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Shared low-level helpers (backend-agnostic)
+# ---------------------------------------------------------------------------
+
+def _apply_pvalue_correction(
+    results: dict,
+    pairs: list,
+    correction: str,
+) -> None:
+    """Apply multiple-comparisons correction to a ``results`` dict in-place.
+
+    Parameters
+    ----------
+    results : dict[tuple[str, str], PairedDiffResult]
+        Mapping from ``(label_a, label_b)`` to a ``PairedDiffResult``.
+        Updated in-place: corrected p-values and an updated ``test_method``
+        string are written back for each pair.
+    pairs : list[tuple[str, str]]
+        Ordered list of pairs in the same order as ``results`` was populated,
+        used to extract and replace p-values in a consistent order.
+    correction : str
+        Correction method accepted by :func:`correct_pvalues` (e.g.
+        ``'holm'``, ``'bonferroni'``, ``'fdr_bh'``, ``'none'``).
+        When ``'none'`` or ``len(pairs) <= 1`` the function is a no-op.
+    """
+    if correction == "none" or len(pairs) <= 1:
+        return
+    p_values = np.array([results[p].p_value for p in pairs])
+    adjusted = correct_pvalues(p_values, correction)
+    for pair, adj_p in zip(pairs, adjusted):
+        r = results[pair]
+        results[pair] = PairedDiffResult(
+            template_a=r.template_a,
+            template_b=r.template_b,
+            point_diff=r.point_diff,
+            std_diff=r.std_diff,
+            ci_low=r.ci_low,
+            ci_high=r.ci_high,
+            p_value=float(adj_p),
+            test_method=f"{r.test_method} ({correction}-corrected)",
+            n_inputs=r.n_inputs,
+            per_input_diffs=r.per_input_diffs,
+            n_runs=r.n_runs,
+            statistic=r.statistic,
+        )
+
+
+def _compute_raw_advantages_and_spread(
+    cell_means_2d: np.ndarray,
+    ref_idx: Optional[int],
+    spread_percentiles: tuple[float, float],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Compute per-input raw advantages and intrinsic spread bands.
+
+    Parameters
+    ----------
+    cell_means_2d : np.ndarray, shape ``(N, M)``
+        Cell-mean scores: N templates × M inputs.
+    ref_idx : int or None
+        Index of the reference template (for a specific-template reference)
+        or ``None`` (for the grand-mean reference).
+    spread_percentiles : tuple[float, float]
+        ``(low_pct, high_pct)`` percentiles used for the spread band.
+
+    Returns
+    -------
+    raw_advantages : np.ndarray, shape ``(N, M)``
+    spread_low : np.ndarray, shape ``(N,)``
+    spread_high : np.ndarray, shape ``(N,)``
+    """
+    if ref_idx is None:
+        cell_ref = np.nanmean(cell_means_2d, axis=0)   # (M,) — NaN-safe grand mean
+    else:
+        cell_ref = cell_means_2d[ref_idx]               # (M,)
+    raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]   # (N, M)
+    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
+    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
+    return raw_advantages, spread_low, spread_high
+
+
+# ---------------------------------------------------------------------------
 # Pairwise comparisons
 # ---------------------------------------------------------------------------
 
@@ -424,27 +504,7 @@ def _lmm_to_pairwise(
             "Check that template labels are simple strings without ' - '."
         )
 
-    # Apply multiple-comparisons correction
-    if correction != "none" and len(pairs) > 1:
-        p_values = np.array([results[p].p_value for p in pairs])
-        adjusted = correct_pvalues(p_values, correction)
-        for pair, adj_p in zip(pairs, adjusted):
-            r = results[pair]
-            results[pair] = PairedDiffResult(
-                template_a=r.template_a,
-                template_b=r.template_b,
-                point_diff=r.point_diff,
-                std_diff=r.std_diff,
-                ci_low=r.ci_low,
-                ci_high=r.ci_high,
-                p_value=float(adj_p),
-                test_method=f"{r.test_method} ({correction}-corrected)",
-                n_inputs=r.n_inputs,
-                per_input_diffs=r.per_input_diffs,
-                n_runs=r.n_runs,
-                statistic=r.statistic,
-            )
-
+    _apply_pvalue_correction(results, pairs, correction)
     return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
 
 
@@ -568,14 +628,9 @@ def _lmm_to_mean_advantage(
     ci_high  = mean_advantages + t_crit * se_adv
 
     # --- Raw cell-mean advantages for spread bands -------------------------
-    if reference == "grand_mean":
-        cell_ref = np.nanmean(cell_means_2d, axis=0)   # (M,) — NaN-safe grand mean
-    else:
-        cell_ref = cell_means_2d[ref_idx]               # (M,)
-
-    raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]  # (N, M)
-    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
-    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
+    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
+        cell_means_2d, ref_idx, spread_percentiles
+    )
 
     return PointAdvantageResult(
         labels=labels,
@@ -703,14 +758,21 @@ def _lmm_to_rank_dist(
 # LMM diagnostics
 # ---------------------------------------------------------------------------
 
-def _build_lmm_info(model: Any, n_obs: int) -> LMMInfo:
-    """Extract ``LMMInfo`` from a fitted pymer4 ``lmer`` model."""
-    sigma_input, sigma_resid = _extract_variance_components(model)
+def _compute_icc(sigma_input: float, sigma_resid: float) -> float:
+    """Intraclass correlation: σ²_input / (σ²_input + σ²_resid).
 
+    Returns 0.0 when total variance is zero (degenerate model).
+    """
     var_input = sigma_input ** 2
     var_resid = sigma_resid ** 2
     total_var = var_input + var_resid
-    icc = var_input / total_var if total_var > 0 else 0.0
+    return var_input / total_var if total_var > 0 else 0.0
+
+
+def _build_lmm_info(model: Any, n_obs: int) -> LMMInfo:
+    """Extract ``LMMInfo`` from a fitted pymer4 ``lmer`` model."""
+    sigma_input, sigma_resid = _extract_variance_components(model)
+    icc = _compute_icc(sigma_input, sigma_resid)
 
     # pymer4 0.9 stores the convergence result in model.convergence_status
     # as a string containing the R output; "TRUE" signals successful convergence.
@@ -918,26 +980,7 @@ def _lmm_to_pairwise_sm(
     if not results:
         raise RuntimeError("statsmodels LMM returned no usable contrasts.")
 
-    if correction != "none" and len(pairs) > 1:
-        p_values = np.array([results[p].p_value for p in pairs])
-        adjusted = correct_pvalues(p_values, correction)
-        for pair, adj_p in zip(pairs, adjusted):
-            r = results[pair]
-            results[pair] = PairedDiffResult(
-                template_a=r.template_a,
-                template_b=r.template_b,
-                point_diff=r.point_diff,
-                std_diff=r.std_diff,
-                ci_low=r.ci_low,
-                ci_high=r.ci_high,
-                p_value=float(adj_p),
-                test_method=f"{r.test_method} ({correction}-corrected)",
-                n_inputs=r.n_inputs,
-                per_input_diffs=r.per_input_diffs,
-                n_runs=r.n_runs,
-                statistic=r.statistic,
-            )
-
+    _apply_pvalue_correction(results, pairs, correction)
     return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
 
 
@@ -977,14 +1020,9 @@ def _lmm_to_mean_advantage_sm(
     ci_low  = mean_advantages - t_crit * se_adv
     ci_high = mean_advantages + t_crit * se_adv
 
-    if reference == "grand_mean":
-        cell_ref = np.nanmean(cell_means_2d, axis=0)
-    else:
-        cell_ref = cell_means_2d[ref_idx]
-
-    raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]
-    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
-    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
+    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
+        cell_means_2d, ref_idx, spread_percentiles
+    )
 
     return PointAdvantageResult(
         labels=labels,
@@ -1004,12 +1042,7 @@ def _lmm_to_mean_advantage_sm(
 def _build_lmm_info_sm(sm_result: Any, n_obs: int) -> LMMInfo:
     """Extract ``LMMInfo`` from a fitted statsmodels ``MixedLMResults``."""
     sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
-
-    var_input = sigma_input ** 2
-    var_resid = sigma_resid ** 2
-    total_var = var_input + var_resid
-    icc       = var_input / total_var if total_var > 0 else 0.0
-
+    icc = _compute_icc(sigma_input, sigma_resid)
     converged = bool(getattr(sm_result, "converged", True))
 
     return LMMInfo(
@@ -1252,11 +1285,7 @@ def _build_factorial_lmm_info_sm(
 ) -> "FactorialLMMInfo":
     """Build a ``FactorialLMMInfo`` from a fitted statsmodels MixedLMResults."""
     sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
-
-    var_input = sigma_input ** 2
-    var_resid = sigma_resid ** 2
-    total_var = var_input + var_resid
-    icc       = var_input / total_var if total_var > 0 else 0.0
+    icc = _compute_icc(sigma_input, sigma_resid)
     converged = bool(getattr(sm_result, "converged", True))
 
     factor_tests  = _extract_factor_tests_sm(sm_result, factor_names)
@@ -1342,26 +1371,7 @@ def _lmm_to_pairwise_factorial_sm(
     if not results:
         raise RuntimeError("Factorial LMM produced no usable pairwise contrasts.")
 
-    if correction != "none" and len(pairs) > 1:
-        p_values = np.array([results[p].p_value for p in pairs])
-        adjusted = correct_pvalues(p_values, correction)
-        for pair, adj_p in zip(pairs, adjusted):
-            r = results[pair]
-            results[pair] = PairedDiffResult(
-                template_a=r.template_a,
-                template_b=r.template_b,
-                point_diff=r.point_diff,
-                std_diff=r.std_diff,
-                ci_low=r.ci_low,
-                ci_high=r.ci_high,
-                p_value=float(adj_p),
-                test_method=f"{r.test_method} ({correction}-corrected)",
-                n_inputs=r.n_inputs,
-                per_input_diffs=r.per_input_diffs,
-                n_runs=r.n_runs,
-                statistic=r.statistic,
-            )
-
+    _apply_pvalue_correction(results, pairs, correction)
     return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
 
 
@@ -1391,6 +1401,7 @@ def _lmm_to_mean_advantage_factorial_sm(
     template_means = design_vecs @ betas  # (N,)
 
     if reference == "grand_mean":
+        ref_idx   = None
         ref_value = template_means.mean()
         ref_label = "grand_mean"
         ref_vec   = design_vecs.mean(axis=0)  # (P,)
@@ -1412,14 +1423,9 @@ def _lmm_to_mean_advantage_factorial_sm(
     ci_low  = mean_advantages - t_crit * se_adv
     ci_high = mean_advantages + t_crit * se_adv
 
-    if reference == "grand_mean":
-        cell_ref = np.nanmean(cell_means_2d, axis=0)
-    else:
-        cell_ref = cell_means_2d[labels.index(reference)]
-
-    raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]
-    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
-    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
+    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
+        cell_means_2d, ref_idx, spread_percentiles
+    )
 
     return PointAdvantageResult(
         labels=labels,
