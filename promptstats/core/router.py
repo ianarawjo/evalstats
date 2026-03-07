@@ -473,6 +473,242 @@ def analyze(
 
 
 # ---------------------------------------------------------------------------
+# Factorial convenience entry point
+# ---------------------------------------------------------------------------
+
+def analyze_factorial(
+    data: "pd.DataFrame",
+    factors: list[str],
+    random_effect: str = "input_id",
+    score_col: str = "score",
+    *,
+    ci: float = 0.95,
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    reference: str = "grand_mean",
+    spread_percentiles: tuple[float, float] = (10, 90),
+    failure_threshold: Optional[float] = None,
+    n_sim: int = 10_000,
+    rng: Optional[np.random.Generator] = None,
+) -> "AnalysisBundle":
+    """Run factorial LMM analysis on a long-form DataFrame.
+
+    Fits the mixed model::
+
+        score ~ C(F1) * C(F2) * ... + (1 | random_effect)
+
+    where ``F1, F2, ...`` are the factor columns specified in *factors*.
+    The random effect (e.g. question ID, input document) absorbs
+    between-input variation, producing cleaner estimates of each factor
+    combination's performance and their main effects / interactions.
+
+    This is a convenience wrapper around :func:`analyze` for two scenarios:
+
+    * **Post-hoc tagged pipelines** — e.g. a RAG experiment where each
+      output row records the ``chunker`` and ``retrieval_method`` used.
+    * **Designed factorial experiments** — e.g. prompt templates that vary
+      ``persona`` and ``few_shots``; see also ``BenchmarkResult`` with
+      ``template_factors`` for the array-based path.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Long-form DataFrame.  Must contain:
+
+        * One column per factor name in *factors*.
+        * *random_effect* column — unique identifier for each benchmark
+          input (e.g. question ID).  At least 2 distinct values required.
+        * *score_col* column — numeric evaluation score.
+
+        Multiple rows with the same ``(random_effect, factor_combo)`` key
+        are averaged (cell means) before fitting the LMM.
+
+    factors : list[str]
+        Column names of the fixed-effect factors.  Each must be a valid
+        Python identifier and have at least 2 unique levels in *data*.
+
+    random_effect : str
+        Column that identifies benchmark inputs (default ``"input_id"``).
+
+    score_col : str
+        Column containing the numeric score (default ``"score"``).
+
+    ci : float
+        Confidence level for Wald intervals (default 0.95).
+
+    correction : str
+        Multiple-comparisons correction for pairwise tests:
+        ``'holm'`` (default), ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
+
+    reference : str
+        Reference for mean advantage: ``'grand_mean'`` (default) or the
+        label of a specific factor-combination cell (e.g. ``'fixed_512|bm25'``
+        when factors are ``['chunker', 'retrieval']``).
+
+    spread_percentiles : tuple[float, float]
+        Percentile bands for the point-advantage spread (default ``(10, 90)``).
+
+    failure_threshold : float, optional
+        Score threshold below which an observation counts as a failure
+        for robustness metrics.
+
+    n_sim : int
+        Monte Carlo simulations for the rank distribution (default 10 000).
+
+    rng : np.random.Generator, optional
+        Random-number generator for reproducibility.
+
+    Returns
+    -------
+    AnalysisBundle
+        All standard fields (``pairwise``, ``point_advantage``,
+        ``robustness``, ``rank_dist``) are populated via the LMM path.
+        ``bundle.factorial_lmm_info`` additionally contains:
+
+        * ``factor_tests`` — Wald χ² tests per main effect and interaction.
+        * ``marginal_means`` — estimated marginal means per factor.
+        * ``icc``, ``sigma_input``, ``sigma_resid`` — variance components.
+
+    Raises
+    ------
+    TypeError
+        If *data* is not a :class:`pandas.DataFrame`.
+    ValueError
+        If required columns are missing, factor names are not valid Python
+        identifiers, or any factor has fewer than 2 unique levels.
+
+    Examples
+    --------
+    RAG pipeline with two factors (chunker × retrieval method):
+
+    >>> import pandas as pd
+    >>> import promptstats as ps
+    >>> data = pd.DataFrame([
+    ...     {"input_id": "q1", "chunker": "fixed_512", "retrieval": "bm25",  "score": 0.72},
+    ...     {"input_id": "q1", "chunker": "fixed_512", "retrieval": "dense", "score": 0.85},
+    ...     {"input_id": "q1", "chunker": "semantic",  "retrieval": "bm25",  "score": 0.78},
+    ...     {"input_id": "q1", "chunker": "semantic",  "retrieval": "dense", "score": 0.91},
+    ...     {"input_id": "q2", "chunker": "fixed_512", "retrieval": "bm25",  "score": 0.61},
+    ...     {"input_id": "q2", "chunker": "fixed_512", "retrieval": "dense", "score": 0.74},
+    ...     {"input_id": "q2", "chunker": "semantic",  "retrieval": "bm25",  "score": 0.65},
+    ...     {"input_id": "q2", "chunker": "semantic",  "retrieval": "dense", "score": 0.82},
+    ... ])
+    >>> bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
+    >>> ps.print_analysis_summary(bundle)
+    """
+    import pandas as pd
+
+    # ------------------------------------------------------------------
+    # Input validation
+    # ------------------------------------------------------------------
+    if not isinstance(data, pd.DataFrame):
+        raise TypeError(
+            f"data must be a pandas DataFrame; got {type(data).__name__}."
+        )
+    if not factors:
+        raise ValueError("factors must be a non-empty list of column names.")
+
+    missing = [c for c in [*factors, random_effect, score_col] if c not in data.columns]
+    if missing:
+        raise ValueError(
+            f"Columns not found in data: {missing}. "
+            f"Available columns: {list(data.columns)}."
+        )
+    for factor in factors:
+        if not str(factor).isidentifier():
+            raise ValueError(
+                f"Factor name '{factor}' is not a valid Python identifier. "
+                "Rename it (e.g., replace spaces with underscores) so that "
+                "it can be used in model formulas."
+            )
+        n_unique = data[factor].nunique(dropna=True)
+        if n_unique < 2:
+            raise ValueError(
+                f"Factor '{factor}' has {n_unique} unique level(s). "
+                "Each factor must have at least 2 distinct levels."
+            )
+    n_inputs = data[random_effect].nunique(dropna=True)
+    if n_inputs < 2:
+        raise ValueError(
+            f"random_effect column '{random_effect}' has {n_inputs} unique value(s). "
+            "At least 2 distinct inputs are required to fit the random intercept."
+        )
+
+    # ------------------------------------------------------------------
+    # Build unique factor-combination → template label mapping
+    # ------------------------------------------------------------------
+    _SEP = "|"
+
+    combos = (
+        data[factors]
+        .drop_duplicates()
+        .sort_values(factors)
+        .reset_index(drop=True)
+    )
+    template_labels: list[str] = [
+        _SEP.join(str(row[f]) for f in factors)
+        for _, row in combos.iterrows()
+    ]
+    if len(set(template_labels)) < len(template_labels):
+        raise ValueError(
+            "Some factor-level combinations produce identical template labels "
+            f"when joined with the separator '{_SEP}'. Ensure factor values "
+            f"do not contain '{_SEP}'."
+        )
+
+    template_factors_df = combos.copy()
+
+    # ------------------------------------------------------------------
+    # Normalise input IDs to strings, pivot to (N_templates × M_inputs)
+    # ------------------------------------------------------------------
+    data_work = data.copy()
+    data_work["_ps_input"] = data_work[random_effect].astype(str)
+    data_work["_ps_template"] = data_work[factors].apply(
+        lambda row: _SEP.join(str(row[f]) for f in factors), axis=1
+    )
+
+    input_labels: list[str] = sorted(
+        data_work["_ps_input"].dropna().unique().tolist()
+    )
+
+    pivot = data_work.pivot_table(
+        index="_ps_input",
+        columns="_ps_template",
+        values=score_col,
+        aggfunc="mean",
+        observed=True,
+    )
+    pivot = pivot.reindex(index=input_labels, columns=template_labels)
+    cell_means_2d = pivot.to_numpy().T  # (N_templates, M_inputs)
+
+    # ------------------------------------------------------------------
+    # Build BenchmarkResult and run the standard LMM analysis pipeline
+    # ------------------------------------------------------------------
+    if rng is None:
+        rng = np.random.default_rng()
+
+    from .types import BenchmarkResult as _BR
+    benchmark = _BR(
+        scores=cell_means_2d,
+        template_labels=template_labels,
+        input_labels=input_labels,
+        template_factors=template_factors_df,
+    )
+
+    return analyze(  # type: ignore[return-value]
+        benchmark,
+        method="lmm",
+        ci=ci,
+        n_bootstrap=n_sim,
+        correction=correction,
+        reference=reference,
+        spread_percentiles=spread_percentiles,
+        failure_threshold=failure_threshold,
+        rng=rng,
+        statistic="mean",
+    )
+
+
+# ---------------------------------------------------------------------------
 # Internal analysis runners
 # ---------------------------------------------------------------------------
 
@@ -1360,6 +1596,16 @@ def _print_bundle_summary(
             item_singular=item_singular,
         )
 
+    # LMM diagnostics (standard one-factor LMM).
+    if bundle.lmm_info is not None:
+        print()
+        _print_lmm_summary(bundle)
+
+    # Factorial LMM diagnostics (factor tests + marginal means).
+    if bundle.factorial_lmm_info is not None:
+        print()
+        _print_factorial_lmm_summary(bundle)
+
     # Token usage & Pareto analysis (only when token_usage was provided).
     if bundle.token_analysis is not None:
         print()
@@ -2083,3 +2329,71 @@ def _format_p_value(p_value: Optional[float]) -> str:
     if p_value is None:
         return "N/A"
     return f"{p_value:.4g}{_p_value_stars(p_value)}"
+
+
+def _print_lmm_summary(bundle: "AnalysisBundle") -> None:
+    """Print LMM variance-component diagnostics for a standard (one-factor) LMM."""
+    info = bundle.lmm_info
+    if info is None:
+        return
+    _print_subsection("--- LMM Diagnostics ---")
+    print(f"  Formula : {info.formula}")
+    print(
+        f"  ICC={info.icc:.3f}  σ_input={info.sigma_input:.4f}  "
+        f"σ_resid={info.sigma_resid:.4f}  n_obs={info.n_obs}"
+        + ("" if info.converged else f"  {_YELLOW}[convergence warning]{_RESET}")
+    )
+
+
+def _print_factorial_lmm_summary(bundle: "AnalysisBundle") -> None:
+    """Print factorial LMM diagnostics: variance components, factor tests, marginal means."""
+    info = bundle.factorial_lmm_info
+    if info is None:
+        return
+
+    _print_subsection("--- Factorial LMM Diagnostics ---")
+    print(f"  Formula : {info.formula}")
+    print(
+        f"  ICC={info.icc:.3f}  σ_input={info.sigma_input:.4f}  "
+        f"σ_resid={info.sigma_resid:.4f}  n_obs={info.n_obs}"
+        + ("" if info.converged else f"  {_YELLOW}[convergence warning]{_RESET}")
+    )
+    print()
+
+    # Factor / interaction Wald tests
+    _print_subsection("--- Factor Tests (Wald χ²) ---")
+    ft = info.factor_tests
+    if ft is not None and len(ft) > 0:
+        term_w = max(len("Term"), max(len(str(t)) for t in ft["term"]))
+        print(f"  {'Term':<{term_w}s}  {'χ²':>10s}  {'df':>4s}  {'p-value':>12s}")
+        print(f"  {'-' * term_w}  {'-' * 10}  {'-' * 4}  {'-' * 12}")
+        for _, row in ft.iterrows():
+            pval = float(row["p_value"])
+            stars = _p_value_stars(pval)
+            p_str = f"{pval:.4g}{stars}"
+            print(
+                f"  {str(row['term']):<{term_w}s}  "
+                f"{float(row['statistic']):>10.3f}  "
+                f"{float(row['df']):>4.0f}  "
+                f"{p_str:>12s}"
+            )
+    else:
+        print("  (no factor tests available)")
+
+    # Estimated marginal means per factor
+    mm = info.marginal_means
+    if mm:
+        for factor_name, mm_df in mm.items():
+            print()
+            _print_subsection(f"--- Marginal Means: {factor_name} ---")
+            level_w = max(len("Level"), max(len(str(v)) for v in mm_df["level"]))
+            print(f"  {'Level':<{level_w}s}  {'Mean':>8s}  {'SE':>8s}  {'CI Low':>9s}  {'CI High':>9s}")
+            print(f"  {'-' * level_w}  {'-' * 8}  {'-' * 8}  {'-' * 9}  {'-' * 9}")
+            for _, row in mm_df.iterrows():
+                print(
+                    f"  {str(row['level']):<{level_w}s}  "
+                    f"{float(row['mean']):>8.4f}  "
+                    f"{float(row['se']):>8.4f}  "
+                    f"{float(row['ci_low']):>9.4f}  "
+                    f"{float(row['ci_high']):>9.4f}"
+                )

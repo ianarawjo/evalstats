@@ -11,6 +11,7 @@ from promptstats.core.variance import (
 from promptstats.core.tokens import TokenUsage, TokenAnalysisResult
 from promptstats.core.router import (
     analyze,
+    analyze_factorial,
     AnalysisBundle,
     AnalysisResult,
     BenchmarkShape,
@@ -26,7 +27,6 @@ from promptstats.compare import (
     CompareReport,
     EntityStats,
 )
-from promptstats.factorial import analyze_factorial
 
 __version__ = "0.1.1"
 
