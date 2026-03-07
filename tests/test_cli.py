@@ -102,7 +102,7 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
         summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise})
 
     monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-    monkeypatch.setattr("promptstats.core.router.print_analysis_summary", fake_print_summary)
+    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", fake_print_summary)
 
     args = argparse.Namespace(
         file=file_path,
@@ -278,7 +278,7 @@ def test_cmd_analyze_routes_format_and_forwards_options(
 
     monkeypatch.setattr("promptstats.io.from_dataframe", fake_from_dataframe)
     monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-    monkeypatch.setattr("promptstats.core.router.print_analysis_summary", fake_print_summary)
+    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", fake_print_summary)
 
     args = argparse.Namespace(
         file=file_path,
@@ -388,7 +388,7 @@ def test_cmd_analyze_allows_per_evaluator_for_multimodel(tmp_path, monkeypatch):
         ),
     )
     monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-    monkeypatch.setattr("promptstats.core.router.print_analysis_summary", lambda *a, **k: None)
+    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", lambda *a, **k: None)
 
     cli._cmd_analyze(args)
 
@@ -428,7 +428,7 @@ def test_cmd_analyze_writes_requested_outputs(tmp_path, monkeypatch):
     )
     monkeypatch.setattr("promptstats.core.router.analyze", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(
-        "promptstats.core.router.print_analysis_summary",
+        "promptstats.core.summary.print_analysis_summary",
         lambda *a, **k: print("mock summary"),
     )
 

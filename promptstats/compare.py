@@ -19,7 +19,8 @@ from typing import Literal, Optional
 import numpy as np
 
 from .core.types import BenchmarkResult, MultiModelBenchmark
-from .core.router import analyze, AnalysisBundle, MultiModelBundle, print_analysis_summary
+from .core.router import analyze, AnalysisBundle, MultiModelBundle
+from .core.summary import print_analysis_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
 from .core.resampling import bootstrap_means_1d, bca_interval_1d, resolve_resampling_method
 

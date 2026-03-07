@@ -22,6 +22,7 @@ dependencies = [
     "pandas>=1.5",
     "matplotlib>=3.6",
     "scikit-posthocs",
+    "statsmodels>=0.14",
     "plotext",
 ]
 
@@ -31,7 +32,7 @@ Repository = "https://github.com/ianarawjo/promptstats"
 
 [project.optional-dependencies]
 interactive = ["plotly>=5.0"]
-models = ["statsmodels>=0.14", "choix>=0.3"]
+models = ["choix>=0.3"]
 lmm = [
     "pymer4>=0.9",
     "pyarrow>=14.0",
@@ -45,7 +46,6 @@ lmm = [
 xlsx = ["openpyxl>=3.0"]
 all = [
     "plotly>=5.0",
-    "statsmodels>=0.14",
     "choix>=0.3",
     "openpyxl>=3.0",
     "pymer4>=0.9",

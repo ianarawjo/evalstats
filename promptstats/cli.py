@@ -293,7 +293,8 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     print()
 
     # --- Run analysis ---
-    from promptstats.core.router import analyze, print_analysis_summary
+    from promptstats.core.router import analyze
+    from promptstats.core.summary import print_analysis_summary
 
     print("Running analysis ...", flush=True)
     try:

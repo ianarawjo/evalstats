@@ -16,8 +16,8 @@ from promptstats.core.router import (
     AnalysisResult,
     BenchmarkShape,
     MultiModelBundle,
-    print_analysis_summary,
 )
+from promptstats.core.summary import print_analysis_summary
 from promptstats.vis.advantage import plot_point_advantage
 from promptstats.vis.critical_difference import plot_critical_difference
 from promptstats.io import from_dataframe, DataLoadReport

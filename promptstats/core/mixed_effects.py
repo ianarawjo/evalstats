@@ -810,24 +810,46 @@ def _require_statsmodels() -> Any:
 
 
 def _scores_to_long_df_pandas(
-    scores_2d: np.ndarray,
+    scores: np.ndarray,
     template_labels: list[str],
     input_labels: list[str],
 ) -> "pd.DataFrame":
-    """Convert an ``(N, M)`` cell-mean score matrix to a long-form pandas DataFrame.
+    """Convert a score array to a long-form pandas DataFrame.
 
-    Returns a DataFrame with columns ``'template'``, ``'input'``, ``'score'``.
-    The ``'template'`` column is a ``pd.Categorical`` with ``template_labels[0]``
-    as the first (reference) category.  NaN rows are dropped.
+    Accepts either:
+
+    * ``(N, M)`` — one row per ``(template, input)`` cell mean.
+    * ``(N, M, R)`` — one row per ``(template, input, run)`` observation;
+      a ``'run'`` column is added.  This lets the LMM use individual
+      run observations as i.i.d. residuals rather than pre-averaged cell
+      means, which propagates seed variance into fixed-effect CIs.
+
+    Returns a DataFrame with columns ``'template'``, ``'input'``, ``'score'``
+    (and ``'run'`` when 3-D input is given).  The ``'template'`` column is a
+    ``pd.Categorical`` with ``template_labels[0]`` as the first (reference)
+    category.  NaN rows are dropped.
     """
     import pandas as pd
 
-    N, M = scores_2d.shape
-    templates   = np.repeat(template_labels, M).tolist()
-    inputs      = np.tile(input_labels, N).tolist()
-    scores_flat = scores_2d.ravel().tolist()
+    if scores.ndim == 2:
+        N, M = scores.shape
+        templates   = np.repeat(template_labels, M).tolist()
+        inputs      = np.tile(input_labels, N).tolist()
+        scores_flat = scores.ravel().tolist()
+        df = pd.DataFrame({"template": templates, "input": inputs, "score": scores_flat})
+    elif scores.ndim == 3:
+        N, M, R = scores.shape
+        # Layout after ravel(): template0/input0/run0, t0/i0/run1, ..., t0/i1/run0, ...
+        templates   = np.repeat(template_labels, M * R).tolist()
+        inputs      = np.tile(np.repeat(input_labels, R), N).tolist()
+        runs        = np.tile(np.arange(R), N * M).tolist()
+        scores_flat = scores.ravel().tolist()
+        df = pd.DataFrame({"template": templates, "input": inputs, "run": runs, "score": scores_flat})
+    else:
+        raise ValueError(
+            f"scores must be 2-D (N, M) or 3-D (N, M, R); got {scores.ndim}-D array."
+        )
 
-    df = pd.DataFrame({"template": templates, "input": inputs, "score": scores_flat})
     df = df.dropna(subset=["score"])
     df["template"] = pd.Categorical(df["template"], categories=template_labels)
     return df
@@ -1071,20 +1093,20 @@ def _build_factorial_formula(factor_names: list[str]) -> str:
 
 
 def _scores_to_long_df_factorial_pandas(
-    scores_2d: np.ndarray,
+    scores: np.ndarray,
     template_labels: list[str],
     input_labels: list[str],
     template_factors: "pd.DataFrame",
 ) -> "pd.DataFrame":
     """Build a long-form pandas DataFrame with factor columns appended.
 
-    Calls :func:`_scores_to_long_df_pandas` then left-joins the factor
-    columns from *template_factors*, aligning rows positionally to
-    *template_labels*.
+    Calls :func:`_scores_to_long_df_pandas` (which accepts both 2-D and 3-D
+    *scores*) then left-joins the factor columns from *template_factors*,
+    aligning rows positionally to *template_labels*.
     """
     import pandas as pd
 
-    df = _scores_to_long_df_pandas(scores_2d, template_labels, input_labels)
+    df = _scores_to_long_df_pandas(scores, template_labels, input_labels)
 
     # Positional alignment: row i of template_factors → template_labels[i]
     factor_map = template_factors.copy()
@@ -1483,7 +1505,10 @@ def _lmm_analyze_factorial_sm(
     if result.is_seeded:
         seed_var = seed_variance_decomposition(run_scores, labels)
 
-    df       = _scores_to_long_df_factorial_pandas(cell_means_2d, labels, inputs, template_factors)
+    # When runs are available, fit on individual observations so that seed
+    # variance enters the residual and inflates fixed-effect CIs appropriately.
+    lmm_scores = run_scores if result.is_seeded else cell_means_2d
+    df       = _scores_to_long_df_factorial_pandas(lmm_scores, labels, inputs, template_factors)
     n_obs    = len(df)
     sm_result, formula = _fit_factorial_lmm_sm(df, factor_names)
 
@@ -1647,7 +1672,11 @@ def lmm_analyze(
     # ------------------------------------------------------------------
     if backend == "statsmodels":
         _require_statsmodels()
-        df    = _scores_to_long_df_pandas(cell_means_2d, labels, inputs)
+        # When runs are available, fit on individual observations so that
+        # seed variance enters the residual and inflates fixed-effect CIs
+        # appropriately.  Fall back to cell means when R < 3.
+        lmm_scores = run_scores if result.is_seeded else cell_means_2d
+        df    = _scores_to_long_df_pandas(lmm_scores, labels, inputs)
         n_obs = len(df)
         sm_result = _fit_lmm_sm(df, labels)
 

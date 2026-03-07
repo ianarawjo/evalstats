@@ -15,7 +15,7 @@ Supported shapes
 from __future__ import annotations
 
 import warnings
-from typing import TYPE_CHECKING, Dict, Literal, Optional, Union
+from typing import Dict, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -29,15 +29,10 @@ from .bundles import (
     PerEvaluatorMultiModel,
     AnalysisResult,
 )
-from .summary import print_analysis_summary  # re-exported as part of this module's public API
 from .paired import all_pairwise
 from .ranking import bootstrap_ranks, bootstrap_point_advantage
 from .variance import robustness_metrics, seed_variance_decomposition
 from .tokens import TokenUsage, analyze_tokens
-
-if TYPE_CHECKING:
-    from .mixed_effects import LMMInfo, FactorialLMMInfo
-
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -332,6 +327,8 @@ def analyze_factorial(
     random_effect: str = "input_id",
     score_col: str = "score",
     *,
+    run_col: Optional[str] = None,
+    backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
     reference: str = "grand_mean",
@@ -381,6 +378,20 @@ def analyze_factorial(
 
     score_col : str
         Column containing the numeric score (default ``"score"``).
+
+    run_col : str, optional
+        Column that identifies repeated runs / seeds (e.g. ``"seed"`` or
+        ``"run"``).  When provided, each unique value in this column becomes
+        one run slice in the underlying ``BenchmarkResult``, producing a
+        3-D scores array ``(N_templates, M_inputs, R_runs)``.  This
+        propagates seed variance into bootstrap confidence intervals and
+        populates ``bundle.seed_variance``.  When *None* (default), multiple
+        rows with the same ``(random_effect, factor_combo)`` key are averaged
+        into a single cell mean, matching the previous behaviour.
+
+    backend : str
+        LMM fitting backend for the factorial analysis:
+        ``'statsmodels'`` (default) or ``'pymer4'``.
 
     ci : float
         Confidence level for Wald intervals (default 0.95).
@@ -457,7 +468,10 @@ def analyze_factorial(
     if not factors:
         raise ValueError("factors must be a non-empty list of column names.")
 
-    missing = [c for c in [*factors, random_effect, score_col] if c not in data.columns]
+    required_cols = [*factors, random_effect, score_col]
+    if run_col is not None:
+        required_cols.append(run_col)
+    missing = [c for c in required_cols if c not in data.columns]
     if missing:
         raise ValueError(
             f"Columns not found in data: {missing}. "
@@ -508,7 +522,7 @@ def analyze_factorial(
     template_factors_df = combos.copy()
 
     # ------------------------------------------------------------------
-    # Normalise input IDs to strings, pivot to (N_templates × M_inputs)
+    # Normalise input IDs to strings, pivot to scores array
     # ------------------------------------------------------------------
     data_work = data.copy()
     data_work["_ps_input"] = data_work[random_effect].astype(str)
@@ -520,15 +534,35 @@ def analyze_factorial(
         data_work["_ps_input"].dropna().unique().tolist()
     )
 
-    pivot = data_work.pivot_table(
-        index="_ps_input",
-        columns="_ps_template",
-        values=score_col,
-        aggfunc="mean",
-        observed=True,
-    )
-    pivot = pivot.reindex(index=input_labels, columns=template_labels)
-    cell_means_2d = pivot.to_numpy().T  # (N_templates, M_inputs)
+    if run_col is not None:
+        # Build a 3-D array: (N_templates, M_inputs, R_runs)
+        run_labels: list[str] = sorted(
+            data_work[run_col].dropna().astype(str).unique().tolist()
+        )
+        data_work["_ps_run"] = data_work[run_col].astype(str)
+        slices = []
+        for run in run_labels:
+            run_df = data_work[data_work["_ps_run"] == run]
+            pivot = run_df.pivot_table(
+                index="_ps_input",
+                columns="_ps_template",
+                values=score_col,
+                aggfunc="mean",
+                observed=True,
+            )
+            pivot = pivot.reindex(index=input_labels, columns=template_labels)
+            slices.append(pivot.to_numpy().T)  # (N_templates, M_inputs)
+        scores_array = np.stack(slices, axis=2)  # (N_templates, M_inputs, R_runs)
+    else:
+        pivot = data_work.pivot_table(
+            index="_ps_input",
+            columns="_ps_template",
+            values=score_col,
+            aggfunc="mean",
+            observed=True,
+        )
+        pivot = pivot.reindex(index=input_labels, columns=template_labels)
+        scores_array = pivot.to_numpy().T  # (N_templates, M_inputs)
 
     # ------------------------------------------------------------------
     # Build BenchmarkResult and run the standard LMM analysis pipeline
@@ -538,7 +572,7 @@ def analyze_factorial(
 
     from .types import BenchmarkResult as _BR
     benchmark = _BR(
-        scores=cell_means_2d,
+        scores=scores_array,
         template_labels=template_labels,
         input_labels=input_labels,
         template_factors=template_factors_df,
@@ -547,6 +581,7 @@ def analyze_factorial(
     return analyze(  # type: ignore[return-value]
         benchmark,
         method="lmm",
+        backend=backend,
         ci=ci,
         n_bootstrap=n_sim,
         correction=correction,
