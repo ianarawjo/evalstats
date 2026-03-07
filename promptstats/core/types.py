@@ -10,6 +10,90 @@ import numpy as np
 import pandas as pd
 
 
+# ---------------------------------------------------------------------------
+# Private validation helpers shared by both dataclasses
+# ---------------------------------------------------------------------------
+
+def _warn_two_runs(shape: tuple, *, stacklevel: int = 4) -> None:
+    """Emit a warning when only 2 repeated runs are detected."""
+    warnings.warn(
+        f"scores has shape {shape}: only 2 runs detected. "
+        "Seed-variance analysis requires R >= 3 runs. "
+        "Scores will be pre-averaged across runs before analysis.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
+def _warn_evaluator_axis_confusion(
+    evaluator_names: list,
+    n_runs: int,
+    shape: tuple,
+    *,
+    runs_axis: int,
+    shape_hint: str,
+    stacklevel: int = 4,
+) -> None:
+    """Warn when evaluator_names count accidentally matches the runs axis."""
+    if evaluator_names != ["score"] and len(evaluator_names) == n_runs:
+        warnings.warn(
+            f"scores has shape {shape} and evaluator_names has "
+            f"{len(evaluator_names)} entries matching axis {runs_axis}. "
+            f"Axis {runs_axis} is now the *runs* axis, not the evaluator axis. "
+            f"For K evaluators without repeated runs use shape {shape_hint}.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+
+
+def _check_evaluator_count(
+    evaluator_names: list, n_evals: int, *, axis: int
+) -> None:
+    """Raise if evaluator_names does not match the evaluator axis length."""
+    if len(evaluator_names) != n_evals:
+        raise ValueError(
+            f"evaluator_names length ({len(evaluator_names)}) "
+            f"does not match scores axis {axis} ({n_evals})"
+        )
+
+
+def _check_label_length(
+    labels: list, n: int, *, name: str, axis: int
+) -> None:
+    """Raise if a label list does not match the expected axis length."""
+    if len(labels) != n:
+        raise ValueError(
+            f"{name} length ({len(labels)}) "
+            f"does not match scores axis {axis} ({n})"
+        )
+
+
+def _check_labels_unique(labels: list, *, name: str) -> None:
+    """Raise if a label list contains duplicates."""
+    if len(labels) != len(set(labels)):
+        raise ValueError(f"{name} must be unique")
+
+
+def _check_no_inf(scores: np.ndarray) -> None:
+    """Raise if the score array contains any infinite values."""
+    if np.any(np.isinf(scores)):
+        raise ValueError(
+            "scores contain infinite values. "
+            "Use np.nan to represent missing (not-evaluated) cells."
+        )
+
+
+def _check_metadata_length(
+    metadata: Optional[pd.DataFrame], n_inputs: int
+) -> None:
+    """Raise if input_metadata length does not match the number of inputs."""
+    if metadata is not None and len(metadata) != n_inputs:
+        raise ValueError(
+            f"input_metadata length ({len(metadata)}) "
+            f"does not match number of inputs ({n_inputs})"
+        )
+
+
 @dataclass
 class BenchmarkResult:
     """Container for benchmark scores across templates and inputs.
@@ -66,74 +150,29 @@ class BenchmarkResult:
         elif s.ndim == 3:
             n_templates, n_inputs, n_runs = s.shape
             if n_runs == 2:
-                warnings.warn(
-                    f"scores has shape {s.shape}: only 2 runs detected. "
-                    "Seed-variance analysis requires R >= 3 runs. "
-                    "Scores will be pre-averaged across runs before analysis.",
-                    UserWarning,
-                    stacklevel=3,
-                )
+                _warn_two_runs(s.shape)
             # Catch the common mistake of passing old-style (N, M, K) evaluators.
-            if (
-                self.evaluator_names != ["score"]
-                and len(self.evaluator_names) == n_runs
-            ):
-                warnings.warn(
-                    f"scores has shape {s.shape} and evaluator_names has "
-                    f"{len(self.evaluator_names)} entries matching axis 2. "
-                    "Axis 2 is now the *runs* axis, not the evaluator axis. "
-                    "For K evaluators without repeated runs use shape (N, M, 1, K).",
-                    UserWarning,
-                    stacklevel=3,
-                )
+            _warn_evaluator_axis_confusion(
+                self.evaluator_names, n_runs, s.shape,
+                runs_axis=2, shape_hint="(N, M, 1, K)",
+            )
         elif s.ndim == 4:
             n_templates, n_inputs, n_runs, n_evals = s.shape
             if n_runs == 2:
-                warnings.warn(
-                    f"scores has shape {s.shape}: only 2 runs detected. "
-                    "Seed-variance analysis requires R >= 3 runs. "
-                    "Scores will be pre-averaged across runs before analysis.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-            if len(self.evaluator_names) != n_evals:
-                raise ValueError(
-                    f"evaluator_names length ({len(self.evaluator_names)}) "
-                    f"does not match scores axis 3 ({n_evals})"
-                )
+                _warn_two_runs(s.shape)
+            _check_evaluator_count(self.evaluator_names, n_evals, axis=3)
         else:
             raise ValueError(
                 f"scores must be 2-D (N, M), 3-D (N, M, R), or "
                 f"4-D (N, M, R, K); got {s.ndim}-D"
             )
 
-        if len(self.template_labels) != n_templates:
-            raise ValueError(
-                f"template_labels length ({len(self.template_labels)}) "
-                f"does not match scores axis 0 ({n_templates})"
-            )
-        if len(self.input_labels) != n_inputs:
-            raise ValueError(
-                f"input_labels length ({len(self.input_labels)}) "
-                f"does not match scores axis 1 ({n_inputs})"
-            )
-        if len(self.template_labels) != len(set(self.template_labels)):
-            raise ValueError("template_labels must be unique")
-        if len(self.input_labels) != len(set(self.input_labels)):
-            raise ValueError("input_labels must be unique")
-
-        if np.any(np.isinf(s)):
-            raise ValueError(
-                "scores contain infinite values. "
-                "Use np.nan to represent missing (not-evaluated) cells."
-            )
-
-        if self.input_metadata is not None:
-            if len(self.input_metadata) != n_inputs:
-                raise ValueError(
-                    f"input_metadata length ({len(self.input_metadata)}) "
-                    f"does not match number of inputs ({n_inputs})"
-                )
+        _check_label_length(self.template_labels, n_templates, name="template_labels", axis=0)
+        _check_label_length(self.input_labels, n_inputs, name="input_labels", axis=1)
+        _check_labels_unique(self.template_labels, name="template_labels")
+        _check_labels_unique(self.input_labels, name="input_labels")
+        _check_no_inf(s)
+        _check_metadata_length(self.input_metadata, n_inputs)
 
         if self.baseline_template is not None:
             if self.baseline_template not in self.template_labels:
@@ -308,40 +347,16 @@ class MultiModelBenchmark:
         elif s.ndim == 4:
             n_models, n_templates, n_inputs, n_runs = s.shape
             if n_runs == 2:
-                warnings.warn(
-                    f"scores has shape {s.shape}: only 2 runs detected. "
-                    "Seed-variance analysis requires R >= 3 runs. "
-                    "Scores will be pre-averaged across runs before analysis.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-            if (
-                self.evaluator_names != ["score"]
-                and len(self.evaluator_names) == n_runs
-            ):
-                warnings.warn(
-                    f"scores has shape {s.shape} and evaluator_names has "
-                    f"{len(self.evaluator_names)} entries matching axis 3. "
-                    "Axis 3 is now the *runs* axis, not the evaluator axis. "
-                    "For K evaluators without repeated runs use shape (P, N, M, 1, K).",
-                    UserWarning,
-                    stacklevel=3,
-                )
+                _warn_two_runs(s.shape)
+            _warn_evaluator_axis_confusion(
+                self.evaluator_names, n_runs, s.shape,
+                runs_axis=3, shape_hint="(P, N, M, 1, K)",
+            )
         elif s.ndim == 5:
             n_models, n_templates, n_inputs, n_runs, n_evals = s.shape
             if n_runs == 2:
-                warnings.warn(
-                    f"scores has shape {s.shape}: only 2 runs detected. "
-                    "Seed-variance analysis requires R >= 3 runs. "
-                    "Scores will be pre-averaged across runs before analysis.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-            if len(self.evaluator_names) != n_evals:
-                raise ValueError(
-                    f"evaluator_names length ({len(self.evaluator_names)}) "
-                    f"does not match scores axis 4 ({n_evals})"
-                )
+                _warn_two_runs(s.shape)
+            _check_evaluator_count(self.evaluator_names, n_evals, axis=4)
         else:
             raise ValueError(
                 f"scores must be 3-D (P, N, M), 4-D (P, N, M, R), or "
@@ -354,40 +369,14 @@ class MultiModelBenchmark:
                 "Use BenchmarkResult for single-model benchmarks."
             )
 
-        if len(self.model_labels) != n_models:
-            raise ValueError(
-                f"model_labels length ({len(self.model_labels)}) "
-                f"does not match scores axis 0 ({n_models})"
-            )
-        if len(self.template_labels) != n_templates:
-            raise ValueError(
-                f"template_labels length ({len(self.template_labels)}) "
-                f"does not match scores axis 1 ({n_templates})"
-            )
-        if len(self.input_labels) != n_inputs:
-            raise ValueError(
-                f"input_labels length ({len(self.input_labels)}) "
-                f"does not match scores axis 2 ({n_inputs})"
-            )
-        if len(self.model_labels) != len(set(self.model_labels)):
-            raise ValueError("model_labels must be unique")
-        if len(self.template_labels) != len(set(self.template_labels)):
-            raise ValueError("template_labels must be unique")
-        if len(self.input_labels) != len(set(self.input_labels)):
-            raise ValueError("input_labels must be unique")
-
-        if np.any(np.isinf(s)):
-            raise ValueError(
-                "scores contain infinite values. "
-                "Use np.nan to represent missing (not-evaluated) cells."
-            )
-
-        if self.input_metadata is not None:
-            if len(self.input_metadata) != n_inputs:
-                raise ValueError(
-                    f"input_metadata length ({len(self.input_metadata)}) "
-                    f"does not match number of inputs ({n_inputs})"
-                )
+        _check_label_length(self.model_labels, n_models, name="model_labels", axis=0)
+        _check_label_length(self.template_labels, n_templates, name="template_labels", axis=1)
+        _check_label_length(self.input_labels, n_inputs, name="input_labels", axis=2)
+        _check_labels_unique(self.model_labels, name="model_labels")
+        _check_labels_unique(self.template_labels, name="template_labels")
+        _check_labels_unique(self.input_labels, name="input_labels")
+        _check_no_inf(s)
+        _check_metadata_length(self.input_metadata, n_inputs)
 
         # Warn about zero-variance (model, template) cells using 2-D view.
         scores_3d = self._get_3d_cell_means()

@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 
 import promptstats as ps
-from promptstats.core import router as router_core
+from promptstats.core.summary import _critical_difference_groups, _single_clear_winner_label, _print_critical_difference_groups
 from promptstats.core.paired import PairedDiffResult, PairwiseMatrix
 
 
@@ -315,7 +315,7 @@ def test_critical_difference_groups_has_two_separate_rank_bands():
         friedman=None,
     )
 
-    groups = router_core._critical_difference_groups(
+    groups = _critical_difference_groups(
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
@@ -379,7 +379,7 @@ def test_critical_difference_groups_can_have_overlapping_rank_bands():
         friedman=None,
     )
 
-    groups = router_core._critical_difference_groups(
+    groups = _critical_difference_groups(
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
@@ -449,7 +449,7 @@ def test_single_clear_winner_label_detects_unique_statistical_winner():
         friedman=None,
     )
 
-    winner = router_core._single_clear_winner_label(
+    winner = _single_clear_winner_label(
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
@@ -515,7 +515,7 @@ def test_print_critical_difference_groups_includes_clear_winner_line(capsys):
         friedman=None,
     )
 
-    router_core._print_critical_difference_groups(
+    _print_critical_difference_groups(
         pairwise,
         labels_sorted=labels,
         alpha=0.05,
