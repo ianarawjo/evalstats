@@ -239,7 +239,8 @@ install.packages(c(
     "broom",
     "broom.mixed",
     "lmerTest",
-    "report"
+    "report",
+    "car"
 ))
 ```
 
@@ -258,13 +259,24 @@ pip install "promptstats[lmm]"
 
 Installation details may differ on your system.
 
-## Future
+## Future and TODO
 
 We aim to continue to contribute to `promptstats`. Ideas for future features:
 - Mixed-effects models (LMMs and potentially GLMMs) for multi-input data. Currently, `promptstats` only supports the case of one input per prompt template, rather than a grid search (cross product) of different prompt variations.
 - A default "report" mode that outputs a PDF summarizing findings and diving into the details
 - Integration with ChainForge as a front-end, to bring statistical analyses to plotted evals
 - Help developers quantify the "semantic variance" of the provided prompt templates, and perhaps even factor this into the calculation in an intelligent way. This is important because the current implementation doesn't know about the diversity/representativity of the input dataset and prompts. 
+- Automatic "reliability" checking that generates minor prompt variations (e.g., lightly paraphrasing) and tests model robustness to small deviations. Implement various methods for generating minor prompt variations.
+
+Another area of concern, but separate from the current focus on running stats over benchmarking scores, is helping users improve their eval and test set validity. Benchmark validity testing could use diagnostic tools from Item Response Theory, to converge on a smaller, higher-quality item set where every item is valuable (e.g., see Fluid Benchmarking). For each item in a set, know:
+   - Difficulty: What proportion of model/prompt variants get this right? Near-zero items either have bad reference answers, are genuinely unanswerable, or represent a capability so far out of range it's not discriminating anything useful. Near-ceiling items inflate scores without adding signal.
+   - Discrimination: Does performance on this item correlate with performance on the rest of the eval? A good item should be passed by models that do well overall and failed by models that do poorly. Low or negative discrimination is a red flag. Negative discrimination especially suggests the item may be flawed, ambiguous, or testing something orthogonal.
+
+More practically speaking, we could:
+ - Flag always-pass and always-fail items for removal or replacement. Replace them with items at a similar difficulty level to what the user intended but with better discriminating power.
+ - Flag negative-discrimination items for inspection. These usually have one of a few problems: ambiguous wording where reasonable models disagree on interpretation, a flawed reference answer, or the item is actually measuring a different construct than the rest of the eval. Decide whether to fix or drop.
+ - Cluster items by similarity, either by topic or by response pattern (items that all the same models pass/fail together). Prune to the most discriminating items in each cluster. After pruning, look for construct areas that lost too many items: the user may need to write better items for that region rather than leaving it underrepresented.
+ - Target a difficulty distribution: a well-designed benchmark has items spread across the difficulty range, with more items in the middle (where models are actually differentiated) than at the extremes. If the user's distribution is skewed too easy or hard, help them write targeted items to fill gaps.
 
 **How does this differ from ChainForge?** I aim to integrate `promptstats` with ChainForge in a future release. 
 

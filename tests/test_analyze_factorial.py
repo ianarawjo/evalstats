@@ -392,12 +392,121 @@ def test_effect_sizes_and_ranking_are_reasonable_with_runs():
 
 
 # ---------------------------------------------------------------------------
-# Backend parity (factorial path currently routes pymer4 -> statsmodels)
+# Backend parity helpers and tests
 # ---------------------------------------------------------------------------
+
+def _assert_factorial_bundles_compatible(bundle_a, bundle_b, *, atol: float = 0.05) -> None:
+    """Assert that two factorial bundles from different backends are broadly compatible.
+
+    Unlike ``_assert_factorial_bundles_close``, this function:
+    - Skips ``test_method`` and ``formula`` string comparisons (differ across backends).
+    - Uses a loose numerical tolerance for LMM-derived quantities (CIs, p-values).
+    - Checks factor test *term names* and p-value *direction* (sig at α=0.05) rather
+      than exact statistic values (chi2 vs F scales differ between backends).
+    - Requires marginal-mean point estimates to be close but not identical.
+    """
+    labels = bundle_a.benchmark.template_labels
+    assert labels == bundle_b.benchmark.template_labels
+
+    # Pairwise: point estimates and CI direction should agree; p-values agree on α=0.05
+    for i, label_a in enumerate(labels):
+        for label_b in labels[i + 1:]:
+            left = bundle_a.pairwise.get(label_a, label_b)
+            right = bundle_b.pairwise.get(label_a, label_b)
+            assert left.template_a == right.template_a
+            assert left.template_b == right.template_b
+            assert left.n_inputs == right.n_inputs
+            assert left.n_runs == right.n_runs
+            assert_allclose(left.point_diff, right.point_diff, atol=atol)
+            # CI direction must agree
+            assert (left.ci_low > 0) == (right.ci_low > 0), (
+                f"CI direction disagrees for {label_a} vs {label_b}: "
+                f"sm={left.ci_low:.4f} py={right.ci_low:.4f}"
+            )
+            # Significance at α=0.05 must agree
+            assert (left.p_value < 0.05) == (right.p_value < 0.05), (
+                f"p-value significance disagrees for {label_a} vs {label_b}: "
+                f"sm={left.p_value:.4f} py={right.p_value:.4f}"
+            )
+
+    # Point advantages: ordering and signs should match
+    pa_a = bundle_a.point_advantage
+    pa_b = bundle_b.point_advantage
+    assert pa_a.labels == pa_b.labels
+    assert pa_a.reference == pa_b.reference
+    assert_allclose(pa_a.point_advantages, pa_b.point_advantages, atol=atol)
+    assert np.sign(pa_a.point_advantages).tolist() == np.sign(pa_b.point_advantages).tolist()
+
+    # Robustness means should be close (derived from raw data, not backend-specific)
+    rb_a = bundle_a.robustness
+    rb_b = bundle_b.robustness
+    assert rb_a.labels == rb_b.labels
+    assert_allclose(rb_a.mean, rb_b.mean, atol=atol)
+
+    # LMM diagnostics
+    info_a = bundle_a.factorial_lmm_info
+    info_b = bundle_b.factorial_lmm_info
+    assert isinstance(info_a, FactorialLMMInfo)
+    assert isinstance(info_b, FactorialLMMInfo)
+    assert set(info_a.factor_names) == set(info_b.factor_names)
+    assert info_a.n_obs == info_b.n_obs
+    # Both should report convergence
+    assert info_a.converged
+    assert info_b.converged
+    # ICC and variance components should be in the same ballpark
+    assert_allclose(info_a.icc, info_b.icc, atol=0.1)
+    assert_allclose(info_a.sigma_input, info_b.sigma_input, atol=0.15)
+    assert_allclose(info_a.sigma_resid, info_b.sigma_resid, atol=0.15)
+
+    # Factor tests: term names and p-value significance must agree.
+    # Normalize away C(...) wrapping from statsmodels so names are comparable.
+    import re as _re
+    def _norm_term(t: str) -> str:
+        return ":".join(
+            _re.sub(r"^C\((.+)\)$", r"\1", part)
+            for part in t.split(":")
+        )
+
+    tests_a = info_a.factor_tests.copy()
+    tests_b = info_b.factor_tests.copy()
+    tests_a["_norm"] = tests_a["term"].map(_norm_term)
+    tests_b["_norm"] = tests_b["term"].map(_norm_term)
+    tests_a = tests_a.sort_values("_norm").reset_index(drop=True)
+    tests_b = tests_b.sort_values("_norm").reset_index(drop=True)
+    assert tests_a["_norm"].tolist() == tests_b["_norm"].tolist(), (
+        f"Factor test term mismatch: {tests_a['term'].tolist()} vs {tests_b['term'].tolist()}"
+    )
+    for (_, row_a), (_, row_b) in zip(tests_a.iterrows(), tests_b.iterrows()):
+        assert (row_a["p_value"] < 0.05) == (row_b["p_value"] < 0.05), (
+            f"Factor test significance disagrees for '{row_a['_norm']}': "
+            f"sm={row_a['p_value']:.4f} py={row_b['p_value']:.4f}"
+        )
+
+    # Marginal means: point estimates should be close
+    for factor in info_a.factor_names:
+        mm_a = info_a.marginal_means[factor].sort_values("level").reset_index(drop=True)
+        mm_b = info_b.marginal_means[factor].sort_values("level").reset_index(drop=True)
+        assert mm_a["level"].tolist() == mm_b["level"].tolist()
+        assert_allclose(mm_a["mean"].to_numpy(), mm_b["mean"].to_numpy(), atol=atol)
+
+
+def _has_r_car() -> bool:
+    """Return True if the R 'car' package is available via rpy2."""
+    try:
+        from rpy2.robjects.packages import importr, PackageNotInstalledError
+        importr("car")
+        return True
+    except Exception:
+        return False
+
 
 @pytest.mark.parametrize("n_runs", [1, 5])
 def test_backend_parity_statsmodels_vs_pymer4_request(n_runs: int):
-    """statsmodels and requested pymer4 backend should produce aligned outputs."""
+    """statsmodels and pymer4 backends should produce broadly compatible outputs."""
+    pytest.importorskip("pymer4", reason="pymer4 not installed")
+    if not _has_r_car():
+        pytest.skip("R package 'car' not installed (needed for pymer4 factor tests)")
+
     rng_data = np.random.default_rng(17 + n_runs)
     data = _make_factorial_df(rng_data, n_inputs=40, n_runs=n_runs)
     run_col = "seed"
@@ -411,17 +520,17 @@ def test_backend_parity_statsmodels_vs_pymer4_request(n_runs: int):
         rng=np.random.default_rng(4242),
     )
 
-    with pytest.warns(UserWarning, match="currently supports only backend='statsmodels'"):
-        bundle_py = ps.analyze_factorial(
-            data,
-            factors=["chunker", "retrieval"],
-            run_col=run_col,
-            backend="pymer4",
-            n_sim=2500,
-            rng=np.random.default_rng(4242),
-        )
+    bundle_py = ps.analyze_factorial(
+        data,
+        factors=["chunker", "retrieval"],
+        run_col=run_col,
+        backend="pymer4",
+        n_sim=2500,
+        rng=np.random.default_rng(4242),
+    )
 
-    _assert_factorial_bundles_close(bundle_sm, bundle_py)
+    # Backends use different estimation engines; require approximate rather than exact agreement
+    _assert_factorial_bundles_compatible(bundle_sm, bundle_py, atol=0.05)
 
 
 # ---------------------------------------------------------------------------

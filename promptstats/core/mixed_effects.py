@@ -1539,6 +1539,492 @@ def _lmm_analyze_factorial_sm(
 
 
 # ---------------------------------------------------------------------------
+# Factorial LMM — pymer4 / lme4 backend
+# ---------------------------------------------------------------------------
+
+def _get_r_model_matrix(model: Any) -> np.ndarray:
+    """Extract the fixed-effect model matrix from a fitted lme4/pymer4 model.
+
+    Calls ``stats::model.matrix(r_model)`` via rpy2 and converts the result
+    to a numpy array of shape ``(n_obs, P)`` where ``n_obs`` is the number
+    of observations used in the fit and ``P`` the number of fixed-effect
+    parameters.  Row order matches the data passed to ``lmer``.
+    """
+    from rpy2.robjects.packages import importr
+    base_r  = importr("base")
+    stats_r = importr("stats")
+    mm_r = stats_r.model_matrix(model.r_model)
+    return np.asarray(base_r.as_matrix(mm_r))   # (n_obs, P)
+
+
+def _get_fe_params_pymer4(model: Any) -> np.ndarray:
+    """Return the fixed-effect parameter vector from a pymer4 model as numpy.
+
+    Reads ``model.result_fit`` (a Polars DataFrame) and returns the
+    ``estimate`` column as a 1-D array of shape ``(P,)`` in the same
+    parameter order as the model matrix columns.
+    """
+    rf      = model.result_fit
+    est_col = _col_pl(rf, ["estimate", "Estimate", "coefficient", "Coefficient"])
+    return rf[est_col].to_numpy()
+
+
+def _get_template_design_vectors_pymer4(
+    model: Any,
+    df_pandas: "pd.DataFrame",
+    labels: list[str],
+) -> np.ndarray:
+    """Return ``(N, P)`` per-template design vectors from a pymer4 factorial model.
+
+    Uses ``stats::model.matrix`` (via rpy2) to extract the ``(n_obs, P)``
+    design matrix, then averages rows within each template cell — mirroring
+    :func:`_get_template_design_vectors` for the statsmodels path.
+    """
+    exog      = _get_r_model_matrix(model)        # (n_obs, P)
+    templates = df_pandas["template"].values       # (n_obs,) — str/categorical
+
+    if exog.shape[0] != len(df_pandas):
+        # Row-count mismatch: the model dropped rows that we didn't expect.
+        # Silently fall back to rows that are present in both.
+        df_pandas = df_pandas.dropna(subset=["score"]).reset_index(drop=True)
+
+    N = len(labels)
+    P = exog.shape[1]
+    design_vecs = np.zeros((N, P))
+    for i, label in enumerate(labels):
+        mask = templates == label
+        if not mask.any():
+            raise RuntimeError(
+                f"Template '{label}' missing from long-form DataFrame "
+                "after pymer4 model fitting. This is a bug — please open an issue."
+            )
+        design_vecs[i] = exog[mask].mean(axis=0)
+    return design_vecs
+
+
+def _fit_factorial_lmm_pymer4(
+    df_pandas: "pd.DataFrame",
+    factor_names: list[str],
+    lmer: Any,
+) -> tuple[Any, str]:
+    """Fit ``score ~ F1 * F2 * ... + (1|input)`` with pymer4/lme4.
+
+    *factor_names* are the raw column names (not ``C(F)``-wrapped as in the
+    statsmodels path — R's treatment coding is configured by ``set_factors``).
+    Returns ``(model, formula_str)``.
+    """
+    import polars as pl
+
+    factor_formula = " * ".join(factor_names)
+    formula        = f"score ~ {factor_formula} + (1|input)"
+
+    # pymer4 0.9 requires a Polars DataFrame.
+    df_pl = pl.from_pandas(df_pandas)
+
+    model = lmer(formula, data=df_pl)
+
+    # Register factor columns so R uses treatment coding with a stable
+    # reference level (first level alphabetically).
+    factor_levels = {
+        f: sorted(df_pandas[f].dropna().unique().tolist(), key=str)
+        for f in factor_names
+    }
+    model.set_factors(factor_levels)
+    model.fit()
+    return model, formula
+
+
+def _extract_factor_tests_pymer4(
+    model: Any,
+    factor_names: list[str],
+) -> "pd.DataFrame":
+    """Extract per-term Wald tests from a pymer4 factorial LMM via ``car::Anova``.
+
+    Requires the R package *car*.  Raises ``RuntimeError`` if *car* is not
+    installed so callers can surface the requirement clearly.
+
+    Columns: ``term``, ``statistic``, ``df``, ``p_value``.
+    """
+    import pandas as pd
+    from rpy2.robjects.packages import importr, PackageNotInstalledError
+
+    try:
+        car = importr("car")
+    except PackageNotInstalledError as exc:
+        raise RuntimeError(
+            "The R package 'car' is required for factor Wald tests when using "
+            "backend='pymer4'. Install it in R with: install.packages('car')"
+        ) from exc
+
+    anova_r = car.Anova(model.r_model, type=3)
+
+    terms     = list(anova_r.rownames)
+    col_names = list(anova_r.colnames)
+
+    # car::Anova type-3 columns: "Chisq", "Df", "Pr(>Chisq)"
+    chisq_col = next(
+        (c for c in col_names if "chisq" in c.lower() or c.lower() in ("f", "f value")),
+        col_names[0],
+    )
+    df_col = next(
+        (c for c in col_names if c.lower() in ("df", "numdf", "num df")),
+        col_names[1] if len(col_names) > 1 else col_names[0],
+    )
+    p_col = next(
+        (c for c in col_names if "pr" in c.lower() or "p.val" in c.lower()),
+        col_names[-1],
+    )
+
+    chisq_vals = list(anova_r.rx2(chisq_col))
+    df_vals    = list(anova_r.rx2(df_col))
+    p_vals     = list(anova_r.rx2(p_col))
+
+    rows = []
+    for term, stat, df_v, p_v in zip(terms, chisq_vals, df_vals, p_vals):
+        if term in ("(Intercept)", "Intercept"):
+            continue
+        rows.append({
+            "term":      str(term),
+            "statistic": float(stat),
+            "df":        float(df_v),
+            "p_value":   float(p_v),
+        })
+    return pd.DataFrame(rows, columns=["term", "statistic", "df", "p_value"])
+
+
+def _extract_marginal_means_pymer4(
+    model: Any,
+    df_pandas: "pd.DataFrame",
+    factor_names: list[str],
+    ci: float,
+) -> dict[str, "pd.DataFrame"]:
+    """Estimated marginal means per factor from a fitted pymer4 factorial LMM.
+
+    Uses the same design-vector approach as :func:`_extract_marginal_means_sm`:
+    the model matrix is extracted from R via rpy2, then EMMs are computed
+    from the fixed-effect parameters and covariance matrix.
+    """
+    import pandas as pd
+    from itertools import product as iterproduct
+
+    alpha = 1 - ci
+
+    # Conservative t critical value: use the minimum Satterthwaite DF from
+    # the per-parameter result_fit as a safe lower bound.
+    rf       = model.result_fit
+    df_col_n = next(
+        (c for c in rf.columns if c.lower() in ("df", "df_error", "ddf", "denomdf")),
+        None,
+    )
+    t_df   = float(rf[df_col_n].min()) if df_col_n else float(len(df_pandas) - len(factor_names) - 1)
+    t_crit = float(scipy.stats.t.ppf(1 - alpha / 2, df=t_df))
+
+    exog  = _get_r_model_matrix(model)       # (n_obs, P)
+    betas = _get_fe_params_pymer4(model)     # (P,)
+    vcov  = _get_vcov(model)                 # (P, P)
+
+    if exog.shape[0] != len(df_pandas):
+        df_pandas = df_pandas.dropna(subset=["score"]).reset_index(drop=True)
+
+    emm_per_factor: dict[str, pd.DataFrame] = {}
+    for focal in factor_names:
+        other            = [f for f in factor_names if f != focal]
+        focal_levels     = sorted(df_pandas[focal].dropna().unique().tolist(), key=str)
+        other_level_sets = [
+            sorted(df_pandas[f].dropna().unique().tolist(), key=str)
+            for f in other
+        ]
+        other_combos = list(iterproduct(*other_level_sets)) if other else [()]
+
+        rows = []
+        for level in focal_levels:
+            cell_vecs = []
+            for combo in other_combos:
+                mask = (df_pandas[focal] == level).values
+                for f, v in zip(other, combo):
+                    mask = mask & (df_pandas[f] == v).values
+                if mask.any():
+                    cell_vecs.append(exog[mask].mean(axis=0))
+
+            if not cell_vecs:
+                continue
+
+            c   = np.mean(cell_vecs, axis=0)
+            emm = float(c @ betas)
+            se  = float(np.sqrt(max(float(c @ vcov @ c), 0.0)))
+            rows.append({
+                "level":   level,
+                "mean":    emm,
+                "se":      se,
+                "ci_low":  emm - t_crit * se,
+                "ci_high": emm + t_crit * se,
+            })
+
+        emm_per_factor[focal] = pd.DataFrame(rows)
+
+    return emm_per_factor
+
+
+def _build_factorial_lmm_info_pymer4(
+    model: Any,
+    factor_names: list[str],
+    n_obs: int,
+    formula: str,
+    ci: float,
+    df_pandas: "pd.DataFrame",
+) -> FactorialLMMInfo:
+    """Build a :class:`FactorialLMMInfo` from a fitted pymer4 factorial model."""
+    sigma_input, sigma_resid = _extract_variance_components(model)
+    icc       = _compute_icc(sigma_input, sigma_resid)
+    converged = True
+    status    = getattr(model, "convergence_status", None)
+    if status is not None and "TRUE" not in str(status).upper():
+        converged = False
+
+    factor_tests   = _extract_factor_tests_pymer4(model, factor_names)
+    marginal_means = _extract_marginal_means_pymer4(model, df_pandas, factor_names, ci)
+
+    return FactorialLMMInfo(
+        icc=icc,
+        sigma_input=sigma_input,
+        sigma_resid=sigma_resid,
+        n_obs=n_obs,
+        formula=formula,      # already contains (1|input)
+        converged=converged,
+        factor_names=list(factor_names),
+        factor_tests=factor_tests,
+        marginal_means=marginal_means,
+    )
+
+
+def _lmm_to_pairwise_factorial_pymer4(
+    model: Any,
+    labels: list[str],
+    df_pandas: "pd.DataFrame",
+    cell_means_2d: np.ndarray,
+    ci: float,
+    correction: str,
+) -> PairwiseMatrix:
+    """Pairwise Wald contrasts for a pymer4 factorial LMM via the delta method.
+
+    Mirrors :func:`_lmm_to_pairwise_factorial_sm` using the R model matrix
+    (via rpy2) and the fixed-effect covariance matrix from pymer4.
+    """
+    alpha = 1 - ci
+    N     = len(labels)
+
+    design_vecs = _get_template_design_vectors_pymer4(model, df_pandas, labels)
+    betas       = _get_fe_params_pymer4(model)
+    vcov        = _get_vcov(model)
+
+    # Conservative DF: minimum Satterthwaite DF across all fixed-effect parameters.
+    rf       = model.result_fit
+    df_col_n = next(
+        (c for c in rf.columns if c.lower() in ("df", "df_error", "ddf", "denomdf")),
+        None,
+    )
+    df_val = float(rf[df_col_n].min()) if df_col_n else float(len(df_pandas) - N - 1)
+    t_crit = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+
+    results: dict[tuple[str, str], PairedDiffResult] = {}
+    pairs:   list[tuple[str, str]] = []
+
+    for idx_a in range(N):
+        for idx_b in range(idx_a + 1, N):
+            label_a, label_b = labels[idx_a], labels[idx_b]
+
+            c        = design_vecs[idx_a] - design_vecs[idx_b]
+            estimate = float(c @ betas)
+            var_est  = float(c @ vcov @ c)
+            se       = float(np.sqrt(max(var_est, 0.0)))
+            t_stat   = estimate / se if se > 0 else 0.0
+            p_val    = float(2 * scipy.stats.t.sf(abs(t_stat), df=df_val))
+            ci_low   = estimate - t_crit * se
+            ci_high  = estimate + t_crit * se
+
+            per_input_diffs = cell_means_2d[idx_a] - cell_means_2d[idx_b]
+            n_complete      = int(np.sum(~np.isnan(per_input_diffs)))
+            std_diff        = float(np.nanstd(per_input_diffs, ddof=1)) if n_complete > 1 else 0.0
+
+            res = PairedDiffResult(
+                template_a=label_a,
+                template_b=label_b,
+                point_diff=estimate,
+                std_diff=std_diff,
+                ci_low=ci_low,
+                ci_high=ci_high,
+                p_value=p_val,
+                test_method=f"factorial lmm wald (pymer4, df={df_val:.0f})",
+                n_inputs=n_complete,
+                per_input_diffs=per_input_diffs,
+                n_runs=1,
+                statistic="mean",
+            )
+            results[(label_a, label_b)] = res
+            pairs.append((label_a, label_b))
+
+    if not results:
+        raise RuntimeError("Factorial LMM (pymer4) produced no usable pairwise contrasts.")
+
+    _apply_pvalue_correction(results, pairs, correction)
+    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+
+
+def _lmm_to_mean_advantage_factorial_pymer4(
+    model: Any,
+    labels: list[str],
+    df_pandas: "pd.DataFrame",
+    cell_means_2d: np.ndarray,
+    ci: float,
+    spread_percentiles: tuple[float, float],
+    reference: str,
+) -> PointAdvantageResult:
+    """Mean advantages for a pymer4 factorial LMM via the delta method.
+
+    Mirrors :func:`_lmm_to_mean_advantage_factorial_sm` using the R model
+    matrix (via rpy2) and pymer4's fixed-effect covariance matrix.
+    """
+    N     = len(labels)
+    alpha = 1 - ci
+
+    design_vecs    = _get_template_design_vectors_pymer4(model, df_pandas, labels)
+    betas          = _get_fe_params_pymer4(model)
+    vcov           = _get_vcov(model)
+    template_means = design_vecs @ betas
+
+    if reference == "grand_mean":
+        ref_idx   = None
+        ref_value = template_means.mean()
+        ref_label = "grand_mean"
+        ref_vec   = design_vecs.mean(axis=0)
+    else:
+        ref_idx   = labels.index(reference)
+        ref_value = template_means[ref_idx]
+        ref_label = reference
+        ref_vec   = design_vecs[ref_idx]
+
+    mean_advantages = template_means - ref_value
+    C       = design_vecs - ref_vec[np.newaxis, :]
+    cov_adv = C @ vcov @ C.T
+    var_adv = np.diag(cov_adv)
+    se_adv  = np.sqrt(np.maximum(var_adv, 0.0))
+
+    rf       = model.result_fit
+    df_col_n = next(
+        (c for c in rf.columns if c.lower() in ("df", "df_error", "ddf", "denomdf")),
+        None,
+    )
+    df_val = float(rf[df_col_n].min()) if df_col_n else float(len(df_pandas) - N - 1)
+    t_crit = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+    ci_low  = mean_advantages - t_crit * se_adv
+    ci_high = mean_advantages + t_crit * se_adv
+
+    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
+        cell_means_2d, ref_idx, spread_percentiles
+    )
+
+    return PointAdvantageResult(
+        labels=labels,
+        point_advantages=mean_advantages,
+        bootstrap_ci_low=ci_low,
+        bootstrap_ci_high=ci_high,
+        spread_low=spread_low,
+        spread_high=spread_high,
+        reference=ref_label,
+        per_input_advantages=raw_advantages,
+        n_bootstrap=0,
+        spread_percentiles=spread_percentiles,
+        statistic="mean",
+    )
+
+
+def _lmm_analyze_factorial_pymer4(
+    result: Any,
+    *,
+    reference: str,
+    ci: float,
+    correction: str,
+    spread_percentiles: tuple[float, float],
+    failure_threshold: Optional[float],
+    n_sim: int,
+    rng: np.random.Generator,
+) -> tuple[
+    PairwiseMatrix,
+    PointAdvantageResult,
+    RankDistribution,
+    RobustnessResult,
+    Optional[SeedVarianceResult],
+    FactorialLMMInfo,
+]:
+    """Full factorial LMM pipeline — pymer4/lme4 backend.
+
+    Fits ``score ~ F1 * F2 * ... + (1|input)`` using R's lme4 via pymer4.
+    Pairwise contrasts and advantages are computed from the R model matrix
+    (extracted via rpy2) and the fixed-effect covariance matrix, mirroring
+    the statsmodels factorial path.  Factor Wald tests require the R *car*
+    package (``car::Anova``); if *car* is unavailable, ``factor_tests`` is
+    returned as an empty DataFrame with a warning.
+    """
+    lmer = _require_pymer4()
+
+    M      = result.n_inputs
+    labels = result.template_labels
+    inputs = result.input_labels
+
+    template_factors = result.template_factors
+    factor_names     = list(template_factors.columns)
+
+    cell_means_2d = result.get_2d_scores()
+    run_scores    = result.get_run_scores()
+
+    robustness = robustness_metrics(run_scores, labels, failure_threshold=failure_threshold)
+    seed_var: Optional[SeedVarianceResult] = None
+    if result.is_seeded:
+        seed_var = seed_variance_decomposition(run_scores, labels)
+
+    lmm_scores = run_scores if result.is_seeded else cell_means_2d
+    df_pandas  = _scores_to_long_df_factorial_pandas(lmm_scores, labels, inputs, template_factors)
+    n_obs      = len(df_pandas)
+
+    model, formula = _fit_factorial_lmm_pymer4(df_pandas, factor_names, lmer)
+
+    if not model.fitted:
+        raise RuntimeError(
+            "Factorial LMM (pymer4) failed to fit. Check that scores have "
+            "sufficient variance and that factor labels are well-formed."
+        )
+
+    lmm_info = _build_factorial_lmm_info_pymer4(
+        model, factor_names, n_obs, formula, ci, df_pandas
+    )
+
+    if not lmm_info.converged:
+        warnings.warn(
+            "The factorial LMM optimizer (pymer4) did not converge. "
+            "Results may be unreliable. Consider using method='auto' "
+            "or simplifying the model.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    pairwise = _lmm_to_pairwise_factorial_pymer4(
+        model, labels, df_pandas, cell_means_2d, ci, correction
+    )
+    mean_adv = _lmm_to_mean_advantage_factorial_pymer4(
+        model, labels, df_pandas, cell_means_2d, ci, spread_percentiles, reference
+    )
+
+    design_vecs              = _get_template_design_vectors_pymer4(model, df_pandas, labels)
+    template_means           = design_vecs @ _get_fe_params_pymer4(model)
+    sigma_input, sigma_resid = _extract_variance_components(model)
+    rank_dist = _simulate_rank_dist(
+        template_means, sigma_input, sigma_resid, M, labels, n_sim, rng
+    )
+
+    return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -1609,18 +2095,9 @@ def lmm_analyze(
 
     # ------------------------------------------------------------------
     # Factorial path — activated when BenchmarkResult.template_factors is set.
-    # Currently only the statsmodels backend is supported for factorial models.
     # ------------------------------------------------------------------
     if getattr(result, "template_factors", None) is not None:
-        if backend == "pymer4":
-            warnings.warn(
-                "Factorial LMM analysis currently supports only backend='statsmodels'. "
-                "Switching to statsmodels for this analysis.",
-                UserWarning,
-                stacklevel=2,
-            )
-        return _lmm_analyze_factorial_sm(
-            result,
+        _factorial_kwargs = dict(
             reference=reference,
             ci=ci,
             correction=correction,
@@ -1629,6 +2106,9 @@ def lmm_analyze(
             n_sim=n_sim,
             rng=rng,
         )
+        if backend == "pymer4":
+            return _lmm_analyze_factorial_pymer4(result, **_factorial_kwargs)
+        return _lmm_analyze_factorial_sm(result, **_factorial_kwargs)
 
     N = result.n_templates
     M = result.n_inputs
