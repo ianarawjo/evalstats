@@ -53,6 +53,7 @@ class BenchmarkResult:
     evaluator_names: list[str] = field(default_factory=lambda: ["score"])
     input_metadata: Optional[pd.DataFrame] = None
     baseline_template: Optional[str] = None
+    template_factors: Optional[pd.DataFrame] = None
 
     def __post_init__(self):
         self.scores = np.asarray(self.scores, dtype=np.float64)
@@ -139,6 +140,31 @@ class BenchmarkResult:
                 raise ValueError(
                     f"baseline_template '{self.baseline_template}' "
                     f"not found in template_labels"
+                )
+
+        if self.template_factors is not None:
+            if len(self.template_factors) != n_templates:
+                raise ValueError(
+                    f"template_factors length ({len(self.template_factors)}) "
+                    f"does not match number of templates ({n_templates})"
+                )
+            if len(self.template_factors.columns) == 0:
+                raise ValueError(
+                    "template_factors must have at least one column (factor)"
+                )
+            for col in self.template_factors.columns:
+                if not str(col).isidentifier():
+                    raise ValueError(
+                        f"template_factors column name '{col}' is not a valid "
+                        "Python identifier. Rename it (e.g., replace spaces with "
+                        "underscores) so it can be used in model formulas."
+                    )
+            if self.template_factors.isnull().any(axis=None):
+                warnings.warn(
+                    "template_factors contains NaN values. Factor columns should "
+                    "be fully specified for all templates.",
+                    UserWarning,
+                    stacklevel=3,
                 )
 
         # Warn about zero-variance rows (using cell means for multi-run data).

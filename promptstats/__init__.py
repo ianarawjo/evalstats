@@ -26,6 +26,7 @@ from promptstats.compare import (
     CompareReport,
     EntityStats,
 )
+from promptstats.factorial import analyze_factorial
 
 __version__ = "0.1.1"
 
@@ -58,13 +59,15 @@ __all__ = [
     "compare_models",
     "CompareReport",
     "EntityStats",
+    "analyze_factorial",
 ]
 
-# LMMInfo is exported lazily so that pymer4 is not a hard dependency.
-# Access via: from promptstats.core.mixed_effects import LMMInfo
-# or inspect bundle.lmm_info at runtime.
+# LMMInfo and FactorialLMMInfo are exported lazily so that statsmodels/pymer4
+# are not hard dependencies.  Access via:
+#   from promptstats.core.mixed_effects import LMMInfo, FactorialLMMInfo
+# or inspect bundle.lmm_info / bundle.factorial_lmm_info at runtime.
 try:
-    from promptstats.core.mixed_effects import LMMInfo
-    __all__ = __all__ + ["LMMInfo"]
+    from promptstats.core.mixed_effects import LMMInfo, FactorialLMMInfo
+    __all__ = __all__ + ["LMMInfo", "FactorialLMMInfo"]
 except ImportError:
     pass

@@ -121,6 +121,53 @@ class LMMInfo:
     converged: bool = True
 
 
+@dataclass
+class FactorialLMMInfo:
+    """Variance components and fit diagnostics from a factorial LMM.
+
+    Extends the one-factor design to support multiple fixed-effect factors
+    (and their interactions), as specified by ``BenchmarkResult.template_factors``.
+
+    The model formula is ``score ~ F1 * F2 * ... + (1 | input)``, where the
+    ``*`` operator expands to all main effects and interactions.
+
+    Attributes
+    ----------
+    icc : float
+        Intraclass correlation: σ²_input / (σ²_input + σ²_resid).
+    sigma_input : float
+        Estimated SD of the input random effect.
+    sigma_resid : float
+        Estimated residual SD.
+    n_obs : int
+        Number of observations used to fit the model.
+    formula : str
+        Full model formula (e.g. ``'score ~ C(persona) * C(few_shots) + (1|input)'``).
+    converged : bool
+        Whether the optimizer reported successful convergence.
+    factor_names : list[str]
+        Factor column names from ``BenchmarkResult.template_factors``.
+    factor_tests : pd.DataFrame
+        Wald test results per model term (main effects + interactions).
+        Columns: ``term``, ``statistic``, ``df``, ``p_value``.
+    marginal_means : dict[str, pd.DataFrame]
+        Estimated marginal means per factor (averaged equally over all
+        levels of other factors). Keys are factor names; each value is a
+        DataFrame with columns ``level``, ``mean``, ``se``, ``ci_low``,
+        ``ci_high``.
+    """
+
+    icc: float
+    sigma_input: float
+    sigma_resid: float
+    n_obs: int
+    formula: str
+    factor_names: list
+    factor_tests: object   # pd.DataFrame
+    marginal_means: dict   # dict[str, pd.DataFrame]
+    converged: bool = True
+
+
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
@@ -973,6 +1020,484 @@ def _build_lmm_info_sm(sm_result, n_obs: int) -> LMMInfo:
 
 
 # ---------------------------------------------------------------------------
+# Factorial LMM — statsmodels backend
+# ---------------------------------------------------------------------------
+
+def _build_factorial_formula(factor_names: list) -> str:
+    """Build ``score ~ C(F1) * C(F2) * ... + (1|input)`` formula string.
+
+    The ``*`` expansion yields all main effects and interactions.
+    Returns a plain string suitable for ``smf.mixedlm``; the random-effect
+    part ``(1|input)`` is specified separately via the ``groups`` argument.
+    """
+    fixed = " * ".join(f"C({f})" for f in factor_names)
+    return f"score ~ {fixed}"
+
+
+def _scores_to_long_df_factorial_pandas(
+    scores_2d: np.ndarray,
+    template_labels: list,
+    input_labels: list,
+    template_factors,  # pd.DataFrame
+):
+    """Build a long-form pandas DataFrame with factor columns appended.
+
+    Calls :func:`_scores_to_long_df_pandas` then left-joins the factor
+    columns from *template_factors*, aligning rows positionally to
+    *template_labels*.
+    """
+    import pandas as pd
+
+    df = _scores_to_long_df_pandas(scores_2d, template_labels, input_labels)
+
+    # Positional alignment: row i of template_factors → template_labels[i]
+    factor_map = template_factors.copy()
+    factor_map.index = template_labels
+    df = df.join(factor_map, on="template")
+    return df
+
+
+def _get_fe_vcov_sm(sm_result) -> np.ndarray:
+    """Return the fixed-effect-only covariance matrix from a statsmodels MixedLMResults.
+
+    ``sm_result.cov_params()`` includes both fixed-effect and random-effect
+    variance parameters.  This helper slices it to just the rows/columns
+    corresponding to ``sm_result.fe_params.index``.
+    """
+    fe_names = sm_result.fe_params.index.tolist()
+    return sm_result.cov_params().loc[fe_names, fe_names].to_numpy()
+
+
+def _fit_factorial_lmm_sm(df_pandas, factor_names: list):
+    """Fit ``score ~ C(F1) * C(F2) * ... + (1|input)`` via statsmodels MixedLM.
+
+    Returns ``(sm_result, formula_str)``.
+    """
+    import statsmodels.formula.api as smf
+    formula = _build_factorial_formula(factor_names)
+    model = smf.mixedlm(formula, data=df_pandas, groups=df_pandas["input"])
+    return model.fit(reml=True, disp=False), formula
+
+
+def _get_template_design_vectors(
+    sm_result,
+    df_pandas,
+    labels: list,
+) -> np.ndarray:
+    """Return ``(N, P)`` matrix: row i = mean design vector for template i.
+
+    ``sm_result.model.exog`` rows are aligned with ``df_pandas`` rows (statsmodels
+    preserves input row order).  Averaging per-template gives the effective
+    contrast vector ``c_i`` such that ``c_i @ fe_params == predicted cell mean``.
+    """
+    exog = sm_result.model.exog          # (n_obs, P)
+    templates = df_pandas["template"].values  # (n_obs,)
+
+    N = len(labels)
+    P = exog.shape[1]
+    design_vecs = np.zeros((N, P))
+    for i, label in enumerate(labels):
+        mask = templates == label
+        if not mask.any():
+            raise RuntimeError(
+                f"Template '{label}' missing from long-form DataFrame. "
+                "This is a bug — please open an issue."
+            )
+        design_vecs[i] = exog[mask].mean(axis=0)
+    return design_vecs
+
+
+def _extract_factor_tests_sm(sm_result, factor_names: list):
+    """Return a DataFrame of Wald tests per model term (main effects + interactions).
+
+    Uses ``sm_result.wald_test_terms()`` which tests H₀: all coefficients for
+    each term are zero simultaneously.  The ``Intercept`` row is dropped since
+    it is not a factor.  Falls back to an empty DataFrame with a warning if
+    the method is unavailable or raises an error.
+
+    Columns: ``term``, ``statistic``, ``df``, ``p_value``.
+    statsmodels returns column names ``statistic``, ``pvalue``, ``df_constraint``;
+    values may be 0-D or 2-D numpy arrays and are extracted as Python floats.
+    """
+    import pandas as pd
+
+    try:
+        wt = sm_result.wald_test_terms(skip_single=False)
+        table = wt.table.copy()
+
+        # Normalise column names (statsmodels uses 'statistic', 'pvalue', 'df_constraint').
+        col_map: dict = {}
+        for col in table.columns:
+            lc = col.lower().replace(" ", "").replace("_", "").replace("-", "")
+            if lc == "statistic" or "fstat" in lc or "chi2" in lc:
+                col_map[col] = "statistic"
+            elif lc in ("pvalue", "prob", "p>f", "p>chi2"):
+                col_map[col] = "p_value"
+            elif "dfconstraint" in lc or lc in ("df", "dfnum", "numdf"):
+                col_map[col] = "df"
+        table = table.rename(columns=col_map)
+
+        rows = []
+        for term, row in table.iterrows():
+            if str(term) == "Intercept":
+                continue
+            stat = row.get("statistic", float("nan"))
+            pval = row.get("p_value", float("nan"))
+            df_c = row.get("df", float("nan"))
+            # Unwrap numpy arrays of any shape to a scalar float.
+            def _scalar(v):
+                try:
+                    import numpy as _np
+                    return float(_np.asarray(v).flat[0])
+                except Exception:
+                    return float("nan")
+            rows.append({"term": str(term), "statistic": _scalar(stat),
+                         "df": _scalar(df_c), "p_value": _scalar(pval)})
+
+        return pd.DataFrame(rows, columns=["term", "statistic", "df", "p_value"])
+
+    except Exception as exc:
+        warnings.warn(
+            f"Could not extract Wald tests for factorial terms: {exc}. "
+            "factor_tests will be empty.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return pd.DataFrame(columns=["term", "statistic", "df", "p_value"])
+
+
+def _extract_marginal_means_sm(
+    sm_result,
+    df_pandas,
+    factor_names: list,
+    ci: float,
+) -> dict:
+    """Estimated marginal means per factor from a fitted factorial LMM.
+
+    For each focal factor F, the EMM for level ℓ is the prediction at
+    (F=ℓ) averaged *equally* over all observed combinations of the remaining
+    factors.  This matches the equal-weights marginal mean used by R's
+    ``emmeans`` for balanced designs and is a sensible approximation for
+    unbalanced designs.
+
+    Returns ``dict[factor_name → pd.DataFrame]`` where each DataFrame has
+    columns ``level``, ``mean``, ``se``, ``ci_low``, ``ci_high``.
+    """
+    import pandas as pd
+    from itertools import product as iterproduct
+
+    alpha = 1 - ci
+    t_crit = float(scipy.stats.t.ppf(1 - alpha / 2, df=sm_result.df_resid))
+
+    exog  = sm_result.model.exog           # (n_obs, P)
+    betas = sm_result.fe_params.to_numpy() # (P,)
+    vcov  = _get_fe_vcov_sm(sm_result)     # (P, P)
+    tmpl_col = df_pandas["template"].values
+
+    emm_per_factor: dict = {}
+
+    for focal in factor_names:
+        other = [f for f in factor_names if f != focal]
+        focal_levels = sorted(df_pandas[focal].dropna().unique().tolist(),
+                              key=lambda x: (str(type(x)), x))
+        other_level_sets = [
+            sorted(df_pandas[f].dropna().unique().tolist(),
+                   key=lambda x: (str(type(x)), x))
+            for f in other
+        ]
+        other_combos = list(iterproduct(*other_level_sets)) if other else [()]
+
+        rows = []
+        for level in focal_levels:
+            cell_vecs = []
+            for combo in other_combos:
+                # Build mask: focal factor == level AND each other factor == its value
+                mask = (df_pandas[focal] == level).values
+                for f, v in zip(other, combo):
+                    mask = mask & (df_pandas[f] == v).values
+                if mask.any():
+                    cell_vecs.append(exog[mask].mean(axis=0))  # (P,)
+
+            if not cell_vecs:
+                continue
+
+            # Equal-weight average over present cells
+            c   = np.mean(cell_vecs, axis=0)   # (P,)
+            emm = float(c @ betas)
+            se  = float(np.sqrt(max(float(c @ vcov @ c), 0.0)))
+
+            rows.append({
+                "level":   level,
+                "mean":    emm,
+                "se":      se,
+                "ci_low":  emm - t_crit * se,
+                "ci_high": emm + t_crit * se,
+            })
+
+        emm_per_factor[focal] = pd.DataFrame(rows)
+
+    return emm_per_factor
+
+
+def _build_factorial_lmm_info_sm(
+    sm_result,
+    factor_names: list,
+    n_obs: int,
+    formula: str,
+    ci: float,
+    df_pandas,
+) -> "FactorialLMMInfo":
+    """Build a ``FactorialLMMInfo`` from a fitted statsmodels MixedLMResults."""
+    sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
+
+    var_input = sigma_input ** 2
+    var_resid = sigma_resid ** 2
+    total_var = var_input + var_resid
+    icc       = var_input / total_var if total_var > 0 else 0.0
+    converged = bool(getattr(sm_result, "converged", True))
+
+    factor_tests  = _extract_factor_tests_sm(sm_result, factor_names)
+    marginal_means = _extract_marginal_means_sm(sm_result, df_pandas, factor_names, ci)
+
+    # Append the random-effect part to the formula string for display.
+    display_formula = formula.replace("score ~", "score ~") + " + (1|input)"
+
+    return FactorialLMMInfo(
+        icc=icc,
+        sigma_input=sigma_input,
+        sigma_resid=sigma_resid,
+        n_obs=n_obs,
+        formula=display_formula,
+        converged=converged,
+        factor_names=list(factor_names),
+        factor_tests=factor_tests,
+        marginal_means=marginal_means,
+    )
+
+
+def _lmm_to_pairwise_factorial_sm(
+    sm_result,
+    labels: list,
+    df_pandas,
+    cell_means_2d: np.ndarray,
+    ci: float,
+    correction: str,
+) -> PairwiseMatrix:
+    """Pairwise Wald contrasts between all N treatment cells in a factorial LMM.
+
+    Each template corresponds to a unique factor-level combination.  The
+    contrast vector ``c = design_vec_a − design_vec_b`` encodes the
+    difference in predicted cell means; its variance is ``c @ vcov @ c``.
+    """
+    alpha = 1 - ci
+    N     = len(labels)
+
+    design_vecs = _get_template_design_vectors(sm_result, df_pandas, labels)
+    betas       = sm_result.fe_params.to_numpy()
+    vcov        = _get_fe_vcov_sm(sm_result)
+    df_val      = float(sm_result.df_resid)
+    t_crit      = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+
+    results: dict = {}
+    pairs:   list = []
+
+    for idx_a in range(N):
+        for idx_b in range(idx_a + 1, N):
+            label_a, label_b = labels[idx_a], labels[idx_b]
+
+            c        = design_vecs[idx_a] - design_vecs[idx_b]
+            estimate = float(c @ betas)
+            var_est  = float(c @ vcov @ c)
+            se       = float(np.sqrt(max(var_est, 0.0)))
+            t_stat   = estimate / se if se > 0 else 0.0
+            p_val    = float(2 * scipy.stats.t.sf(abs(t_stat), df=df_val))
+
+            ci_low  = estimate - t_crit * se
+            ci_high = estimate + t_crit * se
+
+            per_input_diffs = cell_means_2d[idx_a] - cell_means_2d[idx_b]
+            n_complete = int(np.sum(~np.isnan(per_input_diffs)))
+            std_diff   = float(np.nanstd(per_input_diffs, ddof=1)) if n_complete > 1 else 0.0
+
+            res = PairedDiffResult(
+                template_a=label_a,
+                template_b=label_b,
+                point_diff=estimate,
+                std_diff=std_diff,
+                ci_low=ci_low,
+                ci_high=ci_high,
+                p_value=p_val,
+                test_method=f"factorial lmm wald (statsmodels, df={df_val:.0f})",
+                n_inputs=n_complete,
+                per_input_diffs=per_input_diffs,
+                n_runs=1,
+                statistic="mean",
+            )
+            results[(label_a, label_b)] = res
+            pairs.append((label_a, label_b))
+
+    if not results:
+        raise RuntimeError("Factorial LMM produced no usable pairwise contrasts.")
+
+    if correction != "none" and len(pairs) > 1:
+        p_values = np.array([results[p].p_value for p in pairs])
+        adjusted = correct_pvalues(p_values, correction)
+        for pair, adj_p in zip(pairs, adjusted):
+            r = results[pair]
+            results[pair] = PairedDiffResult(
+                template_a=r.template_a,
+                template_b=r.template_b,
+                point_diff=r.point_diff,
+                std_diff=r.std_diff,
+                ci_low=r.ci_low,
+                ci_high=r.ci_high,
+                p_value=float(adj_p),
+                test_method=f"{r.test_method} ({correction}-corrected)",
+                n_inputs=r.n_inputs,
+                per_input_diffs=r.per_input_diffs,
+                n_runs=r.n_runs,
+                statistic=r.statistic,
+            )
+
+    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+
+
+def _lmm_to_mean_advantage_factorial_sm(
+    sm_result,
+    labels: list,
+    df_pandas,
+    cell_means_2d: np.ndarray,
+    ci: float,
+    spread_percentiles: tuple,
+    reference: str,
+) -> PointAdvantageResult:
+    """Mean advantages for a factorial LMM via the delta method.
+
+    Cell means come from the fitted fixed effects (``design_vec_i @ betas``).
+    CIs use the delta method applied to the contrast matrix
+    ``C[i] = design_vec_i − reference_vec``.
+    """
+    N     = len(labels)
+    alpha = 1 - ci
+
+    design_vecs = _get_template_design_vectors(sm_result, df_pandas, labels)
+    betas       = sm_result.fe_params.to_numpy()
+    vcov        = _get_fe_vcov_sm(sm_result)
+    df_val      = float(sm_result.df_resid)
+
+    template_means = design_vecs @ betas  # (N,)
+
+    if reference == "grand_mean":
+        ref_value = template_means.mean()
+        ref_label = "grand_mean"
+        ref_vec   = design_vecs.mean(axis=0)  # (P,)
+    else:
+        ref_idx   = labels.index(reference)
+        ref_value = template_means[ref_idx]
+        ref_label = reference
+        ref_vec   = design_vecs[ref_idx]
+
+    mean_advantages = template_means - ref_value  # (N,)
+
+    # Delta method: var(advantage_i) = (design_i - ref_vec) @ vcov @ (design_i - ref_vec)
+    C       = design_vecs - ref_vec[np.newaxis, :]   # (N, P)
+    cov_adv = C @ vcov @ C.T                          # (N, N)
+    var_adv = np.diag(cov_adv)
+    se_adv  = np.sqrt(np.maximum(var_adv, 0.0))
+
+    t_crit  = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+    ci_low  = mean_advantages - t_crit * se_adv
+    ci_high = mean_advantages + t_crit * se_adv
+
+    if reference == "grand_mean":
+        cell_ref = np.nanmean(cell_means_2d, axis=0)
+    else:
+        cell_ref = cell_means_2d[labels.index(reference)]
+
+    raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]
+    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
+    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
+
+    return PointAdvantageResult(
+        labels=labels,
+        point_advantages=mean_advantages,
+        bootstrap_ci_low=ci_low,
+        bootstrap_ci_high=ci_high,
+        spread_low=spread_low,
+        spread_high=spread_high,
+        reference=ref_label,
+        per_input_advantages=raw_advantages,
+        n_bootstrap=0,
+        spread_percentiles=spread_percentiles,
+        statistic="mean",
+    )
+
+
+def _lmm_analyze_factorial_sm(
+    result,
+    *,
+    reference: str,
+    ci: float,
+    correction: str,
+    spread_percentiles: tuple,
+    failure_threshold: Optional[float],
+    n_sim: int,
+    rng: np.random.Generator,
+):
+    """Full factorial LMM pipeline (statsmodels backend only).
+
+    Fits ``score ~ C(F1) * C(F2) * ... + (1|input)`` on cell-mean scores
+    and returns the same tuple as :func:`lmm_analyze`:
+    ``(pairwise, mean_adv, rank_dist, robustness, seed_var, factorial_lmm_info)``.
+    """
+    _require_statsmodels()
+
+    M      = result.n_inputs
+    labels = result.template_labels
+    inputs = result.input_labels
+
+    template_factors = result.template_factors
+    factor_names     = list(template_factors.columns)
+
+    cell_means_2d = result.get_2d_scores()  # (N, M)
+    run_scores    = result.get_run_scores() # (N, M, R)
+
+    robustness = robustness_metrics(run_scores, labels, failure_threshold=failure_threshold)
+    seed_var: Optional[SeedVarianceResult] = None
+    if result.is_seeded:
+        seed_var = seed_variance_decomposition(run_scores, labels)
+
+    df       = _scores_to_long_df_factorial_pandas(cell_means_2d, labels, inputs, template_factors)
+    n_obs    = len(df)
+    sm_result, formula = _fit_factorial_lmm_sm(df, factor_names)
+
+    lmm_info = _build_factorial_lmm_info_sm(sm_result, factor_names, n_obs, formula, ci, df)
+
+    if not lmm_info.converged:
+        warnings.warn(
+            "The factorial LMM optimizer did not converge. "
+            "Results may be unreliable. Consider using method='auto' "
+            "or simplifying the model.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    pairwise = _lmm_to_pairwise_factorial_sm(sm_result, labels, df, cell_means_2d, ci, correction)
+    mean_adv = _lmm_to_mean_advantage_factorial_sm(
+        sm_result, labels, df, cell_means_2d, ci, spread_percentiles, reference
+    )
+
+    design_vecs              = _get_template_design_vectors(sm_result, df, labels)
+    template_means           = design_vecs @ sm_result.fe_params.to_numpy()
+    sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
+    rank_dist = _simulate_rank_dist(
+        template_means, sigma_input, sigma_resid, M, labels, n_sim, rng
+    )
+
+    return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -987,8 +1512,7 @@ def lmm_analyze(
     failure_threshold: Optional[float] = None,
     n_sim: int = 10_000,
     rng: Optional[np.random.Generator] = None,
-) -> tuple[PairwiseMatrix, PointAdvantageResult, RankDistribution,
-           RobustnessResult, Optional[SeedVarianceResult], LMMInfo]:
+) -> "tuple[PairwiseMatrix, PointAdvantageResult, RankDistribution, RobustnessResult, Optional[SeedVarianceResult], LMMInfo | FactorialLMMInfo]":
     """Run the full LMM analysis pipeline on a ``BenchmarkResult``.
 
     Fits ``score ~ template + (1|input)`` on the cell-mean scores and maps
@@ -1041,6 +1565,29 @@ def lmm_analyze(
 
     if rng is None:
         rng = np.random.default_rng()
+
+    # ------------------------------------------------------------------
+    # Factorial path — activated when BenchmarkResult.template_factors is set.
+    # Currently only the statsmodels backend is supported for factorial models.
+    # ------------------------------------------------------------------
+    if getattr(result, "template_factors", None) is not None:
+        if backend == "pymer4":
+            warnings.warn(
+                "Factorial LMM analysis currently supports only backend='statsmodels'. "
+                "Switching to statsmodels for this analysis.",
+                UserWarning,
+                stacklevel=2,
+            )
+        return _lmm_analyze_factorial_sm(
+            result,
+            reference=reference,
+            ci=ci,
+            correction=correction,
+            spread_percentiles=spread_percentiles,
+            failure_threshold=failure_threshold,
+            n_sim=n_sim,
+            rng=rng,
+        )
 
     N = result.n_templates
     M = result.n_inputs

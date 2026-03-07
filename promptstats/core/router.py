@@ -29,7 +29,7 @@ from .variance import RobustnessResult, SeedVarianceResult, robustness_metrics, 
 from .tokens import TokenUsage, TokenAnalysisResult, analyze_tokens
 
 if TYPE_CHECKING:
-    from .mixed_effects import LMMInfo
+    from .mixed_effects import LMMInfo, FactorialLMMInfo
 
 
 # ---------------------------------------------------------------------------
@@ -128,7 +128,8 @@ class AnalysisBundle:
     rank_dist: RankDistribution
     seed_variance: Optional[SeedVarianceResult] = None
     token_analysis: Optional[TokenAnalysisResult] = None
-    lmm_info: Optional[LMMInfo] = None
+    lmm_info: Optional["LMMInfo"] = None
+    factorial_lmm_info: Optional["FactorialLMMInfo"] = None
 
 
 @dataclass
@@ -505,8 +506,8 @@ def _analyze_single(
                 stacklevel=2,
             )
             statistic = "mean"
-        from .mixed_effects import lmm_analyze
-        pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info = lmm_analyze(
+        from .mixed_effects import lmm_analyze, FactorialLMMInfo
+        pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_result = lmm_analyze(
             result,
             backend=backend,
             reference=reference,
@@ -517,6 +518,17 @@ def _analyze_single(
             n_sim=n_bootstrap,
             rng=rng,
         )
+        if isinstance(lmm_result, FactorialLMMInfo):
+            return AnalysisBundle(
+                benchmark=result,
+                shape=shape,
+                pairwise=pairwise,
+                point_advantage=mean_adv,
+                robustness=robustness,
+                rank_dist=rank_dist,
+                seed_variance=seed_var,
+                factorial_lmm_info=lmm_result,
+            )
         return AnalysisBundle(
             benchmark=result,
             shape=shape,
@@ -525,7 +537,7 @@ def _analyze_single(
             robustness=robustness,
             rank_dist=rank_dist,
             seed_variance=seed_var,
-            lmm_info=lmm_info,
+            lmm_info=lmm_result,
         )
 
     # ------------------------------------------------------------------
