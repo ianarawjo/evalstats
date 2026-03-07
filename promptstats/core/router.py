@@ -199,6 +199,7 @@ def analyze(
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
     method: Literal["bootstrap", "bca", "auto", "lmm"] = "auto",
+    backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -246,14 +247,19 @@ def analyze(
           percentile bootstrap otherwise.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
-        * ``'lmm'`` — Linear Mixed Model via pymer4/lme4.  Fits
+        * ``'lmm'`` — Linear Mixed Model.  Fits
           ``score ~ template + (1|input)`` on cell-mean scores.
-          Produces Wald CIs and emmeans-based pairwise contrasts.
-          Requires pymer4 and R (``pip install pymer4``).
+          Produces Wald CIs via the fixed-effect covariance matrix.
           Prefer this when M < ~15 (bootstrap unstable) or when an
           ICC decomposition is desired.  ``AnalysisBundle.lmm_info``
           is populated with variance components and the ICC.
           Not compatible with ``statistic='median'``.
+          The backend is controlled by the ``backend`` parameter.
+    backend : str
+        LMM fitting backend (only used when ``method='lmm'``):
+        ``'statsmodels'`` (default, pure Python, no R required) or
+        ``'pymer4'`` (wraps R/lme4, requires R with lme4 and emmeans).
+        Ignored for bootstrap methods.
     ci : float
         Confidence level for intervals (default 0.95).
     n_bootstrap : int
@@ -307,7 +313,7 @@ def analyze(
     NotImplementedError
         If the benchmark shape is not yet supported.
     ImportError
-        If ``method='lmm'`` and pymer4 is not installed.
+        If ``method='lmm'`` and the selected backend is not installed.
     """
     if rng is None:
         rng = np.random.default_rng()
@@ -326,8 +332,7 @@ def analyze(
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
-            "Consider using method='lmm' for more stable inference with small samples "
-            "(requires pymer4).",
+            "Consider using method='lmm' for more stable inference with small samples.",
             UserWarning,
             stacklevel=2,
         )
@@ -335,6 +340,7 @@ def analyze(
     kwargs = dict(
         reference=reference,
         method=method,
+        backend=backend,
         ci=ci,
         n_bootstrap=n_bootstrap,
         correction=correction,
@@ -475,6 +481,7 @@ def _analyze_single(
     *,
     reference: str,
     method: Literal["bootstrap", "bca", "auto", "lmm"],
+    backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
@@ -484,7 +491,7 @@ def _analyze_single(
     statistic: Literal["mean", "median"],
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
-    # LMM path — fit score ~ template + (1|input) via pymer4/lme4
+    # LMM path — fit score ~ template + (1|input)
     # ------------------------------------------------------------------
     if method == "lmm":
         if statistic == "median":
@@ -501,6 +508,7 @@ def _analyze_single(
         from .mixed_effects import lmm_analyze
         pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info = lmm_analyze(
             result,
+            backend=backend,
             reference=reference,
             ci=ci,
             correction=correction,
@@ -579,6 +587,7 @@ def _analyze_multi_model(
     *,
     reference: str,
     method: Literal["bootstrap", "bca", "auto"],
+    backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
@@ -591,6 +600,7 @@ def _analyze_multi_model(
     kwargs = dict(
         reference=reference,
         method=method,
+        backend=backend,
         ci=ci,
         n_bootstrap=n_bootstrap,
         correction=correction,

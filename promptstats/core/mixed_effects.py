@@ -1,4 +1,4 @@
-"""Linear Mixed Model (LMM) analysis using pymer4 / lme4.
+"""Linear Mixed Model (LMM) analysis — statsmodels (default) or pymer4/lme4 backend.
 
 Fits the one-way mixed model::
 
@@ -74,7 +74,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Optional
+from typing import Literal, Optional
 
 import numpy as np
 import scipy.stats
@@ -582,14 +582,16 @@ def _extract_variance_components(model) -> tuple[float, float]:
     return sigma_input, sigma_resid
 
 
-def _lmm_to_rank_dist(
-    model,
+def _simulate_rank_dist(
+    template_means: np.ndarray,
+    sigma_input: float,
+    sigma_resid: float,
+    M: int,
     labels: list[str],
-    cell_means_2d: np.ndarray,
     n_sim: int,
     rng: np.random.Generator,
 ) -> RankDistribution:
-    """Parametric rank distribution via simulation from the fitted LMM.
+    """Parametric rank distribution via simulation — shared by both backends.
 
     At each iteration:
 
@@ -603,10 +605,6 @@ def _lmm_to_rank_dist(
     when M is small.
     """
     N = len(labels)
-    M = cell_means_2d.shape[1]
-
-    template_means           = _extract_template_means(model, labels)
-    sigma_input, sigma_resid = _extract_variance_components(model)
 
     rank_counts = np.zeros((N, N), dtype=np.int64)
 
@@ -624,9 +622,9 @@ def _lmm_to_rank_dist(
         for rank, tidx in enumerate(order):
             rank_counts[tidx, rank] += 1
 
-    rank_probs    = rank_counts / n_sim
+    rank_probs     = rank_counts / n_sim
     expected_ranks = (rank_probs * np.arange(1, N + 1)).sum(axis=1)
-    p_best        = rank_probs[:, 0]
+    p_best         = rank_probs[:, 0]
 
     return RankDistribution(
         labels=labels,
@@ -635,6 +633,20 @@ def _lmm_to_rank_dist(
         p_best=p_best,
         n_bootstrap=n_sim,
     )
+
+
+def _lmm_to_rank_dist(
+    model,
+    labels: list[str],
+    cell_means_2d: np.ndarray,
+    n_sim: int,
+    rng: np.random.Generator,
+) -> RankDistribution:
+    """Parametric rank distribution from a fitted pymer4 model."""
+    M = cell_means_2d.shape[1]
+    template_means           = _extract_template_means(model, labels)
+    sigma_input, sigma_resid = _extract_variance_components(model)
+    return _simulate_rank_dist(template_means, sigma_input, sigma_resid, M, labels, n_sim, rng)
 
 
 # ---------------------------------------------------------------------------
@@ -670,12 +682,304 @@ def _build_lmm_info(model, n_obs: int) -> LMMInfo:
 
 
 # ---------------------------------------------------------------------------
+# statsmodels backend
+# ---------------------------------------------------------------------------
+
+def _require_statsmodels():
+    """Import and return ``statsmodels.formula.api``, or raise a helpful ImportError."""
+    try:
+        import statsmodels.formula.api as smf  # type: ignore[import]
+        return smf
+    except ImportError:
+        raise ImportError(
+            "statsmodels is required for method='lmm' with backend='statsmodels'.\n"
+            "Install it with:\n    pip install statsmodels"
+        ) from None
+
+
+def _scores_to_long_df_pandas(
+    scores_2d: np.ndarray,
+    template_labels: list[str],
+    input_labels: list[str],
+):
+    """Convert an ``(N, M)`` cell-mean score matrix to a long-form pandas DataFrame.
+
+    Returns a DataFrame with columns ``'template'``, ``'input'``, ``'score'``.
+    The ``'template'`` column is a ``pd.Categorical`` with ``template_labels[0]``
+    as the first (reference) category.  NaN rows are dropped.
+    """
+    import pandas as pd
+
+    N, M = scores_2d.shape
+    templates   = np.repeat(template_labels, M).tolist()
+    inputs      = np.tile(input_labels, N).tolist()
+    scores_flat = scores_2d.ravel().tolist()
+
+    df = pd.DataFrame({"template": templates, "input": inputs, "score": scores_flat})
+    df = df.dropna(subset=["score"])
+    df["template"] = pd.Categorical(df["template"], categories=template_labels)
+    return df
+
+
+def _sm_param_names(template_labels: list[str]) -> list[str]:
+    """Return the statsmodels fixed-effect parameter names for treatment coding.
+
+    statsmodels ``C(template)`` produces names like::
+
+        ["Intercept", "C(template)[T.T1]", "C(template)[T.T2]", ...]
+
+    where ``template_labels[0]`` is the (omitted) reference level.
+    """
+    return ["Intercept"] + [f"C(template)[T.{lbl}]" for lbl in template_labels[1:]]
+
+
+def _fit_lmm_sm(df_pandas, template_labels: list[str]):
+    """Fit ``score ~ C(template) + (1|input)`` via statsmodels MixedLM (REML).
+
+    Returns a fitted ``MixedLMResults`` object.
+    """
+    import statsmodels.formula.api as smf  # type: ignore[import]
+    model = smf.mixedlm("score ~ C(template)", data=df_pandas, groups=df_pandas["input"])
+    return model.fit(reml=True, disp=False)
+
+
+def _extract_template_means_sm(sm_result, labels: list[str]) -> np.ndarray:
+    """Extract fitted marginal means from a statsmodels MixedLMResults object.
+
+    With treatment coding (reference = ``labels[0]``):
+
+    * μ₀  = intercept
+    * μᵢ  = intercept + β_i   for i > 0
+    """
+    N = len(labels)
+    param_names = _sm_param_names(labels)
+
+    intercept = float(sm_result.fe_params["Intercept"])
+    means = np.empty(N)
+    means[0] = intercept
+    for i in range(1, N):
+        means[i] = intercept + float(sm_result.fe_params[param_names[i]])
+    return means
+
+
+def _get_vcov_sm(sm_result, template_labels: list[str]) -> np.ndarray:
+    """Extract the fixed-effects covariance matrix as a numpy array ``(N, N)``.
+
+    Slices ``result.cov_params()`` to the treatment-coding parameters
+    ``[Intercept, β₁, …, β_{N-1}]`` in order.
+    """
+    param_names = _sm_param_names(template_labels)
+    vcov_df = sm_result.cov_params().loc[param_names, param_names]
+    return vcov_df.to_numpy()
+
+
+def _extract_variance_components_sm(sm_result) -> tuple[float, float]:
+    """Return ``(sigma_input, sigma_resid)`` from a statsmodels MixedLMResults.
+
+    ``result.cov_re`` is the random-effect covariance (1×1 for random intercepts);
+    its single entry is σ²_input.  ``result.scale`` is σ²_resid.
+    Both are returned as standard deviations.
+    """
+    var_input = float(sm_result.cov_re.iloc[0, 0])
+    var_resid = float(sm_result.scale)
+    sigma_input = float(np.sqrt(max(var_input, 0.0)))
+    sigma_resid = float(np.sqrt(max(var_resid, 0.0)))
+    return sigma_input, sigma_resid
+
+
+def _lmm_to_pairwise_sm(
+    sm_result,
+    labels: list[str],
+    cell_means_2d: np.ndarray,
+    ci: float,
+    correction: str,
+) -> PairwiseMatrix:
+    """Build a ``PairwiseMatrix`` from statsmodels fixed effects via delta method.
+
+    For each pair (A, B) the contrast vector ``c`` satisfies ``c @ betas = μ_A - μ_B``
+    under treatment coding.  The variance is ``c @ vcov @ c``.  A conservative
+    t-distribution with ``result.df_resid`` degrees of freedom is used.
+    """
+    alpha    = 1 - ci
+    N        = len(labels)
+    betas    = np.empty(N)
+    betas[0] = float(sm_result.fe_params["Intercept"])
+    for i in range(1, N):
+        betas[i] = float(sm_result.fe_params[_sm_param_names(labels)[i]])
+
+    vcov  = _get_vcov_sm(sm_result, labels)
+    df_val = float(sm_result.df_resid)
+
+    # Build N contrast rows: L[i] @ betas = μ_i
+    # Reuse the already-implemented advantage contrast matrix with ref=None (grand mean)
+    # but we only need the μ_i-row structure; it's simpler to build directly.
+    # Under treatment coding: μ₀ = β₀;  μᵢ = β₀ + βᵢ (i>0)
+    # So the contrast vector for μᵢ is L_i where:
+    #   L_0 = [1, 0, 0, ...]
+    #   L_i = [1, 0, ..., 1, ..., 0]  (1 at position i)
+    L = np.zeros((N, N))
+    L[:, 0] = 1.0          # intercept column
+    for i in range(1, N):
+        L[i, i] = 1.0     # β_i column
+
+    results: dict[tuple[str, str], PairedDiffResult] = {}
+    pairs: list[tuple[str, str]] = []
+
+    for idx_a in range(N):
+        for idx_b in range(idx_a + 1, N):
+            label_a = labels[idx_a]
+            label_b = labels[idx_b]
+
+            c        = L[idx_a] - L[idx_b]          # contrast: μ_a - μ_b
+            estimate = float(c @ betas)
+            var_est  = float(c @ vcov @ c)
+            se       = float(np.sqrt(max(var_est, 0.0)))
+
+            t_crit  = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+            ci_low  = estimate - t_crit * se
+            ci_high = estimate + t_crit * se
+
+            t_stat  = estimate / se if se > 0 else 0.0
+            p_val   = float(2 * scipy.stats.t.sf(abs(t_stat), df=df_val))
+
+            per_input_diffs = cell_means_2d[idx_a] - cell_means_2d[idx_b]
+            n_complete = int(np.sum(~np.isnan(per_input_diffs)))
+            std_diff   = (
+                float(np.nanstd(per_input_diffs, ddof=1)) if n_complete > 1 else 0.0
+            )
+
+            res = PairedDiffResult(
+                template_a=label_a,
+                template_b=label_b,
+                point_diff=estimate,
+                std_diff=std_diff,
+                ci_low=ci_low,
+                ci_high=ci_high,
+                p_value=p_val,
+                test_method=f"lmm wald (statsmodels, df={df_val:.0f})",
+                n_inputs=n_complete,
+                per_input_diffs=per_input_diffs,
+                n_runs=1,
+                statistic="mean",
+            )
+            results[(label_a, label_b)] = res
+            pairs.append((label_a, label_b))
+
+    if not results:
+        raise RuntimeError("statsmodels LMM returned no usable contrasts.")
+
+    if correction != "none" and len(pairs) > 1:
+        p_values = np.array([results[p].p_value for p in pairs])
+        adjusted = correct_pvalues(p_values, correction)
+        for pair, adj_p in zip(pairs, adjusted):
+            r = results[pair]
+            results[pair] = PairedDiffResult(
+                template_a=r.template_a,
+                template_b=r.template_b,
+                point_diff=r.point_diff,
+                std_diff=r.std_diff,
+                ci_low=r.ci_low,
+                ci_high=r.ci_high,
+                p_value=float(adj_p),
+                test_method=f"{r.test_method} ({correction}-corrected)",
+                n_inputs=r.n_inputs,
+                per_input_diffs=r.per_input_diffs,
+                n_runs=r.n_runs,
+                statistic=r.statistic,
+            )
+
+    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+
+
+def _lmm_to_mean_advantage_sm(
+    sm_result,
+    labels: list[str],
+    cell_means_2d: np.ndarray,
+    ci: float,
+    spread_percentiles: tuple[float, float],
+    reference: str,
+) -> PointAdvantageResult:
+    """Compute mean advantages from statsmodels fixed effects via delta method."""
+    N     = len(labels)
+    alpha = 1 - ci
+
+    template_means = _extract_template_means_sm(sm_result, labels)
+    vcov           = _get_vcov_sm(sm_result, labels)
+    df_val         = float(sm_result.df_resid)
+
+    if reference == "grand_mean":
+        ref_value = template_means.mean()
+        ref_idx   = None
+        ref_label = "grand_mean"
+    else:
+        ref_idx   = labels.index(reference)
+        ref_value = template_means[ref_idx]
+        ref_label = reference
+
+    mean_advantages = template_means - ref_value
+
+    L       = _build_advantage_contrast_matrix(N, ref_idx)
+    cov_adv = L @ vcov @ L.T
+    var_adv = np.diag(cov_adv)
+    se_adv  = np.sqrt(np.maximum(var_adv, 0.0))
+
+    t_crit  = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
+    ci_low  = mean_advantages - t_crit * se_adv
+    ci_high = mean_advantages + t_crit * se_adv
+
+    if reference == "grand_mean":
+        cell_ref = np.nanmean(cell_means_2d, axis=0)
+    else:
+        cell_ref = cell_means_2d[ref_idx]
+
+    raw_advantages = cell_means_2d - cell_ref[np.newaxis, :]
+    spread_low  = np.nanpercentile(raw_advantages, spread_percentiles[0], axis=1)
+    spread_high = np.nanpercentile(raw_advantages, spread_percentiles[1], axis=1)
+
+    return PointAdvantageResult(
+        labels=labels,
+        point_advantages=mean_advantages,
+        bootstrap_ci_low=ci_low,
+        bootstrap_ci_high=ci_high,
+        spread_low=spread_low,
+        spread_high=spread_high,
+        reference=ref_label,
+        per_input_advantages=raw_advantages,
+        n_bootstrap=0,
+        spread_percentiles=spread_percentiles,
+        statistic="mean",
+    )
+
+
+def _build_lmm_info_sm(sm_result, n_obs: int) -> LMMInfo:
+    """Extract ``LMMInfo`` from a fitted statsmodels ``MixedLMResults``."""
+    sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
+
+    var_input = sigma_input ** 2
+    var_resid = sigma_resid ** 2
+    total_var = var_input + var_resid
+    icc       = var_input / total_var if total_var > 0 else 0.0
+
+    converged = bool(getattr(sm_result, "converged", True))
+
+    return LMMInfo(
+        icc=icc,
+        sigma_input=sigma_input,
+        sigma_resid=sigma_resid,
+        n_obs=n_obs,
+        formula="score ~ template + (1|input)",
+        converged=converged,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 def lmm_analyze(
     result,
     *,
+    backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     reference: str = "grand_mean",
     ci: float = 0.95,
     correction: str = "holm",
@@ -694,6 +998,12 @@ def lmm_analyze(
     ----------
     result : BenchmarkResult
         The benchmark data to analyse.
+    backend : str
+        Which fitting library to use: ``'statsmodels'`` (default, pure Python,
+        no R required) or ``'pymer4'`` (wraps R/lme4, requires pymer4 + R with
+        lme4 and emmeans installed).  Both produce Wald CIs from the
+        fixed-effect covariance matrix.  pymer4 uses per-contrast Satterthwaite
+        DFs via emmeans; statsmodels uses a single conservative residual DF.
     reference : str
         Reference for mean advantage: ``'grand_mean'`` or a template label.
     ci : float
@@ -720,11 +1030,14 @@ def lmm_analyze(
     Raises
     ------
     ImportError
-        If pymer4 or pyarrow is not installed, or R/lme4 is not reachable.
+        If the selected backend's dependencies are not installed.
     RuntimeError
         If the model fails to converge or returns unusable contrasts.
+    ValueError
+        If ``backend`` is not ``'statsmodels'`` or ``'pymer4'``.
     """
-    lmer = _require_pymer4()
+    if backend not in ("statsmodels", "pymer4"):
+        raise ValueError(f"backend must be 'statsmodels' or 'pymer4', got {backend!r}")
 
     if rng is None:
         rng = np.random.default_rng()
@@ -760,9 +1073,49 @@ def lmm_analyze(
     labels        = result.template_labels
     inputs        = result.input_labels
 
-    # Fit the LMM
+    robustness = robustness_metrics(run_scores, labels, failure_threshold=failure_threshold)
+
+    seed_var: Optional[SeedVarianceResult] = None
+    if result.is_seeded:
+        seed_var = seed_variance_decomposition(run_scores, labels)
+
+    # ------------------------------------------------------------------
+    # statsmodels path
+    # ------------------------------------------------------------------
+    if backend == "statsmodels":
+        _require_statsmodels()
+        df    = _scores_to_long_df_pandas(cell_means_2d, labels, inputs)
+        n_obs = len(df)
+        sm_result = _fit_lmm_sm(df, labels)
+
+        lmm_info = _build_lmm_info_sm(sm_result, n_obs)
+        if not lmm_info.converged:
+            warnings.warn(
+                "The statsmodels LMM optimizer did not converge. "
+                "Results may be unreliable. Consider using the bootstrap method "
+                "(method='auto') or simplifying the model.",
+                UserWarning,
+                stacklevel=3,
+            )
+
+        pairwise = _lmm_to_pairwise_sm(sm_result, labels, cell_means_2d, ci, correction)
+        mean_adv = _lmm_to_mean_advantage_sm(
+            sm_result, labels, cell_means_2d, ci, spread_percentiles, reference
+        )
+        template_means           = _extract_template_means_sm(sm_result, labels)
+        sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
+        rank_dist = _simulate_rank_dist(
+            template_means, sigma_input, sigma_resid, M, labels, n_sim, rng
+        )
+
+        return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+
+    # ------------------------------------------------------------------
+    # pymer4 path (original implementation)
+    # ------------------------------------------------------------------
+    lmer = _require_pymer4()
     df    = _scores_to_long_df(cell_means_2d, labels, inputs)
-    n_obs = len(df)   # observed rows after dropping NaN
+    n_obs = len(df)
     model = _fit_lmm(df, lmer, labels)
 
     if not model.fitted:
@@ -771,19 +1124,12 @@ def lmm_analyze(
             "across inputs and that template labels are well-formed."
         )
 
-    # Build all analysis components
     pairwise  = _lmm_to_pairwise(model, labels, cell_means_2d, ci, correction)
     mean_adv  = _lmm_to_mean_advantage(
         model, labels, cell_means_2d, ci, spread_percentiles, reference
     )
     rank_dist = _lmm_to_rank_dist(model, labels, cell_means_2d, n_sim, rng)
-    robustness = robustness_metrics(run_scores, labels, failure_threshold=failure_threshold)
-
-    seed_var: Optional[SeedVarianceResult] = None
-    if result.is_seeded:
-        seed_var = seed_variance_decomposition(run_scores, labels)
-
-    lmm_info = _build_lmm_info(model, n_obs)
+    lmm_info  = _build_lmm_info(model, n_obs)
 
     if not lmm_info.converged:
         warnings.warn(
