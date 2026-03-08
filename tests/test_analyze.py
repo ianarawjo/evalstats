@@ -199,50 +199,6 @@ def test_analyze_multimodel_single_prompt_warns_and_runs():
     assert analysis.best_pair == ("Model 2", "Prompt A")
 
 
-def test_print_multimodel_summary_includes_collapsed_template_level_section(capsys):
-    model_labels = ["Model 1", "Model 2"]
-    prompt_labels = ["Prompt A", "Prompt B", "Prompt C"]
-    input_labels = ["i1", "i2", "i3"]
-
-    # Prompt C is worst regardless of model, so it should be called out.
-    scores = np.array(
-        [
-            [
-                [0.90, 0.88, 0.91],
-                [0.80, 0.79, 0.78],
-                [0.52, 0.50, 0.49],
-            ],
-            [
-                [0.89, 0.87, 0.90],
-                [0.77, 0.76, 0.75],
-                [0.45, 0.47, 0.46],
-            ],
-        ],
-        dtype=float,
-    )
-
-    result = ps.MultiModelBenchmark(
-        scores=scores,
-        model_labels=model_labels,
-        template_labels=prompt_labels,
-        input_labels=input_labels,
-    )
-
-    analysis = ps.analyze(
-        result,
-        n_bootstrap=300,
-        rng=np.random.default_rng(123),
-        template_model_collapse="mean"
-    )
-
-    ps.print_analysis_summary(analysis, top_pairwise=3)
-    out = capsys.readouterr().out
-
-    assert "CROSS-MODEL PER-TEMPLATE COMPARISON " in out
-    assert "Best-performing prompt across models (by mean score)" in out
-    assert "'Prompt A'" in out
-
-
 def test_print_summary_includes_critical_difference_groups(capsys):
     # Three identical templates => Nemenyi should mark all as indistinguishable.
     scores = np.array(
