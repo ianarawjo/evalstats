@@ -36,6 +36,22 @@ _BRIGHT_CYAN   = "\033[96m" if _ANSI else ""
 _BRIGHT_RED    = "\033[91m" if _ANSI else ""
 
 
+def _p_best_color(p: float) -> str:
+    """Return an opening ANSI code sequence for a P(Best) value.
+
+    > 50%  → bold green (likely winner)
+    < 5%   → dim (unlikely)
+    else   → no color
+    """
+    if not _ANSI:
+        return ""
+    if p > 0.50:
+        return _BOLD + _BRIGHT_GREEN
+    if p < 0.05:
+        return _DIM
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -136,9 +152,22 @@ def _instability_color(instability: float) -> str:
         return _BRIGHT_RED
     if instability >= 0.10:
         return _YELLOW
+    return ""  # neutral — no color applied
+
+
+def _stability_emoji_label(instability: float) -> str:
+    """Return an emoji + label string for a stability column in the executive summary."""
+    if np.isnan(instability):
+        return "—"
+    if instability >= 0.35:
+        return "💀 Near-random"
+    if instability >= 0.20:
+        return "Noisy"
+    if instability >= 0.10:
+        return "Variable"
     if instability >= 0.05:
-        return ""  # neutral — no color applied
-    return _GREEN
+        return "Mostly Stable"
+    return "Stable"
 
 
 # ---------------------------------------------------------------------------
@@ -162,7 +191,7 @@ def _print_multi_model_summary(
     model_str = ", ".join(bundle.benchmark.model_labels)
     print(f"Models: {model_str}")
     best_model, best_template = bundle.best_pair
-    print(f"{_BOLD}Best pair:{_RESET} model='{_BRIGHT_GREEN}{best_model}{_RESET}'  template='{_BRIGHT_GREEN}{best_template}{_RESET}'")
+    print(f"{_BOLD}Best pair by mean:{_RESET} model='{_BRIGHT_GREEN}{best_model}{_RESET}'  template='{_BRIGHT_GREEN}{best_template}{_RESET}'")
     print()
 
     _print_loud_section("Model-level comparison (across all prompts):")
@@ -185,12 +214,7 @@ def _print_multi_model_summary(
     )
     best_idx = int(np.argmax(bundle.template_level.robustness.mean))
     best_template = bundle.template_level.benchmark.template_labels[best_idx]
-    best_mean = float(bundle.template_level.robustness.mean[best_idx])
-    print(
-        f"  {_BOLD}{_BRIGHT_GREEN}-> Best-performing prompt across models (by mean score):{_RESET} "
-        f"'{best_template}' (mean={best_mean:.3f})"
-    )
-
+    
     # Instability across runs across models
     instability_rows = _collect_cross_model_seed_instability_rows(bundle)
     if instability_rows:
@@ -237,10 +261,13 @@ def _print_multi_model_summary(
         template_label = _truncate_label(template_label, template_col_width)
         p_best_i = float(p_best[idx])
         expected_rank_i = float(expected_ranks[idx])
+        p_color = _p_best_color(p_best_i)
+        p_reset = _RESET if p_color else ""
+        p_str = f"{p_best_i:>8.1%} {_ratio_bar(p_best_i, width=rank_bar_width)}"
         print(
             f"  {model_label:<{model_col_width}s} "
             f"{template_label:<{template_col_width}s} "
-            f"{p_best_i:>8.1%} {_ratio_bar(p_best_i, width=rank_bar_width)} "
+            f"{p_color}{p_str}{p_reset} "
             f"{expected_rank_i:>8.2f} "
             f"{_rank_hump_lane(expected_rank_i, n_ranked_items, width=rank_bar_width)}"
         )
@@ -320,6 +347,9 @@ def _print_multi_model_summary(
             f"{abs_spread_low:>9.3f} "
             f"{abs_spread_high:>9.3f}"
         )
+
+    print()
+    _print_cross_model_executive_summary(bundle)
     print()
 
 
@@ -383,8 +413,93 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 
     # Footer
     print(div)
-    print(f"  * = global best pair  |  heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]")
+    print(f"  * = best pair by mean  |  heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]")
     print()
+
+
+def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
+    """Print executive leaderboard for cross-model (model/template) pairs."""
+    cross = bundle.cross_model
+    labels = list(cross.rank_dist.labels)
+    n = len(labels)
+    if n < 2:
+        return
+
+    means = cross.robustness.mean
+    sort_idx = list(np.argsort(-means))
+    labels_sorted = [labels[i] for i in sort_idx]
+    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
+
+    ma = cross.point_advantage
+    if ma.reference == "grand_mean":
+        ref_offset = float(np.mean(means))
+    else:
+        try:
+            ref_idx = ma.labels.index(ma.reference)
+            ref_offset = float(means[ref_idx])
+        except ValueError:
+            ref_offset = 0.0
+
+    split_pairs = [_split_model_template_label(label) for label in labels]
+    model_w = min(28, max(10, max(len(m) for m, _ in split_pairs) + 2))
+    template_w = min(28, max(12, max(len(t) for _, t in split_pairs) + 2))
+    grp_w = 4
+    mean_w = 6
+    ci_w = 15
+
+    _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
+    header = (
+        f"  {'Model':<{model_w}s}"
+        f"  {'Template':<{template_w}s}"
+        f"  {'Grp':^{grp_w}s}"
+        f"  {'Mean':>{mean_w}s}"
+        f"  {'Bootstrap CI':<{ci_w}s}"
+        "  Verdict"
+    )
+    sep = "  " + "─" * (len(header) - 2)
+    print(header)
+    print(sep)
+
+    for label in labels_sorted:
+        orig_idx = labels.index(label)
+        mean_val = float(means[orig_idx])
+        model_label, template_label = _split_model_template_label(label)
+
+        try:
+            adv_idx = ma.labels.index(label)
+        except ValueError:
+            adv_idx = orig_idx
+        ci_lo = float(ma.bootstrap_ci_low[adv_idx]) + ref_offset
+        ci_hi = float(ma.bootstrap_ci_high[adv_idx]) + ref_offset
+        ci_str = f"[{ci_lo:.3f}, {ci_hi:.3f}]"
+
+        group = label_to_group.get(label, "?")
+        verdict = _exec_verdict(label, label_to_group, labels_sorted)
+
+        plain_model = f"{_truncate_label(model_label, model_w):<{model_w}s}"
+        plain_template = f"{_truncate_label(template_label, template_w):<{template_w}s}"
+        plain_grp = f"{group:^{grp_w}s}"
+        if group == "#1" and _ANSI:
+            model_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_model}{_RESET}"
+            template_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_template}{_RESET}"
+            grp_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_grp}{_RESET}"
+            verdict_str = f"{_BRIGHT_GREEN}{verdict}{_RESET}"
+        else:
+            model_str = plain_model
+            template_str = plain_template
+            grp_str = plain_grp
+            verdict_str = verdict
+
+        print(
+            f"  {model_str}"
+            f"  {template_str}"
+            f"  {grp_str}"
+            f"  {mean_val:>{mean_w}.3f}"
+            f"  {ci_str:<{ci_w}s}"
+            f"  {verdict_str}"
+        )
+
+    print(sep)
 
 
 # ---------------------------------------------------------------------------
@@ -437,9 +552,12 @@ def _print_bundle_summary(
         rank_label = _truncate_label(label, rank_label_col_width)
         p_best = float(bundle.rank_dist.p_best[i])
         expected_rank = float(bundle.rank_dist.expected_ranks[i])
+        p_color = _p_best_color(p_best)
+        p_reset = _RESET if p_color else ""
+        p_str = f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)}"
         print(
             f"  {rank_label:<{rank_label_col_width}s} "
-            f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)} "
+            f"{p_color}{p_str}{p_reset} "
             f"{expected_rank:>8.2f} {_rank_hump_lane(expected_rank, n_ranked_items, width=rank_bar_width)}"
         )
     print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
@@ -621,6 +739,10 @@ def _print_bundle_summary(
     if bundle.token_analysis is not None:
         print()
         _print_token_pareto_summary(bundle.token_analysis, bundle)
+
+    # Executive summary leaderboard (always last — immediately visible in terminal).
+    print()
+    _print_executive_summary(bundle, item_singular=item_singular)
 
 
 # ---------------------------------------------------------------------------
@@ -1555,3 +1677,190 @@ def _print_critical_difference_groups(
             f"  {_BRIGHT_GREEN}-> Statistically distinguishable, clear winner:{_RESET} "
             f"'{_BOLD}{_BRIGHT_GREEN}{clear_winner}{_RESET}'"
         )
+
+
+# ---------------------------------------------------------------------------
+# Executive summary helpers
+# ---------------------------------------------------------------------------
+
+def _assign_significance_groups(
+    pairwise: PairwiseMatrix,
+    labels_sorted: list[str],
+    alpha: float = 0.05,
+    p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
+) -> dict[str, str]:
+    """Assign numeric group IDs (#1, #2, #3…) to templates via CD-group analysis.
+
+    Templates in the same maximal non-significant rank band share an ID.
+    Group #1 is the band that contains the rank-1 template. Any template not
+    found in any CD group receives a unique ID (it is distinctly ranked).
+    """
+    groups = _critical_difference_groups(
+        pairwise, labels_sorted=labels_sorted, alpha=alpha, p_source=p_source,
+    )
+    rank_map = {label: i for i, label in enumerate(labels_sorted)}
+    groups_sorted = sorted(groups, key=lambda g: min(rank_map.get(l, 999) for l in g))
+    top_label = labels_sorted[0]
+
+    label_to_group: dict[str, str] = {}
+
+    # Group #1 is reserved for the top-ranked item and any non-significant ties
+    # that share its maximal contiguous rank band.
+    label_to_group[top_label] = "#1"
+    for group in groups_sorted:
+        if top_label in group:
+            for label in group:
+                label_to_group[label] = "#1"
+
+    group_idx = 1
+    for group in groups_sorted:
+        if top_label in group:
+            continue
+        new_members = [l for l in group if l not in label_to_group]
+        if new_members:
+            group_id = f"#{group_idx + 1}"
+            group_idx += 1
+            for label in new_members:
+                label_to_group[label] = group_id
+
+    # Templates not in any CD group each get their own unique letter.
+    for label in labels_sorted:
+        if label not in label_to_group:
+            group_id = f"#{group_idx + 1}"
+            label_to_group[label] = group_id
+            group_idx += 1
+
+    return label_to_group
+
+
+def _exec_verdict(
+    label: str,
+    label_to_group: dict[str, str],
+    labels_sorted: list[str],
+) -> str:
+    """Human-readable verdict for a template in the executive summary."""
+    my_group = label_to_group.get(label, "?")
+    if my_group != "#1":
+        return "Significant drop-off"
+    group_1 = [l for l in labels_sorted if label_to_group.get(l) == "#1"]
+    others = [l for l in group_1 if l != label]
+    if not others:
+        return "Clear winner"
+    if len(others) == 1:
+        return f"Tied with {_truncate_label(others[0], 20)} as best"
+    return f"Tied with {len(others)} others as best"
+
+
+def _print_executive_summary(
+    bundle: AnalysisBundle,
+    *,
+    item_singular: str = "template",
+) -> None:
+    """Print a concise executive leaderboard after the stats-heavy blocks.
+
+    Shows each template's significance group, mean score, bootstrap CI,
+    optional stability (when seed data is present), and a plain-language
+    verdict so the user can assess results at a glance without scrolling up.
+    """
+    labels = list(bundle.rank_dist.labels)
+    n = len(labels)
+    if n < 2:
+        return
+
+    # Sort by mean score descending (best first).
+    means = bundle.robustness.mean
+    sort_idx = list(np.argsort(-means))
+    labels_sorted = [labels[i] for i in sort_idx]
+
+    # Significance group letters via CD groups.
+    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+
+    # Absolute CI bounds: advantage CI + reference offset → absolute scale.
+    ma = bundle.point_advantage
+    if ma.reference == "grand_mean":
+        ref_offset = float(np.mean(means))
+    else:
+        try:
+            ref_idx = ma.labels.index(ma.reference)
+            ref_offset = float(means[ref_idx])
+        except ValueError:
+            ref_offset = 0.0
+
+    # Seed variance for stability column (optional).
+    sv = bundle.seed_variance
+    has_stability = sv is not None
+
+    item_title = item_singular.capitalize()
+    _print_subsection(f"--- Executive Summary ({item_title} leaderboard) ---")
+
+    # Column widths.
+    tpl_w = min(28, max(16, max(len(l) for l in labels)))
+    grp_w = 4
+    mean_w = 6
+    ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
+    stab_w = 16
+
+    # Header row (no ANSI codes so widths match exactly).
+    header_parts = [
+        f"  {item_title:<{tpl_w}s}",
+        f"  {'Grp':^{grp_w}s}",
+        f"  {'Mean':>{mean_w}s}",
+        f"  {'Bootstrap CI':<{ci_w}s}",
+    ]
+    if has_stability:
+        header_parts.append(f"  {'Stability':<{stab_w}s}")
+    header_parts.append("  Verdict")
+    header = "".join(header_parts)
+    sep = "  " + "─" * (len(header) - 2)
+    print(header)
+    print(sep)
+
+    for label in labels_sorted:
+        orig_idx = labels.index(label)
+        mean_val = float(means[orig_idx])
+
+        # Absolute CI bounds.
+        try:
+            adv_idx = ma.labels.index(label)
+        except ValueError:
+            adv_idx = orig_idx
+        ci_lo = float(ma.bootstrap_ci_low[adv_idx]) + ref_offset
+        ci_hi = float(ma.bootstrap_ci_high[adv_idx]) + ref_offset
+        ci_str = f"[{ci_lo:.3f}, {ci_hi:.3f}]"
+
+        group = label_to_group.get(label, "?")
+        verdict = _exec_verdict(label, label_to_group, labels_sorted)
+
+        # Pre-format fixed-width parts, then optionally wrap with ANSI.
+        plain_label = f"{_truncate_label(label, tpl_w):<{tpl_w}s}"
+        plain_grp = f"{group:^{grp_w}s}"
+        if group == "#1" and _ANSI:
+            label_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_label}{_RESET}"
+            grp_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_grp}{_RESET}"
+            verdict_str = f"{_BRIGHT_GREEN}{verdict}{_RESET}"
+        else:
+            label_str = plain_label
+            grp_str = plain_grp
+            verdict_str = verdict
+
+        row = (
+            f"  {label_str}"
+            f"  {grp_str}"
+            f"  {mean_val:>{mean_w}.3f}"
+            f"  {ci_str:<{ci_w}s}"
+        )
+
+        if has_stability:
+            sv_labels = list(sv.labels)
+            if label in sv_labels:
+                sv_idx = sv_labels.index(label)
+                stab_str = _stability_emoji_label(float(sv.instability[sv_idx]))
+            else:
+                stab_str = "—"
+            row += f"  {stab_str:<{stab_w}s}"
+
+        row += f"  {verdict_str}"
+        print(row)
+
+    print(sep)
+    print()

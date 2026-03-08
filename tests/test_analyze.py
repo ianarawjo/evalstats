@@ -2,7 +2,12 @@ import numpy as np
 import pytest
 
 import promptstats as ps
-from promptstats.core.summary import _critical_difference_groups, _single_clear_winner_label, _print_critical_difference_groups
+from promptstats.core.summary import (
+    _assign_significance_groups,
+    _critical_difference_groups,
+    _print_critical_difference_groups,
+    _single_clear_winner_label,
+)
 from promptstats.core.paired import PairedDiffResult, PairwiseMatrix
 
 
@@ -390,6 +395,78 @@ def test_critical_difference_groups_can_have_overlapping_rank_bands():
         ["Prompt A", "Prompt B", "Prompt C"],
         ["Prompt C", "Prompt D", "Prompt E"],
     ]
+
+
+def test_assign_significance_groups_keeps_clear_winner_in_group_1():
+    labels_sorted = [
+        "qwen/qwen3-vl-8b-instruct",
+        "gpt-4.1-nano",
+        "google/gemma-3-4b-it",
+    ]
+
+    # Mirror the reported pattern:
+    # - qwen significantly better than both others
+    # - gpt and gemma not significantly different from each other
+    pairwise_results: dict[tuple[str, str], PairedDiffResult] = {
+        ("qwen/qwen3-vl-8b-instruct", "gpt-4.1-nano"): PairedDiffResult(
+            template_a="qwen/qwen3-vl-8b-instruct",
+            template_b="gpt-4.1-nano",
+            point_diff=0.1125,
+            std_diff=0.01,
+            ci_low=0.07,
+            ci_high=0.16,
+            p_value=0.0003,
+            test_method="bootstrap",
+            n_inputs=200,
+            per_input_diffs=np.zeros(200, dtype=float),
+            n_runs=1,
+            statistic="mean",
+            wilcoxon_p=1.684e-05,
+        ),
+        ("qwen/qwen3-vl-8b-instruct", "google/gemma-3-4b-it"): PairedDiffResult(
+            template_a="qwen/qwen3-vl-8b-instruct",
+            template_b="google/gemma-3-4b-it",
+            point_diff=0.1500,
+            std_diff=0.01,
+            ci_low=0.105,
+            ci_high=0.205,
+            p_value=0.0003,
+            test_method="bootstrap",
+            n_inputs=200,
+            per_input_diffs=np.zeros(200, dtype=float),
+            n_runs=1,
+            statistic="mean",
+            wilcoxon_p=1.876e-07,
+        ),
+        ("gpt-4.1-nano", "google/gemma-3-4b-it"): PairedDiffResult(
+            template_a="gpt-4.1-nano",
+            template_b="google/gemma-3-4b-it",
+            point_diff=0.0375,
+            std_diff=0.01,
+            ci_low=-0.015,
+            ci_high=0.085,
+            p_value=0.1465,
+            test_method="bootstrap",
+            n_inputs=200,
+            per_input_diffs=np.zeros(200, dtype=float),
+            n_runs=1,
+            statistic="mean",
+            wilcoxon_p=0.1394,
+        ),
+    }
+
+    pairwise = PairwiseMatrix(
+        labels=labels_sorted,
+        results=pairwise_results,
+        correction_method="holm",
+        friedman=None,
+    )
+
+    groups = _assign_significance_groups(pairwise, labels_sorted)
+
+    assert groups["qwen/qwen3-vl-8b-instruct"] == "#1"
+    assert groups["gpt-4.1-nano"] == "#2"
+    assert groups["google/gemma-3-4b-it"] == "#2"
 
 
 def test_single_clear_winner_label_detects_unique_statistical_winner():

@@ -293,6 +293,19 @@ def main():
         f"{result_3d.n_inputs} inputs × 1 run × {len(EVALUATOR_NAMES)} evaluators\n"
     )
 
+    print("=== analyze(..., evaluator_mode='per_evaluator') ===")
+    analysis_by_eval = pstats.analyze(
+        result_3d,
+        evaluator_mode="per_evaluator",
+        reference="grand_mean",
+        method="auto",
+        n_bootstrap=3_000,
+        correction="holm",
+        failure_threshold=0.5,
+        rng=np.random.default_rng(0),
+    )
+    pstats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
+
     print("=== analyze(..., evaluator_mode='aggregate') ===")
     analysis_agg = pstats.analyze(
         result_3d,
@@ -306,19 +319,6 @@ def main():
     )
     pstats.print_analysis_summary(analysis_agg, top_pairwise=8)
     print()
-
-    print("=== analyze(..., evaluator_mode='per_evaluator') ===")
-    analysis_by_eval = pstats.analyze(
-        result_3d,
-        evaluator_mode="per_evaluator",
-        reference="grand_mean",
-        method="auto",
-        n_bootstrap=3_000,
-        correction="holm",
-        failure_threshold=0.5,
-        rng=np.random.default_rng(0),
-    )
-    pstats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
 
     result_2d = pstats.BenchmarkResult(
         scores=result_3d.get_2d_scores(),
