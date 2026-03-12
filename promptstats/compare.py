@@ -300,8 +300,9 @@ def compare_prompts(
         Multiple-comparisons correction: ``'holm'`` (default),
         ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
     method : str
-        Bootstrap variant: ``'auto'`` (default, picks BCa for 15 ≤ M ≤ 200),
-        ``'bootstrap'`` (percentile), or ``'bca'``.
+        Bootstrap variant: ``'auto'`` (default, selects ``'smooth_bootstrap'``),
+        ``'bootstrap'`` (percentile), ``'bca'``, ``'bayes_bootstrap'``,
+        or ``'smooth_bootstrap'``.
     statistic : str
         Central-tendency statistic: ``'mean'`` (default) or ``'median'``.
     ci : float
@@ -644,12 +645,21 @@ def compare_models(
         row = scores_2d[i]
         point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
 
-        boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-        if resolved_method == "bca":
-            ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha_ci, statistic=statistic)
-        else:
+        if resolved_method == "bayes_bootstrap":
+            boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
             ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
             ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+        elif resolved_method == "smooth_bootstrap":
+            boot_stats = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+            ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
+            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+        else:
+            boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+            if resolved_method == "bca":
+                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha_ci, statistic=statistic)
+            else:
+                ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
+                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
 
         entity_stats[label] = EntityStats(
             mean=float(rob.mean[i]),

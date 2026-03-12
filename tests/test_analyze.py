@@ -226,7 +226,14 @@ def test_print_summary_includes_critical_difference_groups(capsys):
     out = capsys.readouterr().out
 
     assert "Statistically indistinguishable" in out
-    assert "[Prompt A ─ Prompt B ─ Prompt C]" in out
+    band_lines = [
+        line for line in out.splitlines()
+        if "#1" in line and "[" in line and "Prompt" in line
+    ]
+    assert any(
+        ("Prompt A" in line and "Prompt B" in line and "Prompt C" in line and "Prompt D" not in line)
+        for line in band_lines
+    )
     assert "#" in out
     assert "Prompt D" in out
 

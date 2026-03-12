@@ -89,8 +89,7 @@ def analyze(
     method : str
         Statistical method for CIs and p-values:
 
-        * ``'auto'`` (default) — BCa bootstrap for 15 ≤ M ≤ 200,
-          percentile bootstrap otherwise.
+                * ``'auto'`` (default) — smooth bootstrap.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
         * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).
@@ -182,7 +181,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "

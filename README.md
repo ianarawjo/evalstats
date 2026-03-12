@@ -33,8 +33,7 @@ The specific statistical tests the `promptstats.analyze()` method runs are:
 - **All pairwise prompt comparisons (paired by input)** via `all_pairwise(...)`:
     - Computes mean or median difference (mean by default), bootstrapped confidence interval, and p-value for every prompt template pair.
     - Resampling method defaults to `method="auto"`:
-        - **BCa bootstrap** for moderate-sized input counts (`15 <= M <= 200`)
-        - **Percentile bootstrap** otherwise
+        - **Smoothed bootstrap** (`method="smooth_bootstrap"`) in most situations. It has been verified with simulations that for eval-type data and small sample sizes especially, smoothed is superior to the other bootstrap methods considered (percentile, BCa, Bayesian). 
     - Multiple-comparisons correction for p-values defaults to **Holm** (`correction="holm"`). 
     - Also reports Wilcoxon signed-rank test p-value, in case you need it for people familiar with that test, although p-values from bootstrapped CIs are more robust
 

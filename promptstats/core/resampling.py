@@ -55,7 +55,7 @@ def _warn_smooth_bootstrap_fallback(function_name: str, reason: str) -> None:
     warnings.warn(
         f"{function_name} falling back to plain bootstrap; no KDE smoothing applied. Reason: {reason}.",
         UserWarning,
-        stacklevel=3,
+        stacklevel=2,
     )
 
 
@@ -119,12 +119,14 @@ def resolve_resampling_method(
 ) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]:
     """Resolve ``method='auto'`` to a concrete bootstrap method.
 
-    Uses BCa for moderate sample sizes where acceleration/bias correction is
-    typically beneficial, and percentile bootstrap otherwise.
+    ``method='auto'`` always resolves to ``'smooth_bootstrap'``.
+    ``sample_size`` and BCa threshold arguments are retained for API
+    compatibility.
     ``'bayes_bootstrap'`` and ``'smooth_bootstrap'`` are passed through unchanged.
     """
+    _ = (sample_size, bca_min_n, bca_max_n)
     if method == "auto":
-        return "bca" if bca_min_n <= sample_size <= bca_max_n else "bootstrap"
+        return "smooth_bootstrap"
     return method  # type: ignore[return-value]
 
 

@@ -283,8 +283,8 @@ def pairwise_differences(
     method : str
         Statistical method: ``'auto'`` (default), ``'bootstrap'``, ``'bca'``,
         ``'bayes_bootstrap'`` (Bayesian bootstrap), or ``'smooth_bootstrap'``
-        (smoothed bootstrap via Gaussian KDE).  ``'auto'`` selects BCa for
-        15 ≤ M ≤ 200.
+        (smoothed bootstrap via Gaussian KDE).  ``'auto'`` selects
+        ``'smooth_bootstrap'``.
     ci : float
         Confidence level for the interval (default 0.95).
     n_bootstrap : int

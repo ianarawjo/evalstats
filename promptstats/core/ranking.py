@@ -160,9 +160,10 @@ def bootstrap_ranks(
     method : str
         Resampling method for API consistency: ``'bootstrap'``, ``'bca'``,
         ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, or ``'auto'``.  Rank
-        distributions use multinomial (``'bootstrap'``/``'bca'``/``'auto'``),
+        distributions use multinomial (``'bootstrap'``/``'bca'``),
         Dirichlet (``'bayes_bootstrap'``), or smoothed KDE
-        (``'smooth_bootstrap'``) outer weights.
+        (``'smooth_bootstrap'``) outer weights. ``'auto'`` resolves to
+        ``'smooth_bootstrap'``.
     rng : np.random.Generator, optional
         Random number generator for reproducibility.
     statistic : str
@@ -180,13 +181,16 @@ def bootstrap_ranks(
     if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"}:
         raise ValueError(f"Unknown method: {method}")
 
+    m_inputs = scores.shape[1]
+    resolved_method = resolve_resampling_method(method, m_inputs)
+
     # ------------------------------------------------------------------ #
     # Seeded path (R >= 3)                                                #
     # ------------------------------------------------------------------ #
     if scores.ndim == 3 and scores.shape[2] >= 3:
-        if method == "bayes_bootstrap":
+        if resolved_method == "bayes_bootstrap":
             return _bayes_bootstrap_ranks_seeded(scores, labels, n_bootstrap, rng, statistic=statistic)
-        if method == "smooth_bootstrap":
+        if resolved_method == "smooth_bootstrap":
             return _smooth_bootstrap_ranks_seeded(scores, labels, n_bootstrap, rng, statistic=statistic)
         return _bootstrap_ranks_seeded(scores, labels, n_bootstrap, rng, statistic=statistic)
 
@@ -199,7 +203,7 @@ def bootstrap_ranks(
     n_templates, m_inputs = scores.shape
     rank_counts = np.zeros((n_templates, n_templates), dtype=float)
 
-    if method == "bayes_bootstrap":
+    if resolved_method == "bayes_bootstrap":
         # Dirichlet-weighted aggregation per template instead of
         # multinomial input resampling.
         exp_mat = rng.exponential(1.0, size=(n_bootstrap, m_inputs))   # (B, M)
@@ -212,7 +216,7 @@ def bootstrap_ranks(
             for b in range(n_bootstrap):
                 agg = scores @ weights[b]                               # (N,)
                 _accumulate_tie_aware_rank_mass(rank_counts, agg)
-    elif method == "smooth_bootstrap":
+    elif resolved_method == "smooth_bootstrap":
         # KDE-smoothed resample: resample inputs with replacement + add Gaussian noise.
         from scipy.stats import gaussian_kde as _kde
         # Compute per-template bandwidths from the M cell means.
@@ -405,7 +409,9 @@ def bootstrap_point_advantage(
     ci : float
         Confidence level (default 0.95).
     method : str
-        CI method: ``'auto'``, ``'bootstrap'``, or ``'bca'``.
+        CI method: ``'auto'``, ``'bootstrap'``, ``'bca'``,
+        ``'bayes_bootstrap'``, or ``'smooth_bootstrap'``. ``'auto'``
+        resolves to ``'smooth_bootstrap'``.
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band (default ``(10, 90)``).
     rng : np.random.Generator, optional
@@ -425,7 +431,8 @@ def bootstrap_point_advantage(
     # Seeded path (R >= 3)                                                #
     # ------------------------------------------------------------------ #
     if scores.ndim == 3 and scores.shape[2] >= 3:
-        if method == "bayes_bootstrap":
+        resolved_method = resolve_resampling_method(method, scores.shape[1])
+        if resolved_method == "bayes_bootstrap":
             return _bayes_bootstrap_point_advantage_seeded(
                 scores, labels,
                 reference=reference,
@@ -435,7 +442,7 @@ def bootstrap_point_advantage(
                 rng=rng,
                 statistic=statistic,
             )
-        if method == "smooth_bootstrap":
+        if resolved_method == "smooth_bootstrap":
             return _smooth_bootstrap_point_advantage_seeded(
                 scores, labels,
                 reference=reference,
@@ -452,7 +459,7 @@ def bootstrap_point_advantage(
             ci=ci,
             spread_percentiles=spread_percentiles,
             rng=rng,
-            method=method,
+            method=resolved_method,
             statistic=statistic,
         )
 
@@ -545,13 +552,12 @@ def _bootstrap_point_advantage_seeded(
     ci: float,
     spread_percentiles: tuple[float, float],
     rng: np.random.Generator,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "auto"],
+    method: Literal["bootstrap", "bca"],
     statistic: Literal["mean", "median"],
 ) -> PointAdvantageResult:
     """Point advantage with nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
     N, M, _ = scores.shape
     alpha = 1 - ci
-    resolved_method = resolve_resampling_method(method, M)
 
     # ---- Point estimates from cell means --------------------------------
     # Within-cell aggregation always uses mean (collapsing R runs per cell).
@@ -602,10 +608,10 @@ def _bootstrap_point_advantage_seeded(
 
     for i in range(N):
         boot_i = boot_point_advs[:, i]      # (B,)
-        if resolved_method == "bootstrap":
+        if method == "bootstrap":
             ci_low[i] = np.percentile(boot_i, 100 * alpha / 2)
             ci_high[i] = np.percentile(boot_i, 100 * (1 - alpha / 2))
-        elif resolved_method == "bca":
+        elif method == "bca":
             # Jackknife over inputs (outer sampling unit) using cell-point advantages.
             ci_low[i], ci_high[i] = bca_interval_1d(
                 advantages[i], float(point_adv[i]), boot_i, alpha,

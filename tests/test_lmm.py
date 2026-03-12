@@ -583,15 +583,15 @@ def test_lmm_nan_high_missing_fraction_still_runs():
 # ---------------------------------------------------------------------------
 
 def test_bootstrap_rejects_nan_cells():
-    """analyze() with default bootstrap method should raise ValueError on NaN scores."""
+    """analyze() with default resampling method should raise ValueError on NaN scores."""
     result = _make_result_with_missing(np.random.default_rng(300), n_inputs=20)
     assert result.has_missing
     with pytest.raises(ValueError, match="NaN"):
-        analyze(result)  # default method='auto' → bootstrap
+        analyze(result)  # default method='auto' → smooth_bootstrap
 
 
 def test_bootstrap_method_auto_rejects_nan():
-    """method='auto' should also reject NaN since it routes to bootstrap."""
+    """method='auto' should also reject NaN since it routes to smooth bootstrap."""
     result = _make_result_with_missing(np.random.default_rng(310), n_inputs=20)
     with pytest.raises(ValueError, match="NaN"):
         analyze(result, method="auto")
