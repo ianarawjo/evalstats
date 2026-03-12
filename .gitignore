@@ -12,3 +12,4 @@
 *.deepeval/
 dist/
 build/
+scripts/pypi_release_checks.sh
