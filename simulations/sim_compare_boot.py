@@ -10,6 +10,7 @@ Methods:
   bca              Bias-corrected and accelerated (BCa) bootstrap
   bayes_bootstrap  Bayesian (Dirichlet-weighted) bootstrap
   smooth_bootstrap Smoothed (KDE-perturbed) bootstrap
+    newcombe_score   Newcombe score CI for paired binary differences
 
 Eval output types:
   binary      Bernoulli 0/1 (pass/fail judgements)
@@ -63,7 +64,8 @@ with warnings.catch_warnings():
 
 METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]
 WILSON_METHOD = "wilson"
-REPORT_METHODS = METHODS + [WILSON_METHOD]
+NEWCOMBE_METHOD = "newcombe_score"
+REPORT_METHODS = METHODS + [WILSON_METHOD, NEWCOMBE_METHOD]
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
 
 
@@ -371,6 +373,40 @@ def _wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     return low, high
 
 
+def _newcombe_paired_score_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
+    """
+    Newcombe score CI for paired binary difference p(A=1) - p(B=1).
+
+    Uses the discordant-pairs formulation:
+      d = (n10 - n01) / n = (m / n) * (2*theta - 1),
+    where m = n10 + n01 and theta = n10 / m.
+    A Wilson score interval is computed for theta and then transformed back
+    to the difference scale.
+    """
+    if a.ndim != 1 or b.ndim != 1 or a.shape != b.shape:
+        raise ValueError("Newcombe paired score CI expects two 1D arrays with equal shape.")
+
+    n = int(a.shape[0])
+    if n <= 0:
+        return (0.0, 0.0)
+
+    a_bin = (a >= 0.5).astype(int)
+    b_bin = (b >= 0.5).astype(int)
+
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    m = n10 + n01
+
+    if m == 0:
+        return (0.0, 0.0)
+
+    theta_low, theta_high = _wilson_ci(successes=n10, n=m, alpha=alpha)
+    scale = m / n
+    low = scale * (2.0 * theta_low - 1.0)
+    high = scale * (2.0 * theta_high - 1.0)
+    return float(low), float(high)
+
+
 def _pairwise_ci(
     a: np.ndarray,
     b: np.ndarray,
@@ -544,6 +580,10 @@ def run_pairwise_simulation(
 
             covered: dict[str, int] = {m: 0 for m in METHODS}
             total_w: dict[str, float] = {m: 0.0 for m in METHODS}
+            add_newcombe = scenario.eval_type == "binary" and runs == 1 and statistic == "mean"
+            if add_newcombe:
+                covered[NEWCOMBE_METHOD] = 0
+                total_w[NEWCOMBE_METHOD] = 0.0
 
             for _ in range(n_reps):
                 a, b = scenario.generate_pair(rng, n, runs)
@@ -569,7 +609,19 @@ def run_pairwise_simulation(
                         covered[method] += 1
                     total_w[method] += ci_high - ci_low
 
-            for method in METHODS:
+                if add_newcombe:
+                    try:
+                        ci_low, ci_high = _newcombe_paired_score_ci(a[:, 0], b[:, 0], alpha)
+                    except Exception:
+                        obs = float(np.mean(a[:, 0] - b[:, 0]))
+                        ci_low = ci_high = obs
+
+                    if ci_low <= scenario.true_diff <= ci_high:
+                        covered[NEWCOMBE_METHOD] += 1
+                    total_w[NEWCOMBE_METHOD] += ci_high - ci_low
+
+            active_methods = METHODS + ([NEWCOMBE_METHOD] if add_newcombe else [])
+            for method in active_methods:
                 results.append(
                     SimResult(
                         eval_type=scenario.eval_type,
@@ -889,7 +941,13 @@ def main() -> None:
             f"= {bootstrap_calls:,} CI calls, plus {wilson_calls:,} Wilson calls (binary only) …"
         )
     else:
-        print(f"\nRunning {cells} cells × {args.reps} reps × {len(METHODS)} methods = {bootstrap_calls:,} CI calls …")
+        binary_cells = n_by_type["binary"] * len(args.sizes)
+        newcombe_calls = binary_cells * args.reps if args.runs == 1 and args.statistic == "mean" else 0
+        extra = f", plus {newcombe_calls:,} Newcombe calls (pairwise binary, runs=1)" if newcombe_calls else ""
+        print(
+            f"\nRunning {cells} cells × {args.reps} reps × {len(METHODS)} methods "
+            f"= {bootstrap_calls:,} CI calls{extra} …"
+        )
 
     if args.estimand == "mean":
         results = run_simulation(
