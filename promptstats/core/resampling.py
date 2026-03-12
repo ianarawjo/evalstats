@@ -23,6 +23,83 @@ def _weighted_median(values: np.ndarray, weights: np.ndarray) -> float:
     return float(values[sorted_idx[min(idx, len(values) - 1)]])
 
 
+def _weighted_medians_rows(values: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    """Row-wise weighted medians for 2-D *values* and matching *weights*."""
+    sorted_idx = np.argsort(values, axis=1)
+    sorted_vals = np.take_along_axis(values, sorted_idx, axis=1)
+    sorted_w = np.take_along_axis(weights, sorted_idx, axis=1)
+    cumsum_w = np.cumsum(sorted_w, axis=1)
+    med_idx = np.argmax(cumsum_w >= 0.5, axis=1)
+    row_idx = np.arange(values.shape[0])
+    return sorted_vals[row_idx, med_idx]
+
+
+def _percentile_interval(boot_stats: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Equal-tailed percentile interval from bootstrap replicates."""
+    return (
+        float(np.percentile(boot_stats, 100 * alpha / 2)),
+        float(np.percentile(boot_stats, 100 * (1 - alpha / 2))),
+    )
+
+
+def _reduce_rows(values: np.ndarray, statistic: Literal["mean", "median"]) -> np.ndarray:
+    """Reduce 2-D rows via mean or median."""
+    if statistic == "median":
+        return np.median(values, axis=1)
+    return values.mean(axis=1)
+
+
+def _nested_cell_mean_diffs(
+    scores_a: np.ndarray,
+    scores_b: np.ndarray,
+    run_idx: np.ndarray,
+    input_idx: np.ndarray | None = None,
+) -> np.ndarray:
+    """Compute bootstrap-wise per-input diffs of inner-resampled cell means.
+
+    Parameters
+    ----------
+    scores_a, scores_b : np.ndarray
+        Arrays of shape ``(M, R)``.
+    run_idx : np.ndarray
+        Inner resample run indices with shape ``(B, M, R)``.
+    input_idx : np.ndarray, optional
+        Optional outer input resample indices with shape ``(B, M)``.
+        If omitted, no outer input resampling is performed.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(B, M)`` containing paired cell-mean differences.
+    """
+    n_bootstrap, M, _ = run_idx.shape
+    if input_idx is None:
+        m_range = np.arange(M)[np.newaxis, :, np.newaxis]         # (1, M, 1)
+        resampled_a = scores_a[m_range, run_idx]                  # (B, M, R)
+        resampled_b = scores_b[m_range, run_idx]                  # (B, M, R)
+    else:
+        sel_a = scores_a[input_idx]                               # (B, M, R)
+        sel_b = scores_b[input_idx]                               # (B, M, R)
+        b_range = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]  # (B, 1, 1)
+        m_range = np.arange(M)[np.newaxis, :, np.newaxis]         # (1, M, 1)
+        resampled_a = sel_a[b_range, m_range, run_idx]            # (B, M, R)
+        resampled_b = sel_b[b_range, m_range, run_idx]            # (B, M, R)
+    return resampled_a.mean(axis=2) - resampled_b.mean(axis=2)    # (B, M)
+
+
+def _inner_resample_cell_means(
+    scores: np.ndarray,
+    run_idx: np.ndarray,
+    input_idx: np.ndarray | None = None,
+) -> np.ndarray:
+    """Inner-resample per-input cell means for scores of shape ``(N, M, R)``."""
+    _, M, _ = scores.shape
+    selected = scores if input_idx is None else scores[:, input_idx, :]
+    m_range = np.arange(M)[:, np.newaxis]                         # (M, 1)
+    resampled = selected[:, m_range, run_idx]                     # (N, M, R)
+    return resampled.mean(axis=2)                                 # (N, M)
+
+
 def resolve_resampling_method(
     method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
     sample_size: int,
@@ -108,16 +185,8 @@ def bayes_bootstrap_means_1d(
     if statistic == "mean":
         return weights @ values                                     # (B,)
 
-    # Weighted median: sort once by value, then walk the cumulative-weight CDF.
-    sorted_idx = np.argsort(values)
-    sorted_vals = values[sorted_idx]
-    sorted_w = weights[:, sorted_idx]                              # (B, n)
-    cum_w = np.cumsum(sorted_w, axis=1)                            # (B, n)
-    boot_stats = np.empty(n_bootstrap)
-    for b in range(n_bootstrap):
-        idx = int(np.searchsorted(cum_w[b], 0.5))
-        boot_stats[b] = sorted_vals[min(idx, n - 1)]
-    return boot_stats
+    row_values = np.broadcast_to(values, (n_bootstrap, n))
+    return _weighted_medians_rows(row_values, weights)
 
 
 def bayes_bootstrap_diffs_nested(
@@ -156,14 +225,8 @@ def bayes_bootstrap_diffs_nested(
 
     # Inner resample: which R runs for each (bootstrap, input) pair.
     run_idx = rng.integers(0, R, size=(n_bootstrap, M, R))         # (B, M, R)
-    m_range = np.arange(M)[np.newaxis, :, np.newaxis]              # (1, M, 1)
-
     # Gather inner-resampled runs from all M original inputs.
-    resampled_a = scores_a[m_range, run_idx]                       # (B, M, R)
-    resampled_b = scores_b[m_range, run_idx]                       # (B, M, R)
-
-    # Cell means (always mean over R inner-resampled runs).
-    diffs = resampled_a.mean(axis=2) - resampled_b.mean(axis=2)   # (B, M)
+    diffs = _nested_cell_mean_diffs(scores_a, scores_b, run_idx)   # (B, M)
 
     # Outer Dirichlet weights for the M inputs.
     exp_mat = rng.exponential(1.0, size=(n_bootstrap, M))          # (B, M)
@@ -172,16 +235,7 @@ def bayes_bootstrap_diffs_nested(
     if statistic == "mean":
         return (outer_weights * diffs).sum(axis=1)                 # (B,)
 
-    # Weighted median per bootstrap sample.
-    sorted_idx = np.argsort(diffs, axis=1)                         # (B, M)
-    sorted_diffs = np.take_along_axis(diffs, sorted_idx, axis=1)
-    sorted_w = np.take_along_axis(outer_weights, sorted_idx, axis=1)
-    cumsum_w = np.cumsum(sorted_w, axis=1)                         # (B, M)
-    boot_stats = np.empty(n_bootstrap)
-    for b in range(n_bootstrap):
-        idx = int(np.searchsorted(cumsum_w[b], 0.5))
-        boot_stats[b] = sorted_diffs[b, min(idx, M - 1)]
-    return boot_stats
+    return _weighted_medians_rows(diffs, outer_weights)
 
 
 def bayes_bootstrap_resample_cell_means_once(
@@ -208,9 +262,7 @@ def bayes_bootstrap_resample_cell_means_once(
     """
     N, M, R = scores.shape
     run_idx = rng.integers(0, R, size=(M, R))                      # (M, R)
-    m_range = np.arange(M)[:, np.newaxis]                          # (M, 1)
-    resampled = scores[:, m_range, run_idx]                        # (N, M, R)
-    cell_means = resampled.mean(axis=2)                            # (N, M)
+    cell_means = _inner_resample_cell_means(scores, run_idx)       # (N, M)
 
     exp_samp = rng.exponential(1.0, size=M)
     outer_weights = exp_samp / exp_samp.sum()                      # (M,)
@@ -311,18 +363,9 @@ def smooth_bootstrap_diffs_nested(
 
     input_idx = rng.integers(0, M, size=(n_bootstrap, M))         # (B, M)
     run_idx = rng.integers(0, R, size=(n_bootstrap, M, R))        # (B, M, R)
-    sel_a = scores_a[input_idx]                                    # (B, M, R)
-    sel_b = scores_b[input_idx]                                    # (B, M, R)
-    b_range = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]   # (B, 1, 1)
-    m_range = np.arange(M)[np.newaxis, :, np.newaxis]             # (1, M, 1)
-    resampled_a = sel_a[b_range, m_range, run_idx]                 # (B, M, R)
-    resampled_b = sel_b[b_range, m_range, run_idx]                 # (B, M, R)
-
-    diffs = resampled_a.mean(axis=2) - resampled_b.mean(axis=2)   # (B, M)
+    diffs = _nested_cell_mean_diffs(scores_a, scores_b, run_idx, input_idx)   # (B, M)
     diffs += rng.normal(0.0, h, size=(n_bootstrap, M))
-    if statistic == "median":
-        return np.median(diffs, axis=1)
-    return diffs.mean(axis=1)
+    return _reduce_rows(diffs, statistic)
 
 
 def smooth_bootstrap_resample_cell_means_once(
@@ -354,10 +397,7 @@ def smooth_bootstrap_resample_cell_means_once(
     input_idx = rng.integers(0, M, size=M)      # (M,)
     run_idx = rng.integers(0, R, size=(M, R))   # (M, R)
 
-    sel = scores[:, input_idx, :]               # (N, M, R)
-    m_range = np.arange(M)[:, np.newaxis]       # (M, 1)
-    resampled = sel[:, m_range, run_idx]        # (N, M, R)
-    cell_means = resampled.mean(axis=2)         # (N, M)
+    cell_means = _inner_resample_cell_means(scores, run_idx, input_idx)  # (N, M)
 
     for i in range(N):
         if bandwidths[i] > 0.0:
@@ -383,23 +423,14 @@ def bootstrap_ci_1d(
     """
     if method == "bayes_bootstrap":
         boot_stats = bayes_bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
-        return (
-            float(np.percentile(boot_stats, 100 * alpha / 2)),
-            float(np.percentile(boot_stats, 100 * (1 - alpha / 2))),
-        )
+        return _percentile_interval(boot_stats, alpha)
     if method == "smooth_bootstrap":
         boot_stats = smooth_bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
-        return (
-            float(np.percentile(boot_stats, 100 * alpha / 2)),
-            float(np.percentile(boot_stats, 100 * (1 - alpha / 2))),
-        )
+        return _percentile_interval(boot_stats, alpha)
     boot_stats = bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
     if method == "bca":
         return bca_interval_1d(values, observed_stat, boot_stats, alpha, statistic=statistic)
-    return (
-        float(np.percentile(boot_stats, 100 * alpha / 2)),
-        float(np.percentile(boot_stats, 100 * (1 - alpha / 2))),
-    )
+    return _percentile_interval(boot_stats, alpha)
 
 
 def bca_interval_1d(
@@ -504,23 +535,8 @@ def bootstrap_diffs_nested(
     # Shape (n_bootstrap, M, R).
     run_idx = rng.integers(0, R, size=(n_bootstrap, M, R))
 
-    # Gather inputs: scores_a[input_idx] broadcasts over the (B, M) index
-    # into axis 0 of scores_a (shape M, R), giving shape (B, M, R).
-    sel_a = scores_a[input_idx]   # (B, M, R)
-    sel_b = scores_b[input_idx]   # (B, M, R)
-
-    # Gather runs: for each (b, k), pick the R run indices in run_idx[b, k].
-    # sel_a[b, k, run_idx[b, k, r]] for all b, k, r.
-    b_range = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]  # (B, 1, 1)
-    m_range = np.arange(M)[np.newaxis, :, np.newaxis]            # (1, M, 1)
-    resampled_a = sel_a[b_range, m_range, run_idx]               # (B, M, R)
-    resampled_b = sel_b[b_range, m_range, run_idx]               # (B, M, R)
-
-    # Cell means (always mean over R runs) and per-input paired differences.
-    diffs = resampled_a.mean(axis=2) - resampled_b.mean(axis=2)  # (B, M)
-    if statistic == "median":
-        return np.median(diffs, axis=1)                          # (B,)
-    return diffs.mean(axis=1)                                    # (B,)
+    diffs = _nested_cell_mean_diffs(scores_a, scores_b, run_idx, input_idx)  # (B, M)
+    return _reduce_rows(diffs, statistic)                                  # (B,)
 
 
 def nested_resample_cell_means_once(
@@ -536,7 +552,4 @@ def nested_resample_cell_means_once(
     input_idx = rng.integers(0, M, size=M)      # (M,)
     run_idx = rng.integers(0, R, size=(M, R))   # (M, R)
 
-    sel = scores[:, input_idx, :]               # (N, M, R)
-    m_range = np.arange(M)[:, np.newaxis]       # (M, 1)
-    resampled = sel[:, m_range, run_idx]        # (N, M, R)
-    return resampled.mean(axis=2)               # (N, M)
+    return _inner_resample_cell_means(scores, run_idx, input_idx)  # (N, M)
