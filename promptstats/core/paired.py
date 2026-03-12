@@ -19,7 +19,17 @@ from typing import Literal, Optional
 import numpy as np
 from scipy.stats import rankdata, friedmanchisquare, studentized_range
 
-from .resampling import bca_interval_1d, bootstrap_diffs_nested, bootstrap_means_1d, resolve_resampling_method, _stat
+from .resampling import (
+    bca_interval_1d,
+    bayes_bootstrap_means_1d,
+    bayes_bootstrap_diffs_nested,
+    smooth_bootstrap_means_1d,
+    smooth_bootstrap_diffs_nested,
+    bootstrap_diffs_nested,
+    bootstrap_means_1d,
+    resolve_resampling_method,
+    _stat,
+)
 from .stats_utils import correct_pvalues
 
 
@@ -251,7 +261,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -271,8 +281,10 @@ def pairwise_differences(
     label_a, label_b : str
         Human-readable labels for the templates.
     method : str
-        Statistical method: ``'auto'`` (default), ``'bootstrap'``, or
-        ``'bca'``.  ``'auto'`` selects BCa for 15 ≤ M ≤ 200.
+        Statistical method: ``'auto'`` (default), ``'bootstrap'``, ``'bca'``,
+        ``'bayes_bootstrap'`` (Bayesian bootstrap), or ``'smooth_bootstrap'``
+        (smoothed bootstrap via Gaussian KDE).  ``'auto'`` selects BCa for
+        15 ≤ M ≤ 200.
     ci : float
         Confidence level for the interval (default 0.95).
     n_bootstrap : int
@@ -281,8 +293,7 @@ def pairwise_differences(
         Random number generator for reproducibility.
     statistic : str
         Point-estimate and bootstrap statistic: ``'mean'`` (default) or
-        ``'mean'``.  Median is preferred for LLM score distributions, which
-        are frequently non-normal.
+        ``'median'``.
 
     Returns
     -------
@@ -349,6 +360,34 @@ def pairwise_differences(
         p_value = float((extreme_count + 1) / (n_bootstrap + 1))
         test_name = f"bca bootstrap (n={n_bootstrap})"
 
+    elif resolved_method == "bayes_bootstrap":
+        boot_stats = bayes_bootstrap_means_1d(
+            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+        )
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        centered_diffs = diffs - point_d
+        boot_centered_stats = bayes_bootstrap_means_1d(
+            centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+        )
+        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point_d))
+        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
+        test_name = f"bayesian bootstrap (n={n_bootstrap})"
+
+    elif resolved_method == "smooth_bootstrap":
+        boot_stats = smooth_bootstrap_means_1d(
+            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+        )
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        centered_diffs = diffs - point_d
+        boot_centered_stats = smooth_bootstrap_means_1d(
+            centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+        )
+        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point_d))
+        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
+        test_name = f"smooth bootstrap (n={n_bootstrap})"
+
     else:
         raise ValueError(f"Unknown method: {method}")
 
@@ -381,7 +420,7 @@ def _pairwise_diffs_seeded(
     label_a: str,
     label_b: str,
     *,
-    method: Literal["bootstrap", "bca", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
     ci: float,
     n_bootstrap: int,
     rng: np.random.Generator,
@@ -412,21 +451,21 @@ def _pairwise_diffs_seeded(
 
     resolved_method = resolve_resampling_method(method, M)
 
-    # Nested bootstrap replicates of the statistic of paired cell-mean differences.
-    boot_stats = bootstrap_diffs_nested(
-        scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
-    )
-
     if resolved_method == "bootstrap":
+        boot_stats = bootstrap_diffs_nested(
+            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
+        )
         ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
         ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        # Null-centred: shift bootstrap distribution to have statistic = 0.
         boot_centered = boot_stats - point_d
         extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
         p_value = float((extreme_count + 1) / (n_bootstrap + 1))
         test_name = f"nested bootstrap (n={n_bootstrap}, R={R})"
 
     elif resolved_method == "bca":
+        boot_stats = bootstrap_diffs_nested(
+            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
+        )
         # BCa: jackknife over inputs (the outer sampling unit) using cell_diffs.
         ci_low, ci_high = bca_interval_1d(
             cell_diffs, point_d, boot_stats, alpha, statistic=statistic,
@@ -435,6 +474,29 @@ def _pairwise_diffs_seeded(
         extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
         p_value = float((extreme_count + 1) / (n_bootstrap + 1))
         test_name = f"nested bca bootstrap (n={n_bootstrap}, R={R})"
+
+    elif resolved_method == "bayes_bootstrap":
+        # Bayesian bootstrap: Dirichlet outer weights replace multinomial input resampling.
+        boot_stats = bayes_bootstrap_diffs_nested(
+            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
+        )
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        boot_centered = boot_stats - point_d
+        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
+        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
+        test_name = f"nested bayesian bootstrap (n={n_bootstrap}, R={R})"
+
+    elif resolved_method == "smooth_bootstrap":
+        boot_stats = smooth_bootstrap_diffs_nested(
+            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
+        )
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        boot_centered = boot_stats - point_d
+        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
+        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
+        test_name = f"nested smooth bootstrap (n={n_bootstrap}, R={R})"
 
     else:
         raise ValueError(f"Unknown method: {method}")
@@ -464,7 +526,7 @@ def _pairwise_diffs_seeded(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -563,7 +625,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",

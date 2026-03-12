@@ -22,7 +22,7 @@ from .core.types import BenchmarkResult, MultiModelBenchmark
 from .core.router import analyze, AnalysisBundle, MultiModelBundle
 from .core.summary import print_analysis_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
-from .core.resampling import bootstrap_means_1d, bca_interval_1d, resolve_resampling_method
+from .core.resampling import bayes_bootstrap_means_1d, smooth_bootstrap_means_1d, bootstrap_means_1d, bca_interval_1d, resolve_resampling_method
 
 
 # ---------------------------------------------------------------------------
@@ -267,7 +267,7 @@ def compare_prompts(
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
-    method: Literal["bootstrap", "bca", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
     rng: Optional[np.random.Generator] = None,
@@ -441,13 +441,21 @@ def compare_prompts(
         row = scores_2d[i]  # (M,) cell means
         point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
 
-        boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-
-        if resolved_method == "bca":
-            ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha_ci, statistic=statistic)
-        else:
+        if resolved_method == "bayes_bootstrap":
+            boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
             ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
             ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+        elif resolved_method == "smooth_bootstrap":
+            boot_stats = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+            ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
+            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+        else:
+            boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+            if resolved_method == "bca":
+                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha_ci, statistic=statistic)
+            else:
+                ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
+                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
 
         entity_stats[label] = EntityStats(
             mean=float(rob.mean[i]),
@@ -488,7 +496,7 @@ def compare_models(
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
-    method: Literal["bootstrap", "bca", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",

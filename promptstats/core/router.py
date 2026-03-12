@@ -44,7 +44,7 @@ def analyze(
     token_usage: Optional[TokenUsage] = None,
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
-    method: Literal["bootstrap", "bca", "auto", "lmm"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm"] = "auto",
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
@@ -93,6 +93,14 @@ def analyze(
           percentile bootstrap otherwise.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
+        * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).
+          Uses Dirichlet(1,...,1) weights instead of multinomial resampling.
+          Provides smoother CI coverage for small sample sizes (M < 15)
+          compared to the standard percentile bootstrap.
+        * ``'smooth_bootstrap'`` — Smoothed bootstrap via Gaussian KDE
+          (Scott's rule bandwidth).  Resamples observations with replacement
+          and adds Gaussian noise, smoothing the discrete empirical
+          distribution.  May improve coverage for continuous data.
         * ``'lmm'`` — Linear Mixed Model.  Fits
           ``score ~ template + (1|input)`` on cell-mean scores.
           Produces Wald CIs via the fixed-effect covariance matrix.
@@ -174,11 +182,12 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method != "lmm" and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
-            "Consider using method='lmm' for more stable inference with small samples.",
+            "Consider using method='bayes_bootstrap', method='smooth_bootstrap', or method='lmm' "
+            "for more stable inference with small samples.",
             UserWarning,
             stacklevel=2,
         )
@@ -602,7 +611,7 @@ def _analyze_single(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "auto", "lmm"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm"],
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
@@ -719,7 +728,7 @@ def _analyze_multi_model(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
