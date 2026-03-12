@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Literal
 
 import numpy as np
@@ -47,6 +48,15 @@ def _reduce_rows(values: np.ndarray, statistic: Literal["mean", "median"]) -> np
     if statistic == "median":
         return np.median(values, axis=1)
     return values.mean(axis=1)
+
+
+def _warn_smooth_bootstrap_fallback(function_name: str, reason: str) -> None:
+    """Warn that a smooth-bootstrap path fell back to plain bootstrap."""
+    warnings.warn(
+        f"{function_name} falling back to plain bootstrap; no KDE smoothing applied. Reason: {reason}.",
+        UserWarning,
+        stacklevel=3,
+    )
 
 
 def _nested_cell_mean_diffs(
@@ -306,10 +316,21 @@ def smooth_bootstrap_means_1d(
 
     n = len(values)
     std_val = float(np.std(values, ddof=1)) if n > 1 else 0.0
-    if std_val == 0.0 or n < 2:
+    if n < 2 or not np.isfinite(std_val) or std_val <= 0.0:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_means_1d",
+            f"n={n}, sample std={std_val:.6g}",
+        )
         return bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
 
-    h = float(gaussian_kde(values).factor * std_val)
+    try:
+        h = float(gaussian_kde(values).factor * std_val)
+    except np.linalg.LinAlgError as exc:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_means_1d",
+            f"KDE failed with {exc.__class__.__name__}: {exc}",
+        )
+        return bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
     idx = rng.integers(0, n, size=(n_bootstrap, n))
     noise = rng.normal(0.0, h, size=(n_bootstrap, n))
     samples = values[idx] + noise          # (B, n)
@@ -356,10 +377,21 @@ def smooth_bootstrap_diffs_nested(
     M, R = scores_a.shape
     cell_diffs = scores_a.mean(axis=1) - scores_b.mean(axis=1)   # (M,)
     std_val = float(np.std(cell_diffs, ddof=1)) if M > 1 else 0.0
-    if std_val == 0.0 or M < 2:
+    if M < 2 or not np.isfinite(std_val) or std_val <= 0.0:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_diffs_nested",
+            f"M={M}, std(cell_diffs)={std_val:.6g}",
+        )
         return bootstrap_diffs_nested(scores_a, scores_b, n_bootstrap, rng, statistic=statistic)
 
-    h = float(gaussian_kde(cell_diffs).factor * std_val)
+    try:
+        h = float(gaussian_kde(cell_diffs).factor * std_val)
+    except np.linalg.LinAlgError as exc:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_diffs_nested",
+            f"KDE failed with {exc.__class__.__name__}: {exc}",
+        )
+        return bootstrap_diffs_nested(scores_a, scores_b, n_bootstrap, rng, statistic=statistic)
 
     input_idx = rng.integers(0, M, size=(n_bootstrap, M))         # (B, M)
     run_idx = rng.integers(0, R, size=(n_bootstrap, M, R))        # (B, M, R)

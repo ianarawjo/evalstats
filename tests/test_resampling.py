@@ -1,12 +1,16 @@
 import numpy as np
+import pytest
 
 from promptstats.core.resampling import (
+    bayes_bootstrap_means_1d,
     bca_interval_1d,
     bootstrap_ci_1d,
     bootstrap_diffs_nested,
     bootstrap_means_1d,
     nested_resample_cell_means_once,
     resolve_resampling_method,
+    smooth_bootstrap_diffs_nested,
+    smooth_bootstrap_means_1d,
 )
 
 
@@ -198,3 +202,118 @@ def test_bootstrap_ci_1d_bca_skewed_differs_from_percentile_bootstrap():
     # Both intervals should still be ordered.
     assert perc_low <= perc_high
     assert bca_low <= bca_high
+
+
+def test_smooth_bootstrap_means_1d_constant_values_matches_bootstrap_fallback():
+    values = np.full(12, 4.2)
+    n_bootstrap = 300
+
+    with pytest.warns(UserWarning, match="smooth_bootstrap_means_1d falling back"):
+        smooth = smooth_bootstrap_means_1d(
+            values,
+            n_bootstrap=n_bootstrap,
+            rng=np.random.default_rng(77),
+        )
+    standard = bootstrap_means_1d(
+        values,
+        n_bootstrap=n_bootstrap,
+        rng=np.random.default_rng(77),
+    )
+
+    np.testing.assert_allclose(smooth, standard)
+    np.testing.assert_allclose(smooth, np.full(n_bootstrap, 4.2))
+
+
+def test_bayes_bootstrap_means_1d_constant_values_are_degenerate():
+    values = np.full(9, -1.75)
+
+    boot_mean = bayes_bootstrap_means_1d(
+        values,
+        n_bootstrap=500,
+        rng=np.random.default_rng(11),
+        statistic="mean",
+    )
+    boot_median = bayes_bootstrap_means_1d(
+        values,
+        n_bootstrap=500,
+        rng=np.random.default_rng(12),
+        statistic="median",
+    )
+
+    np.testing.assert_allclose(boot_mean, np.full(500, -1.75))
+    np.testing.assert_allclose(boot_median, np.full(500, -1.75))
+
+
+def test_smooth_bootstrap_diffs_nested_constant_diffs_warns_and_falls_back():
+    # Force deterministic fallback via M < 2.
+    rng = np.random.default_rng(901)
+    scores_b = rng.normal(size=(1, 5))
+    scores_a = scores_b + 2.0
+    n_bootstrap = 250
+
+    with pytest.warns(UserWarning, match="smooth_bootstrap_diffs_nested falling back"):
+        smooth = smooth_bootstrap_diffs_nested(
+            scores_a,
+            scores_b,
+            n_bootstrap=n_bootstrap,
+            rng=np.random.default_rng(333),
+        )
+
+    standard = bootstrap_diffs_nested(
+        scores_a,
+        scores_b,
+        n_bootstrap=n_bootstrap,
+        rng=np.random.default_rng(333),
+    )
+    np.testing.assert_allclose(smooth, standard)
+
+
+def test_bayes_and_smooth_bootstrap_ci_similar_to_standard_for_large_n():
+    rng_data = np.random.default_rng(2026)
+    values = rng_data.normal(loc=1.0, scale=0.75, size=200)
+    observed_mean = float(values.mean())
+
+    alpha = 0.05
+    n_bootstrap = 4000
+
+    boot_ci = bootstrap_ci_1d(
+        values,
+        observed_mean,
+        method="bootstrap",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(400),
+    )
+    bayes_ci = bootstrap_ci_1d(
+        values,
+        observed_mean,
+        method="bayes_bootstrap",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(401),
+    )
+    smooth_ci = bootstrap_ci_1d(
+        values,
+        observed_mean,
+        method="smooth_bootstrap",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(402),
+    )
+
+    for ci in (boot_ci, bayes_ci, smooth_ci):
+        assert np.isfinite(ci[0])
+        assert np.isfinite(ci[1])
+        assert ci[0] <= ci[1]
+
+    boot_width = boot_ci[1] - boot_ci[0]
+    bayes_width = bayes_ci[1] - bayes_ci[0]
+    smooth_width = smooth_ci[1] - smooth_ci[0]
+    assert boot_width > 0.0
+    assert bayes_width > 0.0
+    assert smooth_width > 0.0
+
+    # With clear signal and N=200, alternative bootstrap variants should be
+    # close to the classic percentile-bootstrap interval.
+    np.testing.assert_allclose(bayes_ci, boot_ci, atol=0.06, rtol=0.0)
+    np.testing.assert_allclose(smooth_ci, boot_ci, atol=0.08, rtol=0.0)
