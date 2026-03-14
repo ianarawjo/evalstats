@@ -10,7 +10,11 @@ Methods:
   bca              Bias-corrected and accelerated (BCa) bootstrap
   bayes_bootstrap  Bayesian (Dirichlet-weighted) bootstrap
   smooth_bootstrap Smoothed (KDE-perturbed) bootstrap
+    wilson           Wilson score CI for single-sample binary means
     newcombe_score   Newcombe score CI for paired binary differences
+    bayes_indep      Beta-conjugate Bayesian interval for binary means
+    bayes_indep_comp Independent Beta-posteriors interval for paired binaries
+    bayes_paired_comp Paired Bayesian interval using bayes_evals latent model
 
 Eval output types:
   binary      Bernoulli 0/1 (pass/fail judgements)
@@ -30,6 +34,7 @@ Usage:
     python simulations/sim_compare_boot.py --scenario-suite expanded
     python simulations/sim_compare_boot.py --progress bar
   python simulations/sim_compare_boot.py --reps 500 --bootstrap-n 1000
+        python simulations/sim_compare_boot.py --bayes-n 2000
   python simulations/sim_compare_boot.py --sizes 5 10 20 50 100
     python simulations/sim_compare_boot.py --estimand pairwise --runs 3
     python simulations/sim_compare_boot.py --official-test
@@ -38,6 +43,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
+import sys
 import time
 import warnings
 from collections import defaultdict
@@ -45,7 +52,13 @@ from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+import scipy.stats as stats
 from scipy.stats import norm
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+from bayes_evals import binorm_cdf  # noqa: E402
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
@@ -69,7 +82,16 @@ with warnings.catch_warnings():
 METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]
 WILSON_METHOD = "wilson"
 NEWCOMBE_METHOD = "newcombe_score"
-REPORT_METHODS = METHODS + [WILSON_METHOD, NEWCOMBE_METHOD]
+BAYES_SINGLE_METHOD = "bayes_indep"
+BAYES_PAIR_INDEP_METHOD = "bayes_indep_comp"
+BAYES_PAIR_PAIRED_METHOD = "bayes_paired_comp"
+REPORT_METHODS = METHODS + [
+    WILSON_METHOD,
+    NEWCOMBE_METHOD,
+    BAYES_SINGLE_METHOD,
+    BAYES_PAIR_INDEP_METHOD,
+    BAYES_PAIR_PAIRED_METHOD,
+]
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
 SCENARIO_SUITES = ["standard", "expanded"]
 PROGRESS_MODES = ["bar", "cell", "off"]
@@ -709,6 +731,87 @@ def _newcombe_paired_score_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tup
     return float(low), float(high)
 
 
+def _bayes_indep_ci(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Beta(1,1) posterior credible interval for a Bernoulli proportion."""
+    n = int(values.shape[0])
+    s = int(np.sum(values >= 0.5))
+    lo, hi = stats.beta(s + 1, n - s + 1).interval(1.0 - alpha)
+    return float(lo), float(hi)
+
+
+def _bayes_indep_comp_ci(
+    a: np.ndarray,
+    b: np.ndarray,
+    alpha: float,
+    num_samples: int,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Independent Beta-posteriors CI for paired binary difference p(A=1)-p(B=1)."""
+    a_bin = (a >= 0.5).astype(float)
+    b_bin = (b >= 0.5).astype(float)
+
+    post_a = rng.beta(float(np.sum(a_bin)) + 1.0, float(a_bin.shape[0] - np.sum(a_bin)) + 1.0, size=num_samples)
+    post_b = rng.beta(float(np.sum(b_bin)) + 1.0, float(b_bin.shape[0] - np.sum(b_bin)) + 1.0, size=num_samples)
+    diff = post_a - post_b
+    return (
+        float(np.percentile(diff, 100.0 * alpha / 2.0)),
+        float(np.percentile(diff, 100.0 * (1.0 - alpha / 2.0))),
+    )
+
+
+def _bayes_paired_comp_ci(
+    a: np.ndarray,
+    b: np.ndarray,
+    alpha: float,
+    num_samples: int,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """
+    Paired Bayesian CI for p(A=1)-p(B=1) using the bivariate-normal latent model
+    from bayes_evals.py.
+    """
+    a_bin = (a >= 0.5).astype(float)
+    b_bin = (b >= 0.5).astype(float)
+
+    s = float(np.sum(a_bin * b_bin))
+    t = float(np.sum(a_bin * (1.0 - b_bin)))
+    u = float(np.sum((1.0 - a_bin) * b_bin))
+    v = float(np.sum((1.0 - a_bin) * (1.0 - b_bin)))
+
+    theta_as = rng.beta(1.0, 1.0, size=num_samples)
+    theta_bs = rng.beta(1.0, 1.0, size=num_samples)
+    rhos = np.clip(2.0 * rng.beta(4.0, 2.0, size=num_samples) - 1.0, -1 + 1e-20, 1 - 1e-20)
+    diff = theta_as - theta_bs
+
+    mu_a = stats.norm.ppf(theta_as)
+    mu_b = stats.norm.ppf(theta_bs)
+
+    th_v = binorm_cdf(0, 0, mu_a, mu_b, 1, 1, rhos)
+    th_s = theta_as + theta_bs + th_v - 1.0
+    th_t = 1.0 - theta_bs - th_v
+    th_u = 1.0 - theta_as - th_v
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_w = s * np.log(th_s) + t * np.log(th_t) + u * np.log(th_u) + v * np.log(th_v)
+
+    log_w -= np.nanmax(log_w)
+    w = np.exp(log_w)
+    w[np.isnan(w)] = 0.0
+    w_sum = float(np.sum(w))
+
+    if w_sum <= 0.0:
+        d_hat = float(np.mean(a_bin) - np.mean(b_bin))
+        return d_hat, d_hat
+
+    w /= w_sum
+    diff_post = diff[rng.choice(num_samples, size=num_samples, replace=True, p=w)]
+
+    return (
+        float(np.percentile(diff_post, 100.0 * alpha / 2.0)),
+        float(np.percentile(diff_post, 100.0 * (1.0 - alpha / 2.0))),
+    )
+
+
 def _pairwise_ci(
     a: np.ndarray,
     b: np.ndarray,
@@ -778,6 +881,7 @@ def run_simulation(
     sample_sizes: list[int],
     n_reps: int,
     n_bootstrap: int,
+    bayes_n: int,
     alpha: float,
     progress_mode: str = "bar",
     seed: int = 42,
@@ -795,6 +899,7 @@ def run_simulation(
             active_methods = METHODS.copy()
             if scenario.eval_type == "binary":
                 active_methods.append(WILSON_METHOD)
+                active_methods.append(BAYES_SINGLE_METHOD)
 
             covered: dict[str, int] = {m: 0 for m in active_methods}
             total_w: dict[str, float] = {m: 0.0 for m in active_methods}
@@ -836,6 +941,14 @@ def run_simulation(
                         covered[WILSON_METHOD] += 1
                     total_w[WILSON_METHOD] += ci_high - ci_low
 
+                    try:
+                        ci_low, ci_high = _bayes_indep_ci(values, alpha)
+                    except Exception:
+                        ci_low = ci_high = obs_mean
+                    if ci_low <= scenario.true_mean <= ci_high:
+                        covered[BAYES_SINGLE_METHOD] += 1
+                    total_w[BAYES_SINGLE_METHOD] += ci_high - ci_low
+
             for method in active_methods:
                 results.append(
                     SimResult(
@@ -858,6 +971,7 @@ def run_pairwise_simulation(
     sample_sizes: list[int],
     n_reps: int,
     n_bootstrap: int,
+    bayes_n: int,
     alpha: float,
     runs: int,
     statistic: str,
@@ -877,9 +991,15 @@ def run_pairwise_simulation(
             covered: dict[str, int] = {m: 0 for m in METHODS}
             total_w: dict[str, float] = {m: 0.0 for m in METHODS}
             add_newcombe = scenario.eval_type == "binary" and runs == 1 and statistic == "mean"
+            add_bayes_binary = scenario.eval_type == "binary" and runs == 1 and statistic == "mean"
             if add_newcombe:
                 covered[NEWCOMBE_METHOD] = 0
                 total_w[NEWCOMBE_METHOD] = 0.0
+            if add_bayes_binary:
+                covered[BAYES_PAIR_INDEP_METHOD] = 0
+                total_w[BAYES_PAIR_INDEP_METHOD] = 0.0
+                covered[BAYES_PAIR_PAIRED_METHOD] = 0
+                total_w[BAYES_PAIR_PAIRED_METHOD] = 0.0
 
             for _rep in range(n_reps):
                 a, b = scenario.generate_pair(rng, n, runs)
@@ -922,7 +1042,42 @@ def run_pairwise_simulation(
                         covered[NEWCOMBE_METHOD] += 1
                     total_w[NEWCOMBE_METHOD] += ci_high - ci_low
 
-            active_methods = METHODS + ([NEWCOMBE_METHOD] if add_newcombe else [])
+                if add_bayes_binary:
+                    try:
+                        ci_low, ci_high = _bayes_indep_comp_ci(
+                            a[:, 0],
+                            b[:, 0],
+                            alpha,
+                            bayes_n,
+                            rng,
+                        )
+                    except Exception:
+                        obs = float(np.mean(a[:, 0] - b[:, 0]))
+                        ci_low = ci_high = obs
+                    if ci_low <= scenario.true_diff <= ci_high:
+                        covered[BAYES_PAIR_INDEP_METHOD] += 1
+                    total_w[BAYES_PAIR_INDEP_METHOD] += ci_high - ci_low
+
+                    try:
+                        ci_low, ci_high = _bayes_paired_comp_ci(
+                            a[:, 0],
+                            b[:, 0],
+                            alpha,
+                            bayes_n,
+                            rng,
+                        )
+                    except Exception:
+                        obs = float(np.mean(a[:, 0] - b[:, 0]))
+                        ci_low = ci_high = obs
+                    if ci_low <= scenario.true_diff <= ci_high:
+                        covered[BAYES_PAIR_PAIRED_METHOD] += 1
+                    total_w[BAYES_PAIR_PAIRED_METHOD] += ci_high - ci_low
+
+            active_methods = METHODS.copy()
+            if add_newcombe:
+                active_methods.append(NEWCOMBE_METHOD)
+            if add_bayes_binary:
+                active_methods.extend([BAYES_PAIR_INDEP_METHOD, BAYES_PAIR_PAIRED_METHOD])
             for method in active_methods:
                 results.append(
                     SimResult(
@@ -1108,7 +1263,7 @@ def print_report(
     # Worst-coverage scenarios (averaged across methods)
     # ----------------------------------------------------------------
     print(f"\n{'─'*72}")
-    print("  WORST COVERAGE CASES  (averaged across all four methods)")
+    print("  WORST COVERAGE CASES  (averaged across included methods)")
     print(f"{'─'*72}")
 
     # Average coverage across methods for each (eval_type, scenario, n)
@@ -1191,6 +1346,7 @@ def _run_benchmark(
     statistic: str,
     reps: int,
     bootstrap_n: int,
+    bayes_n: int,
     alpha: float,
     sizes: list[int],
     seed: int,
@@ -1211,6 +1367,7 @@ def _run_benchmark(
         print(f"  Statistic       : {statistic}")
     print(f"  Reps per cell   : {reps}")
     print(f"  Bootstrap draws : {bootstrap_n}")
+    print(f"  Bayes samples   : {bayes_n}")
     print(f"  Alpha / CI level: {alpha} / {(1 - alpha):.0%}")
     print(f"  Sample sizes    : {sizes}")
     print(f"  Seed            : {seed}")
@@ -1233,15 +1390,18 @@ def _run_benchmark(
     if estimand == "mean":
         binary_cells = n_by_type["binary"] * len(sizes)
         wilson_calls = binary_cells * reps
+        bayes_calls = binary_cells * reps
         print(
             f"\nRunning {cells} cells × {reps} reps × {len(METHODS)} bootstrap methods "
-            f"= {bootstrap_calls:,} CI calls, plus {wilson_calls:,} Wilson calls (binary only) …"
+            f"= {bootstrap_calls:,} CI calls, plus {wilson_calls:,} Wilson calls and "
+            f"{bayes_calls:,} Bayesian-independent calls (binary only) …"
         )
         results = run_simulation(
             scenarios=scenarios,
             sample_sizes=sizes,
             n_reps=reps,
             n_bootstrap=bootstrap_n,
+            bayes_n=bayes_n,
             alpha=alpha,
             progress_mode=progress_mode,
             seed=seed,
@@ -1250,7 +1410,13 @@ def _run_benchmark(
     else:
         binary_cells = n_by_type["binary"] * len(sizes)
         newcombe_calls = binary_cells * reps if runs == 1 and statistic == "mean" else 0
-        extra = f", plus {newcombe_calls:,} Newcombe calls (pairwise binary, runs=1)" if newcombe_calls else ""
+        bayes_pair_calls = 2 * binary_cells * reps if runs == 1 and statistic == "mean" else 0
+        extra = (
+            f", plus {newcombe_calls:,} Newcombe calls and {bayes_pair_calls:,} Bayesian pairwise calls "
+            f"(binary, runs=1, statistic=mean)"
+            if newcombe_calls
+            else ""
+        )
         print(
             f"\nRunning {cells} cells × {reps} reps × {len(METHODS)} methods "
             f"= {bootstrap_calls:,} CI calls{extra} …"
@@ -1260,6 +1426,7 @@ def _run_benchmark(
             sample_sizes=sizes,
             n_reps=reps,
             n_bootstrap=bootstrap_n,
+            bayes_n=bayes_n,
             alpha=alpha,
             runs=runs,
             statistic=statistic,
@@ -1342,6 +1509,13 @@ def main() -> None:
         help="Bootstrap replicates per CI estimate (default: 500)",
     )
     parser.add_argument(
+        "--bayes-n",
+        type=int,
+        default=2000,
+        metavar="N",
+        help="Posterior samples per Bayesian CI estimate (default: 2000)",
+    )
+    parser.add_argument(
         "--alpha",
         type=float,
         default=0.05,
@@ -1373,6 +1547,7 @@ def main() -> None:
             statistic="mean",
             reps=2000,
             bootstrap_n=10000,
+            bayes_n=10000,
             alpha=0.05,
             sizes=[5, 10, 20, 30, 50, 100, 200],
             seed=args.seed,
@@ -1387,6 +1562,7 @@ def main() -> None:
             statistic="mean",
             reps=2000,
             bootstrap_n=10000,
+            bayes_n=10000,
             alpha=0.05,
             sizes=[10, 20, 30, 50, 100, 200],
             seed=args.seed + 1,
@@ -1402,6 +1578,7 @@ def main() -> None:
         statistic=args.statistic,
         reps=args.reps,
         bootstrap_n=args.bootstrap_n,
+        bayes_n=args.bayes_n,
         alpha=args.alpha,
         sizes=args.sizes,
         seed=args.seed,
