@@ -367,6 +367,81 @@ code {
 .footer-links a { font-size: 0.78rem; color: var(--text-dim); text-decoration: none; }
 .footer-links a:hover { color: var(--text); }
 
+/* ─── PAPER CARDS (resources page) ───────────────────── */
+.paper-section { margin-bottom: 2.5rem; }
+.paper-section h2 { margin-top: 1rem; }
+
+.paper-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 1rem;
+}
+.paper-entry {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  background: var(--bg);
+}
+.paper-entry-title {
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 600;
+  line-height: 1.4;
+  margin-bottom: 0.2rem;
+}
+.paper-entry-title a {
+  color: var(--text);
+  text-decoration: none;
+}
+.paper-entry-title a:hover { color: var(--blue); text-decoration: underline; }
+.paper-entry-meta {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  margin-bottom: 0.55rem;
+}
+.paper-entry-summary {
+  font-family: var(--font-sans);
+  font-size: 0.83rem;
+  line-height: 1.6;
+  color: var(--text-mid);
+  margin: 0;
+}
+.paper-entry-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.6rem;
+}
+.paper-tag {
+  font-family: var(--font-mono);
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.45rem;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  background: var(--bg-soft);
+}
+.paper-tag.tag-used {
+  color: var(--orange);
+  background: var(--orange-soft);
+  border-color: var(--orange-mid);
+}
+.paper-tag.tag-debated {
+  color: #92400e;
+  background: var(--yellow-soft);
+  border-color: var(--yellow-mid);
+}
+.paper-tag.tag-pitfall {
+  color: #1e40af;
+  background: var(--blue-soft);
+  border-color: #bfdbfe;
+}
+
 /* ─── RESPONSIVE ──────────────────────────────────────── */
 @media (max-width: 900px) {
   .page-layout {
