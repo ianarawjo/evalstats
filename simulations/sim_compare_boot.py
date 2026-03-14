@@ -23,18 +23,22 @@ Metrics:
               Target: equals the nominal level, e.g. 0.95 for alpha=0.05
   mean_width  Average CI width — a measure of precision (smaller is better
               when coverage is adequate)
+    mc_uncert   Monte Carlo uncertainty for coverage with MCSE + 95% bands
 
 Usage:
   python simulations/sim_compare_boot.py
+    python simulations/sim_compare_boot.py --scenario-suite expanded
+    python simulations/sim_compare_boot.py --progress bar
   python simulations/sim_compare_boot.py --reps 500 --bootstrap-n 1000
   python simulations/sim_compare_boot.py --sizes 5 10 20 50 100
     python simulations/sim_compare_boot.py --estimand pairwise --runs 3
+    python simulations/sim_compare_boot.py --official-test
 """
 
 from __future__ import annotations
 
 import argparse
-import sys
+import time
 import warnings
 from collections import defaultdict
 from dataclasses import dataclass
@@ -67,6 +71,8 @@ WILSON_METHOD = "wilson"
 NEWCOMBE_METHOD = "newcombe_score"
 REPORT_METHODS = METHODS + [WILSON_METHOD, NEWCOMBE_METHOD]
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
+SCENARIO_SUITES = ["standard", "expanded"]
+PROGRESS_MODES = ["bar", "cell", "off"]
 
 
 # ---------------------------------------------------------------------------
@@ -90,6 +96,58 @@ class PairScenario:
     true_diff: float
 
 
+class _ProgressReporter:
+    """Lightweight terminal progress reporter with optional ETA."""
+
+    def __init__(self, total: int, *, mode: str = "bar", label: str = "") -> None:
+        self.total = max(int(total), 1)
+        self.mode = mode
+        self.label = label
+        self.start = time.time()
+        self.last_print = 0.0
+
+    def update(self, step: int, detail: str = "") -> None:
+        if self.mode == "off":
+            return
+
+        now = time.time()
+        is_final = step >= self.total
+        if not is_final and (now - self.last_print) < 0.2:
+            return
+        self.last_print = now
+
+        if self.mode == "cell":
+            pct = 100.0 * min(step, self.total) / self.total
+            print(
+                f"\r  [{step:>7d}/{self.total:<7d}] {pct:6.2f}%  {detail:<55s}",
+                end="",
+                flush=True,
+            )
+            if is_final:
+                print()
+            return
+
+        # bar mode
+        frac = min(step, self.total) / self.total
+        filled = int(28 * frac)
+        bar = "█" * filled + "·" * (28 - filled)
+        elapsed = max(now - self.start, 1e-9)
+        rate = step / elapsed
+        rem = max(self.total - step, 0)
+        eta_sec = rem / max(rate, 1e-12)
+        eta_m, eta_s = divmod(int(round(eta_sec)), 60)
+        eta_h, eta_m = divmod(eta_m, 60)
+        eta_str = f"{eta_h:02d}:{eta_m:02d}:{eta_s:02d}"
+        prefix = f"{self.label}: " if self.label else ""
+        print(
+            f"\r  {prefix}[{bar}] {100.0*frac:6.2f}%  {step:>7d}/{self.total:<7d}  ETA {eta_str}  {detail[:40]:<40s}",
+            end="",
+            flush=True,
+        )
+        if is_final:
+            print()
+
+
 def _true_mean_clipped_normal(
     mu: float, sigma: float, lo: float = 0.0, hi: float = 100.0
 ) -> float:
@@ -98,14 +156,32 @@ def _true_mean_clipped_normal(
     return float(np.clip(rng.normal(mu, sigma, size=2_000_000), lo, hi).mean())
 
 
-def build_scenarios() -> list[Scenario]:
-    """Return all simulation scenarios across the four eval types."""
+def _estimate_true_mean_mc(
+    generate: Callable[[np.random.Generator, int], np.ndarray],
+    *,
+    seed: int = 0,
+    n_mc: int = 500_000,
+) -> float:
+    """Estimate population mean via large Monte Carlo draw for complex generators."""
+    rng = np.random.default_rng(seed)
+    return float(np.mean(generate(rng, n_mc)))
+
+
+def build_scenarios(suite: str = "standard") -> list[Scenario]:
+    """Return simulation scenarios across the four eval types."""
+    if suite not in SCENARIO_SUITES:
+        raise ValueError(f"Unknown scenario suite: {suite}")
+
     scenarios: list[Scenario] = []
 
     # ------------------------------------------------------------------
     # Binary: Bernoulli(p)  →  0/1 pass-fail judgements
     # ------------------------------------------------------------------
-    for p in [0.1, 0.3, 0.5, 0.7, 0.9]:
+    binary_ps = [0.1, 0.3, 0.5, 0.7, 0.9]
+    if suite == "expanded":
+        binary_ps += [0.02, 0.05, 0.95, 0.98]
+
+    for p in binary_ps:
         p_ = p
         scenarios.append(
             Scenario(
@@ -119,13 +195,24 @@ def build_scenarios() -> list[Scenario]:
     # ------------------------------------------------------------------
     # Continuous [0, 1]: Beta distributions of varying shape
     # ------------------------------------------------------------------
-    for label, a, b in [
+    continuous_specs = [
         ("Uniform",        1.0, 1.0),   # flat
         ("U-shaped",       0.5, 0.5),   # bimodal-ish extremes
         ("right-skewed",   2.0, 8.0),   # mass near 0
         ("left-skewed",    8.0, 2.0),   # mass near 1
         ("moderate-skew",  2.0, 5.0),   # asymmetric centre
-    ]:
+    ]
+    if suite == "expanded":
+        continuous_specs.extend(
+            [
+                ("extreme-right", 0.35, 6.0),
+                ("extreme-left", 6.0, 0.35),
+                ("near-boundaries", 0.3, 0.3),
+                ("near-center", 6.0, 6.0),
+            ]
+        )
+
+    for label, a, b in continuous_specs:
         a_, b_ = a, b
         scenarios.append(
             Scenario(
@@ -136,17 +223,58 @@ def build_scenarios() -> list[Scenario]:
             )
         )
 
+    if suite == "expanded":
+        def _gen_mix_continuous(rng: np.random.Generator, n: int) -> np.ndarray:
+            selector = rng.binomial(1, 0.55, size=n).astype(bool)
+            vals = np.empty(n, dtype=float)
+            vals[selector] = rng.beta(0.5, 4.0, size=int(np.sum(selector)))
+            vals[~selector] = rng.beta(5.5, 1.2, size=int(np.sum(~selector)))
+            return vals
+
+        scenarios.append(
+            Scenario(
+                label="mixture Beta(0.5,4.0)/(5.5,1.2)",
+                eval_type="continuous",
+                generate=_gen_mix_continuous,
+                true_mean=_estimate_true_mean_mc(_gen_mix_continuous),
+            )
+        )
+
+        def _gen_logit_normal(rng: np.random.Generator, n: int) -> np.ndarray:
+            logits = rng.normal(-0.35, 1.35, size=n)
+            return 1.0 / (1.0 + np.exp(-logits))
+
+        scenarios.append(
+            Scenario(
+                label="logit-normal(mu=-0.35,s=1.35)",
+                eval_type="continuous",
+                generate=_gen_logit_normal,
+                true_mean=_estimate_true_mean_mc(_gen_logit_normal),
+            )
+        )
+
     # ------------------------------------------------------------------
     # Likert 1–5: discrete integer scores
     # ------------------------------------------------------------------
     likert_vals = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    for label, probs in [
+    likert_specs = [
         ("uniform",       [0.20, 0.20, 0.20, 0.20, 0.20]),
         ("skewed-low",    [0.40, 0.30, 0.15, 0.10, 0.05]),
         ("skewed-high",   [0.05, 0.10, 0.15, 0.30, 0.40]),
         ("bimodal",       [0.35, 0.10, 0.10, 0.10, 0.35]),
         ("center-peaked", [0.05, 0.15, 0.60, 0.15, 0.05]),
-    ]:
+    ]
+    if suite == "expanded":
+        likert_specs.extend(
+            [
+                ("near-floor", [0.62, 0.22, 0.10, 0.04, 0.02]),
+                ("near-ceiling", [0.02, 0.04, 0.10, 0.22, 0.62]),
+                ("polarized", [0.47, 0.06, 0.04, 0.06, 0.37]),
+                ("flat-middle", [0.10, 0.30, 0.20, 0.30, 0.10]),
+            ]
+        )
+
+    for label, probs in likert_specs:
         probs_ = np.array(probs, dtype=float)
         true_mean_ = float(np.dot(likert_vals, probs_))
         scenarios.append(
@@ -163,13 +291,23 @@ def build_scenarios() -> list[Scenario]:
     # ------------------------------------------------------------------
     # Grades 0–100: truncated normals of varying centre and spread
     # ------------------------------------------------------------------
-    for label, mu, sigma in [
+    grade_specs = [
         ("symmetric",     50, 20),   # centred, moderate spread
         ("high-scoring",  75, 15),   # near ceiling
         ("low-scoring",   35, 20),   # near floor
         ("ceiling-heavy", 88, 10),   # mass near 100 — heavy clipping
         ("floor-heavy",   12, 10),   # mass near 0   — heavy clipping
-    ]:
+    ]
+    if suite == "expanded":
+        grade_specs.extend(
+            [
+                ("very-high", 92, 7),
+                ("very-low", 8, 7),
+                ("high-variance", 50, 34),
+            ]
+        )
+
+    for label, mu, sigma in grade_specs:
         mu_, sigma_ = mu, sigma
         true_mean_ = _true_mean_clipped_normal(mu_, sigma_)
         scenarios.append(
@@ -180,6 +318,37 @@ def build_scenarios() -> list[Scenario]:
                     rng.normal(_m, _s, n), 0.0, 100.0
                 ),
                 true_mean=true_mean_,
+            )
+        )
+
+    if suite == "expanded":
+        def _gen_grade_mixture(rng: np.random.Generator, n: int) -> np.ndarray:
+            flags = rng.choice(3, size=n, p=[0.20, 0.50, 0.30])
+            vals = np.empty(n, dtype=float)
+            for bucket, mu, sigma in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
+                mask = flags == bucket
+                vals[mask] = rng.normal(mu, sigma, size=int(np.sum(mask)))
+            return np.clip(vals, 0.0, 100.0)
+
+        scenarios.append(
+            Scenario(
+                label="mixture-truncnorm(3 components)",
+                eval_type="grades",
+                generate=_gen_grade_mixture,
+                true_mean=_estimate_true_mean_mc(_gen_grade_mixture),
+            )
+        )
+
+        def _gen_grade_heavy_tail(rng: np.random.Generator, n: int) -> np.ndarray:
+            vals = 52.0 + 16.0 * rng.standard_t(df=3.0, size=n)
+            return np.clip(vals, 0.0, 100.0)
+
+        scenarios.append(
+            Scenario(
+                label="heavy-tail t(df=3)",
+                eval_type="grades",
+                generate=_gen_grade_heavy_tail,
+                true_mean=_estimate_true_mean_mc(_gen_grade_heavy_tail),
             )
         )
 
@@ -198,8 +367,11 @@ def _estimate_true_pair_diff(
     return float(np.mean(a[:, 0] - b[:, 0]))
 
 
-def build_pair_scenarios() -> list[PairScenario]:
+def build_pair_scenarios(suite: str = "standard") -> list[PairScenario]:
     """Return paired-difference scenarios mirroring prompt/model comparisons."""
+    if suite not in SCENARIO_SUITES:
+        raise ValueError(f"Unknown scenario suite: {suite}")
+
     scenarios: list[PairScenario] = []
 
     # Binary 0/1 with paired input difficulty and a fixed uplift for template B.
@@ -235,6 +407,38 @@ def build_pair_scenarios() -> list[PairScenario]:
             )
         )
 
+    if suite == "expanded":
+        for label, base_p, delta, conc in [
+            ("binary-rare-events", 0.05, 0.03, 7.0),
+            ("binary-near-ceiling", 0.93, 0.02, 10.0),
+        ]:
+            base_p_, delta_, conc_ = base_p, delta, conc
+
+            def _gen_binary_ext(
+                rng: np.random.Generator,
+                n: int,
+                runs: int,
+                _bp: float = base_p_,
+                _d: float = delta_,
+                _c: float = conc_,
+            ) -> tuple[np.ndarray, np.ndarray]:
+                alpha = _bp * _c
+                beta = (1.0 - _bp) * _c
+                p_a = rng.beta(alpha, beta, size=(n, 1))
+                p_b = np.clip(p_a + _d, 0.0, 1.0)
+                a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
+                b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
+                return a, b
+
+            scenarios.append(
+                PairScenario(
+                    label=label,
+                    eval_type="binary",
+                    generate_pair=_gen_binary_ext,
+                    true_diff=_estimate_true_pair_diff(_gen_binary_ext),
+                )
+            )
+
     # Continuous [0,1] with paired latent difficulty + bounded noise.
     for label, a, b, delta, sigma in [
         ("continuous-uniform", 1.0, 1.0, 0.06, 0.10),
@@ -269,6 +473,40 @@ def build_pair_scenarios() -> list[PairScenario]:
             )
         )
 
+    if suite == "expanded":
+        for label, a, b, delta, sigma in [
+            ("continuous-heavy-noise", 2.0, 5.0, 0.03, 0.14),
+            ("continuous-boundary", 0.6, 0.6, 0.02, 0.10),
+        ]:
+            a_, b_, delta_, sigma_ = a, b, delta, sigma
+
+            def _gen_continuous_ext(
+                rng: np.random.Generator,
+                n: int,
+                runs: int,
+                _a: float = a_,
+                _b: float = b_,
+                _d: float = delta_,
+                _s: float = sigma_,
+            ) -> tuple[np.ndarray, np.ndarray]:
+                base = rng.beta(_a, _b, size=(n, 1))
+                shared = rng.normal(0.0, _s, size=(n, runs))
+                outlier = rng.binomial(1, 0.04, size=(n, runs)) * rng.normal(0.0, 0.25, size=(n, runs))
+                indiv_a = rng.normal(0.0, _s * 0.45, size=(n, runs)) + outlier
+                indiv_b = rng.normal(0.0, _s * 0.45, size=(n, runs)) + outlier
+                a_vals = np.clip(base + shared + indiv_a, 0.0, 1.0)
+                b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 1.0)
+                return a_vals, b_vals
+
+            scenarios.append(
+                PairScenario(
+                    label=label,
+                    eval_type="continuous",
+                    generate_pair=_gen_continuous_ext,
+                    true_diff=_estimate_true_pair_diff(_gen_continuous_ext),
+                )
+            )
+
     # Likert 1-5 via rounded latent scores.
     for label, mu, sigma, delta in [
         ("likert-mid", 3.0, 0.9, 0.35),
@@ -302,6 +540,38 @@ def build_pair_scenarios() -> list[PairScenario]:
             )
         )
 
+    if suite == "expanded":
+        for label, mu, sigma, delta in [
+            ("likert-polarized", 3.0, 1.4, 0.22),
+            ("likert-near-floor", 1.8, 0.7, 0.20),
+        ]:
+            mu_, sigma_, delta_ = mu, sigma, delta
+
+            def _gen_likert_ext(
+                rng: np.random.Generator,
+                n: int,
+                runs: int,
+                _m: float = mu_,
+                _s: float = sigma_,
+                _d: float = delta_,
+            ) -> tuple[np.ndarray, np.ndarray]:
+                base = rng.normal(_m, _s, size=(n, 1))
+                shared = rng.normal(0.0, 0.45, size=(n, runs))
+                indiv_a = rng.normal(0.0, 0.30, size=(n, runs))
+                indiv_b = rng.normal(0.0, 0.30, size=(n, runs))
+                a_vals = np.rint(np.clip(base + shared + indiv_a, 1.0, 5.0))
+                b_vals = np.rint(np.clip(base + _d + shared + indiv_b, 1.0, 5.0))
+                return a_vals, b_vals
+
+            scenarios.append(
+                PairScenario(
+                    label=label,
+                    eval_type="likert",
+                    generate_pair=_gen_likert_ext,
+                    true_diff=_estimate_true_pair_diff(_gen_likert_ext),
+                )
+            )
+
     # Grades 0-100 with shared latent ability and bounded noise.
     for label, mu, sigma, delta in [
         ("grades-mid", 55.0, 18.0, 4.5),
@@ -334,6 +604,38 @@ def build_pair_scenarios() -> list[PairScenario]:
                 true_diff=_estimate_true_pair_diff(_gen_grades),
             )
         )
+
+    if suite == "expanded":
+        for label, mu, sigma, delta in [
+            ("grades-heavy-tail", 52.0, 22.0, 3.5),
+            ("grades-ceiling", 86.0, 10.0, 2.8),
+        ]:
+            mu_, sigma_, delta_ = mu, sigma, delta
+
+            def _gen_grades_ext(
+                rng: np.random.Generator,
+                n: int,
+                runs: int,
+                _m: float = mu_,
+                _s: float = sigma_,
+                _d: float = delta_,
+            ) -> tuple[np.ndarray, np.ndarray]:
+                base = _m + _s * rng.standard_t(df=4.0, size=(n, 1))
+                shared = rng.normal(0.0, _s * 0.22, size=(n, runs))
+                indiv_a = rng.normal(0.0, _s * 0.12, size=(n, runs))
+                indiv_b = rng.normal(0.0, _s * 0.12, size=(n, runs))
+                a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
+                b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 100.0)
+                return a_vals, b_vals
+
+            scenarios.append(
+                PairScenario(
+                    label=label,
+                    eval_type="grades",
+                    generate_pair=_gen_grades_ext,
+                    true_diff=_estimate_true_pair_diff(_gen_grades_ext),
+                )
+            )
 
     return scenarios
 
@@ -477,25 +779,19 @@ def run_simulation(
     n_reps: int,
     n_bootstrap: int,
     alpha: float,
+    progress_mode: str = "bar",
     seed: int = 42,
 ) -> list[SimResult]:
     rng = np.random.default_rng(seed)
     results: list[SimResult] = []
 
-    total = len(scenarios) * len(sample_sizes)
-    done = 0
+    total_cells = len(scenarios) * len(sample_sizes)
+    total_steps = total_cells * n_reps
+    step = 0
+    reporter = _ProgressReporter(total_steps, mode=progress_mode, label="mean")
 
     for scenario in scenarios:
         for n in sample_sizes:
-            done += 1
-            print(
-                f"\r  [{done:3d}/{total}] "
-                f"{scenario.eval_type:<12s}  "
-                f"{scenario.label:<30s}  n={n:<3d}   ",
-                end="",
-                flush=True,
-            )
-
             active_methods = METHODS.copy()
             if scenario.eval_type == "binary":
                 active_methods.append(WILSON_METHOD)
@@ -503,9 +799,15 @@ def run_simulation(
             covered: dict[str, int] = {m: 0 for m in active_methods}
             total_w: dict[str, float] = {m: 0.0 for m in active_methods}
 
-            for _ in range(n_reps):
+            for _rep in range(n_reps):
                 values = scenario.generate(rng, n)
                 obs_mean = float(np.mean(values))
+
+                step += 1
+                reporter.update(
+                    step,
+                    detail=f"{scenario.eval_type} {scenario.label} n={n}",
+                )
 
                 for method in METHODS:
                     try:
@@ -547,7 +849,7 @@ def run_simulation(
                     )
                 )
 
-    print()  # end progress line
+    reporter.update(total_steps, detail="done")
     return results
 
 
@@ -559,25 +861,19 @@ def run_pairwise_simulation(
     alpha: float,
     runs: int,
     statistic: str,
+    progress_mode: str = "bar",
     seed: int = 42,
 ) -> list[SimResult]:
     rng = np.random.default_rng(seed)
     results: list[SimResult] = []
 
-    total = len(scenarios) * len(sample_sizes)
-    done = 0
+    total_cells = len(scenarios) * len(sample_sizes)
+    total_steps = total_cells * n_reps
+    step = 0
+    reporter = _ProgressReporter(total_steps, mode=progress_mode, label="pairwise")
 
     for scenario in scenarios:
         for n in sample_sizes:
-            done += 1
-            print(
-                f"\r  [{done:3d}/{total}] "
-                f"{scenario.eval_type:<12s}  "
-                f"{scenario.label:<30s}  n={n:<3d}   ",
-                end="",
-                flush=True,
-            )
-
             covered: dict[str, int] = {m: 0 for m in METHODS}
             total_w: dict[str, float] = {m: 0.0 for m in METHODS}
             add_newcombe = scenario.eval_type == "binary" and runs == 1 and statistic == "mean"
@@ -585,8 +881,14 @@ def run_pairwise_simulation(
                 covered[NEWCOMBE_METHOD] = 0
                 total_w[NEWCOMBE_METHOD] = 0.0
 
-            for _ in range(n_reps):
+            for _rep in range(n_reps):
                 a, b = scenario.generate_pair(rng, n, runs)
+
+                step += 1
+                reporter.update(
+                    step,
+                    detail=f"{scenario.eval_type} {scenario.label} n={n}",
+                )
 
                 for method in METHODS:
                     try:
@@ -634,7 +936,7 @@ def run_pairwise_simulation(
                     )
                 )
 
-    print()
+    reporter.update(total_steps, detail="done")
     return results
 
 
@@ -650,6 +952,17 @@ def _cov_marker(cov: float, target: float, tol: float = 0.04) -> str:
     if cov > target + tol:
         return "▲"   # over-conservative
     return " "
+
+
+def _mc_proportion_stats(successes: int, total: int, z: float = 1.96) -> tuple[float, float, float, float]:
+    """Return (p_hat, mcse, lo, hi) for a Monte Carlo proportion estimate."""
+    if total <= 0:
+        return (float("nan"), float("nan"), float("nan"), float("nan"))
+    p_hat = successes / total
+    mcse = float(np.sqrt(max(p_hat * (1.0 - p_hat), 0.0) / total))
+    lo = max(0.0, p_hat - z * mcse)
+    hi = min(1.0, p_hat + z * mcse)
+    return float(p_hat), mcse, float(lo), float(hi)
 
 
 def _rule(width: int, char: str = "─") -> str:
@@ -702,12 +1015,15 @@ def print_report(
     # ----------------------------------------------------------------
     # agg[(eval_type, method, n)] accumulates per-scenario (cov, width) pairs
     agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))  # covered, total
     per_sc: dict[tuple, tuple[float, float]] = {}  # (et, sc, method, n)
 
     for r in results:
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         agg[(r.eval_type, r.method, r.n)].append((cov, width))
+        c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
+        agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
         per_sc[(r.eval_type, r.scenario, r.method, r.n)] = (cov, width)
 
     def mean_cov(et: str, m: str, n: int) -> float:
@@ -727,6 +1043,7 @@ def print_report(
     print(f"  Estimand: {estimand_label}")
     print(f"  Nominal coverage: {target:.0%}   |   reps/scenario: {n_reps}")
     print(f"  ▼ = under-covered (<{target - 0.04:.0%})   ▲ = over-conservative (>{target + 0.04:.0%})")
+    print("  MC uncertainty reported as normal-approximation 95% bands on coverage.")
     print(sep)
 
     # ----------------------------------------------------------------
@@ -753,6 +1070,24 @@ def print_report(
             row_labels=method_labels,
             col_labels=n_labels,
             cells=cov_cells,
+        )
+
+        band_cells: dict[tuple[str, str], str] = {}
+        for m in method_labels:
+            for i, n in enumerate(sample_sizes):
+                covered, total = agg_counts.get((et, m, n), (0, 0))
+                if total <= 0:
+                    band_cells[(m, n_labels[i])] = "─"
+                    continue
+                _, _, lo, hi = _mc_proportion_stats(covered, total)
+                band_cells[(m, n_labels[i])] = f"{lo:.3f}-{hi:.3f}"
+
+        _print_grid(
+            "Coverage MC 95% Band",
+            row_labels=method_labels,
+            col_labels=n_labels,
+            cells=band_cells,
+            col_w=13,
         )
 
         # Width grid
@@ -821,19 +1156,25 @@ def print_report(
 
     all_cov: dict[str, list[float]] = defaultdict(list)
     all_wid: dict[str, list[float]] = defaultdict(list)
+    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
     for (et, m, n), vals in agg.items():
         all_cov[m].extend(v[0] for v in vals)
         all_wid[m].extend(v[1] for v in vals)
+        c, t = agg_counts[(et, m, n)]
+        c_prev, t_prev = all_counts[m]
+        all_counts[m] = (c_prev + c, t_prev + t)
 
-    print(f"\n  {'Method':<20}  {'Mean Coverage':>14}  {'Mean Width':>11}  {'Coverage−Target':>16}")
-    print(f"  {'─'*20}  {'─'*14}  {'─'*11}  {'─'*16}")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MCSE':>7}  {'Band95':>13}  {'Width':>8}  {'Dev':>8}")
+    print(f"  {'─'*20}  {'─'*6}  {'─'*7}  {'─'*13}  {'─'*8}  {'─'*8}")
     for m in method_labels:
         mc = float(np.mean(all_cov[m]))
         mw = float(np.mean(all_wid[m]))
         dev = mc - target
         mark = _cov_marker(mc, target)
+        c_tot, t_tot = all_counts[m]
+        _, mcse, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         print(
-            f"  {m:<20}  {mc:>13.3f}{mark}  {mw:>11.4f}  {dev:>+16.3f}"
+            f"  {m:<20}  {mc:>5.3f}{mark}  {mcse:>7.4f}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {dev:>+8.3f}"
         )
     print()
 
@@ -843,10 +1184,123 @@ def print_report(
 # ---------------------------------------------------------------------------
 
 
+def _run_benchmark(
+    *,
+    estimand: str,
+    runs: int,
+    statistic: str,
+    reps: int,
+    bootstrap_n: int,
+    alpha: float,
+    sizes: list[int],
+    seed: int,
+    scenario_suite: str,
+    progress_mode: str,
+    label: str | None = None,
+) -> None:
+    if label:
+        print(f"\n{'=' * 72}")
+        print(f"  {label}")
+        print(f"{'=' * 72}")
+
+    print(f"\nBootstrap CI Simulation")
+    print(f"  Estimand        : {estimand}")
+    print(f"  Scenario suite  : {scenario_suite}")
+    if estimand == "pairwise":
+        print(f"  Runs per input  : {runs}")
+        print(f"  Statistic       : {statistic}")
+    print(f"  Reps per cell   : {reps}")
+    print(f"  Bootstrap draws : {bootstrap_n}")
+    print(f"  Alpha / CI level: {alpha} / {(1 - alpha):.0%}")
+    print(f"  Sample sizes    : {sizes}")
+    print(f"  Seed            : {seed}")
+    print(f"  Progress mode   : {progress_mode}")
+
+    print("\nBuilding scenarios …", end="", flush=True)
+    if estimand == "mean":
+        scenarios = build_scenarios(suite=scenario_suite)
+    else:
+        scenarios = build_pair_scenarios(suite=scenario_suite)
+
+    n_by_type = {et: sum(1 for s in scenarios if s.eval_type == et) for et in EVAL_TYPES}
+    print(
+        f"  {len(scenarios)} total  "
+        + "  ".join(f"{et}: {n_by_type[et]}" for et in EVAL_TYPES)
+    )
+
+    cells = len(scenarios) * len(sizes)
+    bootstrap_calls = cells * reps * len(METHODS)
+    if estimand == "mean":
+        binary_cells = n_by_type["binary"] * len(sizes)
+        wilson_calls = binary_cells * reps
+        print(
+            f"\nRunning {cells} cells × {reps} reps × {len(METHODS)} bootstrap methods "
+            f"= {bootstrap_calls:,} CI calls, plus {wilson_calls:,} Wilson calls (binary only) …"
+        )
+        results = run_simulation(
+            scenarios=scenarios,
+            sample_sizes=sizes,
+            n_reps=reps,
+            n_bootstrap=bootstrap_n,
+            alpha=alpha,
+            progress_mode=progress_mode,
+            seed=seed,
+        )
+        estimand_label = "template mean"
+    else:
+        binary_cells = n_by_type["binary"] * len(sizes)
+        newcombe_calls = binary_cells * reps if runs == 1 and statistic == "mean" else 0
+        extra = f", plus {newcombe_calls:,} Newcombe calls (pairwise binary, runs=1)" if newcombe_calls else ""
+        print(
+            f"\nRunning {cells} cells × {reps} reps × {len(METHODS)} methods "
+            f"= {bootstrap_calls:,} CI calls{extra} …"
+        )
+        results = run_pairwise_simulation(
+            scenarios=scenarios,
+            sample_sizes=sizes,
+            n_reps=reps,
+            n_bootstrap=bootstrap_n,
+            alpha=alpha,
+            runs=runs,
+            statistic=statistic,
+            progress_mode=progress_mode,
+            seed=seed,
+        )
+        estimand_label = f"paired template difference ({statistic}, runs={runs})"
+
+    print_report(
+        results,
+        sample_sizes=sizes,
+        alpha=alpha,
+        n_reps=reps,
+        estimand_label=estimand_label,
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--scenario-suite",
+        choices=SCENARIO_SUITES,
+        default="expanded",
+        help="Scenario breadth to run (default: expanded)",
+    )
+    parser.add_argument(
+        "--official-test",
+        action="store_true",
+        help=(
+            "Run the intensive official benchmark battery with robust preset "
+            "options (overrides routine settings)."
+        ),
+    )
+    parser.add_argument(
+        "--progress",
+        choices=PROGRESS_MODES,
+        default="bar",
+        help="Progress display mode: bar (ETA), cell, or off (default: bar)",
     )
     parser.add_argument(
         "--estimand",
@@ -909,75 +1363,50 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    print(f"\nBootstrap CI Simulation")
-    print(f"  Estimand        : {args.estimand}")
-    if args.estimand == "pairwise":
-        print(f"  Runs per input  : {args.runs}")
-        print(f"  Statistic       : {args.statistic}")
-    print(f"  Reps per cell   : {args.reps}")
-    print(f"  Bootstrap draws : {args.bootstrap_n}")
-    print(f"  Alpha / CI level: {args.alpha} / {(1 - args.alpha):.0%}")
-    print(f"  Sample sizes    : {args.sizes}")
-    print(f"  Seed            : {args.seed}")
+    if args.official_test:
+        print("\nRunning OFFICIAL TEST battery with robust, intensive presets.")
+        print("This mode intentionally prioritizes rigor over runtime.")
 
-    print("\nBuilding scenarios …", end="", flush=True)
-    if args.estimand == "mean":
-        scenarios = build_scenarios()
-    else:
-        scenarios = build_pair_scenarios()
-    n_by_type = {et: sum(1 for s in scenarios if s.eval_type == et) for et in EVAL_TYPES}
-    print(
-        f"  {len(scenarios)} total  "
-        + "  ".join(f"{et}: {n_by_type[et]}" for et in EVAL_TYPES)
-    )
-
-    cells = len(scenarios) * len(args.sizes)
-    bootstrap_calls = cells * args.reps * len(METHODS)
-    if args.estimand == "mean":
-        binary_cells = n_by_type["binary"] * len(args.sizes)
-        wilson_calls = binary_cells * args.reps
-        print(
-            f"\nRunning {cells} cells × {args.reps} reps × {len(METHODS)} bootstrap methods "
-            f"= {bootstrap_calls:,} CI calls, plus {wilson_calls:,} Wilson calls (binary only) …"
-        )
-    else:
-        binary_cells = n_by_type["binary"] * len(args.sizes)
-        newcombe_calls = binary_cells * args.reps if args.runs == 1 and args.statistic == "mean" else 0
-        extra = f", plus {newcombe_calls:,} Newcombe calls (pairwise binary, runs=1)" if newcombe_calls else ""
-        print(
-            f"\nRunning {cells} cells × {args.reps} reps × {len(METHODS)} methods "
-            f"= {bootstrap_calls:,} CI calls{extra} …"
-        )
-
-    if args.estimand == "mean":
-        results = run_simulation(
-            scenarios=scenarios,
-            sample_sizes=args.sizes,
-            n_reps=args.reps,
-            n_bootstrap=args.bootstrap_n,
-            alpha=args.alpha,
+        _run_benchmark(
+            estimand="mean",
+            runs=1,
+            statistic="mean",
+            reps=2000,
+            bootstrap_n=10000,
+            alpha=0.05,
+            sizes=[5, 10, 20, 30, 50, 100, 200],
             seed=args.seed,
+            scenario_suite="expanded",
+            progress_mode=args.progress,
+            label="OFFICIAL TEST · Phase 1/2 · Single-sample mean estimand",
         )
-        estimand_label = "template mean"
-    else:
-        results = run_pairwise_simulation(
-            scenarios=scenarios,
-            sample_sizes=args.sizes,
-            n_reps=args.reps,
-            n_bootstrap=args.bootstrap_n,
-            alpha=args.alpha,
-            runs=args.runs,
-            statistic=args.statistic,
-            seed=args.seed,
-        )
-        estimand_label = f"paired template difference ({args.statistic}, runs={args.runs})"
 
-    print_report(
-        results,
-        sample_sizes=args.sizes,
+        _run_benchmark(
+            estimand="pairwise",
+            runs=3,
+            statistic="mean",
+            reps=2000,
+            bootstrap_n=10000,
+            alpha=0.05,
+            sizes=[10, 20, 30, 50, 100, 200],
+            seed=args.seed + 1,
+            scenario_suite="expanded",
+            progress_mode=args.progress,
+            label="OFFICIAL TEST · Phase 2/2 · Pairwise estimand (nested runs)",
+        )
+        return
+
+    _run_benchmark(
+        estimand=args.estimand,
+        runs=args.runs,
+        statistic=args.statistic,
+        reps=args.reps,
+        bootstrap_n=args.bootstrap_n,
         alpha=args.alpha,
-        n_reps=args.reps,
-        estimand_label=estimand_label,
+        sizes=args.sizes,
+        seed=args.seed,
+        scenario_suite=args.scenario_suite,
+        progress_mode=args.progress,
     )
 
 
