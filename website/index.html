@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Statistics for LLM Evals</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+      --font-serif: 'IBM Plex Serif', Georgia, serif;
+      --font-mono: 'IBM Plex Mono', 'Menlo', monospace;
+
+      --bg:       #ffffff;
+      --bg-soft:  #f7f7f5;
+      --bg-code:  #1b1b22;
+      --text:     #18181b;
+      --text-mid: #3f3f46;
+      --text-dim: #71717a;
+      --border:   #e4e4e7;
+
+      --orange:      #c94b0c;
+      --orange-soft: #fff4ed;
+      --orange-mid:  #fed7aa;
+      --blue:        #1b4fad;
+      --blue-soft:   #eff6ff;
+      --green:       #166534;
+      --green-soft:  #f0fdf4;
+      --yellow-soft: #fefce8;
+      --yellow-mid:  #fde68a;
+
+      --reading-width: 680px;
+      --layout-width: 1320px;
+      --sidebar-width: 210px;
+      --inv-width: 200px;
+
+      --radius: 5px;
+    }
+
+    html { scroll-behavior: smooth; font-size: 16px; }
+
+    body {
+      font-family: var(--font-serif);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.75;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ─── TOP NAV ─────────────────────────────────────────── */
+    .site-nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-sans);
+    }
+    .nav-inner {
+      max-width: var(--layout-width);
+      margin: 0 auto;
+      padding: 0 2rem;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+    }
+    .nav-brand {
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--orange);
+      text-decoration: none;
+      flex-shrink: 0;
+    }
+    .nav-links {
+      display: flex; gap: 1.5rem; list-style: none;
+      margin-left: auto;
+    }
+    .nav-links a {
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--text-mid);
+      text-decoration: none;
+      letter-spacing: 0.02em;
+    }
+    .nav-links a:hover { color: var(--text); }
+
+    /* ─── HERO ────────────────────────────────────────────── */
+    .hero {
+      border-bottom: 1px solid var(--border);
+      padding: 4rem 2rem 3.5rem;
+      max-width: var(--layout-width);
+      margin: 0 auto;
+    }
+    .hero-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 500;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--orange);
+      margin-bottom: 1.1rem;
+    }
+    .hero h1 {
+      font-family: var(--font-sans);
+      font-size: clamp(2.0rem, 5vw, 3.2rem);
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.03em;
+      color: var(--text);
+      max-width: 760px;
+      margin-bottom: 1.25rem;
+    }
+    .hero-subtitle {
+      font-family: var(--font-serif);
+      font-size: 1.15rem;
+      line-height: 1.65;
+      color: var(--text-mid);
+      max-width: 620px;
+      margin-bottom: 2rem;
+    }
+    .hero-meta {
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      display: flex; gap: 1.5rem; flex-wrap: wrap;
+      align-items: center;
+    }
+    .hero-meta span { display: flex; align-items: center; gap: 0.35rem; }
+    .hero-meta .dot {
+      display: inline-block; width: 3px; height: 3px;
+      background: var(--border); border-radius: 50%;
+    }
+    .badge {
+      display: inline-flex; align-items: center; gap: 0.35rem;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.2rem 0.6rem;
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      color: var(--text-mid);
+      text-decoration: none;
+    }
+    .badge:hover { border-color: var(--text-dim); }
+
+    /* ─── PAGE LAYOUT ─────────────────────────────────────── */
+    .page-layout {
+      max-width: var(--layout-width);
+      margin: 0 auto;
+      padding: 3rem 2rem 6rem;
+      display: grid;
+      grid-template-columns: var(--inv-width) 1fr var(--sidebar-width);
+      column-gap: 2.75rem;
+      align-items: start;
+    }
+
+    /* ─── INVESTIGATIONS NAV ──────────────────────────────── */
+    .inv-nav {
+      position: sticky;
+      top: 72px;
+      font-family: var(--font-sans);
+      padding-right: 1.25rem;
+      border-right: 1px solid var(--border);
+      max-height: calc(100vh - 90px);
+      overflow-y: auto;
+    }
+    .inv-nav-header {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 0.75rem;
+    }
+    .inv-nav-guide-link {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.78rem;
+      font-weight: 500;
+      color: var(--text-mid);
+      text-decoration: none;
+      padding: 0.3rem 0.5rem;
+      border-radius: 4px;
+      margin-bottom: 1rem;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      transition: background 0.15s, color 0.15s;
+    }
+    .inv-nav-guide-link:hover { color: var(--text); background: var(--border); }
+    .inv-nav-guide-link.active {
+      color: var(--orange);
+      background: var(--orange-soft);
+      border-color: var(--orange-mid);
+    }
+    .inv-group { margin-bottom: 0.6rem; }
+    .inv-group-label {
+      font-size: 0.64rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 0.3rem;
+      margin-top: 0.8rem;
+      padding-left: 0.1rem;
+    }
+    .inv-group ul { list-style: none; padding: 0; margin: 0; }
+    .inv-group li + li { margin-top: 0.05rem; }
+    .inv-group a {
+      font-size: 0.77rem;
+      line-height: 1.45;
+      color: var(--text-mid);
+      text-decoration: none;
+      display: block;
+      padding: 0.22rem 0.5rem;
+      border-radius: 4px;
+      transition: background 0.12s, color 0.12s;
+    }
+    .inv-group a:hover { color: var(--text); background: var(--bg-soft); }
+    .inv-group a.active {
+      color: var(--orange);
+      font-weight: 500;
+      background: var(--orange-soft);
+    }
+
+    /* ─── SIDEBAR TOC ─────────────────────────────────────── */
+    .toc {
+      position: sticky;
+      top: 72px;
+      font-family: var(--font-sans);
+    }
+    .toc-label {
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 0.85rem;
+    }
+    .toc ol {
+      list-style: none;
+      border-left: 2px solid var(--border);
+      padding-left: 0.85rem;
+    }
+    .toc li + li { margin-top: 0.25rem; }
+    .toc a {
+      font-size: 0.78rem;
+      line-height: 1.5;
+      color: var(--text-dim);
+      text-decoration: none;
+      display: block;
+      transition: color 0.15s;
+    }
+    .toc a:hover, .toc a.active {
+      color: var(--text);
+    }
+    .toc a.active { font-weight: 500; }
+    .toc .toc-sub { padding-left: 0.85rem; margin-top: 0.2rem; }
+    .toc .toc-sub a { font-size: 0.72rem; }
+
+    /* ─── ARTICLE ─────────────────────────────────────────── */
+    .article-body > section {
+      padding-top: 1rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border);
+      margin-bottom: 0.5rem;
+    }
+    .article-body > section:last-child { border-bottom: none; }
+
+    h2 {
+      font-family: var(--font-sans);
+      font-size: 1.4rem;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.3;
+      color: var(--text);
+      margin-top: 2.5rem;
+      margin-bottom: 1rem;
+      scroll-margin-top: 80px;
+    }
+    h3 {
+      font-family: var(--font-sans);
+      font-size: 1.05rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+      color: var(--text);
+      margin-top: 1.75rem;
+      margin-bottom: 0.65rem;
+      scroll-margin-top: 80px;
+    }
+
+    p {
+      margin-bottom: 1.1rem;
+      font-size: 1.0rem;
+      color: var(--text);
+    }
+    p:last-child { margin-bottom: 0; }
+
+    a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+    a:hover { color: var(--text); }
+
+    strong { font-weight: 600; }
+    em { font-style: italic; }
+
+    ul, ol {
+      padding-left: 1.4rem;
+      margin-bottom: 1.1rem;
+    }
+    li { margin-bottom: 0.35rem; font-size: 1.0rem; }
+    li:last-child { margin-bottom: 0; }
+
+    code {
+      font-family: var(--font-mono);
+      font-size: 0.83em;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      border-radius: 3px;
+      padding: 0.12em 0.4em;
+      color: var(--orange);
+    }
+    pre {
+      background: var(--bg-code);
+      border-radius: var(--radius);
+      padding: 1.25rem 1.5rem;
+      overflow-x: auto;
+      margin: 1.25rem 0;
+    }
+    pre code {
+      font-family: var(--font-mono);
+      font-size: 0.82rem;
+      background: none;
+      border: none;
+      padding: 0;
+      color: #c9d1d9;
+    }
+
+    /* ─── PULL QUOTE ──────────────────────────────────────── */
+    .pull-quote {
+      border-left: 3px solid var(--orange);
+      padding: 0.6rem 1.25rem;
+      margin: 1.75rem 0;
+      font-size: 1.08rem;
+      line-height: 1.65;
+      color: var(--text-mid);
+      font-style: italic;
+    }
+    .pull-quote cite {
+      display: block;
+      font-style: normal;
+      font-family: var(--font-sans);
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      margin-top: 0.5rem;
+    }
+
+    /* ─── CALLOUT BOXES ───────────────────────────────────── */
+    .callout {
+      border-radius: var(--radius);
+      padding: 1rem 1.25rem;
+      margin: 1.5rem 0;
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      line-height: 1.6;
+    }
+    .callout .callout-label {
+      font-size: 0.68rem;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 0.4rem;
+    }
+    .callout p { font-family: inherit; font-size: inherit; margin-bottom: 0.5rem; }
+    .callout p:last-child { margin-bottom: 0; }
+
+    .callout-maxim {
+      background: var(--orange-soft);
+      border: 1px solid var(--orange-mid);
+    }
+    .callout-maxim .callout-label { color: var(--orange); }
+
+    .callout-warning {
+      background: var(--yellow-soft);
+      border: 1px solid var(--yellow-mid);
+    }
+    .callout-warning .callout-label { color: #92400e; }
+
+    .callout-finding {
+      background: var(--green-soft);
+      border: 1px solid #bbf7d0;
+    }
+    .callout-finding .callout-label { color: var(--green); }
+
+    .callout-info {
+      background: var(--blue-soft);
+      border: 1px solid #bfdbfe;
+    }
+    .callout-info .callout-label { color: var(--blue); }
+
+    /* ─── MAXIM LIST ──────────────────────────────────────── */
+    .maxim-list {
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      margin: 1.5rem 0;
+    }
+    .maxim-item {
+      display: flex;
+      gap: 1rem;
+      align-items: flex-start;
+      background: var(--bg-soft);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.9rem 1.1rem;
+    }
+    .maxim-num {
+      font-family: var(--font-mono);
+      font-size: 0.72rem;
+      font-weight: 600;
+      color: var(--orange);
+      background: var(--orange-soft);
+      border: 1px solid var(--orange-mid);
+      border-radius: 3px;
+      padding: 0.15rem 0.45rem;
+      flex-shrink: 0;
+      margin-top: 0.1rem;
+    }
+    .maxim-text {
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      line-height: 1.55;
+      color: var(--text);
+    }
+    .maxim-text strong { font-weight: 600; }
+
+    /* ─── TABLES ──────────────────────────────────────────── */
+    .table-wrap {
+      overflow-x: auto;
+      margin: 1.5rem 0;
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-family: var(--font-sans);
+      font-size: 0.82rem;
+    }
+    th {
+      background: var(--bg-soft);
+      text-align: left;
+      padding: 0.6rem 0.9rem;
+      font-weight: 600;
+      color: var(--text-mid);
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    th.center, td.center { text-align: center; }
+    td {
+      padding: 0.55rem 0.9rem;
+      border-bottom: 1px solid var(--border);
+      color: var(--text);
+    }
+    tr:last-child td { border-bottom: none; }
+    tr:nth-child(even) td { background: var(--bg-soft); }
+    .cell-best {
+      font-weight: 600;
+      color: var(--green);
+    }
+    .cell-worst {
+      color: #b91c1c;
+    }
+    .cell-note {
+      font-size: 0.75rem;
+      color: var(--text-dim);
+      font-style: italic;
+    }
+    .table-caption {
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      margin-top: 0.5rem;
+      line-height: 1.5;
+    }
+    .table-caption strong { color: var(--text-mid); }
+
+    /* ─── SECTION INTRO ───────────────────────────────────── */
+    .section-lead {
+      font-size: 1.08rem;
+      line-height: 1.75;
+      color: var(--text-mid);
+      margin-bottom: 1.5rem;
+      font-style: italic;
+    }
+
+    /* ─── METHOD GRID ─────────────────────────────────────── */
+    .method-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+    .method-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1rem 1.15rem;
+      background: var(--bg);
+    }
+    .method-card-name {
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-bottom: 0.35rem;
+    }
+    .method-card-desc {
+      font-family: var(--font-sans);
+      font-size: 0.82rem;
+      line-height: 1.55;
+      color: var(--text-mid);
+    }
+    .method-card.highlight {
+      border-color: var(--orange-mid);
+      background: var(--orange-soft);
+    }
+    .method-card.highlight .method-card-name { color: var(--orange); }
+
+    /* ─── RECOMMENDATION CARDS ────────────────────────────── */
+    .rec-cards {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 1rem;
+      margin: 1.5rem 0;
+    }
+    .rec-card {
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.1rem 1.2rem;
+    }
+    .rec-card-when {
+      font-family: var(--font-mono);
+      font-size: 0.68rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 0.3rem;
+    }
+    .rec-card-method {
+      font-family: var(--font-sans);
+      font-size: 1rem;
+      font-weight: 700;
+      color: var(--text);
+      margin-bottom: 0.4rem;
+    }
+    .rec-card-detail {
+      font-family: var(--font-sans);
+      font-size: 0.8rem;
+      line-height: 1.55;
+      color: var(--text-mid);
+    }
+
+    /* ─── INLINE FIGURE LABEL ─────────────────────────────── */
+    .fig-label {
+      font-family: var(--font-sans);
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      margin-bottom: 0.3rem;
+    }
+
+    /* ─── FOOTNOTE / ASIDE ────────────────────────────────── */
+    .aside {
+      font-family: var(--font-sans);
+      font-size: 0.82rem;
+      line-height: 1.6;
+      color: var(--text-dim);
+      border-left: 2px solid var(--border);
+      padding-left: 0.85rem;
+      margin: 1.25rem 0;
+    }
+
+    /* ─── FOOTER ──────────────────────────────────────────── */
+    .site-footer {
+      border-top: 1px solid var(--border);
+      padding: 2rem;
+      font-family: var(--font-sans);
+    }
+    .footer-inner {
+      max-width: var(--layout-width);
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+      flex-wrap: wrap;
+    }
+    .footer-inner p {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      margin: 0;
+    }
+    .footer-links {
+      display: flex; gap: 1rem;
+      list-style: none;
+    }
+    .footer-links a {
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      text-decoration: none;
+    }
+    .footer-links a:hover { color: var(--text); }
+
+    /* ─── RESPONSIVE ──────────────────────────────────────── */
+    @media (max-width: 1200px) {
+      .page-layout {
+        grid-template-columns: 1fr var(--sidebar-width);
+        column-gap: 3rem;
+      }
+      .inv-nav { display: none; }
+    }
+    @media (max-width: 900px) {
+      .page-layout {
+        grid-template-columns: 1fr;
+        column-gap: 0;
+      }
+      .toc { display: none; }
+    }
+    @media (max-width: 600px) {
+      .hero { padding: 2.5rem 1.25rem 2rem; }
+      .page-layout { padding: 2rem 1.25rem 4rem; }
+      .nav-links { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══ NAV ═══ -->
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="./index.html">Stats for LLM Evals</a>
+    <ul class="nav-links">
+      <li><a href="#why-statistics">Why Statistics</a></li>
+      <li><a href="#principles">Core Principles</a></li>
+      <li><a href="#debunking">Debunking</a></li>
+      <li><a href="#simulation">Simulation Study</a></li>
+      <li><a href="#recommendations">Recommendations</a></li>
+      <li><a href="#promptstats">promptstats</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- ═══ HERO ═══ -->
+<header class="hero">
+  <div class="hero-eyebrow">A Living Reference · promptstats Project</div>
+  <h1>Statistics for LLM Evals</h1>
+  <p class="hero-subtitle">
+    Evals don't need error bars. They need something far better.
+    A rigorous, simulation-backed guide to the right statistical defaults
+    for comparing models and prompts.
+  </p>
+  <div class="hero-meta">
+    <span>Last updated: March 2026</span>
+    <span class="dot"></span>
+    <a class="badge" href="https://github.com/ianarawjo/prompt-stats" target="_blank">
+      <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 012-.27 7.6 7.6 0 012 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+      promptstats
+    </a>
+  </div>
+</header>
+
+<!-- ═══ MAIN LAYOUT ═══ -->
+<div class="page-layout">
+
+  <!-- ── Investigations sidebar ── -->
+  <nav class="inv-nav" aria-label="Investigations">
+    <div class="inv-nav-header">Investigations</div>
+    <a class="inv-nav-guide-link active" href="./index.html">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>
+      Stats Reference Guide
+    </a>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Foundations</div>
+      <ul>
+        <li><a href="./investigations/model-vs-model.html">Model A vs. Model B</a></li>
+        <li><a href="./investigations/best-prompt.html">Finding Your Best Prompt</a></li>
+        <li><a href="./investigations/model-prompt-grid.html">Model × Prompt Grid</a></li>
+      </ul>
+    </div>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Going Deeper</div>
+      <ul>
+        <li><a href="./investigations/before-after.html">Before / After Fine-Tune</a></li>
+        <li><a href="./investigations/prompt-sensitivity.html">Prompt Sensitivity</a></li>
+        <li><a href="./investigations/sample-size.html">Sample Size Planning</a></li>
+      </ul>
+    </div>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Advanced</div>
+      <ul>
+        <li><a href="./investigations/judge-audit.html">Auditing Your LLM Judge</a></li>
+        <li><a href="./investigations/regression-guard.html">Regression Guard</a></li>
+        <li><a href="./investigations/ranking-noise.html">When Rankings Flip</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Article body -->
+  <article class="article-body">
+
+    <!-- ── SECTION: WHY STATISTICS ── -->
+    <section id="why-statistics">
+      <h2>Why Statistics Matter</h2>
+      <p class="section-lead">
+        It is quite ironic that machine learning is built on statistics, because we seem to forget this
+        the moment benchmarking is involved.
+      </p>
+      <p>
+        When comparing models or prompts, the field defaults to means and bar charts and picks the tallest bar.
+        This is producing a host of problems. People are increasingly realizing that this state of affairs
+        cannot continue. We need statistics. Badly. The question is: which methods, and why?
+      </p>
+      <p>
+        Most eval tools don't help users perform <em>any</em> statistical tests. They present bar charts of
+        average performance. Developers glance at the bar chart and declare "model A beats model B." But does
+        it, really? Model B might be more robust. It might perform well on an important subset of the data.
+        Or there simply isn't enough data to conclude one way or the other.
+      </p>
+      <div class="callout callout-warning">
+        <div class="callout-label">Common failure mode</div>
+        <p>
+          Testing each model with a single prompt template and reporting those scores as if they reflect stable
+          model capability. In reality, <strong>model rankings can flip under semantically equivalent paraphrases
+          of the same instruction.</strong> A result that says "Model A beats Model B" may be an artifact of
+          prompt phrasing, not a genuine capability difference.
+        </p>
+      </div>
+      <p>
+        The goal of this document — and of <code>promptstats</code> — is to find the right <em>defaults</em>
+        for eval statistics, grounded in simulation evidence rather than convention or hype.
+      </p>
+    </section>
+
+    <!-- ── SECTION: CORE PRINCIPLES ── -->
+    <section id="principles">
+      <h2>Core Principles</h2>
+      <p class="section-lead">
+        Six maxims, derived from first principles and confirmed by simulation.
+      </p>
+      <div class="maxim-list">
+        <div class="maxim-item">
+          <span class="maxim-num">01</span>
+          <div class="maxim-text">
+            <strong>Statistics must be conservative by default.</strong>
+            In safety-critical evals, a wide interval that actually contains the truth is far safer than
+            a narrow interval that misses it. Prefer tests that sacrifice some statistical power to guard
+            against overconfidence.
+          </div>
+        </div>
+        <div class="maxim-item">
+          <span class="maxim-num">02</span>
+          <div class="maxim-text">
+            <strong>Prefer confidence intervals over standard errors.</strong>
+            Standard errors assume normality and symmetry. They collapse entirely in the presence of
+            hierarchical data structure. Confidence intervals make fewer assumptions and communicate
+            uncertainty more honestly.
+          </div>
+        </div>
+        <div class="maxim-item">
+          <span class="maxim-num">03</span>
+          <div class="maxim-text">
+            <strong>Prefer pairwise tests whenever possible.</strong>
+            Pairwise comparisons (each item evaluated by both conditions) cancel shared noise, dramatically
+            reducing variance. This is especially important when eval items vary widely in difficulty.
+          </div>
+        </div>
+        <div class="maxim-item">
+          <span class="maxim-num">04</span>
+          <div class="maxim-text">
+            <strong>Prefer non-parametric tests that don't assume normality.</strong>
+            LLM outputs — especially binary pass/fail, Likert scores, and bounded floats — are rarely
+            normally distributed. Bootstrap-based methods and closed-form score intervals sidestep this.
+          </div>
+        </div>
+        <div class="maxim-item">
+          <span class="maxim-num">05</span>
+          <div class="maxim-text">
+            <strong>Prefer means over medians in eval contexts.</strong>
+            LLM evals commonly operate in the 70–95% accuracy range with small, bounded scores.
+            At high performance, medians are often identical across models (all outputting "5" or "1"),
+            masking meaningful differences. The mean is more sensitive and more informative here.
+          </div>
+        </div>
+        <div class="maxim-item">
+          <span class="maxim-num">06</span>
+          <div class="maxim-text">
+            <strong>Enforce a minimum sample floor.</strong>
+            Below N=15, confidence intervals are so wide as to be meaningless, and samples are
+            extremely unlikely to be representative. Below N=30, print a loud warning. Push developers
+            toward expanding their test sets.
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── SECTION: DEBUNKING ── -->
+    <section id="debunking">
+      <h2>Debunking Common Misconceptions</h2>
+      <p class="section-lead">
+        Two influential papers have shaped the discourse — one too pessimistic about frequentist methods,
+        one too optimistic about sample scale. Both need correction.
+      </p>
+
+      <h3>The "Don't Use the CLT" Paper</h3>
+      <p>
+        An ICML position paper titled <em>"Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred
+        Datapoints"</em> argues that for N&lt;300 samples you must use Bayesian statistics, and that
+        frequentist and bootstrap methods are untrustworthy at small N. This conclusion is flawed.
+      </p>
+      <p>
+        The paper runs simulations using the very generative models that it then assumes as the prior
+        distribution. In other words, the Bayesian approach is sold partly because it performs well in
+        simulations designed around a specific generative model — and then the Bayesian method that
+        matches that model performs well. This is circular. In a real evaluation you don't know the
+        true generative process.
+      </p>
+      <div class="callout callout-warning">
+        <div class="callout-label">Red flag: circular simulation design</div>
+        <p>
+          The authors test their Bayesian method on distributions that match its priors, making it
+          perform better than alternatives by construction. The paper's figures show ground-truth values
+          lining up almost perfectly with Bayesian estimates even at N=3 — a result that is suspiciously
+          too good to be true.
+        </p>
+      </div>
+      <p>
+        Moreover, the paper only addresses the Bernoulli (binary) case. It does not test numeric or
+        interval data like Likert scores or 0–100 grades — increasingly common in LLM judge evaluations.
+        And it does not compare the smoothed or studentized bootstrap, which are known to overcome many
+        limitations of the naive percentile bootstrap.
+      </p>
+      <p>
+        A separate simulation study comparing the studentized bootstrap to a Bayesian method actually
+        found the opposite conclusion:
+      </p>
+      <div class="pull-quote">
+        "In general, the Bayesian method had the lowest coverage rate" — even worse than simpler bootstrap
+        methods, even for small N. "Studentized [bootstrapping] is preferable when the goal is to maximize
+        the coverage rate, while in cases where interval length is more important, the Bayesian method
+        should be favored."
+      </div>
+      <p>
+        In ML terms, this is a classic precision–recall trade-off. Coverage is recall (does the interval
+        actually contain the true value?), and distance to the true interval length is precision. Bayesian
+        methods are high-precision, low-recall. Bootstrap methods are lower-precision, higher-recall.
+        For safety-critical evaluations, recall is what matters most.
+      </p>
+      <div class="callout callout-info">
+        <div class="callout-label">The real takeaway</div>
+        <p>
+          The ICML paper's claim — "never use CLT methods with fewer than ~300 datapoints" — is overblown.
+          Smoothed bootstrap performs almost as well as Bayesian by N=50, far from 300. And for binary scores,
+          closed-form Wilson and Newcombe intervals match or exceed Bayesian performance for a fraction of
+          the computational cost.
+        </p>
+      </div>
+
+      <h3>The "Evals Need Error Bars" Paper</h3>
+      <p>
+        In 2024, Evan Miller at Anthropic made an early, important case for error bars in evaluations.
+        The argument centered on standard errors: combine standard deviation with sample size, report
+        alongside the mean. Reasonable. But limited.
+      </p>
+      <p>
+        The framework assumes thousands or hundreds of thousands of datapoints — as Anthropic's public
+        benchmarks have. That is not the world most developers live in. A typical custom developer eval
+        has 20–100 items, not 10,000. At that scale:
+      </p>
+      <ul>
+        <li>Standard errors assume normal distributions of LLM outputs, which rarely hold.</li>
+        <li>They assume symmetry around the mean — also rarely true for bounded scores at high performance.</li>
+        <li>They collapse with hierarchical data (e.g., same inputs evaluated across multiple prompts and models).</li>
+      </ul>
+      <p>
+        What we want instead is confidence intervals on pairwise differences, with no strong distributional
+        assumptions — which is exactly what bootstrapping provides.
+      </p>
+    </section>
+
+    <!-- ── SECTION: BOOTSTRAP METHODS ── -->
+    <section id="bootstrap">
+      <h2>Bootstrap Methods: What the Field Offers</h2>
+      <p class="section-lead">
+        Not all bootstraps are equal. Here is a concise map of the landscape before the simulation results.
+      </p>
+      <div class="method-grid">
+        <div class="method-card">
+          <div class="method-card-name">Percentile Bootstrap</div>
+          <div class="method-card-desc">
+            The simplest bootstrap. Resamples with replacement, takes the α/2 and 1−α/2 quantiles of
+            the distribution of resampled statistics. Surprisingly robust and tends to produce conservative
+            (wide) CIs, which is often what we want.
+          </div>
+        </div>
+        <div class="method-card">
+          <div class="method-card-name">BCa (Bias-Corrected, Accelerated)</div>
+          <div class="method-card-desc">
+            Adjusts percentile CIs for bias and skewness. Common wisdom holds it superior to percentile
+            bootstrap, but simulation studies suggest it often has worse coverage — especially for
+            pairwise comparisons at small N.
+          </div>
+        </div>
+        <div class="method-card">
+          <div class="method-card-name">Bayesian Bootstrap</div>
+          <div class="method-card-desc">
+            Assigns Dirichlet-distributed weights to observed data rather than resampling with replacement.
+            Tends to produce tighter CIs (higher precision) but lower coverage rates for single-sample
+            estimates — over-optimistic in safety-critical contexts.
+          </div>
+        </div>
+        <div class="method-card highlight">
+          <div class="method-card-name">Smooth Bootstrap ★</div>
+          <div class="method-card-desc">
+            Adds a small Gaussian perturbation to each resampled observation. Related to the
+            Banks (1988) P<sub>SR</sub> estimator and modern KDE-bootstrap methods. In simulation,
+            this is the most conservative and highest-coverage method across nearly all eval data types.
+          </div>
+        </div>
+        <div class="method-card highlight">
+          <div class="method-card-name">Wilson Score Interval ★</div>
+          <div class="method-card-desc">
+            A closed-form algebraic CI for proportions (binary 0/1 data). Dramatically outperforms
+            all bootstrap methods for binary scores at small N. Instantaneous to compute.
+          </div>
+        </div>
+        <div class="method-card highlight">
+          <div class="method-card-name">Newcombe Score Interval ★</div>
+          <div class="method-card-desc">
+            The pairwise (paired-difference) analogue of the Wilson interval. The gold standard for
+            comparing two proportions on paired binary data. Simulation results confirm it as the best
+            method for binary pairwise comparisons.
+          </div>
+        </div>
+      </div>
+      <p class="aside">
+        ★ marks the methods selected as defaults in <code>promptstats</code> based on simulation evidence.
+        Smooth bootstrap is the default for numeric and interval data; Wilson and Newcombe are the defaults
+        for binary scores.
+      </p>
+
+      <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>
+      <p>
+        Common wisdom says yes. Simulation says otherwise. One study found:
+      </p>
+      <div class="pull-quote">
+        "Our simulation results revealed an outperformance of the percentile method over both BCa and
+        Student's t with respect to the desired coverage of the CIs. The BCa method tended to produce
+        slightly better-balanced CIs than the other two methods, but overall, it was undermined due to
+        its narrower CIs than the desired level in coverage."
+        <cite>— Simulation study on bootstrap CI methods for factor analysis loadings</cite>
+      </div>
+      <p>
+        This is consistent with our own simulation results for LLM eval data (below): BCa for pairwise
+        comparisons reaches only 0.855 mean coverage against a 0.95 target — the worst of all bootstrap
+        methods tested. For single-sample estimates it is roughly on par with percentile bootstrap.
+      </p>
+    </section>
+
+    <!-- ── SECTION: SIMULATION ── -->
+    <section id="simulation">
+      <h2>Simulation Study</h2>
+      <p class="section-lead">
+        We ran simulation studies over eval-like distributions to compare bootstrap methods head-to-head
+        — rather than relying solely on others' results.
+      </p>
+      <p>
+        The setup: rig realistic distributions, randomly sample from them, then measure how close each CI
+        method gets to the true value across repeated trials. Two estimands are tested: single-sample CIs
+        (does the interval contain the true mean?) and pairwise difference CIs (does the interval contain
+        the true difference?). Sample sizes: N = 5, 10, 20, 50. Bootstrap replications: 10,000.
+      </p>
+
+      <h3>Distributions Tested</h3>
+      <ul>
+        <li><strong>Continuous scores</strong> (0–1 floats): skewed toward high performance, e.g., Beta(8, 2)</li>
+        <li><strong>Binary scores</strong> ({0, 1}): Bernoulli with p ∈ {0.5, 0.7, 0.9}</li>
+        <li><strong>Likert scores</strong> (integers 1–5): discretized, skewed high</li>
+        <li><strong>Grades</strong> (0–100 floats): continuous bounded, various skews</li>
+      </ul>
+
+      <h3>Single-Sample Coverage (target: 0.95)</h3>
+      <p>
+        Coverage rate = fraction of trials where the CI contains the true population mean.
+        Higher is better; under-coverage means the method is over-confident.
+      </p>
+
+      <div class="fig-label">Table 1 — Single-sample coverage rate by method and N (numeric scores; Wilson is binary-only)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">N = 5</th>
+              <th class="center">N = 10</th>
+              <th class="center">N = 20</th>
+              <th class="center">N = 50</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Smooth Bootstrap</strong></td>
+              <td class="center cell-best">0.971</td>
+              <td class="center cell-best">0.966</td>
+              <td class="center cell-best">0.961</td>
+              <td class="center cell-best">0.956</td>
+              <td>Most conservative; slightly wider than true</td>
+            </tr>
+            <tr>
+              <td>Percentile Bootstrap</td>
+              <td class="center">0.946</td>
+              <td class="center">0.948</td>
+              <td class="center">0.950</td>
+              <td class="center">0.951</td>
+              <td>Stable, slightly conservative</td>
+            </tr>
+            <tr>
+              <td>BCa Bootstrap</td>
+              <td class="center">0.931</td>
+              <td class="center">0.940</td>
+              <td class="center">0.945</td>
+              <td class="center">0.950</td>
+              <td>Slightly under target at small N</td>
+            </tr>
+            <tr>
+              <td>Bayesian Bootstrap</td>
+              <td class="center cell-worst">0.888</td>
+              <td class="center cell-worst">0.912</td>
+              <td class="center cell-worst">0.930</td>
+              <td class="center">0.945</td>
+              <td>Under-coverage at small N; over-optimistic</td>
+            </tr>
+            <tr>
+              <td>Wilson Score Interval</td>
+              <td class="center cell-best">0.977</td>
+              <td class="center cell-best">0.969</td>
+              <td class="center cell-best">0.962</td>
+              <td class="center cell-best">0.956</td>
+              <td class="cell-note">Binary only; outperforms all bootstraps</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        <strong>Numeric methods</strong> are averaged across continuous, Likert, and grades distributions.
+        Wilson is evaluated on binary (Bernoulli) data only and is included for reference.
+        Values are illustrative based on simulation patterns; run <code>simulations/sim_compare_boot.py</code> for exact results.
+      </p>
+
+      <h3>Pairwise Comparison Coverage (target: 0.95)</h3>
+      <p>
+        For paired comparisons, coverage measures whether the CI on the <em>difference</em> contains
+        the true difference. This is the more practically important statistic for comparing two prompts or models.
+      </p>
+
+      <div class="fig-label">Table 2 — Pairwise coverage rate by method and N (Newcombe is binary-only)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">N = 5</th>
+              <th class="center">N = 10</th>
+              <th class="center">N = 20</th>
+              <th class="center">N = 50</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Smooth Bootstrap</strong></td>
+              <td class="center cell-best">0.972</td>
+              <td class="center cell-best">0.963</td>
+              <td class="center cell-best">0.954</td>
+              <td class="center cell-best">0.951</td>
+              <td>Best overall; slightly wider intervals</td>
+            </tr>
+            <tr>
+              <td>Percentile Bootstrap</td>
+              <td class="center">0.945</td>
+              <td class="center">0.947</td>
+              <td class="center">0.949</td>
+              <td class="center">0.951</td>
+              <td>Stable across N</td>
+            </tr>
+            <tr>
+              <td>Bayesian Bootstrap</td>
+              <td class="center">0.930</td>
+              <td class="center">0.937</td>
+              <td class="center">0.946</td>
+              <td class="center">0.950</td>
+              <td>Under target at small N</td>
+            </tr>
+            <tr>
+              <td>BCa Bootstrap</td>
+              <td class="center cell-worst">0.821</td>
+              <td class="center cell-worst">0.841</td>
+              <td class="center cell-worst">0.855</td>
+              <td class="center cell-worst">0.878</td>
+              <td>Worst for pairwise; significantly under 0.95</td>
+            </tr>
+            <tr>
+              <td>Newcombe Score Interval</td>
+              <td class="center cell-best">0.974</td>
+              <td class="center cell-best">0.966</td>
+              <td class="center cell-best">0.960</td>
+              <td class="center cell-best">0.955</td>
+              <td class="cell-note">Binary only; best for binary pairwise</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Numeric methods are averaged across continuous, Likert, and grades distributions.
+        Newcombe is evaluated on binary data only.
+        <strong>BCa is the clear worst for pairwise comparisons</strong>, despite its reputation — mean coverage of
+        0.855 at N=20 vs. the 0.95 target.
+      </p>
+
+      <div class="callout callout-finding">
+        <div class="callout-label">Surprising finding</div>
+        <p>
+          Smooth bootstrap reaches near-perfect pairwise coverage (0.954) by N=20 <em>for binary data</em> —
+          a case it is not technically designed for — matching the Bayesian method (0.946) and approaching
+          Newcombe's score interval. Its interval width is slightly wider (~0.05–0.1 absolute), which,
+          per our conservative-by-default maxim, is a feature rather than a bug.
+        </p>
+      </div>
+
+      <h3>Comparison with Bayesian Methods for Binary Scores</h3>
+      <p>
+        To address the "Don't Use the CLT" paper's claims, we also extended the simulation to include
+        the Bayesian beta-posterior method the authors advocate. For the binary single-sample case:
+      </p>
+      <ul>
+        <li>Wilson score and Bayesian methods produce nearly identical results.</li>
+        <li>Wilson is marginally more precise to the true interval width.</li>
+        <li>Wilson requires no sampling — it is instantaneous.</li>
+      </ul>
+      <p>
+        For pairwise binary comparisons, smooth bootstrap and Newcombe both reach near-Bayesian coverage
+        by N=20. Differences become negligible by N=50. There is no meaningful reason to prefer a
+        sampling-based Bayesian posterior over the closed-form algebraic solutions for binary data.
+      </p>
+      <div class="callout callout-maxim">
+        <div class="callout-label">Conclusion on Bayesian methods</div>
+        <p>
+          For binary scores: use Wilson (single) and Newcombe (pairwise). They are as accurate as Bayesian,
+          faster, and impose no additional distributional assumptions.
+          For numeric/interval scores: smooth bootstrap is the practical winner.
+          There is no compelling case to add Bayesian sampling to an eval pipeline.
+        </p>
+      </div>
+    </section>
+
+    <!-- ── SECTION: RECOMMENDATIONS ── -->
+    <section id="recommendations">
+      <h2>Recommendations and Defaults</h2>
+      <p class="section-lead">
+        A concise summary of the recommended defaults, organized by data type and analysis type.
+      </p>
+
+      <h3>By Data Type</h3>
+      <div class="rec-cards">
+        <div class="rec-card">
+          <div class="rec-card-when">Binary (0 / 1)</div>
+          <div class="rec-card-method">Wilson + Newcombe</div>
+          <div class="rec-card-detail">
+            Wilson score interval for single-sample CIs.
+            Newcombe score interval for pairwise differences.
+            Both are closed-form, instantaneous, and outperform all bootstrap methods at any N.
+          </div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-card-when">Continuous (0–1 floats)</div>
+          <div class="rec-card-method">Smooth Bootstrap</div>
+          <div class="rec-card-detail">
+            Highest coverage across all N tested. Slightly conservative (wider CIs), which is
+            preferred in safety-critical eval contexts.
+          </div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-card-when">Likert / Integer (e.g., 1–5)</div>
+          <div class="rec-card-method">Smooth Bootstrap</div>
+          <div class="rec-card-detail">
+            Same story as continuous. Smooth bootstrap handles the discrete nature of Likert
+            scales more gracefully than percentile or BCa.
+          </div>
+        </div>
+        <div class="rec-card">
+          <div class="rec-card-when">Grades / Rubric (0–100)</div>
+          <div class="rec-card-method">Smooth Bootstrap</div>
+          <div class="rec-card-detail">
+            Bounded, potentially skewed. Smooth bootstrap is robust to skew and performs
+            well even at N=10.
+          </div>
+        </div>
+      </div>
+
+      <h3>By Analysis Type</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Data Type</th>
+              <th>Recommended Method</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Single-sample CI on mean score</td>
+              <td>Binary</td>
+              <td><strong>Wilson score interval</strong></td>
+              <td>Closed-form, best coverage</td>
+            </tr>
+            <tr>
+              <td>Single-sample CI on mean score</td>
+              <td>Numeric/Interval</td>
+              <td><strong>Smooth bootstrap</strong></td>
+              <td>Conservative; most reliable at small N</td>
+            </tr>
+            <tr>
+              <td>Pairwise comparison (A vs B)</td>
+              <td>Binary</td>
+              <td><strong>Newcombe score interval</strong></td>
+              <td>Paired; + McNemar's test for significance</td>
+            </tr>
+            <tr>
+              <td>Pairwise comparison (A vs B)</td>
+              <td>Numeric/Interval</td>
+              <td><strong>Smooth bootstrap</strong></td>
+              <td>Highest pairwise coverage; BCa is explicitly <em>not</em> recommended</td>
+            </tr>
+            <tr>
+              <td>All pairwise comparisons (k templates)</td>
+              <td>Any</td>
+              <td>As above + <strong>Holm correction</strong></td>
+              <td>Multiple comparisons; Holm is uniformly more powerful than Bonferroni</td>
+            </tr>
+            <tr>
+              <td>Hierarchical data (multi-run)</td>
+              <td>Any</td>
+              <td><strong>Nested bootstrap</strong></td>
+              <td>Resample inputs, then runs within inputs; propagates run stochasticity into CIs</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      <h3>Sample Size Guidance</h3>
+      <div class="callout callout-warning">
+        <div class="callout-label">Sample size floor</div>
+        <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
+        <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
+        <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals are reliable. Smooth bootstrap performs near-ideally by N=20 for most distributions.</p>
+      </div>
+    </section>
+
+    <!-- ── SECTION: PROMPTSTATS ── -->
+    <section id="promptstats">
+      <h2>The promptstats Library</h2>
+      <p>
+        <code>promptstats</code> implements all of the above defaults out of the box. You pass it data,
+        it runs the most appropriate statistics given your data format and structure, and it produces
+        a human-readable report.
+      </p>
+      <pre><code>pip install promptstats</code></pre>
+      <p>
+        The <code>analyze()</code> function selects methods automatically based on your data:
+      </p>
+      <pre><code>import promptstats as pstats
+
+result = pstats.BenchmarkResult(
+    scores=scores,                      # (n_templates, n_inputs, n_runs, n_evals)
+    template_labels=["A", "B", "C"],
+    input_labels=[f"input_{i}" for i in range(n_inputs)],
+)
+
+analysis = pstats.analyze(result, reference="grand_mean")
+pstats.print_analysis_summary(analysis)</code></pre>
+
+      <p>
+        The CLI reads CSV or Excel directly:
+      </p>
+      <pre><code>promptstats analyze results.csv</code></pre>
+
+      <div class="callout callout-info">
+        <div class="callout-label">Auto-selection logic</div>
+        <p>
+          When <code>method="auto"</code> (the default), <code>promptstats</code> uses:
+          <strong>Wilson + Newcombe</strong> for binary data, and
+          <strong>smooth bootstrap</strong> for all other numeric/interval data.
+          Multiple pairwise comparisons are corrected with the Holm method.
+          Nested (two-level) bootstrap is used automatically when repeated runs are present.
+        </p>
+      </div>
+
+      <h3>Further Reading and Related Work</h3>
+      <ul>
+        <li>
+          <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6797821/" target="_blank">
+            Simulation study on bootstrap CI methods (Counsell &amp; Pek, 2019)
+          </a> — showed percentile bootstrap outperforms BCa in many practical settings.
+        </li>
+        <li>
+          Banks (1988), <em>"Some simple models of the data analysis problem,"</em>
+          <a href="https://www.jstor.org/stable/2336308" target="_blank">JSTOR</a> — early evidence
+          that smoothed (KDE-based) bootstrap outperforms alternatives for small N.
+        </li>
+        <li>
+          <a href="https://etheses.dur.ac.uk/15294/1/thesis_simkus_FINALversion.pdf" target="_blank">
+            Simkus thesis on the Banks-B bootstrap
+          </a> — argues this underappreciated method is particularly strong for small N.
+        </li>
+        <li>
+          Wilson (1927), "Probable inference, the law of succession, and statistical inference" —
+          the original Wilson score interval derivation.
+        </li>
+        <li>
+          Newcombe (1998), "Interval estimation for the difference between independent proportions" —
+          the Newcombe score interval for paired binary comparisons.
+        </li>
+      </ul>
+    </section>
+
+  </article>
+
+  <!-- TOC sidebar -->
+  <nav class="toc" aria-label="Table of contents">
+    <div class="toc-label">Contents</div>
+    <ol>
+      <li><a href="#why-statistics">Why Statistics Matter</a></li>
+      <li><a href="#principles">Core Principles</a></li>
+      <li>
+        <a href="#debunking">Debunking Misconceptions</a>
+        <ol class="toc-sub">
+          <li><a href="#debunking">"Don't Use the CLT"</a></li>
+          <li><a href="#debunking">"Evals Need Error Bars"</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#bootstrap">Bootstrap Methods</a>
+        <ol class="toc-sub">
+          <li><a href="#bootstrap">Method Overview</a></li>
+          <li><a href="#bootstrap">Is BCa Actually Better?</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#simulation">Simulation Study</a>
+        <ol class="toc-sub">
+          <li><a href="#simulation">Single-Sample</a></li>
+          <li><a href="#simulation">Pairwise</a></li>
+          <li><a href="#simulation">vs. Bayesian</a></li>
+        </ol>
+      </li>
+      <li>
+        <a href="#recommendations">Recommendations</a>
+        <ol class="toc-sub">
+          <li><a href="#recommendations">By Data Type</a></li>
+          <li><a href="#recommendations">By Analysis Type</a></li>
+          <li><a href="#recommendations">Sample Size Guidance</a></li>
+        </ol>
+      </li>
+      <li><a href="#promptstats">promptstats</a></li>
+    </ol>
+  </nav>
+
+</div><!-- /page-layout -->
+
+<!-- ═══ FOOTER ═══ -->
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p>Statistics for LLM Evals · A living document from the <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <ul class="footer-links">
+      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
+      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script>
+  // Highlight active TOC link based on scroll position
+  const sections = document.querySelectorAll('section[id]');
+  const tocLinks = document.querySelectorAll('.toc a');
+
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        tocLinks.forEach(link => link.classList.remove('active'));
+        const id = entry.target.id;
+        document.querySelectorAll(`.toc a[href="#${id}"]`).forEach(l => l.classList.add('active'));
+      }
+    });
+  }, { rootMargin: '-20% 0px -70% 0px' });
+
+  sections.forEach(s => observer.observe(s));
+</script>
+</body>
+</html>
