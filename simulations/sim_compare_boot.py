@@ -35,6 +35,8 @@ Usage:
     python simulations/sim_compare_boot.py --progress bar
   python simulations/sim_compare_boot.py --reps 500 --bootstrap-n 1000
         python simulations/sim_compare_boot.py --bayes-n 2000
+        python simulations/sim_compare_boot.py --out-dir simulations/out --save-results save
+        python simulations/sim_compare_boot.py --plots save --plots-dir simulations/out/plots
   python simulations/sim_compare_boot.py --sizes 5 10 20 50 100
     python simulations/sim_compare_boot.py --estimand pairwise --runs 3
     python simulations/sim_compare_boot.py --official-test
@@ -43,14 +45,19 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import os
 import sys
 import time
 import warnings
 from collections import defaultdict
+from contextlib import redirect_stdout
 from dataclasses import dataclass
-from typing import Callable
+from pathlib import Path
+from typing import Any, Callable
 
+import matplotlib.pyplot as plt
 import numpy as np
 import scipy.stats as stats
 from scipy.stats import norm
@@ -95,6 +102,8 @@ REPORT_METHODS = METHODS + [
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
 SCENARIO_SUITES = ["standard", "expanded"]
 PROGRESS_MODES = ["bar", "cell", "off"]
+PLOT_MODES = ["save", "off"]
+RESULTS_MODES = ["save", "off"]
 
 
 # ---------------------------------------------------------------------------
@@ -1334,6 +1343,221 @@ def print_report(
     print()
 
 
+def save_metric_plot(
+    *,
+    results: list[SimResult],
+    sample_sizes: list[int],
+    alpha: float,
+    n_reps: int,
+    estimand_label: str,
+    out_path: str,
+    sample_size_filter: int | None = None,
+) -> None:
+    """Save a multi-panel interval/box plot of method performance by eval type."""
+    plot_results = results
+    if sample_size_filter is not None:
+        plot_results = [r for r in results if r.n == sample_size_filter]
+
+    if not plot_results:
+        print(f"Skipped plot (no matching data): {out_path}")
+        return
+
+    target = 1.0 - alpha
+    present_methods = {r.method for r in plot_results}
+    method_labels = [m for m in REPORT_METHODS if m in present_methods]
+
+    fig, axes = plt.subplots(
+        nrows=len(EVAL_TYPES),
+        ncols=2,
+        figsize=(14.8, 11.5),
+        constrained_layout=False,
+        gridspec_kw={"wspace": 0.34, "hspace": 0.30},
+    )
+    if len(EVAL_TYPES) == 1:
+        axes = np.array([axes])
+
+    col_titles = [f"Coverage (target={target:.2f}; red interval = MC95)", "Mean CI Width"]
+
+    box_kwargs: dict[str, Any] = {
+        "vert": False,
+        "showmeans": True,
+        "meanline": False,
+        "patch_artist": False,
+        "whiskerprops": {"linewidth": 1.2, "color": "black"},
+        "capprops": {"linewidth": 1.2, "color": "black"},
+        "medianprops": {"linewidth": 1.8, "color": "black"},
+        "boxprops": {"linewidth": 1.4, "color": "black"},
+        "meanprops": {"marker": "D", "markerfacecolor": "white", "markeredgecolor": "black", "markersize": 4.5},
+        "flierprops": {"marker": "o", "markerfacecolor": "black", "markeredgecolor": "black", "markersize": 2.8, "alpha": 0.55},
+    }
+
+    for r_idx, et in enumerate(EVAL_TYPES):
+        et_results = [res for res in plot_results if res.eval_type == et]
+        et_methods = [m for m in method_labels if any(res.method == m for res in et_results)]
+
+        cov_series: list[np.ndarray] = []
+        wid_series: list[np.ndarray] = []
+        cov_uncertainty: list[tuple[float, float, float]] = []
+
+        for method in et_methods:
+            subset = [res for res in et_results if res.method == method]
+            cov_vals = np.array([res.covered / res.n_reps for res in subset], dtype=float)
+            wid_vals = np.array([res.total_width / res.n_reps for res in subset], dtype=float)
+            if cov_vals.size > 0:
+                cov_series.append(cov_vals)
+                wid_series.append(wid_vals)
+
+                covered_tot = int(sum(res.covered for res in subset))
+                total_tot = int(sum(res.n_reps for res in subset))
+                p_hat, _, lo, hi = _mc_proportion_stats(covered_tot, total_tot)
+                cov_uncertainty.append((p_hat, lo, hi))
+
+        metric_series = [cov_series, wid_series]
+        metric_xlabels = [
+            "Coverage across scenarios × n",
+            "CI width across scenarios × n",
+        ]
+
+        for c_idx, (ax, series, xlabel) in enumerate(zip(axes[r_idx], metric_series, metric_xlabels)):
+            if r_idx == 0:
+                ax.set_title(col_titles[c_idx], fontsize=11)
+
+            if not series:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                ax.set_yticks([])
+                continue
+
+            bp = ax.boxplot(series, tick_labels=et_methods, **box_kwargs)
+
+            ax.grid(axis="x", linestyle="--", linewidth=0.65, alpha=0.50)
+            ax.set_xlabel(xlabel, fontsize=9.5)
+            ax.tick_params(axis="y", labelsize=9.5, pad=2)
+            ax.tick_params(axis="x", labelsize=9)
+            ax.invert_yaxis()
+
+            if c_idx == 0:
+                low_ok = max(0.0, target - 0.04)
+                hi_ok = min(1.0, target + 0.04)
+                ax.axvspan(low_ok, hi_ok, color="#DDDDDD", alpha=0.35, zorder=0)
+                ax.axvline(target, color="black", linestyle="-", linewidth=1.2)
+                ax.set_xlim(0.0, 1.0)
+
+                for y_pos, (p_hat, lo, hi) in enumerate(cov_uncertainty, start=1):
+                    if np.isnan(lo) or np.isnan(hi):
+                        continue
+                    ax.hlines(y=y_pos, xmin=lo, xmax=hi, color="tab:red", linewidth=2.1, zorder=5)
+                    ax.vlines([lo, hi], y_pos - 0.15, y_pos + 0.15, color="tab:red", linewidth=1.5, zorder=5)
+                    if not np.isnan(p_hat):
+                        ax.plot(p_hat, y_pos, marker="|", color="tab:red", markersize=10, markeredgewidth=1.8, zorder=6)
+            else:
+                x_max = max(float(np.max(vals)) for vals in series if vals.size > 0)
+                ax.set_xlim(0.0, x_max * 1.08 if x_max > 0 else 1.0)
+
+            if c_idx == 0:
+                ax.set_ylabel(et.upper(), fontsize=10.5)
+
+            if bp and "means" in bp:
+                for mean_artist in bp["means"]:
+                    mean_artist.set_zorder(4)
+
+    if sample_size_filter is not None:
+        size_text = str(sample_size_filter)
+    elif sample_sizes:
+        size_text = ", ".join(str(n) for n in sample_sizes)
+    else:
+        unique_sizes = sorted({r.n for r in plot_results})
+        size_text = ", ".join(str(n) for n in unique_sizes) if unique_sizes else "n/a"
+
+    fig.suptitle(
+        f"Method Comparison by Eval Type (Interval / Box Plots)\n"
+        f"Estimand: {estimand_label} | reps={n_reps} | alpha={alpha} | n={size_text}",
+        fontsize=13.5,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=r".*not compatible with tight_layout.*",
+            category=UserWarning,
+        )
+        fig.tight_layout(rect=[0.03, 0.02, 0.995, 0.95], w_pad=2.6)
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved plot: {out}")
+
+
+def save_results_artifacts(
+    *,
+    results: list[SimResult],
+    alpha: float,
+    sample_sizes: list[int],
+    n_reps: int,
+    estimand_label: str,
+    out_dir: str,
+    run_stem: str,
+) -> None:
+    """Save per-cell results CSV and full text report log for a simulation run."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+
+    csv_path = out_base / f"{run_stem}_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(
+            [
+                "eval_type",
+                "scenario",
+                "n",
+                "method",
+                "n_reps",
+                "covered",
+                "total_width",
+                "coverage",
+                "mean_width",
+                "mcse",
+                "band95_low",
+                "band95_high",
+            ]
+        )
+        for r in results:
+            coverage = r.covered / r.n_reps
+            mean_width = r.total_width / r.n_reps
+            _, mcse, lo, hi = _mc_proportion_stats(r.covered, r.n_reps)
+            writer.writerow(
+                [
+                    r.eval_type,
+                    r.scenario,
+                    r.n,
+                    r.method,
+                    r.n_reps,
+                    r.covered,
+                    f"{r.total_width:.8f}",
+                    f"{coverage:.8f}",
+                    f"{mean_width:.8f}",
+                    f"{mcse:.8f}",
+                    f"{lo:.8f}",
+                    f"{hi:.8f}",
+                ]
+            )
+
+    summary_path = out_base / f"{run_stem}_summary.log"
+    report_buf = io.StringIO()
+    with redirect_stdout(report_buf):
+        print_report(
+            results=results,
+            sample_sizes=sample_sizes,
+            alpha=alpha,
+            n_reps=n_reps,
+            estimand_label=estimand_label,
+        )
+
+    summary_path.write_text(report_buf.getvalue(), encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
@@ -1352,6 +1576,10 @@ def _run_benchmark(
     seed: int,
     scenario_suite: str,
     progress_mode: str,
+    plot_mode: str,
+    save_results: str,
+    out_dir: str,
+    plots_dir: str,
     label: str | None = None,
 ) -> None:
     if label:
@@ -1372,6 +1600,11 @@ def _run_benchmark(
     print(f"  Sample sizes    : {sizes}")
     print(f"  Seed            : {seed}")
     print(f"  Progress mode   : {progress_mode}")
+    print(f"  Plots           : {plot_mode}")
+    print(f"  Save results    : {save_results}")
+    print(f"  Out dir         : {out_dir}")
+    if plot_mode == "save":
+        print(f"  Plots dir       : {plots_dir}")
 
     print("\nBuilding scenarios …", end="", flush=True)
     if estimand == "mean":
@@ -1443,6 +1676,52 @@ def _run_benchmark(
         estimand_label=estimand_label,
     )
 
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    run_stem = (
+        f"sim_compare_boot_{estimand}_{scenario_suite}_"
+        f"runs{runs}_stat{statistic}_reps{reps}_{stamp}"
+    )
+
+    if save_results == "save":
+        save_results_artifacts(
+            results=results,
+            alpha=alpha,
+            sample_sizes=sizes,
+            n_reps=reps,
+            estimand_label=estimand_label,
+            out_dir=out_dir,
+            run_stem=run_stem,
+        )
+
+    if plot_mode == "save":
+        overall_file_name = (
+            f"sim_compare_boot_{estimand}_{scenario_suite}_"
+            f"runs{runs}_stat{statistic}_reps{reps}_overall_{stamp}.png"
+        )
+        save_metric_plot(
+            results=results,
+            sample_sizes=sizes,
+            alpha=alpha,
+            n_reps=reps,
+            estimand_label=estimand_label,
+            out_path=str(Path(plots_dir) / overall_file_name),
+        )
+
+        for n in sizes:
+            per_n_file_name = (
+                f"sim_compare_boot_{estimand}_{scenario_suite}_"
+                f"runs{runs}_stat{statistic}_reps{reps}_n{n}_{stamp}.png"
+            )
+            save_metric_plot(
+                results=results,
+                sample_sizes=[n],
+                alpha=alpha,
+                n_reps=reps,
+                estimand_label=estimand_label,
+                out_path=str(Path(plots_dir) / per_n_file_name),
+                sample_size_filter=n,
+            )
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(
@@ -1468,6 +1747,28 @@ def main() -> None:
         choices=PROGRESS_MODES,
         default="bar",
         help="Progress display mode: bar (ETA), cell, or off (default: bar)",
+    )
+    parser.add_argument(
+        "--plots",
+        choices=PLOT_MODES,
+        default="save",
+        help="Post-run plotting mode: save or off (default: save)",
+    )
+    parser.add_argument(
+        "--save-results",
+        choices=RESULTS_MODES,
+        default="save",
+        help="Write run results CSV and summary log: save or off (default: save)",
+    )
+    parser.add_argument(
+        "--out-dir",
+        default="simulations/out",
+        help="Base output directory for non-plot artifacts (default: simulations/out)",
+    )
+    parser.add_argument(
+        "--plots-dir",
+        default=None,
+        help="Directory for saved plots when --plots save (default: <out-dir>/plots)",
     )
     parser.add_argument(
         "--estimand",
@@ -1536,6 +1837,7 @@ def main() -> None:
         help="Global RNG seed (default: 42)",
     )
     args = parser.parse_args()
+    plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
 
     if args.official_test:
         print("\nRunning OFFICIAL TEST battery with robust, intensive presets.")
@@ -1553,6 +1855,10 @@ def main() -> None:
             seed=args.seed,
             scenario_suite="expanded",
             progress_mode=args.progress,
+            plot_mode=args.plots,
+            save_results=args.save_results,
+            out_dir=args.out_dir,
+            plots_dir=plots_dir,
             label="OFFICIAL TEST · Phase 1/2 · Single-sample mean estimand",
         )
 
@@ -1564,10 +1870,14 @@ def main() -> None:
             bootstrap_n=10000,
             bayes_n=10000,
             alpha=0.05,
-            sizes=[10, 20, 30, 50, 100, 200],
+            sizes=[5, 10, 20, 30, 50, 100, 200],
             seed=args.seed + 1,
             scenario_suite="expanded",
             progress_mode=args.progress,
+            plot_mode=args.plots,
+            save_results=args.save_results,
+            out_dir=args.out_dir,
+            plots_dir=plots_dir,
             label="OFFICIAL TEST · Phase 2/2 · Pairwise estimand (nested runs)",
         )
         return
@@ -1584,6 +1894,10 @@ def main() -> None:
         seed=args.seed,
         scenario_suite=args.scenario_suite,
         progress_mode=args.progress,
+        plot_mode=args.plots,
+        save_results=args.save_results,
+        out_dir=args.out_dir,
+        plots_dir=plots_dir,
     )
 
 

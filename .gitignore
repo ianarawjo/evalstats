@@ -13,3 +13,5 @@
 dist/
 build/
 scripts/pypi_release_checks.sh
+simulations/out/*
+simulations/plots/*
