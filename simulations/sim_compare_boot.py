@@ -1843,6 +1843,9 @@ def main() -> None:
         print("\nRunning OFFICIAL TEST battery with robust, intensive presets.")
         print("This mode intentionally prioritizes rigor over runtime.")
 
+        # This will run sizes starting from 10, since some methods are very unstable 
+        # at n=5 for the pairwise estimand, and we are assuming the eval sample size is 
+        # at least N=10 (making decisions based on statistics over n=5 is not really that meaningful). 
         _run_benchmark(
             estimand="mean",
             runs=1,
@@ -1851,7 +1854,7 @@ def main() -> None:
             bootstrap_n=10000,
             bayes_n=10000,
             alpha=0.05,
-            sizes=[5, 10, 20, 30, 50, 100, 200],
+            sizes=[10, 20, 30, 50, 100, 200],
             seed=args.seed,
             scenario_suite="expanded",
             progress_mode=args.progress,
@@ -1870,7 +1873,7 @@ def main() -> None:
             bootstrap_n=10000,
             bayes_n=10000,
             alpha=0.05,
-            sizes=[5, 10, 20, 30, 50, 100, 200],
+            sizes=[10, 20, 30, 50, 100, 200],
             seed=args.seed + 1,
             scenario_suite="expanded",
             progress_mode=args.progress,
