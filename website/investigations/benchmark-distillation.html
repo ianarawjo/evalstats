@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>How Many Eval Items Do I Actually Need? &mdash; Stats for LLM Evals</title>
+  <title>Distilling a Benchmark &mdash; Stats for LLM Evals</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
@@ -28,9 +28,9 @@
 <!-- INVESTIGATION HEADER -->
 <div class="inv-header">
   <a class="inv-back" href="../index.html">&larr; Stats Reference Guide</a>
-  <div class="inv-eyebrow">Going Deeper Investigation</div>
-  <h1>How Many Eval Items Do I Actually Need?</h1>
-  <p class="inv-subtitle">Statistical power analysis for LLM evals. Given the effect size you want to detect, how many items do you need &mdash; before you run the eval, not after.</p>
+  <div class="inv-eyebrow">Advanced Investigation</div>
+  <h1>Distilling a Benchmark</h1>
+  <p class="inv-subtitle">You have 2,000 eval items but budget for 200. Which 200 carry the most statistical information? Naive random sampling wastes coverage. This investigation covers principled methods for building compact, representative eval subsets that preserve the full benchmark&rsquo;s discriminative power.</p>
 </div>
 
 <!-- MAIN LAYOUT -->
@@ -64,7 +64,7 @@
         <li><a href="./prompt-sensitivity.html">Prompt Sensitivity</a></li>
         <li><a href="./response-consistency.html">Checking Response Consistency</a></li>
         <li><a href="./rag-factorial.html">Stats for RAG Pipelines</a></li>
-        <li><a href="./sample-size.html" class="active">Sample Size Planning</a></li>
+        <li><a href="./sample-size.html">Sample Size Planning</a></li>
       </ul>
     </div>
 
@@ -74,7 +74,7 @@
         <li><a href="./regression-guard.html">Regression Guard</a></li>
         <li><a href="./irr-human-annotations.html">Auditing Your LLM Judge</a></li>
         <li><a href="./ranking-noise.html">When Rankings Flip</a></li>
-        <li><a href="./benchmark-distillation.html">Distilling a Benchmark</a></li>
+        <li><a href="./benchmark-distillation.html" class="active">Distilling a Benchmark</a></li>
       </ul>
     </div>
   </nav>
@@ -84,25 +84,25 @@
 
     <section>
       <h2>What This Investigation Covers</h2>
-      <p>Most eval datasets are sized by convenience (&ldquo;I had 50 good test cases&rdquo;) rather than by statistical need. Power analysis flips this: given the minimum difference you care about detecting, compute how large N must be to detect it reliably.</p>
+      <p>Large eval sets are expensive to run and maintain. But shrinking them arbitrarily &mdash; by grabbing a random slice &mdash; risks discarding the items that most sharply differentiate models. Benchmark distillation is the principled alternative: using pilot data to identify which items contribute independent statistical information, preserve difficulty coverage, and discriminate between models that would otherwise appear identical. This investigation covers the core techniques, from stratified reduction through IRT-inspired item selection, and shows how to validate that a compact benchmark is trustworthy.</p>
 
       <h3>What you&rsquo;ll learn</h3>
       <div class="learn-grid">
       <div class="learn-item">
         <div class="learn-item-num">01</div>
-        <p><strong>Framing eval design as a power problem</strong> &mdash; How to specify minimum detectable effect (MDE), desired power (1&minus;&beta;), and confidence level (&alpha;) before choosing N.</p>
+        <p><strong>Identifying redundant items</strong> &mdash; How to detect items whose outcomes are highly correlated with other items across a model population, and how removing them shrinks the benchmark without losing coverage or discriminative power.</p>
       </div>
       <div class="learn-item">
         <div class="learn-item-num">02</div>
-        <p><strong>How N scales with effect size and variance</strong> &mdash; The key relationships: halving the MDE quadruples required N; doubling variance roughly doubles N; binary data often requires fewer samples than continuous.</p>
+        <p><strong>Stratified reduction strategies</strong> &mdash; How to preserve the difficulty distribution and category coverage of the full benchmark while dramatically reducing item count &mdash; so the compact set doesn&rsquo;t accidentally over-represent easy or hard cases.</p>
       </div>
       <div class="learn-item">
         <div class="learn-item-num">03</div>
-        <p><strong>Using pilot data to estimate variance</strong> &mdash; How to run a small pilot (N=20&ndash;30) to estimate score variance, then use that to compute required N for the full study.</p>
+        <p><strong>IRT-inspired item selection</strong> &mdash; A practical introduction to item response theory: using pilot data to estimate item discrimination and difficulty, then selecting the items that best differentiate model capabilities across the ability range.</p>
       </div>
       <div class="learn-item">
         <div class="learn-item-num">04</div>
-        <p><strong>Power curves for common eval scenarios</strong> &mdash; Reference curves for binary pass/fail (Wilson-based power), numeric scores (bootstrap-based power), and paired vs. unpaired designs.</p>
+        <p><strong>Validating the distilled benchmark</strong> &mdash; How to measure whether your reduced set produces scores that correlate tightly with full-benchmark scores across a range of held-out models, and the minimum correlation you should require before relying on the compact version.</p>
       </div>
       </div>
 

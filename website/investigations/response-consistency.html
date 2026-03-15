@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>How Many Eval Items Do I Actually Need? &mdash; Stats for LLM Evals</title>
+  <title>Checking Response Consistency &mdash; Stats for LLM Evals</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
@@ -29,8 +29,8 @@
 <div class="inv-header">
   <a class="inv-back" href="../index.html">&larr; Stats Reference Guide</a>
   <div class="inv-eyebrow">Going Deeper Investigation</div>
-  <h1>How Many Eval Items Do I Actually Need?</h1>
-  <p class="inv-subtitle">Statistical power analysis for LLM evals. Given the effect size you want to detect, how many items do you need &mdash; before you run the eval, not after.</p>
+  <h1>Checking Response Consistency</h1>
+  <p class="inv-subtitle">You run the same prompt twice and get different scores. Is that model variance, judge variance, or both? Without knowing how much outputs vary across runs, a single-pass eval may be a snapshot of noise &mdash; not a stable estimate of capability.</p>
 </div>
 
 <!-- MAIN LAYOUT -->
@@ -62,9 +62,9 @@
       <ul>
         <li><a href="./before-after.html">Before / After Fine-Tune</a></li>
         <li><a href="./prompt-sensitivity.html">Prompt Sensitivity</a></li>
-        <li><a href="./response-consistency.html">Checking Response Consistency</a></li>
+        <li><a href="./response-consistency.html" class="active">Checking Response Consistency</a></li>
         <li><a href="./rag-factorial.html">Stats for RAG Pipelines</a></li>
-        <li><a href="./sample-size.html" class="active">Sample Size Planning</a></li>
+        <li><a href="./sample-size.html">Sample Size Planning</a></li>
       </ul>
     </div>
 
@@ -84,25 +84,25 @@
 
     <section>
       <h2>What This Investigation Covers</h2>
-      <p>Most eval datasets are sized by convenience (&ldquo;I had 50 good test cases&rdquo;) rather than by statistical need. Power analysis flips this: given the minimum difference you care about detecting, compute how large N must be to detect it reliably.</p>
+      <p>Most LLM eval pipelines run each test item once. But at temperature &gt; 0, the same prompt produces different outputs &mdash; and different scores &mdash; on every call. This variance has two sources: the model&rsquo;s stochastic generation and the judge&rsquo;s stochastic scoring. Until you measure it, you can&rsquo;t know whether your eval score is a stable estimate or a lucky draw. This investigation shows how to quantify run-to-run variance, separate its two sources, and decide how many runs per item your pipeline actually needs.</p>
 
       <h3>What you&rsquo;ll learn</h3>
       <div class="learn-grid">
       <div class="learn-item">
         <div class="learn-item-num">01</div>
-        <p><strong>Framing eval design as a power problem</strong> &mdash; How to specify minimum detectable effect (MDE), desired power (1&minus;&beta;), and confidence level (&alpha;) before choosing N.</p>
+        <p><strong>Quantifying run-to-run variance</strong> &mdash; How to score the same inputs multiple times and estimate within-item standard deviation. When is variance small enough to trust a single pass, and when does it swamp your signal?</p>
       </div>
       <div class="learn-item">
         <div class="learn-item-num">02</div>
-        <p><strong>How N scales with effect size and variance</strong> &mdash; The key relationships: halving the MDE quadruples required N; doubling variance roughly doubles N; binary data often requires fewer samples than continuous.</p>
+        <p><strong>Separating model variance from judge variance</strong> &mdash; How to design a replicated experiment &mdash; scoring fixed outputs multiple times, and generating multiple outputs per item &mdash; to isolate how much variability comes from the model vs. the scorer.</p>
       </div>
       <div class="learn-item">
         <div class="learn-item-num">03</div>
-        <p><strong>Using pilot data to estimate variance</strong> &mdash; How to run a small pilot (N=20&ndash;30) to estimate score variance, then use that to compute required N for the full study.</p>
+        <p><strong>Computing the minimum runs needed per item</strong> &mdash; The calculation for deciding how many samples per item are required to keep your aggregate score reliable to within a target margin, given your measured within-item variance.</p>
       </div>
       <div class="learn-item">
         <div class="learn-item-num">04</div>
-        <p><strong>Power curves for common eval scenarios</strong> &mdash; Reference curves for binary pass/fail (Wilson-based power), numeric scores (bootstrap-based power), and paired vs. unpaired designs.</p>
+        <p><strong>When consistency is itself a quality signal</strong> &mdash; How to report response consistency as a standalone metric: a model that scores 80% with low variance may be more deployable than one that scores 85% with high variance on the same items.</p>
       </div>
       </div>
 

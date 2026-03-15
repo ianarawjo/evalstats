@@ -29,9 +29,23 @@ INVESTIGATIONS = [
         ],
     },
     {
+        "slug": "multi-metric",
+        "nav_label": "Comparing Multiple Metrics",
+        "tier": "Foundations",
+        "title": "Comparing Models Across Multiple Metrics",
+        "subtitle": "Model A wins on quality, Model B wins on safety, and they tie on cost. There&rsquo;s no universal &ldquo;best.&rdquo; Here&rsquo;s how to reason about multi-metric results without cherry-picking the metric that flatters your preferred model.",
+        "intro": "Real-world LLM deployments are evaluated on several dimensions simultaneously &mdash; quality, safety, latency, cost, refusal rate, and more. When models don&rsquo;t agree across metrics, picking a winner requires making values explicit. This investigation covers the statistical and conceptual tools for multi-metric comparison: how to carry uncertainty through composite scores, when Pareto dominance lets you sidestep weighting choices, and how to present tradeoffs honestly to stakeholders.",
+        "learns": [
+            ("Why composite scores can mislead", "How the choice of weights drives the composite winner, and why hiding that choice inside an aggregate obscures a values decision that should be made explicitly."),
+            ("Pareto dominance as a weight-free criterion", "What it means for one model to dominate another across all metrics simultaneously, how to identify the Pareto frontier, and when it is (and isn&rsquo;t) small enough to be useful."),
+            ("Carrying uncertainty through multiple metrics", "How to compute and visualize per-metric confidence intervals, detect when metric CIs are too wide to support any conclusion, and report results without false precision."),
+            ("Presenting multi-metric results to stakeholders", "Chart patterns and table formats that surface tradeoffs rather than a pre-digested verdict, and how to make weighting assumptions visible rather than baked in."),
+        ],
+    },
+    {
         "slug": "model-prompt-grid",
         "tier": "Foundations",
-        "title": "Model &times; Prompt Grid: What Actually Wins?",
+        "title": "Finding the Best Model-Prompt Combo: What Actually Wins?",
         "subtitle": "Three models, five prompt templates, fifteen combinations. Which pairing genuinely wins? And does Model A&rsquo;s lead hold across all prompts &mdash; or only some of them?",
         "intro": "The 2D model&times;prompt comparison is where most real-world eval work lives. It&rsquo;s also where naive statistics fail most spectacularly: picking the highest cell in a 3&times;5 matrix without correction virtually guarantees a spurious winner.",
         "learns": [
@@ -70,6 +84,34 @@ INVESTIGATIONS = [
         ],
     },
     {
+        "slug": "response-consistency",
+        "nav_label": "Checking Response Consistency",
+        "tier": "Going Deeper",
+        "title": "Checking Response Consistency",
+        "subtitle": "You run the same prompt twice and get different scores. Is that model variance, judge variance, or both? Without knowing how much outputs vary across runs, a single-pass eval may be a snapshot of noise &mdash; not a stable estimate of capability.",
+        "intro": "Most LLM eval pipelines run each test item once. But at temperature &gt; 0, the same prompt produces different outputs &mdash; and different scores &mdash; on every call. This variance has two sources: the model&rsquo;s stochastic generation and the judge&rsquo;s stochastic scoring. Until you measure it, you can&rsquo;t know whether your eval score is a stable estimate or a lucky draw. This investigation shows how to quantify run-to-run variance, separate its two sources, and decide how many runs per item your pipeline actually needs.",
+        "learns": [
+            ("Quantifying run-to-run variance", "How to score the same inputs multiple times and estimate within-item standard deviation. When is variance small enough to trust a single pass, and when does it swamp your signal?"),
+            ("Separating model variance from judge variance", "How to design a replicated experiment &mdash; scoring fixed outputs multiple times, and generating multiple outputs per item &mdash; to isolate how much variability comes from the model vs. the scorer."),
+            ("Computing the minimum runs needed per item", "The calculation for deciding how many samples per item are required to keep your aggregate score reliable to within a target margin, given your measured within-item variance."),
+            ("When consistency is itself a quality signal", "How to report response consistency as a standalone metric: a model that scores 80% with low variance may be more deployable than one that scores 85% with high variance on the same items."),
+        ],
+    },
+    {
+        "slug": "rag-factorial",
+        "nav_label": "Stats for RAG Pipelines",
+        "tier": "Going Deeper",
+        "title": "Which Chunker and Retrieval Method Wins? Stats for RAG Pipelines",
+        "subtitle": "Your dataset is labeled with the chunker and retrieval method used for each row. Fixed-512 + BM25, semantic + dense &mdash; four combinations, one score column. Here&rsquo;s how to find out which pipeline configuration genuinely wins, and whether the factors interact.",
+        "intro": "RAG pipelines have multiple independently-tunable components &mdash; chunking strategy, retrieval method, reranker, context window size &mdash; and it&rsquo;s tempting to tune them one at a time. But factors interact: dense retrieval may only outperform BM25 when paired with semantic chunking, while the combination with fixed-size chunks shows no difference. A one-factor-at-a-time analysis misses this. Factorial evaluation with a mixed model captures main effects and interactions simultaneously, accounts for per-question variation in difficulty, and applies the right multiple-comparison correction across all pairwise tests. If your eval dataset already records which configuration produced each row, you&rsquo;re one <code>analyze_factorial()</code> call away from a rigorous answer.",
+        "learns": [
+            ("Structuring your dataset for factorial analysis", "How to format a tagged RAG eval dataset &mdash; one row per (question, configuration) with the factor columns and a score column &mdash; so it can be passed directly to <code>analyze_factorial()</code>."),
+            ("What the mixed model is doing", "How fitting <code>score&nbsp;~&nbsp;chunker&nbsp;*&nbsp;retrieval&nbsp;+&nbsp;(1|question)</code> separates configuration effects from question-difficulty effects, and why this gives tighter CIs than ignoring the random intercept."),
+            ("Reading main effects vs. interactions", "How to interpret the Wald &chi;&sup2; tests per factor: a significant interaction means the best chunker depends on which retrieval method you use, and you can&rsquo;t report a single &ldquo;best chunker&rdquo; without qualification."),
+            ("Reporting the winning configuration honestly", "How to present estimated marginal means, pairwise CIs, and Holm-corrected p-values across all combinations &mdash; and how to flag when no combination is statistically distinguishable from the others."),
+        ],
+    },
+    {
         "slug": "sample-size",
         "nav_label": "Sample Size Planning",
         "tier": "Going Deeper",
@@ -81,19 +123,6 @@ INVESTIGATIONS = [
             ("How N scales with effect size and variance", "The key relationships: halving the MDE quadruples required N; doubling variance roughly doubles N; binary data often requires fewer samples than continuous."),
             ("Using pilot data to estimate variance", "How to run a small pilot (N=20&ndash;30) to estimate score variance, then use that to compute required N for the full study."),
             ("Power curves for common eval scenarios", "Reference curves for binary pass/fail (Wilson-based power), numeric scores (bootstrap-based power), and paired vs. unpaired designs."),
-        ],
-    },
-    {
-        "slug": "judge-audit",
-        "tier": "Advanced",
-        "title": "Auditing Your LLM Judge",
-        "subtitle": "Your eval pipeline uses an LLM to score outputs. But how consistent is it? How much variance does it add? This investigation measures judge reliability and shows when judge noise dominates sample noise.",
-        "intro": "LLM-as-judge is now the dominant eval paradigm, yet most pipelines treat judge scores as ground truth. They are not. The judge is a stochastic scorer with its own variance, biases, and failure modes. Auditing the judge is a prerequisite for trusting any eval result that depends on it.",
-        "learns": [
-            ("Measuring judge consistency", "How to estimate judge variance by scoring the same outputs multiple times under identical prompts, and how to compute an intra-class correlation (ICC) for the judge."),
-            ("Computing judge-induced CI inflation", "How to propagate judge variance into your model comparison CIs &mdash; the extra uncertainty that comes from the scorer, not the sample."),
-            ("Detecting systematic judge biases", "Common biases to test for: position bias (favoring the first response in pairwise comparison), verbosity bias (preferring longer responses), and self-enhancement bias (a model judging its own outputs favorably)."),
-            ("When to trust judge scores vs. fall back to human annotation", "How to compute the minimum ICC threshold above which automated scoring is a reliable proxy for human judgment."),
         ],
     },
     {
@@ -110,6 +139,20 @@ INVESTIGATIONS = [
         ],
     },
     {
+        "slug": "irr-human-annotations",
+        "nav_label": "Auditing Your LLM Judge",
+        "tier": "Advanced",
+        "title": "Auditing Your LLM Judge",
+        "subtitle": "You&rsquo;ve gathered human annotations on a sample of outputs. Now you want to know: does your LLM judge agree with humans? And by how much must it agree before you can trust it as a proxy? This investigation quantifies judge&ndash;human alignment with the right statistics.",
+        "intro": "LLM-as-judge pipelines are trusted at scale, but the key question is rarely asked rigorously: how well does the judge actually agree with humans? Simple accuracy against a held-out set understates the problem. Agreement metrics must account for scale type (binary, ordinal, continuous), chance-level agreement, and the difference between systematic bias and random disagreement. This investigation covers how to design a human annotation study for judge validation, compute the right agreement statistics with confidence intervals, and interpret the results in terms of when automated scoring is &mdash; and isn&rsquo;t &mdash; an adequate proxy.",
+        "learns": [
+            ("Choosing the right agreement metric", "Cohen&rsquo;s &kappa;, Krippendorff&rsquo;s &alpha;, weighted &kappa;, and intraclass correlation: which to use based on your scale type (binary, ordinal, continuous) and whether you have two raters or many."),
+            ("Structuring your annotation sample", "How many items to annotate, how to stratify across score levels to avoid ceiling/floor effects, and how to handle disagreements between human annotators before using them as a gold standard."),
+            ("The minimum agreement threshold", "What &kappa; or ICC value is required before automated judge scores can substitute for human labels? How to set your own threshold based on the consequences of a wrong call in your deployment context."),
+            ("Diagnosing disagreement patterns", "When the judge and humans diverge, is it systematic (a consistent directional bias you can correct) or idiosyncratic (random noise that requires more human labels to average out)?"),
+        ],
+    },
+    {
         "slug": "ranking-noise",
         "nav_label": "When Rankings Flip",
         "tier": "Advanced",
@@ -121,6 +164,20 @@ INVESTIGATIONS = [
             ("Testing whether adjacent rankings are distinguishable", "How to directly test whether Model #3 and Model #4 are actually distinguishable at the stated confidence level."),
             ("Estimating the fraction of &ldquo;real&rdquo; improvements in a benchmark history", "Given a leaderboard&rsquo;s history of score improvements, how many are outside the CI noise floor? What does this look like for a typical academic NLP benchmark?"),
             ("How N and leaderboard size interact", "How the required N to reliably rank k models scales with k, and why large leaderboards with small eval sets produce mostly noise."),
+        ],
+    },
+    {
+        "slug": "benchmark-distillation",
+        "nav_label": "Distilling a Benchmark",
+        "tier": "Advanced",
+        "title": "Distilling a Benchmark",
+        "subtitle": "You have 2,000 eval items but budget for 200. Which 200 carry the most statistical information? Naive random sampling wastes coverage. This investigation covers principled methods for building compact, representative eval subsets that preserve the full benchmark&rsquo;s discriminative power.",
+        "intro": "Large eval sets are expensive to run and maintain. But shrinking them arbitrarily &mdash; by grabbing a random slice &mdash; risks discarding the items that most sharply differentiate models. Benchmark distillation is the principled alternative: using pilot data to identify which items contribute independent statistical information, preserve difficulty coverage, and discriminate between models that would otherwise appear identical. This investigation covers the core techniques, from stratified reduction through IRT-inspired item selection, and shows how to validate that a compact benchmark is trustworthy.",
+        "learns": [
+            ("Identifying redundant items", "How to detect items whose outcomes are highly correlated with other items across a model population, and how removing them shrinks the benchmark without losing coverage or discriminative power."),
+            ("Stratified reduction strategies", "How to preserve the difficulty distribution and category coverage of the full benchmark while dramatically reducing item count &mdash; so the compact set doesn&rsquo;t accidentally over-represent easy or hard cases."),
+            ("IRT-inspired item selection", "A practical introduction to item response theory: using pilot data to estimate item discrimination and difficulty, then selecting the items that best differentiate model capabilities across the ability range."),
+            ("Validating the distilled benchmark", "How to measure whether your reduced set produces scores that correlate tightly with full-benchmark scores across a range of held-out models, and the minimum correlation you should require before relying on the compact version."),
         ],
     },
 ]
@@ -266,14 +323,15 @@ def make_page(inv):
 
 import os
 
-out_dir = os.path.join(os.path.dirname(__file__), "investigations")
-os.makedirs(out_dir, exist_ok=True)
+if __name__ == "__main__":
+    out_dir = os.path.join(os.path.dirname(__file__), "investigations")
+    os.makedirs(out_dir, exist_ok=True)
 
-for inv in INVESTIGATIONS:
-    html = make_page(inv)
-    path = os.path.join(out_dir, f"{inv['slug']}.html")
-    with open(path, "w") as f:
-        f.write(html)
-    print(f"Wrote {path}")
+    for inv in INVESTIGATIONS:
+        html = make_page(inv)
+        path = os.path.join(out_dir, f"{inv['slug']}.html")
+        with open(path, "w") as f:
+            f.write(html)
+        print(f"Wrote {path}")
 
-print("Done.")
+    print("Done.")

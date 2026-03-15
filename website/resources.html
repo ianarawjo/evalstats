@@ -56,7 +56,8 @@
       <ul>
         <li><a href="./investigations/model-vs-model.html">Model A vs. Model B</a></li>
         <li><a href="./investigations/best-prompt.html">Finding Your Best Prompt</a></li>
-        <li><a href="./investigations/model-prompt-grid.html">Model &times; Prompt Grid</a></li>
+        <li><a href="./investigations/model-prompt-grid.html">Finding the Best Model-Prompt Combo</a></li>
+        <li><a href="./investigations/multi-metric.html">Comparing Multiple Metrics</a></li>
       </ul>
     </div>
 
@@ -66,15 +67,17 @@
         <li><a href="./investigations/before-after.html">Before / After Fine-Tune</a></li>
         <li><a href="./investigations/prompt-sensitivity.html">Prompt Sensitivity</a></li>
         <li><a href="./investigations/sample-size.html">Sample Size Planning</a></li>
+        <li><a href="./investigations/response-consistency.html">Checking Response Consistency</a></li>
       </ul>
     </div>
 
     <div class="inv-group">
       <div class="inv-group-label">Advanced</div>
       <ul>
-        <li><a href="./investigations/judge-audit.html">Auditing Your LLM Judge</a></li>
         <li><a href="./investigations/regression-guard.html">Regression Guard</a></li>
         <li><a href="./investigations/ranking-noise.html">When Rankings Flip</a></li>
+        <li><a href="./investigations/irr-human-annotations.html">Auditing Your LLM Judge</a></li>
+        <li><a href="./investigations/benchmark-distillation.html">Distilling a Benchmark</a></li>
       </ul>
     </div>
   </nav>
@@ -202,8 +205,7 @@
             a scoring proxy for human preference. Shows ~80% agreement with human judges on pairwise
             comparisons. Also introduces Chatbot Arena and its Elo-rating leaderboard. The paper
             identifies key judge failure modes (position bias, verbosity bias, self-enhancement) but
-            does not quantify judge-induced variance in downstream CI estimates &mdash; a gap addressed
-            in the <a href="./investigations/judge-audit.html">Auditing Your LLM Judge</a> investigation.
+            does not quantify judge-induced variance in downstream CI estimates.
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag">LLM-as-judge</span>
@@ -378,8 +380,6 @@
             results. Particularly relevant for LLM-as-judge pipelines: when multiple judges (human
             or model) score the same items, IAA measures reveal whether the scoring process is
             reliable &mdash; a prerequisite for trusting any downstream CI built on those scores.
-            Directly motivates the <a href="./investigations/judge-audit.html">Auditing Your LLM Judge</a>
-            investigation.
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag">inter-annotator agreement</span>

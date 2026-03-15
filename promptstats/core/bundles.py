@@ -107,6 +107,7 @@ class AnalysisBundle:
     token_analysis: Optional[TokenAnalysisResult] = None
     lmm_info: Optional["LMMInfo"] = None
     factorial_lmm_info: Optional["FactorialLMMInfo"] = None
+    resolved_method: Optional[str] = None
 
 
 @dataclass

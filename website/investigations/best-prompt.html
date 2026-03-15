@@ -8,10 +8,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../inv.css" />
+
 </head>
 <body>
 
-<!-- NAV -->
 <nav class="site-nav">
   <div class="nav-inner">
     <a class="nav-brand" href="../index.html">Stats for LLM Evals</a>
@@ -52,7 +52,8 @@
       <ul>
         <li><a href="./model-vs-model.html">Model A vs. Model B</a></li>
         <li><a href="./best-prompt.html" class="active">Finding Your Best Prompt</a></li>
-        <li><a href="./model-prompt-grid.html">Model &times; Prompt Grid</a></li>
+        <li><a href="./multi-metric.html">Comparing Multiple Metrics</a></li>
+        <li><a href="./model-prompt-grid.html">Finding the Best Model-Prompt Combo</a></li>
       </ul>
     </div>
 
@@ -61,6 +62,8 @@
       <ul>
         <li><a href="./before-after.html">Before / After Fine-Tune</a></li>
         <li><a href="./prompt-sensitivity.html">Prompt Sensitivity</a></li>
+        <li><a href="./response-consistency.html">Checking Response Consistency</a></li>
+        <li><a href="./rag-factorial.html">Stats for RAG Pipelines</a></li>
         <li><a href="./sample-size.html">Sample Size Planning</a></li>
       </ul>
     </div>
@@ -68,53 +71,58 @@
     <div class="inv-group">
       <div class="inv-group-label">Advanced</div>
       <ul>
-        <li><a href="./judge-audit.html">Auditing Your LLM Judge</a></li>
         <li><a href="./regression-guard.html">Regression Guard</a></li>
+        <li><a href="./irr-human-annotations.html">Auditing Your LLM Judge</a></li>
         <li><a href="./ranking-noise.html">When Rankings Flip</a></li>
+        <li><a href="./benchmark-distillation.html">Distilling a Benchmark</a></li>
       </ul>
     </div>
   </nav>
 
   <!-- Content -->
   <article class="article-body">
+
     <section>
       <h2>What This Investigation Covers</h2>
       <p>Prompt comparison is the most common eval task &mdash; and one of the most statistically fraught. When you run k comparisons against a baseline (or all-pairs), you need multiple comparison correction or your &ldquo;best prompt&rdquo; is probably just the luckiest one.</p>
 
       <h3>What you&rsquo;ll learn</h3>
       <div class="learn-grid">
-        <div class="learn-item">
-          <div class="learn-item-num">01</div>
-          <p><strong>Why multiple comparisons inflate false positives</strong> &mdash; How running k tests at &alpha;=0.05 gives you roughly k&times;0.05 expected false discoveries without correction.</p>
-        </div>
-        <div class="learn-item">
-          <div class="learn-item-num">02</div>
-          <p><strong>Holm correction in practice</strong> &mdash; How Holm-Bonferroni works step by step, and why it gives more statistical power than plain Bonferroni without increasing false positives.</p>
-        </div>
-        <div class="learn-item">
-          <div class="learn-item-num">03</div>
-          <p><strong>Building CIs for each variant</strong> &mdash; How to compute smooth bootstrap or Wilson CIs for each prompt and visualize the full uncertainty picture.</p>
-        </div>
-        <div class="learn-item">
-          <div class="learn-item-num">04</div>
-          <p><strong>Reporting honestly</strong> &mdash; How to say &ldquo;Prompt C wins&rdquo; with appropriate hedging, and when the data says &ldquo;we can&rsquo;t tell.&rdquo;</p>
-        </div>
+      <div class="learn-item">
+        <div class="learn-item-num">01</div>
+        <p><strong>Why multiple comparisons inflate false positives</strong> &mdash; How running k tests at &alpha;=0.05 gives you roughly k&times;0.05 expected false discoveries without correction.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">02</div>
+        <p><strong>Holm correction in practice</strong> &mdash; How Holm-Bonferroni works step by step, and why it gives more statistical power than plain Bonferroni without increasing false positives.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">03</div>
+        <p><strong>Building CIs for each variant</strong> &mdash; How to compute smooth bootstrap or Wilson CIs for each prompt and visualize the full uncertainty picture.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">04</div>
+        <p><strong>Reporting honestly</strong> &mdash; How to say &ldquo;Prompt C wins&rdquo; with appropriate hedging, and when the data says &ldquo;we can&rsquo;t tell.&rdquo;</p>
+      </div>
       </div>
 
       <div class="coming-soon-card">
         <div class="cs-icon">&#9879;</div>
         <div class="cs-label">Investigation in progress</div>
-        <p class="cs-text">Full worked examples, interactive code, and simulation-backed results are coming soon. <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a> for updates.</p>
+        <p class="cs-text">Full worked examples, interactive code, and simulation-backed
+          results are coming soon.
+          <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a>
+          for updates.</p>
       </div>
     </section>
   </article>
 
 </div><!-- /page-layout -->
 
-<!-- FOOTER -->
 <footer class="site-footer">
   <div class="footer-inner">
-    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <p>Statistics for LLM Evals &middot; A living document from the
+       <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
     <ul class="footer-links">
       <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
       <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>

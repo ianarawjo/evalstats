@@ -657,6 +657,7 @@ def _analyze_single(
                 rank_dist=rank_dist,
                 seed_variance=seed_var,
                 factorial_lmm_info=lmm_result,
+                resolved_method="lmm",
             )
         return AnalysisBundle(
             benchmark=result,
@@ -667,6 +668,7 @@ def _analyze_single(
             rank_dist=rank_dist,
             seed_variance=seed_var,
             lmm_info=lmm_result,
+            resolved_method="lmm",
         )
 
     # ------------------------------------------------------------------
@@ -690,6 +692,8 @@ def _analyze_single(
     # Auto-detect binary (0/1) evaluation data when method='auto'.
     # Switch to Newcombe score intervals for pairwise comparisons and
     # Wilson score intervals for single-sample advantage CIs.
+    # Otherwise resolve 'auto' to its concrete bootstrap method so that
+    # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
     advantage_method = method
     if method == "auto":
@@ -697,6 +701,10 @@ def _analyze_single(
         if is_binary_scores(run_scores):
             pairwise_method = "newcombe"
             advantage_method = "wilson"
+        else:
+            from .resampling import resolve_resampling_method
+            pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
+            advantage_method = pairwise_method
 
     pairwise = all_pairwise(
         run_scores, labels,
@@ -730,6 +738,7 @@ def _analyze_single(
         robustness=robustness,
         rank_dist=rank_dist,
         seed_variance=seed_var,
+        resolved_method=pairwise_method,
     )
 
 

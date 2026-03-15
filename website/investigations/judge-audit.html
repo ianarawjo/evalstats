@@ -8,10 +8,10 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../inv.css" />
+
 </head>
 <body>
 
-<!-- NAV -->
 <nav class="site-nav">
   <div class="nav-inner">
     <a class="nav-brand" href="../index.html">Stats for LLM Evals</a>
@@ -52,7 +52,7 @@
       <ul>
         <li><a href="./model-vs-model.html">Model A vs. Model B</a></li>
         <li><a href="./best-prompt.html">Finding Your Best Prompt</a></li>
-        <li><a href="./model-prompt-grid.html">Model &times; Prompt Grid</a></li>
+        <li><a href="./model-prompt-grid.html">Finding the Best Model-Prompt Combo</a></li>
       </ul>
     </div>
 
@@ -77,44 +77,48 @@
 
   <!-- Content -->
   <article class="article-body">
+
     <section>
       <h2>What This Investigation Covers</h2>
       <p>LLM-as-judge is now the dominant eval paradigm, yet most pipelines treat judge scores as ground truth. They are not. The judge is a stochastic scorer with its own variance, biases, and failure modes. Auditing the judge is a prerequisite for trusting any eval result that depends on it.</p>
 
       <h3>What you&rsquo;ll learn</h3>
       <div class="learn-grid">
-        <div class="learn-item">
-          <div class="learn-item-num">01</div>
-          <p><strong>Measuring judge consistency</strong> &mdash; How to estimate judge variance by scoring the same outputs multiple times under identical prompts, and how to compute an intra-class correlation (ICC) for the judge.</p>
-        </div>
-        <div class="learn-item">
-          <div class="learn-item-num">02</div>
-          <p><strong>Computing judge-induced CI inflation</strong> &mdash; How to propagate judge variance into your model comparison CIs &mdash; the extra uncertainty that comes from the scorer, not the sample.</p>
-        </div>
-        <div class="learn-item">
-          <div class="learn-item-num">03</div>
-          <p><strong>Detecting systematic judge biases</strong> &mdash; Common biases to test for: position bias (favoring the first response in pairwise comparison), verbosity bias (preferring longer responses), and self-enhancement bias (a model judging its own outputs favorably).</p>
-        </div>
-        <div class="learn-item">
-          <div class="learn-item-num">04</div>
-          <p><strong>When to trust judge scores vs. fall back to human annotation</strong> &mdash; How to compute the minimum ICC threshold above which automated scoring is a reliable proxy for human judgment.</p>
-        </div>
+      <div class="learn-item">
+        <div class="learn-item-num">01</div>
+        <p><strong>Measuring judge consistency</strong> &mdash; How to estimate judge variance by scoring the same outputs multiple times under identical prompts, and how to compute an intra-class correlation (ICC) for the judge.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">02</div>
+        <p><strong>Computing judge-induced CI inflation</strong> &mdash; How to propagate judge variance into your model comparison CIs &mdash; the extra uncertainty that comes from the scorer, not the sample.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">03</div>
+        <p><strong>Detecting systematic judge biases</strong> &mdash; Common biases to test for: position bias (favoring the first response in pairwise comparison), verbosity bias (preferring longer responses), and self-enhancement bias (a model judging its own outputs favorably).</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">04</div>
+        <p><strong>When to trust judge scores vs. fall back to human annotation</strong> &mdash; How to compute the minimum ICC threshold above which automated scoring is a reliable proxy for human judgment.</p>
+      </div>
       </div>
 
       <div class="coming-soon-card">
         <div class="cs-icon">&#9879;</div>
         <div class="cs-label">Investigation in progress</div>
-        <p class="cs-text">Full worked examples, interactive code, and simulation-backed results are coming soon. <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a> for updates.</p>
+        <p class="cs-text">Full worked examples, interactive code, and simulation-backed
+          results are coming soon.
+          <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a>
+          for updates.</p>
       </div>
     </section>
   </article>
 
 </div><!-- /page-layout -->
 
-<!-- FOOTER -->
 <footer class="site-footer">
   <div class="footer-inner">
-    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <p>Statistics for LLM Evals &middot; A living document from the
+       <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
     <ul class="footer-links">
       <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
       <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>

@@ -53,6 +53,7 @@ class CompareReport:
     full_analysis: AnalysisBundle | MultiModelBundle
     alpha: float = 0.05
     statistic: Literal["mean", "median"] = "mean"
+    method: str = "smooth_bootstrap"
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm"
     entity_name_singular: str = "prompt"
     entity_name_plural: str = "prompts"
@@ -90,6 +91,7 @@ class CompareReport:
         best_stat = getattr(self.entity_stats[best_label], stat_name)
         delta_name = f"Δ{stat_name}"
         correction_text = "uncorrected" if self.correction == "none" else f"{self.correction}-corrected"
+        method_text = self.method
 
         if n == 2:
             other = [label for label in self.labels if label != best_label][0]
@@ -97,12 +99,12 @@ class CompareReport:
                 return (
                     f"'{best_label}' is significantly better than '{other}' "
                     f"({delta_name}={diff:+.3f}, 95% CI [{ci_lo:.3f}, {ci_hi:.3f}], "
-                    f"p={p:.4g}, {correction_text})"
+                    f"p={p:.4g}, {correction_text}, {method_text})"
                 )
             return (
                 f"No significant difference between '{best_label}' and '{other}' "
                 f"({delta_name}={diff:+.3f}, 95% CI [{ci_lo:.3f}, {ci_hi:.3f}], "
-                f"p={p:.4g}, {correction_text})"
+                f"p={p:.4g}, {correction_text}, {method_text})"
             )
 
         if self.winners is not None:
@@ -110,11 +112,11 @@ class CompareReport:
                 winner_text = f"winner: '{self.winners[0]}'"
             else:
                 winner_text = "winners: " + ", ".join(f"'{winner}'" for winner in self.winners)
-            return f"Top {self.entity_name_singular} set ({winner_text})"
+            return f"Top {self.entity_name_singular} set ({winner_text}, {method_text})"
 
         return (
             f"All {self.entity_name_plural} are tied under pairwise tests; '{best_label}' leads "
-            f"numerically ({stat_name}={best_stat:.3f}) (min p={p:.4g}, {correction_text})"
+            f"numerically ({stat_name}={best_stat:.3f}) (min p={p:.4g}, {correction_text}, {method_text})"
         )
 
     def summary(self) -> None:
@@ -485,6 +487,7 @@ def compare_prompts(
         full_analysis=full_analysis,
         alpha=alpha,
         statistic=statistic,
+        method=full_analysis.resolved_method or resolved_method,
         correction=correction,
         entity_name_singular="prompt",
         entity_name_plural="prompts",
@@ -685,6 +688,7 @@ def compare_models(
         full_analysis=full_analysis,
         alpha=alpha,
         statistic=statistic,
+        method=full_analysis.model_level.resolved_method or resolved_method,
         correction=correction,
         entity_name_singular="model",
         entity_name_plural="models",
