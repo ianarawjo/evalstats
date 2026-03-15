@@ -171,7 +171,7 @@ Gap:     -8.0%
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
 <h2 id="Computing-a-CI-on-the-Difference">Computing a CI on the Difference<a class="anchor-link" href="#Computing-a-CI-on-the-Difference">¶</a></h2><p>The observed gap is a <em>sample statistic</em> — it estimates the true gap but carries
-sampling uncertainty. We use <code>pstats.compare_models()</code> to get bootstrapped confidence
+sampling uncertainty. We use <code>pstats.compare_models()</code> to get confidence
 intervals on each model's mean <em>and</em> on the gap between them.</p>
 <p>Internally, the function treats the aligned score arrays as a paired design (each row
 is the same prompt seen by both models) and bootstraps per-item differences.

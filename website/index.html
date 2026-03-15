@@ -997,91 +997,108 @@
     <section id="simulation">
       <h2>Simulation Study</h2>
       <p class="section-lead">
-        We ran simulation studies over eval-like distributions to compare bootstrap methods head-to-head
-        — rather than relying solely on others' results.
+        We ran simulation studies over eval-like distributions to compare bootstrap methods head-to-head, 
+        rather than relying solely on others' results.
       </p>
       <p>
         The setup: rig realistic distributions, randomly sample from them, then measure how close each CI
         method gets to the true value across repeated trials. Two estimands are tested: single-sample CIs
         (does the interval contain the true mean?) and pairwise difference CIs (does the interval contain
-        the true difference?). Sample sizes: N = 5, 10, 20, 50. Bootstrap replications: 10,000.
+        the true difference?). Sample sizes: N = 10, 20, 30, 50, 100, 200. Bootstrap and Bayesian draws: 10,000. 
+        Monte-Carlo trials: 2,000 per condition. Simulations are implemented in 
+        <code>simulations/sim_compare_boot.py</code>.
       </p>
 
       <h3>Distributions Tested</h3>
       <ul>
-        <li><strong>Continuous scores</strong> (0–1 floats): skewed toward high performance, e.g., Beta(8, 2)</li>
-        <li><strong>Binary scores</strong> ({0, 1}): Bernoulli with p ∈ {0.5, 0.7, 0.9}</li>
-        <li><strong>Likert scores</strong> (integers 1–5): discretized, skewed high</li>
-        <li><strong>Grades</strong> (0–100 floats): continuous bounded, various skews</li>
+        <li><strong>Binary scores</strong> ({0, 1}): Bernoulli with p ∈ {0.1, 0.3, 0.5, 0.7, 0.9}</li>
+        <li><strong>Continuous scores</strong> (0–1 floats): Beta families covering uniform, U-shaped, right-skewed, left-skewed, and moderate-skew (e.g., Beta(1,1), Beta(0.5,0.5), Beta(2,8), Beta(8,2), Beta(2,5))</li>
+        <li><strong>Likert scores</strong> (integers 1–5): discrete scenarios including uniform, skewed-low, skewed-high, bimodal, and center-peaked</li>
+        <li><strong>Grades</strong> (0–100 floats): clipped normal scenarios including symmetric, high-scoring, low-scoring, ceiling-heavy, and floor-heavy</li>
       </ul>
 
       <h3>Single-Sample Coverage (target: 0.95)</h3>
       <p>
-        Coverage rate = fraction of trials where the CI contains the true population mean.
-        Higher is better; under-coverage means the method is over-confident.
+        The following video and table presents the results of the Monte Carlo simulation, which took ~14 hours to run. The video shows 
+        how the coverage rate of each method evolves as the number of samples increases from 10 to 200, 
+        averaged across all distributions and data types. The table breaks down the final average coverage rates 
+        at each sample size, with notes on performance.
+        (Coverage rate = fraction of trials where the CI contains the true population mean.
+        Higher is better; under-coverage means the method is over-confident.)
       </p>
 
-      <div class="fig-label">Table 1 — Single-sample coverage rate by method and N (numeric scores; Wilson is binary-only)</div>
+      <video autoplay muted loop playsinline width="100%">
+        <source src="media/single-sample-comparison-MC.mp4" type="video/mp4">
+      </video>
+
+      <div class="fig-label">Table 1 — Single-sample method summary (true simulation outputs)</div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Method</th>
-              <th class="center">N = 5</th>
-              <th class="center">N = 10</th>
-              <th class="center">N = 20</th>
-              <th class="center">N = 50</th>
+              <th class="center">Coverage</th>
+              <th class="center">MCSE</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
               <th>Notes</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><strong>Smooth Bootstrap</strong></td>
-              <td class="center cell-best">0.971</td>
-              <td class="center cell-best">0.966</td>
-              <td class="center cell-best">0.961</td>
-              <td class="center cell-best">0.956</td>
-              <td>Most conservative; slightly wider than true</td>
+              <td>Percentile bootstrap</td>
+              <td class="center">0.906▼</td>
+              <td class="center">0.0004</td>
+              <td class="center">2.9396</td>
+              <td class="center">-0.044</td>
+              <td>Moderate under-coverage; narrower than smooth bootstrap</td>
             </tr>
             <tr>
-              <td>Percentile Bootstrap</td>
-              <td class="center">0.946</td>
-              <td class="center">0.948</td>
-              <td class="center">0.950</td>
-              <td class="center">0.951</td>
-              <td>Stable, slightly conservative</td>
+              <td>BCa</td>
+              <td class="center">0.908▼</td>
+              <td class="center">0.0004</td>
+              <td class="center">2.9628</td>
+              <td class="center">-0.042</td>
+              <td>Slightly better than percentile bootstrap, still under target</td>
             </tr>
             <tr>
-              <td>BCa Bootstrap</td>
-              <td class="center">0.931</td>
-              <td class="center">0.940</td>
-              <td class="center">0.945</td>
-              <td class="center">0.950</td>
-              <td>Slightly under target at small N</td>
+              <td>Bayes bootstrap</td>
+              <td class="center cell-worst">0.899▼</td>
+              <td class="center">0.0004</td>
+              <td class="center">2.8772</td>
+              <td class="center">-0.051</td>
+              <td>Lowest coverage among bootstrap variants; over-optimistic</td>
             </tr>
             <tr>
-              <td>Bayesian Bootstrap</td>
-              <td class="center cell-worst">0.888</td>
-              <td class="center cell-worst">0.912</td>
-              <td class="center cell-worst">0.930</td>
-              <td class="center">0.945</td>
-              <td>Under-coverage at small N; over-optimistic</td>
+              <td>Smooth Bootstrap (Gaussian KDE)</td>
+              <td class="center">0.922</td>
+              <td class="center">0.0004</td>
+              <td class="center">3.3556</td>
+              <td class="center">-0.028</td>
+              <td>Best bootstrap coverage; widest (most conservative) interval</td>
             </tr>
             <tr>
-              <td>Wilson Score Interval</td>
-              <td class="center cell-best">0.977</td>
-              <td class="center cell-best">0.969</td>
-              <td class="center cell-best">0.962</td>
-              <td class="center cell-best">0.956</td>
-              <td class="cell-note">Binary only; outperforms all bootstraps</td>
+              <td><strong>Wilson score interval</strong></td>
+              <td class="center cell-best">0.950</td>
+              <td class="center">0.0007</td>
+              <td class="center">0.2089</td>
+              <td class="center">-0.000</td>
+              <td class="cell-note"><strong>Binary only; exact-on-target coverage</strong></td>
+            </tr>
+            <tr>
+              <td>Bayesian Independent Samples</td>
+              <td class="center">0.939</td>
+              <td class="center">0.0007</td>
+              <td class="center">0.2095</td>
+              <td class="center">-0.011</td>
+              <td class="cell-note">Binary-only Bayesian baseline; slightly under target</td>
             </tr>
           </tbody>
         </table>
       </div>
       <p class="table-caption">
-        <strong>Numeric methods</strong> are averaged across continuous, Likert, and grades distributions.
-        Wilson is evaluated on binary (Bernoulli) data only and is included for reference.
-        Values are illustrative based on simulation patterns; run <code>simulations/sim_compare_boot.py</code> for exact results.
+        Coverage target is 0.95. ▼ marks under-target coverage. Bootstrap-family methods are shown alongside
+        binary-only references (Wilson and bayes_indep) for comparison.
       </p>
 
       <h3>Pairwise Comparison Coverage (target: 0.95)</h3>
