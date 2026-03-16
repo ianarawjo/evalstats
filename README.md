@@ -20,6 +20,11 @@ This will include simulation- and research-backed examples of statistics for LLM
 as well as example code (which will, obviously, tend to use `promptstats`, but
 the lessons hold regardless of implementation).  
 
+> [!IMPORTANT]
+> We are actively building out this project, both the website/guide and the package.
+> If there's something you'd like to see, or guidance on a specific topic, let us know
+> by raising an Issue.
+
 ## Sample output
 
 Running `pstats.analyze()` and then `pstats.print_analysis_summary(analysis)` prints a full statistical report to the terminal, including confidence interval line plots, pairwise comparisons between prompt templates, and per-input stability across runs (how stable the model is across multiple runs for the same input). Below is example excerpt from an analysis of a 4-template sentiment-classification benchmark (GPT-4.1-nano, 27 inputs, 3 runs, 3 evaluators):
