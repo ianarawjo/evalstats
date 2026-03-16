@@ -29,6 +29,8 @@ from .resampling import (
     bootstrap_means_1d,
     resolve_resampling_method,
     newcombe_paired_ci,
+    bayes_paired_diff_ci,
+    is_binary_scores,
     _stat,
 )
 from .stats_utils import correct_pvalues
@@ -285,7 +287,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -307,9 +309,12 @@ def pairwise_differences(
     method : str
         Statistical method: ``'auto'`` (default), ``'bootstrap'``, ``'bca'``,
         ``'bayes_bootstrap'`` (Bayesian bootstrap), ``'smooth_bootstrap'``
-        (smoothed bootstrap via Gaussian KDE), or ``'newcombe'`` for paired
-        binary (0/1) data using Newcombe CI + exact McNemar p-value.
-        ``'auto'`` selects ``'smooth_bootstrap'``.
+        (smoothed bootstrap via Gaussian KDE), ``'newcombe'`` for paired
+        binary (0/1) data using Newcombe CI + exact McNemar p-value, or
+        ``'bayes_binary'`` for paired binary (0/1) data using the
+        Dirichlet-multinomial Bayesian model (Bowyer et al. 2025).
+        Requires binary data; raises ValueError otherwise.
+        ``'auto'`` selects ``'smooth_bootstrap'`` for non-binary data.
     ci : float
         Confidence level for the interval (default 0.95).
     n_bootstrap : int
@@ -326,6 +331,55 @@ def pairwise_differences(
     """
     if rng is None:
         rng = np.random.default_rng()
+
+    # ------------------------------------------------------------------ #
+    # Bayesian binary path (Dirichlet-multinomial paired model)           #
+    # ------------------------------------------------------------------ #
+    if method == "bayes_binary":
+        # When R >= 3 the per-run cell means are not binary values;
+        # fall back to smooth bootstrap for the seeded nested path.
+        if scores.ndim == 3 and scores.shape[2] >= 3:
+            return _pairwise_diffs_seeded(
+                scores, idx_a, idx_b, label_a, label_b,
+                method="smooth_bootstrap", ci=ci, n_bootstrap=n_bootstrap,
+                rng=rng, statistic=statistic,
+            )
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        if not is_binary_scores(flat):
+            raise ValueError(
+                "method='bayes_binary' requires binary (0/1) data, but "
+                "non-binary values were found in the score array. "
+                "Use is_binary_scores() to check before calling."
+            )
+        diffs = values_a - values_b
+        m = len(diffs)
+        point_d = _stat(diffs, statistic)
+        std_d = float(np.std(diffs, ddof=1))
+        alpha_val = 1.0 - ci
+        ci_low, ci_high, prob_a_greater = bayes_paired_diff_ci(
+            values_a, values_b, alpha_val, num_samples=n_bootstrap, rng=rng,
+        )
+        # Two-sided Bayesian p-value: posterior mass on the wrong side × 2
+        p_value = float(2.0 * min(prob_a_greater, 1.0 - prob_a_greater))
+        p_value = max(1.0 / (n_bootstrap + 1), p_value)
+        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
+        return PairedDiffResult(
+            template_a=label_a,
+            template_b=label_b,
+            point_diff=point_d,
+            std_diff=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_method=f"bayes binary (n={n_bootstrap})",
+            n_inputs=m,
+            per_input_diffs=diffs,
+            n_runs=1,
+            statistic=statistic,
+            wilcoxon_p=wilcoxon_p,
+        )
 
     # ------------------------------------------------------------------ #
     # Newcombe path for paired binary (0/1) data                         #
@@ -590,7 +644,7 @@ def _pairwise_diffs_seeded(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -689,7 +743,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",

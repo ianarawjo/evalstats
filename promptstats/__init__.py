@@ -21,6 +21,8 @@ from promptstats.core.summary import print_analysis_summary
 from promptstats.vis.advantage import plot_point_advantage
 from promptstats.vis.critical_difference import plot_critical_difference
 from promptstats.io import from_dataframe, DataLoadReport
+from promptstats.core.resampling import bayes_binary_ci_1d, bayes_paired_diff_ci
+from promptstats.core import bayes_evals
 from promptstats.compare import (
     compare_prompts,
     compare_models,
@@ -55,6 +57,9 @@ __all__ = [
     "plot_critical_difference",
     "from_dataframe",
     "DataLoadReport",
+    "bayes_binary_ci_1d",
+    "bayes_paired_diff_ci",
+    "bayes_evals",
     "compare_prompts",
     "compare_models",
     "CompareReport",

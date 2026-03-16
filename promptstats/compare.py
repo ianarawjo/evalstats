@@ -22,7 +22,7 @@ from .core.types import BenchmarkResult, MultiModelBenchmark
 from .core.router import analyze, AnalysisBundle, MultiModelBundle
 from .core.summary import print_analysis_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
-from .core.resampling import bayes_bootstrap_means_1d, smooth_bootstrap_means_1d, bootstrap_means_1d, bca_interval_1d, resolve_resampling_method
+from .core.resampling import bayes_bootstrap_means_1d, smooth_bootstrap_means_1d, bootstrap_means_1d, bca_interval_1d, resolve_resampling_method, bayes_binary_ci_1d, wilson_ci_1d
 
 
 # ---------------------------------------------------------------------------
@@ -269,7 +269,7 @@ def compare_prompts(
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
     rng: Optional[np.random.Generator] = None,
@@ -423,7 +423,16 @@ def compare_prompts(
     # ------------------------------------------------------------------
     scores_2d = benchmark.get_2d_scores()  # (N, M)
     alpha_ci = 1.0 - ci
-    resolved_method = resolve_resampling_method(method, M)
+    # Use the resolved method from the analysis bundle (may be 'bayes_binary',
+    # 'newcombe', or a bootstrap variant), falling back to re-resolution.
+    resolved_method = full_analysis.resolved_method or resolve_resampling_method(method, M)
+    # Newcombe is a pairwise method; use bayes_binary or wilson for single-sample CI.
+    # Pairwise-only methods need a single-sample fallback for entity stats CIs.
+    # newcombe → smooth_bootstrap; bayes_binary → wilson (more accurate per simulations).
+    if resolved_method == "newcombe":
+        resolved_method = "smooth_bootstrap"
+    elif resolved_method == "bayes_binary":
+        resolved_method = "wilson"
 
     rob = full_analysis.robustness  # RobustnessResult indexed parallel to labels
 
@@ -444,7 +453,9 @@ def compare_prompts(
         row = scores_2d[i]  # (M,) cell means
         point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
 
-        if resolved_method == "bayes_bootstrap":
+        if resolved_method == "wilson":
+            ci_low, ci_high = wilson_ci_1d(row, alpha_ci)
+        elif resolved_method == "bayes_bootstrap":
             boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
             ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
             ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
@@ -500,7 +511,7 @@ def compare_models(
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
@@ -628,7 +639,13 @@ def compare_models(
     model_analysis = full_analysis.model_level
     scores_2d = benchmark.get_model_mean_result().get_2d_scores()  # (P, M)
     alpha_ci = 1.0 - ci
-    resolved_method = resolve_resampling_method(method, n_inputs)
+    resolved_method = model_analysis.resolved_method or resolve_resampling_method(method, n_inputs)
+    # Pairwise-only methods need a single-sample fallback for entity stats CIs.
+    # newcombe → smooth_bootstrap; bayes_binary → wilson (more accurate per simulations).
+    if resolved_method == "newcombe":
+        resolved_method = "smooth_bootstrap"
+    elif resolved_method == "bayes_binary":
+        resolved_method = "wilson"
     rob = model_analysis.robustness
 
     pairwise_p_values: dict[tuple[str, str], dict[str, Optional[float]]] = {
@@ -648,7 +665,9 @@ def compare_models(
         row = scores_2d[i]
         point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
 
-        if resolved_method == "bayes_bootstrap":
+        if resolved_method == "wilson":
+            ci_low, ci_high = wilson_ci_1d(row, alpha_ci)
+        elif resolved_method == "bayes_bootstrap":
             boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
             ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
             ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))

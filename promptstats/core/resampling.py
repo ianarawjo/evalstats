@@ -697,6 +697,135 @@ def bootstrap_diffs_nested(
     return _reduce_rows(diffs, statistic)                                  # (B,)
 
 
+def bayes_binary_ci_1d(
+    values: np.ndarray,
+    alpha: float,
+    prior: tuple = (1, 1),
+) -> tuple[float, float]:
+    """Bayesian credible interval for binary (0/1) data using a Beta posterior.
+
+    Places a Beta(prior[0], prior[1]) prior on the Bernoulli success probability
+    and returns the equal-tailed ``(1 - alpha)`` credible interval.  With the
+    default uniform prior (1, 1), this is equivalent to the HDI of
+    Beta(a + 1, n - a + 1).
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of binary observations (0 or 1).
+    alpha : float
+        Significance level (1 − confidence level).
+    prior : tuple
+        Beta prior parameters (default: (1, 1), i.e. uniform).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Credible interval clamped to [0, 1].
+    """
+    from scipy.stats import beta as _beta_dist
+
+    n = len(values)
+    a = int(np.round(np.sum(values)))
+    b = n - a
+    dist = _beta_dist(a + prior[0], b + prior[1])
+    lo, hi = dist.interval(1.0 - alpha)
+    return float(lo), float(hi)
+
+
+def bayes_paired_diff_ci(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+    num_samples: int = 10_000,
+    rng: Optional[np.random.Generator] = None,
+) -> tuple[float, float, float]:
+    """Bayesian credible interval for the paired binary difference p(A=1) − p(B=1).
+
+    Implements the paired Dirichlet-multinomial model from Bowyer et al. (2025),
+    "Don't use the CLT in LLM evals with fewer than a few hundred datapoints"
+    (``promptstats/core/bayes_evals.py``).  Uses importance sampling over a
+    bivariate Gaussian model to obtain the full posterior over
+    ``theta_A - theta_B``, accounting for within-question correlation.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        1-D binary arrays of equal length.  Values are thresholded at 0.5
+        to determine binary membership.
+    alpha : float
+        Significance level (1 − confidence level).
+    num_samples : int
+        Number of importance samples (default 10,000).
+    rng : np.random.Generator, optional
+        Random-number generator for reproducibility.
+
+    Returns
+    -------
+    (ci_low, ci_high, prob_a_greater) : tuple[float, float, float]
+        Equal-tailed credible interval on p(A=1) − p(B=1), and the posterior
+        probability P(theta_A > theta_B).
+    """
+    from .bayes_evals import binorm_cdf
+    from scipy.stats import norm as _norm
+
+    if rng is None:
+        rng = np.random.default_rng()
+
+    a_bin = (values_a >= 0.5).astype(float)
+    b_bin = (values_b >= 0.5).astype(float)
+
+    # 2×2 contingency table
+    S = float(np.sum(a_bin * b_bin))              # A=1, B=1
+    T = float(np.sum(a_bin * (1.0 - b_bin)))      # A=1, B=0
+    U = float(np.sum((1.0 - a_bin) * b_bin))      # A=0, B=1
+    V = float(np.sum((1.0 - a_bin) * (1.0 - b_bin)))  # A=0, B=0
+
+    # Sample from the prior: uniform on (0,1) for theta, Beta(4,2)-shifted for rho
+    theta_As = rng.beta(1.0, 1.0, size=num_samples)
+    theta_Bs = rng.beta(1.0, 1.0, size=num_samples)
+    rhos = 2.0 * rng.beta(4.0, 2.0, size=num_samples) - 1.0
+    rhos = np.clip(rhos, -1.0 + 1e-20, 1.0 - 1e-20)
+
+    diff = theta_As - theta_Bs
+
+    # Bivariate normal probit parameterisation
+    mu_A = _norm.ppf(theta_As)
+    mu_B = _norm.ppf(theta_Bs)
+
+    theta_V = binorm_cdf(0, 0, mu_A, mu_B, 1, 1, rhos)
+    theta_S = theta_As + theta_Bs + theta_V - 1.0
+    theta_T = 1.0 - theta_Bs - theta_V
+    theta_U = 1.0 - theta_As - theta_V
+
+    # Log-likelihood (= log-weights since prior = proposal)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_w = (
+            S * np.log(theta_S)
+            + T * np.log(theta_T)
+            + U * np.log(theta_U)
+            + V * np.log(theta_V)
+        )
+
+    max_log_w = np.nanmax(log_w)
+    weights = np.exp(log_w - max_log_w)
+    weights[np.isnan(weights)] = 0.0
+    w_sum = float(weights.sum())
+    if w_sum == 0.0:
+        weights = np.ones(num_samples, dtype=float) / num_samples
+    else:
+        weights /= w_sum
+
+    indices = rng.choice(num_samples, size=num_samples, replace=True, p=weights)
+    diff_post = diff[indices]
+
+    ci_low = float(np.percentile(diff_post, 100.0 * alpha / 2))
+    ci_high = float(np.percentile(diff_post, 100.0 * (1.0 - alpha / 2)))
+    prob_a_greater = float((diff_post > 0).mean())
+
+    return ci_low, ci_high, prob_a_greater
+
+
 def nested_resample_cell_means_once(
     scores: np.ndarray,
     rng: np.random.Generator,

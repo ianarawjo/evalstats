@@ -44,7 +44,7 @@ def analyze(
     token_usage: Optional[TokenUsage] = None,
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm", "bayes_binary"] = "auto",
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
@@ -181,7 +181,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -610,7 +610,7 @@ def _analyze_single(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm", "bayes_binary"],
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
@@ -690,8 +690,10 @@ def _analyze_single(
     labels = result.template_labels
 
     # Auto-detect binary (0/1) evaluation data when method='auto'.
-    # Switch to Newcombe score intervals for pairwise comparisons and
-    # Wilson score intervals for single-sample advantage CIs.
+    # For binary data with N < 100: use the Bayesian paired model (Bowyer 2025)
+    # for pairwise comparisons and Bayesian Beta posterior for advantage CIs.
+    # For binary data with N >= 100: switch to Newcombe score intervals for
+    # pairwise and Wilson for advantage (computationally lighter, accurate).
     # Otherwise resolve 'auto' to its concrete bootstrap method so that
     # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
@@ -699,12 +701,29 @@ def _analyze_single(
     if method == "auto":
         from .resampling import is_binary_scores
         if is_binary_scores(run_scores):
-            pairwise_method = "newcombe"
+            M = run_scores.shape[1]
+            # Single-sample advantage CIs always use Wilson for binary data.
+            # Pairwise: Bayesian model for N < 100, Newcombe for N >= 100.
             advantage_method = "wilson"
+            if M < 100:
+                pairwise_method = "bayes_binary"
+            else:
+                pairwise_method = "newcombe"
         else:
             from .resampling import resolve_resampling_method
             pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
             advantage_method = pairwise_method
+    elif method == "bayes_binary":
+        from .resampling import is_binary_scores
+        if not is_binary_scores(run_scores):
+            raise ValueError(
+                "method='bayes_binary' requires binary (0/1) data, but the "
+                "scores array contains non-binary values. Use is_binary_scores() "
+                "to check before calling, or choose a different method."
+            )
+        # Single-sample advantage CIs use Wilson; pairwise uses the Bayesian model.
+        pairwise_method = "bayes_binary"
+        advantage_method = "wilson"
 
     pairwise = all_pairwise(
         run_scores, labels,
@@ -747,7 +766,7 @@ def _analyze_multi_model(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"],
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,

@@ -30,6 +30,7 @@ from .resampling import (
     resolve_resampling_method,
     wilson_ci_1d,
     newcombe_paired_ci,
+    bayes_binary_ci_1d,
 )
 
 
@@ -143,7 +144,7 @@ def bootstrap_ranks(
     labels: list[str],
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
 ) -> RankDistribution:
     """Compute bootstrap distribution over template rankings.
@@ -180,11 +181,14 @@ def bootstrap_ranks(
     if rng is None:
         rng = np.random.default_rng()
 
-    if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"}:
+    if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"}:
         raise ValueError(f"Unknown method: {method}")
 
+    # Rank distribution does not use a special Bayesian binary model;
+    # treat bayes_binary as smooth_bootstrap for ranking purposes.
+    effective_method = "smooth_bootstrap" if method == "bayes_binary" else method
     m_inputs = scores.shape[1]
-    resolved_method = resolve_resampling_method(method, m_inputs)
+    resolved_method = resolve_resampling_method(effective_method, m_inputs)
 
     # ------------------------------------------------------------------ #
     # Seeded path (R >= 3)                                                #
@@ -382,7 +386,7 @@ def bootstrap_point_advantage(
     ci: float = 0.95,
     spread_percentiles: tuple[float, float] = (10, 90),
     rng: Optional[np.random.Generator] = None,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "wilson"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "wilson", "bayes_binary"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
 ) -> PointAdvantageResult:
     """Compute point advantage over a reference with dual uncertainty bands.
@@ -430,9 +434,9 @@ def bootstrap_point_advantage(
         rng = np.random.default_rng()
 
     # ------------------------------------------------------------------ #
-    # Wilson path for binary (0/1) data                                   #
+    # Wilson / Bayesian binary paths for binary (0/1) data               #
     # ------------------------------------------------------------------ #
-    if method == "wilson":
+    if method in {"wilson", "bayes_binary"}:
         # When R >= 3 the per-run cell means are no longer binary values;
         # fall back to smooth bootstrap for the seeded nested path.
         if scores.ndim == 3 and scores.shape[2] >= 3:
@@ -443,6 +447,13 @@ def bootstrap_point_advantage(
                 rng=rng, statistic=statistic,
             )
         flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        if method == "bayes_binary":
+            return _bayes_binary_point_advantage(
+                flat, labels,
+                reference=reference,
+                alpha=1.0 - ci,
+                spread_percentiles=spread_percentiles,
+            )
         return _wilson_point_advantage(
             flat, labels,
             reference=reference,
@@ -816,6 +827,82 @@ def _smooth_bootstrap_point_advantage_seeded(
         n_bootstrap=n_bootstrap,
         spread_percentiles=spread_percentiles,
         statistic=statistic,
+    )
+
+
+def _bayes_binary_point_advantage(
+    scores: np.ndarray,
+    labels: list[str],
+    *,
+    reference: str,
+    alpha: float,
+    spread_percentiles: tuple[float, float],
+) -> PointAdvantageResult:
+    """Bayesian Beta-posterior CIs for per-template binary success rates, shifted by reference.
+
+    Analogous to ``_wilson_point_advantage`` but uses equal-tailed Beta credible
+    intervals for the grand-mean reference case, and Newcombe score intervals
+    for pairwise reference comparisons (Bayesian paired CI requires an rng and
+    is reserved for pairwise significance tests).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(N, M)`` with binary (0/1) per-input scores.
+    labels : list[str]
+        Template labels.
+    reference : str
+        ``'grand_mean'`` or a template label.
+    alpha : float
+        Significance level (1 − confidence level).
+    spread_percentiles : tuple[float, float]
+        Percentiles for the intrinsic variance band.
+    """
+    n_templates, m_inputs = scores.shape
+
+    if reference == "grand_mean":
+        ref_scores = scores.mean(axis=0)   # (M,) per-input grand mean
+        ref_label = "grand_mean"
+        ref_idx = None
+        grand_mean_p = float(ref_scores.mean())
+    else:
+        ref_idx = labels.index(reference)
+        ref_scores = scores[ref_idx]       # (M,) raw binary scores for reference template
+        ref_label = reference
+
+    advantages = scores - ref_scores[np.newaxis, :]   # (N, M)
+    point_adv = advantages.mean(axis=1)                # (N,) — always mean for proportions
+    spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
+    spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
+
+    ci_low = np.empty(n_templates)
+    ci_high = np.empty(n_templates)
+
+    if reference == "grand_mean":
+        for i in range(n_templates):
+            b_low, b_high = bayes_binary_ci_1d(scores[i], alpha)
+            ci_low[i] = b_low - grand_mean_p
+            ci_high[i] = b_high - grand_mean_p
+    else:
+        for i in range(n_templates):
+            if i == ref_idx:
+                ci_low[i] = 0.0
+                ci_high[i] = 0.0
+            else:
+                ci_low[i], ci_high[i] = newcombe_paired_ci(scores[i], ref_scores, alpha)
+
+    return PointAdvantageResult(
+        labels=labels,
+        point_advantages=point_adv,
+        bootstrap_ci_low=ci_low,
+        bootstrap_ci_high=ci_high,
+        spread_low=spread_low,
+        spread_high=spread_high,
+        reference=ref_label,
+        per_input_advantages=advantages,
+        n_bootstrap=0,
+        spread_percentiles=spread_percentiles,
+        statistic="mean",
     )
 
 

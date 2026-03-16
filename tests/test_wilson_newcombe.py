@@ -283,10 +283,11 @@ def _make_benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
     )
 
 
-def test_analyze_auto_detects_binary_and_uses_wilson():
+def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
+    """For binary data with N < 100, auto should use bayes_binary pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 3
-    m_inputs = 50
+    m_inputs = 50  # < 100 threshold
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
@@ -294,8 +295,28 @@ def test_analyze_auto_detects_binary_and_uses_wilson():
     result_obj = _make_benchmark(scores, ["low", "mid", "high"])
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
-    # Pairwise comparisons should use Newcombe
+    # Pairwise comparisons should use bayes_binary for N < 100
     pair = bundle.pairwise.get("low", "mid")
+    assert "bayes binary" in pair.test_method
+
+    # Advantage CIs should have n_bootstrap=0 (no resampling for bayes_binary)
+    assert bundle.point_advantage.n_bootstrap == 0
+
+
+def test_analyze_auto_detects_binary_and_uses_newcombe_for_large_n():
+    """For binary data with N >= 100, auto should use newcombe pairwise."""
+    rng = np.random.default_rng(42)
+    n_templates = 2
+    m_inputs = 120  # >= 100 threshold
+    scores = np.zeros((n_templates, m_inputs))
+    for i in range(n_templates):
+        scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
+
+    result_obj = _make_benchmark(scores, ["low", "high"])
+    bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
+
+    # Pairwise comparisons should use Newcombe for N >= 100
+    pair = bundle.pairwise.get("low", "high")
     assert "newcombe" in pair.test_method
 
     # Advantage CIs should have n_bootstrap=0 (Wilson, no bootstrap)
