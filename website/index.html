@@ -844,23 +844,21 @@
         true generative process.
       </p> -->
       <div class="callout callout-warning">
-        <div class="callout-label">Red flag: circular simulation design</div>
+        <div class="callout-label">Important methodological caveat</div>
         <p>
-          The authors test their Bayesian method on distributions that match its priors, making it
-          perform better than alternatives by construction. The paper's figures show ground-truth values
-          lining up almost perfectly with Bayesian estimates even at N=3 — a result that is suspiciously
-          too good to be true.
+          The paper evaluates Bayesian methods under simulation assumptions closely aligned with those
+          Bayesian priors. That setup is valid for answering a specific question, but it can favor
+          Bayesian approaches relative to methods optimized for broader or misspecified settings.
         </p>
       </div>
       <p>
-        For one thing, despite the general claim in the title, the paper only addresses the Bernoulli (binary) case. It does not test numeric or
-        interval data like Likert scores or 0–100 grades — increasingly common in LLM judge evaluations.
-        And it only compares to the naive percentile bootstrap, which is well-known to fail at small N, 
-        failing to compare to smoothed or studentized bootstrap which are known methods to overcome these limitations.
+        Despite the broad title, the analysis is focused on Bernoulli (binary) outcomes.
+        It does not cover numeric/interval eval scores (e.g., Likert or 0–100 grades), and it compares
+        against a limited set of frequentist baselines rather than the strongest modern alternatives.
       </p>
       <p>
-        For instance, a separate simulation study comparing the studentized bootstrap to a Bayesian method actually
-        found the opposite conclusion:
+        This matters because other <a href="https://arxiv.org/html/2404.12967v1" target="_blank">simulation work</a> has reported different rankings under different designs,
+        including settings where certain frequentist intervals achieve higher coverage than Bayesian variants:
       </p>
       <div class="pull-quote">
         "In general, the Bayesian method had the lowest coverage rate" — even worse than simpler bootstrap
@@ -869,18 +867,20 @@
         should be favored."
       </div>
       <p>
-        In ML terms, this is a classic precision–recall trade-off. Coverage is recall (does the interval
-        actually contain the true value?), and distance to the true interval length is precision. Bayesian
-        methods are high-precision, low-recall. Bootstrap methods are lower-precision, higher-recall.
-        For safety-critical evaluations, recall is what matters most.
+        In ML terms, this is a precision–recall style trade-off: some methods give tighter intervals,
+        others give higher coverage. Which is preferable depends on risk tolerance, data type,
+        and whether under-coverage or over-conservatism is the bigger error in your application.
       </p>
       <div class="callout callout-info">
         <div class="callout-label">The real takeaway</div>
         <p>
-          The ICML paper's claim — "never use CLT methods with fewer than ~300 datapoints" — is overblown.
-          Smoothed bootstrap performs almost as well as Bayesian by N=50, far from 300. And for binary scores,
-          closed-form Wilson and Newcombe intervals match or exceed Bayesian performance for a fraction of
-          the computational cost.
+          The most defensible interpretation is not "Bayesian always" or "frequentist always," but
+          <em>method-by-data-type</em>. In our updated simulations: Wilson is strongest for binary
+          single-sample coverage, Bayesian paired is strongest for binary pairwise coverage, and
+          smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
+          By around N=50, methods tend to converge in performance, and by N=100+ they are all pretty good —
+          so the "don't use the CLT unless you have hundreds of datapoints" rule is too pessimistic on 
+          more powerful frequentist methods.
         </p>
       </div>
 
