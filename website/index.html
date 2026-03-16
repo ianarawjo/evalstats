@@ -888,11 +888,11 @@
       <p>
         In 2024, Evan Miller at Anthropic made an early, important case for error bars in evaluations.
         The argument centered on standard errors: combine standard deviation with sample size, report
-        alongside the mean. Reasonable. But limited.
+        alongside the mean. 
       </p>
       <p>
-        The framework assumes thousands or hundreds of thousands of datapoints — as Anthropic's public
-        benchmarks have. That is not the world most developers live in. A typical custom developer eval
+        This is reasonable, but limited for the evals landscape of today. The framework assumes thousands or hundreds of thousands of datapoints — as Anthropic's public
+        benchmarks have. That is not the world of most developers. A typical custom developer eval
         has 20–100 items, not 10,000. At that scale:
       </p>
       <ul>
@@ -902,7 +902,8 @@
       </ul>
       <p>
         What we want instead is confidence intervals on pairwise differences, with no strong distributional
-        assumptions — which is exactly what bootstrapping provides.
+        assumptions. To trust these intervals, we need to use methods that are robust at small N. To understand
+        which methods are robust, we would ideally run simulations that reflect the kinds of data we see in real evals.
       </p>
     </section>
 
@@ -940,15 +941,20 @@
         <div class="method-card">
           <div class="method-card-name">Bayesian Independent Samples</div>
           <div class="method-card-desc">
-            A beta-posterior single-sample Bayesian baseline for binary data. In our updated simulation,
-            it under-covers relative to Wilson in the single-sample binary case.
+            A Beta-Bernoulli model with a uniform
+            <code>Beta(1,1)</code> prior per model. For each model, observed successes/failures update to
+            a posterior <code>Beta(a+1, b+1)</code>, and intervals are read directly from posterior quantiles.
+            It is simple and fast, but in our single-sample binary simulation it under-covers relative to Wilson.
           </div>
         </div>
         <div class="method-card highlight">
           <div class="method-card-name">Bayesian Paired Comparison ★</div>
           <div class="method-card-desc">
-            Bayesian paired comparison for binary A-vs-B deltas. In the updated pairwise results,
-            this is closest to target coverage and performs comparably to smooth bootstrap.
+            For binary A-vs-B comparisons, we build paired 2×2 counts
+            (both correct, A-only, B-only, both wrong), then use a Dirichlet-multinomial style posterior
+            with importance sampling. It reweights samples by
+            likelihood and estimates posterior probabilities/intervals of the score difference.
+            In our updated pairwise results, this is closest to target coverage and performs comparably to smooth bootstrap at N>50.
           </div>
         </div>
         <div class="method-card highlight">

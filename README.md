@@ -1,6 +1,6 @@
 # promptstats
 
-Utilities for statistically sane analyses for comparing prompt and LLM performance. Compute statistics and visualize the results.
+Utilities and guidance for statistically sane analyses for comparing prompt and LLM performance. Compute statistics and visualize the results.
 
 `promptstats` helps you answer questions like:
  - Is Prompt A actually better than Prompt B, or just slightly luckier on this dataset?
@@ -8,11 +8,17 @@ Utilities for statistically sane analyses for comparing prompt and LLM performan
  - How sensitive is model performance to prompt wording?
  - Are my performance differences large enough to be meaningful, or just noise?
  - How stable are scores across runs, evaluators, or inputs?
+ - What statistics test should I run in X situation? 
 
 The idea is simple: you give `promptstats` your benchmark data, and it runs statistically appropriate analyses that quantify uncertainty and provide confidence bounds on your claims. Datasets can include eval scores, prompts, inputs, evaluator names, and (optionally) models. `promptstats` provides:
 - Plots and tests comparing prompt performance, with bootstrapped CIs and variance
 - Plots and tests comparing model performance across prompt variations
 - Constraints that guide you into performing best practices, like always considering prompt sensitivity when benchmarking model performance
+
+As well, there is a "learning" guide in `website/` which I am building out. 
+This will include simulation- and research-backed examples of statistics for LLM evals, 
+as well as example code (which will, obviously, tend to use `promptstats`, but
+the lessons hold regardless of implementation).  
 
 ## Sample output
 
@@ -22,7 +28,13 @@ Running `pstats.analyze()` and then `pstats.print_analysis_summary(analysis)` pr
 
 From this output, we can see that Minimal and Instructive are the most promising candidates, but it is statistically unclear which is better. We also see that Chain-of-thought gives the least consistent outputs across multiple runs for the same inputs, compared to the other methods. 
 
-You can also plot within notebook environments (although this feature is being actively built out over time). The `plot_point_advantage` function produces a chart showing each template's mean score advantage over the grand mean, with dual uncertainty bands — the narrow dark band is the bootstrapped CI on the mean, and the wide light band is the 10th–90th percentile spread (template consistency):
+In the most recent version of `promptstats`, there's also helpful colors to help you see
+this information. For instance, comparing models and prompts at the same time,
+`promptstats` shows a 4-way tie between four combinations of model-prompt: 
+
+![Example terminal output with colors](docs/terminal-output-example.jpg)
+
+You can also plot within notebook environments (although this feature is being actively built out over time and the least developed at the moment). The `plot_point_advantage` function produces a chart showing each template's mean score advantage over the grand mean, with dual uncertainty bands — the narrow dark band is the bootstrapped CI on the mean, and the wide light band is the 10th–90th percentile spread (template consistency):
 
 ![Mean advantage plot](docs/mean_advantage.png)
 
@@ -33,15 +45,15 @@ The specific statistical tests the `promptstats.analyze()` method runs are:
 - **All pairwise prompt comparisons (paired by input)** via `all_pairwise(...)`:
     - Computes mean or median difference (mean by default), bootstrapped confidence interval, and p-value for every prompt template pair.
     - Comparison method defaults to `method="auto"`:
-        - **Smoothed bootstrap** (`method="smooth_bootstrap"`) in most situations. It has been verified in our simulations that for eval-type data and small sample sizes especially, smoothed is superior to the other bootstrap methods considered (percentile, BCa, Bayesian).
-        - **Newcombe score intervals and McNemar's test**: Default methods for binary scores (0 or 1 only). Our simulations showed these methods were superior to bootstrap at small N. 
-    - Multiple-comparisons correction for p-values defaults to **Holm** (`correction="holm"`). 
+        - **Smoothed bootstrap with a Gaussian KDE** (`method="smooth_bootstrap"`) in situations of non-binary data. It has been verified in our simulations that for eval-type data and small sample sizes especially, smoothed is superior to the other bootstrap methods considered (percentile, BCa, Bayesian).
+        - **Bayesian pairwise from [`bayes_evals`](https://github.com/sambowyer/bayes_evals/tree/main) and McNemar's test**: Default methods for binary scores (0 or 1 only). Our simulations showed Bayesian pairwise was superior to bootstrap at small N. Note that Bayesian methods should technically be called credible intervals, but they estimate the confidence interval very closely.  
+    - Multiple-comparisons correction for p-values (defaults to **Holm**). 
     - Also reports Wilcoxon signed-rank test p-value, in case you need it for people familiar with that test, although p-values from bootstrapped CIs are more robust
 
 - **Mean/median advantage vs reference** via `bootstrap_point_advantage(...)`:
     - Advantage of each prompt template vs `reference="grand_mean"` (or a chosen template), on either the mean or median (mean by default). 
-    - Reports both a bootstrap CI on the mean/median and a spread band (default 10th–90th percentile) to separate uncertainty from intrinsic variability.
-    - Defaults to smoothed bootstrap when `method="auto"`, unless binary (0 and 1s) data is present, where it defaults to Wilson score intervals, which proved highly accurate CIs in our simulations and far outperformed bootstrap for binary data.
+    - Reports both a CI on the mean/median and a spread band (default 10th–90th percentile) to separate uncertainty from intrinsic variability.
+    - Defaults to smooth bootstrap when `method="auto"`, unless binary (0 and 1s) data is present, where it defaults to Wilson score intervals, which proved highly accurate CIs in our simulations and far outperformed other methods for binary data.
 
 - **Bootstrap rank distribution** via `bootstrap_ranks(...)`:
     - Estimates each prompt template’s `P(best)` and expected rank among the full list of prompt templates.
@@ -52,7 +64,7 @@ The specific statistical tests the `promptstats.analyze()` method runs are:
 
 If your benchmark includes repeated runs (`R >= 3`), bootstrap-based analyses above use a **two-level nested bootstrap** (resample inputs, then runs within each input) so run-to-run stochasticity is propagated into CIs and rankings. In that case, `analyze()` also returns a seed/input variance decomposition via `seed_variance_decomposition(...)`.
 
-If you set `method="lmm"`, `analyze()` switches to a mixed-effects path (`score ~ template + (1|input)`) with Wald CIs and parametric rank distributions. By default this uses `statsmodels` (pure Python, no additional setup required); pass `backend="pymer4"` to use R's lme4/emmeans instead (requires a separate R installation — see below).
+If you set `method="lmm"`, `analyze()` switches to a mixed-effects path (`score ~ template + (1|input)`) with Wald CIs and parametric rank distributions. By default this uses `statsmodels` (pure Python, no additional setup required); pass `backend="pymer4"` to use R's lme4/emmeans instead (requires a separate R installation — see below). **Mixed effects model support is more experimental at the moment.**
 
 ## Installation and Quick start CLI
 
@@ -285,8 +297,6 @@ More practically speaking, we could:
         Rank correlation: 0.94
       ```
  - Target a difficulty distribution: a well-designed benchmark has items spread across the difficulty range, with more items in the middle (where models are actually differentiated) than at the extremes. If the user's distribution is skewed too easy or hard, help them write targeted items to fill gaps.
-
-**How does this differ from ChainForge?** I aim to integrate `promptstats` with ChainForge in a future release. 
 
 ## Development
 
