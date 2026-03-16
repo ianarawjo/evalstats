@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Resources &mdash; Stats for LLM Evals</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./inv.css" />
+</head>
+<body>
+
+<!-- NAV -->
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="./index.html">Stats for LLM Evals</a>
+    <ul class="nav-links">
+      <li><a href="./index.html#why-statistics">Why Statistics</a></li>
+      <li><a href="./index.html#principles">Core Principles</a></li>
+      <li><a href="./index.html#simulation">Simulation Study</a></li>
+      <li><a href="./index.html#recommendations">Recommendations</a></li>
+      <li><a href="./index.html#promptstats">promptstats</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- HEADER -->
+<div class="inv-header">
+  <a class="inv-back" href="./index.html">&larr; Stats Reference Guide</a>
+  <div class="inv-eyebrow">Reference</div>
+  <h1>Resources</h1>
+  <p class="inv-subtitle">
+    A curated survey of the key papers behind the methods and arguments in this guide &mdash;
+    from foundational bootstrap theory to LLM eval methodology and statistical pitfalls.
+  </p>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div class="page-layout">
+
+  <!-- Investigations nav -->
+  <nav class="inv-nav" aria-label="Investigations">
+    <div class="inv-nav-header">Investigations</div>
+    <a class="inv-nav-guide-link" href="./index.html">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>
+      Stats Reference Guide
+    </a>
+    <a class="inv-nav-guide-link active" href="./resources.html">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>
+      Resources
+    </a>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Foundations</div>
+      <ul>
+        <li><a href="./investigations/model-vs-model.html">Model A vs. Model B</a></li>
+        <li><a href="./investigations/best-prompt.html">Finding Your Best Prompt</a></li>
+        <li><a href="./investigations/model-prompt-grid.html">Finding the Best Model-Prompt Combo</a></li>
+        <li><a href="./investigations/multi-metric.html">Comparing Multiple Metrics</a></li>
+      </ul>
+    </div>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Going Deeper</div>
+      <ul>
+        <li><a href="./investigations/before-after.html">Before / After Fine-Tune</a></li>
+        <li><a href="./investigations/prompt-sensitivity.html">Prompt Sensitivity</a></li>
+        <li><a href="./investigations/sample-size.html">Sample Size Planning</a></li>
+        <li><a href="./investigations/response-consistency.html">Checking Response Consistency</a></li>
+      </ul>
+    </div>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Advanced</div>
+      <ul>
+        <li><a href="./investigations/regression-guard.html">Regression Guard</a></li>
+        <li><a href="./investigations/ranking-noise.html">When Rankings Flip</a></li>
+        <li><a href="./investigations/irr-human-annotations.html">Auditing Your LLM Judge</a></li>
+        <li><a href="./investigations/benchmark-distillation.html">Distilling a Benchmark</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <article class="article-body">
+
+
+    <!-- ── SECTION: THE LLM EVAL STATISTICS DEBATE ── -->
+    <section class="paper-section">
+      <h2>LLM Eval Statistics and Debates</h2>
+      <p>Papers that have directly shaped how the field thinks about statistical rigor in LLM evaluation.</p>
+
+      <div class="paper-list">
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2411.00640" target="_blank">
+              Adding Error Bars to Evals: A Statistical Approach to Language Model Evaluations
+            </a>
+          </div>
+          <div class="paper-entry-meta">Miller, E. et al. &mdash; Anthropic, arXiv:2411.00640, 2024</div>
+          <p class="paper-entry-summary">
+            An influential argument for treating LLM eval scores as statistical estimates with
+            quantified uncertainty. Proposes bootstrap CIs, paired tests for model comparisons,
+            and power analysis for eval design. Addresses cluster structure (multi-run, multi-judge
+            settings) via cluster-robust standard errors. The paper identified a genuine gap: the
+            industry norm of reporting bare means without uncertainty is indefensible at any sample
+            size. See the <a href="./index.html#debunking">Debunking section</a> for how
+            promptstats&rsquo; smooth bootstrap improves on SE-based intervals at small N.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-debated">discussed in guide</span>
+            <span class="paper-tag">bootstrap CIs</span>
+            <span class="paper-tag">power analysis</span>
+            <span class="paper-tag">eval practice</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            Don&rsquo;t Use the CLT in LLM Evals With Fewer Than a Few Hundred Datapoints
+          </div>
+          <div class="paper-entry-meta">Boi et al. &mdash; ICML Position Paper, 2024</div>
+          <p class="paper-entry-summary">
+            Argues that for binary LLM eval scores with N&thinsp;&lt;&thinsp;300, Bayesian beta-posterior
+            methods substantially outperform frequentist and bootstrap alternatives. The paper&rsquo;s simulation
+            design evaluates Bayesian estimates on distributions that match the Bayesian prior, which
+            inflates its apparent advantage. It also focuses exclusively on the binary case and does not
+            benchmark against the Wilson interval or smoothed bootstrap. See the
+            <a href="./index.html#debunking">Debunking section</a> of the Stats Reference Guide for a
+            detailed critique. The paper&rsquo;s core call for more rigorous statistics in LLM evals
+            is well-founded, even if the specific recommendation is overstated.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-debated">debated in guide</span>
+            <span class="paper-tag">Bayesian methods</span>
+            <span class="paper-tag">small N</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.800-3.pdf" target="_blank">
+              Expanding the AI Evaluation Toolbox with Statistical Models (NIST AI 800-3)
+            </a>
+          </div>
+          <div class="paper-entry-meta">Raji, I.D. et al. &mdash; NIST AI 800-3, 2026</div>
+          <p class="paper-entry-summary">
+            A NIST standards document advocating for statistical rigor in AI evaluation, with
+            formal guidance on CI estimation, test selection, and uncertainty quantification for
+            model comparisons. Argues that the dominant evaluation culture &mdash; reporting point
+            estimates without uncertainty &mdash; cannot support the regulatory and procurement
+            decisions now being made on the basis of benchmark scores. Provides a taxonomy of
+            evaluation tasks and matching statistical approaches, making it a useful framework
+            for practitioners choosing between methods.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-debated">cited in guide</span>
+            <span class="paper-tag">standards &amp; policy</span>
+            <span class="paper-tag">uncertainty quantification</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION: LLM EVALUATION METHODOLOGY ── -->
+    <section class="paper-section">
+      <h2>LLM Evaluation Methodology</h2>
+      <p>Papers on how LLM evals are structured, run, and reported &mdash; and where they go wrong.</p>
+
+      <div class="paper-list">
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2211.09110" target="_blank">
+              Holistic Evaluation of Language Models (HELM)
+            </a>
+          </div>
+          <div class="paper-entry-meta">Liang, P. et al. &mdash; arXiv:2211.09110, 2022</div>
+          <p class="paper-entry-summary">
+            Introduces HELM: evaluating models across 42 scenarios, 7 metric categories, and
+            hundreds of sub-scenarios. One of the most comprehensive eval frameworks published.
+            Aggregate scores are reported as means without confidence intervals, making it a useful
+            illustration of scale-dependent eval limitations: at the scale HELM operates (thousands
+            of items per scenario), standard errors are small enough to be negligible, but for
+            the typical developer running a custom eval at N=50, HELM&rsquo;s methodology does not transfer.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">benchmark design</span>
+            <span class="paper-tag">large-scale eval</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2306.05685" target="_blank">
+              Judging LLM-as-a-Judge with MT-Bench and Chatbot Arena
+            </a>
+          </div>
+          <div class="paper-entry-meta">Zheng, L. et al. &mdash; NeurIPS 2023</div>
+          <p class="paper-entry-summary">
+            Introduces and validates the LLM-as-a-judge paradigm: using a capable model (GPT-4) as
+            a scoring proxy for human preference. Shows ~80% agreement with human judges on pairwise
+            comparisons. Also introduces Chatbot Arena and its Elo-rating leaderboard. The paper
+            identifies key judge failure modes (position bias, verbosity bias, self-enhancement) but
+            does not quantify judge-induced variance in downstream CI estimates.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">LLM-as-judge</span>
+            <span class="paper-tag">Elo rating</span>
+            <span class="paper-tag tag-pitfall">judge variance unaddressed</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2304.15004" target="_blank">
+              Are Emergent Abilities of Large Language Models a Mirage?
+            </a>
+          </div>
+          <div class="paper-entry-meta">Schaeffer, R. et al. &mdash; NeurIPS 2023</div>
+          <p class="paper-entry-summary">
+            Shows that &ldquo;emergent&rdquo; abilities &mdash; capabilities that appear suddenly at a
+            threshold model scale &mdash; are largely artifacts of the choice of metric. Discontinuous
+            metrics (exact match) create apparent phase transitions; replacing them with continuous
+            metrics (edit distance, token probability) reveals smooth, continuous improvement curves.
+            A precise demonstration of why the score function is part of the statistical model:
+            the metric you choose changes the conclusions you can draw.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">metric artifacts</span>
+            <span class="paper-tag">scaling laws</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://aclanthology.org/P18-1082" target="_blank">
+              A Call for Clarity in Reporting BLEU Scores
+            </a>
+          </div>
+          <div class="paper-entry-meta">Post, M. &mdash; ACL 2018</div>
+          <p class="paper-entry-summary">
+            Documents that different BLEU implementations produce scores that differ by up to
+            1&ndash;2 BLEU points on the same output, making cross-paper comparisons unreliable.
+            An early example of what has become a general problem: aggregate metrics reported without
+            enough implementation detail to reproduce them. The lesson generalizes directly to LLM
+            evals: a score of 78% is only meaningful if the scoring function, judge model, prompt
+            template, and evaluation protocol are fully specified.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">metric reproducibility</span>
+            <span class="paper-tag">NLP eval</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2204.02311" target="_blank">
+              Beyond the Imitation Game: Quantifying and Extrapolating the Capabilities of Language Models (BIG-Bench)
+            </a>
+          </div>
+          <div class="paper-entry-meta">Srivastava, A. et al. &mdash; TMLR, 2023</div>
+          <p class="paper-entry-summary">
+            A large-scale collaborative benchmark covering 204 tasks designed to be beyond the
+            capabilities of then-current models. Beyond its task coverage, BIG-Bench is notable
+            methodologically for its use of multiple human raters with inter-rater reliability checks,
+            calibrated difficulty ratings, and discussion of metric sensitivity. A useful contrast to
+            single-metric benchmarks, though statistical uncertainty of aggregate scores is still
+            not prominently reported.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">benchmark design</span>
+            <span class="paper-tag">inter-rater reliability</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2410.12405" target="_blank">
+              ProSA: Assessing and Understanding the Prompt Sensitivity of LLMs
+            </a>
+          </div>
+          <div class="paper-entry-meta">Zhuo, T.Y. et al. &mdash; arXiv:2410.12405, 2024</div>
+          <p class="paper-entry-summary">
+            Introduces ProSA, a framework for measuring how sensitive LLM performance is to
+            surface-level prompt variation (phrasing, ordering, delimiter choice). Finds that
+            sensitivity varies substantially across models, tasks, and prompt dimensions, and that
+            models with similar mean accuracy can have very different variance profiles. Directly
+            motivates the <a href="./investigations/prompt-sensitivity.html">Prompt Sensitivity</a>
+            investigation: a model&rsquo;s mean score on a single prompt is a noisy proxy for its
+            true task capability, and the noise is correlated with prompt style rather than item difficulty.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">prompt sensitivity</span>
+            <span class="paper-tag">eval variance</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/html/2405.14782v1" target="_blank">
+              Lessons from the Trenches on Reproducible Evaluation of Language Models
+            </a>
+          </div>
+          <div class="paper-entry-meta">Haidar, M. et al. &mdash; arXiv:2405.14782, 2024</div>
+          <p class="paper-entry-summary">
+            A practitioner&rsquo;s guide to reproducibility failures in LLM evaluation, drawn from
+            experience running large-scale evals. Identifies sources of variance that are rarely
+            reported: temperature and sampling randomness, prompt template sensitivity, tokenization
+            differences between frameworks, and hardware-level floating-point non-determinism.
+            The paper makes the case that reproducibility in LLM evals requires specifying far more
+            than just the model name and task description &mdash; a concrete list of what &ldquo;full
+            specification&rdquo; actually entails.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">reproducibility</span>
+            <span class="paper-tag">eval variance</span>
+            <span class="paper-tag">sampling randomness</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/html/2502.07445v1" target="_blank">
+              Forget What You Know about LLM Evaluations: LLMs are Like a Chameleon
+            </a>
+          </div>
+          <div class="paper-entry-meta">Cohen, S. et al. &mdash; arXiv:2502.07445, 2025</div>
+          <p class="paper-entry-summary">
+            Shows that LLM performance on benchmarks fluctuates dramatically with superficial changes
+            to evaluation setup &mdash; from option ordering to question framing &mdash; producing
+            score swings large enough to change model rankings. Argues that standard benchmark scores
+            do not measure a stable underlying capability but rather a model&rsquo;s response to a
+            specific configuration. Directly motivates the
+            <a href="./investigations/ranking-noise.html">When Rankings Flip</a> investigation:
+            a CI on a single eval configuration cannot capture configuration-induced variance.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">ranking instability</span>
+            <span class="paper-tag">eval validity</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/html/2510.26130v1" target="_blank">
+              Beyond Synthetic Benchmarks: Evaluating LLM Performance on Real-World Class-Level Code Generation
+            </a>
+          </div>
+          <div class="paper-entry-meta">Jackson, D. &amp; Fei, G. &mdash; arXiv:2510.26130, 2025</div>
+          <p class="paper-entry-summary">
+            Evaluates LLMs on class-level code generation using real-world open-source repositories
+            rather than synthetic or curated problems. Finds that model rankings on synthetic benchmarks
+            (HumanEval, MBPP) diverge substantially from rankings on authentic tasks, and that
+            benchmark-to-benchmark transfer is weak even within coding evals. A concrete illustration
+            of external validity failure: even a statistically rigorous CI on a synthetic benchmark
+            cannot bound performance on real-world tasks if the benchmark distribution is unrepresentative.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">external validity</span>
+            <span class="paper-tag">code generation</span>
+            <span class="paper-tag">benchmark transfer</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/html/2603.06865" target="_blank">
+              Counting on Consensus: Selecting the Right Inter-Annotator Agreement Metric for NLP
+            </a>
+          </div>
+          <div class="paper-entry-meta">James, B. &mdash; arXiv:2603.06865, 2026</div>
+          <p class="paper-entry-summary">
+            A systematic guide to inter-annotator agreement (IAA) metric selection for NLP tasks.
+            Compares Cohen&rsquo;s &kappa;, Krippendorff&rsquo;s &alpha;, Fleiss&rsquo; &kappa;,
+            and percent agreement, clarifying when each is appropriate and when they give misleading
+            results. Particularly relevant for LLM-as-judge pipelines: when multiple judges (human
+            or model) score the same items, IAA measures reveal whether the scoring process is
+            reliable &mdash; a prerequisite for trusting any downstream CI built on those scores.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">inter-annotator agreement</span>
+            <span class="paper-tag">LLM-as-judge</span>
+            <span class="paper-tag">annotation methodology</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION: METHODS USED IN PROMPTSTATS ── -->
+    <section class="paper-section">
+      <h2>Methods Used in promptstats</h2>
+      <p>The foundational papers for each statistical method implemented in the library.</p>
+
+      <div class="paper-list">
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://www.jstor.org/stable/2276774" target="_blank">
+              Probable inference, the law of succession, and statistical inference
+            </a>
+          </div>
+          <div class="paper-entry-meta">Wilson, E.B. &mdash; Journal of the American Statistical Association, 22(158), 1927</div>
+          <p class="paper-entry-summary">
+            Derives what is now called the Wilson score interval for proportions by inverting the score
+            test statistic directly, rather than approximating <em>p</em> by <em>p&#x0302;</em> in the
+            standard error. The resulting interval never extends outside [0,&thinsp;1], and achieves near-nominal
+            coverage even at small N and extreme probabilities &mdash; both conditions common in binary LLM evals.
+            The Wald interval (p&#x0302;&thinsp;&plusmn;&thinsp;z&sdot;SE) is a first-order approximation that fails badly here.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag">single-sample binary CI</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://doi.org/10.1002/sim.1033" target="_blank">
+              Interval estimation for the difference between independent proportions: comparison of eleven methods
+            </a>
+          </div>
+          <div class="paper-entry-meta">Newcombe, R.G. &mdash; Statistics in Medicine, 17(8), 1998</div>
+          <p class="paper-entry-summary">
+            Systematically compares 11 CI methods for the difference between two proportions. The
+            Wilson-hybrid method (Method 10 in the paper) consistently achieves near-nominal coverage
+            across the full probability space tested. promptstats uses the paired-samples extension of
+            this method for pairwise binary comparisons between prompts or models evaluated on the same
+            input set. Note: this paper addresses independent proportions; the paired variant used in
+            promptstats follows the same Wilson-square-root construction applied to paired differences.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag">pairwise binary CI</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://doi.org/10.1214/aos/1176344552" target="_blank">
+              Bootstrap methods: Another look at the jackknife
+            </a>
+          </div>
+          <div class="paper-entry-meta">Efron, B. &mdash; Annals of Statistics, 7(1), 1979</div>
+          <p class="paper-entry-summary">
+            The foundational bootstrap paper. Introduces resampling with replacement as a general method
+            for estimating the sampling distribution of any statistic, without making distributional
+            assumptions. Establishes the theoretical properties that make the bootstrap valid for
+            smooth statistics and justifies its use for constructing CIs from finite samples.
+            All bootstrap methods in promptstats (percentile, BCa, smooth) trace their lineage here.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag">bootstrap foundation</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://www.jstor.org/stable/2336308" target="_blank">
+              Some simple models of the data analysis problem
+            </a>
+          </div>
+          <div class="paper-entry-meta">Banks, D.L. &mdash; Journal of the American Statistical Association, 1988</div>
+          <p class="paper-entry-summary">
+            Introduces the P<sub>SR</sub> estimator: adding KDE-bandwidth Gaussian perturbations to
+            bootstrap resamples, which smooths the discrete empirical distribution. Shows improved
+            coverage over the plain percentile bootstrap for continuous data at small sample sizes,
+            because the smoothing reduces the discretization artifacts that cause the standard bootstrap
+            to under-cover at small N. promptstats implements this as <code>smooth_bootstrap</code>
+            using Scott&rsquo;s rule (h&thinsp;=&thinsp;n<sup>&minus;1/5</sup>&thinsp;&times;&thinsp;s) for the bandwidth.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag">smooth bootstrap default</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://etheses.dur.ac.uk/15294/1/thesis_simkus_FINALversion.pdf" target="_blank">
+              The Banks-B Bootstrap: Theory and Applications for Small Samples
+            </a>
+          </div>
+          <div class="paper-entry-meta">Simkus, M. &mdash; Doctoral thesis, Durham University, 2022</div>
+          <p class="paper-entry-summary">
+            An extended treatment of the Banks P<sub>SR</sub> and related smoothed bootstrap estimators.
+            Argues that Banks&rsquo; method is substantially underappreciated in the statistical literature
+            and particularly effective for small-N settings where the standard bootstrap discretization
+            error is largest. Provides theoretical coverage guarantees and simulation evidence consistent
+            with promptstats&rsquo; own simulation results favoring the smooth bootstrap.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag">smooth bootstrap theory</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6797821/" target="_blank">
+              A note on the analytic method for bootstrapped confidence intervals
+            </a>
+          </div>
+          <div class="paper-entry-meta">Counsell, A. &amp; Pek, J. &mdash; Psychological Methods, 2019</div>
+          <p class="paper-entry-summary">
+            Simulation study comparing percentile, BCa, and studentized bootstrap CIs for factor analysis
+            loadings. Finds that the percentile method achieves better overall coverage than BCa in
+            typical settings, and that BCa&rsquo;s reputation for superiority depends on conditions that
+            are often not met. Although the domain (factor analysis) differs from LLM evals, the
+            qualitative finding is consistent with promptstats&rsquo; simulation results: BCa underperforms
+            on pairwise comparisons, where the asymmetry it was designed to correct does not manifest cleanly.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-debated">cited in guide</span>
+            <span class="paper-tag">BCa vs. percentile</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://doi.org/10.1080/03610927908827765" target="_blank">
+              A simple sequentially rejective multiple test procedure
+            </a>
+          </div>
+          <div class="paper-entry-meta">Holm, S. &mdash; Scandinavian Journal of Statistics, 6(2), 1979</div>
+          <p class="paper-entry-summary">
+            Introduces the Holm&ndash;Bonferroni step-down procedure: sort p-values in ascending order,
+            then compare the k-th smallest against &alpha;/(m&minus;k+1). This is uniformly more powerful
+            than plain Bonferroni while maintaining strong family-wise error rate control under any
+            dependence structure. Applied in promptstats when comparing k prompts or models simultaneously,
+            replacing the conventional but unnecessarily conservative Bonferroni correction.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag">multiple comparisons</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://doi.org/10.1214/aos/1176345338" target="_blank">
+              The Bayesian bootstrap
+            </a>
+          </div>
+          <div class="paper-entry-meta">Rubin, D.B. &mdash; Annals of Statistics, 9(1), 1981</div>
+          <p class="paper-entry-summary">
+            Proposes assigning Dirichlet-distributed weights to the observed data points instead of
+            resampling with replacement. The resulting posterior is smoother than the standard bootstrap&rsquo;s
+            discrete empirical distribution. In simulation, the Bayesian bootstrap tends to produce
+            narrower (higher-precision) intervals than plain percentile bootstrap, but at the cost of
+            lower coverage (lower recall) at small N &mdash; the trade-off discussed in the
+            Stats Reference Guide.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-used">available in promptstats</span>
+            <span class="paper-tag">Bayesian bootstrap</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            Bootstrap confidence intervals: when, which, what? A practical guide for medical statisticians
+          </div>
+          <div class="paper-entry-meta">Carpenter, J. &amp; Bithell, J. &mdash; Statistics in Medicine, 19(9), 2000</div>
+          <p class="paper-entry-summary">
+            A practical survey of bootstrap CI methods (basic, percentile, BCa, studentized) with guidance
+            on when each is appropriate. Explains why BCa often outperforms percentile in asymmetric
+            situations, but also identifies conditions under which BCa fails &mdash; particularly when the
+            acceleration constant estimate is unstable, which tends to occur in pairwise comparison
+            settings. Useful background for understanding the BCa coverage collapse in promptstats&rsquo; simulations.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">bootstrap reference</span>
+            <span class="paper-tag">BCa behavior</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION 4: STATISTICAL PITFALLS IN ML ── -->
+    <section class="paper-section">
+      <h2>Statistical Pitfalls in ML</h2>
+      <p>Papers on broader patterns of statistical misuse in machine learning research.</p>
+
+      <div class="paper-list">
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://proceedings.mlsys.org/paper_files/paper/2021/hash/cfecdb276f634854f3ef915e2e980c31-Abstract.html" target="_blank">
+              Accounting for Variance in Machine Learning Benchmarks
+            </a>
+          </div>
+          <div class="paper-entry-meta">Bouthillier, X. et al. &mdash; MLSys 2021</div>
+          <p class="paper-entry-summary">
+            Systematic study of variance in ML benchmark results from random seeds, data ordering,
+            and hardware. Shows that a substantial fraction of published improvements fall within the
+            natural variance of the same algorithm under different random initialization. The paper
+            introduces a framework for separating &ldquo;algorithmic variance&rdquo; from
+            &ldquo;trial variance,&rdquo; and argues that current reporting standards make it
+            impossible to know which published improvements are real. Directly motivates the need
+            for bootstrap CIs in eval comparisons.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">random seed variance</span>
+            <span class="paper-tag">benchmark reproducibility</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/1807.03341" target="_blank">
+              Troubling Trends in Machine Learning Scholarship
+            </a>
+          </div>
+          <div class="paper-entry-meta">Lipton, Z.C. &amp; Steinhardt, J. &mdash; ICML, 2018</div>
+          <p class="paper-entry-summary">
+            Identifies failure modes in ML research writing: overclaiming, conflating ablations with
+            explanations, failure to engage with negative results, and misuse of evaluation protocols.
+            Several of the patterns identified directly apply to LLM eval claims: cherry-picked examples
+            presented as representative benchmarks, single-prompt evaluations reported as capability
+            measurements, and improvements that disappear under slightly different conditions.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">research methodology</span>
+            <span class="paper-tag">overclaiming</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2005.00655" target="_blank">
+              Beyond Accuracy: Behavioral Testing of NLP Models with CheckList
+            </a>
+          </div>
+          <div class="paper-entry-meta">Ribeiro, M.T. et al. &mdash; ACL 2020</div>
+          <p class="paper-entry-summary">
+            Introduces behavioral testing: a structured suite of test types (minimum functionality,
+            invariance, directional expectation) designed to probe specific capabilities rather than
+            aggregate accuracy. Shows that models achieving high accuracy on standard benchmarks fail
+            systematically on targeted behavioral tests. A complement to statistical inference methods:
+            knowing whether a CI is tight is less useful if the eval items don&rsquo;t actually
+            represent the capability you care about.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">behavioral testing</span>
+            <span class="paper-tag">eval design</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2106.15772" target="_blank">
+              Repairing the Cracked Foundation: A Survey of Obstacles in Evaluation Practices for Generated Text
+            </a>
+          </div>
+          <div class="paper-entry-meta">Gehrmann, S. et al. &mdash; JAIR, 2023</div>
+          <p class="paper-entry-summary">
+            Surveys obstacles in NLG evaluation: metrics that fail to correlate with human judgment,
+            benchmark contamination, under-specified evaluation protocols, and lack of statistical
+            testing. Identifies six categories of failure across 252 papers. Particularly relevant
+            sections cover inter-annotator agreement methodology and the mismatch between automated
+            metrics and human preference &mdash; problems now manifesting in LLM-as-judge pipelines.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">NLG evaluation</span>
+            <span class="paper-tag">human annotation</span>
+            <span class="paper-tag">benchmark contamination</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </article>
+
+</div><!-- /page-layout -->
+
+<!-- FOOTER -->
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <ul class="footer-links">
+      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
+      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>

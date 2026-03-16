@@ -277,6 +277,13 @@ More practically speaking, we could:
  - Flag always-pass and always-fail items for removal or replacement. Replace them with items at a similar difficulty level to what the user intended but with better discriminating power.
  - Flag negative-discrimination items for inspection. These usually have one of a few problems: ambiguous wording where reasonable models disagree on interpretation, a flawed reference answer, or the item is actually measuring a different construct than the rest of the eval. Decide whether to fix or drop.
  - Cluster items by similarity, either by topic or by response pattern (items that all the same models pass/fail together). Prune to the most discriminating items in each cluster. After pruning, look for construct areas that lost too many items: the user may need to write better items for that region rather than leaving it underrepresented.
+ - Benchmark distillation: Using an IRT-style approach similar to Fluid Benchmarking to find the most informative subset of eval items, and removing less informative ones. Could offer multiple methods for this, and simulations showing how they perform. E.g.: 
+    - ```
+        Full benchmark: 1200 items
+        Distilled benchmark: 35 items
+        Token savings: 96%
+        Rank correlation: 0.94
+      ```
  - Target a difficulty distribution: a well-designed benchmark has items spread across the difficulty range, with more items in the middle (where models are actually differentiated) than at the extremes. If the user's distribution is skewed too easy or hard, help them write targeted items to fill gaps.
 
 **How does this differ from ChainForge?** I aim to integrate `promptstats` with ChainForge in a future release. 

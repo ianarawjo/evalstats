@@ -1,0 +1,184 @@
+/* ─── NOTEBOOK STYLES ─────────────────────────────────────────────────────
+   Styles for investigation pages built from nbconvert (classic template).
+   Actual cell classes: .cell, .input_area, .text_cell_render, .output_area
+   Assumes inv.css is already loaded (for --font-* and --color variables).
+   ───────────────────────────────────────────────────────────────────────── */
+
+/* ── Toolbar (Colab badge + GitHub link) ──────────────────────────────── */
+.nb-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 2rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+}
+.nb-badge img { display: block; }
+.nb-badge-link {
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-decoration: none;
+}
+.nb-badge-link:hover { color: var(--text); text-decoration: underline; }
+
+/* ── Hide nbconvert chrome ────────────────────────────────────────────── */
+.nb-content .prompt { display: none !important; }
+/* Remove the anchor ¶ links that nbconvert adds to headings */
+.nb-content .anchor-link { display: none; }
+
+/* ── Cell spacing ─────────────────────────────────────────────────────── */
+.nb-content .cell { margin-bottom: 0.25rem; }
+.nb-content .code_cell { margin-bottom: 0.75rem; }
+
+/* ── Markdown cells ───────────────────────────────────────────────────── */
+/* .text_cell_render inherits article prose from inv.css — just fine-tune */
+.nb-content .text_cell_render { padding: 0.4rem 0; }
+.nb-content .text_cell_render h2 { margin-top: 2.25rem; }
+.nb-content .text_cell_render h3 { margin-top: 1.75rem; }
+.nb-content .text_cell_render p:last-child { margin-bottom: 0.6rem; }
+.nb-content .text_cell_render blockquote {
+  border-left: 3px solid var(--border);
+  margin: 1rem 0;
+  padding: 0.25rem 1rem;
+  color: var(--text-mid);
+  font-style: italic;
+}
+.nb-content .text_cell_render table {
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  margin: 1rem 0 1.25rem;
+  width: 100%;
+}
+.nb-content .text_cell_render th {
+  background: var(--bg-soft);
+  border: 1px solid var(--border);
+  padding: 0.45rem 0.75rem;
+  text-align: left;
+  font-weight: 600;
+}
+.nb-content .text_cell_render td {
+  border: 1px solid var(--border);
+  padding: 0.4rem 0.75rem;
+}
+
+/* ── Code cells: dark block ───────────────────────────────────────────── */
+.nb-content .input_area {
+  background: var(--bg-code);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.nb-content .input_area .highlight { background: transparent !important; }
+.nb-content .input_area pre {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  line-height: 1.65;
+  color: #f8f8f2;          /* monokai base text */
+  padding: 0.9rem 1.1rem;
+  margin: 0;
+  overflow-x: auto;
+  background: transparent;
+}
+
+/* ── Output area ──────────────────────────────────────────────────────── */
+.nb-content .output_area { padding: 0.4rem 0 0.2rem; }
+.nb-content .output_area pre {
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  line-height: 1.6;
+  color: var(--text-mid);
+  margin: 0;
+  padding: 0.25rem 0;
+  white-space: pre-wrap;
+}
+.nb-content .output_area img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin: 0.5rem 0;
+  display: block;
+}
+/* Stderr */
+.nb-content .output_stderr pre { color: #f97316; }
+
+/* ─── PYGMENTS MONOKAI (scoped to .nb-content .input_area) ──────────── */
+.nb-content .input_area .highlight           { background: transparent; }
+.nb-content .input_area .highlight pre       { color: #f8f8f2; }
+.nb-content .input_area .highlight .hll      { background-color: #49483e }
+/* Comments */
+.nb-content .input_area .highlight .c,
+.nb-content .input_area .highlight .ch,
+.nb-content .input_area .highlight .cm,
+.nb-content .input_area .highlight .cp,
+.nb-content .input_area .highlight .cpf,
+.nb-content .input_area .highlight .c1,
+.nb-content .input_area .highlight .cs       { color: #75715e }
+/* Errors */
+.nb-content .input_area .highlight .err      { color: #960050; background-color: #1e0010 }
+/* Keywords */
+.nb-content .input_area .highlight .k,
+.nb-content .input_area .highlight .kc,
+.nb-content .input_area .highlight .kd,
+.nb-content .input_area .highlight .kp,
+.nb-content .input_area .highlight .kr,
+.nb-content .input_area .highlight .kt       { color: #66d9ef }
+/* import / from */
+.nb-content .input_area .highlight .kn       { color: #f92672 }
+/* Numbers */
+.nb-content .input_area .highlight .m,
+.nb-content .input_area .highlight .mb,
+.nb-content .input_area .highlight .mf,
+.nb-content .input_area .highlight .mh,
+.nb-content .input_area .highlight .mi,
+.nb-content .input_area .highlight .mo,
+.nb-content .input_area .highlight .il       { color: #ae81ff }
+/* Strings */
+.nb-content .input_area .highlight .s,
+.nb-content .input_area .highlight .sa,
+.nb-content .input_area .highlight .sb,
+.nb-content .input_area .highlight .sc,
+.nb-content .input_area .highlight .dl,
+.nb-content .input_area .highlight .sd,
+.nb-content .input_area .highlight .s2,
+.nb-content .input_area .highlight .sh,
+.nb-content .input_area .highlight .si,
+.nb-content .input_area .highlight .sx,
+.nb-content .input_area .highlight .sr,
+.nb-content .input_area .highlight .s1,
+.nb-content .input_area .highlight .ss       { color: #e6db74 }
+/* String escape */
+.nb-content .input_area .highlight .se       { color: #ae81ff }
+/* Operators */
+.nb-content .input_area .highlight .o,
+.nb-content .input_area .highlight .ow       { color: #f92672 }
+/* Names: default text color */
+.nb-content .input_area .highlight .n,
+.nb-content .input_area .highlight .nb,
+.nb-content .input_area .highlight .ni,
+.nb-content .input_area .highlight .nl,
+.nb-content .input_area .highlight .nn,
+.nb-content .input_area .highlight .nv,
+.nb-content .input_area .highlight .py,
+.nb-content .input_area .highlight .vc,
+.nb-content .input_area .highlight .vg,
+.nb-content .input_area .highlight .vi,
+.nb-content .input_area .highlight .vm,
+.nb-content .input_area .highlight .bp,
+.nb-content .input_area .highlight .p,
+.nb-content .input_area .highlight .w        { color: #f8f8f2 }
+/* Class / function / decorator names */
+.nb-content .input_area .highlight .na,
+.nb-content .input_area .highlight .nc,
+.nb-content .input_area .highlight .nd,
+.nb-content .input_area .highlight .ne,
+.nb-content .input_area .highlight .nf,
+.nb-content .input_area .highlight .nx,
+.nb-content .input_area .highlight .fm       { color: #a6e22e }
+/* Constants */
+.nb-content .input_area .highlight .no       { color: #66d9ef }
+/* Tags */
+.nb-content .input_area .highlight .nt       { color: #f92672 }
+/* Whitespace token (nbconvert adds .w spans between tokens) */
+.nb-content .input_area .highlight .w        { color: #f8f8f2 }

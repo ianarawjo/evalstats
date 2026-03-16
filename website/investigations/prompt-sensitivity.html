@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Prompt Sensitivity Analysis: Model Strength or Phrasing Luck? &mdash; Stats for LLM Evals</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="../inv.css" />
+
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="../index.html">Stats for LLM Evals</a>
+    <ul class="nav-links">
+      <li><a href="../index.html#why-statistics">Why Statistics</a></li>
+      <li><a href="../index.html#principles">Core Principles</a></li>
+      <li><a href="../index.html#simulation">Simulation Study</a></li>
+      <li><a href="../index.html#recommendations">Recommendations</a></li>
+      <li><a href="../index.html#promptstats">promptstats</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- INVESTIGATION HEADER -->
+<div class="inv-header">
+  <a class="inv-back" href="../index.html">&larr; Stats Reference Guide</a>
+  <div class="inv-eyebrow">Going Deeper Investigation</div>
+  <h1>Prompt Sensitivity Analysis: Model Strength or Phrasing Luck?</h1>
+  <p class="inv-subtitle">The elephant in the room: model rankings often flip when you change prompt wording. This investigation decomposes score variance into what&rsquo;s the model and what&rsquo;s the prompt.</p>
+</div>
+
+<!-- MAIN LAYOUT -->
+<div class="page-layout">
+
+  <nav class="inv-nav" aria-label="Investigations">
+    <div class="inv-nav-header">Investigations</div>
+    <a class="inv-nav-guide-link" href="../index.html">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>
+      Stats Reference Guide
+    </a>
+    <a class="inv-nav-guide-link" href="../resources.html">
+      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>
+      Resources
+    </a>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Foundations</div>
+      <ul>
+        <li><a href="./model-vs-model.html">Model A vs. Model B</a></li>
+        <li><a href="./best-prompt.html">Finding Your Best Prompt</a></li>
+        <li><a href="./multi-metric.html">Comparing Multiple Metrics</a></li>
+        <li><a href="./model-prompt-grid.html">Finding the Best Model-Prompt Combo</a></li>
+      </ul>
+    </div>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Going Deeper</div>
+      <ul>
+        <li><a href="./before-after.html">Before / After Fine-Tune</a></li>
+        <li><a href="./prompt-sensitivity.html" class="active">Prompt Sensitivity</a></li>
+        <li><a href="./response-consistency.html">Checking Response Consistency</a></li>
+        <li><a href="./rag-factorial.html">Stats for RAG Pipelines</a></li>
+        <li><a href="./sample-size.html">Sample Size Planning</a></li>
+      </ul>
+    </div>
+
+    <div class="inv-group">
+      <div class="inv-group-label">Advanced</div>
+      <ul>
+        <li><a href="./regression-guard.html">Regression Guard</a></li>
+        <li><a href="./irr-human-annotations.html">Auditing Your LLM Judge</a></li>
+        <li><a href="./ranking-noise.html">When Rankings Flip</a></li>
+        <li><a href="./benchmark-distillation.html">Distilling a Benchmark</a></li>
+      </ul>
+    </div>
+  </nav>
+
+  <!-- Content -->
+  <article class="article-body">
+
+    <section>
+      <h2>What This Investigation Covers</h2>
+      <p>A &ldquo;model comparison&rdquo; that uses a single prompt template per model is not really comparing models &mdash; it&rsquo;s comparing model+prompt pairs. Prompt sensitivity analysis is the corrective: run each model on k semantically equivalent phrasings, then ask how stable the ranking is across phrasings.</p>
+
+      <h3>What you&rsquo;ll learn</h3>
+      <div class="learn-grid">
+      <div class="learn-item">
+        <div class="learn-item-num">01</div>
+        <p><strong>Running a prompt sensitivity study</strong> &mdash; How to design a suite of k paraphrase variants that test the same capability while varying surface-level phrasing.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">02</div>
+        <p><strong>Decomposing variance: model vs. prompt</strong> &mdash; How to partition the total score variance into a model component and a prompt component using a simple variance decomposition.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">03</div>
+        <p><strong>Computing a &ldquo;ranking stability score&rdquo;</strong> &mdash; How to estimate the probability that the observed Model A &gt; Model B ranking would hold under a new, unseen prompt &mdash; and what that probability looks like in practice.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">04</div>
+        <p><strong>Reporting rankings that are robust to prompt choice</strong> &mdash; How to report model comparisons that are backed by multi-prompt evidence, and how to flag comparisons that are not.</p>
+      </div>
+      </div>
+
+      <div class="coming-soon-card">
+        <div class="cs-icon">&#9879;</div>
+        <div class="cs-label">Investigation in progress</div>
+        <p class="cs-text">Full worked examples, interactive code, and simulation-backed
+          results are coming soon.
+          <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a>
+          for updates.</p>
+      </div>
+    </section>
+  </article>
+
+</div><!-- /page-layout -->
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p>Statistics for LLM Evals &middot; A living document from the
+       <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <ul class="footer-links">
+      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
+      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
+    </ul>
+  </div>
+</footer>
+
+</body>
+</html>
