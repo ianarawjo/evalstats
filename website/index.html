@@ -908,9 +908,9 @@
 
     <!-- ── SECTION: BOOTSTRAP METHODS ── -->
     <section id="bootstrap">
-      <h2>Bootstrap Methods: What the Field Offers</h2>
+      <h2>Methods Landscape: Bootstrap, Score Intervals, and Bayesian</h2>
       <p class="section-lead">
-        Not all bootstraps are equal. Here is a concise map of the landscape before our simulation results.
+        Not all methods are equal. Here is a concise map of the main approaches used in our simulations.
       </p>
       <div class="method-grid">
         <div class="method-card">
@@ -937,6 +937,20 @@
             estimates — over-optimistic in safety-critical contexts.
           </div>
         </div>
+        <div class="method-card">
+          <div class="method-card-name">Bayesian Independent Samples</div>
+          <div class="method-card-desc">
+            A beta-posterior single-sample Bayesian baseline for binary data. In our updated simulation,
+            it under-covers relative to Wilson in the single-sample binary case.
+          </div>
+        </div>
+        <div class="method-card highlight">
+          <div class="method-card-name">Bayesian Paired Comparison ★</div>
+          <div class="method-card-desc">
+            Bayesian paired comparison for binary A-vs-B deltas. In the updated pairwise results,
+            this is closest to target coverage and performs comparably to smooth bootstrap.
+          </div>
+        </div>
         <div class="method-card highlight">
           <div class="method-card-name">Smooth Bootstrap (KDE) ★</div>
           <div class="method-card-desc">
@@ -954,8 +968,8 @@
             all bootstrap methods for binary scores at small N. Instantaneous to compute.
           </div>
         </div>
-        <div class="method-card highlight">
-          <div class="method-card-name">Newcombe Score Interval ★</div>
+        <div class="method-card">
+          <div class="method-card-name">Newcombe Score Interval</div>
           <div class="method-card-desc">
             The pairwise (paired-difference) analogue of the Wilson interval. The gold standard for
             comparing two proportions on paired binary data. Simulation results confirm it as the best
@@ -964,32 +978,15 @@
         </div>
       </div>
       <p class="aside">
-        ★ marks the methods selected as defaults in <code>promptstats</code> based on simulation evidence.
-        Smooth bootstrap is the default for numeric and interval data; Wilson and Newcombe are the defaults
-        for binary scores.
+        ★ marks methods that were strongest in our simulations.
+        Smooth bootstrap remains the default in <code>promptstats</code> for numeric and interval data;
+        for binary data, the package default remains Wilson + Newcombe, while Bayesian paired is shown here
+        as a strong research result for pairwise binary comparisons.
         <strong>Boundary note:</strong> for bounded data (0–1 floats, Likert scales), the Gaussian
         perturbation is applied without clamping — individual resampled values may stray slightly outside
         the data range. This does not materially affect coverage on the <em>mean</em> statistic, which
         is what <code>promptstats</code> estimates. Wilson and Newcombe are used for strictly binary
         data.
-      </p>
-
-      <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>
-      <p>
-        Common wisdom says yes, but simulations can say otherwise. (GPT-5 seems convinced BCa is the go-to method,
-        for instance, and loves to suggest it.) One simulation study found:
-      </p>
-      <div class="pull-quote">
-        "Our simulation results revealed an outperformance of the percentile method over both BCa and
-        Student's t with respect to the desired coverage of the CIs. The BCa method tended to produce
-        slightly better-balanced CIs than the other two methods, but overall, it was undermined due to
-        its narrower CIs than the desired level in coverage."
-        <cite>— Simulation study on bootstrap CI methods for factor analysis loadings</cite>
-      </div>
-      <p>
-        This is consistent with our own simulation results for LLM eval data (below): BCa for pairwise
-        comparisons reaches only 0.855 mean coverage against a 0.95 target — the worst of all bootstrap
-        methods tested. For single-sample estimates it is roughly on par with percentile bootstrap.
       </p>
     </section>
 
@@ -1107,104 +1104,150 @@
         the true difference. This is the more practically important statistic for comparing two prompts or models.
       </p>
 
-      <div class="fig-label">Table 2 — Pairwise coverage rate by method and N (Newcombe is binary-only)</div>
+      <video autoplay muted loop playsinline width="100%">
+        <source src="media/pairwise-comparison-MC.mp4" type="video/mp4">
+      </video>
+
+      <div class="fig-label">Table 2 — Pairwise method summary (true simulation outputs)</div>
       <div class="table-wrap">
         <table>
           <thead>
             <tr>
               <th>Method</th>
-              <th class="center">N = 5</th>
-              <th class="center">N = 10</th>
-              <th class="center">N = 20</th>
-              <th class="center">N = 50</th>
+              <th class="center">Coverage</th>
+              <th class="center">MCSE</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
               <th>Notes</th>
             </tr>
           </thead>
           <tbody>
             <tr>
-              <td><strong>Smooth Bootstrap</strong></td>
-              <td class="center cell-best">0.972</td>
-              <td class="center cell-best">0.963</td>
-              <td class="center cell-best">0.954</td>
+              <td>Percentile bootstrap</td>
+              <td class="center">0.917</td>
+              <td class="center">0.0006</td>
+              <td class="center">0.6159</td>
+              <td class="center">-0.033</td>
+              <td>Under target; stable but mildly over-confident</td>
+            </tr>
+            <tr>
+              <td>BCa</td>
+              <td class="center cell-worst">0.902▼</td>
+              <td class="center">0.0006</td>
+              <td class="center">0.6247</td>
+              <td class="center">-0.048</td>
+              <td>Lowest frequentist coverage; clearly under target</td>
+            </tr>
+            <tr>
+              <td>Bayes bootstrap</td>
+              <td class="center">0.912</td>
+              <td class="center">0.0006</td>
+              <td class="center">0.6050</td>
+              <td class="center">-0.038</td>
+              <td>Under target with narrower intervals</td>
+            </tr>
+            <tr>
+              <td>Smooth Bootstrap (Gaussian KDE)</td>
               <td class="center cell-best">0.951</td>
-              <td>Best overall; slightly wider intervals</td>
+              <td class="center">0.0004</td>
+              <td class="center">0.7042</td>
+              <td class="center">+0.001</td>
+              <td>Best bootstrap method; near-exact target with widest CI</td>
             </tr>
             <tr>
-              <td>Percentile Bootstrap</td>
-              <td class="center">0.945</td>
-              <td class="center">0.947</td>
-              <td class="center">0.949</td>
-              <td class="center">0.951</td>
-              <td>Stable across N</td>
+              <td>Newcombe score interval</td>
+              <td class="center">0.916</td>
+              <td class="center">0.0011</td>
+              <td class="center">0.2323</td>
+              <td class="center">-0.034</td>
+              <td class="cell-note">Binary-only frequentist score interval; under target overall</td>
             </tr>
             <tr>
-              <td>Bayesian Bootstrap</td>
-              <td class="center">0.930</td>
-              <td class="center">0.937</td>
-              <td class="center">0.946</td>
-              <td class="center">0.950</td>
-              <td>Under target at small N</td>
+              <td>Bayesian Independent Comparison</td>
+              <td class="center">0.969</td>
+              <td class="center">0.0007</td>
+              <td class="center">0.3400</td>
+              <td class="center">+0.019</td>
+              <td class="cell-note">Binary-only independent Bayesian comparison; conservative</td>
             </tr>
             <tr>
-              <td>BCa Bootstrap</td>
-              <td class="center cell-worst">0.821</td>
-              <td class="center cell-worst">0.841</td>
-              <td class="center cell-worst">0.855</td>
-              <td class="center cell-worst">0.878</td>
-              <td>Worst for pairwise; significantly under 0.95</td>
-            </tr>
-            <tr>
-              <td>Newcombe Score Interval</td>
-              <td class="center cell-best">0.974</td>
-              <td class="center cell-best">0.966</td>
-              <td class="center cell-best">0.960</td>
-              <td class="center cell-best">0.955</td>
-              <td class="cell-note">Binary only; best for binary pairwise</td>
+              <td>Bayesian Paired Comparison</td>
+              <td class="center cell-best">0.952</td>
+              <td class="center">0.0009</td>
+              <td class="center">0.3213</td>
+              <td class="center">+0.002</td>
+              <td class="cell-note">Binary-only paired Bayesian comparison; very close to target</td>
             </tr>
           </tbody>
         </table>
       </div>
       <p class="table-caption">
-        Numeric methods are averaged across continuous, Likert, and grades distributions.
-        Newcombe is evaluated on binary data only.
-        <strong>BCa is the clear worst for pairwise comparisons</strong>, despite its reputation — mean coverage of
-        0.855 at N=20 vs. the 0.95 target.
+        Coverage target is 0.95. ▼ marks under-target coverage. Results are averaged across all eval
+        types, scenarios, and sample sizes; binary-specific methods are included for reference.
       </p>
 
       <div class="callout callout-finding">
         <div class="callout-label">Surprising finding</div>
         <p>
-          Smooth bootstrap reaches near-perfect pairwise coverage (0.954) by N=20 <em>for binary data</em> —
-          a case it is not technically designed for — matching the Bayesian method (0.946) and approaching
-          Newcombe's score interval. Its interval width is slightly wider (~0.05–0.1 absolute), which,
-          per our conservative-by-default maxim, is a feature rather than a bug.
+          Among binary Bayesian comparisons, paired Bayes tracks the target very closely (0.952). Surprisingly, 
+          Newcombe's score interval under-covers (0.916) despite being considered the gold standard 
+          for binary pairwise comparisons. Among bootstrap methods, Smooth bootstrap lands almost exactly on target (0.951 overall) with the widest intervals,
+          while BCa under-covers most severely (0.902). Smooth bootstrap's performance is surprising,
+          because smoothing technically shouldn't be performed on binary data. However, the performance only
+          is poor when N&lt;50, hence Bayesian paired comparison is the best choice for binary pairwise comparisons at small N, while smooth bootstrap is a 
+          strong alternative at larger N and is more conservative. 
         </p>
       </div>
 
       <h3>Comparison with Bayesian Methods for Binary Scores</h3>
       <p>
-        To address the "Don't Use the CLT" paper's claims, we also extended the simulation to include
-        the Bayesian beta-posterior method the authors advocate. For the binary single-sample case:
+        To address the "Don't Use the CLT" paper's claims, we ensured the simulation included
+        the Bayesian beta-posterior methods the authors advocate, implemented using their <code>bayes_evals</code> library. 
+        For the binary single-sample case, we find:
       </p>
       <ul>
-        <li>Wilson score and Bayesian methods produce nearly identical results.</li>
-        <li>Wilson is marginally more precise to the true interval width.</li>
-        <li>Wilson requires no sampling — it is instantaneous.</li>
+        <li>Wilson score interval lands exactly on target coverage (0.950).</li>
+        <li>The binary Bayesian single-sample baseline under-covers (0.939).</li>
       </ul>
       <p>
-        For pairwise binary comparisons, smooth bootstrap and Newcombe both reach near-Bayesian coverage
-        by N=20. Differences become negligible by N=50. There is no meaningful reason to prefer a
-        sampling-based Bayesian posterior over the closed-form algebraic solutions for binary data.
+        For pairwise comparisons in this simulation summary, <strong>Bayesian Paired Comparison</strong>
+        (0.952) and <strong>Smooth Bootstrap</strong> (0.951) are both near target, while
+        <strong>Newcombe score interval</strong> under-covers (0.916). That makes the practical trade-off
+        clear: Bayesian paired is most accurate here, while smooth bootstrap is the strongest frequentist
+        option and remains robust across mixed data types.
       </p>
       <div class="callout callout-maxim">
         <div class="callout-label">Conclusion on Bayesian methods</div>
         <p>
-          For binary scores: use Wilson (single) and Newcombe (pairwise). They are as accurate as Bayesian,
-          faster, and impose no additional distributional assumptions.
-          For numeric/interval scores: smooth bootstrap is the practical winner.
-          There is no compelling case to add Bayesian sampling to an eval pipeline.
+          For binary single-sample estimates, use <strong>Wilson</strong>.
+          For pairwise comparisons, <strong>Bayesian paired</strong> is most accurate in this run,
+          with <strong>Smooth bootstrap</strong> as the strongest frequentist alternative.
+          For numeric/interval scores, smooth bootstrap remains the practical winner.
+
+          Thus, while Bayesian methods can perform well for binary data, 
+          they are not universally superior to frequentist methods (at least in these comparisons), and 
+          their advantages may not extend to non-binary data types common in LLM evals. We 
+          call on statistics experts to extend our simulation code and meta-analyses to further 
+          clarify the conditions under which Bayesian methods outperform frequentist alternatives, 
+          and to identify any scenarios where they may underperform.
         </p>
       </div>
+
+      <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>
+      <p>
+        Common wisdom says yes, but simulations can say otherwise. (GPT-5 seems convinced BCa is the go-to method,
+        for instance, and loves to suggest it.) One simulation study found:
+      </p>
+      <div class="pull-quote">
+        "Our simulation results revealed an outperformance of the percentile method over both BCa and
+        Student's t with respect to the desired coverage of the CIs. The BCa method tended to produce
+        slightly better-balanced CIs than the other two methods, but overall, it was undermined due to
+        its narrower CIs than the desired level in coverage."
+        <cite>— Simulation study on bootstrap CI methods for factor analysis loadings</cite>
+      </div>
+      <p>
+        This is consistent with our own simulation results for LLM eval data.
+      </p>
     </section>
 
     <!-- ── SECTION: RECOMMENDATIONS ── -->
@@ -1218,16 +1261,16 @@
       <div class="rec-cards">
         <div class="rec-card">
           <div class="rec-card-when">Binary (0 / 1)</div>
-          <div class="rec-card-method">Wilson + Newcombe</div>
+          <div class="rec-card-method">Wilson + Bayesian Paired</div>
           <div class="rec-card-detail">
             Wilson score interval for single-sample CIs.
-            Newcombe score interval for pairwise differences.
-            Both are closed-form, instantaneous, and outperform all bootstrap methods at any N.
+            For pairwise comparisons in this simulation, Bayesian paired is closest to target
+            (with smooth bootstrap nearly identical and slightly more conservative when N=100 or greater).
           </div>
         </div>
         <div class="rec-card">
           <div class="rec-card-when">Continuous (0–1 floats)</div>
-          <div class="rec-card-method">Smooth Bootstrap</div>
+          <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
           <div class="rec-card-detail">
             Highest coverage across all N tested. Slightly conservative (wider CIs), which is
             preferred in safety-critical eval contexts.
@@ -1235,7 +1278,7 @@
         </div>
         <div class="rec-card">
           <div class="rec-card-when">Likert / Integer (e.g., 1–5)</div>
-          <div class="rec-card-method">Smooth Bootstrap</div>
+          <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
           <div class="rec-card-detail">
             Same story as continuous. Smooth bootstrap handles the discrete nature of Likert
             scales more gracefully than percentile or BCa.
@@ -1243,10 +1286,10 @@
         </div>
         <div class="rec-card">
           <div class="rec-card-when">Grades / Rubric (0–100)</div>
-          <div class="rec-card-method">Smooth Bootstrap</div>
+          <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
           <div class="rec-card-detail">
             Bounded, potentially skewed. Smooth bootstrap is robust to skew and performs
-            well even at N=10.
+            well even at N=10, making up for the over-confidence of other methods at small N.
           </div>
         </div>
       </div>
@@ -1272,31 +1315,31 @@
             <tr>
               <td>Single-sample CI on mean score</td>
               <td>Numeric/Interval</td>
-              <td><strong>Smooth bootstrap</strong></td>
+              <td><strong>Smooth bootstrap (Gaussian KDE)</strong></td>
               <td>Conservative; most reliable at small N</td>
             </tr>
             <tr>
               <td>Pairwise comparison (A vs B)</td>
               <td>Binary</td>
-              <td><strong>Newcombe score interval</strong></td>
-              <td>Paired; + McNemar's test for significance</td>
+              <td><strong>Bayesian Paired Comparison</strong></td>
+              <td>Closest to target in this simulation; smooth bootstrap is strongest frequentist fallback</td>
             </tr>
             <tr>
               <td>Pairwise comparison (A vs B)</td>
               <td>Numeric/Interval</td>
-              <td><strong>Smooth bootstrap</strong></td>
+              <td><strong>Smooth bootstrap (Gaussian KDE)</strong></td>
               <td>Highest pairwise coverage; BCa is explicitly <em>not</em> recommended</td>
             </tr>
             <tr>
               <td>All pairwise comparisons (k templates)</td>
               <td>Any</td>
-              <td>As above + <strong>Holm correction</strong></td>
-              <td>Multiple comparisons; Holm is uniformly more powerful than Bonferroni</td>
+              <td>As above + <strong>multi-comparisons correction</strong></td>
+              <td>Which multiple comparisons correction method to use depends on the context</td>
             </tr>
             <tr>
               <td>Hierarchical data (multi-run)</td>
               <td>Any</td>
-              <td><strong>Nested bootstrap</strong></td>
+              <td><strong>Nested smooth bootstrap (Gaussian KDE)</strong></td>
               <td>Resample inputs, then runs within inputs; propagates run stochasticity into CIs</td>
             </tr>
           </tbody>
@@ -1308,7 +1351,7 @@
         <div class="callout-label">Sample size floor</div>
         <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
         <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
-        <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals are reliable. Smooth bootstrap performs near-ideally by N=20 for most distributions.</p>
+        <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals begin to become reliable.</p>
       </div>
     </section>
 
@@ -1348,6 +1391,9 @@ pstats.print_analysis_summary(analysis)</code></pre>
           <strong>smooth bootstrap</strong> for all other numeric/interval data.
           Multiple pairwise comparisons are corrected with the Holm method.
           Nested (two-level) bootstrap is used automatically when repeated runs are present.
+          <strong>Note:</strong> in the updated simulation summary above, Bayesian paired comparison
+          shows the closest pairwise binary calibration; this is a research finding and not yet the
+          current <code>method="auto"</code> default.
         </p>
       </div>
 
