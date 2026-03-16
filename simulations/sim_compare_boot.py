@@ -33,6 +33,7 @@ Usage:
   python simulations/sim_compare_boot.py
     python simulations/sim_compare_boot.py --scenario-suite expanded
     python simulations/sim_compare_boot.py --progress bar
+        python simulations/sim_compare_boot.py --official-test-pairwise-only
   python simulations/sim_compare_boot.py --reps 500 --bootstrap-n 1000
         python simulations/sim_compare_boot.py --bayes-n 2000
         python simulations/sim_compare_boot.py --out-dir simulations/out --save-results save
@@ -994,13 +995,14 @@ def run_pairwise_simulation(
     total_steps = total_cells * n_reps
     step = 0
     reporter = _ProgressReporter(total_steps, mode=progress_mode, label="pairwise")
+    warned_binary_first_run = False
 
     for scenario in scenarios:
         for n in sample_sizes:
             covered: dict[str, int] = {m: 0 for m in METHODS}
             total_w: dict[str, float] = {m: 0.0 for m in METHODS}
-            add_newcombe = scenario.eval_type == "binary" and runs == 1 and statistic == "mean"
-            add_bayes_binary = scenario.eval_type == "binary" and runs == 1 and statistic == "mean"
+            add_newcombe = scenario.eval_type == "binary" and statistic == "mean"
+            add_bayes_binary = scenario.eval_type == "binary" and statistic == "mean"
             if add_newcombe:
                 covered[NEWCOMBE_METHOD] = 0
                 total_w[NEWCOMBE_METHOD] = 0.0
@@ -1009,6 +1011,14 @@ def run_pairwise_simulation(
                 total_w[BAYES_PAIR_INDEP_METHOD] = 0.0
                 covered[BAYES_PAIR_PAIRED_METHOD] = 0
                 total_w[BAYES_PAIR_PAIRED_METHOD] = 0.0
+
+            if runs > 1 and add_newcombe and not warned_binary_first_run:
+                print(
+                    "\nNote: binary pairwise-only methods "
+                    "(newcombe_score, bayes_indep_comp, bayes_paired_comp) "
+                    "use run index 0 when runs>1."
+                )
+                warned_binary_first_run = True
 
             for _rep in range(n_reps):
                 a, b = scenario.generate_pair(rng, n, runs)
@@ -1642,11 +1652,11 @@ def _run_benchmark(
         estimand_label = "template mean"
     else:
         binary_cells = n_by_type["binary"] * len(sizes)
-        newcombe_calls = binary_cells * reps if runs == 1 and statistic == "mean" else 0
-        bayes_pair_calls = 2 * binary_cells * reps if runs == 1 and statistic == "mean" else 0
+        newcombe_calls = binary_cells * reps if statistic == "mean" else 0
+        bayes_pair_calls = 2 * binary_cells * reps if statistic == "mean" else 0
         extra = (
             f", plus {newcombe_calls:,} Newcombe calls and {bayes_pair_calls:,} Bayesian pairwise calls "
-            f"(binary, runs=1, statistic=mean)"
+            f"(binary, statistic=mean)"
             if newcombe_calls
             else ""
         )
@@ -1740,6 +1750,14 @@ def main() -> None:
         help=(
             "Run the intensive official benchmark battery with robust preset "
             "options (overrides routine settings)."
+        ),
+    )
+    parser.add_argument(
+        "--official-test-pairwise-only",
+        action="store_true",
+        help=(
+            "Run only the pairwise phase of the intensive official benchmark "
+            "battery (overrides routine settings)."
         ),
     )
     parser.add_argument(
@@ -1839,35 +1857,42 @@ def main() -> None:
     args = parser.parse_args()
     plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
 
-    if args.official_test:
+    if args.official_test and args.official_test_pairwise_only:
+        parser.error("Choose only one of --official-test or --official-test-pairwise-only.")
+
+    if args.official_test or args.official_test_pairwise_only:
         print("\nRunning OFFICIAL TEST battery with robust, intensive presets.")
         print("This mode intentionally prioritizes rigor over runtime.")
+
+        if args.official_test_pairwise_only:
+            print("Pairwise-only mode enabled: skipping single-sample phase.")
 
         # This will run sizes starting from 10, since some methods are very unstable 
         # at n=5 for the pairwise estimand, and we are assuming the eval sample size is 
         # at least N=10 (making decisions based on statistics over n=5 is not really that meaningful). 
-        _run_benchmark(
-            estimand="mean",
-            runs=1,
-            statistic="mean",
-            reps=2000,
-            bootstrap_n=10000,
-            bayes_n=10000,
-            alpha=0.05,
-            sizes=[10, 20, 30, 50, 100, 200],
-            seed=args.seed,
-            scenario_suite="expanded",
-            progress_mode=args.progress,
-            plot_mode=args.plots,
-            save_results=args.save_results,
-            out_dir=args.out_dir,
-            plots_dir=plots_dir,
-            label="OFFICIAL TEST · Phase 1/2 · Single-sample mean estimand",
-        )
+        if args.official_test:
+            _run_benchmark(
+                estimand="mean",
+                runs=1,
+                statistic="mean",
+                reps=2000,
+                bootstrap_n=10000,
+                bayes_n=10000,
+                alpha=0.05,
+                sizes=[10, 20, 30, 50, 100, 200],
+                seed=args.seed,
+                scenario_suite="expanded",
+                progress_mode=args.progress,
+                plot_mode=args.plots,
+                save_results=args.save_results,
+                out_dir=args.out_dir,
+                plots_dir=plots_dir,
+                label="OFFICIAL TEST · Phase 1/2 · Single-sample mean estimand",
+            )
 
         _run_benchmark(
             estimand="pairwise",
-            runs=3,
+            runs=1,
             statistic="mean",
             reps=2000,
             bootstrap_n=10000,
