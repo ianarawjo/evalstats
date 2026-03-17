@@ -30,7 +30,7 @@ from promptstats.compare import (
     EntityStats,
 )
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 __all__ = [
     "BenchmarkResult",
