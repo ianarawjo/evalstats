@@ -244,6 +244,28 @@ def test_pairwise_differences_newcombe_seeded_falls_back_to_smooth():
     assert "smooth" in result.test_method
 
 
+def test_pairwise_differences_bayes_binary_warns_for_large_n():
+    rng = np.random.default_rng(2026)
+    m_inputs = 150
+    scores = np.zeros((2, m_inputs))
+    scores[0] = rng.binomial(1, 0.62, m_inputs)
+    scores[1] = rng.binomial(1, 0.51, m_inputs)
+
+    with pytest.warns(UserWarning, match=r"overconfident|N=150|newcombe"):
+        result = pairwise_differences(
+            scores,
+            0,
+            1,
+            "A",
+            "B",
+            method="bayes_binary",
+            ci=0.95,
+            rng=np.random.default_rng(2026),
+        )
+
+    assert "bayes binary" in result.test_method
+
+
 # ---------------------------------------------------------------------------
 # bootstrap_point_advantage with method='wilson'
 # ---------------------------------------------------------------------------
@@ -375,6 +397,26 @@ def test_analyze_explicit_newcombe_forces_newcombe_even_when_n_small():
     pair = bundle.pairwise.get("low", "high")
     assert "newcombe" in pair.test_method
     assert bundle.point_advantage.n_bootstrap == 0
+
+
+def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
+    rng = np.random.default_rng(88)
+    n_templates = 2
+    m_inputs = 120
+    scores = np.zeros((n_templates, m_inputs))
+    for i in range(n_templates):
+        scores[i] = rng.binomial(1, 0.52 + 0.12 * i, m_inputs)
+
+    result_obj = _make_benchmark(scores, ["low", "high"])
+    with pytest.warns(UserWarning, match=r"overconfident|N=120|newcombe"):
+        bundle = analyze(
+            result_obj,
+            method="bayes_binary",
+            rng=np.random.default_rng(88),
+        )
+
+    pair = bundle.pairwise.get("low", "high")
+    assert "bayes binary" in pair.test_method
 
 
 @pytest.mark.parametrize("method", ["wilson", "newcombe"])

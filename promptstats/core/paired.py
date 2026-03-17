@@ -36,6 +36,26 @@ from .resampling import (
 from .stats_utils import correct_pvalues
 
 
+BAYES_BINARY_LARGE_N_THRESHOLD = 200
+
+
+def _warn_bayes_binary_large_n(n_inputs: int, *, stacklevel: int = 4) -> None:
+    """Warn when bayes_binary pairwise CI is used beyond its calibrated range."""
+    if n_inputs < BAYES_BINARY_LARGE_N_THRESHOLD:
+        return
+
+    warnings.warn(
+        "method='bayes_binary' was requested for pairwise binary comparison "
+        f"with N={n_inputs} inputs. Simulations indicate this importance-"
+        "sampling-based CI becomes dangerously overconfident at larger N "
+        "(roughly ~10% at N=500 and ~20% at N=1000). "
+        "Use method='newcombe' (or method='auto') for calibrated pairwise "
+        "intervals at this sample size.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+
+
 def _rank_biserial(diffs: np.ndarray) -> float:
     """Rank biserial correlation for paired differences.
 
@@ -355,6 +375,7 @@ def pairwise_differences(
             )
         diffs = values_a - values_b
         m = len(diffs)
+        _warn_bayes_binary_large_n(m)
         point_d = _stat(diffs, statistic)
         std_d = float(np.std(diffs, ddof=1))
         alpha_val = 1.0 - ci
