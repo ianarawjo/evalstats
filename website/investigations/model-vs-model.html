@@ -8,7 +8,8 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../inv.css" />
-  <link rel="stylesheet" href="../nb.css" />
+
+  <script>(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.setAttribute('data-theme','dark')}catch(e){}})()</script>
 </head>
 <body>
 
@@ -23,6 +24,11 @@
       <li><a href="../choose.html">Choose a Method</a></li>
       <li><a href="../index.html#promptstats">promptstats</a></li>
     </ul>
+    <button class="dark-toggle" id="dark-toggle" aria-label="Toggle dark mode">
+      <svg id="dark-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
   </div>
 </nav>
 
@@ -88,277 +94,36 @@
   <article class="article-body">
 
     <section>
-      <div class="nb-toolbar">
-        <a class="nb-badge" href="https://colab.research.google.com/github/ianarawjo/prompt-stats/blob/main/website/notebooks/model-vs-model.ipynb" target="_blank" rel="noopener">
-          <img src="https://colab.research.google.com/assets/colab-badge.svg"
-               alt="Open In Colab" height="20" />
-        </a>
-        <a class="nb-badge-link" href="https://github.com/ianarawjo/prompt-stats/blob/main/website/notebooks/model-vs-model.ipynb" target="_blank" rel="noopener"
-           >View .ipynb on GitHub</a>
+      <h2>What This Investigation Covers</h2>
+      <p>The most fundamental question in LLM evaluation: does the observed score difference between two models reflect a genuine capability gap, or is it within the noise of your sample? This investigation walks through the complete statistical workflow &mdash; from raw scores to a defensible conclusion.</p>
+
+      <h3>What you&rsquo;ll learn</h3>
+      <div class="learn-grid">
+      <div class="learn-item">
+        <div class="learn-item-num">01</div>
+        <p><strong>How to compute a CI on the score difference</strong> &mdash; Using Newcombe (binary) or smooth bootstrap (numeric), and how to interpret the resulting interval.</p>
       </div>
-      <div class="nb-content">
-        <div class="cell border-box-sizing text_cell rendered" id="cell-id=md-title"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h1 id="Model-A-vs.-Model-B:-Is-the-Gap-Real?">Model A vs. Model B: Is the Gap Real?<a class="anchor-link" href="#Model-A-vs.-Model-B:-Is-the-Gap-Real?">¶</a></h1><p>You ran both models on your eval set. Model A scored 78%, Model B scored 75%.
-Is that a real difference? With N=50, the 95% CI on that 3-point gap often spans zero.</p>
-<p>This notebook walks through the complete statistical workflow:
-from raw scores to a defensible conclusion.</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=code-setup">
-<div class="input">
-<div class="prompt input_prompt">In [1]:</div>
-<div class="inner_cell">
-<div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">promptstats</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pstats</span>
+      <div class="learn-item">
+        <div class="learn-item-num">02</div>
+        <p><strong>What &ldquo;statistically distinguishable&rdquo; means</strong> &mdash; Why two models can have different means while still being statistically tied, and how to communicate that honestly.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">03</div>
+        <p><strong>How sample size limits your conclusions</strong> &mdash; The minimum N needed to detect a 2-point gap, a 5-point gap, or a 10-point gap at 95% confidence.</p>
+      </div>
+      <div class="learn-item">
+        <div class="learn-item-num">04</div>
+        <p><strong>Wilson vs. smooth bootstrap</strong> &mdash; When to use each method based on your score type, and what you give up by choosing the wrong one.</p>
+      </div>
+      </div>
 
-<span class="n">warnings</span><span class="o">.</span><span class="n">filterwarnings</span><span class="p">(</span><span class="s2">"ignore"</span><span class="p">)</span>  <span class="c1"># suppress internal pipeline warnings</span>
-<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-setup"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="The-Setup">The Setup<a class="anchor-link" href="#The-Setup">¶</a></h2><p>We evaluate <strong>two models on the same 50 prompts</strong> (a <em>paired</em> design).
-Each item gets a binary score: 1 if the model's response passes, 0 if it fails.
-We're using synthetic data here, but you can swap these scores with your own eval results.</p>
-<p>The paired structure is key: because each prompt is seen by both models,
-we can compute a per-item <em>difference</em> and bootstrap that directly.
-This is more statistically powerful than treating the two samples as independent.</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=code-data">
-<div class="input">
-<div class="prompt input_prompt">In [2]:</div>
-<div class="inner_cell">
-<div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="n">N</span> <span class="o">=</span> <span class="mi">50</span>
-
-<span class="c1"># Synthetic binary scores (1 = pass, 0 = fail)</span>
-<span class="c1"># True pass rates: Model A 0.70, Model B 0.65 — a 5-point gap in reality</span>
-<span class="n">scores_a</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">0.70</span><span class="p">,</span> <span class="n">N</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
-<span class="n">scores_b</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">0.65</span><span class="p">,</span> <span class="n">N</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
-
-<span class="n">mean_a</span> <span class="o">=</span> <span class="n">scores_a</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
-<span class="n">mean_b</span> <span class="o">=</span> <span class="n">scores_b</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
-<span class="n">obs_diff</span> <span class="o">=</span> <span class="n">mean_a</span> <span class="o">-</span> <span class="n">mean_b</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Model A:  </span><span class="si">{</span><span class="n">mean_a</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">  (</span><span class="si">{</span><span class="nb">int</span><span class="p">(</span><span class="n">scores_a</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">N</span><span class="si">}</span><span class="s2"> passed)"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Model B:  </span><span class="si">{</span><span class="n">mean_b</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">  (</span><span class="si">{</span><span class="nb">int</span><span class="p">(</span><span class="n">scores_b</span><span class="o">.</span><span class="n">sum</span><span class="p">())</span><span class="si">}</span><span class="s2">/</span><span class="si">{</span><span class="n">N</span><span class="si">}</span><span class="s2"> passed)"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Gap:     </span><span class="si">{</span><span class="n">obs_diff</span><span class="si">:</span><span class="s2">+.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="output_wrapper">
-<div class="output">
-<div class="output_area">
-<div class="prompt"></div>
-<div class="output_subarea output_stream output_stdout output_text">
-<pre>Model A:  64.0%  (32/50 passed)
-Model B:  72.0%  (36/50 passed)
-Gap:     -8.0%
-</pre>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-ci"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="Computing-a-CI-on-the-Difference">Computing a CI on the Difference<a class="anchor-link" href="#Computing-a-CI-on-the-Difference">¶</a></h2><p>The observed gap is a <em>sample statistic</em> — it estimates the true gap but carries
-sampling uncertainty. We use <code>pstats.compare_models()</code> to get confidence
-intervals on each model's mean <em>and</em> on the gap between them.</p>
-<p>Internally, the function treats the aligned score arrays as a paired design (each row
-is the same prompt seen by both models) and bootstraps per-item differences.
-We use <code>method="auto"</code>, which looks at the setup and input data types and tries to
-deduce the most appropriate statistical test to run for the comparison.</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=code-ci">
-<div class="input">
-<div class="prompt input_prompt">In [4]:</div>
-<div class="inner_cell">
-<div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="n">report</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
-    <span class="p">{</span><span class="s2">"Model A"</span><span class="p">:</span> <span class="n">scores_a</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">:</span> <span class="n">scores_b</span><span class="p">},</span>
-    <span class="n">method</span><span class="o">=</span><span class="s2">"auto"</span><span class="p">,</span>
-    <span class="n">rng</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">0</span><span class="p">),</span>
-<span class="p">)</span>
-
-<span class="c1"># Per-model statistics</span>
-<span class="k">for</span> <span class="n">label</span><span class="p">,</span> <span class="n">stats</span> <span class="ow">in</span> <span class="n">report</span><span class="o">.</span><span class="n">model_stats</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">label</span><span class="si">}</span><span class="s2">: mean=</span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">mean</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">  95% CI [</span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ci_low</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ci_high</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">]"</span><span class="p">)</span>
-
-<span class="nb">print</span><span class="p">()</span>
-
-<span class="c1"># Gap between the two models</span>
-<span class="n">pair</span> <span class="o">=</span> <span class="n">report</span><span class="o">.</span><span class="n">pairwise</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"Model A"</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Gap (A − B):  </span><span class="si">{</span><span class="n">pair</span><span class="o">.</span><span class="n">point_diff</span><span class="si">:</span><span class="s2">+.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"95% CI:       [</span><span class="si">{</span><span class="n">pair</span><span class="o">.</span><span class="n">ci_low</span><span class="si">:</span><span class="s2">+.1%</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">pair</span><span class="o">.</span><span class="n">ci_high</span><span class="si">:</span><span class="s2">+.1%</span><span class="si">}</span><span class="s2">]"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"p-value:      </span><span class="si">{</span><span class="n">pair</span><span class="o">.</span><span class="n">p_value</span><span class="si">:</span><span class="s2">.3f</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-<span class="nb">print</span><span class="p">()</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="n">report</span><span class="o">.</span><span class="n">quick_summary</span><span class="p">())</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="output_wrapper">
-<div class="output">
-<div class="output_area">
-<div class="prompt"></div>
-<div class="output_subarea output_stream output_stdout output_text">
-<pre>Model A: mean=64.0%  95% CI [50.1%, 75.9%]
-Model B: mean=72.0%  95% CI [58.3%, 82.5%]
-
-Gap (A − B):  -8.0%
-95% CI:       [-24.1%, +9.0%]
-p-value:      0.359
-
-No significant difference between 'Model B' and 'Model A' (Δmean=+0.080, 95% CI [-0.090, 0.241], p=0.359, holm-corrected, bayes_binary)
-</pre>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=65219df9"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<p>Note that <code>bayes_binary</code> is named as the test. Since we set <code>method="auto"</code>, <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> uses the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, like Newcombe (the pairwise sibling test to the Wilson score interval), you can tell <code>analyze</code> to use that method (here <code>method="newcombe"</code>).</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-interp"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="What-'Statistically-Distinguishable'-Means">What 'Statistically Distinguishable' Means<a class="anchor-link" href="#What-'Statistically-Distinguishable'-Means">¶</a></h2><p>A CI that spans zero does <strong>not</strong> mean the two models are equal.
-It means your data is <strong>insufficient to rule out</strong> the possibility that they are.
-The gap could be real — you just don't have enough samples to confirm it.</p>
-<p>The honest report is:</p>
-<blockquote>
-<p><em>"Model A scored X% vs. Model B's Y% on our 50-item eval.
-The 95% CI on the gap is [lo, hi], which includes zero.
-We cannot conclude that Model A is better at this sample size."</em></p>
-</blockquote>
-<p>The wrong report is: <em>"Model A outperformed Model B (78% vs 75%)"</em> — full stop,
-no uncertainty, no sample size, implying a definitive conclusion.</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-n"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="How-Much-Data-Do-You-Actually-Need?">How Much Data Do You Actually Need?<a class="anchor-link" href="#How-Much-Data-Do-You-Actually-Need?">¶</a></h2><p>If the CI spans zero, the next question is: <em>how large would N need to be</em>
-to reliably detect the gap you're seeing?</p>
-<p>We estimate this with a simple simulation: for a range of N values,
-we repeatedly sample from models with the observed means and check what
-fraction of CIs exclude zero (= empirical power).</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=code-power">
-<div class="input">
-<div class="prompt input_prompt">In [14]:</div>
-<div class="inner_cell">
-<div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">empirical_power</span><span class="p">(</span><span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">n_sims</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">"""Fraction of simulated trials where the gap is declared significant."""</span>
-    <span class="n">rng_sim</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
-    <span class="n">detected</span> <span class="o">=</span> <span class="mi">0</span>
-    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_sims</span><span class="p">):</span>
-        <span class="n">a</span> <span class="o">=</span> <span class="n">rng_sim</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">p_a</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
-        <span class="n">b</span> <span class="o">=</span> <span class="n">rng_sim</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
-        <span class="n">rep</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
-            <span class="p">{</span><span class="s2">"Model A"</span><span class="p">:</span> <span class="n">a</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">:</span> <span class="n">b</span><span class="p">},</span>
-            <span class="n">method</span><span class="o">=</span><span class="s2">"auto"</span><span class="p">,</span>
-            <span class="n">alpha</span><span class="o">=</span><span class="n">alpha</span><span class="p">,</span>
-            <span class="n">rng</span><span class="o">=</span><span class="n">rng_sim</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="k">if</span> <span class="n">rep</span><span class="o">.</span><span class="n">significant</span><span class="p">:</span>
-            <span class="n">detected</span> <span class="o">+=</span> <span class="mi">1</span>
-    <span class="k">return</span> <span class="n">detected</span> <span class="o">/</span> <span class="n">n_sims</span>
-
-
-<span class="c1"># True pass rates from our synthetic setup</span>
-<span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span> <span class="o">=</span> <span class="mf">0.70</span><span class="p">,</span> <span class="mf">0.65</span>  <span class="c1"># 5pp true gap</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Power to detect </span><span class="si">{</span><span class="n">p_a</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p_b</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2"> gap (binary scores, 95% CI):</span><span class="se">\n</span><span class="s2">"</span><span class="p">)</span>
-<span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="p">[</span><span class="mi">50</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">,</span> <span class="mi">400</span><span class="p">]:</span>
-    <span class="n">power</span> <span class="o">=</span> <span class="n">empirical_power</span><span class="p">(</span><span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
-    <span class="n">bar</span> <span class="o">=</span> <span class="s2">"█"</span> <span class="o">*</span> <span class="nb">int</span><span class="p">(</span><span class="n">power</span> <span class="o">*</span> <span class="mi">30</span><span class="p">)</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  N=</span><span class="si">{</span><span class="n">n</span><span class="si">:</span><span class="s2">4d</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="n">power</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="n">bar</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="output_wrapper">
-<div class="output">
-<div class="output_area">
-<div class="prompt"></div>
-<div class="output_subarea output_stream output_stdout output_text">
-<pre>Power to detect 5% gap (binary scores, 95% CI):
-
-  N=  50  7%  ██
-  N= 100  13%  ███
-  N= 200  16%  ████
-  N= 400  29%  ████████
-</pre>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-summary"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="Summary">Summary<a class="anchor-link" href="#Summary">¶</a></h2><table>
-<thead>
-<tr>
-<th>What you have</th>
-<th>What you can say</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>CI excludes zero, both bounds positive</td>
-<td>Model A is reliably better</td>
-</tr>
-<tr>
-<td>CI spans zero</td>
-<td>Too close to call at this N</td>
-</tr>
-<tr>
-<td>CI excludes zero, both bounds negative</td>
-<td>Model B is reliably better</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Key takeaways:</strong></p>
-<ul>
-<li>For binary scores, detecting a 5pp gap requires <strong>N ≈ 200–400</strong> per model at 80–95% power.
-Most evals use N=50–100, which can only reliably detect gaps of 10–15pp or larger.</li>
-<li>A paired design (same prompts for both models) is more powerful than independent samples.
-Use it whenever possible.</li>
-<li>Report CIs, not just means. A mean difference without a CI is an incomplete result.</li>
-</ul>
-<p>Next: <a href="./best-prompt.html">Finding Your Best Prompt</a> — extends this to k&gt;2 comparisons
-with multiple-comparison correction.</p>
-</div>
-</div>
-</div>
-
+      <div class="coming-soon-card">
+        <div class="cs-icon">&#9879;</div>
+        <div class="cs-label">Investigation in progress</div>
+        <p class="cs-text">Full worked examples, interactive code, and simulation-backed
+          results are coming soon.
+          <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a>
+          for updates.</p>
       </div>
     </section>
   </article>
@@ -376,5 +141,6 @@ with multiple-comparison correction.</p>
   </div>
 </footer>
 
+<script src="../dark.js"></script>
 </body>
 </html>

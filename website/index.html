@@ -7,8 +7,6 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
-  <!-- Font tester: extra families -->
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Spectral:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&family=Space+Grotesk:wght@300;400;500;600;700&family=Source+Serif+4:ital,opsz,wght@0,8..60,300;0,8..60,400;0,8..60,600;0,8..60,700;1,8..60,300&family=Space+Mono:ital,wght@0,400;0,700;1,400&family=Source+Sans+3:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Source+Code+Pro:wght@400;500&family=Fira+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Lora:ital,wght@0,400;0,600;0,700;1,400&family=Fira+Mono:wght@400;500&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Serif+Text:ital,wght@0,400;1,400&family=DM+Mono:ital,wght@0,400;0,500;1,400&family=Jost:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=Libre+Baskerville:ital,wght@0,400;0,700;1,400&family=Outfit:wght@300;400;500;600;700&family=Crimson+Pro:ital,wght@0,300;0,400;0,600;0,700;1,300;1,400&display=swap" rel="stylesheet" />
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -35,12 +33,36 @@
       --yellow-soft: #fefce8;
       --yellow-mid:  #fde68a;
 
+      --nav-bg: rgba(255,255,255,0.92);
+
       --reading-width: 680px;
       --layout-width: 1320px;
       --sidebar-width: 210px;
       --inv-width: 200px;
 
       --radius: 5px;
+    }
+
+    [data-theme="dark"] {
+      --bg:       #13131a;
+      --bg-soft:  #1e1e28;
+      --bg-code:  #0d0d12;
+      --text:     #e4e4e7;
+      --text-mid: #a1a1aa;
+      --text-dim: #52525b;
+      --border:   #2d2d3a;
+
+      --orange:      #f97316;
+      --orange-soft: rgba(249,115,22,0.12);
+      --orange-mid:  rgba(249,115,22,0.3);
+      --blue:        #60a5fa;
+      --blue-soft:   rgba(96,165,250,0.1);
+      --green:       #4ade80;
+      --green-soft:  rgba(74,222,128,0.08);
+      --yellow-soft: rgba(253,224,71,0.08);
+      --yellow-mid:  rgba(253,224,71,0.22);
+
+      --nav-bg: rgba(19,19,26,0.92);
     }
 
     html { scroll-behavior: smooth; font-size: 16px; }
@@ -56,11 +78,28 @@
     /* ─── TOP NAV ─────────────────────────────────────────── */
     .site-nav {
       position: sticky; top: 0; z-index: 100;
-      background: rgba(255,255,255,0.92);
+      background: var(--nav-bg);
       backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--border);
       font-family: var(--font-sans);
     }
+
+    /* ─── DARK MODE TOGGLE ────────────────────────────── */
+    .dark-toggle {
+      margin-left: auto;
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.3rem 0.55rem;
+      cursor: pointer;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      transition: color 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+    .dark-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+    .dark-toggle svg { display: block; }
     .nav-inner {
       max-width: var(--layout-width);
       margin: 0 auto;
@@ -81,7 +120,6 @@
     }
     .nav-links {
       display: flex; gap: 1.5rem; list-style: none;
-      margin-left: auto;
     }
     .nav-links a {
       font-size: 0.8rem;
@@ -657,6 +695,11 @@
       <li><a href="./choose.html">Choose a Method</a></li>
       <li><a href="#promptstats">promptstats</a></li>
     </ul>
+    <button class="dark-toggle" id="dark-toggle" aria-label="Toggle dark mode">
+      <svg id="dark-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
   </div>
 </nav>
 
@@ -1398,13 +1441,13 @@ pstats.print_analysis_summary(analysis)</code></pre>
         <div class="callout-label">Auto-selection logic</div>
         <p>
           When <code>method="auto"</code> (the default), <code>promptstats</code> uses:
-          <strong>Wilson + Newcombe</strong> for binary data, and
-          <strong>smooth bootstrap</strong> for all other numeric/interval data.
+          <strong>smooth bootstrap</strong> for numeric/interval data.
+          For binary data, it uses <strong>Wilson</strong> for point-advantage CIs;
+          for pairwise comparisons it uses <strong>Bayesian paired</strong> when
+          <code>N &lt; 100</code>, and <strong>Newcombe</strong> when <code>N &ge; 100</code>.
           Multiple pairwise comparisons are corrected with the Holm method.
-          Nested (two-level) bootstrap is used automatically when repeated runs are present.
-          <strong>Note:</strong> in the updated simulation summary above, Bayesian paired comparison
-          shows the closest pairwise binary calibration; this is a research finding and not yet the
-          current <code>method="auto"</code> default.
+          Nested (two-level) bootstrap is used automatically for bootstrap-based analyses
+          when repeated runs are present.
         </p>
       </div>
 
@@ -1491,145 +1534,36 @@ pstats.print_analysis_summary(analysis)</code></pre>
   </div>
 </footer>
 
-<!-- ═══════════════════════════════════════════════
-     FONT TESTER  (temporary dev tool — remove before publish)
-     ═══════════════════════════════════════════════ -->
-<style>
-#font-switcher {
-  position: fixed; bottom: 1.5rem; right: 1.5rem; z-index: 9999;
-  font-family: var(--font-sans);
-}
-#fst-toggle {
-  display: block; margin-left: auto;
-  background: var(--text); color: #fff; border: none;
-  border-radius: 6px; padding: 0.38rem 0.75rem;
-  font-size: 0.72rem; font-weight: 600; letter-spacing: 0.06em;
-  text-transform: uppercase; cursor: pointer;
-  font-family: var(--font-sans);
-  box-shadow: 0 2px 10px rgba(0,0,0,0.22);
-}
-#fst-toggle:hover { background: #333; }
-#fst-panel {
-  display: none; margin-top: 0.45rem;
-  background: #fff; border: 1px solid var(--border);
-  border-radius: 10px; padding: 1rem 1.1rem;
-  box-shadow: 0 6px 28px rgba(0,0,0,0.13);
-  min-width: 360px;
-}
-#fst-panel.open { display: block; }
-.fst-header {
-  font-size: 0.63rem; font-weight: 600; letter-spacing: 0.12em;
-  text-transform: uppercase; color: var(--text-dim); margin-bottom: 0.7rem;
-}
-.fst-grid {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem;
-  margin-bottom: 0.85rem;
-}
-.fst-btn {
-  border: 1px solid var(--border); background: var(--bg-soft);
-  border-radius: 6px; padding: 0.55rem 0.7rem;
-  cursor: pointer; text-align: left;
-  transition: border-color 0.1s, background 0.1s;
-}
-.fst-btn:hover { border-color: #aaa; background: #f0f0ee; }
-.fst-btn.active { border-color: var(--orange); background: var(--orange-soft); }
-.fst-btn-name {
-  display: block; font-size: 0.8rem; font-weight: 600;
-  color: var(--text); margin-bottom: 0.08rem; line-height: 1.2;
-}
-.fst-btn-sub {
-  display: block; font-size: 0.62rem; color: var(--text-dim);
-  font-family: var(--font-sans) !important; line-height: 1.3;
-}
-.fst-preview {
-  border-top: 1px solid var(--border); padding-top: 0.75rem;
-}
-.fst-pre-sans {
-  font-size: 0.95rem; font-weight: 600; color: var(--text);
-  display: block; margin-bottom: 0.2rem; line-height: 1.3;
-}
-.fst-pre-serif {
-  font-size: 0.85rem; color: var(--text-mid);
-  display: block; margin-bottom: 0.2rem; line-height: 1.45;
-  font-style: italic;
-}
-.fst-pre-mono {
-  font-size: 0.73rem; color: var(--text-dim);
-  display: block; letter-spacing: -0.01em;
-}
-</style>
-
-<div id="font-switcher">
-  <button id="fst-toggle">Aa Fonts</button>
-  <div id="fst-panel">
-    <div class="fst-header">Font Tester &mdash; click to apply</div>
-    <div class="fst-grid" id="fst-grid"></div>
-    <div class="fst-preview">
-      <span class="fst-pre-sans" id="ftp-sans">Statistics for LLM Evals — N=50, α=0.05</span>
-      <span class="fst-pre-serif" id="ftp-serif">The smooth bootstrap adds i.i.d. Gaussian noise to each resample, bandwidth h&thinsp;=&thinsp;n<sup>&minus;1/5</sup>&thinsp;&times;&thinsp;s.</span>
-      <span class="fst-pre-mono" id="ftp-mono">bootstrap_ci_1d(values, stat, n=1000)</span>
-    </div>
-  </div>
-</div>
-
 <script>
 (function () {
-  const FONTS = [
-    { id: 'ibm-plex',        label: 'IBM Plex',          sub: 'Plex Sans · Plex Serif · Plex Mono',
-      sans: "'IBM Plex Sans', system-ui, sans-serif",     serif: "'IBM Plex Serif', Georgia, serif",    mono: "'IBM Plex Mono', Menlo, monospace" },
-    { id: 'inter-spectral',  label: 'Inter + Spectral',  sub: 'Inter · Spectral · Plex Mono',
-      sans: "'Inter', system-ui, sans-serif",             serif: "'Spectral', Georgia, serif",          mono: "'IBM Plex Mono', Menlo, monospace" },
-    { id: 'space',           label: 'Space Grotesk',     sub: 'Space Grotesk · Source Serif 4',
-      sans: "'Space Grotesk', system-ui, sans-serif",     serif: "'Source Serif 4', Georgia, serif",   mono: "'Space Mono', Menlo, monospace" },
-    { id: 'adobe-source',    label: 'Adobe Source',      sub: 'Source Sans 3 · Source Serif 4',
-      sans: "'Source Sans 3', system-ui, sans-serif",     serif: "'Source Serif 4', Georgia, serif",   mono: "'Source Code Pro', Menlo, monospace" },
-    { id: 'fira',            label: 'Fira',              sub: 'Fira Sans · Lora · Fira Mono',
-      sans: "'Fira Sans', system-ui, sans-serif",         serif: "'Lora', Georgia, serif",             mono: "'Fira Mono', Menlo, monospace" },
-    { id: 'dm',              label: 'DM',                sub: 'DM Sans · DM Serif Text · DM Mono',
-      sans: "'DM Sans', system-ui, sans-serif",           serif: "'DM Serif Text', Georgia, serif",    mono: "'DM Mono', Menlo, monospace" },
-    { id: 'jost-baskerville',label: 'Jost + Baskerville',sub: 'Jost · Libre Baskerville',
-      sans: "'Jost', system-ui, sans-serif",              serif: "'Libre Baskerville', Georgia, serif",mono: "'Space Mono', Menlo, monospace" },
-    { id: 'outfit-crimson',  label: 'Outfit + Crimson',  sub: 'Outfit · Crimson Pro',
-      sans: "'Outfit', system-ui, sans-serif",            serif: "'Crimson Pro', Georgia, serif",      mono: "'Source Code Pro', Menlo, monospace" },
-  ];
-
   const root = document.documentElement;
+  const btn = document.getElementById('dark-toggle');
+  const icon = document.getElementById('dark-icon');
 
-  function apply(f) {
-    root.style.setProperty('--font-sans', f.sans);
-    root.style.setProperty('--font-serif', f.serif);
-    root.style.setProperty('--font-mono', f.mono);
-    document.getElementById('ftp-sans').style.fontFamily  = f.sans;
-    document.getElementById('ftp-serif').style.fontFamily = f.serif;
-    document.getElementById('ftp-mono').style.fontFamily  = f.mono;
-    document.querySelectorAll('.fst-btn').forEach(b => b.classList.remove('active'));
-    const btn = document.getElementById('fstb-' + f.id);
-    if (btn) btn.classList.add('active');
-    try { localStorage.setItem('font-choice', f.id); } catch(e) {}
+  const SUN = '<path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/><circle cx="12" cy="12" r="5"/>';
+  const MOON = '<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>';
+
+  function setDark(dark) {
+    if (dark) {
+      root.setAttribute('data-theme', 'dark');
+      icon.innerHTML = SUN;
+    } else {
+      root.removeAttribute('data-theme');
+      icon.innerHTML = MOON;
+    }
+    try { localStorage.setItem('theme', dark ? 'dark' : 'light'); } catch(e) {}
   }
 
-  const grid = document.getElementById('fst-grid');
-  FONTS.forEach(f => {
-    const btn = document.createElement('button');
-    btn.className = 'fst-btn';
-    btn.id = 'fstb-' + f.id;
-    btn.innerHTML =
-      `<span class="fst-btn-name" style="font-family:${f.sans}">${f.label}</span>` +
-      `<span class="fst-btn-sub">${f.sub}</span>`;
-    btn.addEventListener('click', () => apply(f));
-    grid.appendChild(btn);
+  const saved = (() => { try { return localStorage.getItem('theme'); } catch(e) { return null; } })();
+  const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  setDark(saved === 'dark' || (!saved && prefersDark));
+
+  btn.addEventListener('click', () => {
+    setDark(root.getAttribute('data-theme') !== 'dark');
   });
-
-  document.getElementById('fst-toggle').addEventListener('click', () =>
-    document.getElementById('fst-panel').classList.toggle('open'));
-
-  const saved = FONTS.find(f => { try { return f.id === localStorage.getItem('font-choice'); } catch(e){} }) || FONTS[0];
-  apply(saved);
 })();
 </script>
-<!-- ═══════════════════════════════════════════════
-     END FONT TESTER
-     ═══════════════════════════════════════════════ -->
+
 
 <script>
   // Highlight active TOC link based on scroll position

@@ -26,8 +26,27 @@
       --orange-mid:  #fed7aa;
       --blue:        #1b4fad;
       --blue-soft:   #eff6ff;
+      --nav-bg: rgba(255,255,255,0.92);
       --layout-width: 1320px;
       --radius: 5px;
+    }
+
+    [data-theme="dark"] {
+      --bg:       #13131a;
+      --bg-soft:  #1e1e28;
+      --bg-code:  #0d0d12;
+      --text:     #e4e4e7;
+      --text-mid: #a1a1aa;
+      --text-dim: #52525b;
+      --border:   #2d2d3a;
+
+      --orange:      #f97316;
+      --orange-soft: rgba(249,115,22,0.12);
+      --orange-mid:  rgba(249,115,22,0.3);
+      --blue:        #60a5fa;
+      --blue-soft:   rgba(96,165,250,0.1);
+
+      --nav-bg: rgba(19,19,26,0.92);
     }
 
     html { scroll-behavior: smooth; font-size: 16px; }
@@ -43,11 +62,26 @@
     /* ─── NAV ─────────────────────────────────────────────── */
     .site-nav {
       position: sticky; top: 0; z-index: 100;
-      background: rgba(255,255,255,0.92);
+      background: var(--nav-bg);
       backdrop-filter: blur(10px);
       border-bottom: 1px solid var(--border);
       font-family: var(--font-sans);
     }
+    /* ─── DARK MODE TOGGLE ────────────────────────────── */
+    .dark-toggle {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.3rem 0.55rem;
+      cursor: pointer;
+      color: var(--text-dim);
+      display: flex;
+      align-items: center;
+      transition: color 0.15s, border-color 0.15s;
+      flex-shrink: 0;
+    }
+    .dark-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+    .dark-toggle svg { display: block; }
     .nav-inner {
       max-width: var(--layout-width);
       margin: 0 auto;
@@ -62,7 +96,7 @@
       letter-spacing: 0.12em; text-transform: uppercase;
       color: var(--orange); text-decoration: none; flex-shrink: 0;
     }
-    .nav-links { display: flex; gap: 1.5rem; list-style: none; margin-left: auto; }
+    .nav-links { display: flex; gap: 1.5rem; list-style: none; }
     .nav-links a {
       font-size: 0.8rem; font-weight: 500;
       color: var(--text-mid); text-decoration: none; letter-spacing: 0.02em;
@@ -393,6 +427,7 @@
       .result-header { padding: 0.9rem 1.1rem; }
     }
   </style>
+  <script>(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.setAttribute('data-theme','dark')}catch(e){}})()</script>
 </head>
 <body>
 
@@ -406,6 +441,11 @@
       <li><a href="./choose.html" class="active">Choose a Method</a></li>
       <li><a href="./resources.html">Resources</a></li>
     </ul>
+    <button class="dark-toggle" id="dark-toggle" aria-label="Toggle dark mode">
+      <svg id="dark-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
   </div>
 </nav>
 
@@ -1155,5 +1195,6 @@ document.getElementById('reset-btn').addEventListener('click', resetFlow);
 renderFlow();
 </script>
 
+<script src="./dark.js"></script>
 </body>
 </html>

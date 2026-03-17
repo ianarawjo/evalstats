@@ -66,6 +66,11 @@ SITE_NAV_HTML = """\
       <li><a href="../choose.html">Choose a Method</a></li>
       <li><a href="../index.html#promptstats">promptstats</a></li>
     </ul>
+    <button class="dark-toggle" id="dark-toggle" aria-label="Toggle dark mode">
+      <svg id="dark-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+      </svg>
+    </button>
   </div>
 </nav>"""
 
@@ -152,6 +157,7 @@ def make_page(inv, content_html, has_notebook=False):
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../inv.css" />
 {nb_css}
+  <script>(function(){{try{{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.setAttribute('data-theme','dark')}}catch(e){{}}}})()</script>
 </head>
 <body>
 
@@ -179,6 +185,7 @@ def make_page(inv, content_html, has_notebook=False):
 
 {FOOTER_HTML}
 
+<script src="../dark.js"></script>
 </body>
 </html>
 """

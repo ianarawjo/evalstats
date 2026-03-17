@@ -25,9 +25,33 @@
   --yellow-soft: #fefce8;
   --yellow-mid:  #fde68a;
 
+  --nav-bg: rgba(255,255,255,0.92);
+
   --layout-width: 1320px;
   --inv-width: 200px;
   --radius: 5px;
+}
+
+[data-theme="dark"] {
+  --bg:       #13131a;
+  --bg-soft:  #1e1e28;
+  --bg-code:  #0d0d12;
+  --text:     #e4e4e7;
+  --text-mid: #a1a1aa;
+  --text-dim: #52525b;
+  --border:   #2d2d3a;
+
+  --orange:      #f97316;
+  --orange-soft: rgba(249,115,22,0.12);
+  --orange-mid:  rgba(249,115,22,0.3);
+  --blue:        #60a5fa;
+  --blue-soft:   rgba(96,165,250,0.1);
+  --green:       #4ade80;
+  --green-soft:  rgba(74,222,128,0.08);
+  --yellow-soft: rgba(253,224,71,0.08);
+  --yellow-mid:  rgba(253,224,71,0.22);
+
+  --nav-bg: rgba(19,19,26,0.92);
 }
 
 html { scroll-behavior: smooth; font-size: 16px; }
@@ -43,11 +67,28 @@ body {
 /* ─── TOP NAV ─────────────────────────────────────────── */
 .site-nav {
   position: sticky; top: 0; z-index: 100;
-  background: rgba(255,255,255,0.92);
+  background: var(--nav-bg);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   font-family: var(--font-sans);
 }
+
+/* ─── DARK MODE TOGGLE ────────────────────────────────── */
+.dark-toggle {
+  margin-left: auto;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.55rem;
+  cursor: pointer;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.dark-toggle:hover { color: var(--text); border-color: var(--text-dim); }
+.dark-toggle svg { display: block; }
 .nav-inner {
   max-width: var(--layout-width);
   margin: 0 auto;
@@ -68,7 +109,6 @@ body {
 }
 .nav-links {
   display: flex; gap: 1.5rem; list-style: none;
-  margin-left: auto;
 }
 .nav-links a {
   font-size: 0.8rem;
