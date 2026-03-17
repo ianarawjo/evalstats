@@ -120,6 +120,31 @@ def _mcnemar_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
     return min(p, 1.0)
 
 
+def _paired_signflip_pvalue(
+    diffs: np.ndarray,
+    *,
+    statistic: Literal["mean", "median"],
+    n_samples: int,
+    rng: np.random.Generator,
+) -> float:
+    """Two-sided paired randomization p-value via sign-flipping.
+
+    The null hypothesis is that paired differences are symmetric around zero,
+    so each per-input difference can be multiplied by +1 or -1 with equal
+    probability. This is the standard paired permutation/randomization test.
+    """
+    observed = abs(_stat(diffs, statistic))
+    m = len(diffs)
+    signs = rng.choice(np.array([-1.0, 1.0]), size=(n_samples, m), replace=True)
+    signed = signs * diffs[np.newaxis, :]
+    if statistic == "median":
+        null_stats = np.median(signed, axis=1)
+    else:
+        null_stats = np.mean(signed, axis=1)
+    extreme_count = int(np.sum(np.abs(null_stats) >= observed))
+    return float((extreme_count + 1) / (n_samples + 1))
+
+
 @dataclass
 class PairedDiffResult:
     """Result of a paired comparison between two templates."""
@@ -307,7 +332,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -334,6 +359,8 @@ def pairwise_differences(
         ``'bayes_binary'`` for paired binary (0/1) data using the
         Dirichlet-multinomial Bayesian model (Bowyer et al. 2025).
         Requires binary data; raises ValueError otherwise.
+        ``'permutation'`` computes a paired sign-flip randomization p-value
+        and reports a percentile-bootstrap CI for the paired effect size.
         ``'auto'`` selects ``'smooth_bootstrap'`` for non-binary data.
     ci : float
         Confidence level for the interval (default 0.95).
@@ -434,6 +461,51 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_method="newcombe (mcnemar p-value)",
+            n_inputs=m,
+            per_input_diffs=diffs,
+            n_runs=1,
+            statistic=statistic,
+            wilcoxon_p=wilcoxon_p,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Paired permutation/randomization path                               #
+    # ------------------------------------------------------------------ #
+    if method == "permutation":
+        if scores.ndim == 3 and scores.shape[2] >= 3:
+            return _pairwise_diffs_seeded(
+                scores, idx_a, idx_b, label_a, label_b,
+                method="permutation", ci=ci, n_bootstrap=n_bootstrap,
+                rng=rng, statistic=statistic,
+            )
+        if scores.ndim == 3:
+            scores = scores.mean(axis=2)
+
+        diffs = scores[idx_a] - scores[idx_b]
+        m = len(diffs)
+        point_d = _stat(diffs, statistic)
+        std_d = float(np.std(diffs, ddof=1))
+        alpha = 1.0 - ci
+
+        boot_stats = bootstrap_means_1d(
+            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+        )
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        p_value = _paired_signflip_pvalue(
+            diffs, statistic=statistic, n_samples=n_bootstrap, rng=rng,
+        )
+        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
+
+        return PairedDiffResult(
+            template_a=label_a,
+            template_b=label_b,
+            point_diff=point_d,
+            std_diff=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_method=f"paired permutation + bootstrap ci (n={n_bootstrap})",
             n_inputs=m,
             per_input_diffs=diffs,
             n_runs=1,
@@ -559,7 +631,7 @@ def _pairwise_diffs_seeded(
     label_a: str,
     label_b: str,
     *,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "permutation"],
     ci: float,
     n_bootstrap: int,
     rng: np.random.Generator,
@@ -590,7 +662,18 @@ def _pairwise_diffs_seeded(
 
     resolved_method = resolve_resampling_method(method, M)
 
-    if resolved_method == "bootstrap":
+    if method == "permutation":
+        boot_stats = bootstrap_diffs_nested(
+            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
+        )
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        p_value = _paired_signflip_pvalue(
+            cell_diffs, statistic=statistic, n_samples=n_bootstrap, rng=rng,
+        )
+        test_name = f"nested paired permutation + bootstrap ci (n={n_bootstrap}, R={R})"
+
+    elif resolved_method == "bootstrap":
         boot_stats = bootstrap_diffs_nested(
             scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
         )
@@ -665,7 +748,7 @@ def _pairwise_diffs_seeded(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -764,7 +847,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",

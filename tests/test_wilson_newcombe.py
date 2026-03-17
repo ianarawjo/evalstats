@@ -246,12 +246,12 @@ def test_pairwise_differences_newcombe_seeded_falls_back_to_smooth():
 
 def test_pairwise_differences_bayes_binary_warns_for_large_n():
     rng = np.random.default_rng(2026)
-    m_inputs = 150
+    m_inputs = 202
     scores = np.zeros((2, m_inputs))
     scores[0] = rng.binomial(1, 0.62, m_inputs)
     scores[1] = rng.binomial(1, 0.51, m_inputs)
 
-    with pytest.warns(UserWarning, match=r"overconfident|N=150|newcombe"):
+    with pytest.warns(UserWarning, match=r"overconfident|N=202|newcombe"):
         result = pairwise_differences(
             scores,
             0,
@@ -402,13 +402,13 @@ def test_analyze_explicit_newcombe_forces_newcombe_even_when_n_small():
 def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     rng = np.random.default_rng(88)
     n_templates = 2
-    m_inputs = 120
+    m_inputs = 220
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.52 + 0.12 * i, m_inputs)
 
     result_obj = _make_benchmark(scores, ["low", "high"])
-    with pytest.warns(UserWarning, match=r"overconfident|N=120|newcombe"):
+    with pytest.warns(UserWarning, match=r"overconfident|N=220|newcombe"):
         bundle = analyze(
             result_obj,
             method="bayes_binary",

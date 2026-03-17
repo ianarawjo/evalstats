@@ -128,7 +128,7 @@ def analyze_tokens(
     token_usage: TokenUsage,
     score_pairwise: PairwiseMatrix,
     *,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "permutation"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -221,7 +221,7 @@ def _compute_token_stats(
     total_tokens: np.ndarray,
     input_tokens: Optional[np.ndarray],
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "permutation"],
     ci: float,
     n_bootstrap: int,
     rng: np.random.Generator,
@@ -239,7 +239,8 @@ def _compute_token_stats(
     mean_input = input_tokens.mean(axis=1) if input_tokens is not None else None
 
     M = out_cell.shape[1]
-    resolved = resolve_resampling_method(method, M)
+    effective_method = "bootstrap" if method == "permutation" else method
+    resolved = resolve_resampling_method(effective_method, M)
 
     ci_low_output = np.empty(N)
     ci_high_output = np.empty(N)

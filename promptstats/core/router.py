@@ -100,6 +100,9 @@ def analyze(
           (Scott's rule bandwidth).  Resamples observations with replacement
           and adds Gaussian noise, smoothing the discrete empirical
           distribution.  May improve coverage for continuous data.
+        * ``'permutation'`` — Paired randomization test (sign-flip) for
+            pairwise p-values, with bootstrap confidence intervals for effect
+            sizes.
         * ``'lmm'`` — Linear Mixed Model.  Fits
           ``score ~ template + (1|input)`` on cell-mean scores.
           Produces Wald CIs via the fixed-effect covariance matrix.
@@ -188,7 +191,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "permutation"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "

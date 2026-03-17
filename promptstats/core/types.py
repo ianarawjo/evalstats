@@ -22,6 +22,7 @@ CommonStatsMethods = Literal[
     "bayes_binary",
     "wilson",
     "newcombe",
+    "permutation",
 ]
 CompareMethod = CommonStatsMethods
 AnalyzeMethod = Union[CommonStatsMethods, Literal["lmm"]]

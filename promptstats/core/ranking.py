@@ -144,7 +144,7 @@ def bootstrap_ranks(
     labels: list[str],
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "permutation"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
 ) -> RankDistribution:
     """Compute bootstrap distribution over template rankings.
@@ -181,12 +181,19 @@ def bootstrap_ranks(
     if rng is None:
         rng = np.random.default_rng()
 
-    if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"}:
+    if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "permutation"}:
         raise ValueError(f"Unknown method: {method}")
 
     # Rank distribution does not use a special Bayesian binary model;
     # treat bayes_binary as smooth_bootstrap for ranking purposes.
-    effective_method = "smooth_bootstrap" if method == "bayes_binary" else method
+    # Permutation is a p-value method for pairwise tests; rank distributions
+    # still use bootstrap-style resampling.
+    if method == "bayes_binary":
+        effective_method = "smooth_bootstrap"
+    elif method == "permutation":
+        effective_method = "bootstrap"
+    else:
+        effective_method = method
     m_inputs = scores.shape[1]
     resolved_method = resolve_resampling_method(effective_method, m_inputs)
 
@@ -386,7 +393,7 @@ def bootstrap_point_advantage(
     ci: float = 0.95,
     spread_percentiles: tuple[float, float] = (10, 90),
     rng: Optional[np.random.Generator] = None,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "wilson", "bayes_binary"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "wilson", "bayes_binary", "permutation"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
 ) -> PointAdvantageResult:
     """Compute point advantage over a reference with dual uncertainty bands.
@@ -465,7 +472,8 @@ def bootstrap_point_advantage(
     # Seeded path (R >= 3)                                                #
     # ------------------------------------------------------------------ #
     if scores.ndim == 3 and scores.shape[2] >= 3:
-        resolved_method = resolve_resampling_method(method, scores.shape[1])
+        effective_method = "bootstrap" if method == "permutation" else method
+        resolved_method = resolve_resampling_method(effective_method, scores.shape[1])
         if resolved_method == "bayes_bootstrap":
             return _bayes_bootstrap_point_advantage_seeded(
                 scores, labels,
@@ -505,7 +513,8 @@ def bootstrap_point_advantage(
 
     n_templates, m_inputs = scores.shape
     alpha = 1 - ci
-    resolved_method = resolve_resampling_method(method, m_inputs)
+    effective_method = "bootstrap" if method == "permutation" else method
+    resolved_method = resolve_resampling_method(effective_method, m_inputs)
 
     if reference == "grand_mean":
         # Grand reference is always the per-input mean across templates.
@@ -586,7 +595,7 @@ def _bootstrap_point_advantage_seeded(
     ci: float,
     spread_percentiles: tuple[float, float],
     rng: np.random.Generator,
-    method: Literal["bootstrap", "bca"],
+    method: Literal["bootstrap", "bca", "permutation"],
     statistic: Literal["mean", "median"],
 ) -> PointAdvantageResult:
     """Point advantage with nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
@@ -642,7 +651,7 @@ def _bootstrap_point_advantage_seeded(
 
     for i in range(N):
         boot_i = boot_point_advs[:, i]      # (B,)
-        if method == "bootstrap":
+        if method in {"bootstrap", "permutation"}:
             ci_low[i] = np.percentile(boot_i, 100 * alpha / 2)
             ci_high[i] = np.percentile(boot_i, 100 * (1 - alpha / 2))
         elif method == "bca":
