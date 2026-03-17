@@ -63,6 +63,7 @@ SITE_NAV_HTML = """\
       <li><a href="../index.html#principles">Core Principles</a></li>
       <li><a href="../index.html#simulation">Simulation Study</a></li>
       <li><a href="../index.html#recommendations">Recommendations</a></li>
+      <li><a href="../choose.html">Choose a Method</a></li>
       <li><a href="../index.html#promptstats">promptstats</a></li>
     </ul>
   </div>

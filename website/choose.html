@@ -1,0 +1,985 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Choose Your Statistical Method &mdash; Stats for LLM Evals</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+      --font-serif: 'IBM Plex Serif', Georgia, serif;
+      --font-mono: 'IBM Plex Mono', 'Menlo', monospace;
+      --bg:       #ffffff;
+      --bg-soft:  #f7f7f5;
+      --bg-code:  #1b1b22;
+      --text:     #18181b;
+      --text-mid: #3f3f46;
+      --text-dim: #71717a;
+      --border:   #e4e4e7;
+      --orange:      #c94b0c;
+      --orange-soft: #fff4ed;
+      --orange-mid:  #fed7aa;
+      --blue:        #1b4fad;
+      --blue-soft:   #eff6ff;
+      --layout-width: 1320px;
+      --radius: 5px;
+    }
+
+    html { scroll-behavior: smooth; font-size: 16px; }
+
+    body {
+      font-family: var(--font-serif);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.75;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ─── NAV ─────────────────────────────────────────────── */
+    .site-nav {
+      position: sticky; top: 0; z-index: 100;
+      background: rgba(255,255,255,0.92);
+      backdrop-filter: blur(10px);
+      border-bottom: 1px solid var(--border);
+      font-family: var(--font-sans);
+    }
+    .nav-inner {
+      max-width: var(--layout-width);
+      margin: 0 auto;
+      padding: 0 2rem;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      gap: 2rem;
+    }
+    .nav-brand {
+      font-size: 0.78rem; font-weight: 600;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--orange); text-decoration: none; flex-shrink: 0;
+    }
+    .nav-links { display: flex; gap: 1.5rem; list-style: none; margin-left: auto; }
+    .nav-links a {
+      font-size: 0.8rem; font-weight: 500;
+      color: var(--text-mid); text-decoration: none; letter-spacing: 0.02em;
+    }
+    .nav-links a:hover { color: var(--text); }
+    .nav-links a.active { color: var(--orange); font-weight: 600; }
+
+    /* ─── HERO ────────────────────────────────────────────── */
+    .hero {
+      border-bottom: 1px solid var(--border);
+      padding: 4rem 2rem 3.5rem;
+      max-width: var(--layout-width);
+      margin: 0 auto;
+    }
+    .hero-eyebrow {
+      font-family: var(--font-mono); font-size: 0.72rem; font-weight: 500;
+      letter-spacing: 0.14em; text-transform: uppercase;
+      color: var(--orange); margin-bottom: 1.1rem;
+    }
+    .hero h1 {
+      font-family: var(--font-sans);
+      font-size: clamp(2.0rem, 5vw, 3.2rem);
+      font-weight: 700; line-height: 1.15;
+      letter-spacing: -0.03em; color: var(--text);
+      max-width: 760px; margin-bottom: 1.25rem;
+    }
+    .hero-subtitle {
+      font-family: var(--font-serif); font-size: 1.15rem;
+      line-height: 1.65; color: var(--text-mid);
+      max-width: 600px; margin-bottom: 1rem;
+    }
+    .hero-hint {
+      font-family: var(--font-sans); font-size: 0.82rem;
+      color: var(--text-dim); display: flex; align-items: center; gap: 1rem;
+    }
+    .hero-hint .dot {
+      display: inline-block; width: 3px; height: 3px;
+      background: var(--border); border-radius: 50%;
+    }
+
+    /* ─── FLOW WRAPPER ────────────────────────────────────── */
+    .flow-outer {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 3.5rem 2rem 6rem;
+    }
+
+    /* ─── CONNECTOR ───────────────────────────────────────── */
+    .flow-connector {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 40px;
+      position: relative;
+    }
+    .flow-connector::before {
+      content: '';
+      position: absolute;
+      left: 50%; top: 0; bottom: 0;
+      width: 2px;
+      background: var(--border);
+      transform: translateX(-50%);
+    }
+    .flow-connector-label {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 0.15rem 0.75rem;
+      font-family: var(--font-sans);
+      font-size: 0.7rem;
+      font-weight: 600;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-dim);
+      position: relative;
+      z-index: 1;
+    }
+
+    /* ─── QUESTION CARD ───────────────────────────────────── */
+    .q-card {
+      border: 1.5px solid var(--border);
+      border-radius: 8px;
+      padding: 1.5rem 1.75rem 1.6rem;
+      background: var(--bg);
+      transition: border-color 0.15s;
+    }
+    .q-card:not(.answered):focus-within {
+      border-color: var(--text-dim);
+    }
+    .q-card.answered {
+      background: var(--bg-soft);
+    }
+    .q-card-step {
+      font-family: var(--font-mono);
+      font-size: 0.67rem; font-weight: 500;
+      letter-spacing: 0.12em; text-transform: uppercase;
+      color: var(--text-dim); margin-bottom: 0.35rem;
+    }
+    .q-card-question {
+      font-family: var(--font-sans);
+      font-size: 1.08rem; font-weight: 600;
+      color: var(--text); line-height: 1.35;
+      margin-bottom: 0.35rem;
+    }
+    .q-card-help {
+      font-family: var(--font-serif);
+      font-size: 0.88rem; color: var(--text-dim);
+      line-height: 1.6; margin-bottom: 1.15rem;
+    }
+
+    /* choices */
+    .q-choices { display: flex; flex-direction: column; gap: 0.55rem; }
+    .q-choice-btn {
+      display: flex; align-items: flex-start; gap: 0.8rem;
+      background: var(--bg);
+      border: 1.5px solid var(--border);
+      border-radius: 6px;
+      padding: 0.8rem 1rem;
+      cursor: pointer;
+      text-align: left;
+      font-family: var(--font-sans);
+      transition: border-color 0.12s, background 0.12s;
+      width: 100%;
+    }
+    .q-choice-btn:hover {
+      border-color: var(--orange);
+      background: var(--orange-soft);
+    }
+    .q-choice-btn:focus-visible {
+      outline: 2px solid var(--orange);
+      outline-offset: 2px;
+    }
+    .q-choice-icon {
+      width: 18px; height: 18px;
+      border: 1.5px solid var(--border);
+      border-radius: 50%;
+      flex-shrink: 0; margin-top: 3px;
+      transition: border-color 0.12s;
+    }
+    .q-choice-btn:hover .q-choice-icon { border-color: var(--orange); }
+    .q-choice-label {
+      font-size: 0.9rem; font-weight: 600;
+      color: var(--text); display: block; margin-bottom: 0.1rem;
+    }
+    .q-choice-sub {
+      font-size: 0.82rem; color: var(--text-dim);
+      font-family: var(--font-serif); line-height: 1.5;
+    }
+
+    /* answered summary */
+    .q-answer-summary { display: none; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+    .answered .q-choices { display: none; }
+    .answered .q-card-help { display: none; }
+    .answered .q-answer-summary { display: flex; }
+    .q-ans-question { font-family: var(--font-sans); font-size: 0.83rem; color: var(--text-dim); }
+    .q-answer-chip {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      background: var(--orange-soft);
+      border: 1px solid var(--orange-mid);
+      border-radius: 3px;
+      padding: 0.1rem 0.55rem;
+      font-family: var(--font-sans);
+      font-size: 0.82rem; font-weight: 600;
+      color: var(--orange);
+    }
+    .q-change-btn {
+      margin-left: auto;
+      background: none; border: none; cursor: pointer;
+      font-family: var(--font-sans); font-size: 0.78rem;
+      color: var(--text-dim); text-decoration: underline; padding: 0;
+    }
+    .q-change-btn:hover { color: var(--text); }
+
+    /* ─── RESULT CARD ─────────────────────────────────────── */
+    .result-card {
+      border: 2px solid var(--orange);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    .result-header {
+      background: var(--orange);
+      color: #fff;
+      padding: 1.1rem 1.5rem;
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+    }
+    .result-eyebrow {
+      font-family: var(--font-mono);
+      font-size: 0.67rem; font-weight: 500;
+      letter-spacing: 0.13em; text-transform: uppercase;
+      opacity: 0.75; margin-bottom: 0.3rem;
+    }
+    .result-method-name {
+      font-family: var(--font-sans);
+      font-size: 1.35rem; font-weight: 700;
+      letter-spacing: -0.02em; line-height: 1.2;
+    }
+    .result-tags {
+      display: flex; gap: 0.4rem; flex-wrap: wrap;
+      align-self: center;
+    }
+    .result-tag {
+      background: rgba(255,255,255,0.22);
+      border-radius: 3px;
+      padding: 0.15rem 0.55rem;
+      font-family: var(--font-sans);
+      font-size: 0.7rem; font-weight: 600;
+      letter-spacing: 0.05em;
+    }
+    .result-body { padding: 1.5rem 1.75rem; }
+    .result-description {
+      font-family: var(--font-serif);
+      font-size: 0.97rem; line-height: 1.72;
+      color: var(--text-mid); margin-bottom: 1.25rem;
+    }
+
+    /* code block */
+    .code-block-wrap {
+      background: var(--bg-code);
+      border-radius: 6px; overflow: hidden;
+      margin-bottom: 1.25rem;
+    }
+    .code-block-label {
+      background: rgba(255,255,255,0.06);
+      padding: 0.38rem 1rem;
+      font-family: var(--font-mono);
+      font-size: 0.67rem; font-weight: 500;
+      letter-spacing: 0.1em; text-transform: uppercase;
+      color: rgba(255,255,255,0.35);
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+    }
+    .code-block-wrap pre {
+      margin: 0; padding: 1rem 1.25rem;
+      overflow-x: auto;
+      font-family: var(--font-mono);
+      font-size: 0.82rem; line-height: 1.65;
+      color: #e8e8f0;
+    }
+    .code-block-wrap code { font-family: inherit; }
+
+    /* "why this method" accordion */
+    .result-why-toggle {
+      display: flex; align-items: center; gap: 0.45rem;
+      background: none; border: none; cursor: pointer; padding: 0;
+      font-family: var(--font-sans);
+      font-size: 0.85rem; font-weight: 600;
+      color: var(--orange); margin-bottom: 0.7rem;
+    }
+    .result-why-toggle:hover { opacity: 0.75; }
+    .result-why-toggle:focus-visible { outline: 2px solid var(--orange); outline-offset: 2px; border-radius: 2px; }
+    .toggle-arrow { display: inline-block; transition: transform 0.18s; font-style: normal; }
+    .result-why-toggle.open .toggle-arrow { transform: rotate(90deg); }
+    .result-why-body {
+      display: none;
+      font-family: var(--font-serif);
+      font-size: 0.9rem; line-height: 1.72;
+      color: var(--text-mid);
+      margin-bottom: 1.1rem;
+      padding: 0.9rem 1.1rem;
+      border-left: 3px solid var(--orange-mid);
+      background: var(--orange-soft);
+      border-radius: 0 4px 4px 0;
+    }
+    .result-why-body.open { display: block; }
+    .result-why-body p + p { margin-top: 0.6rem; }
+
+    /* links */
+    .result-links { display: flex; gap: 0.65rem; flex-wrap: wrap; margin-top: 0.5rem; }
+    .result-link {
+      display: inline-flex; align-items: center; gap: 0.3rem;
+      font-family: var(--font-sans);
+      font-size: 0.81rem; font-weight: 500;
+      color: var(--blue);
+      text-decoration: none;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 0.22rem 0.7rem;
+      transition: border-color 0.12s, background 0.12s;
+    }
+    .result-link:hover { border-color: var(--blue); background: var(--blue-soft); }
+
+    /* reset */
+    .flow-reset { margin-top: 1.75rem; text-align: center; }
+    .flow-reset-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 4px; cursor: pointer;
+      font-family: var(--font-sans);
+      font-size: 0.82rem; font-weight: 500;
+      color: var(--text-dim);
+      padding: 0.4rem 1.1rem;
+      transition: border-color 0.12s, color 0.12s;
+    }
+    .flow-reset-btn:hover { color: var(--text); border-color: var(--text-dim); }
+
+    /* hidden */
+    .hidden { display: none !important; }
+
+    /* ─── FOOTER ──────────────────────────────────────────── */
+    .site-footer {
+      border-top: 1px solid var(--border);
+      background: var(--bg-soft);
+      padding: 2rem;
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+    }
+    .footer-inner {
+      max-width: var(--layout-width);
+      margin: 0 auto;
+      display: flex; align-items: center; justify-content: space-between;
+      flex-wrap: wrap; gap: 1rem;
+    }
+    .footer-links { list-style: none; display: flex; gap: 1.25rem; }
+    .footer-links a { color: var(--text-dim); text-decoration: none; }
+    .footer-links a:hover { color: var(--text); }
+
+    /* ─── RESPONSIVE ──────────────────────────────────────── */
+    @media (max-width: 640px) {
+      .nav-links { display: none; }
+      .hero { padding: 2.5rem 1.25rem 2rem; }
+      .flow-outer { padding: 2rem 1.25rem 4rem; }
+      .q-card { padding: 1.2rem 1.1rem; }
+      .result-body { padding: 1.2rem 1.1rem; }
+      .result-header { padding: 0.9rem 1.1rem; }
+    }
+  </style>
+</head>
+<body>
+
+<nav class="site-nav">
+  <div class="nav-inner">
+    <a class="nav-brand" href="./index.html">Stats for LLM Evals</a>
+    <ul class="nav-links">
+      <li><a href="./index.html#why-statistics">Why Statistics</a></li>
+      <li><a href="./index.html#simulation">Simulation Study</a></li>
+      <li><a href="./index.html#recommendations">Recommendations</a></li>
+      <li><a href="./choose.html" class="active">Choose a Method</a></li>
+      <li><a href="./resources.html">Resources</a></li>
+    </ul>
+  </div>
+</nav>
+
+<div class="hero">
+  <div class="hero-eyebrow">Interactive Guide</div>
+  <h1>Choose Your Statistical Method</h1>
+  <p class="hero-subtitle">Answer a few questions about your eval setup and we&rsquo;ll recommend the right method &mdash; with ready-to-run code.</p>
+  <p class="hero-hint">
+    <span>Takes 30 seconds</span>
+    <span class="dot"></span>
+    <span>Recommendations backed by simulation study</span>
+    <span class="dot"></span>
+    <span>Uses <a href="https://pypi.org/project/promptstats/" style="color:inherit">promptstats</a></span>
+  </p>
+</div>
+
+<div class="flow-outer">
+  <div id="flow-root"></div>
+  <div id="flow-reset" class="flow-reset hidden">
+    <button class="flow-reset-btn" id="reset-btn">&#8635;&ensp;Start over</button>
+  </div>
+</div>
+
+<footer class="site-footer">
+  <div class="footer-inner">
+    <p>Statistics for LLM Evals &middot; A living document from the
+       <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <ul class="footer-links">
+      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
+      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
+    </ul>
+  </div>
+</footer>
+
+<script>
+// ─── FLOW DATA ────────────────────────────────────────────────────────────────
+
+const FLOW = {
+
+  // ── QUESTION NODES ──────────────────────────────────────────────────────────
+
+  root: {
+    type: 'question',
+    step: 'Step 1 of 3',
+    question: 'What type of scores does your eval produce?',
+    help: 'This is the most important first decision. Choose based on how each eval item is scored — not the overall aggregate.',
+    choices: [
+      {
+        label: 'Binary (0 / 1)',
+        sub: 'Pass / fail, yes / no, correct / incorrect — each item is exactly 0 or 1',
+        next: 'binary_goal',
+      },
+      {
+        label: 'Numeric',
+        sub: 'Likert scale (1–5), float (0.0–1.0 or 0–100), continuous scores, grades',
+        next: 'numeric_goal',
+      },
+    ],
+  },
+
+  binary_goal: {
+    type: 'question',
+    step: 'Step 2 of 3',
+    question: 'What is your analysis goal?',
+    help: 'Are you estimating one model\'s performance in isolation, or comparing it against another model or condition?',
+    choices: [
+      {
+        label: 'Estimate overall performance',
+        sub: 'Single-sample CI — what\'s my model\'s pass rate with uncertainty?',
+        next: 'result_wilson',
+      },
+      {
+        label: 'Compare two conditions',
+        sub: 'Model A vs. Model B, before vs. after, prompt A vs. prompt B',
+        next: 'result_bayesian_paired',
+      },
+    ],
+  },
+
+  numeric_goal: {
+    type: 'question',
+    step: 'Step 2 of 3',
+    question: 'What is your analysis goal?',
+    help: 'How many models, prompts, or configurations are you comparing?',
+    choices: [
+      {
+        label: 'Estimate overall performance',
+        sub: 'Single-sample CI — what\'s my model\'s score with uncertainty?',
+        next: 'result_smooth_single',
+      },
+      {
+        label: 'Compare two conditions',
+        sub: 'Model A vs. Model B, or prompt A vs. prompt B',
+        next: 'numeric_runs_2',
+      },
+      {
+        label: 'Compare k > 2 variants',
+        sub: 'Multiple prompts, models, or configurations at once',
+        next: 'numeric_runs_k',
+      },
+    ],
+  },
+
+  numeric_runs_2: {
+    type: 'question',
+    step: 'Step 3 of 3',
+    question: 'Do you have repeated runs per eval item?',
+    help: 'If each eval item was run once per condition, select "No." If you ran each item multiple times — e.g., with temperature > 0 or using multiple LLM judges — select "Yes."',
+    choices: [
+      {
+        label: 'No — each item run once',
+        sub: 'Standard single-run eval (the most common setup)',
+        next: 'result_smooth_pair',
+      },
+      {
+        label: 'Yes — multiple runs per item',
+        sub: 'R \u2265 3 runs per item; nested bootstrap accounts for run-to-run variance',
+        next: 'result_nested_smooth',
+      },
+    ],
+  },
+
+  numeric_runs_k: {
+    type: 'question',
+    step: 'Step 3 of 3',
+    question: 'Do you have repeated runs per eval item?',
+    help: 'If each eval item was run once per variant, select "No." If you ran each item multiple times per variant, select "Yes."',
+    choices: [
+      {
+        label: 'No — each item run once',
+        sub: 'Standard single-run eval',
+        next: 'result_smooth_holm',
+      },
+      {
+        label: 'Yes — multiple runs per item',
+        sub: 'R \u2265 3 runs per item; nested bootstrap + Holm correction',
+        next: 'result_nested_holm',
+      },
+    ],
+  },
+
+  // ── RESULT NODES ────────────────────────────────────────────────────────────
+
+  result_wilson: {
+    type: 'result',
+    method: 'Wilson Score Interval',
+    tags: ['Binary', 'Single Sample'],
+    description: 'The Wilson interval is a closed-form confidence interval for proportions. It dramatically outperforms all bootstrap methods at small N (even N = 10–30) and is instantaneous to compute. It is the recommended default whenever your eval scores are strictly 0 / 1.',
+    code:
+`import promptstats as ps
+
+# scores: list or array of 0s and 1s, one per eval item
+report = ps.compare_prompts(
+    {"my_prompt": scores},
+    method="wilson",
+)
+stats = report.entity_stats["my_prompt"]
+print(f"Mean: {stats.mean:.3f}  95% CI: [{stats.ci_low:.3f}, {stats.ci_high:.3f}]")`,
+    why: `<p>For binary proportions, the Wilson interval has near-exact coverage even at N&nbsp;=&nbsp;10&ndash;20, while percentile bootstrap systematically under-covers. Our simulation study confirms Wilson lands exactly on the 0.950 target across all tested N and scenario distributions.</p>
+<p>BCa and smooth bootstrap technically work on binary data but gain nothing over Wilson and are far slower to compute. Save bootstrap methods for numeric scores where they genuinely shine.</p>`,
+    links: [
+      { label: 'Simulation results', href: './index.html#recommendations' },
+      { label: 'Investigation: Model A vs. Model B', href: './investigations/model-vs-model.html' },
+    ],
+  },
+
+  result_bayesian_paired: {
+    type: 'result',
+    method: 'Bayesian Paired Comparison',
+    tags: ['Binary', 'Pairwise A vs. B'],
+    description: 'For binary A-vs-B comparisons, the Bayesian paired method builds the paired 2\u00d72 contingency table (win / lose / tie counts across items) and draws a posterior over the difference in proportions. Simulation results show it achieves the closest coverage to the 0.95 target, especially at small N.',
+    code:
+`import promptstats as ps
+
+# scores_a, scores_b: arrays of 0s and 1s for the same eval items
+report = ps.compare_prompts(
+    {"model_a": scores_a, "model_b": scores_b},
+    method="bayes_binary",
+)
+print(report.quick_summary())
+# e.g. "'model_a' is significantly better than 'model_b'
+#        (\u0394mean=+0.062, 95% CI [0.012, 0.112], p=0.0180)"`,
+    why: `<p>For binary pairwise comparisons, Bayesian paired achieves a simulated coverage of 0.952 &mdash; almost exactly the 0.95 target &mdash; while smooth bootstrap (0.951) is nearly identical and slightly conservative at N&nbsp;\u2265&nbsp;100.</p>
+<p>At N&nbsp;&lt;&nbsp;100, Bayesian paired is the clear choice. At N&nbsp;\u2265&nbsp;100, smooth bootstrap is also reliable and makes no distributional assumptions.</p>
+<p>The independent (non-paired) Bayesian comparison discards the pairing structure and is more conservative, so the paired version is preferred whenever both conditions are evaluated on the same inputs.</p>`,
+    links: [
+      { label: 'Simulation results', href: './index.html#recommendations' },
+      { label: 'Investigation: Model A vs. Model B', href: './investigations/model-vs-model.html' },
+    ],
+  },
+
+  result_smooth_single: {
+    type: 'result',
+    method: 'Smooth Bootstrap (Gaussian KDE)',
+    tags: ['Numeric', 'Single Sample'],
+    description: 'Smooth bootstrap applies kernel density estimation (KDE) before resampling, producing confidence intervals that are better calibrated for bounded and discrete distributions like Likert scales and 0\u2013100 grade scores. It is the recommended default for all non-binary eval scores.',
+    code:
+`import promptstats as ps
+
+# scores: list or array of numeric eval scores (e.g., Likert 1-5, float 0-100)
+report = ps.compare_prompts(
+    {"my_prompt": scores},
+    # method="smooth_bootstrap" is the default; no need to specify
+)
+stats = report.entity_stats["my_prompt"]
+print(f"Mean: {stats.mean:.3f}  95% CI: [{stats.ci_low:.3f}, {stats.ci_high:.3f}]")`,
+    why: `<p>Plain percentile bootstrap resamples from the observed discrete values, which underestimates uncertainty for bounded and ordinal data. Smooth bootstrap adds Gaussian KDE noise before resampling, producing CIs that better reflect the continuous-valued process underlying discrete scores.</p>
+<p>BCa (bias-corrected accelerated) is explicitly <em>not</em> recommended: it has the worst coverage in our simulation (0.902 overall, well below the 0.95 target) despite being a common default in many statistics packages.</p>`,
+    links: [
+      { label: 'Methods landscape', href: './index.html#bootstrap' },
+      { label: 'Simulation results', href: './index.html#recommendations' },
+    ],
+  },
+
+  result_smooth_pair: {
+    type: 'result',
+    method: 'Smooth Bootstrap (Gaussian KDE)',
+    tags: ['Numeric', 'Pairwise A vs. B'],
+    description: 'Smooth bootstrap with Gaussian KDE is the recommended pairwise method for numeric scores. It draws resampled per-item differences between paired scores, producing a confidence interval on the true performance gap. Holm correction is applied by default even for two variants.',
+    code:
+`import promptstats as ps
+
+# scores_a, scores_b: numeric arrays, same length, same eval items
+report = ps.compare_prompts(
+    {"model_a": scores_a, "model_b": scores_b},
+    # Holm correction applied by default
+)
+print(report.quick_summary())
+
+# Access the CI on the pairwise difference:
+pair = report.pairwise.get("model_a", "model_b")
+print(f"\u0394 = {pair.point_diff:+.3f}  95% CI: [{pair.ci_low:.3f}, {pair.ci_high:.3f}]")`,
+    why: `<p>Smooth bootstrap achieves coverage of 0.951 overall in our pairwise simulation &mdash; essentially the 0.95 target &mdash; and outperforms BCa (0.902) by a wide margin.</p>
+<p>Unlike the Wilson/Newcombe closed-form intervals for binary scores, there is no equivalent closed-form solution for continuous or ordinal data. Bootstrap is the right tool, and the KDE smoothing step handles skew and boundary effects that plain percentile bootstrap misses.</p>`,
+    links: [
+      { label: 'Simulation results', href: './index.html#recommendations' },
+      { label: 'Investigation: Model A vs. Model B', href: './investigations/model-vs-model.html' },
+    ],
+  },
+
+  result_nested_smooth: {
+    type: 'result',
+    method: 'Nested Smooth Bootstrap',
+    tags: ['Numeric', 'Pairwise A vs. B', 'Repeated Runs'],
+    description: 'When each eval item is run R \u2265 3 times, a nested two-level bootstrap separates run-to-run stochasticity from genuine performance differences. The outer loop resamples eval items; the inner loop resamples runs within each item. Pass 2-D arrays with shape (items \u00d7 runs).',
+    code:
+`import promptstats as ps
+
+# scores_a, scores_b: 2-D arrays of shape (M items x R runs)
+# e.g., scores_a[i, r] is run r of model A on input i
+report = ps.compare_prompts(
+    {"model_a": scores_a_2d, "model_b": scores_b_2d},
+    # Nested bootstrap activates automatically when R >= 3
+)
+print(report.quick_summary())`,
+    why: `<p>When the same eval item is run multiple times (at temperature&nbsp;&gt;&nbsp;0, or with multiple LLM judges), a single-level bootstrap treats all runs as independent observations and underestimates variance &mdash; producing CIs that are too narrow and overconfident.</p>
+<p>The nested bootstrap first resamples runs within each item (inner level), then resamples items (outer level). This correctly propagates both sources of uncertainty into the final CI. Pass a 2-D array with at least 3 runs per item; <code>promptstats</code> detects the shape and switches to nested mode automatically.</p>`,
+    links: [
+      { label: 'Methods landscape', href: './index.html#bootstrap' },
+      { label: 'Investigation: Checking Response Consistency', href: './investigations/response-consistency.html' },
+    ],
+  },
+
+  result_smooth_holm: {
+    type: 'result',
+    method: 'Smooth Bootstrap + Holm Correction',
+    tags: ['Numeric', 'Multiple Variants (k > 2)'],
+    description: 'When comparing k > 2 variants simultaneously, each pairwise comparison uses smooth bootstrap and the resulting p-values are adjusted with Holm\u2013Bonferroni correction. This controls your family-wise error rate at \u03b1 = 0.05 while preserving more statistical power than plain Bonferroni.',
+    code:
+`import promptstats as ps
+
+# One score array per variant (all same length, same eval items)
+report = ps.compare_prompts({
+    "prompt_a": scores_a,
+    "prompt_b": scores_b,
+    "prompt_c": scores_c,
+    # add as many variants as needed
+})
+print(report.quick_summary())
+
+# See all pairwise Holm-corrected p-values:
+for (a, b), p_vals in report.pairwise_p_values.items():
+    p = p_vals.get("smooth_bootstrap") or p_vals.get("auto")
+    print(f"{a} vs {b}: p = {p:.4g}")`,
+    why: `<p>Running k comparisons at \u03b1&nbsp;=&nbsp;0.05 without correction gives roughly k\u00d70.05 expected false positives. With just 5 prompts and 10 all-pairs comparisons, you\u2019d expect about 0.5 false &ldquo;winners&rdquo; by chance alone &mdash; and with 8 prompts (28 pairs) that rises to about 1.4.</p>
+<p>Holm\u2013Bonferroni controls the family-wise error rate while being uniformly more powerful than plain Bonferroni. It adjusts the significance threshold dynamically for each ranked p-value, so it\u2019s less conservative for the less-significant comparisons.</p>`,
+    links: [
+      { label: 'Simulation results', href: './index.html#recommendations' },
+      { label: 'Investigation: Finding Your Best Prompt', href: './investigations/best-prompt.html' },
+    ],
+  },
+
+  result_nested_holm: {
+    type: 'result',
+    method: 'Nested Smooth Bootstrap + Holm Correction',
+    tags: ['Numeric', 'Multiple Variants (k > 2)', 'Repeated Runs'],
+    description: 'The full pipeline for complex evals: nested bootstrap correctly propagates run-to-run variance into each pairwise CI, and Holm correction controls false positives across all k(k\u22121)/2 pairwise comparisons. Pass 2-D score arrays (items \u00d7 runs) for each variant.',
+    code:
+`import promptstats as ps
+
+# 2-D score arrays (M items x R runs) per variant
+report = ps.compare_prompts({
+    "prompt_a": scores_a_2d,
+    "prompt_b": scores_b_2d,
+    "prompt_c": scores_c_2d,
+    # add as many variants as needed
+})
+# Nested bootstrap and Holm correction both activate automatically
+print(report.quick_summary())`,
+    why: `<p>This combines two independent corrections. The nested bootstrap handles the &ldquo;which variance source matters?&rdquo; question &mdash; separating run variance from item variance. Holm handles the &ldquo;how many tests am I running?&rdquo; problem.</p>
+<p>Both are necessary when you have k&nbsp;&gt;&nbsp;2 variants with repeated runs. Skipping the nested bootstrap understates uncertainty; skipping Holm inflates your false-positive rate.</p>`,
+    links: [
+      { label: 'Methods landscape', href: './index.html#bootstrap' },
+      { label: 'Investigation: Prompt Sensitivity', href: './investigations/prompt-sensitivity.html' },
+    ],
+  },
+};
+
+// ─── STATE ────────────────────────────────────────────────────────────────────
+
+let path = [];  // [{ nodeId, choiceIndex }, ...]
+
+// ─── RENDERER ─────────────────────────────────────────────────────────────────
+
+function resetFlow() {
+  path = [];
+  renderFlow();
+  document.getElementById('flow-reset').classList.add('hidden');
+}
+
+function choose(nodeId, choiceIndex) {
+  const existingIdx = path.findIndex(p => p.nodeId === nodeId);
+  if (existingIdx >= 0) {
+    path = path.slice(0, existingIdx);
+  }
+  path.push({ nodeId, choiceIndex });
+  renderFlow();
+}
+
+function changeAnswer(nodeId) {
+  const idx = path.findIndex(p => p.nodeId === nodeId);
+  path = path.slice(0, idx);
+  renderFlow();
+}
+
+function renderFlow() {
+  const root = document.getElementById('flow-root');
+  root.innerHTML = '';
+
+  let currentId = 'root';
+  let stepNum = 0;
+  let lastEl = null;
+
+  while (currentId) {
+    const node = FLOW[currentId];
+    if (!node) break;
+
+    const pathEntry = path.find(p => p.nodeId === currentId);
+    const isAnswered = pathEntry !== undefined;
+
+    // Connector between steps
+    if (stepNum > 0) {
+      const connector = document.createElement('div');
+      connector.className = 'flow-connector';
+      if (node.type === 'result') {
+        connector.innerHTML = '<span class="flow-connector-label">Recommendation</span>';
+      }
+      root.appendChild(connector);
+    }
+
+    let el;
+    if (node.type === 'question') {
+      el = renderQuestion(currentId, node, isAnswered, pathEntry);
+      root.appendChild(el);
+      if (isAnswered) {
+        currentId = node.choices[pathEntry.choiceIndex].next;
+      } else {
+        currentId = null;
+      }
+    } else if (node.type === 'result') {
+      el = renderResult(node);
+      root.appendChild(el);
+      document.getElementById('flow-reset').classList.remove('hidden');
+      currentId = null;
+    }
+
+    lastEl = el;
+    stepNum++;
+  }
+
+  // Scroll new content into view (skip on first render)
+  if (path.length > 0 && lastEl) {
+    setTimeout(() => {
+      lastEl.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    }, 60);
+  }
+}
+
+function renderQuestion(nodeId, node, isAnswered, pathEntry) {
+  const card = document.createElement('div');
+  card.className = 'q-card' + (isAnswered ? ' answered' : '');
+
+  // Step label
+  const stepEl = document.createElement('div');
+  stepEl.className = 'q-card-step';
+  stepEl.textContent = node.step;
+  card.appendChild(stepEl);
+
+  // Question text
+  const qEl = document.createElement('div');
+  qEl.className = 'q-card-question';
+  qEl.textContent = node.question;
+  card.appendChild(qEl);
+
+  // Help text
+  if (node.help) {
+    const helpEl = document.createElement('div');
+    helpEl.className = 'q-card-help';
+    helpEl.textContent = node.help;
+    card.appendChild(helpEl);
+  }
+
+  // Choice buttons
+  const choicesEl = document.createElement('div');
+  choicesEl.className = 'q-choices';
+  node.choices.forEach((choice, i) => {
+    const btn = document.createElement('button');
+    btn.className = 'q-choice-btn';
+    btn.addEventListener('click', () => choose(nodeId, i));
+
+    const icon = document.createElement('div');
+    icon.className = 'q-choice-icon';
+    btn.appendChild(icon);
+
+    const textWrap = document.createElement('div');
+
+    const label = document.createElement('span');
+    label.className = 'q-choice-label';
+    label.textContent = choice.label;
+    textWrap.appendChild(label);
+
+    if (choice.sub) {
+      const sub = document.createElement('span');
+      sub.className = 'q-choice-sub';
+      sub.textContent = choice.sub;
+      textWrap.appendChild(sub);
+    }
+
+    btn.appendChild(textWrap);
+    choicesEl.appendChild(btn);
+  });
+  card.appendChild(choicesEl);
+
+  // Answer summary row (visible when answered)
+  if (isAnswered) {
+    const summaryEl = document.createElement('div');
+    summaryEl.className = 'q-answer-summary';
+
+    const qLabel = document.createElement('span');
+    qLabel.className = 'q-ans-question';
+    qLabel.textContent = node.question;
+    summaryEl.appendChild(qLabel);
+
+    const chip = document.createElement('span');
+    chip.className = 'q-answer-chip';
+    chip.textContent = '\u2713 ' + node.choices[pathEntry.choiceIndex].label;
+    summaryEl.appendChild(chip);
+
+    const changeBtn = document.createElement('button');
+    changeBtn.className = 'q-change-btn';
+    changeBtn.textContent = 'Change';
+    changeBtn.addEventListener('click', () => changeAnswer(nodeId));
+    summaryEl.appendChild(changeBtn);
+
+    card.appendChild(summaryEl);
+  }
+
+  return card;
+}
+
+function renderResult(node) {
+  const card = document.createElement('div');
+  card.className = 'result-card';
+
+  // Header
+  const header = document.createElement('div');
+  header.className = 'result-header';
+
+  const titleWrap = document.createElement('div');
+  const eyebrow = document.createElement('div');
+  eyebrow.className = 'result-eyebrow';
+  eyebrow.textContent = 'Recommended method';
+  const methodName = document.createElement('div');
+  methodName.className = 'result-method-name';
+  methodName.textContent = node.method;
+  titleWrap.appendChild(eyebrow);
+  titleWrap.appendChild(methodName);
+  header.appendChild(titleWrap);
+
+  const tagsEl = document.createElement('div');
+  tagsEl.className = 'result-tags';
+  node.tags.forEach(t => {
+    const tag = document.createElement('span');
+    tag.className = 'result-tag';
+    tag.textContent = t;
+    tagsEl.appendChild(tag);
+  });
+  header.appendChild(tagsEl);
+  card.appendChild(header);
+
+  // Body
+  const body = document.createElement('div');
+  body.className = 'result-body';
+
+  const desc = document.createElement('p');
+  desc.className = 'result-description';
+  desc.textContent = node.description;
+  body.appendChild(desc);
+
+  // Code block
+  const codeWrap = document.createElement('div');
+  codeWrap.className = 'code-block-wrap';
+  const codeLabel = document.createElement('div');
+  codeLabel.className = 'code-block-label';
+  codeLabel.textContent = 'Python \u00b7 promptstats';
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.textContent = node.code;  // textContent auto-escapes HTML
+  pre.appendChild(code);
+  codeWrap.appendChild(codeLabel);
+  codeWrap.appendChild(pre);
+  body.appendChild(codeWrap);
+
+  // "Why this method?" accordion
+  const whyToggle = document.createElement('button');
+  whyToggle.className = 'result-why-toggle';
+  whyToggle.innerHTML = '<span class="toggle-arrow">&#9658;</span> Why this method?';
+  body.appendChild(whyToggle);
+
+  const whyBody = document.createElement('div');
+  whyBody.className = 'result-why-body';
+  whyBody.innerHTML = node.why;
+  body.appendChild(whyBody);
+
+  whyToggle.addEventListener('click', () => {
+    const open = whyBody.classList.toggle('open');
+    whyToggle.classList.toggle('open', open);
+    whyToggle.setAttribute('aria-expanded', open);
+  });
+  whyToggle.setAttribute('aria-expanded', 'false');
+
+  // Links
+  if (node.links && node.links.length > 0) {
+    const linksEl = document.createElement('div');
+    linksEl.className = 'result-links';
+    node.links.forEach(link => {
+      const a = document.createElement('a');
+      a.href = link.href;
+      a.className = 'result-link';
+      a.textContent = link.label + ' \u2197';
+      linksEl.appendChild(a);
+    });
+    body.appendChild(linksEl);
+  }
+
+  card.appendChild(body);
+  return card;
+}
+
+// ─── INIT ─────────────────────────────────────────────────────────────────────
+
+document.getElementById('reset-btn').addEventListener('click', resetFlow);
+renderFlow();
+</script>
+
+</body>
+</html>

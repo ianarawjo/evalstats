@@ -184,6 +184,7 @@ INVESTIGATIONS = [
 
 BOOK_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>'
 PAPERS_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>'
+DIAMOND_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M7.5 1.5L14 7.5 7.5 13.5 1 7.5z" stroke="currentColor" stroke-width="1" fill="none"/><path d="M7.5 4L11 7.5 7.5 11 4 7.5z"/></svg>'
 
 SLUGS = [inv["slug"] for inv in INVESTIGATIONS]
 
@@ -204,6 +205,10 @@ def make_nav(active_slug):
     lines.append(f'    <a class="inv-nav-guide-link" href="../resources.html">')
     lines.append(f'      {PAPERS_SVG}')
     lines.append(f'      Resources')
+    lines.append(f'    </a>')
+    lines.append(f'    <a class="inv-nav-guide-link" href="../choose.html">')
+    lines.append(f'      {DIAMOND_SVG}')
+    lines.append(f'      Choose a Method')
     lines.append(f'    </a>')
 
     for tier in TIER_ORDER:
@@ -266,6 +271,7 @@ def make_page(inv):
       <li><a href="../index.html#principles">Core Principles</a></li>
       <li><a href="../index.html#simulation">Simulation Study</a></li>
       <li><a href="../index.html#recommendations">Recommendations</a></li>
+      <li><a href="../choose.html">Choose a Method</a></li>
       <li><a href="../index.html#promptstats">promptstats</a></li>
     </ul>
   </div>
