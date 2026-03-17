@@ -746,7 +746,8 @@
         how to design good evals—like iterative <a href="https://hamel.dev/blog/posts/evals-faq/#q-are-similarity-metrics-bertscore-rouge-etc.-useful-for-evaluating-llm-outputs" target="_blank">error analysis</a>
         —let alone how to analyze eval results statistically. But the stakes are high. Evals are increasingly used 
         to make important decisions about which models, prompts, and agents to deploy, and we need to make informed decisions, 
-        not just snap judgments based on eyeballing plots of limited data. We need statistics. But which ones, and how?
+        not just snap judgments based on eyeballing plots of limited data. It's not right that out of 445 benchmarks,
+        <a href="https://arxiv.org/abs/2511.04703" target="_blank">only 16% conducted any statistical tests</a>. We need statistics. But which ones, and how?
       </p>
       <p>
         I'm compiling this guide to share the insights I've gained from months of research into statistical methods 
@@ -824,7 +825,7 @@
 
     <!-- ── SECTION: DEBUNKING ── -->
     <section id="debunking">
-      <h2>Debunking Common Misconceptions</h2>
+      <h2>Statistical Debates in LLM Evals</h2>
       <p class="section-lead">
         Two influential papers have shaped the discourse — one too pessimistic about frequentist methods,
         one too optimistic about sample scale. Both need correction.
@@ -861,8 +862,7 @@
         including settings where certain frequentist intervals achieve higher coverage than Bayesian variants:
       </p>
       <div class="pull-quote">
-        "In general, the Bayesian method had the lowest coverage rate" — even worse than simpler bootstrap
-        methods, even for small N. "Studentized [bootstrapping] is preferable when the goal is to maximize
+        "In general, the Bayesian method had the lowest coverage rate... Studentized [bootstrapping] is preferable when the goal is to maximize
         the coverage rate, while in cases where interval length is more important, the Bayesian method
         should be favored."
       </div>
@@ -876,9 +876,9 @@
         <p>
           The most defensible interpretation is not "Bayesian always" or "frequentist always," but
           <em>method-by-data-type</em>. In our own simulations (see below): Wilson is strongest for binary
-          single-sample coverage, Bayesian paired is strongest for binary pairwise coverage, and
+          single-sample coverage, the authors' Bayesian paired is strongest for binary pairwise coverage, and
           smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
-          By around N=50, methods tend to converge in performance, and by N=100+ they are all pretty good —
+          By around N=50, methods tend to converge in performance, and by N=100+ they're all pretty good —
           so the "don't use the CLT unless you have hundreds of datapoints" rule is too pessimistic on 
           more powerful frequentist methods.
         </p>
@@ -950,11 +950,11 @@
         <div class="method-card highlight">
           <div class="method-card-name">Bayesian Paired Comparison ★</div>
           <div class="method-card-desc">
-            For binary A-vs-B comparisons, we build paired 2×2 counts
+            For binary A-vs-B comparisons, this method builds paired 2×2 counts
             (both correct, A-only, B-only, both wrong), then use a Dirichlet-multinomial style posterior
-            with importance sampling. It reweights samples by
-            likelihood and estimates posterior probabilities/intervals of the score difference.
-            In our updated pairwise results, this is closest to target coverage and performs comparably to smooth bootstrap at N>50.
+            with importance sampling. It reweights samples by likelihood and estimates posterior probabilities 
+            of the score difference. In our pairwise simulation results, this is closest to target coverage 
+            for N&lt;50 and performs comparably to other methods beyond that.
           </div>
         </div>
         <div class="method-card highlight">

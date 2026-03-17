@@ -11,6 +11,23 @@ import pandas as pd
 
 
 # ---------------------------------------------------------------------------
+# Shared method type aliases
+# ---------------------------------------------------------------------------
+CommonStatsMethods = Literal[
+    "bootstrap",
+    "bca",
+    "bayes_bootstrap",
+    "smooth_bootstrap",
+    "auto",
+    "bayes_binary",
+    "wilson",
+    "newcombe",
+]
+CompareMethod = CommonStatsMethods
+AnalyzeMethod = CommonStatsMethods | Literal["lmm"]
+
+
+# ---------------------------------------------------------------------------
 # Private validation helpers shared by both dataclasses
 # ---------------------------------------------------------------------------
 

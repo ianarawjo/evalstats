@@ -151,6 +151,20 @@ def test_newcombe_paired_ci_covers_true_diff():
     assert lo < true_diff < hi, f"95% CI [{lo:.3f}, {hi:.3f}] did not cover true diff {true_diff}"
 
 
+def test_newcombe_paired_ci_raises_for_shape_mismatch():
+    a = np.array([1.0, 0.0, 1.0])
+    b = np.array([1.0, 0.0])
+    with pytest.raises(ValueError, match="equal shape"):
+        newcombe_paired_ci(a, b, alpha=0.05)
+
+
+def test_newcombe_paired_ci_raises_for_non_1d_inputs():
+    a = np.array([[1.0, 0.0], [1.0, 1.0]])
+    b = np.array([[1.0, 0.0], [0.0, 1.0]])
+    with pytest.raises(ValueError, match="1-D"):
+        newcombe_paired_ci(a, b, alpha=0.05)
+
+
 # ---------------------------------------------------------------------------
 # _mcnemar_p
 # ---------------------------------------------------------------------------
@@ -347,6 +361,32 @@ def test_analyze_explicit_bootstrap_method_overrides_binary_detection():
     assert "smooth" in pair.test_method
 
 
+def test_analyze_explicit_newcombe_forces_newcombe_even_when_n_small():
+    rng = np.random.default_rng(123)
+    n_templates = 2
+    m_inputs = 40  # < 100: auto would choose bayes_binary
+    scores = np.zeros((n_templates, m_inputs))
+    for i in range(n_templates):
+        scores[i] = rng.binomial(1, 0.55 + 0.2 * i, m_inputs)
+
+    result_obj = _make_benchmark(scores, ["low", "high"])
+    bundle = analyze(result_obj, method="newcombe", rng=np.random.default_rng(123))
+
+    pair = bundle.pairwise.get("low", "high")
+    assert "newcombe" in pair.test_method
+    assert bundle.point_advantage.n_bootstrap == 0
+
+
+@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+def test_analyze_explicit_wilson_newcombe_raise_on_non_binary(method: str):
+    rng = np.random.default_rng(314)
+    scores = rng.uniform(0.0, 1.0, size=(2, 30))
+    result_obj = _make_benchmark(scores, ["A", "B"])
+
+    with pytest.raises(ValueError, match=r"requires binary \(0/1\) data"):
+        analyze(result_obj, method=method, rng=np.random.default_rng(314))
+
+
 # ---------------------------------------------------------------------------
 # stress/property tests for Wilson/Newcombe correctness
 # ---------------------------------------------------------------------------
@@ -404,6 +444,35 @@ def test_newcombe_matches_count_formula_exhaustive_small_n():
                 t_lo, t_hi = wilson_ci(n10, m, alpha)
                 expected_lo = (m / n) * (2.0 * t_lo - 1.0)
                 expected_hi = (m / n) * (2.0 * t_hi - 1.0)
+                np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
+                np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
+
+
+def test_newcombe_matches_scipy_wilson_baseline_exhaustive_small_n():
+    # Baseline: use SciPy's Wilson CI for theta on discordant pairs,
+    # then transform to paired-difference scale per Newcombe 1998.
+    alpha = 0.05
+    for n in range(1, 16):
+        for n10 in range(n + 1):
+            for n01 in range(n + 1 - n10):
+                m = n10 + n01
+                concordant = n - m
+                n11 = concordant // 2
+                n00 = concordant - n11
+
+                a, b = _make_pairs_from_counts(n10, n01, n11, n00)
+                lo, hi = newcombe_paired_ci(a, b, alpha=alpha)
+
+                if m == 0:
+                    assert (lo, hi) == (0.0, 0.0)
+                    continue
+
+                ref = stats.binomtest(n10, m).proportion_ci(
+                    confidence_level=1.0 - alpha,
+                    method="wilson",
+                )
+                expected_lo = (m / n) * (2.0 * ref.low - 1.0)
+                expected_hi = (m / n) * (2.0 * ref.high - 1.0)
                 np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
                 np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
 

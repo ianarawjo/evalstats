@@ -19,6 +19,7 @@ from typing import Literal, Optional
 import numpy as np
 
 from .core.types import BenchmarkResult, MultiModelBenchmark
+from .core.types import CompareMethod
 from .core.router import analyze, AnalysisBundle, MultiModelBundle
 from .core.summary import print_analysis_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
@@ -269,7 +270,7 @@ def compare_prompts(
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"] = "auto",
+    method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
     rng: Optional[np.random.Generator] = None,
@@ -304,7 +305,8 @@ def compare_prompts(
     method : str
         Bootstrap variant: ``'auto'`` (default, selects ``'smooth_bootstrap'``),
         ``'bootstrap'`` (percentile), ``'bca'``, ``'bayes_bootstrap'``,
-        or ``'smooth_bootstrap'``.
+        ``'smooth_bootstrap'``, ``'bayes_binary'``, ``'wilson'``,
+        or ``'newcombe'``.
     statistic : str
         Central-tendency statistic: ``'mean'`` (default) or ``'median'``.
     ci : float
@@ -511,7 +513,7 @@ def compare_models(
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"] = "auto",
+    method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",

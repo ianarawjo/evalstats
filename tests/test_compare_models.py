@@ -70,6 +70,35 @@ def test_compare_models_template_labels_length_check():
         )
 
 
+@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+def test_compare_models_accepts_explicit_binary_methods(method: str):
+    report = ps.compare_models(
+        {
+            "m1": np.array([1, 0, 1, 1, 0, 1, 0, 1], dtype=float),
+            "m2": np.array([0, 0, 1, 0, 0, 1, 0, 0], dtype=float),
+            "m3": np.array([1, 1, 1, 1, 0, 1, 1, 1], dtype=float),
+        },
+        method=method,
+        n_bootstrap=300,
+        rng=_rng(31),
+    )
+    pair = report.pairwise.get("m1", "m2")
+    assert "newcombe" in pair.test_method
+
+
+@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+def test_compare_models_explicit_binary_methods_reject_non_binary(method: str):
+    with pytest.raises(ValueError, match=r"requires binary \(0/1\) data"):
+        ps.compare_models(
+            {
+                "m1": np.array([0.1, 0.4, 0.8, 0.6, 0.2], dtype=float),
+                "m2": np.array([0.2, 0.5, 0.7, 0.4, 0.3], dtype=float),
+            },
+            method=method,
+            rng=_rng(32),
+        )
+
+
 def test_compare_models_returns_report_and_fields():
     report = ps.compare_models(
         {

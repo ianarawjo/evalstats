@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import warnings
-from typing import Literal
+from typing import Literal, Optional
 
 import numpy as np
 from scipy import stats
@@ -215,7 +215,19 @@ def newcombe_paired_ci(
     -------
     (ci_low, ci_high) : tuple[float, float]
         CI on p(A=1) − p(B=1).
+
+    Raises
+    ------
+    ValueError
+        If inputs are not 1-D arrays of equal length.
     """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+    if values_a.ndim != 1 or values_b.ndim != 1:
+        raise ValueError("newcombe_paired_ci expects 1-D input arrays.")
+    if values_a.shape != values_b.shape:
+        raise ValueError("newcombe_paired_ci expects arrays with equal shape.")
+
     n = len(values_a)
     if n <= 0:
         return (0.0, 0.0)

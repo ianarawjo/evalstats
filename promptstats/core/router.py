@@ -20,7 +20,7 @@ from typing import Dict, Literal, Optional, Union
 import numpy as np
 import pandas as pd
 
-from .types import BenchmarkResult, MultiModelBenchmark
+from .types import BenchmarkResult, MultiModelBenchmark, AnalyzeMethod, CompareMethod
 from .bundles import (
     BenchmarkShape,
     AnalysisBundle,
@@ -44,7 +44,7 @@ def analyze(
     token_usage: Optional[TokenUsage] = None,
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm", "bayes_binary"] = "auto",
+    method: AnalyzeMethod = "auto",
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
@@ -108,6 +108,13 @@ def analyze(
           is populated with variance components and the ICC.
           Not compatible with ``statistic='median'``.
           The backend is controlled by the ``backend`` parameter.
+        * ``'wilson'`` — Binary-only frequentist mode. Uses Wilson score
+            intervals for point-advantage CIs and Newcombe score intervals
+            (+ exact McNemar p-values) for pairwise comparisons.
+        * ``'newcombe'`` — Binary-only frequentist mode. Alias of
+            ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
+            Newcombe score intervals (+ exact McNemar p-values), while
+            point-advantage CIs use Wilson score intervals.
     backend : str
         LMM fitting backend (only used when ``method='lmm'``):
         ``'statsmodels'`` (default, pure Python, no R required) or
@@ -181,7 +188,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -610,7 +617,7 @@ def _analyze_single(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "lmm", "bayes_binary"],
+    method: AnalyzeMethod,
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
@@ -724,6 +731,19 @@ def _analyze_single(
         # Single-sample advantage CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         advantage_method = "wilson"
+    elif method in {"wilson", "newcombe"}:
+        from .resampling import is_binary_scores
+        if not is_binary_scores(run_scores):
+            raise ValueError(
+                f"method='{method}' requires binary (0/1) data, but the "
+                "scores array contains non-binary values. Use is_binary_scores() "
+                "to check before calling, or choose a different method."
+            )
+        # In analyze(), both explicit frequentist binary methods route to:
+        #   - pairwise Newcombe + exact McNemar p-values
+        #   - point-advantage Wilson score CIs
+        pairwise_method = "newcombe"
+        advantage_method = "wilson"
 
     pairwise = all_pairwise(
         run_scores, labels,
@@ -766,7 +786,7 @@ def _analyze_multi_model(
     shape: BenchmarkShape,
     *,
     reference: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary"],
+    method: CompareMethod,
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,

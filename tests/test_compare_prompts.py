@@ -62,6 +62,34 @@ def test_compare_prompts_wrong_ndim():
         )
 
 
+@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+def test_compare_prompts_accepts_explicit_binary_methods(method: str):
+    report = ps.compare_prompts(
+        {
+            "a": [1, 0, 1, 1, 0, 1, 0, 1],
+            "b": [0, 0, 1, 0, 0, 1, 0, 0],
+        },
+        method=method,
+        n_bootstrap=300,
+        rng=_rng(101),
+    )
+    pair = report.pairwise.get("a", "b")
+    assert "newcombe" in pair.test_method
+
+
+@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+def test_compare_prompts_explicit_binary_methods_reject_non_binary(method: str):
+    with pytest.raises(ValueError, match=r"requires binary \(0/1\) data"):
+        ps.compare_prompts(
+            {
+                "a": [0.1, 0.4, 0.8, 0.6, 0.2],
+                "b": [0.2, 0.5, 0.7, 0.4, 0.3],
+            },
+            method=method,
+            rng=_rng(102),
+        )
+
+
 def test_friedman_nemenyi_all_ties_returns_stable_values():
     scores = np.array(
         [
