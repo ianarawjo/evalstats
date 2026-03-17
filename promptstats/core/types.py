@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass, field
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -24,7 +24,7 @@ CommonStatsMethods = Literal[
     "newcombe",
 ]
 CompareMethod = CommonStatsMethods
-AnalyzeMethod = CommonStatsMethods | Literal["lmm"]
+AnalyzeMethod = Union[CommonStatsMethods, Literal["lmm"]]
 
 
 # ---------------------------------------------------------------------------
