@@ -8,6 +8,7 @@
 *.ipynb_checkpoints/
 *.venv/
 *.pkgtest-venv/
+*.pkgtest-venv39/
 *.vscode/
 *.deepeval/
 dist/
