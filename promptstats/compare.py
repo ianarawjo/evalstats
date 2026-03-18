@@ -21,7 +21,7 @@ import numpy as np
 from .core.types import BenchmarkResult, MultiModelBenchmark
 from .core.types import CompareMethod
 from .core.router import analyze, AnalysisBundle, MultiModelBundle
-from .core.summary import print_analysis_summary
+from .core.summary import print_analysis_summary, print_compare_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
 from .core.resampling import bayes_bootstrap_means_1d, smooth_bootstrap_means_1d, bootstrap_means_1d, bca_interval_1d, resolve_resampling_method, bayes_binary_ci_1d, wilson_ci_1d
 
@@ -43,13 +43,42 @@ class EntityStats:
 
 @dataclass
 class CompareReport:
-    """Unified comparison report for prompts or models."""
+    """Unified comparison report for prompts or models.
+
+    Attributes
+    ----------
+    labels : list[str]
+        Names of the compared entities in input order.
+    entity_stats : dict[str, EntityStats]
+        Per-entity descriptive statistics and bootstrapped absolute CIs.
+        These CIs are single-sample (marginal) intervals, not pairwise
+        difference intervals — use ``pairwise`` for the latter.
+    top_tier : list[str] or None
+        Labels of entities in the top significance tier (no other entity
+        significantly beats them). ``None`` when no significant differences
+        were found.
+    pairwise : PairwiseMatrix
+        All pairwise statistical comparison results, including effect sizes,
+        CIs, and corrected p-values. Access via ``pairwise.get(a, b)``.
+    full_analysis : AnalysisBundle or MultiModelBundle
+        The full internal analysis object. Use ``full_summary()`` to print
+        the complete analysis, or access fields directly for advanced use.
+    alpha : float
+        Significance threshold used to determine ``top_tier``.
+    statistic : str
+        Central-tendency statistic used (``'mean'`` or ``'median'``).
+    method : str
+        Resolved bootstrap/test method used.
+    correction : str
+        Multiple-comparisons correction applied to p-values.
+    entity_name_singular / entity_name_plural : str
+        Human-readable entity type labels (``'prompt'``/``'prompts'`` or
+        ``'model'``/``'models'``).
+    """
 
     labels: list[str]
     entity_stats: dict[str, EntityStats]
-    pairwise_p_values: dict[tuple[str, str], dict[str, Optional[float]]]
-    winners: Optional[list[str]]
-    p_best: float
+    top_tier: Optional[list[str]]
     pairwise: PairwiseMatrix
     full_analysis: AnalysisBundle | MultiModelBundle
     alpha: float = 0.05
@@ -73,68 +102,98 @@ class CompareReport:
 
     @property
     def significant(self) -> bool:
-        return self.winners is not None
+        """True when at least one significant pairwise difference was found."""
+        return self.top_tier is not None
 
     @property
     def winner(self) -> Optional[str]:
-        if self.winners is None or len(self.winners) != 1:
-            return None
-        return self.winners[0]
+        """The sole top-tier entity, or None when the top tier has multiple members or is empty."""
+        if self.top_tier and len(self.top_tier) == 1:
+            return self.top_tier[0]
+        return None
 
     def quick_summary(self) -> str:
+        """One-line summary suitable for logging or a paper methods section.
+
+        Always includes the best entity's absolute mean and 95% CI so the
+        number can be cited directly.
+        """
         best_label = self._best_label()
-        pair = self._best_pair()
-        diff = pair.point_diff
-        ci_lo, ci_hi = pair.ci_low, pair.ci_high
-        p = pair.p_value
-        n = len(self.labels)
+        best_stats = self.entity_stats[best_label]
         stat_name = self.statistic
-        best_stat = getattr(self.entity_stats[best_label], stat_name)
+        best_stat = getattr(best_stats, stat_name)
         delta_name = f"Δ{stat_name}"
         correction_text = "uncorrected" if self.correction == "none" else f"{self.correction}-corrected"
         method_text = self.method
+        n = len(self.labels)
 
         if n == 2:
             other = [label for label in self.labels if label != best_label][0]
-            if self.winners is not None:
+            pair = self._best_pair()
+            diff, ci_lo, ci_hi, p = pair.point_diff, pair.ci_low, pair.ci_high, pair.p_value
+            abs_str = f"{stat_name}={best_stat:.3f}, 95% CI [{best_stats.ci_low:.3f}, {best_stats.ci_high:.3f}]"
+            diff_str = f"{delta_name}={diff:+.3f}, CI [{ci_lo:.3f}, {ci_hi:.3f}], p={p:.4g}"
+            if self.top_tier is not None:
                 return (
                     f"'{best_label}' is significantly better than '{other}' "
-                    f"({delta_name}={diff:+.3f}, 95% CI [{ci_lo:.3f}, {ci_hi:.3f}], "
-                    f"p={p:.4g}, {correction_text}, {method_text})"
+                    f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
                 )
             return (
                 f"No significant difference between '{best_label}' and '{other}' "
-                f"({delta_name}={diff:+.3f}, 95% CI [{ci_lo:.3f}, {ci_hi:.3f}], "
-                f"p={p:.4g}, {correction_text}, {method_text})"
+                f"({diff_str}, {correction_text}, {method_text}; "
+                f"'{best_label}' {abs_str})"
             )
 
-        if self.winners is not None:
-            if len(self.winners) == 1:
-                winner_text = f"winner: '{self.winners[0]}'"
-            else:
-                winner_text = "winners: " + ", ".join(f"'{winner}'" for winner in self.winners)
-            return f"Top {self.entity_name_singular} set ({winner_text}, {method_text})"
+        # n > 2
+        abs_str = f"{stat_name}={best_stat:.3f}, 95% CI [{best_stats.ci_low:.3f}, {best_stats.ci_high:.3f}]"
+        if self.top_tier is not None:
+            # Show comparison vs. runner-up (2nd-highest by mean).
+            sorted_labels = sorted(
+                self.labels,
+                key=lambda l: getattr(self.entity_stats[l], stat_name),
+                reverse=True,
+            )
+            runner_up = sorted_labels[1]
+            pair = self.pairwise.get(best_label, runner_up)
+            diff_str = (
+                f"{delta_name} vs '{runner_up}'={pair.point_diff:+.3f}, "
+                f"CI [{pair.ci_low:.3f}, {pair.ci_high:.3f}], p={pair.p_value:.4g}"
+            )
+            if len(self.top_tier) == 1:
+                return (
+                    f"'{best_label}' is best {self.entity_name_singular} "
+                    f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
+                )
+            tier_str = ", ".join(f"'{w}'" for w in self.top_tier)
+            return (
+                f"Top {self.entity_name_singular} tier ({tier_str}); '{best_label}' leads "
+                f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
+            )
 
+        min_p = self._best_pair().p_value
         return (
-            f"All {self.entity_name_plural} are tied under pairwise tests; '{best_label}' leads "
-            f"numerically ({stat_name}={best_stat:.3f}) (min p={p:.4g}, {correction_text}, {method_text})"
+            f"No significant differences between {self.entity_name_plural}; '{best_label}' leads "
+            f"({abs_str}; min p={min_p:.4g}, {correction_text}, {method_text})"
         )
 
     def summary(self) -> None:
+        """Print a focused summary scoped to the entity comparison level.
+
+        Shows pairwise comparisons and the executive leaderboard only.
+        For the full internal analysis use ``full_summary()`` instead.
+        """
+        print_compare_summary(self)
+
+    def full_summary(self) -> None:
+        """Print the complete internal analysis (full AnalysisBundle / MultiModelBundle output)."""
         print_analysis_summary(self.full_analysis)
 
     def print(self) -> None:
+        """Alias for ``summary()``."""
         self.summary()
 
     def _best_label(self) -> str:
         return max(self.labels, key=lambda label: getattr(self.entity_stats[label], self.statistic))
-
-    def get_pairwise_p_values(self, a: str, b: str) -> dict[str, Optional[float]]:
-        if (a, b) in self.pairwise_p_values:
-            return self.pairwise_p_values[(a, b)]
-        if (b, a) in self.pairwise_p_values:
-            return self.pairwise_p_values[(b, a)]
-        raise KeyError(f"No pairwise p-values found for ({a}, {b}).")
 
     def _best_pair(self) -> PairedDiffResult:
         best = self._best_label()
@@ -145,17 +204,17 @@ class CompareReport:
         )
 
 
-def _compute_winners(
+def _compute_top_tier(
     labels: list[str],
     pairwise: PairwiseMatrix,
     alpha: float,
 ) -> Optional[list[str]]:
-    """Compute top-tier winners from directed significant-better relations.
+    """Compute the top significance tier from directed significant-better relations.
 
     A directed edge i→j exists when i is significantly better than j
     (correction-adjusted p < alpha and positive point difference).
-    Winners are labels with zero incoming edges. If there are no edges,
-    all prompts are tied and ``None`` is returned.
+    The top tier consists of labels with zero incoming edges (nothing beats them).
+    Returns ``None`` when no significant edges exist (all tied).
     """
     incoming = {label: 0 for label in labels}
     edge_count = 0
@@ -174,8 +233,8 @@ def _compute_winners(
     if edge_count == 0:
         return None
 
-    winners = [label for label in labels if incoming[label] == 0]
-    return winners if winners else None
+    top_tier = [label for label in labels if incoming[label] == 0]
+    return top_tier if top_tier else None
 
 
 def _normalize_compare_models_scores(
@@ -438,18 +497,6 @@ def compare_prompts(
 
     rob = full_analysis.robustness  # RobustnessResult indexed parallel to labels
 
-    pairwise_p_values: dict[tuple[str, str], dict[str, Optional[float]]] = {
-        (a, b): {
-            "p_boot": float(result.p_value),
-            "p_wilcoxon": (
-                float(result.wilcoxon_p)
-                if result.wilcoxon_p is not None
-                else None
-            ),
-        }
-        for (a, b), result in full_analysis.pairwise.results.items()
-    }
-
     entity_stats: dict[str, EntityStats] = {}
     for i, label in enumerate(labels):
         row = scores_2d[i]  # (M,) cell means
@@ -481,21 +528,12 @@ def compare_prompts(
             ci_high=ci_high,
         )
 
-    # ------------------------------------------------------------------
-    # Winners: top tier under pairwise significance.
-    # ------------------------------------------------------------------
-    best_label = max(labels, key=lambda l: getattr(entity_stats[l], statistic))
-    other_labels = [l for l in labels if l != best_label]
-    best_pairs = [full_analysis.pairwise.get(best_label, other) for other in other_labels]
-    p_best = float(min(r.p_value for r in best_pairs))
-    winners = _compute_winners(labels, full_analysis.pairwise, alpha)
+    top_tier = _compute_top_tier(labels, full_analysis.pairwise, alpha)
 
     return CompareReport(
         labels=labels,
         entity_stats=entity_stats,
-        pairwise_p_values=pairwise_p_values,
-        winners=winners,
-        p_best=p_best,
+        top_tier=top_tier,
         pairwise=full_analysis.pairwise,
         full_analysis=full_analysis,
         alpha=alpha,
@@ -650,18 +688,6 @@ def compare_models(
         resolved_method = "wilson"
     rob = model_analysis.robustness
 
-    pairwise_p_values: dict[tuple[str, str], dict[str, Optional[float]]] = {
-        (a, b): {
-            "p_boot": float(result.p_value),
-            "p_wilcoxon": (
-                float(result.wilcoxon_p)
-                if result.wilcoxon_p is not None
-                else None
-            ),
-        }
-        for (a, b), result in model_analysis.pairwise.results.items()
-    }
-
     entity_stats: dict[str, EntityStats] = {}
     for i, label in enumerate(labels):
         row = scores_2d[i]
@@ -693,18 +719,12 @@ def compare_models(
             ci_high=ci_high,
         )
 
-    best_label = max(labels, key=lambda l: getattr(entity_stats[l], statistic))
-    other_labels = [l for l in labels if l != best_label]
-    best_pairs = [model_analysis.pairwise.get(best_label, other) for other in other_labels]
-    p_best = float(min(r.p_value for r in best_pairs))
-    winners = _compute_winners(labels, model_analysis.pairwise, alpha)
+    top_tier = _compute_top_tier(labels, model_analysis.pairwise, alpha)
 
     return CompareReport(
         labels=labels,
         entity_stats=entity_stats,
-        pairwise_p_values=pairwise_p_values,
-        winners=winners,
-        p_best=p_best,
+        top_tier=top_tier,
         pairwise=model_analysis.pairwise,
         full_analysis=full_analysis,
         alpha=alpha,

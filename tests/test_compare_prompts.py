@@ -204,11 +204,7 @@ def test_report_has_expected_attributes():
     assert set(report.labels) == {"a", "b"}
     assert set(report.means.keys()) == {"a", "b"}
     assert set(report.prompt_stats.keys()) == {"a", "b"}
-    assert set(report.pairwise_p_values.keys()) == {("a", "b")}
-    assert set(report.pairwise_p_values[("a", "b")].keys()) == {"p_boot", "p_wilcoxon"}
-    assert isinstance(report.p_best, float)
-    assert 0.0 <= report.p_best <= 1.0
-    assert report.winners in (None, ["a"], ["b"])
+    assert report.top_tier in (None, ["a"], ["b"])
     assert isinstance(report.significant, bool)
     assert isinstance(report.quick_summary(), str) and len(report.quick_summary()) > 0
     assert isinstance(report.full_analysis, ps.AnalysisBundle)
@@ -259,30 +255,31 @@ def test_prompt_stats_ci_ordering():
 
 
 def test_pairwise_p_values_populated_for_two_way():
-    """2-way comparison: pairwise p-values should be populated in tuple-keyed dict."""
+    """2-way comparison: pairwise p-values should be accessible via PairwiseMatrix."""
     report = ps.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.6, 0.5, 0.65, 0.55] * 5},
         n_bootstrap=500,
         rng=_rng(),
     )
-    pair = report.pairwise_p_values[("a", "b")]
-    assert pair["p_boot"] is not None
-    assert 0.0 <= pair["p_boot"] <= 1.0
+    p = report.pairwise.get("a", "b").p_value
+    assert p is not None
+    assert 0.0 <= p <= 1.0
 
 
 def test_pairwise_p_values_match_pairwise_matrix():
-    """pairwise_p_values p_boot should equal PairwiseMatrix p_value."""
+    """pairwise p-value should be accessible via PairwiseMatrix both directions."""
     report = ps.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.6, 0.5, 0.65, 0.55] * 5},
         n_bootstrap=500,
         rng=_rng(),
     )
-    pair_p = report.pairwise.get("a", "b").p_value
-    assert report.pairwise_p_values[("a", "b")]["p_boot"] == pytest.approx(pair_p, abs=1e-12)
+    ab = report.pairwise.get("a", "b")
+    ba = report.pairwise.get("b", "a")
+    assert ab.p_value == pytest.approx(ba.p_value, abs=1e-12)
 
 
 def test_pairwise_p_values_present_for_all_nway_pairs():
-    """N-way comparison: pairwise_p_values should contain all pair tuples."""
+    """N-way comparison: pairwise results should be present for all pairs."""
     report = ps.compare_prompts(
         {
             "a": [0.8, 0.9, 0.7] * 5,
@@ -292,7 +289,7 @@ def test_pairwise_p_values_present_for_all_nway_pairs():
         n_bootstrap=500,
         rng=_rng(),
     )
-    assert set(report.pairwise_p_values.keys()) == {("a", "b"), ("a", "c"), ("b", "c")}
+    assert len(report.pairwise.results) == 3
 
 
 def test_get_pairwise_p_values_works_both_directions():
@@ -301,13 +298,9 @@ def test_get_pairwise_p_values_works_both_directions():
         n_bootstrap=500,
         rng=_rng(),
     )
-    ab = report.get_pairwise_p_values("a", "b")
-    ba = report.get_pairwise_p_values("b", "a")
-    assert ab["p_boot"] == pytest.approx(ba["p_boot"], abs=1e-12)
-    if ab["p_wilcoxon"] is None:
-        assert ba["p_wilcoxon"] is None
-    else:
-        assert ab["p_wilcoxon"] == pytest.approx(ba["p_wilcoxon"], abs=1e-12)
+    ab = report.pairwise.get("a", "b")
+    ba = report.pairwise.get("b", "a")
+    assert ab.p_value == pytest.approx(ba.p_value, abs=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -325,25 +318,25 @@ def test_significant_difference_detected():
         n_bootstrap=2_000,
         rng=_rng(7),
     )
-    assert report.winners == ["b"]
+    assert report.top_tier == ["b"]
     assert report.significant is True
-    assert report.p_best < 0.05
+    assert report.pairwise.get("a", "b").p_value < 0.05
 
 
 def test_no_significant_difference_detected():
-    """Identical scores should yield no winners (all tied)."""
+    """Identical scores should yield no top_tier (all tied)."""
     scores = [0.8, 0.7, 0.9, 0.6, 0.8]
     report = ps.compare_prompts(
         {"a": scores, "b": scores},
         n_bootstrap=500,
         rng=_rng(),
     )
-    assert report.winners is None
+    assert report.top_tier is None
     assert report.significant is False
 
 
 def test_alpha_controls_winner_threshold():
-    """With a very strict alpha the same data should not produce a winner."""
+    """With a very strict alpha the same data should not produce a top tier."""
     rng = _rng(42)
     a = rng.normal(0.5, 0.1, 50)
     b = rng.normal(0.55, 0.1, 50)  # small difference
@@ -354,7 +347,8 @@ def test_alpha_controls_winner_threshold():
         n_bootstrap=1_000,
         rng=_rng(1),
     )
-    assert report_strict.p_best > report_strict.alpha or report_strict.winners is None
+    p = report_strict.pairwise.get("a", "b").p_value
+    assert p > report_strict.alpha or report_strict.top_tier is None
 
 
 # ---------------------------------------------------------------------------
@@ -376,7 +370,7 @@ def test_three_way_comparison_returns_report():
 
 
 def test_three_way_single_winner_has_highest_mean():
-    """When a single winner is declared it must be the highest-mean prompt."""
+    """When a single top-tier is declared it must be the highest-mean prompt."""
     rng = _rng(99)
     a = rng.normal(0.5, 0.05, 200)
     b = rng.normal(0.6, 0.05, 200)
@@ -387,8 +381,8 @@ def test_three_way_single_winner_has_highest_mean():
         n_bootstrap=2_000,
         rng=_rng(3),
     )
-    if report.winners is not None and len(report.winners) == 1:
-        assert report.winners[0] == max(report.means, key=report.means.get)
+    if report.top_tier is not None and len(report.top_tier) == 1:
+        assert report.top_tier[0] == max(report.means, key=report.means.get)
 
 
 def test_winners_can_include_multiple_top_prompts():
@@ -404,8 +398,8 @@ def test_winners_can_include_multiple_top_prompts():
         rng=_rng(8),
     )
 
-    assert report.winners is not None
-    assert set(report.winners) == {"a", "b"}
+    assert report.top_tier is not None
+    assert set(report.top_tier) == {"a", "b"}
 
 
 # ---------------------------------------------------------------------------
@@ -435,7 +429,7 @@ def test_multirun_nested_bootstrap_activates():
         rng=_rng(6),
     )
     assert report.full_analysis.benchmark.n_runs == 3
-    assert isinstance(report.p_best, float)
+    assert isinstance(report.pairwise.get("a", "b").p_value, float)
 
 
 def test_multirun_mean_matches_flattened():
@@ -480,8 +474,8 @@ def test_summary_mentions_selected_statistic_and_correction():
     assert "bonferroni-corrected" in report.quick_summary()
 
 
-def test_summary_delegates_to_analysis_summary(capsys):
-    """summary() should call print_analysis_summary and produce its standard output."""
+def test_summary_delegates_to_compare_summary(capsys):
+    """summary() should call print_compare_summary and produce focused output."""
     report = ps.compare_prompts(
         {"baseline": [0.8, 0.7, 0.9, 0.85] * 5, "new": [0.82, 0.75, 0.91, 0.87] * 5},
         n_bootstrap=200,
@@ -489,9 +483,9 @@ def test_summary_delegates_to_analysis_summary(capsys):
     )
     report.summary()
     captured = capsys.readouterr()
-    # print_analysis_summary always emits these sections
-    assert "Robustness" in captured.out
-    assert "Rank Probabilities" in captured.out
+    # print_compare_summary emits pairwise and executive summary sections
+    assert "Pairwise Comparisons" in captured.out
+    assert "Executive Summary" in captured.out
 
 
 def test_print_is_alias_for_summary(capsys):
@@ -502,8 +496,8 @@ def test_print_is_alias_for_summary(capsys):
     )
     report.print()
     captured = capsys.readouterr()
-    assert "Robustness" in captured.out
-    assert "Rank Probabilities" in captured.out
+    assert "Pairwise Comparisons" in captured.out
+    assert "Executive Summary" in captured.out
 
 
 # ---------------------------------------------------------------------------

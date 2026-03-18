@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 import sys
-from typing import Literal, Mapping, Optional, Union
+from typing import TYPE_CHECKING, Literal, Mapping, Optional, Union
 
 import numpy as np
 
@@ -16,6 +16,9 @@ from .bundles import AnalysisBundle, MultiModelBundle
 from .paired import PairwiseMatrix
 from .variance import SeedVarianceResult
 from .tokens import TokenAnalysisResult
+
+if TYPE_CHECKING:
+    from ..compare import CompareReport
 
 
 # ---------------------------------------------------------------------------
@@ -99,6 +102,46 @@ def print_analysis_summary(
                 line_width=line_width,
             )
         print()
+
+
+def print_compare_summary(
+    report: "CompareReport",
+    *,
+    top_pairwise: int = 5,
+    line_width: int = 41,
+) -> None:
+    """Print a focused summary for compare_prompts / compare_models results.
+
+    Shows only the pairwise comparisons and the executive leaderboard —
+    scoped to the entity level (prompts or models) that was compared.
+    For the full internal analysis use ``report.full_summary()`` instead.
+    """
+    n = len(report.labels)
+    # Get the AnalysisBundle appropriate to the entity-level comparison.
+    if isinstance(report.full_analysis, MultiModelBundle):
+        bundle = report.full_analysis.model_level
+    else:
+        bundle = report.full_analysis  # type: ignore[assignment]
+
+    n_inputs = bundle.benchmark.n_inputs
+    ci_pct = int(round((1 - report.alpha) * 100))
+
+    _print_loud_section(f"{report.entity_name_plural.capitalize()} Comparison")
+    print(
+        f"{n} {report.entity_name_plural} | "
+        f"{n_inputs} inputs | "
+        f"method={report.method} | "
+        f"correction={report.correction} | "
+        f"CI={ci_pct}%"
+    )
+    print()
+
+    _print_pairwise_section(
+        bundle,
+        top_pairwise=top_pairwise,
+        line_width=line_width,
+    )
+    _print_executive_summary(bundle, item_singular=report.entity_name_singular)
 
 
 # ---------------------------------------------------------------------------
@@ -509,15 +552,17 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
 # Single-model bundle summary
 # ---------------------------------------------------------------------------
 
-def _print_bundle_summary(
+def _print_pairwise_section(
     bundle: AnalysisBundle,
     *,
     top_pairwise: int,
     line_width: int,
-    item_singular: str = "template",
-    item_plural: str = "templates",
 ) -> None:
-    template_col_width = 24
+    """Print the pairwise comparisons block for an AnalysisBundle.
+
+    Extracted so it can be reused by both the full bundle summary and the
+    focused CompareReport summary without duplicating code.
+    """
     pair_col_width = 32
     pair_stat_col_width = 8
     pair_ci_col_width = 9
@@ -525,100 +570,6 @@ def _print_bundle_summary(
     pair_p_boot_col_width = 10
     pair_p_wsr_col_width = 9
     pair_p_nem_col_width = 9
-
-    print(f"Shape: {bundle.shape}")
-    n_runs = bundle.benchmark.n_runs
-    item_singular_title = item_singular.capitalize()
-    item_plural_title = item_plural.capitalize()
-    print(
-        f"{item_plural_title}: {bundle.benchmark.n_templates} | "
-        f"Inputs: {bundle.benchmark.n_inputs}"
-        + (f" | Runs: {n_runs}" if n_runs > 1 else "")
-    )
-    print()
-
-    _print_subsection("--- Robustness ---")
-    print(bundle.robustness.summary_table().to_string())
-    print()
-
-    _print_subsection("--- Rank Probabilities ---")
-    max_rank_label_len = max((len(label) for label in bundle.rank_dist.labels), default=0)
-    rank_label_col_width = min(40, max(len(item_singular_title) + 1, max_rank_label_len + 2))
-    rank_bar_width = 14
-    n_ranked_items = len(bundle.rank_dist.labels)
-    print(
-        f"  {item_singular_title:<{rank_label_col_width}s} "
-        f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
-        f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
-    )
-    for i, label in enumerate(bundle.rank_dist.labels):
-        rank_label = _truncate_label(label, rank_label_col_width)
-        p_best = float(bundle.rank_dist.p_best[i])
-        expected_rank = float(bundle.rank_dist.expected_ranks[i])
-        p_color = _p_best_color(p_best)
-        p_reset = _RESET if p_color else ""
-        p_str = f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)}"
-        print(
-            f"  {rank_label:<{rank_label_col_width}s} "
-            f"{p_color}{p_str}{p_reset} "
-            f"{expected_rank:>8.2f} {_rank_hump_lane(expected_rank, n_ranked_items, width=rank_bar_width)}"
-        )
-    print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
-    print()
-
-    stat_label = bundle.point_advantage.statistic.capitalize()
-    is_wilson_adv = bundle.point_advantage.n_bootstrap == 0
-    _adv_ci_note = "Wilson CIs" if is_wilson_adv else "Bootstrap CIs"
-    _print_subsection(f"--- {stat_label} Advantage (reference={bundle.point_advantage.reference}, {_adv_ci_note}) ---")
-    low_p, high_p = bundle.point_advantage.spread_percentiles
-    ma = bundle.point_advantage
-    ma_max_abs = max(
-        1e-12,
-        float(
-            np.max(
-                np.abs(
-                    np.concatenate(
-                        [
-                            ma.point_advantages,
-                            ma.bootstrap_ci_low,
-                            ma.bootstrap_ci_high,
-                            ma.spread_low,
-                            ma.spread_high,
-                        ]
-                    )
-                )
-            )
-        ),
-    )
-    ma_low = -ma_max_abs
-    ma_high = ma_max_abs
-    print(f"  axis: [{ma_low:+.3f}, {ma_high:+.3f}]  (· spread, ─ CI, ● {stat_label.lower()}, │ zero)  spread percentiles = ({low_p:g}, {high_p:g})")
-    print(
-        f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
-        f"{'CI Low':>9s} {'CI High':>9s} {'Spread Lo':>10s} {'Spread Hi':>10s}"
-    )
-    for i, label in enumerate(bundle.point_advantage.labels):
-        template_label = _truncate_label(label, template_col_width)
-        line = _ascii_interval_line(
-            mean=float(bundle.point_advantage.point_advantages[i]),
-            ci_low=float(bundle.point_advantage.bootstrap_ci_low[i]),
-            ci_high=float(bundle.point_advantage.bootstrap_ci_high[i]),
-            spread_low=float(bundle.point_advantage.spread_low[i]),
-            spread_high=float(bundle.point_advantage.spread_high[i]),
-            axis_low=ma_low,
-            axis_high=ma_high,
-            width=line_width,
-        )
-        print(
-            f"  {template_label:<{template_col_width}s} "
-            f"{line:<{line_width}s} "
-            f"{bundle.point_advantage.point_advantages[i]:>+7.3f} "
-            f"{bundle.point_advantage.bootstrap_ci_low[i]:>+8.3f} "
-            f"{bundle.point_advantage.bootstrap_ci_high[i]:>+8.3f} "
-            f"{bundle.point_advantage.spread_low[i]:>+9.3f} "
-            f"{bundle.point_advantage.spread_high[i]:>+9.3f}"
-        )
-    print()
 
     # Determine statistic label from the first result (all share the same statistic).
     first_result = next(iter(bundle.pairwise.results.values()), None)
@@ -735,6 +686,113 @@ def _print_bundle_summary(
             labels_sorted=labels_sorted,
             p_source="bootstrap",
         )
+
+
+def _print_bundle_summary(
+    bundle: AnalysisBundle,
+    *,
+    top_pairwise: int,
+    line_width: int,
+    item_singular: str = "template",
+    item_plural: str = "templates",
+) -> None:
+    template_col_width = 24
+
+    print(f"Shape: {bundle.shape}")
+    n_runs = bundle.benchmark.n_runs
+    item_singular_title = item_singular.capitalize()
+    item_plural_title = item_plural.capitalize()
+    print(
+        f"{item_plural_title}: {bundle.benchmark.n_templates} | "
+        f"Inputs: {bundle.benchmark.n_inputs}"
+        + (f" | Runs: {n_runs}" if n_runs > 1 else "")
+    )
+    print()
+
+    _print_subsection("--- Robustness ---")
+    print(bundle.robustness.summary_table().to_string())
+    print()
+
+    _print_subsection("--- Rank Probabilities ---")
+    max_rank_label_len = max((len(label) for label in bundle.rank_dist.labels), default=0)
+    rank_label_col_width = min(40, max(len(item_singular_title) + 1, max_rank_label_len + 2))
+    rank_bar_width = 14
+    n_ranked_items = len(bundle.rank_dist.labels)
+    print(
+        f"  {item_singular_title:<{rank_label_col_width}s} "
+        f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
+        f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
+    )
+    for i, label in enumerate(bundle.rank_dist.labels):
+        rank_label = _truncate_label(label, rank_label_col_width)
+        p_best = float(bundle.rank_dist.p_best[i])
+        expected_rank = float(bundle.rank_dist.expected_ranks[i])
+        p_color = _p_best_color(p_best)
+        p_reset = _RESET if p_color else ""
+        p_str = f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)}"
+        print(
+            f"  {rank_label:<{rank_label_col_width}s} "
+            f"{p_color}{p_str}{p_reset} "
+            f"{expected_rank:>8.2f} {_rank_hump_lane(expected_rank, n_ranked_items, width=rank_bar_width)}"
+        )
+    print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
+    print()
+
+    stat_label = bundle.point_advantage.statistic.capitalize()
+    is_wilson_adv = bundle.point_advantage.n_bootstrap == 0
+    _adv_ci_note = "Wilson CIs" if is_wilson_adv else "Bootstrap CIs"
+    _print_subsection(f"--- {stat_label} Advantage (reference={bundle.point_advantage.reference}, {_adv_ci_note}) ---")
+    low_p, high_p = bundle.point_advantage.spread_percentiles
+    ma = bundle.point_advantage
+    ma_max_abs = max(
+        1e-12,
+        float(
+            np.max(
+                np.abs(
+                    np.concatenate(
+                        [
+                            ma.point_advantages,
+                            ma.bootstrap_ci_low,
+                            ma.bootstrap_ci_high,
+                            ma.spread_low,
+                            ma.spread_high,
+                        ]
+                    )
+                )
+            )
+        ),
+    )
+    ma_low = -ma_max_abs
+    ma_high = ma_max_abs
+    print(f"  axis: [{ma_low:+.3f}, {ma_high:+.3f}]  (· spread, ─ CI, ● {stat_label.lower()}, │ zero)  spread percentiles = ({low_p:g}, {high_p:g})")
+    print(
+        f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
+        f"{'CI Low':>9s} {'CI High':>9s} {'Spread Lo':>10s} {'Spread Hi':>10s}"
+    )
+    for i, label in enumerate(bundle.point_advantage.labels):
+        template_label = _truncate_label(label, template_col_width)
+        line = _ascii_interval_line(
+            mean=float(bundle.point_advantage.point_advantages[i]),
+            ci_low=float(bundle.point_advantage.bootstrap_ci_low[i]),
+            ci_high=float(bundle.point_advantage.bootstrap_ci_high[i]),
+            spread_low=float(bundle.point_advantage.spread_low[i]),
+            spread_high=float(bundle.point_advantage.spread_high[i]),
+            axis_low=ma_low,
+            axis_high=ma_high,
+            width=line_width,
+        )
+        print(
+            f"  {template_label:<{template_col_width}s} "
+            f"{line:<{line_width}s} "
+            f"{bundle.point_advantage.point_advantages[i]:>+7.3f} "
+            f"{bundle.point_advantage.bootstrap_ci_low[i]:>+8.3f} "
+            f"{bundle.point_advantage.bootstrap_ci_high[i]:>+8.3f} "
+            f"{bundle.point_advantage.spread_low[i]:>+9.3f} "
+            f"{bundle.point_advantage.spread_high[i]:>+9.3f}"
+        )
+    print()
+
+    _print_pairwise_section(bundle, top_pairwise=top_pairwise, line_width=line_width)
 
     # Seed variance section (only when seeded data is present).
     if bundle.seed_variance is not None:

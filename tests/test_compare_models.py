@@ -119,7 +119,8 @@ def test_compare_models_returns_report_and_fields():
     assert set(report.labels) == {"model_a", "model_b"}
     assert set(report.model_stats.keys()) == {"model_a", "model_b"}
     assert isinstance(report.model_stats["model_a"], EntityStats)
-    assert set(report.pairwise_p_values.keys()) == {("model_a", "model_b")}
+    p = report.pairwise.get("model_a", "model_b").p_value
+    assert 0.0 <= p <= 1.0
     assert isinstance(report.full_analysis, ps.MultiModelBundle)
     assert isinstance(report.quick_summary(), str)
     assert report.winner in (None, "model_a", "model_b")
@@ -136,9 +137,9 @@ def test_compare_models_detects_clear_winner():
         rng=_rng(12),
     )
 
-    assert report.winners == ["stronger"]
+    assert report.top_tier == ["stronger"]
     assert report.significant is True
-    assert report.p_best < 0.05
+    assert report.pairwise.get("weaker", "stronger").p_value < 0.05
 
 
 def test_compare_models_pairwise_lookup_direction_agnostic():
@@ -157,9 +158,9 @@ def test_compare_models_pairwise_lookup_direction_agnostic():
         rng=_rng(2),
     )
 
-    p12 = report.get_pairwise_p_values("m1", "m2")
-    p21 = report.get_pairwise_p_values("m2", "m1")
-    assert p12["p_boot"] == pytest.approx(p21["p_boot"], abs=1e-12)
+    p12 = report.pairwise.get("m1", "m2").p_value
+    p21 = report.pairwise.get("m2", "m1").p_value
+    assert p12 == pytest.approx(p21, abs=1e-12)
 
 
 def test_compare_models_accepts_flat_1d_per_model_scores():
