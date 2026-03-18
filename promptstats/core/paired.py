@@ -120,6 +120,38 @@ def _mcnemar_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
     return min(p, 1.0)
 
 
+def _fisher_exact_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
+    """Two-sided Fisher's exact p-value on the paired 2×2 contingency table.
+
+    Uses table layout::
+
+        [[n11, n10],
+         [n01, n00]]
+
+    where n10 is ``A=1, B=0`` and n01 is ``A=0, B=1``.
+
+    Note that Fisher's exact test treats margins as fixed and does not exploit
+    pairing in the same way as McNemar; it is provided as an optional
+    conservative exact alternative for binary comparisons.
+    """
+    from scipy.stats import fisher_exact
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    n11 = int(np.sum((a_bin == 1) & (b_bin == 1)))
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    n00 = int(np.sum((a_bin == 0) & (b_bin == 0)))
+
+    table = np.array([[n11, n10], [n01, n00]], dtype=int)
+    _, p = fisher_exact(table, alternative="two-sided")
+    p = float(p)
+    if not np.isfinite(p):
+        return 1.0
+    return min(max(p, 0.0), 1.0)
+
+
 def _paired_signflip_pvalue(
     diffs: np.ndarray,
     *,
@@ -332,7 +364,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -356,6 +388,8 @@ def pairwise_differences(
         ``'bayes_bootstrap'`` (Bayesian bootstrap), ``'smooth_bootstrap'``
         (smoothed bootstrap via Gaussian KDE), ``'newcombe'`` for paired
         binary (0/1) data using Newcombe CI + exact McNemar p-value, or
+        ``'fisher_exact'`` for paired binary (0/1) data using Newcombe CI
+        + two-sided Fisher's exact p-value on the 2×2 contingency table, or
         ``'bayes_binary'`` for paired binary (0/1) data using the
         Dirichlet-multinomial Bayesian model (Bowyer et al. 2025).
         Requires binary data; raises ValueError otherwise.
@@ -461,6 +495,52 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_method="newcombe (mcnemar p-value)",
+            n_inputs=m,
+            per_input_diffs=diffs,
+            n_runs=1,
+            statistic=statistic,
+            wilcoxon_p=wilcoxon_p,
+        )
+
+    if method == "fisher_exact":
+        if scores.ndim == 3:
+            if scores.shape[2] > 1:
+                warnings.warn(
+                    "method='fisher_exact' uses binary outcomes and therefore "
+                    "uses run index 0 when repeated runs are present.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+            flat = scores[:, :, 0]
+        else:
+            flat = scores
+
+        if not is_binary_scores(flat):
+            raise ValueError(
+                "method='fisher_exact' requires binary (0/1) data, but "
+                "non-binary values were found in the score array. "
+                "Use is_binary_scores() to check before calling."
+            )
+
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        diffs = values_a - values_b
+        m = len(diffs)
+        point_d = _stat(diffs, statistic)
+        std_d = float(np.std(diffs, ddof=1))
+        alpha_val = 1.0 - ci
+        ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
+        p_value = _fisher_exact_p(values_a, values_b)
+        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
+        return PairedDiffResult(
+            template_a=label_a,
+            template_b=label_b,
+            point_diff=point_d,
+            std_diff=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_method="fisher exact (newcombe ci)",
             n_inputs=m,
             per_input_diffs=diffs,
             n_runs=1,
@@ -748,7 +828,7 @@ def _pairwise_diffs_seeded(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
@@ -847,7 +927,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",

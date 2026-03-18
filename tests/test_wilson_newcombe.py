@@ -24,6 +24,7 @@ from promptstats.core.resampling import (
 )
 from promptstats.core.paired import (
     _mcnemar_p,
+    _fisher_exact_p,
     pairwise_differences,
     all_pairwise,
 )
@@ -199,6 +200,28 @@ def test_mcnemar_p_bounded():
     assert 0.0 <= p <= 1.0
 
 
+def test_fisher_exact_p_no_signal_balanced_table():
+    a = np.array([1., 1., 0., 0.])
+    b = np.array([1., 0., 1., 0.])
+    p = _fisher_exact_p(a, b)
+    assert p > 0.2
+
+
+def test_fisher_exact_p_extreme_case_small_p():
+    a = np.array([
+        1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.,
+        1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.,
+        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+    ])
+    b = np.array([
+        1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.,
+        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+        0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0., 0.,
+    ])
+    p = _fisher_exact_p(a, b)
+    assert p < 0.01
+
+
 # ---------------------------------------------------------------------------
 # pairwise_differences with method='newcombe'
 # ---------------------------------------------------------------------------
@@ -242,6 +265,16 @@ def test_pairwise_differences_newcombe_seeded_falls_back_to_smooth():
     # Should use smooth bootstrap, not newcombe
     assert "newcombe" not in result.test_method
     assert "smooth" in result.test_method
+
+
+def test_pairwise_differences_fisher_exact_binary_path():
+    a = np.array([1., 1., 1., 0., 0., 1., 0., 1.])
+    b = np.array([0., 1., 0., 0., 0., 1., 0., 0.])
+    scores = np.stack([a, b])
+    result = pairwise_differences(scores, 0, 1, "A", "B", method="fisher_exact", ci=0.95)
+    assert "fisher exact" in result.test_method
+    assert 0.0 <= result.p_value <= 1.0
+    assert result.ci_low <= result.point_diff <= result.ci_high
 
 
 def test_pairwise_differences_bayes_binary_warns_for_large_n():
@@ -399,6 +432,22 @@ def test_analyze_explicit_newcombe_forces_newcombe_even_when_n_small():
     assert bundle.point_advantage.n_bootstrap == 0
 
 
+def test_analyze_explicit_fisher_exact_uses_fisher_path():
+    rng = np.random.default_rng(321)
+    n_templates = 2
+    m_inputs = 80
+    scores = np.zeros((n_templates, m_inputs))
+    for i in range(n_templates):
+        scores[i] = rng.binomial(1, 0.50 + 0.15 * i, m_inputs)
+
+    result_obj = _make_benchmark(scores, ["low", "high"])
+    bundle = analyze(result_obj, method="fisher_exact", rng=np.random.default_rng(321))
+
+    pair = bundle.pairwise.get("low", "high")
+    assert "fisher exact" in pair.test_method
+    assert bundle.point_advantage.n_bootstrap == 0
+
+
 def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     rng = np.random.default_rng(88)
     n_templates = 2
@@ -419,7 +468,7 @@ def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     assert "bayes binary" in pair.test_method
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_analyze_explicit_wilson_newcombe_raise_on_non_binary(method: str):
     rng = np.random.default_rng(314)
     scores = rng.uniform(0.0, 1.0, size=(2, 30))

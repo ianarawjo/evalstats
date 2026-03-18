@@ -574,13 +574,22 @@ def _print_pairwise_section(
     # Determine statistic label from the first result (all share the same statistic).
     first_result = next(iter(bundle.pairwise.results.values()), None)
     pair_stat_label = first_result.statistic.capitalize() if first_result else "Mean"
-    # Detect newcombe (binary) path: p_value column holds McNemar, not bootstrap p.
+    # Detect binary exact-test paths: p_value column holds exact-test p-values.
     is_newcombe_pairwise = (
         first_result is not None
         and "newcombe" in first_result.test_method.lower()
     )
-    p_first_header = "p (McNemar)" if is_newcombe_pairwise else "p (boot)"
+    is_fisher_pairwise = (
+        first_result is not None
+        and "fisher exact" in first_result.test_method.lower()
+    )
     if is_newcombe_pairwise:
+        p_first_header = "p (McNemar)"
+    elif is_fisher_pairwise:
+        p_first_header = "p (Fisher)"
+    else:
+        p_first_header = "p (boot)"
+    if is_newcombe_pairwise or is_fisher_pairwise:
         pair_p_boot_col_width = max(pair_p_boot_col_width, len(p_first_header))
     _print_subsection("--- Pairwise Comparisons (lowest p-value first) ---")
     pair_results = sorted(
@@ -665,6 +674,12 @@ def _print_pairwise_section(
         if is_newcombe_pairwise:
             print(
                 f"  p (McNemar) = McNemar exact test (two-sided, uncorrected); "
+                f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
+                f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
+            )
+        elif is_fisher_pairwise:
+            print(
+                f"  p (Fisher) = Fisher's exact test (two-sided, uncorrected); "
                 f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
                 f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
             )

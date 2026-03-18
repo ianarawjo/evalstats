@@ -70,7 +70,7 @@ def test_compare_models_template_labels_length_check():
         )
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_compare_models_accepts_explicit_binary_methods(method: str):
     report = ps.compare_models(
         {
@@ -83,10 +83,13 @@ def test_compare_models_accepts_explicit_binary_methods(method: str):
         rng=_rng(31),
     )
     pair = report.pairwise.get("m1", "m2")
-    assert "newcombe" in pair.test_method
+    if method == "fisher_exact":
+        assert "fisher exact" in pair.test_method.lower()
+    else:
+        assert "newcombe" in pair.test_method
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_compare_models_explicit_binary_methods_reject_non_binary(method: str):
     with pytest.raises(ValueError, match=r"requires binary \(0/1\) data"):
         ps.compare_models(

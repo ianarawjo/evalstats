@@ -23,6 +23,7 @@ CommonStatsMethods = Literal[
     "wilson",
     "newcombe",
     "permutation",
+    "fisher_exact",
 ]
 CompareMethod = CommonStatsMethods
 AnalyzeMethod = Union[CommonStatsMethods, Literal["lmm"]]

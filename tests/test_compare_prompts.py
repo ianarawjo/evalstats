@@ -62,7 +62,7 @@ def test_compare_prompts_wrong_ndim():
         )
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_compare_prompts_accepts_explicit_binary_methods(method: str):
     report = ps.compare_prompts(
         {
@@ -74,10 +74,13 @@ def test_compare_prompts_accepts_explicit_binary_methods(method: str):
         rng=_rng(101),
     )
     pair = report.pairwise.get("a", "b")
-    assert "newcombe" in pair.test_method
+    if method == "fisher_exact":
+        assert "fisher exact" in pair.test_method.lower()
+    else:
+        assert "newcombe" in pair.test_method
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_compare_prompts_explicit_binary_methods_reject_non_binary(method: str):
     with pytest.raises(ValueError, match=r"requires binary \(0/1\) data"):
         ps.compare_prompts(

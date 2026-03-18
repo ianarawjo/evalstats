@@ -487,10 +487,10 @@ def compare_prompts(
     # Use the resolved method from the analysis bundle (may be 'bayes_binary',
     # 'newcombe', or a bootstrap variant), falling back to re-resolution.
     resolved_method = full_analysis.resolved_method or resolve_resampling_method(method, M)
-    # Newcombe is a pairwise method; use bayes_binary or wilson for single-sample CI.
+    # Newcombe/fisher_exact are pairwise methods; use bayes_binary or wilson for single-sample CI.
     # Pairwise-only methods need a single-sample fallback for entity stats CIs.
-    # newcombe → smooth_bootstrap; bayes_binary → wilson (more accurate per simulations).
-    if resolved_method == "newcombe":
+    # newcombe/fisher_exact → smooth_bootstrap; bayes_binary → wilson.
+    if resolved_method in {"newcombe", "fisher_exact"}:
         resolved_method = "smooth_bootstrap"
     elif resolved_method == "bayes_binary":
         resolved_method = "wilson"
@@ -682,7 +682,7 @@ def compare_models(
     resolved_method = model_analysis.resolved_method or resolve_resampling_method(method, n_inputs)
     # Pairwise-only methods need a single-sample fallback for entity stats CIs.
     # newcombe → smooth_bootstrap; bayes_binary → wilson (more accurate per simulations).
-    if resolved_method == "newcombe":
+    if resolved_method in {"newcombe", "fisher_exact"}:
         resolved_method = "smooth_bootstrap"
     elif resolved_method == "bayes_binary":
         resolved_method = "wilson"

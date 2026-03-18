@@ -118,6 +118,9 @@ def analyze(
             ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
             Newcombe score intervals (+ exact McNemar p-values), while
             point-advantage CIs use Wilson score intervals.
+        * ``'fisher_exact'`` — Binary-only frequentist mode. Pairwise
+            comparisons use Newcombe score intervals + Fisher's exact
+            p-values, while point-advantage CIs use Wilson score intervals.
     backend : str
         LMM fitting backend (only used when ``method='lmm'``):
         ``'statsmodels'`` (default, pure Python, no R required) or
@@ -191,7 +194,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "permutation"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "permutation", "fisher_exact"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -734,7 +737,7 @@ def _analyze_single(
         # Single-sample advantage CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         advantage_method = "wilson"
-    elif method in {"wilson", "newcombe"}:
+    elif method in {"wilson", "newcombe", "fisher_exact"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
             raise ValueError(
@@ -742,10 +745,13 @@ def _analyze_single(
                 "scores array contains non-binary values. Use is_binary_scores() "
                 "to check before calling, or choose a different method."
             )
-        # In analyze(), both explicit frequentist binary methods route to:
-        #   - pairwise Newcombe + exact McNemar p-values
-        #   - point-advantage Wilson score CIs
-        pairwise_method = "newcombe"
+        if method == "fisher_exact":
+            pairwise_method = "fisher_exact"
+        else:
+            # In analyze(), explicit frequentist binary methods route to:
+            #   - pairwise Newcombe + exact McNemar p-values
+            #   - point-advantage Wilson score CIs
+            pairwise_method = "newcombe"
         advantage_method = "wilson"
 
     pairwise = all_pairwise(

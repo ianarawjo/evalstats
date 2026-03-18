@@ -63,6 +63,7 @@ with np.errstate(all="ignore"):
 
 PAIRWISE_METHODS = [
     "mcnemar",          # exact McNemar test (binary only)
+    "fisher_exact",     # Fisher's exact test on paired 2x2 (binary only)
     "bootstrap",
     "bca",
     "bayes_bootstrap",
@@ -496,7 +497,7 @@ def _pairwise_pvalue(
     if method == "paired_t":
         return _safe_paired_t_p(diffs)
 
-    if method in {"newcombe", "bayes_binary", "mcnemar"}:
+    if method in {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"}:
         # These methods are strictly binary at single-run resolution.
         # For runs>1 the extra runs are discarded here; newcombe/bayes_binary
         # fall back to smooth_bootstrap internally when runs>=3 is detected,
@@ -532,8 +533,8 @@ def _pairwise_pvalue(
 
 
 def _method_allowed(eval_type: str, method: str) -> bool:
-    # mcnemar, newcombe, and bayes_binary are binary-only methods.
-    if method in {"newcombe", "bayes_binary", "mcnemar"} and eval_type != "binary":
+    # mcnemar, fisher_exact, newcombe, and bayes_binary are binary-only methods.
+    if method in {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"} and eval_type != "binary":
         return False
     return True
 
