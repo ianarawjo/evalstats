@@ -69,6 +69,7 @@ PAIRWISE_METHODS = [
     "bayes_bootstrap",
     "smooth_bootstrap",
     "permutation",
+    "sign_test",        # exact paired sign-test p-value + bootstrap CI
     "newcombe",         # Newcombe CI + McNemar p-value (binary only)
     "bayes_binary",     # Bayesian binary model (binary only)
     "wilcoxon",
@@ -670,55 +671,62 @@ def run_pairwise_simulation(
     step = 0
     reporter = _ProgressReporter(total_steps, mode=progress_mode, label="pairwise")
 
-    for scenario in scenarios:
-        methods = [m for m in PAIRWISE_METHODS if _method_allowed(scenario.eval_type, m)]
-        all_conditions = [("null", 0.0)] + scenario.alt_conditions
+    # Keep progress output clean by muting noisy UserWarnings during active
+    # progress rendering. Warnings are left unchanged when progress is off.
+    suppress_user_warnings = progress_mode != "off"
+    with warnings.catch_warnings():
+        if suppress_user_warnings:
+            warnings.simplefilter("ignore", UserWarning)
 
-        for n in sample_sizes:
-            reject_counts: dict[tuple[str, str], int] = {
-                (m, c): 0 for m in methods for (c, _) in all_conditions
-            }
-            p_sums: dict[tuple[str, str], float] = {
-                (m, c): 0.0 for m in methods for (c, _) in all_conditions
-            }
+        for scenario in scenarios:
+            methods = [m for m in PAIRWISE_METHODS if _method_allowed(scenario.eval_type, m)]
+            all_conditions = [("null", 0.0)] + scenario.alt_conditions
 
-            for _ in range(n_reps):
-                for condition, delta in all_conditions:
-                    a, b = scenario.generate_pair(rng, n, runs, delta)
-                    step += 1
-                    reporter.update(
-                        step,
-                        detail=f"{scenario.eval_type} {scenario.label} n={n} {condition}",
-                    )
+            for n in sample_sizes:
+                reject_counts: dict[tuple[str, str], int] = {
+                    (m, c): 0 for m in methods for (c, _) in all_conditions
+                }
+                p_sums: dict[tuple[str, str], float] = {
+                    (m, c): 0.0 for m in methods for (c, _) in all_conditions
+                }
 
-                    for method in methods:
-                        p = _pairwise_pvalue(
-                            a,
-                            b,
-                            method=method,
-                            n_bootstrap=n_bootstrap,
-                            rng=rng,
-                            statistic=statistic,
+                for _ in range(n_reps):
+                    for condition, delta in all_conditions:
+                        a, b = scenario.generate_pair(rng, n, runs, delta)
+                        step += 1
+                        reporter.update(
+                            step,
+                            detail=f"{scenario.eval_type} {scenario.label} n={n} {condition}",
                         )
-                        p_sums[(method, condition)] += p
-                        if p <= alpha:
-                            reject_counts[(method, condition)] += 1
 
-            for method in methods:
-                for condition, _ in all_conditions:
-                    results.append(
-                        PairwiseResult(
-                            eval_type=scenario.eval_type,
-                            scenario=scenario.label,
-                            n=n,
-                            runs=runs,
-                            method=method,
-                            condition=condition,
-                            n_reps=n_reps,
-                            rejects=reject_counts[(method, condition)],
-                            p_sum=p_sums[(method, condition)],
+                        for method in methods:
+                            p = _pairwise_pvalue(
+                                a,
+                                b,
+                                method=method,
+                                n_bootstrap=n_bootstrap,
+                                rng=rng,
+                                statistic=statistic,
+                            )
+                            p_sums[(method, condition)] += p
+                            if p <= alpha:
+                                reject_counts[(method, condition)] += 1
+
+                for method in methods:
+                    for condition, _ in all_conditions:
+                        results.append(
+                            PairwiseResult(
+                                eval_type=scenario.eval_type,
+                                scenario=scenario.label,
+                                n=n,
+                                runs=runs,
+                                method=method,
+                                condition=condition,
+                                n_reps=n_reps,
+                                rejects=reject_counts[(method, condition)],
+                                p_sum=p_sums[(method, condition)],
+                            )
                         )
-                    )
 
     reporter.update(total_steps, detail="done")
     return results
@@ -749,59 +757,66 @@ def run_multiarm_simulation(
 
     labels = [f"arm_{i}" for i in range(k_arms)]
 
-    for scenario in scenarios:
-        for n in sample_sizes:
-            agg_any: dict[tuple[str, str], int] = {
-                (c, cond): 0 for c in MULTIARM_CORRECTIONS for cond in ("null", "alt")
-            }
-            agg_best: dict[tuple[str, str], int] = {
-                (c, cond): 0 for c in MULTIARM_CORRECTIONS for cond in ("null", "alt")
-            }
+    # Keep progress output clean by muting noisy UserWarnings during active
+    # progress rendering. Warnings are left unchanged when progress is off.
+    suppress_user_warnings = progress_mode != "off"
+    with warnings.catch_warnings():
+        if suppress_user_warnings:
+            warnings.simplefilter("ignore", UserWarning)
 
-            for _ in range(n_reps):
-                for condition, delta in (("null", 0.0), ("alt", scenario.alt_delta)):
-                    scores = scenario.generate_scores(rng, n, runs, k_arms, delta)
-                    step += 1
-                    reporter.update(
-                        step,
-                        detail=f"{scenario.eval_type} n={n} {condition}",
-                    )
+        for scenario in scenarios:
+            for n in sample_sizes:
+                agg_any: dict[tuple[str, str], int] = {
+                    (c, cond): 0 for c in MULTIARM_CORRECTIONS for cond in ("null", "alt")
+                }
+                agg_best: dict[tuple[str, str], int] = {
+                    (c, cond): 0 for c in MULTIARM_CORRECTIONS for cond in ("null", "alt")
+                }
 
-                    # Compute bootstrap p-values ONCE; apply all corrections cheaply.
-                    metrics = _compute_multiarm_metrics(
-                        scores=scores,
-                        labels=labels,
-                        method=multiarm_method,
-                        corrections=MULTIARM_CORRECTIONS,
-                        n_bootstrap=n_bootstrap,
-                        alpha=alpha,
-                        statistic=statistic,
-                        rng=rng,
-                    )
-
-                    for correction in MULTIARM_CORRECTIONS:
-                        any_reject, best_selected = metrics.get(correction, (False, False))
-                        if any_reject:
-                            agg_any[(correction, condition)] += 1
-                        if best_selected:
-                            agg_best[(correction, condition)] += 1
-
-            for correction in MULTIARM_CORRECTIONS:
-                for condition in ("null", "alt"):
-                    results.append(
-                        MultiArmResult(
-                            eval_type=scenario.eval_type,
-                            scenario=scenario.label,
-                            n=n,
-                            runs=runs,
-                            k=k_arms,
-                            correction=correction,
-                            condition=condition,
-                            n_reps=n_reps,
-                            any_reject=agg_any[(correction, condition)],
-                            best_selected=agg_best[(correction, condition)],
+                for _ in range(n_reps):
+                    for condition, delta in (("null", 0.0), ("alt", scenario.alt_delta)):
+                        scores = scenario.generate_scores(rng, n, runs, k_arms, delta)
+                        step += 1
+                        reporter.update(
+                            step,
+                            detail=f"{scenario.eval_type} n={n} {condition}",
                         )
-                    )
+
+                        # Compute bootstrap p-values ONCE; apply all corrections cheaply.
+                        metrics = _compute_multiarm_metrics(
+                            scores=scores,
+                            labels=labels,
+                            method=multiarm_method,
+                            corrections=MULTIARM_CORRECTIONS,
+                            n_bootstrap=n_bootstrap,
+                            alpha=alpha,
+                            statistic=statistic,
+                            rng=rng,
+                        )
+
+                        for correction in MULTIARM_CORRECTIONS:
+                            any_reject, best_selected = metrics.get(correction, (False, False))
+                            if any_reject:
+                                agg_any[(correction, condition)] += 1
+                            if best_selected:
+                                agg_best[(correction, condition)] += 1
+
+                for correction in MULTIARM_CORRECTIONS:
+                    for condition in ("null", "alt"):
+                        results.append(
+                            MultiArmResult(
+                                eval_type=scenario.eval_type,
+                                scenario=scenario.label,
+                                n=n,
+                                runs=runs,
+                                k=k_arms,
+                                correction=correction,
+                                condition=condition,
+                                n_reps=n_reps,
+                                any_reject=agg_any[(correction, condition)],
+                                best_selected=agg_best[(correction, condition)],
+                            )
+                        )
 
     reporter.update(total_steps, detail="done")
     return results
@@ -1359,7 +1374,7 @@ def main() -> None:
     parser.add_argument(
         "--multiarm-method",
         choices=["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "permutation"],
-        default="permutation",
+        default="smooth_bootstrap",
         help="Pairwise method used inside the multi-arm phase (bootstrap p-values computed once; corrections applied to those same p-values)",
     )
     parser.add_argument("--pairwise-only", action="store_true", help="Run only pairwise phase")

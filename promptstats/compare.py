@@ -365,7 +365,7 @@ def compare_prompts(
         Bootstrap variant: ``'auto'`` (default, selects ``'smooth_bootstrap'``),
         ``'bootstrap'`` (percentile), ``'bca'``, ``'bayes_bootstrap'``,
         ``'smooth_bootstrap'``, ``'bayes_binary'``, ``'wilson'``,
-        or ``'newcombe'``.
+        ``'newcombe'``, ``'fisher_exact'``, or ``'sign_test'``.
     statistic : str
         Central-tendency statistic: ``'mean'`` (default) or ``'median'``.
     ci : float
@@ -487,10 +487,10 @@ def compare_prompts(
     # Use the resolved method from the analysis bundle (may be 'bayes_binary',
     # 'newcombe', or a bootstrap variant), falling back to re-resolution.
     resolved_method = full_analysis.resolved_method or resolve_resampling_method(method, M)
-    # Newcombe/fisher_exact are pairwise methods; use bayes_binary or wilson for single-sample CI.
+    # Newcombe/fisher_exact/sign_test are pairwise methods; use bayes_binary or wilson for single-sample CI.
     # Pairwise-only methods need a single-sample fallback for entity stats CIs.
-    # newcombe/fisher_exact → smooth_bootstrap; bayes_binary → wilson.
-    if resolved_method in {"newcombe", "fisher_exact"}:
+    # newcombe/fisher_exact/sign_test → smooth_bootstrap; bayes_binary → wilson.
+    if resolved_method in {"newcombe", "fisher_exact", "sign_test"}:
         resolved_method = "smooth_bootstrap"
     elif resolved_method == "bayes_binary":
         resolved_method = "wilson"
@@ -681,8 +681,8 @@ def compare_models(
     alpha_ci = 1.0 - ci
     resolved_method = model_analysis.resolved_method or resolve_resampling_method(method, n_inputs)
     # Pairwise-only methods need a single-sample fallback for entity stats CIs.
-    # newcombe → smooth_bootstrap; bayes_binary → wilson (more accurate per simulations).
-    if resolved_method in {"newcombe", "fisher_exact"}:
+    # newcombe/fisher_exact/sign_test → smooth_bootstrap; bayes_binary → wilson.
+    if resolved_method in {"newcombe", "fisher_exact", "sign_test"}:
         resolved_method = "smooth_bootstrap"
     elif resolved_method == "bayes_binary":
         resolved_method = "wilson"

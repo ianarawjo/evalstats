@@ -93,6 +93,21 @@ def test_compare_prompts_explicit_binary_methods_reject_non_binary(method: str):
         )
 
 
+def test_compare_prompts_accepts_sign_test_for_non_binary_data():
+    report = ps.compare_prompts(
+        {
+            "a": [0.72, 0.75, 0.78, 0.74, 0.71, 0.73, 0.77, 0.76],
+            "b": [0.66, 0.69, 0.70, 0.68, 0.65, 0.67, 0.71, 0.70],
+        },
+        method="sign_test",
+        n_bootstrap=500,
+        rng=_rng(103),
+    )
+
+    pair = report.pairwise.get("a", "b")
+    assert "sign test" in pair.test_method.lower()
+
+
 def test_friedman_nemenyi_all_ties_returns_stable_values():
     scores = np.array(
         [

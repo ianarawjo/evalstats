@@ -1,7 +1,8 @@
 import numpy as np
+import pytest
 
 import promptstats as ps
-from promptstats.core.paired import pairwise_differences
+from promptstats.core.paired import pairwise_differences, _paired_sign_test_p
 
 
 def test_pairwise_permutation_detects_nonzero_paired_effect():
@@ -86,4 +87,61 @@ def test_analyze_accepts_permutation_method_with_runs():
 
     pair = analysis.pairwise.get("A", "B")
     assert "permutation" in pair.test_method
+    assert pair.n_runs == 3
+
+
+def test_paired_sign_test_p_no_signal_returns_one():
+    diffs = np.array([1.0, -1.0, 2.0, -2.0, 0.0, 0.0])
+    p = _paired_sign_test_p(diffs)
+    assert p == pytest.approx(1.0, abs=1e-12)
+
+
+def test_pairwise_sign_test_detects_nonzero_paired_effect():
+    rng = np.random.default_rng(303)
+    n_inputs = 70
+
+    a = rng.normal(loc=0.7, scale=0.12, size=n_inputs)
+    b = a - 0.07 + rng.normal(loc=0.0, scale=0.015, size=n_inputs)
+    scores = np.vstack([a, b])
+
+    res = pairwise_differences(
+        scores,
+        0,
+        1,
+        "A",
+        "B",
+        method="sign_test",
+        n_bootstrap=3000,
+        rng=np.random.default_rng(304),
+    )
+
+    assert "sign test" in res.test_method
+    assert res.point_diff > 0
+    assert res.p_value < 0.05
+
+
+def test_analyze_accepts_sign_test_method_with_runs():
+    rng = np.random.default_rng(2027)
+    n_templates, n_inputs, n_runs = 2, 30, 3
+
+    scores = np.empty((n_templates, n_inputs, n_runs), dtype=float)
+    base = rng.normal(0.6, 0.10, size=(n_inputs, n_runs))
+    scores[0] = base + rng.normal(0.03, 0.02, size=(n_inputs, n_runs))
+    scores[1] = base + rng.normal(-0.03, 0.02, size=(n_inputs, n_runs))
+
+    result = ps.BenchmarkResult(
+        scores=scores,
+        template_labels=["A", "B"],
+        input_labels=[f"i{i:02d}" for i in range(n_inputs)],
+    )
+
+    analysis = ps.analyze(
+        result,
+        method="sign_test",
+        n_bootstrap=1500,
+        rng=np.random.default_rng(305),
+    )
+
+    pair = analysis.pairwise.get("A", "B")
+    assert "sign test" in pair.test_method
     assert pair.n_runs == 3

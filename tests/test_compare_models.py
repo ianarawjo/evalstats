@@ -102,6 +102,22 @@ def test_compare_models_explicit_binary_methods_reject_non_binary(method: str):
         )
 
 
+def test_compare_models_accepts_sign_test_for_non_binary_data():
+    report = ps.compare_models(
+        {
+            "m1": np.array([0.70, 0.72, 0.69, 0.71, 0.70, 0.73, 0.72, 0.71], dtype=float),
+            "m2": np.array([0.64, 0.66, 0.65, 0.67, 0.64, 0.68, 0.66, 0.65], dtype=float),
+            "m3": np.array([0.76, 0.77, 0.75, 0.78, 0.76, 0.79, 0.77, 0.78], dtype=float),
+        },
+        method="sign_test",
+        n_bootstrap=500,
+        rng=_rng(33),
+    )
+
+    pair = report.pairwise.get("m1", "m2")
+    assert "sign test" in pair.test_method.lower()
+
+
 def test_compare_models_returns_report_and_fields():
     report = ps.compare_models(
         {

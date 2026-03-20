@@ -583,13 +583,19 @@ def _print_pairwise_section(
         first_result is not None
         and "fisher exact" in first_result.test_method.lower()
     )
+    is_sign_pairwise = (
+        first_result is not None
+        and "sign test" in first_result.test_method.lower()
+    )
     if is_newcombe_pairwise:
         p_first_header = "p (McNemar)"
     elif is_fisher_pairwise:
         p_first_header = "p (Fisher)"
+    elif is_sign_pairwise:
+        p_first_header = "p (sign)"
     else:
         p_first_header = "p (boot)"
-    if is_newcombe_pairwise or is_fisher_pairwise:
+    if is_newcombe_pairwise or is_fisher_pairwise or is_sign_pairwise:
         pair_p_boot_col_width = max(pair_p_boot_col_width, len(p_first_header))
     _print_subsection("--- Pairwise Comparisons (lowest p-value first) ---")
     pair_results = sorted(
@@ -680,6 +686,12 @@ def _print_pairwise_section(
         elif is_fisher_pairwise:
             print(
                 f"  p (Fisher) = Fisher's exact test (two-sided, uncorrected); "
+                f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
+                f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
+            )
+        elif is_sign_pairwise:
+            print(
+                f"  p (sign) = paired sign test (two-sided exact, ties dropped, uncorrected); "
                 f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
                 f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
             )
