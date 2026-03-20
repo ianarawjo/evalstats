@@ -42,8 +42,10 @@ import io
 import time
 import warnings
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from contextlib import redirect_stdout
 from dataclasses import dataclass, field
+from functools import partial
 from pathlib import Path
 from typing import Any, Callable
 
@@ -94,6 +96,9 @@ class PairScenario:
     # alt_conditions: list of (condition_label, delta) for the alternative hypothesis.
     # Include at least two deltas (weak and full) to show a power curve.
     alt_conditions: list[tuple[str, float]] = field(default_factory=list)
+    # Empirical Cohen's |d| for each alt condition, computed once at build time via
+    # _calibrate_cohens_d.  Parallel to alt_conditions (index i ↔ alt_conditions[i]).
+    alt_cohens_d: list[float] = field(default_factory=list)
 
 
 @dataclass
@@ -107,6 +112,7 @@ class PairwiseResult:
     n_reps: int
     rejects: int
     p_sum: float
+    cohens_d: float = 0.0  # 0.0 for null; empirical |d| for alt conditions
 
 
 @dataclass
@@ -254,6 +260,24 @@ def _gen_grades_pair(
     return a_vals, b_vals
 
 
+def _calibrate_cohens_d(
+    generate_pair: Callable,
+    delta: float,
+    n_ref: int = 2000,
+) -> float:
+    """Estimate empirical Cohen's |d| for a (generate_pair, delta) pair.
+
+    Uses a large reference sample so the estimate is stable.  The signed d is
+    mean(b - a) / std(b - a), which is positive when delta > 0 (B is better).
+    Returns |d| so the value is always non-negative regardless of convention.
+    """
+    rng = np.random.default_rng(0)
+    a, b = generate_pair(rng, n_ref, 1, delta)
+    diffs = b[:, 0] - a[:, 0]
+    sd = float(np.std(diffs, ddof=1))
+    return abs(float(np.mean(diffs)) / sd) if sd > 1e-12 else 0.0
+
+
 def build_pair_scenarios() -> list[PairScenario]:
     scenarios: list[PairScenario] = []
 
@@ -262,7 +286,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="binary-balanced",
         eval_type="binary",
-        generate_pair=lambda rng, n, runs, delta: _gen_binary_pair(rng, n, runs, delta, base_p=0.50, concentration=12.0),
+        generate_pair=partial(_gen_binary_pair, base_p=0.50, concentration=12.0),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -271,7 +295,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="binary-low",
         eval_type="binary",
-        generate_pair=lambda rng, n, runs, delta: _gen_binary_pair(rng, n, runs, delta, base_p=0.20, concentration=10.0),
+        generate_pair=partial(_gen_binary_pair, base_p=0.20, concentration=10.0),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -280,7 +304,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="binary-sparse",
         eval_type="binary",
-        generate_pair=lambda rng, n, runs, delta: _gen_binary_pair(rng, n, runs, delta, base_p=0.05, concentration=8.0),
+        generate_pair=partial(_gen_binary_pair, base_p=0.05, concentration=8.0),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -289,7 +313,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="continuous-right-skew",
         eval_type="continuous",
-        generate_pair=lambda rng, n, runs, delta: _gen_continuous_pair(rng, n, runs, delta, a_shape=2.0, b_shape=8.0, sigma=0.09),
+        generate_pair=partial(_gen_continuous_pair, a_shape=2.0, b_shape=8.0, sigma=0.09),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -298,7 +322,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="continuous-near-center",
         eval_type="continuous",
-        generate_pair=lambda rng, n, runs, delta: _gen_continuous_pair(rng, n, runs, delta, a_shape=5.0, b_shape=5.0, sigma=0.10),
+        generate_pair=partial(_gen_continuous_pair, a_shape=5.0, b_shape=5.0, sigma=0.10),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -307,7 +331,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="likert-mid",
         eval_type="likert",
-        generate_pair=lambda rng, n, runs, delta: _gen_likert_pair(rng, n, runs, delta, mu=3.0, sigma=0.90),
+        generate_pair=partial(_gen_likert_pair, mu=3.0, sigma=0.90),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -316,7 +340,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="likert-near-floor",
         eval_type="likert",
-        generate_pair=lambda rng, n, runs, delta: _gen_likert_pair(rng, n, runs, delta, mu=2.0, sigma=0.80),
+        generate_pair=partial(_gen_likert_pair, mu=2.0, sigma=0.80),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -325,7 +349,7 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="grades-mid",
         eval_type="grades",
-        generate_pair=lambda rng, n, runs, delta: _gen_grades_pair(rng, n, runs, delta, mu=55.0, sigma=16.0),
+        generate_pair=partial(_gen_grades_pair, mu=55.0, sigma=16.0),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
@@ -334,9 +358,17 @@ def build_pair_scenarios() -> list[PairScenario]:
     scenarios.append(PairScenario(
         label="grades-high-variance",
         eval_type="grades",
-        generate_pair=lambda rng, n, runs, delta: _gen_grades_pair(rng, n, runs, delta, mu=52.0, sigma=24.0),
+        generate_pair=partial(_gen_grades_pair, mu=52.0, sigma=24.0),
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
+
+    # Compute empirical Cohen's |d| for each scenario × alt condition once at
+    # build time (n_ref=2000) so the metric is available in reports and CSV.
+    for sc in scenarios:
+        sc.alt_cohens_d = [
+            _calibrate_cohens_d(sc.generate_pair, delta)
+            for _, delta in sc.alt_conditions
+        ]
 
     return scenarios
 
@@ -421,7 +453,7 @@ def build_multiarm_scenarios() -> list[MultiArmScenario]:
         MultiArmScenario(
             label="binary",
             eval_type="binary",
-            generate_scores=lambda rng, n, runs, k, d: _gen_multiarm_binary(rng, n, runs, k, d, base_p=0.5),
+            generate_scores=partial(_gen_multiarm_binary, base_p=0.5),
             alt_delta=0.05,
         ),
         MultiArmScenario(
@@ -499,12 +531,10 @@ def _pairwise_pvalue(
         return _safe_paired_t_p(diffs)
 
     if method in {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"}:
-        # These methods are strictly binary at single-run resolution.
-        # For runs>1 the extra runs are discarded here; newcombe/bayes_binary
-        # fall back to smooth_bootstrap internally when runs>=3 is detected,
-        # but we pass a 1-D slice so they always use the binary path.
-        aa = a[:, 0]
-        bb = b[:, 0]
+        # These methods require binary (0/1) input. When runs > 1, collapse
+        # multiple runs to a single binary value via majority vote (mean >= 0.5).
+        aa = (a.mean(axis=1) >= 0.5).astype(float)
+        bb = (b.mean(axis=1) >= 0.5).astype(float)
         if method == "mcnemar":
             # Standalone exact McNemar test (no CI computation overhead).
             return _mcnemar_p(aa, bb)
@@ -533,9 +563,11 @@ def _pairwise_pvalue(
     return min(max(p, 0.0), 1.0)
 
 
-def _method_allowed(eval_type: str, method: str) -> bool:
-    # mcnemar, fisher_exact, newcombe, and bayes_binary are binary-only methods.
-    if method in {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"} and eval_type != "binary":
+def _method_allowed(eval_type: str, method: str, runs: int = 1) -> bool:
+    binary_only = {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"}
+    # These methods require binary inputs; they are excluded for non-binary eval types.
+    # When runs > 1, _pairwise_pvalue collapses runs via majority vote before calling them.
+    if method in binary_only and eval_type != "binary":
         return False
     return True
 
@@ -586,6 +618,8 @@ def _compute_multiarm_metrics(
             statistic=statistic,
         )
         raw_p = np.array([matrix_none.get(a, b).p_value for (a, b) in pairs])
+        # Precompute O(1) pair lookup to avoid repeated O(k²) list scans below.
+        pair_to_idx = {pair: idx for idx, pair in enumerate(pairs)}
 
         for correction in non_friedman:
             if correction == "none":
@@ -601,9 +635,8 @@ def _compute_multiarm_metrics(
             best_selected = True
             for other in labels[1:]:
                 pair_key = (best, other)
-                try:
-                    pair_idx = pairs.index(pair_key)
-                except ValueError:
+                pair_idx = pair_to_idx.get(pair_key)
+                if pair_idx is None:
                     best_selected = False
                     break
                 if not (adj_p[pair_idx] < alpha and matrix_none.get(best, other).point_diff > 0.0):
@@ -648,6 +681,114 @@ def _compute_multiarm_metrics(
 # ---------------------------------------------------------------------------
 
 
+def _pairwise_cell_worker(args: tuple) -> list[PairwiseResult]:
+    """Process one (scenario, n) cell. Top-level so it is picklable for ProcessPoolExecutor."""
+    scenario, n, runs, all_conditions, methods, n_reps, n_bootstrap, alpha, statistic, cell_seed = args
+
+    # Split the cell seed into independent streams via SeedSequence:
+    #   - data_rng: shared across all methods per rep (Common Random Numbers — each
+    #     method sees the same generated data, reducing method-comparison variance).
+    #   - per-method bootstrap rngs: independent of each other and of method order
+    #     in PAIRWISE_METHODS, so adding/reordering methods doesn't shift results.
+    ss = np.random.SeedSequence(cell_seed)
+    data_rng = np.random.default_rng(ss.spawn(1)[0])
+    method_rngs = {m: np.random.default_rng(s) for m, s in zip(methods, ss.spawn(len(methods)))}
+
+    # Build a lookup: condition label → Cohen's |d| (0.0 for null).
+    cohens_d_map: dict[str, float] = {"null": 0.0}
+    for (cond, _), cd in zip(scenario.alt_conditions, scenario.alt_cohens_d):
+        cohens_d_map[cond] = cd
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        reject_counts: dict[tuple[str, str], int] = {
+            (m, c): 0 for m in methods for (c, _) in all_conditions
+        }
+        p_sums: dict[tuple[str, str], float] = {
+            (m, c): 0.0 for m in methods for (c, _) in all_conditions
+        }
+        for _ in range(n_reps):
+            for condition, delta in all_conditions:
+                a, b = scenario.generate_pair(data_rng, n, runs, delta)
+                for method in methods:
+                    p = _pairwise_pvalue(
+                        a, b, method=method, n_bootstrap=n_bootstrap,
+                        rng=method_rngs[method], statistic=statistic,
+                    )
+                    p_sums[(method, condition)] += p
+                    if p <= alpha:
+                        reject_counts[(method, condition)] += 1
+
+    results: list[PairwiseResult] = []
+    for method in methods:
+        for condition, _ in all_conditions:
+            results.append(PairwiseResult(
+                eval_type=scenario.eval_type,
+                scenario=scenario.label,
+                n=n,
+                runs=runs,
+                method=method,
+                condition=condition,
+                n_reps=n_reps,
+                rejects=reject_counts[(method, condition)],
+                p_sum=p_sums[(method, condition)],
+                cohens_d=cohens_d_map.get(condition, 0.0),
+            ))
+    return results
+
+
+def _multiarm_cell_worker(args: tuple) -> list[MultiArmResult]:
+    """Process one (scenario, n) cell for the multi-arm phase."""
+    (scenario, n, runs, k_arms, labels, corrections,
+     n_reps, n_bootstrap, alpha, multiarm_method, statistic, cell_seed) = args
+    rng = np.random.default_rng(cell_seed)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        agg_any: dict[tuple[str, str], int] = {
+            (c, cond): 0 for c in corrections for cond in ("null", "alt")
+        }
+        agg_best: dict[tuple[str, str], int] = {
+            (c, cond): 0 for c in corrections for cond in ("null", "alt")
+        }
+        for _ in range(n_reps):
+            for condition, delta in (("null", 0.0), ("alt", scenario.alt_delta)):
+                scores = scenario.generate_scores(rng, n, runs, k_arms, delta)
+                # Compute bootstrap p-values ONCE; apply all corrections cheaply.
+                metrics = _compute_multiarm_metrics(
+                    scores=scores,
+                    labels=labels,
+                    method=multiarm_method,
+                    corrections=corrections,
+                    n_bootstrap=n_bootstrap,
+                    alpha=alpha,
+                    statistic=statistic,
+                    rng=rng,
+                )
+                for correction in corrections:
+                    any_reject, best_selected = metrics.get(correction, (False, False))
+                    if any_reject:
+                        agg_any[(correction, condition)] += 1
+                    if best_selected:
+                        agg_best[(correction, condition)] += 1
+
+    results: list[MultiArmResult] = []
+    for correction in corrections:
+        for condition in ("null", "alt"):
+            results.append(MultiArmResult(
+                eval_type=scenario.eval_type,
+                scenario=scenario.label,
+                n=n,
+                runs=runs,
+                k=k_arms,
+                correction=correction,
+                condition=condition,
+                n_reps=n_reps,
+                any_reject=agg_any[(correction, condition)],
+                best_selected=agg_best[(correction, condition)],
+            ))
+    return results
+
+
 def run_pairwise_simulation(
     *,
     scenarios: list[PairScenario],
@@ -659,76 +800,41 @@ def run_pairwise_simulation(
     statistic: str,
     progress_mode: str,
     seed: int,
+    n_jobs: int = 1,
 ) -> list[PairwiseResult]:
-    rng = np.random.default_rng(seed)
+    # Build one arg-tuple per (scenario, n) cell; each cell gets a deterministic seed
+    # derived from the base seed so results are reproducible regardless of job count.
+    cells: list[tuple] = []
+    for s_idx, scenario in enumerate(scenarios):
+        methods = [m for m in PAIRWISE_METHODS if _method_allowed(scenario.eval_type, m, runs)]
+        all_conditions = [("null", 0.0)] + scenario.alt_conditions
+        for n_idx, n in enumerate(sample_sizes):
+            cell_seed = seed + s_idx * 10_000 + n_idx * 1_000
+            cells.append((scenario, n, runs, all_conditions, methods,
+                          n_reps, n_bootstrap, alpha, statistic, cell_seed))
+
+    reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pairwise")
     results: list[PairwiseResult] = []
 
-    # One progress step per (scenario × n × rep × condition).
-    total_steps = sum(
-        len(sample_sizes) * n_reps * (1 + len(sc.alt_conditions))
-        for sc in scenarios
-    )
-    step = 0
-    reporter = _ProgressReporter(total_steps, mode=progress_mode, label="pairwise")
+    if n_jobs == 1:
+        with warnings.catch_warnings():
+            if progress_mode != "off":
+                warnings.simplefilter("ignore", UserWarning)
+            for step, cell in enumerate(cells, 1):
+                sc, n = cell[0], cell[1]
+                reporter.update(step, detail=f"{sc.eval_type} {sc.label} n={n}")
+                results.extend(_pairwise_cell_worker(cell))
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            future_to_cell = {executor.submit(_pairwise_cell_worker, cell): cell for cell in cells}
+            completed = 0
+            for future in as_completed(future_to_cell):
+                completed += 1
+                sc, n = future_to_cell[future][0], future_to_cell[future][1]
+                reporter.update(completed, detail=f"{sc.eval_type} {sc.label} n={n}")
+                results.extend(future.result())
 
-    # Keep progress output clean by muting noisy UserWarnings during active
-    # progress rendering. Warnings are left unchanged when progress is off.
-    suppress_user_warnings = progress_mode != "off"
-    with warnings.catch_warnings():
-        if suppress_user_warnings:
-            warnings.simplefilter("ignore", UserWarning)
-
-        for scenario in scenarios:
-            methods = [m for m in PAIRWISE_METHODS if _method_allowed(scenario.eval_type, m)]
-            all_conditions = [("null", 0.0)] + scenario.alt_conditions
-
-            for n in sample_sizes:
-                reject_counts: dict[tuple[str, str], int] = {
-                    (m, c): 0 for m in methods for (c, _) in all_conditions
-                }
-                p_sums: dict[tuple[str, str], float] = {
-                    (m, c): 0.0 for m in methods for (c, _) in all_conditions
-                }
-
-                for _ in range(n_reps):
-                    for condition, delta in all_conditions:
-                        a, b = scenario.generate_pair(rng, n, runs, delta)
-                        step += 1
-                        reporter.update(
-                            step,
-                            detail=f"{scenario.eval_type} {scenario.label} n={n} {condition}",
-                        )
-
-                        for method in methods:
-                            p = _pairwise_pvalue(
-                                a,
-                                b,
-                                method=method,
-                                n_bootstrap=n_bootstrap,
-                                rng=rng,
-                                statistic=statistic,
-                            )
-                            p_sums[(method, condition)] += p
-                            if p <= alpha:
-                                reject_counts[(method, condition)] += 1
-
-                for method in methods:
-                    for condition, _ in all_conditions:
-                        results.append(
-                            PairwiseResult(
-                                eval_type=scenario.eval_type,
-                                scenario=scenario.label,
-                                n=n,
-                                runs=runs,
-                                method=method,
-                                condition=condition,
-                                n_reps=n_reps,
-                                rejects=reject_counts[(method, condition)],
-                                p_sum=p_sums[(method, condition)],
-                            )
-                        )
-
-    reporter.update(total_steps, detail="done")
+    reporter.update(len(cells), detail="done")
     return results
 
 
@@ -745,80 +851,38 @@ def run_multiarm_simulation(
     statistic: str,
     progress_mode: str,
     seed: int,
+    n_jobs: int = 1,
 ) -> list[MultiArmResult]:
-    rng = np.random.default_rng(seed)
+    labels = [f"arm_{i}" for i in range(k_arms)]
+    cells: list[tuple] = []
+    for s_idx, scenario in enumerate(scenarios):
+        for n_idx, n in enumerate(sample_sizes):
+            cell_seed = seed + s_idx * 10_000 + n_idx * 1_000
+            cells.append((scenario, n, runs, k_arms, labels, MULTIARM_CORRECTIONS,
+                          n_reps, n_bootstrap, alpha, multiarm_method, statistic, cell_seed))
+
+    reporter = _ProgressReporter(len(cells), mode=progress_mode, label="multiarm")
     results: list[MultiArmResult] = []
 
-    # One progress step per (scenario × n × rep × condition).
-    # Bootstrap is computed once per step; corrections are cheap array ops.
-    total_steps = len(scenarios) * len(sample_sizes) * n_reps * 2
-    step = 0
-    reporter = _ProgressReporter(total_steps, mode=progress_mode, label="multiarm")
+    if n_jobs == 1:
+        with warnings.catch_warnings():
+            if progress_mode != "off":
+                warnings.simplefilter("ignore", UserWarning)
+            for step, cell in enumerate(cells, 1):
+                sc, n = cell[0], cell[1]
+                reporter.update(step, detail=f"{sc.eval_type} n={n}")
+                results.extend(_multiarm_cell_worker(cell))
+    else:
+        with ProcessPoolExecutor(max_workers=n_jobs) as executor:
+            future_to_cell = {executor.submit(_multiarm_cell_worker, cell): cell for cell in cells}
+            completed = 0
+            for future in as_completed(future_to_cell):
+                completed += 1
+                sc, n = future_to_cell[future][0], future_to_cell[future][1]
+                reporter.update(completed, detail=f"{sc.eval_type} n={n}")
+                results.extend(future.result())
 
-    labels = [f"arm_{i}" for i in range(k_arms)]
-
-    # Keep progress output clean by muting noisy UserWarnings during active
-    # progress rendering. Warnings are left unchanged when progress is off.
-    suppress_user_warnings = progress_mode != "off"
-    with warnings.catch_warnings():
-        if suppress_user_warnings:
-            warnings.simplefilter("ignore", UserWarning)
-
-        for scenario in scenarios:
-            for n in sample_sizes:
-                agg_any: dict[tuple[str, str], int] = {
-                    (c, cond): 0 for c in MULTIARM_CORRECTIONS for cond in ("null", "alt")
-                }
-                agg_best: dict[tuple[str, str], int] = {
-                    (c, cond): 0 for c in MULTIARM_CORRECTIONS for cond in ("null", "alt")
-                }
-
-                for _ in range(n_reps):
-                    for condition, delta in (("null", 0.0), ("alt", scenario.alt_delta)):
-                        scores = scenario.generate_scores(rng, n, runs, k_arms, delta)
-                        step += 1
-                        reporter.update(
-                            step,
-                            detail=f"{scenario.eval_type} n={n} {condition}",
-                        )
-
-                        # Compute bootstrap p-values ONCE; apply all corrections cheaply.
-                        metrics = _compute_multiarm_metrics(
-                            scores=scores,
-                            labels=labels,
-                            method=multiarm_method,
-                            corrections=MULTIARM_CORRECTIONS,
-                            n_bootstrap=n_bootstrap,
-                            alpha=alpha,
-                            statistic=statistic,
-                            rng=rng,
-                        )
-
-                        for correction in MULTIARM_CORRECTIONS:
-                            any_reject, best_selected = metrics.get(correction, (False, False))
-                            if any_reject:
-                                agg_any[(correction, condition)] += 1
-                            if best_selected:
-                                agg_best[(correction, condition)] += 1
-
-                for correction in MULTIARM_CORRECTIONS:
-                    for condition in ("null", "alt"):
-                        results.append(
-                            MultiArmResult(
-                                eval_type=scenario.eval_type,
-                                scenario=scenario.label,
-                                n=n,
-                                runs=runs,
-                                k=k_arms,
-                                correction=correction,
-                                condition=condition,
-                                n_reps=n_reps,
-                                any_reject=agg_any[(correction, condition)],
-                                best_selected=agg_best[(correction, condition)],
-                            )
-                        )
-
-    reporter.update(total_steps, detail="done")
+    reporter.update(len(cells), detail="done")
     return results
 
 
@@ -844,7 +908,30 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     print("=" * 90)
 
     # Discover the ordered set of alternative conditions from the data.
-    all_conds = sorted({r.condition for r in results if r.condition != "null"})
+    # Sort so weaker effects (alt_half) precede stronger (alt), matching the
+    # scenario definition order rather than pure alphabetical order.
+    all_conds = sorted(
+        {r.condition for r in results if r.condition != "null"},
+        key=lambda c: (c.count("_"), c),
+    )
+
+    # Print effect-size calibration table so power figures can be interpreted
+    # across eval types.  Cohen's |d| is computed at n=2000 per scenario.
+    calib: dict[tuple[str, str], float] = {}
+    for r in results:
+        if r.condition != "null" and (r.scenario, r.condition) not in calib:
+            calib[(r.scenario, r.condition)] = r.cohens_d
+    if calib:
+        print("\n  Effect-size calibration (empirical Cohen's |d|, n_ref=2000):")
+        scenarios_seen = sorted({r.scenario for r in results})
+        header = f"  {'scenario':<26}" + "".join(f" {c:>10}" for c in all_conds)
+        print(header)
+        print("  " + "-" * (26 + 11 * len(all_conds)))
+        for sc in scenarios_seen:
+            row = f"  {sc:<26}" + "".join(
+                f" {calib.get((sc, c), float('nan')):>10.3f}" for c in all_conds
+            )
+            print(row)
 
     key = lambda r: (r.eval_type, r.method, r.n, r.condition)
     grouped: dict[tuple[str, str, int, str], list[PairwiseResult]] = defaultdict(list)
@@ -855,6 +942,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     sizes = sorted({r.n for r in results})
 
     # Build header dynamically based on available alternative conditions.
+    print()
     alt_headers = "".join(f" {'pwr_' + c:>8} {'band95':>15}" for c in all_conds)
     print(
         f"  {'method':<18} {'n':>5} {'typeI':>8} {'band95':>15}"
@@ -960,9 +1048,14 @@ def save_pairwise_metric_plot(
         print(f"Skipped pairwise plot (no matching data): {out_path}")
         return
 
-    # Discover alternative conditions from the data (preserve insertion order via sorted).
-    alt_conds = sorted({r.condition for r in plot_results if r.condition != "null"})
-    n_cols = 1 + len(alt_conds)  # type-I column + one column per alt condition
+    # Discover alternative conditions; sort weaker effects before stronger ones.
+    alt_conds = sorted(
+        {r.condition for r in plot_results if r.condition != "null"},
+        key=lambda c: (c.count("_"), c),
+    )
+    # Columns: type-I | one per alt condition | mean null p-value (calibration)
+    n_data_cols = 1 + len(alt_conds)
+    n_cols = n_data_cols + 1
     methods = sorted({r.method for r in plot_results})
 
     fig_width = 7.8 * n_cols
@@ -979,9 +1072,11 @@ def save_pairwise_metric_plot(
     if axes.ndim == 1:
         axes = axes[:, np.newaxis]
 
-    col_titles = [f"Type-I Error (target={alpha:.2f}; red=MC95)"] + [
-        f"Power [{c}] (red=MC95)" for c in alt_conds
-    ]
+    col_titles = (
+        [f"Type-I Error (target={alpha:.2f}; red=MC95)"]
+        + [f"Power [{c}] (red=MC95)" for c in alt_conds]
+        + ["Mean null p-value (target≈0.50; red=mean±SE)"]
+    )
 
     box_kwargs: dict[str, Any] = {
         "vert": False,
@@ -1000,10 +1095,13 @@ def save_pairwise_metric_plot(
         et_results = [res for res in plot_results if res.eval_type == et]
         et_methods = [m for m in methods if any(res.method == m for res in et_results)]
 
-        # Gather series and uncertainty bands for all columns.
-        all_series: list[list[np.ndarray]] = [[] for _ in range(n_cols)]
-        all_uncert: list[list[tuple[float, float, float]]] = [[] for _ in range(n_cols)]
+        # Gather reject-rate series and uncertainty for the data columns.
+        all_series: list[list[np.ndarray]] = [[] for _ in range(n_data_cols)]
+        all_uncert: list[list[tuple[float, float, float]]] = [[] for _ in range(n_data_cols)]
         all_conditions = ["null"] + alt_conds
+        # Separate series for the mean null p-value column.
+        mean_p_series: list[np.ndarray] = []
+        mean_p_uncert: list[tuple[float, float, float]] = []
 
         for method in et_methods:
             for c_idx, cond in enumerate(all_conditions):
@@ -1019,14 +1117,27 @@ def save_pairwise_metric_plot(
                 all_series[c_idx].append(vals)
                 all_uncert[c_idx].append((p_hat, lo, hi))
 
+            # Mean null p-value series: p_sum / n_reps for each (scenario, n) cell.
+            null_rows = [res for res in et_results if res.method == method and res.condition == "null"]
+            if null_rows:
+                mp_vals = np.array([res.p_sum / res.n_reps for res in null_rows], dtype=float)
+                mean_p_series.append(mp_vals)
+                mp_mean = float(np.mean(mp_vals))
+                mp_se = float(np.std(mp_vals, ddof=1) / np.sqrt(len(mp_vals))) if len(mp_vals) > 1 else 0.0
+                mean_p_uncert.append((mp_mean, max(0.0, mp_mean - 1.96 * mp_se), min(1.0, mp_mean + 1.96 * mp_se)))
+            else:
+                mean_p_series.append(np.array([float("nan")]))
+                mean_p_uncert.append((float("nan"), float("nan"), float("nan")))
+
         for c_idx in range(n_cols):
             ax = axes[r_idx, c_idx]
 
             if r_idx == 0:
                 ax.set_title(col_titles[c_idx], fontsize=10)
 
-            series = all_series[c_idx]
-            uncert = all_uncert[c_idx]
+            is_mean_p_col = (c_idx == n_cols - 1)
+            series = mean_p_series if is_mean_p_col else all_series[c_idx]
+            uncert = mean_p_uncert if is_mean_p_col else all_uncert[c_idx]
             valid = [s for s in series if not (s.size == 1 and np.isnan(s[0]))]
 
             if not valid:
@@ -1040,10 +1151,13 @@ def save_pairwise_metric_plot(
                 **box_kwargs,
             )
             ax.grid(axis="x", linestyle="--", linewidth=0.65, alpha=0.50)
-            ax.set_xlabel(
-                "Type-I error across scenarios × n" if c_idx == 0 else f"Power [{all_conditions[c_idx]}] across scenarios × n",
-                fontsize=9,
-            )
+            if c_idx == 0:
+                xlabel = "Type-I error across scenarios × n"
+            elif is_mean_p_col:
+                xlabel = "Mean null p-value across scenarios × n"
+            else:
+                xlabel = f"Power [{all_conditions[c_idx]}] across scenarios × n"
+            ax.set_xlabel(xlabel, fontsize=9)
             ax.tick_params(axis="y", labelsize=9, pad=2)
             ax.tick_params(axis="x", labelsize=8.5)
             ax.invert_yaxis()
@@ -1054,6 +1168,10 @@ def save_pairwise_metric_plot(
                 hi_ok = min(1.0, alpha + 0.02)
                 ax.axvspan(low_ok, hi_ok, color="#DDDDDD", alpha=0.35, zorder=0)
                 ax.axvline(alpha, color="black", linestyle="-", linewidth=1.2)
+            elif is_mean_p_col:
+                # Well-calibrated tests should have mean null p ≈ 0.5.
+                ax.axvline(0.5, color="black", linestyle="-", linewidth=1.2)
+                ax.axvspan(0.40, 0.60, color="#DDDDDD", alpha=0.35, zorder=0)
 
             for y_pos, (p_hat, lo, hi) in enumerate(uncert, start=1):
                 if np.isnan(lo) or np.isnan(hi):
@@ -1270,6 +1388,7 @@ def save_results_artifacts(
                     "runs",
                     "method",
                     "condition",
+                    "cohens_d",
                     "n_reps",
                     "rejects",
                     "rate",
@@ -1290,6 +1409,7 @@ def save_results_artifacts(
                         r.runs,
                         r.method,
                         r.condition,
+                        f"{r.cohens_d:.6f}",
                         r.n_reps,
                         r.rejects,
                         f"{rate:.8f}",
@@ -1364,19 +1484,20 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--sizes", type=int, nargs="+", default=[10, 20, 50, 100], help="Sample sizes")
-    parser.add_argument("--runs", type=int, default=1, help="Runs per input (R>=3 activates nested compare paths)")
+    parser.add_argument("--runs", type=int, default=1, help="Runs per input (R>=3 activates nested compare paths; binary-only methods excluded when R>1)")
     parser.add_argument("--reps", type=int, default=500, help="Monte Carlo reps per cell")
     parser.add_argument("--bootstrap-n", type=int, default=2000, help="Bootstrap/permutation samples per method")
     parser.add_argument("--alpha", type=float, default=0.05, help="Significance threshold")
     parser.add_argument("--seed", type=int, default=123, help="Random seed")
     parser.add_argument("--statistic", choices=["mean", "median"], default="mean", help="Statistic for paired effects")
-    parser.add_argument("--k-arms", type=int, default=8, help="Number of templates/models in multi-arm phase")
+    parser.add_argument("--k-arms", type=int, default=4, help="Number of templates/models in multi-arm phase")
     parser.add_argument(
         "--multiarm-method",
         choices=["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "permutation"],
         default="smooth_bootstrap",
         help="Pairwise method used inside the multi-arm phase (bootstrap p-values computed once; corrections applied to those same p-values)",
     )
+    parser.add_argument("--jobs", type=int, default=1, help="Parallel worker processes (default: 1)")
     parser.add_argument("--pairwise-only", action="store_true", help="Run only pairwise phase")
     parser.add_argument("--multiarm-only", action="store_true", help="Run only multi-arm phase")
     parser.add_argument("--progress", choices=PROGRESS_MODES, default="bar", help="Progress display mode")
@@ -1403,6 +1524,7 @@ def main() -> None:
     print(f"  Multi-arm K      : {args.k_arms}")
     print(f"  Multi-arm method : {args.multiarm_method}")
     print(f"  Seed             : {args.seed}")
+    print(f"  Jobs             : {args.jobs}")
     print(f"  Progress         : {args.progress}")
     print(f"  Plots            : {args.plots}")
     print(f"  Save results     : {args.save_results}")
@@ -1426,6 +1548,7 @@ def main() -> None:
             statistic=args.statistic,
             progress_mode=args.progress,
             seed=args.seed,
+            n_jobs=args.jobs,
         )
         print_pairwise_report(pairwise_results, alpha=args.alpha)
         if args.plots == "save":
@@ -1464,6 +1587,7 @@ def main() -> None:
             statistic=args.statistic,
             progress_mode=args.progress,
             seed=args.seed + 100,
+            n_jobs=args.jobs,
         )
         print_multiarm_report(multiarm_results)
         if args.plots == "save":

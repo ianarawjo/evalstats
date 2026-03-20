@@ -280,15 +280,21 @@ def bootstrap_means_1d(
         ``'mean'`` (default) or ``'median'``.
     """
     m = len(values)
-    boot_stats = np.empty(n_bootstrap)
-    if statistic == "median":
-        for b in range(n_bootstrap):
-            idx = rng.choice(m, size=m, replace=True)
-            boot_stats[b] = np.median(values[idx])
-    else:
-        for b in range(n_bootstrap):
-            idx = rng.choice(m, size=m, replace=True)
-            boot_stats[b] = np.mean(values[idx])
+    boot_stats = np.empty(n_bootstrap, dtype=float)
+
+    chunk_size = max(1, min(n_bootstrap, 4096, max(1, int(1_000_000 // max(m, 1)))))
+
+    start = 0
+    while start < n_bootstrap:
+        stop = min(start + chunk_size, n_bootstrap)
+        idx = rng.integers(0, m, size=(stop - start, m))
+        samples = values[idx]
+        if statistic == "median":
+            boot_stats[start:stop] = np.median(samples, axis=1)
+        else:
+            boot_stats[start:stop] = samples.mean(axis=1)
+        start = stop
+
     return boot_stats
 
 
