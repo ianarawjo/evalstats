@@ -438,6 +438,55 @@ def pairwise_differences(
     if rng is None:
         rng = np.random.default_rng()
 
+    def _seeded_fallback(seed_method: str) -> PairedDiffResult:
+        return _pairwise_diffs_seeded(
+            scores, idx_a, idx_b, label_a, label_b,
+            method=seed_method, ci=ci, n_bootstrap=n_bootstrap,
+            rng=rng, statistic=statistic,
+        )
+
+    def _paired_stats(values_a: np.ndarray, values_b: np.ndarray) -> tuple[np.ndarray, int, float, float]:
+        diffs = values_a - values_b
+        m = len(diffs)
+        point_d = _stat(diffs, statistic)
+        std_d = float(np.std(diffs, ddof=1))
+        return diffs, m, point_d, std_d
+
+    def _percentile_ci(boot_stats: np.ndarray, alpha_val: float) -> tuple[float, float]:
+        ci_low = float(np.percentile(boot_stats, 100 * alpha_val / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha_val / 2)))
+        return ci_low, ci_high
+
+    def _bootstrap_tail_pvalue(boot_centered_stats: np.ndarray, point: float) -> float:
+        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point))
+        return float((extreme_count + 1) / (n_bootstrap + 1))
+
+    def _build_result(
+        *,
+        diffs: np.ndarray,
+        point_d: float,
+        std_d: float,
+        ci_low: float,
+        ci_high: float,
+        p_value: float,
+        test_name: str,
+    ) -> PairedDiffResult:
+        return PairedDiffResult(
+            template_a=label_a,
+            template_b=label_b,
+            point_diff=point_d,
+            std_diff=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_method=test_name,
+            n_inputs=len(diffs),
+            per_input_diffs=diffs,
+            n_runs=1,
+            statistic=statistic,
+            wilcoxon_p=_wilcoxon_signed_rank_p(diffs),
+        )
+
     # ------------------------------------------------------------------ #
     # Bayesian binary path (Dirichlet-multinomial paired model)           #
     # ------------------------------------------------------------------ #
@@ -445,11 +494,7 @@ def pairwise_differences(
         # When R >= 3 the per-run cell means are not binary values;
         # fall back to smooth bootstrap for the seeded nested path.
         if scores.ndim == 3 and scores.shape[2] >= 3:
-            return _pairwise_diffs_seeded(
-                scores, idx_a, idx_b, label_a, label_b,
-                method="smooth_bootstrap", ci=ci, n_bootstrap=n_bootstrap,
-                rng=rng, statistic=statistic,
-            )
+            return _seeded_fallback("smooth_bootstrap")
         flat = scores.mean(axis=2) if scores.ndim == 3 else scores
         values_a = flat[idx_a]
         values_b = flat[idx_b]
@@ -459,11 +504,8 @@ def pairwise_differences(
                 "non-binary values were found in the score array. "
                 "Use is_binary_scores() to check before calling."
             )
-        diffs = values_a - values_b
-        m = len(diffs)
+        diffs, m, point_d, std_d = _paired_stats(values_a, values_b)
         _warn_bayes_binary_large_n(m)
-        point_d = _stat(diffs, statistic)
-        std_d = float(np.std(diffs, ddof=1))
         alpha_val = 1.0 - ci
         ci_low, ci_high, prob_a_greater = bayes_paired_diff_ci(
             values_a, values_b, alpha_val, num_samples=n_bootstrap, rng=rng,
@@ -471,21 +513,14 @@ def pairwise_differences(
         # Two-sided Bayesian p-value: posterior mass on the wrong side × 2
         p_value = float(2.0 * min(prob_a_greater, 1.0 - prob_a_greater))
         p_value = max(1.0 / (n_bootstrap + 1), p_value)
-        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
-        return PairedDiffResult(
-            template_a=label_a,
-            template_b=label_b,
-            point_diff=point_d,
-            std_diff=std_d,
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_method=f"bayes binary (n={n_bootstrap})",
-            n_inputs=m,
-            per_input_diffs=diffs,
-            n_runs=1,
-            statistic=statistic,
-            wilcoxon_p=wilcoxon_p,
+            test_name=f"bayes binary (n={n_bootstrap})",
         )
 
     # ------------------------------------------------------------------ #
@@ -495,36 +530,22 @@ def pairwise_differences(
         # When R >= 3 the cell means are proportions, not binary values.
         # Fall back to smooth bootstrap for the seeded nested path.
         if scores.ndim == 3 and scores.shape[2] >= 3:
-            return _pairwise_diffs_seeded(
-                scores, idx_a, idx_b, label_a, label_b,
-                method="smooth_bootstrap", ci=ci, n_bootstrap=n_bootstrap,
-                rng=rng, statistic=statistic,
-            )
+            return _seeded_fallback("smooth_bootstrap")
         flat = scores.mean(axis=2) if scores.ndim == 3 else scores
         values_a = flat[idx_a]
         values_b = flat[idx_b]
-        diffs = values_a - values_b
-        m = len(diffs)
-        point_d = _stat(diffs, statistic)
-        std_d = float(np.std(diffs, ddof=1))
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
         p_value = _mcnemar_p(values_a, values_b)
-        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
-        return PairedDiffResult(
-            template_a=label_a,
-            template_b=label_b,
-            point_diff=point_d,
-            std_diff=std_d,
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_method="newcombe (mcnemar p-value)",
-            n_inputs=m,
-            per_input_diffs=diffs,
-            n_runs=1,
-            statistic=statistic,
-            wilcoxon_p=wilcoxon_p,
+            test_name="newcombe (mcnemar p-value)",
         )
 
     if method == "fisher_exact":
@@ -549,116 +570,54 @@ def pairwise_differences(
 
         values_a = flat[idx_a]
         values_b = flat[idx_b]
-        diffs = values_a - values_b
-        m = len(diffs)
-        point_d = _stat(diffs, statistic)
-        std_d = float(np.std(diffs, ddof=1))
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
         p_value = _fisher_exact_p(values_a, values_b)
-        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
-        return PairedDiffResult(
-            template_a=label_a,
-            template_b=label_b,
-            point_diff=point_d,
-            std_diff=std_d,
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_method="fisher exact (newcombe ci)",
-            n_inputs=m,
-            per_input_diffs=diffs,
-            n_runs=1,
-            statistic=statistic,
-            wilcoxon_p=wilcoxon_p,
+            test_name="fisher exact (newcombe ci)",
         )
 
     # ------------------------------------------------------------------ #
     # Paired sign test path                                               #
     # ------------------------------------------------------------------ #
-    if method == "sign_test":
+    if method in {"sign_test", "permutation"}:
         if scores.ndim == 3 and scores.shape[2] >= 3:
-            return _pairwise_diffs_seeded(
-                scores, idx_a, idx_b, label_a, label_b,
-                method="sign_test", ci=ci, n_bootstrap=n_bootstrap,
-                rng=rng, statistic=statistic,
-            )
+            return _seeded_fallback(method)
         if scores.ndim == 3:
             scores = scores.mean(axis=2)
 
-        diffs = scores[idx_a] - scores[idx_b]
-        m = len(diffs)
-        point_d = _stat(diffs, statistic)
-        std_d = float(np.std(diffs, ddof=1))
+        diffs, _, point_d, std_d = _paired_stats(scores[idx_a], scores[idx_b])
         alpha = 1.0 - ci
 
         boot_stats = bootstrap_means_1d(
             diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
         )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        p_value = _paired_sign_test_p(diffs)
-        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
+        ci_low, ci_high = _percentile_ci(boot_stats, alpha)
 
-        return PairedDiffResult(
-            template_a=label_a,
-            template_b=label_b,
-            point_diff=point_d,
-            std_diff=std_d,
-            ci_low=ci_low,
-            ci_high=ci_high,
-            p_value=p_value,
-            test_method=f"paired sign test + bootstrap ci (n={n_bootstrap})",
-            n_inputs=m,
-            per_input_diffs=diffs,
-            n_runs=1,
-            statistic=statistic,
-            wilcoxon_p=wilcoxon_p,
-        )
-
-    # ------------------------------------------------------------------ #
-    # Paired permutation/randomization path                               #
-    # ------------------------------------------------------------------ #
-    if method == "permutation":
-        if scores.ndim == 3 and scores.shape[2] >= 3:
-            return _pairwise_diffs_seeded(
-                scores, idx_a, idx_b, label_a, label_b,
-                method="permutation", ci=ci, n_bootstrap=n_bootstrap,
-                rng=rng, statistic=statistic,
+        if method == "sign_test":
+            p_value = _paired_sign_test_p(diffs)
+            test_name = f"paired sign test + bootstrap ci (n={n_bootstrap})"
+        else:
+            p_value = _paired_signflip_pvalue(
+                diffs, statistic=statistic, n_samples=n_bootstrap, rng=rng,
             )
-        if scores.ndim == 3:
-            scores = scores.mean(axis=2)
+            test_name = f"paired permutation + bootstrap ci (n={n_bootstrap})"
 
-        diffs = scores[idx_a] - scores[idx_b]
-        m = len(diffs)
-        point_d = _stat(diffs, statistic)
-        std_d = float(np.std(diffs, ddof=1))
-        alpha = 1.0 - ci
-
-        boot_stats = bootstrap_means_1d(
-            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        p_value = _paired_signflip_pvalue(
-            diffs, statistic=statistic, n_samples=n_bootstrap, rng=rng,
-        )
-        wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
-
-        return PairedDiffResult(
-            template_a=label_a,
-            template_b=label_b,
-            point_diff=point_d,
-            std_diff=std_d,
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_method=f"paired permutation + bootstrap ci (n={n_bootstrap})",
-            n_inputs=m,
-            per_input_diffs=diffs,
-            n_runs=1,
-            statistic=statistic,
-            wilcoxon_p=wilcoxon_p,
+            test_name=test_name,
         )
 
     # ------------------------------------------------------------------ #
@@ -667,11 +626,7 @@ def pairwise_differences(
     if scores.ndim == 3:
         R = scores.shape[2]
         if R >= 3:
-            return _pairwise_diffs_seeded(
-                scores, idx_a, idx_b, label_a, label_b,
-                method=method, ci=ci, n_bootstrap=n_bootstrap, rng=rng,
-                statistic=statistic,
-            )
+            return _seeded_fallback(method)
         # R == 1 or R == 2: collapse to 2-D (warning already issued during validation)
         scores = scores.mean(axis=2)
 
@@ -698,54 +653,40 @@ def pairwise_differences(
                 idx = rng.choice(m, size=m, replace=True)
                 boot_centered_stats[b] = np.mean(centered_diffs[idx])
         boot_stats = boot_centered_stats + point_d
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
+        ci_low, ci_high = _percentile_ci(boot_stats, alpha)
+        p_value = _bootstrap_tail_pvalue(boot_centered_stats, point_d)
         test_name = f"bootstrap (n={n_bootstrap})"
 
-    elif resolved_method == "bca":
-        boot_stats = bootstrap_means_1d(
-            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
-        ci_low, ci_high = bca_interval_1d(
-            diffs, point_d, boot_stats, alpha, statistic=statistic,
-        )
-        centered_diffs = diffs - point_d
-        boot_centered_stats = bootstrap_means_1d(
-            centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
-        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"bca bootstrap (n={n_bootstrap})"
+    elif resolved_method in {"bca", "bayes_bootstrap", "smooth_bootstrap"}:
+        samplers = {
+            "bca": bootstrap_means_1d,
+            "bayes_bootstrap": bayes_bootstrap_means_1d,
+            "smooth_bootstrap": smooth_bootstrap_means_1d,
+        }
+        sampler = samplers[resolved_method]
 
-    elif resolved_method == "bayes_bootstrap":
-        boot_stats = bayes_bootstrap_means_1d(
+        boot_stats = sampler(
             diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
         )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        centered_diffs = diffs - point_d
-        boot_centered_stats = bayes_bootstrap_means_1d(
-            centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
-        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"bayesian bootstrap (n={n_bootstrap})"
+        if resolved_method == "bca":
+            ci_low, ci_high = bca_interval_1d(
+                diffs, point_d, boot_stats, alpha, statistic=statistic,
+            )
+        else:
+            ci_low, ci_high = _percentile_ci(boot_stats, alpha)
 
-    elif resolved_method == "smooth_bootstrap":
-        boot_stats = smooth_bootstrap_means_1d(
-            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
         centered_diffs = diffs - point_d
-        boot_centered_stats = smooth_bootstrap_means_1d(
+        boot_centered_stats = sampler(
             centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
         )
-        extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"smooth bootstrap (n={n_bootstrap})"
+        p_value = _bootstrap_tail_pvalue(boot_centered_stats, point_d)
+
+        test_labels = {
+            "bca": "bca bootstrap",
+            "bayes_bootstrap": "bayesian bootstrap",
+            "smooth_bootstrap": "smooth bootstrap",
+        }
+        test_name = f"{test_labels[resolved_method]} (n={n_bootstrap})"
 
     else:
         raise ValueError(f"Unknown method: {method}")
@@ -753,22 +694,14 @@ def pairwise_differences(
     if method == "auto":
         test_name = f"auto→{test_name}"
 
-    wilcoxon_p = _wilcoxon_signed_rank_p(diffs)
-
-    return PairedDiffResult(
-        template_a=label_a,
-        template_b=label_b,
-        point_diff=point_d,
-        std_diff=std_d,
+    return _build_result(
+        diffs=diffs,
+        point_d=point_d,
+        std_d=std_d,
         ci_low=ci_low,
         ci_high=ci_high,
         p_value=p_value,
-        test_method=test_name,
-        n_inputs=m,
-        per_input_diffs=diffs,
-        n_runs=1,
-        statistic=statistic,
-        wilcoxon_p=wilcoxon_p,
+        test_name=test_name,
     )
 
 
@@ -810,12 +743,21 @@ def _pairwise_diffs_seeded(
 
     resolved_method = resolve_resampling_method(method, M)
 
+    def _percentile_ci(boot_stats: np.ndarray) -> tuple[float, float]:
+        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        return ci_low, ci_high
+
+    def _bootstrap_tail_pvalue(boot_stats: np.ndarray) -> float:
+        boot_centered = boot_stats - point_d
+        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
+        return float((extreme_count + 1) / (n_bootstrap + 1))
+
     if method == "permutation":
         boot_stats = bootstrap_diffs_nested(
             scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
         )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        ci_low, ci_high = _percentile_ci(boot_stats)
         p_value = _paired_signflip_pvalue(
             cell_diffs, statistic=statistic, n_samples=n_bootstrap, rng=rng,
         )
@@ -825,57 +767,38 @@ def _pairwise_diffs_seeded(
         boot_stats = bootstrap_diffs_nested(
             scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
         )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+        ci_low, ci_high = _percentile_ci(boot_stats)
         p_value = _paired_sign_test_p(cell_diffs)
         test_name = f"nested paired sign test + bootstrap ci (n={n_bootstrap}, R={R})"
 
-    elif resolved_method == "bootstrap":
-        boot_stats = bootstrap_diffs_nested(
+    elif resolved_method in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"}:
+        samplers = {
+            "bootstrap": bootstrap_diffs_nested,
+            "bca": bootstrap_diffs_nested,
+            "bayes_bootstrap": bayes_bootstrap_diffs_nested,
+            "smooth_bootstrap": smooth_bootstrap_diffs_nested,
+        }
+        boot_stats = samplers[resolved_method](
             scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
         )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        boot_centered = boot_stats - point_d
-        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"nested bootstrap (n={n_bootstrap}, R={R})"
 
-    elif resolved_method == "bca":
-        boot_stats = bootstrap_diffs_nested(
-            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
-        )
-        # BCa: jackknife over inputs (the outer sampling unit) using cell_diffs.
-        ci_low, ci_high = bca_interval_1d(
-            cell_diffs, point_d, boot_stats, alpha, statistic=statistic,
-        )
-        boot_centered = boot_stats - point_d
-        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"nested bca bootstrap (n={n_bootstrap}, R={R})"
+        if resolved_method == "bca":
+            # BCa: jackknife over inputs (the outer sampling unit) using cell_diffs.
+            ci_low, ci_high = bca_interval_1d(
+                cell_diffs, point_d, boot_stats, alpha, statistic=statistic,
+            )
+        else:
+            ci_low, ci_high = _percentile_ci(boot_stats)
 
-    elif resolved_method == "bayes_bootstrap":
-        # Bayesian bootstrap: Dirichlet outer weights replace multinomial input resampling.
-        boot_stats = bayes_bootstrap_diffs_nested(
-            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
-        )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        boot_centered = boot_stats - point_d
-        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"nested bayesian bootstrap (n={n_bootstrap}, R={R})"
+        p_value = _bootstrap_tail_pvalue(boot_stats)
 
-    elif resolved_method == "smooth_bootstrap":
-        boot_stats = smooth_bootstrap_diffs_nested(
-            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
-        )
-        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
-        boot_centered = boot_stats - point_d
-        extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
-        p_value = float((extreme_count + 1) / (n_bootstrap + 1))
-        test_name = f"nested smooth bootstrap (n={n_bootstrap}, R={R})"
+        test_labels = {
+            "bootstrap": "nested bootstrap",
+            "bca": "nested bca bootstrap",
+            "bayes_bootstrap": "nested bayesian bootstrap",
+            "smooth_bootstrap": "nested smooth bootstrap",
+        }
+        test_name = f"{test_labels[resolved_method]} (n={n_bootstrap}, R={R})"
 
     else:
         raise ValueError(f"Unknown method: {method}")
