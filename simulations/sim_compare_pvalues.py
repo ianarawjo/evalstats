@@ -137,6 +137,16 @@ class MultiArmResult:
     best_selected: int
 
 
+def _min_reps_for_mcse(target_mcse: float) -> int:
+    """Worst-case reps needed for Bernoulli Monte Carlo MCSE target.
+
+    Uses p(1-p) <= 0.25, so MCSE <= sqrt(0.25 / reps).
+    """
+    if target_mcse <= 0:
+        return 0
+    return int(np.ceil(0.25 / (target_mcse ** 2)))
+
+
 class _ProgressReporter:
     def __init__(self, total: int, *, mode: str = "bar", label: str = "") -> None:
         self.total = max(int(total), 1)
@@ -226,6 +236,29 @@ def _gen_continuous_pair(
     return a_vals, b_vals
 
 
+def _gen_continuous_pair_heavy_tail(
+    rng: np.random.Generator,
+    n: int,
+    runs: int,
+    delta: float,
+    base_loc: float = 0.5,
+    base_scale: float = 0.14,
+    t_df: float = 2.5,
+    tail_scale: float = 0.11,
+    outlier_prob: float = 0.03,
+    outlier_scale: float = 0.35,
+) -> tuple[np.ndarray, np.ndarray]:
+    base = np.clip(rng.normal(base_loc, base_scale, size=(n, 1)), 0.0, 1.0)
+    shared = stats.t.rvs(df=t_df, size=(n, runs), random_state=rng) * tail_scale
+    indiv_a = stats.t.rvs(df=t_df, size=(n, runs), random_state=rng) * (tail_scale * 0.7)
+    indiv_b = stats.t.rvs(df=t_df, size=(n, runs), random_state=rng) * (tail_scale * 0.7)
+    outlier_a = rng.normal(0.0, outlier_scale, size=(n, runs)) * (rng.random((n, runs)) < outlier_prob)
+    outlier_b = rng.normal(0.0, outlier_scale, size=(n, runs)) * (rng.random((n, runs)) < outlier_prob)
+    a_vals = np.clip(base + shared + indiv_a + outlier_a, 0.0, 1.0)
+    b_vals = np.clip(base + delta + shared + indiv_b + outlier_b, 0.0, 1.0)
+    return a_vals, b_vals
+
+
 def _gen_likert_pair(
     rng: np.random.Generator,
     n: int,
@@ -260,6 +293,24 @@ def _gen_grades_pair(
     return a_vals, b_vals
 
 
+def _gen_grades_pair_heavy_tail(
+    rng: np.random.Generator,
+    n: int,
+    runs: int,
+    delta: float,
+    mu: float = 55.0,
+    sigma: float = 20.0,
+    t_df: float = 3.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    base = np.clip(mu + stats.t.rvs(df=t_df, size=(n, 1), random_state=rng) * sigma, 0.0, 100.0)
+    shared = stats.t.rvs(df=t_df, size=(n, runs), random_state=rng) * (sigma * 0.22)
+    indiv_a = stats.t.rvs(df=t_df, size=(n, runs), random_state=rng) * (sigma * 0.16)
+    indiv_b = stats.t.rvs(df=t_df, size=(n, runs), random_state=rng) * (sigma * 0.16)
+    a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
+    b_vals = np.clip(base + delta + shared + indiv_b, 0.0, 100.0)
+    return a_vals, b_vals
+
+
 def _calibrate_cohens_d(
     generate_pair: Callable,
     delta: float,
@@ -278,7 +329,7 @@ def _calibrate_cohens_d(
     return abs(float(np.mean(diffs)) / sd) if sd > 1e-12 else 0.0
 
 
-def build_pair_scenarios() -> list[PairScenario]:
+def build_pair_scenarios(*, include_extreme: bool = False) -> list[PairScenario]:
     scenarios: list[PairScenario] = []
 
     # Binary: balanced (p≈0.50)
@@ -362,6 +413,52 @@ def build_pair_scenarios() -> list[PairScenario]:
         alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
     ))
 
+    if include_extreme:
+        # Binary: very sparse event regime (near-zero success probability)
+        d = 0.02
+        scenarios.append(PairScenario(
+            label="binary-ultra-sparse",
+            eval_type="binary",
+            generate_pair=partial(_gen_binary_pair, base_p=0.01, concentration=6.0),
+            alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
+        ))
+
+        # Binary: near-ceiling regime (limited headroom)
+        d = 0.018
+        scenarios.append(PairScenario(
+            label="binary-near-ceiling",
+            eval_type="binary",
+            generate_pair=partial(_gen_binary_pair, base_p=0.95, concentration=10.0),
+            alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
+        ))
+
+        # Continuous: heavy-tailed + outlier contamination
+        d = 0.025
+        scenarios.append(PairScenario(
+            label="continuous-heavy-tail",
+            eval_type="continuous",
+            generate_pair=partial(_gen_continuous_pair_heavy_tail, base_loc=0.50, base_scale=0.14, t_df=2.5),
+            alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
+        ))
+
+        # Likert: near-ceiling compressed regime
+        d = 0.16
+        scenarios.append(PairScenario(
+            label="likert-near-ceiling",
+            eval_type="likert",
+            generate_pair=partial(_gen_likert_pair, mu=4.45, sigma=0.55),
+            alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
+        ))
+
+        # Grades: heavy-tailed broad-score regime
+        d = 3.0
+        scenarios.append(PairScenario(
+            label="grades-heavy-tail",
+            eval_type="grades",
+            generate_pair=partial(_gen_grades_pair_heavy_tail, mu=56.0, sigma=22.0, t_df=3.0),
+            alt_conditions=[("alt_half", d * 0.5), ("alt", d)],
+        ))
+
     # Compute empirical Cohen's |d| for each scenario × alt condition once at
     # build time (n_ref=2000) so the metric is available in reports and CSV.
     for sc in scenarios:
@@ -412,6 +509,25 @@ def _gen_multiarm_continuous(
     return out
 
 
+def _gen_multiarm_continuous_heavy_tail(
+    rng: np.random.Generator,
+    n: int,
+    runs: int,
+    k: int,
+    delta: float,
+) -> np.ndarray:
+    base = np.clip(rng.normal(0.5, 0.15, size=(n, 1)), 0.0, 1.0)
+    shared = stats.t.rvs(df=2.5, size=(n, runs), random_state=rng) * 0.11
+    out = np.empty((k, n, runs), dtype=float)
+    effects = np.zeros(k)
+    effects[0] = delta
+    for j in range(k):
+        indiv = stats.t.rvs(df=2.5, size=(n, runs), random_state=rng) * 0.08
+        spikes = rng.normal(0.0, 0.30, size=(n, runs)) * (rng.random((n, runs)) < 0.03)
+        out[j] = np.clip(base + effects[j] + shared + indiv + spikes, 0.0, 1.0)
+    return out
+
+
 def _gen_multiarm_likert(
     rng: np.random.Generator,
     n: int,
@@ -426,6 +542,24 @@ def _gen_multiarm_likert(
     effects[0] = delta
     for j in range(k):
         indiv = rng.normal(0.0, 0.25, size=(n, runs))
+        out[j] = np.rint(np.clip(base + effects[j] + shared + indiv, 1.0, 5.0))
+    return out
+
+
+def _gen_multiarm_likert_near_ceiling(
+    rng: np.random.Generator,
+    n: int,
+    runs: int,
+    k: int,
+    delta: float,
+) -> np.ndarray:
+    base = rng.normal(4.45, 0.55, size=(n, 1))
+    shared = rng.normal(0.0, 0.28, size=(n, runs))
+    out = np.empty((k, n, runs), dtype=float)
+    effects = np.zeros(k)
+    effects[0] = delta
+    for j in range(k):
+        indiv = rng.normal(0.0, 0.20, size=(n, runs))
         out[j] = np.rint(np.clip(base + effects[j] + shared + indiv, 1.0, 5.0))
     return out
 
@@ -448,8 +582,26 @@ def _gen_multiarm_grades(
     return out
 
 
-def build_multiarm_scenarios() -> list[MultiArmScenario]:
-    return [
+def _gen_multiarm_grades_heavy_tail(
+    rng: np.random.Generator,
+    n: int,
+    runs: int,
+    k: int,
+    delta: float,
+) -> np.ndarray:
+    base = np.clip(56.0 + stats.t.rvs(df=3.0, size=(n, 1), random_state=rng) * 20.0, 0.0, 100.0)
+    shared = stats.t.rvs(df=3.0, size=(n, runs), random_state=rng) * 4.2
+    out = np.empty((k, n, runs), dtype=float)
+    effects = np.zeros(k)
+    effects[0] = delta
+    for j in range(k):
+        indiv = stats.t.rvs(df=3.0, size=(n, runs), random_state=rng) * 3.0
+        out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 100.0)
+    return out
+
+
+def build_multiarm_scenarios(*, include_extreme: bool = False) -> list[MultiArmScenario]:
+    scenarios = [
         MultiArmScenario(
             label="binary",
             eval_type="binary",
@@ -475,6 +627,36 @@ def build_multiarm_scenarios() -> list[MultiArmScenario]:
             alt_delta=3.0,
         ),
     ]
+
+    if include_extreme:
+        scenarios.extend([
+            MultiArmScenario(
+                label="binary-ultra-sparse",
+                eval_type="binary",
+                generate_scores=partial(_gen_multiarm_binary, base_p=0.01),
+                alt_delta=0.02,
+            ),
+            MultiArmScenario(
+                label="continuous-heavy-tail",
+                eval_type="continuous",
+                generate_scores=_gen_multiarm_continuous_heavy_tail,
+                alt_delta=0.025,
+            ),
+            MultiArmScenario(
+                label="likert-near-ceiling",
+                eval_type="likert",
+                generate_scores=_gen_multiarm_likert_near_ceiling,
+                alt_delta=0.14,
+            ),
+            MultiArmScenario(
+                label="grades-heavy-tail",
+                eval_type="grades",
+                generate_scores=_gen_multiarm_grades_heavy_tail,
+                alt_delta=2.8,
+            ),
+        ])
+
+    return scenarios
 
 
 # ---------------------------------------------------------------------------
@@ -945,11 +1127,11 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     print()
     alt_headers = "".join(f" {'pwr_' + c:>8} {'band95':>15}" for c in all_conds)
     print(
-        f"  {'method':<18} {'n':>5} {'typeI':>8} {'band95':>15}"
+        f"  {'method':<18} {'n':>5} {'typeI':>8} {'mcse':>8} {'band95':>15}"
         + alt_headers
         + f" {'mean_p0':>9}"
     )
-    sep = f"  {'-'*18} {'-'*5} {'-'*8} {'-'*15}" + "".join(f" {'-'*8} {'-'*15}" for _ in all_conds) + f" {'-'*9}"
+    sep = f"  {'-'*18} {'-'*5} {'-'*8} {'-'*8} {'-'*15}" + "".join(f" {'-'*8} {'-'*15}" for _ in all_conds) + f" {'-'*9}"
     print(sep)
 
     for et in EVAL_TYPES:
@@ -965,7 +1147,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
 
                 null_rej = int(sum(r.rejects for r in null_rows))
                 null_tot = int(sum(r.n_reps for r in null_rows))
-                type1, _, n_lo, n_hi = _mc_stats(null_rej, null_tot)
+                type1, n_mcse, n_lo, n_hi = _mc_stats(null_rej, null_tot)
                 mean_p0 = float(sum(r.p_sum for r in null_rows) / max(null_tot, 1))
 
                 alt_cols = ""
@@ -980,7 +1162,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
                         alt_cols += f" {'n/a':>8} {'':>15}"
 
                 print(
-                    f"  {method:<18} {n:>5d} {type1:>8.3f} {f'{n_lo:.3f}-{n_hi:.3f}':>15}"
+                    f"  {method:<18} {n:>5d} {type1:>8.3f} {n_mcse:>8.3f} {f'{n_lo:.3f}-{n_hi:.3f}':>15}"
                     + alt_cols
                     + f" {mean_p0:>9.3f}"
                 )
@@ -1006,9 +1188,9 @@ def print_multiarm_report(results: list[MultiArmResult]) -> None:
         print(f"  {et.upper()}")
         print(f"{'-' * 78}")
         print(
-            f"  {'correction':<16} {'n':>5} {'fwer':>8} {'fwer95':>15} {'best_power':>11} {'best95':>15}"
+            f"  {'correction':<16} {'n':>5} {'fwer':>8} {'mcse_fw':>8} {'fwer95':>15} {'best_power':>11} {'mcse_best':>10} {'best95':>15}"
         )
-        print(f"  {'-' * 16} {'-' * 5} {'-' * 8} {'-' * 15} {'-' * 11} {'-' * 15}")
+        print(f"  {'-' * 16} {'-' * 5} {'-' * 8} {'-' * 8} {'-' * 15} {'-' * 11} {'-' * 10} {'-' * 15}")
 
         for correction in MULTIARM_CORRECTIONS:
             for n in sizes:
@@ -1022,12 +1204,12 @@ def print_multiarm_report(results: list[MultiArmResult]) -> None:
                 a_best = int(sum(r.best_selected for r in alt_rows))
                 a_tot = int(sum(r.n_reps for r in alt_rows))
 
-                fwer, _, n_lo, n_hi = _mc_stats(n_any, n_tot)
-                best, _, a_lo, a_hi = _mc_stats(a_best, a_tot)
+                fwer, fwer_mcse, n_lo, n_hi = _mc_stats(n_any, n_tot)
+                best, best_mcse, a_lo, a_hi = _mc_stats(a_best, a_tot)
 
                 print(
-                    f"  {correction:<16} {n:>5d} {fwer:>8.3f} {f'{n_lo:.3f}-{n_hi:.3f}':>15} "
-                    f"{best:>11.3f} {f'{a_lo:.3f}-{a_hi:.3f}':>15}"
+                    f"  {correction:<16} {n:>5d} {fwer:>8.3f} {fwer_mcse:>8.3f} {f'{n_lo:.3f}-{n_hi:.3f}':>15} "
+                    f"{best:>11.3f} {best_mcse:>10.3f} {f'{a_lo:.3f}-{a_hi:.3f}':>15}"
                 )
 
 
@@ -1438,12 +1620,16 @@ def save_results_artifacts(
                     "any_reject",
                     "best_selected",
                     "any_reject_rate",
+                    "any_reject_mcse",
                     "best_selected_rate",
+                    "best_selected_mcse",
                 ]
             )
             for r in multiarm_results:
                 any_rate = r.any_reject / max(r.n_reps, 1)
                 best_rate = r.best_selected / max(r.n_reps, 1)
+                any_mcse = float(np.sqrt(max(any_rate * (1.0 - any_rate), 0.0) / max(r.n_reps, 1)))
+                best_mcse = float(np.sqrt(max(best_rate * (1.0 - best_rate), 0.0) / max(r.n_reps, 1)))
                 writer.writerow(
                     [
                         r.eval_type,
@@ -1457,7 +1643,9 @@ def save_results_artifacts(
                         r.any_reject,
                         r.best_selected,
                         f"{any_rate:.8f}",
+                        f"{any_mcse:.8f}",
                         f"{best_rate:.8f}",
+                        f"{best_mcse:.8f}",
                     ]
                 )
         print(f"Saved multi-arm CSV: {multi_csv}")
@@ -1484,7 +1672,7 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--sizes", type=int, nargs="+", default=[10, 20, 50, 100], help="Sample sizes")
-    parser.add_argument("--runs", type=int, default=1, help="Runs per input (R>=3 activates nested compare paths; binary-only methods excluded when R>1)")
+    parser.add_argument("--runs", type=int, default=1, help="Runs per input (R>=3 activates nested compare paths; binary-only methods use majority voting when R>1)")
     parser.add_argument("--reps", type=int, default=500, help="Monte Carlo reps per cell")
     parser.add_argument("--bootstrap-n", type=int, default=2000, help="Bootstrap/permutation samples per method")
     parser.add_argument("--alpha", type=float, default=0.05, help="Significance threshold")
@@ -1505,6 +1693,17 @@ def main() -> None:
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save", help="Save CSV + summary log")
     parser.add_argument("--out-dir", default="simulations/out", help="Output directory")
     parser.add_argument("--plots-dir", default=None, help="Directory for saved plots when --plots save (default: <out-dir>/plots)")
+    parser.add_argument(
+        "--include-extreme",
+        action="store_true",
+        help="Include additional extreme/distribution-shift stress scenarios in pairwise and multi-arm phases",
+    )
+    parser.add_argument(
+        "--mcse-target",
+        type=float,
+        default=0.005,
+        help="Target Monte Carlo standard error for key Bernoulli rates; script reports required reps and warns if --reps is lower (set <=0 to disable)",
+    )
     args = parser.parse_args()
     plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
 
@@ -1529,14 +1728,27 @@ def main() -> None:
     print(f"  Plots            : {args.plots}")
     print(f"  Save results     : {args.save_results}")
     print(f"  Out dir          : {args.out_dir}")
+    print(f"  Extreme sweeps   : {'on' if args.include_extreme else 'off'}")
+    print(f"  MCSE target      : {args.mcse_target}")
     if args.plots == "save":
         print(f"  Plots dir        : {plots_dir}")
+
+    required_reps = _min_reps_for_mcse(args.mcse_target)
+    if required_reps > 0:
+        achieved_mcse = np.sqrt(0.25 / max(args.reps, 1))
+        print(f"  MCSE reps req    : {required_reps} (worst-case Bernoulli)")
+        print(f"  MCSE at --reps   : {achieved_mcse:.5f}")
+        if args.reps < required_reps:
+            print(
+                f"  WARNING          : --reps={args.reps} is below MCSE target requirement; "
+                f"consider --reps >= {required_reps}"
+            )
 
     pairwise_results: list[PairwiseResult] = []
     multiarm_results: list[MultiArmResult] = []
 
     if run_pairwise:
-        scenarios = build_pair_scenarios()
+        scenarios = build_pair_scenarios(include_extreme=args.include_extreme)
         print(f"\nRunning pairwise phase: {len(scenarios)} scenarios")
         pairwise_results = run_pairwise_simulation(
             scenarios=scenarios,
@@ -1573,7 +1785,7 @@ def main() -> None:
                 )
 
     if run_multiarm:
-        scenarios = build_multiarm_scenarios()
+        scenarios = build_multiarm_scenarios(include_extreme=args.include_extreme)
         print(f"\nRunning multi-arm phase: {len(scenarios)} scenarios")
         multiarm_results = run_multiarm_simulation(
             scenarios=scenarios,
