@@ -15,6 +15,8 @@ Usage:
 import os
 import sys
 import argparse
+import re
+import html as html_lib
 
 WEBSITE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTEBOOKS_DIR = os.path.join(WEBSITE_DIR, "notebooks")
@@ -50,6 +52,31 @@ def nb_to_html(nb_path, execute=False):
         tags = metadata.setdefault("tags", [])
         if "remove-input" not in tags:
             tags.append("remove-input")
+
+        match = re.search(r"ci_widget_html\s*=\s*r'''(.*?)'''", source, flags=re.DOTALL)
+        if not match:
+            continue
+
+        widget_html = match.group(1)
+        iframe_srcdoc = html_lib.escape(widget_html, quote=True)
+        iframe_html = (
+            "<iframe "
+            "title=\"Confidence interval visualizer\" "
+            "style=\"width: 100%; max-width: 860px; height: 620px; border: 1px solid #d1d5db; border-radius: 8px;\" "
+            "sandbox=\"allow-scripts\" "
+            f"srcdoc=\"{iframe_srcdoc}\">"
+            "</iframe>"
+        )
+
+        cell["outputs"] = [
+            {
+                "output_type": "display_data",
+                "data": {
+                    "text/html": iframe_html,
+                },
+                "metadata": {},
+            }
+        ]
 
     if execute:
         from nbconvert.preprocessors import ExecutePreprocessor

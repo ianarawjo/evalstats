@@ -273,8 +273,7 @@ Model B: mean=64.0%  95% CI [50.1%, 75.9%]
 <div class="output">
 <div class="output_area">
 <div class="prompt"></div>
-<div class="output_html rendered_html output_subarea">
-<iframe sandbox="allow-scripts" srcdoc='&lt;!DOCTYPE html&gt;
+<div class="output_html rendered_html output_subarea"><iframe sandbox="allow-scripts" srcdoc='&lt;!DOCTYPE html&gt;
 &lt;html&gt;
 &lt;head&gt;
   &lt;meta charset="utf-8" /&gt;
@@ -295,6 +294,7 @@ Model B: mean=64.0%  95% CI [50.1%, 75.9%]
     .ci.hit { stroke: #2ca02c; }
     .ci.miss { stroke: #d62728; }
     .zero-line { stroke: black; stroke-dasharray: 4; }
+    .true-line { stroke: #7c3aed; stroke-dasharray: 3; }
     .label { font-size: 12px; fill: #333; }
     button { margin-right: 8px; margin-top: 8px; }
   &lt;/style&gt;
@@ -302,7 +302,7 @@ Model B: mean=64.0%  95% CI [50.1%, 75.9%]
 &lt;body&gt;
 
 &lt;label&gt;True difference:
-  &lt;input type="range" id="effect" min="0" max="0.3" step="0.01" value="0.05"&gt;
+  &lt;input type="range" id="effect" min="0" max="0.3" step="0.01" value="0.08"&gt;
   &lt;span id="effectVal"&gt;0.05&lt;/span&gt;
 &lt;/label&gt;
 
@@ -311,6 +311,20 @@ Model B: mean=64.0%  95% CI [50.1%, 75.9%]
 &lt;label&gt;Dataset size (n):
   &lt;input type="range" id="n" min="10" max="200" step="10" value="50"&gt;
   &lt;span id="nVal"&gt;50&lt;/span&gt;
+&lt;/label&gt;
+
+&lt;br&gt;
+
+&lt;label&gt;Model A sharpness (sd):
+  &lt;input type="range" id="sdA" min="0.03" max="0.25" step="0.01" value="0.10"&gt;
+  &lt;span id="sdAVal"&gt;0.10&lt;/span&gt;
+&lt;/label&gt;
+
+&lt;br&gt;
+
+&lt;label&gt;Model B sharpness (sd):
+  &lt;input type="range" id="sdB" min="0.03" max="0.25" step="0.01" value="0.10"&gt;
+  &lt;span id="sdBVal"&gt;0.10&lt;/span&gt;
 &lt;/label&gt;
 
 &lt;br&gt;
@@ -328,6 +342,8 @@ const width = 800;
 
 const effectSlider = document.getElementById("effect");
 const nSlider = document.getElementById("n");
+const sdASlider = document.getElementById("sdA");
+const sdBSlider = document.getElementById("sdB");
 
 effectSlider.oninput = () =&gt; {
   document.getElementById("effectVal").innerText = effectSlider.value;
@@ -338,8 +354,20 @@ nSlider.oninput = () =&gt; {
   document.getElementById("nVal").innerText = nSlider.value;
 };
 
+sdASlider.oninput = () =&gt; {
+  document.getElementById("sdAVal").innerText = Number(sdASlider.value).toFixed(2);
+  drawDistributions();
+};
+
+sdBSlider.oninput = () =&gt; {
+  document.getElementById("sdBVal").innerText = Number(sdBSlider.value).toFixed(2);
+  drawDistributions();
+};
+
 function getEffect() { return parseFloat(effectSlider.value); }
 function getN() { return parseInt(nSlider.value); }
+function getSdA() { return parseFloat(sdASlider.value); }
+function getSdB() { return parseFloat(sdBSlider.value); }
 
 const x = d3.scaleLinear().domain([0,1]).range([50,750]);
 const y = d3.scaleLinear().domain([0,5]).range([200,20]);
@@ -356,20 +384,23 @@ function drawDistributions() {
   topSvg.selectAll("*").remove();
 
   const effect = getEffect();
-  const base = 0.6;
+  const base = 0.5;
   const meanA = base + effect/2;
   const meanB = base - effect/2;
-  const sd = 0.1;
+  const sdA = getSdA();
+  const sdB = getSdB();
+  const peakYA = Math.max(12, y(normalPDF(meanA, meanA, sdA)) - 8);
+  const peakYB = Math.max(12, y(normalPDF(meanB, meanB, sdB)) - 8);
 
   const data = d3.range(0,1,0.01);
 
   const lineA = d3.line()
     .x(d =&gt; x(d))
-    .y(d =&gt; y(normalPDF(d, meanA, sd)));
+    .y(d =&gt; y(normalPDF(d, meanA, sdA)));
 
   const lineB = d3.line()
     .x(d =&gt; x(d))
-    .y(d =&gt; y(normalPDF(d, meanB, sd)));
+    .y(d =&gt; y(normalPDF(d, meanB, sdB)));
 
   topSvg.append("path").datum(data).attr("class","curveA").attr("d", lineA);
   topSvg.append("path").datum(data).attr("class","curveB").attr("d", lineB);
@@ -384,13 +415,15 @@ function drawDistributions() {
   topSvg.append("text")
     .attr("class","label")
     .attr("x", x(meanA))
-    .attr("y", 20)
+    .attr("y", peakYA)
+    .attr("text-anchor","middle")
     .text("Model A");
 
   topSvg.append("text")
     .attr("class","label")
     .attr("x", x(meanB))
-    .attr("y", 35)
+    .attr("y", peakYB)
+    .attr("text-anchor","middle")
     .text("Model B");
 }
 
@@ -400,8 +433,9 @@ async function runAnimated() {
   const effect = getEffect();
   const n = getN();
 
-  const base = 0.6;
-  const sd = 0.1;
+  const base = 0.5;
+  const sdA = getSdA();
+  const sdB = getSdB();
 
   let samplesA = [];
   let samplesB = [];
@@ -409,8 +443,8 @@ async function runAnimated() {
   document.getElementById("status").innerText = "Sampling...";
 
   for (let i = 0; i &lt; n; i++) {
-    const a = d3.randomNormal(base + effect/2, sd)();
-    const b = d3.randomNormal(base - effect/2, sd)();
+    const a = d3.randomNormal(base + effect/2, sdA)();
+    const b = d3.randomNormal(base - effect/2, sdB)();
 
     samplesA.push(a);
     samplesB.push(b);
@@ -451,7 +485,7 @@ async function runAnimated() {
   document.getElementById("status").innerText =
     `Sample diff (A − B) = ${diff.toFixed(3)}`;
 
-  const se = Math.sqrt((sd**2)/n + (sd**2)/n);
+  const se = Math.sqrt((sdA**2)/n + (sdB**2)/n);
   const margin = 1.96 * se;
   const ci = [diff - margin, diff + margin];
 
@@ -464,12 +498,13 @@ async function runAnimated() {
 function drawCI() {
   bottomSvg.selectAll("*").remove();
 
+  const trueEffect = getEffect();
   const xCI = d3.scaleLinear().domain([-0.3,0.3]).range([50,750]);
 
   bottomSvg.append("text")
     .attr("class","label")
     .attr("x", 400)
-    .attr("y", 240)
+    .attr("y", 234)
     .attr("text-anchor","middle")
     .text("Performance difference (A − B)");
 
@@ -479,6 +514,20 @@ function drawCI() {
     .attr("x2", xCI(0))
     .attr("y1", 0)
     .attr("y2", 250);
+
+  bottomSvg.append("line")
+    .attr("class","true-line")
+    .attr("x1", xCI(trueEffect))
+    .attr("x2", xCI(trueEffect))
+    .attr("y1", 0)
+    .attr("y2", 250);
+
+  bottomSvg.append("text")
+    .attr("class","label")
+    .attr("x", xCI(trueEffect))
+    .attr("y", 250)
+    .attr("text-anchor","middle")
+    .text("True mean difference");
 
   bottomSvg.selectAll(".ci")
     .data(intervals)
@@ -513,9 +562,7 @@ drawDistributions();
 &lt;/script&gt;
 
 &lt;/body&gt;
-&lt;/html&gt;' style="width: 100%; max-width: 860px; height: 620px; border: 1px solid #d1d5db; border-radius: 8px;" title="Confidence interval visualizer">
-</iframe>
-</div>
+&lt;/html&gt;' style="width: 100%; max-width: 860px; height: 620px; border: 1px solid #d1d5db; border-radius: 8px;" title="Confidence interval visualizer"></iframe></div>
 </div>
 </div>
 </div>
