@@ -832,7 +832,9 @@ def _compute_multiarm_metrics(
         try:
             fr = friedman_nemenyi(scores, labels)
             has_any = any(
-                (fr.get_nemenyi_p(a, b) or 1.0) < alpha for (a, b) in pairs
+                (p is not None and p < alpha)
+                for (a, b) in pairs
+                for p in [fr.get_nemenyi_p(a, b)]
             )
 
             best = labels[0]
@@ -991,7 +993,9 @@ def run_pairwise_simulation(
         methods = [m for m in PAIRWISE_METHODS if _method_allowed(scenario.eval_type, m, runs)]
         all_conditions = [("null", 0.0)] + scenario.alt_conditions
         for n_idx, n in enumerate(sample_sizes):
-            cell_seed = seed + s_idx * 10_000 + n_idx * 1_000
+            cell_seed = int(
+                np.random.SeedSequence([seed, 1, s_idx, n_idx]).generate_state(1, dtype=np.uint64)[0]
+            )
             cells.append((scenario, n, runs, all_conditions, methods,
                           n_reps, n_bootstrap, alpha, statistic, cell_seed))
 
@@ -1039,7 +1043,9 @@ def run_multiarm_simulation(
     cells: list[tuple] = []
     for s_idx, scenario in enumerate(scenarios):
         for n_idx, n in enumerate(sample_sizes):
-            cell_seed = seed + s_idx * 10_000 + n_idx * 1_000
+            cell_seed = int(
+                np.random.SeedSequence([seed, 2, s_idx, n_idx]).generate_state(1, dtype=np.uint64)[0]
+            )
             cells.append((scenario, n, runs, k_arms, labels, MULTIARM_CORRECTIONS,
                           n_reps, n_bootstrap, alpha, multiarm_method, statistic, cell_seed))
 
@@ -1083,6 +1089,194 @@ def _mc_stats(successes: int, total: int, z: float = 1.96) -> tuple[float, float
     return float(phat), mcse, float(lo), float(hi)
 
 
+def _pairwise_summary_score(*, type1: float, mean_power: float, alpha: float) -> float:
+    """Balanced pairwise score for quick ranking in summary tables.
+
+    Higher is better. Rewards power and penalizes distance from nominal alpha.
+    """
+    return float(mean_power - abs(type1 - alpha))
+
+
+def _multiarm_summary_score(*, fwer: float, best_power: float, alpha: float) -> float:
+    """Balanced multi-arm score for quick ranking in summary tables.
+
+    Higher is better. Rewards true-best selection and penalizes FWER overflow.
+    """
+    overflow = max(0.0, fwer - alpha)
+    return float(best_power - overflow)
+
+
+def _alt_condition_sort_key(condition: str) -> tuple[int, str]:
+    """Sort weak effect labels before stronger/default labels."""
+    if condition == "alt_half":
+        return (0, condition)
+    if condition == "alt":
+        return (1, condition)
+    return (2, condition)
+
+
+def _print_pairwise_summary_tables(
+    *,
+    results: list[PairwiseResult],
+    alpha: float,
+    alt_conditions: list[str],
+) -> None:
+    print("\n" + "=" * 90)
+    print("  PAIRWISE SUMMARY TABLES (AVERAGED ACROSS SIZES)")
+    print("=" * 90)
+
+    per_eval_rows: list[tuple[str, str, int, float, float, float, float]] = []
+    methods = sorted({r.method for r in results})
+
+    for et in EVAL_TYPES:
+        et_rows = [r for r in results if r.eval_type == et]
+        if not et_rows:
+            continue
+
+        print(f"\n  {'—'*5} {et.upper()} (across all n) {'—'*5}")
+        print(
+            f"  {'rank':>4} {'method':<18} {'typeI':>8} {'mean_power':>11} {'mean_p0':>9} {'score':>8} {'cells':>6}"
+        )
+        print(f"  {'-'*4} {'-'*18} {'-'*8} {'-'*11} {'-'*9} {'-'*8} {'-'*6}")
+
+        ranked: list[tuple[str, float, float, float, float, int]] = []
+        for method in methods:
+            m_rows = [r for r in et_rows if r.method == method]
+            if not m_rows:
+                continue
+
+            null_rows = [r for r in m_rows if r.condition == "null"]
+            null_rej = int(sum(r.rejects for r in null_rows))
+            null_tot = int(sum(r.n_reps for r in null_rows))
+            type1 = (null_rej / null_tot) if null_tot > 0 else float("nan")
+            mean_p0 = (sum(r.p_sum for r in null_rows) / null_tot) if null_tot > 0 else float("nan")
+
+            cond_powers: list[float] = []
+            for cond in alt_conditions:
+                c_rows = [r for r in m_rows if r.condition == cond]
+                c_rej = int(sum(r.rejects for r in c_rows))
+                c_tot = int(sum(r.n_reps for r in c_rows))
+                if c_tot > 0:
+                    cond_powers.append(c_rej / c_tot)
+            mean_power = float(np.mean(cond_powers)) if cond_powers else float("nan")
+            score = _pairwise_summary_score(type1=type1, mean_power=mean_power, alpha=alpha)
+            n_cells = len({(r.scenario, r.n) for r in m_rows if r.condition == "null"})
+            ranked.append((method, type1, mean_power, mean_p0, score, n_cells))
+
+        ranked.sort(key=lambda x: (x[4], x[2]), reverse=True)
+        for rank, (method, type1, mean_power, mean_p0, score, n_cells) in enumerate(ranked, 1):
+            print(
+                f"  {rank:>4d} {method:<18} {type1:>8.3f} {mean_power:>11.3f} {mean_p0:>9.3f} {score:>8.3f} {n_cells:>6d}"
+            )
+            per_eval_rows.append((et, method, n_cells, type1, mean_power, mean_p0, score))
+
+    if not per_eval_rows:
+        return
+
+    print("\n" + "=" * 90)
+    print("  PAIRWISE GLOBAL SUMMARY (AVERAGED ACROSS SIZES + EVAL TYPES)")
+    print("  score = mean_power - |typeI - alpha|")
+    print("=" * 90)
+    print(
+        f"  {'rank':>4} {'method':<18} {'typeI':>8} {'mean_power':>11} {'mean_p0':>9} {'score':>8} {'types':>6}"
+    )
+    print(f"  {'-'*4} {'-'*18} {'-'*8} {'-'*11} {'-'*9} {'-'*8} {'-'*6}")
+
+    global_grouped: dict[str, list[tuple[str, str, int, float, float, float, float]]] = defaultdict(list)
+    for row in per_eval_rows:
+        global_grouped[row[1]].append(row)
+
+    global_ranked: list[tuple[str, float, float, float, float, int]] = []
+    for method, rows in global_grouped.items():
+        type1 = float(np.mean([r[3] for r in rows]))
+        mean_power = float(np.mean([r[4] for r in rows]))
+        mean_p0 = float(np.mean([r[5] for r in rows]))
+        score = _pairwise_summary_score(type1=type1, mean_power=mean_power, alpha=alpha)
+        n_types = len({r[0] for r in rows})
+        global_ranked.append((method, type1, mean_power, mean_p0, score, n_types))
+
+    global_ranked.sort(key=lambda x: (x[4], x[2]), reverse=True)
+    for rank, (method, type1, mean_power, mean_p0, score, n_types) in enumerate(global_ranked, 1):
+        print(
+            f"  {rank:>4d} {method:<18} {type1:>8.3f} {mean_power:>11.3f} {mean_p0:>9.3f} {score:>8.3f} {n_types:>6d}"
+        )
+
+
+def _print_multiarm_summary_tables(*, results: list[MultiArmResult], alpha: float) -> None:
+    print("\n" + "=" * 78)
+    print("  MULTI-ARM SUMMARY TABLES (AVERAGED ACROSS SIZES)")
+    print("=" * 78)
+
+    per_eval_rows: list[tuple[str, str, int, float, float, float]] = []
+    for et in EVAL_TYPES:
+        et_rows = [r for r in results if r.eval_type == et]
+        if not et_rows:
+            continue
+
+        print(f"\n  {'—'*5} {et.upper()} (across all n) {'—'*5}")
+        print(
+            f"  {'rank':>4} {'correction':<16} {'fwer':>8} {'best_power':>11} {'score':>8} {'cells':>6}"
+        )
+        print(f"  {'-'*4} {'-'*16} {'-'*8} {'-'*11} {'-'*8} {'-'*6}")
+
+        ranked: list[tuple[str, float, float, float, int]] = []
+        for corr in MULTIARM_CORRECTIONS:
+            c_rows = [r for r in et_rows if r.correction == corr]
+            if not c_rows:
+                continue
+
+            null_rows = [r for r in c_rows if r.condition == "null"]
+            alt_rows = [r for r in c_rows if r.condition == "alt"]
+
+            n_any = int(sum(r.any_reject for r in null_rows))
+            n_tot = int(sum(r.n_reps for r in null_rows))
+            a_best = int(sum(r.best_selected for r in alt_rows))
+            a_tot = int(sum(r.n_reps for r in alt_rows))
+
+            fwer = (n_any / n_tot) if n_tot > 0 else float("nan")
+            best_power = (a_best / a_tot) if a_tot > 0 else float("nan")
+            score = _multiarm_summary_score(fwer=fwer, best_power=best_power, alpha=alpha)
+            n_cells = len({(r.scenario, r.n) for r in c_rows if r.condition == "null"})
+            ranked.append((corr, fwer, best_power, score, n_cells))
+
+        ranked.sort(key=lambda x: (x[3], x[2]), reverse=True)
+        for rank, (corr, fwer, best_power, score, n_cells) in enumerate(ranked, 1):
+            print(
+                f"  {rank:>4d} {corr:<16} {fwer:>8.3f} {best_power:>11.3f} {score:>8.3f} {n_cells:>6d}"
+            )
+            per_eval_rows.append((et, corr, n_cells, fwer, best_power, score))
+
+    if not per_eval_rows:
+        return
+
+    print("\n" + "=" * 78)
+    print("  MULTI-ARM GLOBAL SUMMARY (AVERAGED ACROSS SIZES + EVAL TYPES)")
+    print("  score = best_power - max(0, fwer - alpha)")
+    print("=" * 78)
+    print(
+        f"  {'rank':>4} {'correction':<16} {'fwer':>8} {'best_power':>11} {'score':>8} {'types':>6}"
+    )
+    print(f"  {'-'*4} {'-'*16} {'-'*8} {'-'*11} {'-'*8} {'-'*6}")
+
+    global_grouped: dict[str, list[tuple[str, str, int, float, float, float]]] = defaultdict(list)
+    for row in per_eval_rows:
+        global_grouped[row[1]].append(row)
+
+    global_ranked: list[tuple[str, float, float, float, int]] = []
+    for corr, rows in global_grouped.items():
+        fwer = float(np.mean([r[3] for r in rows]))
+        best_power = float(np.mean([r[4] for r in rows]))
+        score = _multiarm_summary_score(fwer=fwer, best_power=best_power, alpha=alpha)
+        n_types = len({r[0] for r in rows})
+        global_ranked.append((corr, fwer, best_power, score, n_types))
+
+    global_ranked.sort(key=lambda x: (x[3], x[2]), reverse=True)
+    for rank, (corr, fwer, best_power, score, n_types) in enumerate(global_ranked, 1):
+        print(
+            f"  {rank:>4d} {corr:<16} {fwer:>8.3f} {best_power:>11.3f} {score:>8.3f} {n_types:>6d}"
+        )
+
+
 def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     print("\n" + "=" * 90)
     print("  P-VALUE METHOD COMPARISON — PAIRWISE A VS B")
@@ -1094,7 +1288,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     # scenario definition order rather than pure alphabetical order.
     all_conds = sorted(
         {r.condition for r in results if r.condition != "null"},
-        key=lambda c: (c.count("_"), c),
+        key=_alt_condition_sort_key,
     )
 
     # Print effect-size calibration table so power figures can be interpreted
@@ -1167,8 +1361,10 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
                     + f" {mean_p0:>9.3f}"
                 )
 
+    _print_pairwise_summary_tables(results=results, alpha=alpha, alt_conditions=all_conds)
 
-def print_multiarm_report(results: list[MultiArmResult]) -> None:
+
+def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
     print("\n" + "=" * 78)
     print("  MULTI-ARM MULTIPLICITY COMPARISON")
     print("  Metrics: FWER under global null, and true-best selection under alternative")
@@ -1212,6 +1408,8 @@ def print_multiarm_report(results: list[MultiArmResult]) -> None:
                     f"{best:>11.3f} {best_mcse:>10.3f} {f'{a_lo:.3f}-{a_hi:.3f}':>15}"
                 )
 
+    _print_multiarm_summary_tables(results=results, alpha=alpha)
+
 
 def save_pairwise_metric_plot(
     *,
@@ -1233,7 +1431,7 @@ def save_pairwise_metric_plot(
     # Discover alternative conditions; sort weaker effects before stronger ones.
     alt_conds = sorted(
         {r.condition for r in plot_results if r.condition != "null"},
-        key=lambda c: (c.count("_"), c),
+        key=_alt_condition_sort_key,
     )
     # Columns: type-I | one per alt condition | mean null p-value (calibration)
     n_data_cols = 1 + len(alt_conds)
@@ -1656,7 +1854,7 @@ def save_results_artifacts(
         if pairwise_results:
             print_pairwise_report(pairwise_results, alpha=alpha)
         if multiarm_results:
-            print_multiarm_report(multiarm_results)
+            print_multiarm_report(multiarm_results, alpha=alpha)
     summary_log.write_text(text.getvalue(), encoding="utf-8")
     print(f"Saved summary log: {summary_log}")
 
@@ -1801,7 +1999,7 @@ def main() -> None:
             seed=args.seed + 100,
             n_jobs=args.jobs,
         )
-        print_multiarm_report(multiarm_results)
+        print_multiarm_report(multiarm_results, alpha=args.alpha)
         if args.plots == "save":
             stamp = time.strftime("%Y%m%d_%H%M%S")
             overall_name = f"sim_compare_pvalues_multiarm_runs{args.runs}_reps{args.reps}_k{args.k_arms}_overall_{stamp}.png"
