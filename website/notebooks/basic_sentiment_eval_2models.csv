@@ -1,0 +1,1037 @@
+model_label,provider,model_name,template_label,input_idx,input_label,run_idx,text,ground_truth,output,label_valid,accuracy,brevity
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,"The text expresses strong positive feelings about the product, highlighting satisfaction and love for it. Therefore, the sentiment is clearly positive.
+
+Sentiment: POSITIVE",1.0,1.0,0.23851255385430242
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,"The text clearly expresses dissatisfaction with the product, indicating a negative experience. The words ""waste,"" ""broke,"" and the overall tone suggest a negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1985594620737261
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,"The phrase ""It works fine"" and ""Does what it says on the box"" both suggest satisfaction and reliability, indicating a positive sentiment. 
+
+Sentiment: POSITIVE",1.0,0.0,0.2658029590889266
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,"The text expresses strong satisfaction and positive feelings about the purchase, indicating a positive sentiment. 
+
+Sentiment: POSITIVE",1.0,1.0,0.32465246735834974
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,"The text expresses strong dissatisfaction with the customer service and a clear intention not to make future purchases, indicating a negative sentiment. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.23457028809379765
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,"The statement indicates a neutral stance, neither positive nor negative, as it describes the quality as average and expresses no strong feelings.  
+Sentiment: NEUTRAL",1.0,1.0,0.25074135398985803
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,"The message expresses satisfaction with the shipping speed and the product's appearance, indicating a positive experience. Therefore, the sentiment is positive.
+
+Sentiment: POSITIVE",1.0,1.0,0.22127846824591726
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,"The text expresses dissatisfaction with the product, mentioning that the color differs from the photos and that it feels cheap, which indicates a negative sentiment.  
+Sentiment: NEGATIVE",1.0,1.0,0.2104865900039634
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"The statement indicates a neutral tone, simply reporting the arrival time without expressing strong feelings or opinions. There is no positive or negative emotion conveyed, just an objective update.
+
+Sentiment: NEUTRAL",1.0,1.0,0.16256673791438075
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,"The statement expresses a positive evaluation of the product, highlighting its durability and value for money. 
+
+Sentiment: POSITIVE",1.0,1.0,0.33287108369807955
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,"The instructions being confusing and missing a piece indicate a negative experience.  
+The sentiment expressed reflects dissatisfaction and frustration.  
+Sentiment: NEGATIVE",1.0,1.0,0.23457028809379765
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,"The statement indicates that the product is acceptable considering its cost but not outstanding, suggesting a mixed or slightly positive sentiment. Since it acknowledges some value but not enthusiasm, it leans towards neutral with a slight positive nuance.
+
+Sentiment: NEUTRAL",1.0,1.0,0.10025884372280375
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,"The phrase ""Surpassed my expectations in every way!"" expresses a highly positive experience and satisfaction. It indicates a favorable impression and happiness with the outcome.
+
+Sentiment: POSITIVE",1.0,1.0,0.19204990862075413
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,"The text expresses strong dissatisfaction and a negative opinion about the subject, indicating a negative sentiment. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.3166367693790533
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"The statement indicates a neutral or mild sentiment, acknowledging a middle ground without strong positive or negative feelings. It suggests a balanced opinion, neither overly praising nor criticizing.
+
+Sentiment: NEUTRAL",1.0,1.0,0.15855295085400772
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"The text expresses sarcasm and frustration, indicating a negative sentiment despite the seemingly positive words. The phrase ""Oh wonderful"" followed by ""it broke"" suggests disappointment.  
+Sentiment: NEGATIVE",1.0,1.0,0.17522811025892673
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"The text uses sarcasm to convey frustration with customer support, indicating a negative sentiment despite the positive words. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.291319891133471
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The sentence expresses a sense of disappointment or criticism about a situation that was expected to be simple but ended up badly. This indicates a negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.20873982339007963
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"The statement suggests that there are some positive aspects (""Not entirely without merit"") but overall the impression is not very impressive, indicating a mixed or lukewarm sentiment leaning slightly negative.  
+Sentiment: NEUTRAL",1.0,1.0,0.1470964673929768
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"The speaker expresses disappointment but also a sense of not being completely let down, indicating mixed feelings but leaning towards a slightly negative or uncertain sentiment. Overall, the sentiment seems more negative than positive, with some ambivalence.
+
+Sentiment: NEGATIVE",1.0,0.0,0.09778344405135005
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"The statement acknowledges that something functions, but indicates dissatisfaction with its performance, implying a generally negative sentiment.  
+Sentiment: NEGATIVE",1.0,1.0,0.24866052486976417
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"The text expresses a positive opinion about the hardware but a negative view of the software, indicating mixed feelings. Overall, the negative aspect seems more prominent as it affects usability significantly.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1470964673929768
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"The text expresses a positive sentiment towards the concept itself but criticizes the execution, indicating mixed feelings. Overall, the sentiment leans more towards negative due to the disappointment in execution.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1410933807013415
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"The review mentions positive aspects like fast delivery and nice packaging, but also criticizes the product as being mediocre, indicating mixed feelings. Overall, the negative or mediocre sentiment outweighs the positives.
+
+Sentiment: NEGATIVE",1.0,0.0,0.13199384318783022
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,"The statement indicates dissatisfaction with the experience, suggesting a negative sentiment. The phrase ""I won't be ordering a second one"" implies disappointment or displeasure.  
+Sentiment: NEGATIVE",1.0,1.0,0.18887560283756183
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,"The person expresses surprise and a slight positive experience, indicating a generally positive sentiment. 
+
+Sentiment: POSITIVE",1.0,1.0,0.34415378686541237
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"The statement suggests a somewhat neutral tone, acknowledging the product's consistent performance despite its limited functionality. There is no strong positive or negative emotion expressed.
+
+Sentiment: NEUTRAL",1.0,1.0,0.17090171280152483
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,"The text expresses strong positive feelings about the product, emphasizing satisfaction and love for it. 
+
+Sentiment: POSITIVE",1.0,1.0,0.3499377491111553
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,"The text clearly expresses dissatisfaction and disappointment, indicating a negative experience. The words ""waste,"" ""broke,"" and the overall tone suggest negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1985594620737261
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,"The text is stating that the product functions properly and meets expectations, indicating a positive experience.  
+Sentiment: POSITIVE",1.0,0.0,0.32465246735834974
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,"The message expresses strong satisfaction and approval, indicating a positive feeling towards the purchase. There are no negative or neutral elements present.
+
+Sentiment: POSITIVE",1.0,0.0,0.2249973472906239
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,"The text expresses strong dissatisfaction and disappointment with the customer service, indicating a negative experience. Therefore, the sentiment is negative.
+
+Sentiment: NEGATIVE",1.0,1.0,0.22313016014842982
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,"The statement indicates a neutral stance, neither positive nor negative, as it describes the quality as average and expresses no strong feelings.  
+Sentiment: NEUTRAL",1.0,1.0,0.25074135398985803
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,"The message expresses satisfaction with the quick shipping and the quality of the item, indicating a positive experience.  
+Sentiment: POSITIVE",1.0,1.0,0.3037146509214855
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,"The text expresses dissatisfaction with the product's appearance and quality, indicating a negative experience. Therefore, the sentiment is negative.
+
+Sentiment: NEGATIVE",1.0,1.0,0.24252107463564868
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"The statement mentions that the item arrived on time, which is a positive aspect, but also notes that it hasn't been fully tested yet, indicating some uncertainty. Overall, it seems neutral as it doesn't express strong positive or negative feelings.
+
+Sentiment: NEUTRAL",1.0,1.0,0.1062812213155449
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,"The text expresses satisfaction with the product's quality and value, indicating a positive experience.  
+Sentiment: POSITIVE",1.0,1.0,0.3528660814588489
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,"The instructions being confusing and a piece missing indicates dissatisfaction and frustration, suggesting a negative experience.  
+Sentiment: NEGATIVE",1.0,1.0,0.2841271773934891
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,"The phrase ""Decent enough for the price"" suggests a somewhat positive or acceptable sentiment, but ""Not amazing"" indicates some disappointment. Overall, the sentiment leans towards being mildly positive or neutral, but with a slight negative undertone.
+
+Sentiment: NEUTRAL",1.0,1.0,0.10365712861152786
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,"The phrase ""Surpassed my expectations in every way!"" expresses a very positive experience and satisfaction. There are no negative or neutral indicators, and the enthusiasm suggests a positive sentiment.
+
+Sentiment: POSITIVE",1.0,0.0,0.15593230108409842
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,"The text expresses strong dissatisfaction and discouragement, indicating a negative outlook. The words ""completely useless"" and ""don't waste your time"" clearly convey a negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.17522811025892673
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"The statement expresses a moderate, somewhat indifferent attitude, acknowledging both positive and negative experiences without strong feelings. Therefore, the overall sentiment leans towards neutrality.
+
+Sentiment: NEUTRAL",1.0,1.0,0.15593230108409842
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"The text expresses sarcasm, implying disappointment about the product breaking quickly, despite the seemingly positive words. This suggests a negative sentiment overall.
+
+Sentiment: NEGATIVE",1.0,1.0,0.20528965757990927
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"The text uses sarcasm to express dissatisfaction with customer support, implying a negative experience. Therefore, the sentiment is negative.
+
+Sentiment: NEGATIVE",1.0,1.0,0.2592402606458915
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The sentence expresses surprise and disappointment about a situation that went wrong despite its simplicity, indicating a negative sentiment. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.2570889015865697
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"The statement expresses a lukewarm or mixed opinion, acknowledging some value but also noting the lack of impressiveness. It doesn't convey strong positive or negative feelings, leaning more towards a neutral stance.
+
+Sentiment: NEUTRAL",1.0,1.0,0.1399224880243094
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"The speaker expresses disappointment but also indicates they weren't completely let down, suggesting a mixed or somewhat negative sentiment but with a hint of acceptance. Overall, the tone leans toward negative due to the disappointment.
+
+Sentiment: NEGATIVE",1.0,0.0,0.11648415777349697
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"The text indicates that the system functions but not effectively, suggesting a somewhat negative or disappointed sentiment.  
+Sentiment: NEGATIVE",1.0,1.0,0.29869468928867837
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"The sentence expresses a positive opinion about the hardware but a negative opinion about the software, indicating mixed feelings. Since the overall sentiment is primarily negative due to the software issue, it leans more towards negative.  
+Sentiment: NEGATIVE",1.0,1.0,0.11360815367076377
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"The text expresses appreciation for the idea but criticizes how it was carried out, indicating mixed feelings. Overall, it leans towards a negative sentiment due to the emphasis on poor execution and being ""so far"" from success.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1255564274931972
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"The review mentions positive aspects like fast delivery and nice packaging, but also criticizes the product as mediocre, indicating mixed feelings. Overall, the negative impression of the product quality outweighs the positive comments about delivery and packaging.
+
+Sentiment: NEGATIVE",1.0,0.0,0.09224258918435976
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,"The statement suggests dissatisfaction or disappointment, indicating a negative sentiment.  
+Sentiment: NEGATIVE",1.0,1.0,0.39324072086859824
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,"The speaker expresses a positive feeling of being pleasantly surprised, indicating that their experience exceeded expectations. Therefore, the sentiment is positive.
+
+Sentiment: POSITIVE",1.0,1.0,0.21224797382674304
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"The statement suggests that the product performs its basic function reliably, even if that function is minimal. This indicates a somewhat positive or at least neutral sentiment, but it does not express strong enthusiasm or dissatisfaction.
+
+Sentiment: NEUTRAL",1.0,1.0,0.11551748983592772
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Minimal,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Instructive,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Few-shot,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,"The text uses positive words like ""exceeded all my expectations"" and ""Absolutely love it,"" indicating a very favorable sentiment.  
+Sentiment: POSITIVE",1.0,1.0,0.2841271773934891
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,"The text expresses dissatisfaction with the product, mentioning it was a waste of money and broke quickly. These points clearly indicate a negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.2249973472906239
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,"The phrase ""It works fine"" suggests a satisfactory experience, and ""Does what it says on the box"" indicates reliability. Both indicate positive or neutral satisfaction with the product.  
+Sentiment: POSITIVE",1.0,1.0,0.1781730517728984
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,"The text expresses strong approval and happiness with the purchase, indicating a positive sentiment. There are no negative or neutral cues present.
+
+Sentiment: POSITIVE",1.0,0.0,0.2465969639416065
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,"The text expresses dissatisfaction with the customer service and a decision not to return, indicating a negative experience.  
+Sentiment: NEGATIVE",1.0,1.0,0.29621590947194976
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,"The statement indicates that the quality is mediocre, with no strong positive or negative feelings expressed. It suggests a neutral stance toward the quality.
+
+Sentiment: NEUTRAL",1.0,1.0,0.22688015933902364
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,"The statement expresses satisfaction with the fast shipping and the quality of the item, indicating a positive experience.  
+Sentiment: POSITIVE",1.0,1.0,0.30119421191220214
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,"The text expresses dissatisfaction with the product, indicating a negative experience. The mention of the color mismatch and feeling cheap suggests a negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.20528965757990927
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"The message indicates a neutral tone, providing a factual statement about the item's arrival time without expressing strong positive or negative feelings. Since the person hasn't tested it fully yet, there's no clear indication of satisfaction or dissatisfaction.
+
+Sentiment: NEUTRAL",1.0,1.0,0.0945777214470472
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,"The text expresses satisfaction with the quality and value of the product, indicating a positive experience. 
+
+Sentiment: POSITIVE",1.0,1.0,0.3384654251067422
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,"The instructions being confusing and a piece missing suggests a negative experience.  
+The sentiment is likely negative because of dissatisfaction and frustration.
+
+Sentiment: NEGATIVE",1.0,1.0,0.21581508339868974
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,"The statement indicates that the product is acceptable given its cost but not outstanding, suggesting a mixed or slightly negative feeling. Overall, it leans more toward a slightly negative or neutral sentiment, but since it does not express strong negativity, ""NEUTRAL"" is appropriate.
+
+Sentiment: NEUTRAL",1.0,1.0,0.07808166600115317
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,"The phrase ""Surpassed my expectations in every way!"" expresses a highly positive experience and satisfaction. Therefore, the sentiment is clearly positive.
+
+Sentiment: POSITIVE",1.0,1.0,0.23069318225496285
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,"The text expresses strong dissatisfaction and frustration, indicating a negative sentiment. It clearly conveys a negative opinion about the subject.
+
+Sentiment: NEGATIVE",1.0,1.0,0.2445505279017134
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"The statement expresses a middle ground, acknowledging that it is neither particularly good nor bad, suggesting a neutral or slightly negative sentiment. It doesn't convey strong positive emotions but also isn't outright negative.
+
+Sentiment: NEUTRAL",1.0,1.0,0.12451447144412296
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"The text uses sarcasm to express frustration about something breaking immediately, indicating a negative sentiment.  
+Sentiment: NEGATIVE",1.0,1.0,0.3192864340596914
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"The tone appears sarcastic, indicating dissatisfaction with the support despite the positive words. The phrase ""love spending 45 minutes on hold"" is likely sarcastic, implying frustration. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.17377394345044514
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The sentence expresses a sense of disappointment or criticism about a situation that did not turn out as expected, despite its simplicity. It contains a negative tone, highlighting the failure or mistake.
+
+Sentiment: NEGATIVE",1.0,1.0,0.15335496684492847
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"The statement expresses a mixed opinion, acknowledging some value but also pointing out a lack of impressiveness, which suggests a somewhat negative or lukewarm sentiment. 
+
+Sentiment: NEUTRAL",1.0,1.0,0.20189651799465538
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"The speaker expresses disappointment but also some acceptance or mixed feelings, indicating a nuanced sentiment that is not entirely negative or positive. It suggests a neutral or mixed sentiment overall.
+
+Sentiment: NEUTRAL",1.0,1.0,0.1546382645492548
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"The statement acknowledges that the system works but emphasizes that it does not work well, indicating a generally negative experience. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.2702701314370209
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"The statement expresses positive feedback about the hardware but negative feedback about the software, indicating mixed feelings overall. Since the negative aspect seems to overshadow the positive, the overall sentiment leans towards negative.
+
+Sentiment: NEGATIVE",1.0,1.0,0.11080315836233387
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"The text expresses a positive opinion about the idea itself (""Great concept"") but criticizes its implementation (""poor execution""). Overall, it shows a mix of positive and negative sentiments, but the negative aspects dominate due to the critical tone. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.10194382697455369
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"The text mentions positive aspects like fast delivery and nice packaging, but also describes the product as deeply mediocre, indicating mixed feelings. Overall, the negative sentiment about the product outweighs the positives.
+
+Sentiment: NEGATIVE",1.0,0.0,0.12766657029576653
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,"The statement indicates dissatisfaction or disappointment with the experience, suggesting a negative sentiment. 
+
+Sentiment: NEGATIVE",1.0,1.0,0.3301086839854889
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,"The speaker expresses a mild positive feeling by being pleasantly surprised and receiving more than expected, which indicates a positive sentiment.  
+Sentiment: POSITIVE",1.0,1.0,0.2445505279017134
+OpenAI: gpt-4.1-nano,openai,gpt-4.1-nano,Chain-of-thought,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"The statement suggests that the product performs its limited function reliably, which could be seen as a neutral or mildly positive aspect. However, since it emphasizes that it ""does practically nothing,"" it leans towards a negative sentiment.  
+Sentiment: NEGATIVE",1.0,1.0,0.10988363537639657
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,**Sentiment: POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,**Sentiment: NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,Sentiment: **NEUTRAL**,1.0,1.0,0.8324906126116027
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,**Sentiment: NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"Sentiment: **NEUTRAL**
+
+(Explanation: The text mentions a neutral observation about arrival (""on time"") and a pending action (""haven't tested it fully yet""), with no explicit positive or negative sentiment.)",1.0,1.0,0.1781730517728984
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,"Sentiment: **NEUTRAL (with a slight leaning toward POSITIVE, but closer to NEUTRAL)**
+
+### Breakdown:
+- **""Decent enough""** – Mildly positive but not strongly so.
+- **""for the price""** – Neutral (implies value but no clear sentiment).
+- **""Not amazing""** – Slightly negative, but not strongly so (e.g., ""not terrible"" would be more neutral).
+
+Since the text doesn’t express strong enthusiasm or dissatisfaction, **NEUTRAL** is the most accurate classification. If forced to choose between neutral and slightly positive, **NEUTRAL** still fits better due",1.0,1.0,0.00996841850134678
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"For the given text:
+
+**Text:** ""It's okay. I've seen better but I've also seen worse.""
+**Sentiment:** **NEUTRAL** (slightly leaning toward **NEGATIVE** if nuanced, but overall neutral due to balanced phrasing).
+
+*Justification:* The statement contains mixed positive (""seen better"") and negative (""seen worse"") reflections with a ""neutral"" anchor (""it's okay""), making it **NEUTRAL** with undertones. If forced to pick a definitive label, most classifiers would likely assign **NEUTRAL** here.",1.0,1.0,0.01643514361841113
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"Sentiment: **NEGATIVE** (with a strong ironic/negative undertone despite the initial ""wonderful""). The sarcasm and contrast (""just what I always wanted"") clearly indicate dissatisfaction.",1.0,1.0,0.2104865900039634
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"Sentiment: **NEGATIVE**
+
+*(The sarcasm in ""Sure, I love spending 45 minutes on hold. Best. Support. Ever."" clearly indicates a negative sentiment despite the exaggerated positive words.)*",1.0,1.0,0.2104865900039634
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The sentiment of the text is **NEGATIVE**.
+
+While the word ""impressive"" might suggest some level of surprise or attention, the phrase ""can go so spectacularly wrong"" strongly conveys disappointment, frustration, or negativity.",1.0,1.0,0.15208231885270754
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"Sentiment: **NEUTRAL**
+
+*(The text balances a mild positive (""not entirely without merit"") with a mild negative (""not exactly impressive""), resulting in a neutral overall tone.)*",1.0,1.0,0.22688015933902364
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"Sentiment: **NEUTRAL**
+
+*(Explanation: The text contains mixed sentiment—""disappointed"" is negative, but ""wasn't fully let down"" suggests a nuanced, non-extreme reaction. The phrasing leans toward neutrality with a hint of mild disappointment that's not fully resolved.)*",1.0,1.0,0.10452454724113604
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"NEUTRAL (with a slight negative undertone, but overall leans neutral due to the lack of strong positive or negative language). However, since the primary focus is on the functionality (""not well""), the sentiment could also be *arguably classified as NEGATIVE*—depending on the context of what ""well"" implies. Given the phrasing, **NEGATIVE** is likely the more accurate classification.",1.0,0.0,0.040423930376155305
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"Sentiment: **NEGATIVE**
+
+*(The positive mention of ""excellent"" hardware is outweighed by the strong negative sentiment of ""unusable"" software, making the overall tone negative.)*",1.0,1.0,0.22688015933902364
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"Sentiment: **MIXED (but leaning NEGATIVE)**
+
+*Note:* While the text contains a positive phrase (""Great concept""), the overall sentiment is dominated by the negative evaluation (""poor execution,"" ""so close, yet so far""), making it **NEGATIVE** in classification. If forced to choose strictly among POSITIVE/NEGATIVE/NEUTRAL, **NEGATIVE** is the most accurate. However, it’s worth noting the mixed nature of the sentiment.",1.0,0.0,0.0301973834223185
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"Sentiment: **NEGATIVE**
+
+**Reasoning:**
+- ""Fast delivery and nice packaging"" could lean slightly positive, but the phrase ""the product itself is deeply mediocre"" strongly outweighs this with clear negative sentiment.
+- The word ""deeply mediocre"" is explicitly negative, making the overall sentiment negative.",1.0,0.0,0.07679108957896803
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"Sentiment: **NEGATIVE**
+
+*(The phrase ""does practically nothing"" is highly negative, despite the ""quite consistently"" being neutral or slightly positive.)*",1.0,1.0,0.27481238055948964
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,0,review_00,1,This product exceeded all my expectations. Absolutely love it!,POSITIVE,"The text contains strong positive words (""exceeded,"" ""love"") and an exclamation mark, indicating enthusiasm and satisfaction. There are no negative or neutral elements present.
+
+Sentiment: POSITIVE",1.0,0.0,0.19365701148751888
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,1,review_01,1,Complete waste of money. Broke after two days.,NEGATIVE,"The text contains strongly negative words like ""waste"" and ""broke,"" along with a clear expression of disappointment (""after two days"") without any mitigating or positive language.
+
+Sentiment: NEGATIVE",1.0,1.0,0.18887560283756183
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,2,review_02,1,It works fine. Does what it says on the box.,NEUTRAL,"The text contains straightforward, neutral statements about functionality (""It works fine"") and accuracy (""Does what it says on the box""). There are no explicit positive or negative words, making the sentiment appear neutral.
+
+Sentiment: NEUTRAL",1.0,1.0,0.129812176855438
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,3,review_03,1,Best purchase I've made all year. Five stars!,POSITIVE,"The text contains strong positive language (""best purchase,"" ""all year,"" ""five stars""), indicating enthusiasm and satisfaction.
+
+Sentiment: POSITIVE",1.0,1.0,0.291319891133471
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,4,review_04,1,Terrible customer service. Will never buy again.,NEGATIVE,"The text contains strong negative language (""Terrible,"" ""never buy again""), indicating frustration and dissatisfaction.
+
+Sentiment: NEGATIVE",1.0,1.0,0.3114032239145977
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,5,review_05,1,Average quality. Neither impressed nor disappointed.,NEUTRAL,"1. The text uses neutral descriptors (""Average,"" ""Neither impressed nor disappointed"") without strong emotional cues like praise or criticism.
+2. It avoids any positive or negative language, focusing on a balanced, factual assessment.
+
+Sentiment: NEUTRAL",1.0,1.0,0.12043240152376271
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,6,review_06,1,Shipping was fast and the item looks great. Very happy.,POSITIVE,"The text contains several explicit positive phrases (""fast,"" ""looks great,"" ""happy"") that clearly convey satisfaction. There are no negative or neutral elements present.
+
+Sentiment: POSITIVE",1.0,0.0,0.20528965757990927
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,7,review_07,1,The color is different from the photos. Feels cheap.,NEGATIVE,"The text contains negative words like ""different,"" which can imply dissatisfaction, and ""cheap,"" which is a clear negative descriptor. The overall tone suggests disappointment or criticism.
+
+Sentiment: NEGATIVE",1.0,1.0,0.17377394345044514
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,8,review_08,1,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"The text mentions a positive aspect (""arrived on time"") but also includes uncertainty (""haven't tested it fully yet""), which leans toward neutral due to lack of strong sentiment in the second part.
+
+Sentiment: NEUTRAL",1.0,1.0,0.16392712112111643
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,9,review_09,1,Incredibly sturdy build. Worth every penny.,POSITIVE,"The text contains strong positive language (""incredibly sturdy,"" ""worth every penny""), indicating a favorable opinion. There are no negative or neutral words that could offset this sentiment.
+
+Sentiment: POSITIVE",1.0,0.0,0.17090171280152483
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,10,review_10,1,Instructions were confusing and a piece was missing.,NEGATIVE,"1. The text contains clear complaints (""confusing,"" ""a piece was missing""), which indicate dissatisfaction.
+2. There are no positive or neutral elements present, only negative feedback.
+
+Sentiment: NEGATIVE",1.0,0.0,0.1796640309893994
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,11,review_11,1,Decent enough for the price. Not amazing.,NEUTRAL,"The text mentions that the item is ""decent enough"" but not ""amazing,"" which suggests a mild approval with a hint of disappointment or reservation. Overall, this leans toward a slightly negative or neutral sentiment due to the comparative language.
+
+Sentiment: NEUTRAL",1.0,1.0,0.10806741863482926
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,12,review_12,1,Surpassed my expectations in every way!,POSITIVE,"1. The text contains strong, enthusiastic language (""Surpassed,"" ""every way!"") and an exclamation mark, which are indicators of very positive sentiment.
+2. The wording clearly conveys extreme satisfaction and delight.
+
+Sentiment: POSITIVE",1.0,1.0,0.1376097727196054
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,13,review_13,1,Completely useless. Don't waste your time.,NEGATIVE,"The text contains strong negative language (""completely useless,"" ""don't waste your time"") with clear expressions of dissatisfaction or disappointment. These phrases strongly imply a negative sentiment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.15593230108409842
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,14,review_14,1,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"The text contains mild dissatisfaction (""I've seen better"") but also acknowledges acceptance (""okay"") and a balanced perspective (""I've also seen worse""). This suggests a neutral sentiment overall, as there are no strong positive or negative emotions expressed.
+
+Sentiment: NEUTRAL",1.0,1.0,0.09616722588086603
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,15,review_15,1,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"The text contains strong negative language (""broke,"" ""just what I always wanted"") and sarcasm, indicating frustration and dissatisfaction.
+
+Sentiment: NEGATIVE",1.0,1.0,0.2658029590889266
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,16,review_16,1,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"The text contains strongly worded expressions like ""love,"" ""Best,"" and ""Ever,"" which are clearly positive terms. The exaggerated tone (""45 minutes on hold"" paired with enthusiastic praise) suggests sarcasm or humor, but the *content* of the praise dominates, indicating strong positive sentiment despite the absurd premise.
+
+Sentiment: POSITIVE",1.0,0.0,0.056888238346101516
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,17,review_17,1,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The text contains ironic phrasing (""so simple"" contrasted with ""spectacularly wrong"") and a negative word (""wrong""), suggesting disappointment or frustration. While playful, the underlying tone leans toward negativity due to the implication of failure or disappointment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.08847811904208731
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,18,review_18,1,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"The text contains contrasting language (""not entirely without merit"" suggests some positive aspects, while ""not exactly impressive"" implies criticism). The overall tone leans slightly negative due to the emphasis on the lack of impressiveness.
+
+Sentiment: NEGATIVE",1.0,0.0,0.11080315836233387
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,19,review_19,1,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"The text expresses mixed emotions: it acknowledges disappointment (""wasn't disappointed"") but also suggests a nuanced, less severe reaction (""wasn't fully let down""). The use of ""somehow"" and the lack of strong negative language (""yet"") softens the overall tone, leaning slightly away from pure negativity.
+
+Sentiment: NEUTRAL",1.0,1.0,0.06609470331898892
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,20,review_20,1,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"The text contains a mix of neutral (""It's not like it doesn't work. It works."") and negative (""Just not well."") elements, with the latter clearly outweighing the former in emotional tone.
+
+Sentiment: NEGATIVE",1.0,0.0,0.17669444575659674
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,21,review_21,1,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"Thinking step by step: The phrase ""excellent"" suggests a strong positive sentiment, while ""unusable"" is a strongly negative word. These contrasting elements create an overall mixed but predominantly negative impression due to the critical nature of ""unusable"" overshadowing the positive hardware comment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.06664779385646828
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,22,review_22,1,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"The text contains contrasting elements: ""great concept"" suggests strong positive sentiment, while ""poor execution"" and ""so far"" introduce negative or critical undertones. The overall tone leans negative due to the emphasis on flaws despite initial praise.
+
+Sentiment: NEGATIVE",1.0,1.0,0.10025884372280375
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,23,review_23,1,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"The text contains mixed elements: ""Fast delivery and nice packaging"" suggests positive aspects, while ""the product itself is deeply mediocre"" clearly expresses dissatisfaction. The negative sentiment about the product outweighs the positives, making the overall tone negative.
+
+Sentiment: NEGATIVE",1.0,0.0,0.08416299025731036
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,24,review_24,1,Let's just say I won't be ordering a second one.,NEGATIVE,"The text contains a clear negative implication with the phrase ""won't be ordering a second one,"" which suggests dissatisfaction or a decision against repetition. The phrasing ""just say"" also adds a tone of reluctance or reluctance to commit further.
+
+Sentiment: NEGATIVE",1.0,1.0,0.10539922456186433
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,25,review_25,1,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,"The text includes words like ""pleasantly surprised"" and ""got slightly more than that,"" which convey a positive reaction to an unexpected outcome. The overall tone is clearly favorable.
+
+Sentiment: POSITIVE",1.0,1.0,0.18116748694692214
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,26,review_26,1,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"The text contains sarcasm (""for a product that does practically nothing"") followed by a positive-sounding phrase (""it does it quite consistently""). The contrast implies dissatisfaction, suggesting the sentiment is negative.
+
+Sentiment: NEGATIVE",1.0,0.0,0.13089846490974433
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,**Sentiment: POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,"**Sentiment: POSITIVE**
+
+*(The text expresses satisfaction with the product's functionality and accuracy, with no negative or neutral qualifiers.)*",1.0,1.0,0.29375770032353277
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,**Sentiment: NEUTRAL**,1.0,1.0,0.8324906126116027
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,**POSITIVE**,1.0,1.0,0.9048374180359595
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"**Sentiment: NEUTRAL**
+
+*(The text mentions a positive aspect (""arrived on time"") but also indicates uncertainty (""haven't tested it fully yet""), making the overall sentiment neutral.)*",1.0,1.0,0.21402409717744744
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,**Sentiment: POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,"Sentiment: **NEUTRAL (with a slight leaning toward NEGATIVE)**
+
+### Explanation:
+- **""Decent enough for the price""** suggests mild satisfaction, but the phrase ""not amazing"" implies a lack of enthusiasm or disappointment. The overall tone is neither strongly positive nor strongly negative, but slightly negative due to the word ""not.""
+- If forced to pick a single label, **NEUTRAL** is more accurate because the sentiment is mixed (positive for value but negative for quality). However, if the system requires strict classification, **NEGATIVE** could be justified due to the ""not amazing"" phras",1.0,1.0,0.006966330477467914
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"Sentiment: **NEUTRAL**
+
+*(The text contains contrasting opinions—""okay"" is neutral, ""better"" suggests a mild negative perspective, and ""worse"" suggests a mild positive comparison—but the overall balance leans toward neutral due to the lack of strong emotional intensity.)*",1.0,1.0,0.10365712861152786
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"Sentiment: **NEGATIVE** (The phrase ""Oh wonderful"" is sarcastic, and the rest of the text clearly expresses dissatisfaction.)",1.0,1.0,0.3528660814588489
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"Sentiment: **NEGATIVE** (The sarcastic tone, despite using positive words like ""love"" and ""best,"" clearly indicates dissatisfaction.)",1.0,1.0,0.3301086839854889
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"Sentiment: **NEGATIVE** (The phrase ""go so spectacularly wrong"" strongly indicates dissatisfaction or criticism.)",1.0,1.0,0.3899773312036323
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"Sentiment: **NEUTRAL**
+
+*(The text acknowledges some positive aspects (""without merit"") while also expressing a lack of strong enthusiasm (""not exactly impressive""), resulting in a balanced, neutral tone.)*",1.0,1.0,0.1796640309893994
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"**Sentiment: NEUTRAL**
+
+*(The text contains mixed emotions—disappointment (""wasn't disappointed"" implies a lack of full satisfaction) and a nuanced tone (""yet somehow I wasn't fully let down""), making it lean toward neutrality rather than outright positive or negative.)*",1.0,1.0,0.10452454724113604
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"Sentiment: **MIXED (overall NEGATIVE)**
+
+While the hardware is praised (""excellent""), the strong negative sentiment (""unusable"") about the software dominates the overall tone, making the classification **NEGATIVE** in this context. If you strictly need **POSITIVE/NEGATIVE/NEUTRAL**, the answer would be **NEGATIVE**.",1.0,0.0,0.07124243316496003
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"Sentiment: **MIXED (but leaning toward NEGATIVE overall)**
+
+*Note:* While the text contains a positive phrase (""Great concept""), the strong negative (""poor execution"") and overall contrast (""so close, yet so far"") dominate, making the sentiment **predominantly negative**. If forced to choose strictly between POSITIVE, NEGATIVE, or NEUTRAL, **NEGATIVE** would be the most accurate classification.",1.0,0.0,0.03657708478842577
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"Sentiment: **NEGATIVE** (due to the phrase ""deeply mediocre"" outweighing the positive aspects of delivery and packaging).",1.0,0.0,0.36482651734498667
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"Sentiment: **NEGATIVE**
+
+*(The phrase ""does practically nothing"" is highly critical, while ""consistently"" is used sarcastically or ironically to emphasize the negative sentiment.)*",1.0,0.0,0.22313016014842982
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,0,review_00,2,This product exceeded all my expectations. Absolutely love it!,POSITIVE,"1. The text contains strong positive language (""exceeded all my expectations,"" ""Absolutely love it"").
+2. The words and phrases express enthusiasm and satisfaction.
+
+Sentiment: POSITIVE",1.0,1.0,0.21581508339868974
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,1,review_01,2,Complete waste of money. Broke after two days.,NEGATIVE,"The text contains strong negative language (""Complete waste of money,"" ""Broke after two days""), which clearly indicates dissatisfaction and disappointment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.23069318225496285
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,2,review_02,2,It works fine. Does what it says on the box.,NEUTRAL,"The text contains short, straightforward phrases (""works fine,"" ""Does what it says on the box"") that convey satisfaction without strong emotional language. There are no negative or overly enthusiastic words, so the sentiment is neutral but slightly positive.
+
+Sentiment: POSITIVE",1.0,1.0,0.09778344405135005
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,3,review_03,2,Best purchase I've made all year. Five stars!,POSITIVE,"The text contains strong affirmative language (""best purchase,"" ""Five stars!""), which suggests a highly favorable opinion without any negative words or mixed emotions.
+
+Sentiment: POSITIVE",1.0,0.0,0.20873982339007963
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,4,review_04,2,Terrible customer service. Will never buy again.,NEGATIVE,"The text contains strong, negative words like ""Terrible"" and ""never,"" indicating dissatisfaction and a clear intention to avoid purchasing again.
+
+Sentiment: NEGATIVE",1.0,1.0,0.25074135398985803
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,5,review_05,2,Average quality. Neither impressed nor disappointed.,NEUTRAL,"The text uses neutral language (""average quality,"" ""neither impressed nor disappointed""), avoiding strong positive or negative words. It does not express enthusiasm or dissatisfaction either way.
+
+Sentiment: NEUTRAL",1.0,1.0,0.16668213447794653
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,6,review_06,2,Shipping was fast and the item looks great. Very happy.,POSITIVE,"Here’s the thought process:
+The text contains clear positive words (""fast,"" ""great,"" ""happy"") and a straightforward expression of satisfaction without any contradictory or neutral phrasing.
+
+Sentiment: POSITIVE",1.0,0.0,0.17377394345044514
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,7,review_07,2,The color is different from the photos. Feels cheap.,NEGATIVE,"The text contains negative language (""different,"" ""cheap""), suggesting dissatisfaction with the product. There's no positive or neutral tone present.
+
+Sentiment: NEGATIVE",1.0,0.0,0.24252107463564868
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,8,review_08,2,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"The text mentions a positive aspect (""arrived on time"") but also includes uncertainty (""haven't tested it fully yet""), which leans toward a neutral tone due to the lack of strong positive or negative language.
+
+Sentiment: NEUTRAL",1.0,1.0,0.148327393021299
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,9,review_09,2,Incredibly sturdy build. Worth every penny.,POSITIVE,"The text contains strong positive words like ""incredibly sturdy"" and ""worth every penny,"" which convey satisfaction and high quality. There are no negative or neutral words present.
+
+Sentiment: POSITIVE",1.0,0.0,0.18575376371409136
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,10,review_10,2,Instructions were confusing and a piece was missing.,NEGATIVE,"The text contains strong negative language (""confusing,"" ""missing""), which clearly indicates dissatisfaction or frustration. There are no positive or neutral terms present.
+
+Sentiment: NEGATIVE",1.0,0.0,0.20022103787458784
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,11,review_11,2,Decent enough for the price. Not amazing.,NEUTRAL,"The text mentions that the item is ""decent enough for the price,"" which suggests mild satisfaction, but it also includes ""Not amazing,"" indicating some disappointment or lack of strong enthusiasm. These opposing elements balance out the sentiment without leaning heavily toward positivity or negativity.
+
+Sentiment: NEUTRAL",1.0,1.0,0.06776789869953549
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,12,review_12,2,Surpassed my expectations in every way!,POSITIVE,"1. The text contains strong, enthusiastic language (""surpassed,"" ""every way,"" ""!"") that clearly conveys excitement and satisfaction.
+2. This kind of phrasing typically signals a highly positive sentiment without any mixed or neutral tones.
+
+Sentiment: POSITIVE",1.0,0.0,0.11455884399268773
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,13,review_13,2,Completely useless. Don't waste your time.,NEGATIVE,"First, the text contains strong negative words like ""Completely useless"" and ""Don't waste your time,"" which express frustration and discouragement. There are no positive or neutral indicators present.
+
+Sentiment: NEGATIVE",1.0,0.0,0.15855295085400772
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,14,review_14,2,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"The text contains mixed but generally balanced language—""okay"" is neutral, ""seen better"" suggests mild dissatisfaction, and ""seen worse"" implies some relief or acceptance. Overall, the tone leans slightly negative due to the comparative phrasing.
+
+Sentiment: NEGATIVE",1.0,1.0,0.10806741863482926
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,15,review_15,2,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"The text contains strong negative language (""broke,"" ""Just what I always wanted"") and sarcasm (""Oh wonderful""), indicating frustration and disappointment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.2326236579172927
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,16,review_16,2,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"The text contains strong positive language with explicit expressions of satisfaction (""love,"" ""best,"" ""ever"") and enthusiasm. The sarcastic tone (indicated by exaggerated praise) actually underscores positive sentiment despite its humorous criticism.
+
+Sentiment: POSITIVE",1.0,0.0,0.10452454724113604
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,17,review_17,2,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The text contrasts ""impressive"" (a positive observation) with ""go spectacularly wrong"" (a strongly negative outcome), creating a mix of admiration and disappointment. The overall tone leans toward **negative** due to the emphasis on failure and the strong contrast.
+
+Sentiment: NEGATIVE",1.0,1.0,0.09224258918435976
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,18,review_18,2,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"The text contains mixed language with phrases like ""without merit"" (negative) and ""not exactly impressive"" (negative), but it also includes a slight mitigating phrase (""not entirely"") that softens the tone. Overall, the sentiment leans more negative due to the dominant critical language.
+
+Sentiment: NEGATIVE",1.0,0.0,0.07615382279861033
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,19,review_19,2,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"The text contains mixed emotions: it acknowledges disappointment (""wasn't disappointed"") but also suggests a nuanced, less severe reaction (""wasn't fully let down""). The phrasing leans toward a slightly negative but not overwhelmingly harsh sentiment, with a hint of relief or acceptance.
+
+Sentiment: NEGATIVE",1.0,0.0,0.07615382279861033
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,20,review_20,2,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"The text contains a mix of positive (""It works"") and negative (""not well"") elements, but the overall tone leans slightly negative due to the qualifying phrase that undermines the positive statement.
+
+Sentiment: NEGATIVE",1.0,1.0,0.16121764412977677
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,21,review_21,2,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"The sentence contains a strong praise for the hardware (""excellent"") and a strong criticism of the software (""unusable""), which cancels out the positive sentiment. The contrast between the two opposing opinions suggests an overall negative feeling.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1062812213155449
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,22,review_22,2,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"The text contains a mix of praise (""Great concept"") and criticism (""poor execution""), with a slightly negative tone emphasized by the phrase ""so close, yet so far."" The overall sentiment leans negative due to the focus on flaws outweighing the positive aspects.
+
+Sentiment: NEGATIVE",1.0,1.0,0.09536916221554961
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,23,review_23,2,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"The text contains contradictory elements: ""fast delivery and nice packaging"" suggest positive experiences, while ""the product itself is deeply mediocre"" clearly indicates dissatisfaction. The negative critique outweighs the positives.
+
+Sentiment: NEGATIVE",1.0,0.0,0.11943296826671962
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,24,review_24,2,Let's just say I won't be ordering a second one.,NEGATIVE,"The text contains strong negative language (""won't be ordering a second one""), which suggests dissatisfaction or reluctance. The phrasing implies a clear refusal or disappointment without any mitigating positive qualifiers.
+
+Sentiment: NEGATIVE",1.0,1.0,0.13089846490974433
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,25,review_25,2,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,"The text expresses a positive reaction (""pleasantly surprised"") and highlights a favorable outcome (""got slightly more than that""), indicating satisfaction with an unexpected result.
+
+Sentiment: POSITIVE",1.0,1.0,0.18421224758780075
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,26,review_26,2,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"The text contains a sarcastic or critical tone (""practically nothing"" followed by ""consistently"") that suggests dissatisfaction with the product’s functionality. The phrasing implies a negative experience despite the product’s reliability.
+
+Sentiment: NEGATIVE",1.0,0.0,0.11455884399268773
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,POSITIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Minimal,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,NEUTRAL,1.0,0.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,NEGATIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,POSITIVE,1.0,1.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Instructive,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,NEGATIVE,1.0,0.0,0.9355069850316178
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,"**Sentiment: POSITIVE**
+
+*(The text expresses satisfaction with the product's functionality and alignment with expectations.)*",1.0,0.0,0.3499377491111553
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,NEUTRAL,1.0,1.0,0.9433354498734922
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"Sentiment: **NEUTRAL**
+
+*(The text mentions a positive aspect (""arrived on time"") but also includes a neutral/unspecified statement (""haven't tested it fully yet""), making the overall sentiment neutral.)*",1.0,1.0,0.18268352405273466
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,"Sentiment: **NEUTRAL** (with a slight leaning toward **NEGATIVE**, but the overall tone is balanced).
+
+*Note:* The phrase ""decent enough"" suggests mild satisfaction, while ""not amazing"" implies disappointment. However, the lack of strong negative language and the neutral framing of ""decent enough"" keeps it closer to **NEUTRAL** overall. If the context were more critical (e.g., ""terrible for the price""), it would clearly be **NEGATIVE**.",1.0,1.0,0.025561533206507402
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"Sentiment: **NEUTRAL** (with a slight leaning toward **NEGATIVE** due to ""seen better"" being more prominent than ""seen worse"").
+
+However, the overall tone is **NEUTRAL** because it balances both positive and negative observations without strong bias toward either. If forced to strictly pick one, **NEUTRAL** is the safest choice.",1.0,1.0,0.06392786120670757
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,Sentiment: **NEGATIVE** (with a strong sarcastic/ironic tone),1.0,1.0,0.6014972392621288
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,Sentiment: **NEGATIVE** (The sarcastic tone and exaggerated praise in the context of a long wait time indicate strong dissatisfaction.),1.0,1.0,0.32465246735834974
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"Sentiment: **NEUTRAL**
+
+*(The phrase balances a mild positive (""without merit"") with a mild negative (""not impressive""), resulting in an overall neutral tone.)*",1.0,1.0,0.26359713811572677
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"NEUTRAL
+
+*(The sentence contains mixed emotions—disappointment (""wasn't disappointed"") and a slight mitigating tone (""yet somehow I wasn't fully let down""), making it ambiguous enough to lean toward neutral rather than overtly positive or negative.)*",1.0,1.0,0.12451447144412296
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"**Sentiment: NEGATIVE**
+
+*(While the statement admits functionality (""it works""), the phrase ""just not well"" clearly conveys dissatisfaction.)*",1.0,1.0,0.3037146509214855
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"Sentiment: **NEGATIVE**
+
+*(The strong negative sentiment from ""unusable"" outweighs the positive ""excellent,"" making the overall sentiment negative.)*",1.0,1.0,0.2889023126084798
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"Sentiment: **NEUTRAL** (with a slight leaning toward **NEGATIVE** if considering the overall tone).
+
+While the text starts with a positive phrase (""Great concept""), the negative evaluation (""poor execution"") and the contrasting tone (""So close, yet so far"") balance it out, leaning toward **NEUTRAL** with a critical undertone. However, if forced to choose a single classification, **NEUTRAL** is the most accurate.",1.0,0.0,0.0314821886317737
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"Sentiment: **NEGATIVE**
+
+*(The text contains strong positive words (""fast,"" ""nice"") but is outweighed by the strongly negative ""deeply mediocre,"" making the overall sentiment negative.)*",1.0,0.0,0.21224797382674304
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,Sentiment: **NEGATIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,Sentiment: **POSITIVE**,1.0,1.0,0.8255820166366561
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Few-shot,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"Sentiment: **NEGATIVE**
+
+*(The phrase ""does practically nothing"" is a strong negative indicator, despite ""quite consistently"" being neutral or slightly positive.)*",1.0,1.0,0.2570889015865697
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,0,review_00,3,This product exceeded all my expectations. Absolutely love it!,POSITIVE,"1. The text contains enthusiastic language (""exceeded,"" ""absolutely love it"") and strong positive expressions, indicating a very favorable view of the product.
+2. There are no negative or neutral words present to counterbalance the positivity.
+
+Sentiment: POSITIVE",1.0,0.0,0.11080315836233387
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,1,review_01,3,Complete waste of money. Broke after two days.,NEGATIVE,"The text contains strong negative language (""Complete waste of money,"" ""Broke after two days""), which clearly expresses dissatisfaction and disappointment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.23069318225496285
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,2,review_02,3,It works fine. Does what it says on the box.,NEUTRAL,"1. The text contains short, factual statements (""works fine,"" ""does what it says on the box"") with no emotional language or criticism.
+2. There are no clear indicators of negativity or overt positivity—just straightforward confirmation of functionality.
+
+Sentiment: NEUTRAL",1.0,1.0,0.1027969084352864
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,3,review_03,3,Best purchase I've made all year. Five stars!,POSITIVE,"The text contains enthusiastic language (""best purchase,"" ""Five stars!""), which strongly indicates a very positive sentiment.
+
+Sentiment: POSITIVE",1.0,1.0,0.29621590947194976
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,4,review_04,3,Terrible customer service. Will never buy again.,NEGATIVE,"The text contains strong negative language (""terrible,"" ""never"") and expresses clear dissatisfaction with the experience.
+
+Sentiment: NEGATIVE",1.0,1.0,0.30625618134802807
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,5,review_05,3,Average quality. Neither impressed nor disappointed.,NEUTRAL,"The text describes an experience that is neither favorable nor unfavorable—it lacks strong positive or negative language and focuses on a neutral assessment of quality.
+
+Sentiment: NEUTRAL",1.0,1.0,0.20873982339007963
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,6,review_06,3,Shipping was fast and the item looks great. Very happy.,POSITIVE,"1. The text includes strong positive words like ""fast,"" ""great,"" and ""happy,"" which clearly indicate satisfaction.
+2. The overall tone is enthusiastic and approving without any negative or neutral language.
+
+Sentiment: POSITIVE",1.0,0.0,0.15082023219374777
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,7,review_07,3,The color is different from the photos. Feels cheap.,NEGATIVE,"The text contains negative words like ""different"" (often implying dissatisfaction) and ""cheap"" (which typically conveys low quality or poor value). There are no overtly positive or neutral phrases.
+
+Sentiment: NEGATIVE",1.0,0.0,0.16256673791438075
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,8,review_08,3,It arrived on time. Haven't tested it fully yet.,NEUTRAL,"The text mentions a positive aspect (""arrived on time"") but also includes uncertainty (""Haven't tested it fully yet""), which suggests a neutral or slightly cautious tone without strong negativity.
+
+Sentiment: NEUTRAL",1.0,1.0,0.16529888822158653
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,9,review_09,3,Incredibly sturdy build. Worth every penny.,POSITIVE,"The text uses strong positive words like ""incredibly sturdy"" and ""worth every penny,"" which convey high satisfaction and value.
+
+Sentiment: POSITIVE",1.0,1.0,0.291319891133471
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,10,review_10,3,Instructions were confusing and a piece was missing.,NEGATIVE,"The text mentions two issues: confusing instructions and a missing piece, which are both negative experiences. These complaints strongly suggest dissatisfaction or frustration.
+
+Sentiment: NEGATIVE",1.0,1.0,0.19365701148751888
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,11,review_11,3,Decent enough for the price. Not amazing.,NEUTRAL,"The text contains a mild positive statement (""decent enough"") but is tempered by a negative qualifier (""not amazing""), suggesting a lukewarm or slightly critical tone.
+
+Sentiment: NEUTRAL",1.0,1.0,0.2104865900039634
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,12,review_12,3,Surpassed my expectations in every way!,POSITIVE,"1. The text contains an exclamation point and the phrase ""surpassed my expectations,"" both of which strongly indicate a positive emotion.
+2. The language is enthusiastic and conveys satisfaction.
+
+Sentiment: POSITIVE",1.0,1.0,0.16529888822158653
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,13,review_13,3,Completely useless. Don't waste your time.,NEGATIVE,"The text contains strongly negative language with explicit phrases (""completely useless,"" ""don't waste your time"") that express disappointment or dislike. There are no positive or neutral words present.
+
+Sentiment: NEGATIVE",1.0,0.0,0.15593230108409842
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,14,review_14,3,It's okay. I've seen better but I've also seen worse.,NEUTRAL,"The text includes neutral language (""It's okay"") and contrasting judgments (""seen better"" and ""seen worse""), which cancel out strong positive or negative emotions. The overall tone lacks clear enthusiasm or displeasure, leaning toward balanced assessment.
+
+Sentiment: NEUTRAL",1.0,1.0,0.10109782498721881
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,15,review_15,3,"Oh wonderful, it broke on the very first day. Just what I always wanted.",NEGATIVE,"The text contains strong negative language (""broke,"" ""very first day,"" ""just what I always wanted"") and sarcastic tone, indicating frustration or disappointment.
+
+Sentiment: NEGATIVE",1.0,1.0,0.21944214299262663
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,16,review_16,3,"Sure, I love spending 45 minutes on hold. Best. Support. Ever.",NEGATIVE,"The text contains strong positive language (""love,"" ""Best. Support. Ever."") and sarcasm (""Sure, I love spending 45 minutes on hold""), but the exaggerated positive tone (""Best. Support. Ever."") outweighs the sarcastic implication, leaning toward overall positivity.
+
+Sentiment: POSITIVE",1.0,0.0,0.09301448921066349
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,17,review_17,3,Impressive how something so simple can go so spectacularly wrong.,NEGATIVE,"The text uses a contrast (""so simple"" vs. ""spectacularly wrong"") to highlight irony or disappointment. The use of ""wrong"" and the phrasing ""go spectacularly wrong"" connote failure or negative consequences.
+
+Sentiment: NEGATIVE",1.0,1.0,0.15208231885270754
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,18,review_18,3,"Not entirely without merit, though not exactly impressive either.",NEUTRAL,"The text contains contradictory elements: it acknowledges some merit (""not entirely without merit"") but also criticizes (""not exactly impressive either""). The mixed tone leans slightly negative due to the emphasis on the lack of impressiveness.
+
+Sentiment: NEGATIVE",1.0,0.0,0.10988363537639657
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,19,review_19,3,I can't say I wasn't disappointed — yet somehow I wasn't fully let down.,NEUTRAL,"The text expresses mixed emotions: it acknowledges disappointment (""wasn’t disappointed"") but softens it with a nuanced relief (""wasn’t fully let down""). The phrasing suggests a cautious, slightly critical yet not overwhelmingly negative view.
+
+Sentiment: NEGATIVE",1.0,0.0,0.11080315836233387
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,20,review_20,3,It's not like it doesn't work. It works. Just not well.,NEGATIVE,"The text contains a mix of positive (""It works"") and negative (""not well"") elements, but the overall tone leans toward dissatisfaction due to the qualifier ""not well"" outweighing the acknowledgment of functionality.
+
+Sentiment: NEGATIVE",1.0,1.0,0.1399224880243094
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,21,review_21,3,The hardware is excellent but the software makes the whole thing unusable.,NEGATIVE,"The sentence contains a contrast: ""excellent"" (positive) describes the hardware, while ""unusable"" (negative) describes the overall experience due to the software. The strong negative adjective (""unusable"") outweighs the limited positive detail.
+
+Sentiment: NEGATIVE",1.0,1.0,0.10988363537639657
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,22,review_22,3,"Great concept, poor execution. So close, yet so far.",NEGATIVE,"The text contains contrasting elements: ""great concept"" suggests strong positive sentiment, while ""poor execution"" and ""so close, yet so far"" imply disappointment or frustration. The mixed tone leans toward a negative overall impression due to the emphasis on shortcomings despite praise.
+
+Sentiment: NEGATIVE",1.0,1.0,0.07615382279861033
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,23,review_23,3,Fast delivery and nice packaging; the product itself is deeply mediocre.,NEUTRAL,"The text contains contrasting elements: ""fast delivery"" and ""nice packaging"" are positive, while ""deeply mediocre"" strongly indicates dissatisfaction with the product. The negative word outweighs the positives, making the overall sentiment predominantly negative.
+
+Sentiment: NEGATIVE",1.0,0.0,0.09379284861387625
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,24,review_24,3,Let's just say I won't be ordering a second one.,NEGATIVE,"The text contains a clear negative implication (""won't be ordering a second one""), which suggests dissatisfaction or a negative experience. There are no positive or neutral indicators present.
+
+Sentiment: NEGATIVE",1.0,0.0,0.1694834494994701
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,25,review_25,3,Pleasantly surprised — I expected nothing and got slightly more than that.,POSITIVE,"The text contains words like ""pleasantly surprised"" and ""more than"" that convey a positive experience. There are no negative words or constructs present, suggesting a favorable sentiment.
+
+Sentiment: POSITIVE",1.0,0.0,0.17669444575659674
+OpenRouter: mistralai/ministral-8b-2512,openrouter,mistralai/ministral-8b-2512,Chain-of-thought,26,review_26,3,"For a product that does practically nothing, it does it quite consistently.",NEUTRAL,"The text contains sarcastic phrasing (""does practically nothing"" followed by ""quite consistently""), which suggests a strongly negative sentiment. The contrast between the positive-sounding ""consistently"" and the negative implication of the product’s uselessness reinforces this.
+
+Sentiment: NEGATIVE",1.0,0.0,0.08277189838633166

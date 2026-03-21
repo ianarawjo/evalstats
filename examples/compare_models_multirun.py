@@ -31,6 +31,8 @@ import os
 import sys
 import re
 import time
+import csv
+from pathlib import Path
 
 import numpy as np
 
@@ -125,6 +127,7 @@ N_TEMPLATES = len(TEMPLATE_LABELS)
 N_INPUTS = len(INPUTS)
 N_RUNS = 3
 TEMPERATURE = 0.7
+DEFAULT_INTERMEDIATE_CSV = "examples/model_runs/compare_models_multirun_outputs.csv"
 
 
 # ---------------------------------------------------------------------------
@@ -287,6 +290,66 @@ def run_multi_model_benchmark(clients: dict[str, OpenAI]) -> tuple[np.ndarray, d
     return scores, outputs_by_model
 
 
+def _write_intermediate_csv(
+    csv_path: str,
+    scores: np.ndarray,
+    outputs_by_model: dict[str, list[list[list[str]]]],
+) -> Path:
+    """Persist raw model outputs + evaluator scores to a flat CSV file."""
+    output_path = Path(csv_path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", newline="", encoding="utf-8") as file_obj:
+        writer = csv.writer(file_obj)
+        writer.writerow(
+            [
+                "model_label",
+                "provider",
+                "model_name",
+                "template_label",
+                "input_idx",
+                "input_label",
+                "run_idx",
+                "text",
+                "ground_truth",
+                "output",
+                *EVALUATOR_NAMES,
+            ]
+        )
+
+        for m_idx, spec in enumerate(MODEL_SPECS):
+            model_label = spec["label"]
+            provider = spec["provider"]
+            model_name = spec["model"]
+            runs_for_model = outputs_by_model[model_label]
+
+            for r_idx in range(N_RUNS):
+                for t_idx, template_label in enumerate(TEMPLATE_LABELS):
+                    for i_idx, (text, ground_truth) in enumerate(INPUTS):
+                        output = runs_for_model[r_idx][t_idx][i_idx]
+                        evaluator_scores = [
+                            float(scores[m_idx, t_idx, i_idx, r_idx, e_idx])
+                            for e_idx in range(len(EVALUATOR_NAMES))
+                        ]
+                        writer.writerow(
+                            [
+                                model_label,
+                                provider,
+                                model_name,
+                                template_label,
+                                i_idx,
+                                INPUT_LABELS[i_idx],
+                                r_idx + 1,
+                                text,
+                                ground_truth,
+                                output,
+                                *evaluator_scores,
+                            ]
+                        )
+
+    return output_path
+
+
 def demo_compare_models() -> None:
     clients = _make_clients()
 
@@ -300,9 +363,26 @@ def demo_compare_models() -> None:
 
     print("Running multi-model benchmark …")
     t0 = time.time()
-    raw_scores, _outputs = run_multi_model_benchmark(clients)
+    raw_scores, outputs = run_multi_model_benchmark(clients)
     elapsed = time.time() - t0
     print(f"\nCompleted in {elapsed:.1f}s\n")
+
+    csv_path = os.environ.get("INTERMEDIATE_CSV_PATH", DEFAULT_INTERMEDIATE_CSV)
+    saved_csv = _write_intermediate_csv(
+        csv_path=csv_path,
+        scores=raw_scores,
+        outputs_by_model=outputs,
+    )
+    print(f"Saved intermediate run data to: {saved_csv}")
+    print(
+        "You can load this CSV in a notebook and re-run compare_models "
+        "without calling the API again."
+    )
+
+    if sys.stdin.isatty():
+        input("\nPress Enter to continue with compare_models analysis (Ctrl+C to stop)... ")
+    else:
+        print("\nNo interactive stdin detected; continuing without pause.")
 
     # raw_scores shape: (N_models, N_templates, N_inputs, N_runs, N_evaluators)
     multi_result = pstats.MultiModelBenchmark(

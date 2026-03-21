@@ -128,7 +128,7 @@ This is more statistically powerful than treating the two samples as independent
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-data">
 <div class="input">
-<div class="prompt input_prompt">In [6]:</div>
+<div class="prompt input_prompt">In [24]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
@@ -190,7 +190,7 @@ deduce the most appropriate statistical test to run for the comparison.</p>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-ci">
 <div class="input">
-<div class="prompt input_prompt">In [7]:</div>
+<div class="prompt input_prompt">In [25]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">report</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
@@ -251,6 +251,12 @@ Model B: mean=72.0%  95% CI [58.3%, 82.5%]
 <pre><code>Model B (&lt;0)   ··───●───··      |              (&gt;0) Model A
 </code></pre>
 <p>Then we might draw a firmer conclusion that Model B is reliably better for these inputs.</p>
+<p>To report this information, you might say:</p>
+<blockquote>
+<p><em>"Model A scored 64% vs. Model B's 72% on our 50-item eval.
+The 95% CI on the gap is [-24.1%, +9.0%], which includes zero.
+We cannot conclude that Model A is better at this sample size."</em></p>
+</blockquote>
 <p><em>*Note that <code>bayes_binary</code> is named as the test. Since we set <code>method="auto"</code>, <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> uses the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, like Newcombe (the pairwise sibling test to the Wilson score interval), you can tell <code>analyze</code> to use that method (here <code>method="newcombe"</code>).</em></p>
 </div>
 </div>
@@ -267,7 +273,7 @@ Model B  ███████████████████████�
 </code></pre>
 <p>we might just conclude that Model B is better, and call it a day. After all, we have <code>N=50</code> samples, and that sounds like a lot.</p>
 <p>And we'd be <em>completely wrong!</em></p>
-<p>This is where confidence intervals save us. Because we see that the 95% CI spans 0, we can't be sure what world we're in—one where Model B is truly better, or just bad luck of the draw. Just looking at means, you wouldn't catch this, then you'd make a wrong choice, then users will suffer.</p>
+<p>This is where confidence intervals save us. Because we see that the 95% CI spans 0, we can't be sure what world we're in—one where Model B is truly better, or just bad luck.</p>
 </div>
 </div>
 </div>
@@ -281,7 +287,7 @@ Model B  ███████████████████████�
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=6d26fb59">
 <div class="input">
-<div class="prompt input_prompt">In [8]:</div>
+<div class="prompt input_prompt">In [26]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
@@ -381,10 +387,116 @@ Model B: overall=62.4% | run means=['50.0%', '70.0%', '68.0%', '64.0%', '60.0%']
 </div>
 </div>
 </div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=dab4dbd3"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="What-about-a-real-world-example?">What about a real-world example?<a class="anchor-link" href="#What-about-a-real-world-example?">¶</a></h2><p>The synthetic demo is useful for intuition, but in practice you’ll usually have raw outputs from actual model calls.</p>
+<p>To give us a sense of real outputs, I made a basic sentiment analysis eval, which you can run yourself at <code>examples/compare_models_multirun.py</code>. It outputs a CSV file. I've run the eval over two models, <code>gpt-4.1-nano</code> and <code>mistralai/ministral-8b-251</code>, with multiple prompt template variants (<code>Minimal</code>, <code>Few-shot</code>, <code>Chain-of-thought</code>, etc.), 27 example inputs, and 3 runs per model.</p>
+<p>In the next cell, we load that CSV, pull out the <code>accuracy</code> evaluator column (with the binary scores), and pass aligned multirun rows into <code>pstats.compare_models(...)</code>.</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=2934b9e4">
+<div class="input">
+<div class="prompt input_prompt">In [27]:</div>
+<div class="inner_cell">
+<div class="input_area">
+<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">pathlib</span><span class="w"> </span><span class="kn">import</span> <span class="n">Path</span>
+
+<span class="c1"># 1. Load and Filter</span>
+<span class="n">csv_path</span> <span class="o">=</span> <span class="s2">"basic_sentiment_eval_2models.csv"</span>
+<span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">read_csv</span><span class="p">(</span><span class="n">csv_path</span><span class="p">)</span>
+<span class="c1"># The CSV file contains headers like: </span>
+<span class="c1"># model_name, template_label, input_idx, input_label, run_idx, ... ,accuracy</span>
+
+<span class="c1"># We filter to the "Minimal" template, which is the single prompt template we're analyzing.</span>
+<span class="c1"># In reality, the CSV contains multiple prompt templates, but for this example we focus on </span>
+<span class="c1"># just one to simplify things. </span>
+<span class="n">minimal</span> <span class="o">=</span> <span class="n">df</span><span class="p">[</span><span class="n">df</span><span class="p">[</span><span class="s2">"template_label"</span><span class="p">]</span> <span class="o">==</span> <span class="s2">"Minimal"</span><span class="p">]</span><span class="o">.</span><span class="n">copy</span><span class="p">()</span>
+
+<span class="c1"># 2. Pivot the data</span>
+<span class="c1"># This creates a table where rows are (input, run) and columns are model names</span>
+<span class="n">pivot_df</span> <span class="o">=</span> <span class="n">minimal</span><span class="o">.</span><span class="n">pivot</span><span class="p">(</span>
+    <span class="n">index</span><span class="o">=</span><span class="p">[</span><span class="s2">"input_idx"</span><span class="p">,</span> <span class="s2">"run_idx"</span><span class="p">],</span> 
+    <span class="n">columns</span><span class="o">=</span><span class="s2">"model_name"</span><span class="p">,</span> 
+    <span class="n">values</span><span class="o">=</span><span class="s2">"accuracy"</span>
+<span class="p">)</span><span class="o">.</span><span class="n">dropna</span><span class="p">()</span>  <span class="c1"># dropna() ensures we only keep "complete" rows</span>
+
+<span class="c1"># 3. Restructure for the stats tool</span>
+<span class="c1"># We want: {model_name: [[input1_runs], [input2_runs], ...]}</span>
+<span class="n">scores_by_model</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">model</span><span class="p">:</span> <span class="n">pivot_df</span><span class="p">[</span><span class="n">model</span><span class="p">]</span><span class="o">.</span><span class="n">groupby</span><span class="p">(</span><span class="s2">"input_idx"</span><span class="p">)</span><span class="o">.</span><span class="n">apply</span><span class="p">(</span><span class="nb">list</span><span class="p">)</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">model</span> <span class="ow">in</span> <span class="n">pivot_df</span><span class="o">.</span><span class="n">columns</span>
+<span class="p">}</span>
+
+<span class="c1"># 4. Run analysis</span>
+<span class="n">report</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
+    <span class="n">scores_by_model</span><span class="p">,</span>
+    <span class="n">method</span><span class="o">=</span><span class="s2">"auto"</span><span class="p">,</span>
+    <span class="n">rng</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">7</span><span class="p">),</span>
+<span class="p">)</span>
+
+<span class="c1"># 5. Quick Summary</span>
+<span class="n">n_inputs</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">pivot_df</span><span class="o">.</span><span class="n">index</span><span class="o">.</span><span class="n">get_level_values</span><span class="p">(</span><span class="s2">"input_idx"</span><span class="p">)</span><span class="o">.</span><span class="n">unique</span><span class="p">())</span>
+<span class="n">n_runs</span> <span class="o">=</span> <span class="nb">len</span><span class="p">(</span><span class="n">pivot_df</span><span class="o">.</span><span class="n">index</span><span class="o">.</span><span class="n">get_level_values</span><span class="p">(</span><span class="s2">"run_idx"</span><span class="p">)</span><span class="o">.</span><span class="n">unique</span><span class="p">())</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Template: Minimal | Inputs: </span><span class="si">{</span><span class="n">n_inputs</span><span class="si">}</span><span class="s2"> | Runs/Input: </span><span class="si">{</span><span class="n">n_runs</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">label</span><span class="p">,</span> <span class="n">stats</span> <span class="ow">in</span> <span class="n">report</span><span class="o">.</span><span class="n">model_stats</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">label</span><span class="si">}</span><span class="s2">: </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">mean</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2"> (95% CI: [</span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ci_low</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">stats</span><span class="o">.</span><span class="n">ci_high</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">])"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">()</span>
+
+<span class="c1"># Pairwise comparison summary with ASCII interval plot and verdict</span>
+<span class="n">pair</span> <span class="o">=</span> <span class="n">report</span><span class="o">.</span><span class="n">pairwise</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"gpt-4.1-nano"</span><span class="p">,</span> <span class="s2">"mistralai/ministral-8b-2512"</span><span class="p">)</span>
+<span class="n">pair</span><span class="o">.</span><span class="n">summary</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="output_wrapper">
+<div class="output">
+<div class="output_area">
+<div class="prompt"></div>
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>Template: Minimal | Inputs: 27 | Runs/Input: 3
+gpt-4.1-nano: 91.4% (95% CI: [80.3%, 100.4%])
+mistralai/ministral-8b-2512: 84.0% (95% CI: [68.2%, 98.1%])
+
+========================================================
+ PAIRWISE: GPT-4.1-NANO VS. MISTRALAI/MINISTRAL-8B-2512 
+========================================================
+  method: smooth bootstrap (n=10000)  |  N=27 inputs
+
+  Mean gap (gpt-4.1-nano − mistralai/ministral-8b-2512):  +7.4%
+  95% CI:  [-3.4%, +20.4%]
+
+  axis: [-0.357, +0.357]  (· ±1σ spread, ─ 95% CI, ● mean, │ zero)
+  mistralai/ministral-8b-2512 (&lt;0)           ············──│─────●─────────·········· (&gt;0) gpt-4.1-nano
+
+  Effect size (rank-biserial r):  +0.600   p (Wilcoxon signed-rank) = 0.2693  (not significant)
+
+  Verdict: CI spans zero — the gap is not distinguishable from chance at N=27 (Wilcoxon signed-rank p=0.269). Collect more data to be sure.
+
+</pre>
+</div>
+</div>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=87933560"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>We don't reach a conclusion here, even with 3 runs per input, since there's not enough data to say. We're leaning towards <code>gpt-4.1-nano</code> being better for this prompt, but that difference could be chance.</p>
+<h2 id="Bonus:-Couldn't-we-run-it-across-all-templates-to-get-a-tighter-estimate-of-model-performance?">Bonus: Couldn't we run it across all templates to get a tighter estimate of model performance?<a class="anchor-link" href="#Bonus:-Couldn't-we-run-it-across-all-templates-to-get-a-tighter-estimate-of-model-performance?">¶</a></h2><p>We could compare performance across all prompt templates in the dataset, but this might lead to inflated, over-confident conclusions. Why?</p>
+<p>Each template runs the exact same inputs. This means the results are correlated—a difficult input for one template is likely difficult for another—yet basic statistical procedures would treat these as entirely new, independent data points. This false sense of 'extra data' can lead to 95% CIs that look tight and confident but are actually unreliable.</p>
+<p>To handle that scenario appropriately, we'd need something like a mixed effects model or a blocked boostrap. A later example will deal with this.</p>
+</div>
+</div>
+</div>
 <div class="cell border-box-sizing text_cell rendered" id="cell-id=3ce75fdd"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="Interactive-CI-Visualizer">Interactive CI Visualizer<a class="anchor-link" href="#Interactive-CI-Visualizer">¶</a></h2><p>Run the next cell to see an animated explanation of how repeated finite samples produce confidence intervals for the gap $(A - B)$.</p>
+<h2 id="Interactive-CI-Visualizer">Interactive CI Visualizer<a class="anchor-link" href="#Interactive-CI-Visualizer">¶</a></h2><p>To gain intuition for CIs and how they're derived from samples, here's an interactive visualization. Run the next cell to see an animated explanation of how repeated finite samples produce confidence intervals for the gap $(A - B)$.</p>
 <ul>
 <li>The top panel shows sampled model scores and sample means.</li>
 <li>The bottom panel stacks the resulting confidence intervals.</li>
@@ -689,120 +801,6 @@ drawDistributions();
 &lt;/body&gt;
 &lt;/html&gt;' style="width: 100%; max-width: 860px; height: 620px; border: 1px solid #d1d5db; border-radius: 8px;" title="Confidence interval visualizer"></iframe></div>
 </div>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-interp"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="What-'Statistically-Distinguishable'-Means">What 'Statistically Distinguishable' Means<a class="anchor-link" href="#What-'Statistically-Distinguishable'-Means">¶</a></h2><p>A CI that spans zero does <strong>not</strong> mean the two models are equal.
-It means your data is <strong>insufficient to rule out</strong> the possibility that they are.
-The gap could be real — you just don't have enough samples to confirm it.</p>
-<p>The honest report is:</p>
-<blockquote>
-<p><em>"Model A scored X% vs. Model B's Y% on our 50-item eval.
-The 95% CI on the gap is [lo, hi], which includes zero.
-We cannot conclude that Model A is better at this sample size."</em></p>
-</blockquote>
-<p>The wrong report is: <em>"Model A outperformed Model B (78% vs 75%)"</em> — full stop,
-no uncertainty, no sample size, implying a definitive conclusion.</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-n"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="How-Much-Data-Do-You-Actually-Need?">How Much Data Do You Actually Need?<a class="anchor-link" href="#How-Much-Data-Do-You-Actually-Need?">¶</a></h2><p>If the CI spans zero, the next question is: <em>how large would N need to be</em>
-to reliably detect the gap you're seeing?</p>
-<p>We estimate this with a simple simulation: for a range of N values,
-we repeatedly sample from models with the observed means and check what
-fraction of CIs exclude zero (= empirical power).</p>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=code-power">
-<div class="input">
-<div class="prompt input_prompt">In [ ]:</div>
-<div class="inner_cell">
-<div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">empirical_power</span><span class="p">(</span><span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">n_sims</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
-<span class="w">    </span><span class="sd">"""Fraction of simulated trials where the gap is declared significant."""</span>
-    <span class="n">rng_sim</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="n">seed</span><span class="p">)</span>
-    <span class="n">detected</span> <span class="o">=</span> <span class="mi">0</span>
-    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">n_sims</span><span class="p">):</span>
-        <span class="n">a</span> <span class="o">=</span> <span class="n">rng_sim</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">p_a</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
-        <span class="n">b</span> <span class="o">=</span> <span class="n">rng_sim</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
-        <span class="n">rep</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
-            <span class="p">{</span><span class="s2">"Model A"</span><span class="p">:</span> <span class="n">a</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">:</span> <span class="n">b</span><span class="p">},</span>
-            <span class="n">method</span><span class="o">=</span><span class="s2">"auto"</span><span class="p">,</span>
-            <span class="n">alpha</span><span class="o">=</span><span class="n">alpha</span><span class="p">,</span>
-            <span class="n">rng</span><span class="o">=</span><span class="n">rng_sim</span><span class="p">,</span>
-        <span class="p">)</span>
-        <span class="k">if</span> <span class="n">rep</span><span class="o">.</span><span class="n">significant</span><span class="p">:</span>
-            <span class="n">detected</span> <span class="o">+=</span> <span class="mi">1</span>
-    <span class="k">return</span> <span class="n">detected</span> <span class="o">/</span> <span class="n">n_sims</span>
-
-
-<span class="c1"># True pass rates from our synthetic setup</span>
-<span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span> <span class="o">=</span> <span class="mf">0.70</span><span class="p">,</span> <span class="mf">0.65</span>  <span class="c1"># 5pp true gap</span>
-
-<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Power to detect </span><span class="si">{</span><span class="n">p_a</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">p_b</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2"> gap (binary scores, 95% CI):</span><span class="se">\n</span><span class="s2">"</span><span class="p">)</span>
-<span class="k">for</span> <span class="n">n</span> <span class="ow">in</span> <span class="p">[</span><span class="mi">50</span><span class="p">,</span> <span class="mi">100</span><span class="p">,</span> <span class="mi">200</span><span class="p">,</span> <span class="mi">400</span><span class="p">]:</span>
-    <span class="n">power</span> <span class="o">=</span> <span class="n">empirical_power</span><span class="p">(</span><span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">)</span>
-    <span class="n">bar</span> <span class="o">=</span> <span class="s2">"█"</span> <span class="o">*</span> <span class="nb">int</span><span class="p">(</span><span class="n">power</span> <span class="o">*</span> <span class="mi">30</span><span class="p">)</span>
-    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  N=</span><span class="si">{</span><span class="n">n</span><span class="si">:</span><span class="s2">4d</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="n">power</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="n">bar</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-<div class="output_wrapper">
-<div class="output">
-<div class="output_area">
-<div class="prompt"></div>
-<div class="output_subarea output_stream output_stdout output_text">
-<pre>Power to detect 5% gap (binary scores, 95% CI):
-
-</pre>
-</div>
-</div>
-</div>
-</div>
-</div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=md-summary"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="Summary">Summary<a class="anchor-link" href="#Summary">¶</a></h2><table>
-<thead>
-<tr>
-<th>What you have</th>
-<th>What you can say</th>
-</tr>
-</thead>
-<tbody>
-<tr>
-<td>CI excludes zero, both bounds positive</td>
-<td>Model A is reliably better</td>
-</tr>
-<tr>
-<td>CI spans zero</td>
-<td>Too close to call at this N</td>
-</tr>
-<tr>
-<td>CI excludes zero, both bounds negative</td>
-<td>Model B is reliably better</td>
-</tr>
-</tbody>
-</table>
-<p><strong>Key takeaways:</strong></p>
-<ul>
-<li>For binary scores, detecting a 5pp gap requires <strong>N ≈ 200–400</strong> per model at 80–95% power.
-Most evals use N=50–100, which can only reliably detect gaps of 10–15pp or larger.</li>
-<li>A paired design (same prompts for both models) is more powerful than independent samples.
-Use it whenever possible.</li>
-<li>Report CIs, not just means. A mean difference without a CI is an incomplete result.</li>
-</ul>
-<p>Next: <a href="./best-prompt.html">Finding Your Best Prompt</a> — extends this to k&gt;2 comparisons
-with multiple-comparison correction.</p>
 </div>
 </div>
 </div>
