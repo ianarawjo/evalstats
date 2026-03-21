@@ -32,7 +32,6 @@ from .bundles import (
 from .paired import all_pairwise
 from .ranking import bootstrap_ranks, bootstrap_point_advantage
 from .variance import robustness_metrics, seed_variance_decomposition
-from .tokens import TokenUsage, analyze_tokens
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -41,7 +40,6 @@ from .tokens import TokenUsage, analyze_tokens
 def analyze(
     result: Union[BenchmarkResult, MultiModelBenchmark],
     *,
-    token_usage: Optional[TokenUsage] = None,
     evaluator_mode: Literal["aggregate", "per_evaluator"] = "aggregate",
     reference: str = "grand_mean",
     method: AnalyzeMethod = "auto",
@@ -67,13 +65,6 @@ def analyze(
     ----------
     result : BenchmarkResult or MultiModelBenchmark
         The benchmark data to analyze.
-    token_usage : TokenUsage, optional
-        Token counts (input and/or output) aligned to the benchmark
-        templates and inputs.  When provided, ``AnalysisBundle`` is
-        extended with a ``token_analysis`` field containing per-template
-        token CIs, pairwise token comparisons, and a Pareto frontier
-        analysis combining token cost with performance.  Only supported
-        for ``BenchmarkResult`` in ``evaluator_mode='aggregate'``.
     evaluator_mode : str
         ``'aggregate'`` (default) analyzes the evaluator-averaged score
         matrix. ``'per_evaluator'`` runs analyses separately for each
@@ -224,13 +215,6 @@ def analyze(
     # Multi-model path
     # ------------------------------------------------------------------
     if isinstance(result, MultiModelBenchmark):
-        if token_usage is not None:
-            warnings.warn(
-                "token_usage is not yet supported for MultiModelBenchmark "
-                "and will be ignored. Pass a BenchmarkResult instead.",
-                UserWarning,
-                stacklevel=2,
-            )
         if evaluator_mode not in {"aggregate", "per_evaluator"}:
             raise ValueError(
                 f"Unknown evaluator_mode '{evaluator_mode}'. "
@@ -291,28 +275,9 @@ def analyze(
     _validate_supported(shape)
 
     if evaluator_mode == "aggregate":
-        bundle = _analyze_single(result=result, shape=shape, **kwargs)
-        if token_usage is not None:
-            _validate_token_usage(token_usage, result)
-            bundle.token_analysis = analyze_tokens(
-                token_usage,
-                bundle.pairwise,
-                method=method,
-                ci=ci,
-                n_bootstrap=n_bootstrap,
-                correction=correction,
-                rng=rng,
-            )
-        return bundle
+        return _analyze_single(result=result, shape=shape, **kwargs)
 
     # per_evaluator mode — only applies to the 4-D (N, M, R, K) case.
-    if token_usage is not None:
-        warnings.warn(
-            "token_usage is ignored when evaluator_mode='per_evaluator'. "
-            "Token analysis only runs in aggregate mode.",
-            UserWarning,
-            stacklevel=2,
-        )
     has_evaluator_axis = result.scores.ndim == 4
     evaluator_names = result.evaluator_names if has_evaluator_axis else ["score"]
 
@@ -902,47 +867,6 @@ def _analyze_multi_model(
         cross_model=cross_model,
         best_pair=best_pair,
     )
-
-
-# ---------------------------------------------------------------------------
-# Token usage validation
-# ---------------------------------------------------------------------------
-
-def _validate_token_usage(
-    token_usage: TokenUsage,
-    result: BenchmarkResult,
-) -> None:
-    """Raise ValueError if token_usage is incompatible with the benchmark."""
-    if token_usage.template_labels != result.template_labels:
-        raise ValueError(
-            "token_usage.template_labels does not match benchmark template_labels.\n"
-            f"  token_usage: {token_usage.template_labels}\n"
-            f"  benchmark:   {result.template_labels}"
-        )
-    if token_usage.input_labels != result.input_labels:
-        raise ValueError(
-            "token_usage.input_labels does not match benchmark input_labels.\n"
-            f"  token_usage: {token_usage.input_labels}\n"
-            f"  benchmark:   {result.input_labels}"
-        )
-    N, M = result.n_templates, result.n_inputs
-    out = token_usage.output_tokens
-    if out.ndim not in (2, 3):
-        raise ValueError(
-            f"token_usage.output_tokens must be 2-D (N, M) or 3-D (N, M, R); "
-            f"got shape {out.shape}."
-        )
-    if out.shape[:2] != (N, M):
-        raise ValueError(
-            f"token_usage.output_tokens shape {out.shape} is incompatible with "
-            f"benchmark (N={N}, M={M}). Expected first two dims ({N}, {M})."
-        )
-    if token_usage.input_tokens is not None:
-        inp = token_usage.input_tokens
-        if inp.shape != (N, M):
-            raise ValueError(
-                f"token_usage.input_tokens shape {inp.shape} must be ({N}, {M})."
-            )
 
 
 # ---------------------------------------------------------------------------

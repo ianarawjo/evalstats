@@ -8,7 +8,6 @@ from promptstats.core.variance import (
     seed_variance_decomposition,
     SeedVarianceResult,
 )
-from promptstats.core.tokens import TokenUsage, TokenAnalysisResult
 from promptstats.core.router import (
     analyze,
     analyze_factorial,
@@ -45,8 +44,6 @@ __all__ = [
     "robustness_metrics",
     "seed_variance_decomposition",
     "SeedVarianceResult",
-    "TokenUsage",
-    "TokenAnalysisResult",
     "analyze",
     "AnalysisBundle",
     "AnalysisResult",

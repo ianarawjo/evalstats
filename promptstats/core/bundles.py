@@ -14,7 +14,6 @@ from .types import BenchmarkResult, MultiModelBenchmark
 from .paired import PairwiseMatrix
 from .ranking import RankDistribution, PointAdvantageResult
 from .variance import RobustnessResult, SeedVarianceResult
-from .tokens import TokenAnalysisResult
 
 if TYPE_CHECKING:
     from .mixed_effects import LMMInfo, FactorialLMMInfo
@@ -86,9 +85,6 @@ class AnalysisBundle:
     seed_variance : SeedVarianceResult or None
         Seed-variance decomposition (instability scores).  Present only
         when the benchmark carries R >= 3 repeated runs.
-    token_analysis : TokenAnalysisResult or None
-        Token cost analysis with Pareto frontier.  Present only when
-        token_usage was passed to analyze().
     lmm_info : LMMInfo or None
         Variance components and ICC from a standard one-factor LMM.
         Present only when method='lmm' was used.
@@ -104,7 +100,6 @@ class AnalysisBundle:
     robustness: RobustnessResult
     rank_dist: RankDistribution
     seed_variance: Optional[SeedVarianceResult] = None
-    token_analysis: Optional[TokenAnalysisResult] = None
     lmm_info: Optional["LMMInfo"] = None
     factorial_lmm_info: Optional["FactorialLMMInfo"] = None
     resolved_method: Optional[str] = None
