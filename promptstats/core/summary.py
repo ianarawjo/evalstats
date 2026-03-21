@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal, Mapping, Optional, Union
 import numpy as np
 
 from .bundles import AnalysisBundle, MultiModelBundle
-from .paired import PairwiseMatrix
+from .paired import PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
 
 if TYPE_CHECKING:
@@ -52,6 +52,41 @@ def _p_best_color(p: float) -> str:
     if p < 0.05:
         return _DIM
     return ""
+
+
+def _pairwise_p_value_label(test_method: str) -> str:
+    """Return a human-readable p-value method label for pairwise summaries."""
+    method = test_method.lower()
+    if "newcombe" in method:
+        return "McNemar exact"
+    if "fisher exact" in method:
+        return "Fisher exact"
+    if "sign test" in method:
+        return "paired sign test"
+    if "wilcoxon" in method:
+        return "Wilcoxon signed-rank"
+    if "bootstrap" in method:
+        return "bootstrap"
+    return test_method
+
+
+def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
+    """Choose the p-value shown in single-pair summaries.
+
+    Default behavior is to display the Wilcoxon signed-rank p-value when
+    available, while preserving exact-test paths (McNemar/Fisher/sign test)
+    where ``pair.p_value`` is the canonical inferential p-value.
+    """
+    method = pair.test_method.lower()
+    is_exact_path = (
+        "newcombe" in method
+        or "mcnemar" in method
+        or "fisher exact" in method
+        or "sign test" in method
+    )
+    if not is_exact_path and pair.wilcoxon_p is not None:
+        return float(pair.wilcoxon_p), "Wilcoxon signed-rank"
+    return float(pair.p_value), _pairwise_p_value_label(pair.test_method)
 
 
 # ---------------------------------------------------------------------------
@@ -101,6 +136,150 @@ def print_analysis_summary(
                 line_width=line_width,
             )
         print()
+
+
+def print_pairwise_summary(
+    pair: PairedDiffResult,
+    *,
+    alpha: float = 0.05,
+    correction: str = "",
+    line_width: int = 50,
+) -> None:
+    """Print a focused, human-readable summary for a single pairwise comparison.
+
+    Displays the gap estimate, an ASCII interval plot of the confidence
+    interval, and a plain-language verdict so you can immediately see whether
+    the difference is statistically distinguishable from zero.
+
+    Parameters
+    ----------
+    pair : PairedDiffResult
+        A single pairwise comparison result, e.g. from
+        ``report.pairwise.get("Model A", "Model B")``.
+    alpha : float
+        Significance threshold (default 0.05).
+    correction : str
+        Name of the multiple-comparisons correction applied, e.g. ``'fdr_bh'``.
+        Shown in the header when provided.
+    line_width : int
+        Width of the ASCII interval plot (default 50 characters).
+
+    Examples
+    --------
+    >>> pair = report.pairwise.get("Model A", "Model B")
+    >>> from promptstats.core.summary import print_pairwise_summary
+    >>> print_pairwise_summary(pair)
+
+    Or use the convenience method directly on the pair or the matrix:
+
+    >>> pair.summary()
+    >>> report.pairwise.summary("Model A", "Model B")
+    """
+    a, b = pair.template_a, pair.template_b
+    stat_label = pair.statistic.capitalize()
+    ci_pct = int(round((1.0 - alpha) * 100))
+    display_p_value, p_method_label = _pairwise_display_pvalue(pair)
+
+    _print_loud_section(f"Pairwise: {a} vs. {b}")
+
+    corr_str = f"  |  correction: {correction}" if correction else ""
+    print(f"  method: {pair.test_method}{corr_str}  |  N={pair.n_inputs} inputs")
+    print()
+
+    # --- Gap and CI ---
+    # Detect percentage-scale values for nicer formatting.
+    all_vals = [pair.point_diff, pair.ci_low, pair.ci_high]
+    looks_pct = all(abs(v) <= 1.5 for v in all_vals)
+    if looks_pct:
+        def _fmt(v: float) -> str:
+            return f"{v:+.1%}"
+    else:
+        def _fmt(v: float) -> str:
+            return f"{v:+.4f}"
+
+    print(
+        f"  {stat_label} gap ({a} − {b}):  "
+        f"{_BOLD}{_fmt(pair.point_diff)}{_RESET}"
+    )
+    print(f"  {ci_pct}% CI:  [{_fmt(pair.ci_low)}, {_fmt(pair.ci_high)}]")
+    print()
+
+    # --- ASCII interval plot ---
+    max_abs = max(
+        1e-12,
+        abs(pair.point_diff),
+        abs(pair.ci_low),
+        abs(pair.ci_high),
+        abs(pair.point_diff - pair.std_diff),
+        abs(pair.point_diff + pair.std_diff),
+    )
+    axis_low, axis_high = -max_abs, max_abs
+    line = _ascii_interval_line(
+        mean=pair.point_diff,
+        ci_low=pair.ci_low,
+        ci_high=pair.ci_high,
+        spread_low=pair.point_diff - pair.std_diff,
+        spread_high=pair.point_diff + pair.std_diff,
+        axis_low=axis_low,
+        axis_high=axis_high,
+        width=line_width,
+    )
+    print(
+        f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
+        f"(· ±1σ spread, ─ {ci_pct}% CI, ● {pair.statistic}, │ zero)"
+    )
+    print(f"  {b} (<0) {line} (>0) {a}")
+    print()
+
+    # --- Effect size and p-value ---
+    d = pair.rank_biserial
+    p_str = _format_p_value(display_p_value)
+    sig = display_p_value < alpha
+    sig_color = _BRIGHT_GREEN if (sig and _ANSI) else (_YELLOW if _ANSI else "")
+    sig_reset = _RESET if _ANSI else ""
+    sig_label = "significant" if sig else "not significant"
+    print(
+        f"  Effect size (rank-biserial r):  {d:+.3f}   "
+        f"p ({p_method_label}) = {sig_color}{p_str}{sig_reset}  ({sig_label})"
+    )
+    print()
+
+    # --- Plain-language verdict ---
+    if sig:
+        if pair.point_diff > 0:
+            verdict = (
+                f"'{a}' is significantly better than '{b}' "
+                f"(CI excludes zero, {p_method_label} p={display_p_value:.3g})."
+            )
+        else:
+            verdict = (
+                f"'{b}' is significantly better than '{a}' "
+                f"(CI excludes zero, {p_method_label} p={display_p_value:.3g})."
+            )
+        verdict_color = _BRIGHT_GREEN if _ANSI else ""
+    else:
+        ci_spans_zero = pair.ci_low < 0 < pair.ci_high
+        if ci_spans_zero:
+            verdict = (
+                f"CI spans zero — the gap is not distinguishable from chance "
+                f"at N={pair.n_inputs} ({p_method_label} p={display_p_value:.3g}). "
+                f"Collect more data to be sure."
+            )
+        elif pair.ci_low >= 0:
+            verdict = (
+                f"Gap is positive but weak ({p_method_label} p={display_p_value:.3g}). "
+                f"Trending toward '{a}'; more data may confirm."
+            )
+        else:
+            verdict = (
+                f"Gap is negative but weak ({p_method_label} p={display_p_value:.3g}). "
+                f"Trending toward '{b}'; more data may confirm."
+            )
+        verdict_color = _YELLOW if _ANSI else ""
+
+    verdict_reset = _RESET if _ANSI else ""
+    print(f"  {_BOLD}Verdict:{_RESET} {verdict_color}{verdict}{verdict_reset}")
+    print()
 
 
 def print_compare_summary(

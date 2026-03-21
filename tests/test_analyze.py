@@ -7,6 +7,7 @@ from promptstats.core.summary import (
     _critical_difference_groups,
     _print_critical_difference_groups,
     _single_clear_winner_label,
+    print_pairwise_summary,
 )
 from promptstats.core.paired import PairedDiffResult, PairwiseMatrix
 
@@ -236,6 +237,84 @@ def test_print_summary_includes_critical_difference_groups(capsys):
     )
     assert "#" in out
     assert "Prompt D" in out
+
+
+def test_print_pairwise_summary_prefers_wilcoxon_pvalue_for_non_exact_methods(capsys):
+    pair = PairedDiffResult(
+        template_a="Prompt A",
+        template_b="Prompt B",
+        point_diff=0.12,
+        std_diff=0.20,
+        ci_low=0.01,
+        ci_high=0.24,
+        p_value=0.42,
+        test_method="bayes binary (n=2000)",
+        n_inputs=64,
+        per_input_diffs=np.array([0.0, 0.2, 0.1, -0.1, 0.3, 0.0, 0.1, -0.2]),
+        n_runs=1,
+        statistic="mean",
+        wilcoxon_p=0.03125,
+    )
+
+    print_pairwise_summary(pair, alpha=0.05)
+    out = capsys.readouterr().out
+
+    assert "method: bayes binary (n=2000)" in out
+    assert "p (Wilcoxon signed-rank) =" in out
+    assert "Wilcoxon signed-rank p=0.0312" in out
+
+
+def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
+    pair = PairedDiffResult(
+        template_a="Prompt A",
+        template_b="Prompt B",
+        point_diff=0.12,
+        std_diff=0.20,
+        ci_low=-0.05,
+        ci_high=0.23,
+        p_value=0.04,
+        test_method="newcombe (mcnemar p-value)",
+        n_inputs=64,
+        per_input_diffs=np.array([0.0, 0.2, 0.1, -0.1, 0.3, 0.0, 0.1, -0.2]),
+        n_runs=1,
+        statistic="mean",
+        wilcoxon_p=0.0005,
+    )
+
+    print_pairwise_summary(pair, alpha=0.05)
+    out = capsys.readouterr().out
+
+    assert "p (McNemar exact) =" in out
+    assert "McNemar exact p=0.04" in out
+
+
+def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):
+    pair = PairedDiffResult(
+        template_a="Model A",
+        template_b="Model B",
+        point_diff=-0.08,
+        std_diff=0.22,
+        ci_low=-0.241,
+        ci_high=0.09,
+        p_value=0.42,
+        test_method="bayes binary (n=10000)",
+        n_inputs=50,
+        per_input_diffs=np.array([0.0, -0.2, 0.1, -0.1, 0.2, 0.0, -0.1, 0.1]),
+        n_runs=1,
+        statistic="mean",
+        wilcoxon_p=0.3711,
+    )
+
+    print_pairwise_summary(pair, alpha=0.05)
+    out = capsys.readouterr().out
+
+    plot_lines = [
+        line for line in out.splitlines()
+        if "●" in line and "│" in line and "Model A" in line and "Model B" in line
+    ]
+    assert len(plot_lines) == 1
+    assert "(<0)" in plot_lines[0]
+    assert "(>0)" in plot_lines[0]
 
 
 def test_critical_difference_groups_has_two_separate_rank_bands():

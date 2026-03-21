@@ -233,6 +233,28 @@ class PairedDiffResult:
         """Alias for ``rank_biserial``."""
         return self.rank_biserial
 
+    def summary(self, *, alpha: float = 0.05, correction: str = "") -> None:
+        """Print a focused summary for this pairwise comparison.
+
+        Displays the gap, an ASCII interval plot of the confidence interval,
+        and a plain-language verdict.
+
+        Parameters
+        ----------
+        alpha : float
+            Significance threshold (default 0.05).
+        correction : str
+            Name of the multiple-comparisons correction applied, shown in the
+            header when provided.
+
+        Examples
+        --------
+        >>> pair = report.pairwise.get("Model A", "Model B")
+        >>> pair.summary()
+        """
+        from .summary import print_pairwise_summary
+        print_pairwise_summary(self, alpha=alpha, correction=correction)
+
 
 @dataclass
 class FriedmanResult:
@@ -368,6 +390,27 @@ class PairwiseMatrix:
                 wilcoxon_p=r.wilcoxon_p,  # two-sided, so p is the same when flipping direction
             )
         raise KeyError(f"No comparison found for ({a}, {b})")
+
+    def summary(self, a: str, b: str, *, alpha: float = 0.05) -> None:
+        """Print a focused summary for the comparison between `a` and `b`.
+
+        Retrieves the pairwise result via ``get(a, b)``, then delegates to
+        ``PairedDiffResult.summary()``, automatically passing the correction
+        method stored on this matrix.
+
+        Parameters
+        ----------
+        a, b : str
+            Entity labels.  The direction is always ``a − b``.
+        alpha : float
+            Significance threshold (default 0.05).
+
+        Examples
+        --------
+        >>> report.pairwise.summary("Model A", "Model B")
+        """
+        pair = self.get(a, b)
+        pair.summary(alpha=alpha, correction=self.correction_method)
 
     def point_diff_matrix(self) -> np.ndarray:
         """Return NxN matrix of point-estimate differences (mean or median)."""
