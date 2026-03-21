@@ -831,7 +831,7 @@ def all_pairwise(
     method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
 ) -> PairwiseMatrix:
@@ -851,8 +851,8 @@ def all_pairwise(
     n_bootstrap : int
         Number of bootstrap resamples.
     correction : str
-        Multiple comparisons correction: ``'holm'`` (default),
-        ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
+        Multiple comparisons correction: ``'fdr_bh'`` (default),
+        ``'holm'``, ``'bonferroni'``, or ``'none'``.
     rng : np.random.Generator, optional
         Random number generator for reproducibility.
     statistic : str
@@ -930,7 +930,7 @@ def vs_baseline(
     method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
 ) -> list[PairedDiffResult]:

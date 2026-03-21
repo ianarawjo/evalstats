@@ -46,7 +46,7 @@ def analyze(
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
@@ -127,8 +127,8 @@ def analyze(
         ``method='lmm'`` this controls the number of parametric
         simulations used for the rank distribution.
     correction : str
-        Multiple comparisons correction: ``'holm'`` (default),
-        ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
+        Multiple comparisons correction: ``'fdr_bh'`` (default),
+        ``'holm'``, ``'bonferroni'``, or ``'none'``.
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band in the advantage plot
         (default ``(10, 90)``).
@@ -319,7 +319,7 @@ def analyze_factorial(
     run_col: Optional[str] = None,
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: float = 0.95,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     reference: str = "grand_mean",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
@@ -387,7 +387,7 @@ def analyze_factorial(
 
     correction : str
         Multiple-comparisons correction for pairwise tests:
-        ``'holm'`` (default), ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
+        ``'fdr_bh'`` (default), ``'holm'``, ``'bonferroni'``, or ``'none'``.
 
     reference : str
         Reference for mean advantage: ``'grand_mean'`` (default) or the

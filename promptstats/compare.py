@@ -84,7 +84,7 @@ class CompareReport:
     alpha: float = 0.05
     statistic: Literal["mean", "median"] = "mean"
     method: str = "smooth_bootstrap"
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm"
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh"
     entity_name_singular: str = "prompt"
     entity_name_plural: str = "prompts"
 
@@ -328,7 +328,7 @@ def compare_prompts(
     *,
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
@@ -359,8 +359,8 @@ def compare_prompts(
     n_bootstrap : int
         Bootstrap resamples (default 10,000).
     correction : str
-        Multiple-comparisons correction: ``'holm'`` (default),
-        ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
+        Multiple-comparisons correction: ``'fdr_bh'`` (default),
+        ``'holm'``, ``'bonferroni'``, or ``'none'``.
     method : str
         Bootstrap variant: ``'auto'`` (default, selects ``'smooth_bootstrap'``),
         ``'bootstrap'`` (percentile), ``'bca'``, ``'bayes_bootstrap'``,
@@ -550,7 +550,7 @@ def compare_models(
     *,
     alpha: float = 0.05,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "holm",
+    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,

@@ -876,10 +876,13 @@
         <div class="maxim-item">
           <span class="maxim-num">02</span>
           <div class="maxim-text">
-            <strong>Prefer confidence intervals over standard errors.</strong>
+            <strong>Prefer confidence intervals over standard errors, and plot CIs as error bars.</strong>
             Standard errors assume normality and symmetry. They collapse in the presence of
             hierarchical data structure. Confidence intervals make fewer assumptions and communicate
             uncertainty more honestly.
+            <em>This recommendation is consistent with the principles of "The New Statistics", a widely-cited <a href="https://pubmed.ncbi.nlm.nih.gov/24220629/">article</a> which changed how psychologists approach data analysis 
+              (specifically the guideline: "Prefer 95% CIs to SE bars. Routinely report 95% CIs, and use error bars to depict them in figures").
+            </em>
           </div>
         </div>
         <div class="maxim-item">
@@ -889,6 +892,7 @@
             Pairwise comparisons (each item evaluated by both conditions) cancel shared noise, dramatically
             reducing variance. This is especially important when eval items vary widely in difficulty.
             Said differently, comparing two models on the same set of items is more powerful than comparing them on different sets, even if the latter are larger.
+            This guideline is also consistent with the "New Statistics" guideline to calculate CIs on differences rather than on raw means.
           </div>
         </div>
         <div class="maxim-item">
@@ -1027,7 +1031,7 @@
 
     <!-- ── SECTION: BOOTSTRAP METHODS ── -->
     <section id="bootstrap">
-      <h2>Methods Landscape: Bootstrap, Score Intervals, and Bayesian</h2>
+      <h2>Methods for Caculating Confidence Intervals</h2>
       <p class="section-lead">
         Not all methods are equal. Here is a concise map of the main approaches used in our simulations.
       </p>
@@ -1118,7 +1122,7 @@
     <section id="simulation">
       <h2>Simulation Study</h2>
       <p class="section-lead">
-        We ran simulation studies over eval-like distributions to compare bootstrap methods head-to-head, 
+        We ran simulation studies over eval-like distributions to compare methods head-to-head, 
         rather than relying solely on others' results.
       </p>
       <p>
@@ -1372,6 +1376,51 @@
       <p>
         This is consistent with our own simulation results for LLM eval data.
       </p>
+
+      <h3>Which p-value Method Works Best?</h3>
+      <p>
+        We also ran another Monte Carlo simulation study to compare p-value methods for pairwise
+        testing across LLM eval data types and sample sizes, implemented in
+        <code>simulations/sim_compare_pvalues.py</code>. The criterion here is Type I error
+        control under the null (target: <code>&alpha; = 0.05</code>) plus consistency across
+        data distributions and N.
+      </p>
+      <p>
+        <strong>Wilcoxon Signed Ranks</strong> is our recommended default for pairwise
+        comparisons. In this simulation, it is slightly conservative, consistently
+        performant across sample sizes, data types, and distributions, and does not show pathological
+        behavior where Type I error is inflated above the nominal threshold
+        (<code>&alpha; = 0.05</code>). Wilcoxon is a non-parametric test that 
+        makes fewer assumptions about the data distribution, which likely contributes 
+        to its robustness in this context. It is also widely implemented, well-understood,
+        and computationally efficient, making it a practical choice for developers.
+      </p>
+      <p>
+        That said, the Sign Test is also a reasonable choice for safety-critical settings
+        where false positives are especially costly, because it is much more conservative than Wilcoxon.
+      </p>
+      <p>For <a href="https://en.wikipedia.org/wiki/Multiple_comparisons_problem">multiple comparisons correction</a>, 
+        we recommend the <strong>Benjamini-Hochberg</strong> procedure (<code>correction="fdr_bh"</code>), 
+        which performed comparably to other methods in our simulation, but had the greatest power,
+        meaning it was most likely to avoid false negatives. 
+    </p>
+      <div class="callout callout-warning">
+        <div class="callout-label">Do not rely on NHST alone</div>
+        <p>
+          We ran simulations to provide guidance on which p-value method is most reliable for 
+          LLM evals, for those who want to use them, but we do not recommend relying on p-values.
+          Null-hypothesis significance testing (NHST) should not be the primary basis for
+          eval decisions. A p-value is only a compatibility check against a null model;
+          it does not tell you the magnitude, direction, or practical importance of an effect.
+        </p>
+        <p>
+          If you report p-values at all, <strong>always</strong> report them alongside <strong>effect sizes</strong>
+          and <strong>confidence intervals</strong>. In practice, prefer effect sizes and CIs as
+          the main evidence, and use p-values as secondary context. Prefer alpha thresholds that 
+          are more conservative than 0.05, if you use them at all (e.g., 0.001). 
+        </p>
+      </div>
+      
     </section>
 
     <!-- ── SECTION: RECOMMENDATIONS ── -->
@@ -1381,7 +1430,7 @@
         A concise summary of the recommended defaults, organized by data type and analysis type.
       </p>
 
-      <h3>By Data Type</h3>
+      <h3>By Data Type (Confidence Intervals)</h3>
       <div class="rec-cards">
         <div class="rec-card">
           <div class="rec-card-when">Binary (0 / 1)</div>
@@ -1418,7 +1467,7 @@
         </div>
       </div>
 
-      <h3>By Analysis Type</h3>
+      <h3>By Analysis Type (Confidence Intervals)</h3>
       <div class="table-wrap">
         <table>
           <thead>
@@ -1458,7 +1507,7 @@
               <td>All pairwise comparisons (k templates)</td>
               <td>Any</td>
               <td>As above + <strong>multi-comparisons correction</strong></td>
-              <td>Which multiple comparisons correction method to use depends on the context</td>
+              <td>We recommend the Benjamini-Hochberg procedure (<code>correction="fdr_bh"</code>).</td>
             </tr>
             <tr>
               <td>Hierarchical data (multi-run)</td>
@@ -1470,13 +1519,53 @@
         </table>
       </div>
 
-      <h3>Sample Size Guidance</h3>
-      <div class="callout callout-warning">
-        <div class="callout-label">Sample size floor</div>
-        <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
-        <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
-        <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals begin to become reliable.</p>
+      <h3>By Analysis Type (P-values)</h3>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Task</th>
+              <th>Data Type</th>
+              <th>Recommended Method</th>
+              <th>Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Pairwise test (A vs B)</td>
+              <td>Any paired eval scores</td>
+              <td><strong>Wilcoxon Signed Ranks</strong></td>
+              <td>Slightly conservative, consistent across data types and sample sizes, and no Type I inflation above the alpha in our simulation.</td>
+            </tr>
+            <tr>
+              <td>Pairwise test (A vs B), but in a safety-critical setting</td>
+              <td>Any paired eval scores</td>
+              <td><strong>Sign Test</strong></td>
+              <td>More conservative than Wilcoxon; useful when false positives are very costly.</td>
+            </tr>
+            <tr>
+              <td>Multiple pairwise tests (k variants)</td>
+              <td>Any</td>
+              <td><strong>Benjamini-Hochberg</strong> (<code>fdr_bh</code>)</td>
+              <td>Default correction in <code>promptstats</code>; controls expected false discovery rate with better power than stricter family-wise procedures.</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
+
+      <div class="callout callout-warning">
+        <div class="callout-label">Reporting principle</div>
+        <p>
+          Do not rely on NHST alone for eval decisions. If you report p-values, report them
+          alongside <strong>effect sizes</strong> and <strong>confidence intervals</strong>.
+          Prefer effect sizes and CIs as primary evidence, and treat p-values as secondary.
+        </p>
+      </div>
+
+      <h3>Sample Size Guidance</h3>
+      <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
+      <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
+      <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals begin to become reliable.</p>
     </section>
 
     <!-- ── SECTION: PROMPTSTATS ── -->
@@ -1515,7 +1604,8 @@ pstats.print_analysis_summary(analysis)</code></pre>
           For binary data, it uses <strong>Wilson</strong> for point-advantage CIs;
           for pairwise comparisons it uses <strong>Bayesian paired</strong> when
           <code>N &lt; 100</code>, and <strong>Newcombe</strong> when <code>N &ge; 100</code>.
-          Multiple pairwise comparisons are corrected with the Holm method.
+          Multiple pairwise comparisons are corrected with the Benjamini-Hochberg method
+          (<code>fdr_bh</code>) by default.
           Nested (two-level) bootstrap is used automatically for bootstrap-based analyses
           when repeated runs are present.
         </p>

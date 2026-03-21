@@ -2034,7 +2034,7 @@ def lmm_analyze(
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     reference: str = "grand_mean",
     ci: float = 0.95,
-    correction: str = "holm",
+    correction: str = "fdr_bh",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
     n_sim: int = 10_000,
@@ -2060,8 +2060,8 @@ def lmm_analyze(
     ci : float
         Confidence level for Wald intervals (default 0.95).
     correction : str
-        Multiple-comparisons correction: ``'holm'`` (default),
-        ``'bonferroni'``, ``'fdr_bh'``, or ``'none'``.
+        Multiple-comparisons correction: ``'fdr_bh'`` (default),
+        ``'holm'``, ``'bonferroni'``, or ``'none'``.
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band (default ``(10, 90)``).
     failure_threshold : float, optional

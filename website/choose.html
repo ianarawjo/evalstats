@@ -525,7 +525,7 @@ const FLOW = {
       {
         label: 'Compare k\u00a0>\u00a02 variants',
         sub: 'Multiple prompts or models simultaneously \u2014 all-pairs with family-wise error control',
-        next: 'result_binary_holm',
+        next: 'result_binary_fdr',
       },
       {
         label: 'Models \u00d7 prompts grid',
@@ -592,12 +592,12 @@ const FLOW = {
       {
         label: 'No \u2014 each item run once',
         sub: 'Standard single-run eval',
-        next: 'result_smooth_holm',
+        next: 'result_smooth_fdr',
       },
       {
         label: 'Yes \u2014 multiple runs per item',
-        sub: 'R\u00a0\u2265\u00a03 runs per item; nested bootstrap + Holm correction',
-        next: 'result_nested_holm',
+        sub: 'R\u00a0\u2265\u00a03 runs per item; nested bootstrap + Benjamini-Hochberg (FDR) correction',
+        next: 'result_nested_fdr',
       },
     ],
   },
@@ -698,14 +698,14 @@ print(f"Mean: {stats.mean:.3f}  95% CI: [{stats.ci_low:.3f}, {stats.ci_high:.3f}
     type: 'result',
     method: 'Smooth Bootstrap (Gaussian KDE)',
     tags: ['Numeric', 'Pairwise A vs. B'],
-    description: 'Smooth bootstrap with Gaussian KDE is the recommended pairwise method for numeric scores. It draws resampled per-item differences between paired scores, producing a confidence interval on the true performance gap. Holm correction is applied by default even for two variants.',
+    description: 'Smooth bootstrap with Gaussian KDE is the recommended pairwise method for numeric scores. It draws resampled per-item differences between paired scores, producing a confidence interval on the true performance gap. Benjamini-Hochberg correction (<code>fdr_bh</code>) is the default for p-values (and is equivalent for a single pair).',
     code:
 `import promptstats as ps
 
 # scores_a, scores_b: numeric arrays, same length, same eval items
 report = ps.compare_prompts(
     {"model_a": scores_a, "model_b": scores_b},
-    # Holm correction applied by default
+  # correction="fdr_bh" is the default
 )
 print(report.quick_summary())
 
@@ -743,11 +743,11 @@ print(report.quick_summary())`,
     ],
   },
 
-  result_smooth_holm: {
+  result_smooth_fdr: {
     type: 'result',
-    method: 'Smooth Bootstrap + Holm Correction',
+    method: 'Smooth Bootstrap + Benjamini-Hochberg (FDR) Correction',
     tags: ['Numeric', 'Multiple Variants (k > 2)'],
-    description: 'When comparing k > 2 variants simultaneously, each pairwise comparison uses smooth bootstrap and the resulting p-values are adjusted with Holm\u2013Bonferroni correction. This controls your family-wise error rate at \u03b1 = 0.05 while preserving more statistical power than plain Bonferroni.',
+    description: 'When comparing k > 2 variants simultaneously, each pairwise comparison uses smooth bootstrap and the resulting p-values are adjusted with Benjamini-Hochberg FDR correction (<code>fdr_bh</code>). This controls the expected false discovery rate while retaining higher power than stricter family-wise controls.',
     code:
 `import promptstats as ps
 
@@ -760,23 +760,23 @@ report = ps.compare_prompts({
 })
 print(report.quick_summary())
 
-# See all pairwise Holm-corrected p-values:
+# See all pairwise fdr_bh-corrected p-values:
 for (a, b), p_vals in report.pairwise_p_values.items():
     p = p_vals.get("smooth_bootstrap") or p_vals.get("auto")
     print(f"{a} vs {b}: p = {p:.4g}")`,
     why: `<p>Running k comparisons at \u03b1&nbsp;=&nbsp;0.05 without correction gives roughly k\u00d70.05 expected false positives. With just 5 prompts and 10 all-pairs comparisons, you\u2019d expect about 0.5 false &ldquo;winners&rdquo; by chance alone &mdash; and with 8 prompts (28 pairs) that rises to about 1.4.</p>
-<p>Holm\u2013Bonferroni controls the family-wise error rate while being uniformly more powerful than plain Bonferroni. It adjusts the significance threshold dynamically for each ranked p-value, so it\u2019s less conservative for the less-significant comparisons.</p>`,
+<p>Benjamini-Hochberg controls the expected false discovery rate (FDR), which is often a better fit for exploratory prompt/model screening where you care about finding true improvements without being overly conservative. Use Holm/Bonferroni when strict family-wise control is required.</p>`,
     links: [
       { label: 'Simulation results', href: './index.html#recommendations' },
       { label: 'Investigation: Finding Your Best Prompt', href: './investigations/best-prompt.html' },
     ],
   },
 
-  result_nested_holm: {
+  result_nested_fdr: {
     type: 'result',
-    method: 'Nested Smooth Bootstrap + Holm Correction',
+    method: 'Nested Smooth Bootstrap + Benjamini-Hochberg (FDR) Correction',
     tags: ['Numeric', 'Multiple Variants (k\u00a0>\u00a02)', 'Repeated Runs'],
-    description: 'The full pipeline for complex evals: nested bootstrap correctly propagates run-to-run variance into each pairwise CI, and Holm correction controls false positives across all k(k\u22121)/2 pairwise comparisons. Pass 2-D score arrays (items \u00d7 runs) for each variant.',
+    description: 'The full pipeline for complex evals: nested bootstrap correctly propagates run-to-run variance into each pairwise CI, and Benjamini-Hochberg correction (<code>fdr_bh</code>) controls expected false discoveries across all k(k\u22121)/2 pairwise comparisons. Pass 2-D score arrays (items \u00d7 runs) for each variant.',
     code:
 `import promptstats as ps
 
@@ -787,21 +787,21 @@ report = ps.compare_prompts({
     "prompt_c": scores_c_2d,
     # add as many variants as needed
 })
-# Nested bootstrap and Holm correction both activate automatically
+# Nested bootstrap and fdr_bh correction both activate automatically
 print(report.quick_summary())`,
-    why: `<p>This combines two independent corrections. The nested bootstrap handles the &ldquo;which variance source matters?&rdquo; question &mdash; separating run variance from item variance. Holm handles the &ldquo;how many tests am I running?&rdquo; problem.</p>
-<p>Both are necessary when you have k&nbsp;&gt;&nbsp;2 variants with repeated runs. Skipping the nested bootstrap understates uncertainty; skipping Holm inflates your false-positive rate.</p>`,
+  why: `<p>This combines two independent corrections. The nested bootstrap handles the &ldquo;which variance source matters?&rdquo; question &mdash; separating run variance from item variance. Benjamini-Hochberg handles the &ldquo;how many tests am I running?&rdquo; problem by controlling expected false discoveries.</p>
+<p>Both are necessary when you have k&nbsp;&gt;&nbsp;2 variants with repeated runs. Skipping the nested bootstrap understates uncertainty; skipping multiple-comparisons correction inflates false discoveries.</p>`,
     links: [
       { label: 'Methods landscape', href: './index.html#bootstrap' },
       { label: 'Investigation: Prompt Sensitivity', href: './investigations/prompt-sensitivity.html' },
     ],
   },
 
-  result_binary_holm: {
+  result_binary_fdr: {
     type: 'result',
-    method: 'Bayesian Paired Comparison + Holm Correction',
+    method: 'Bayesian Paired Comparison + Benjamini-Hochberg (FDR) Correction',
     tags: ['Binary', 'Multiple Variants (k\u00a0>\u00a02)'],
-    description: 'When comparing k\u00a0>\u00a02 binary conditions, all-pairs Bayesian paired comparisons are run and the resulting p-values are adjusted with Holm\u2013Bonferroni correction. The same compare_prompts() call handles any number of variants \u2014 just add more entries to the dict.',
+    description: 'When comparing k\u00a0>\u00a02 binary conditions, all-pairs Bayesian paired comparisons are run and the resulting p-values are adjusted with Benjamini-Hochberg FDR correction (<code>fdr_bh</code>). The same compare_prompts() call handles any number of variants \u2014 just add more entries to the dict.',
     code:
 `import promptstats as ps
 
@@ -814,15 +814,15 @@ report = ps.compare_prompts(
         # add as many variants as needed
     },
     method="bayes_binary",
-    # Holm correction applied by default
+    # correction="fdr_bh" is the default
 )
 print(report.quick_summary())
 
 # Per-variant Wilson CIs:
 for label, stats in report.entity_stats.items():
     print(f"{label}: {stats.mean:.3f}  [{stats.ci_low:.3f}, {stats.ci_high:.3f}]")`,
-    why: `<p>Running k pairwise comparisons at &alpha;&nbsp;=&nbsp;0.05 without correction gives roughly k&times;0.05 expected false discoveries. Holm&ndash;Bonferroni controls the family-wise error rate while retaining more power than plain Bonferroni.</p>
-<p>The Bayesian paired method is preferred over smooth bootstrap for binary data at any N (it achieves simulated coverage closest to 0.95), so the binary + Holm path uses it for each pairwise test. Per-variant CIs fall back to Wilson, consistent with the single-sample binary recommendation.</p>`,
+    why: `<p>Running k pairwise comparisons at &alpha;&nbsp;=&nbsp;0.05 without correction inflates false discoveries. Benjamini-Hochberg controls the expected false discovery rate while retaining good power for multi-variant screening.</p>
+  <p>The Bayesian paired method is preferred over smooth bootstrap for binary data at any N (it achieves simulated coverage closest to 0.95), so the binary + FDR path uses it for each pairwise test. Per-variant CIs fall back to Wilson, consistent with the single-sample binary recommendation.</p>`,
     links: [
       { label: 'Simulation results', href: './index.html#recommendations' },
       { label: 'Investigation: Finding Your Best Prompt', href: './investigations/best-prompt.html' },
@@ -831,9 +831,9 @@ for label, stats in report.entity_stats.items():
 
   result_binary_grid: {
     type: 'result',
-    method: 'compare_models \u2014 Bayesian Paired + Holm Correction',
+    method: 'compare_models \u2014 Bayesian Paired + Benjamini-Hochberg (FDR) Correction',
     tags: ['Binary', 'Models \u00d7 Prompts Grid'],
-    description: 'For a grid of models \u00d7 prompt templates with binary scores, compare_models() accepts a nested dict and aggregates each model\'s performance across templates. It then runs Bayesian paired comparisons between models with Holm correction, giving you a per-model ranking with calibrated uncertainty.',
+    description: 'For a grid of models \u00d7 prompt templates with binary scores, compare_models() accepts a nested dict and aggregates each model\'s performance across templates. It then runs Bayesian paired comparisons between models with Benjamini-Hochberg FDR correction, giving you a per-model ranking with calibrated uncertainty.',
     code:
 `import promptstats as ps
 
@@ -851,7 +851,7 @@ report = ps.compare_models(
         },
     },
     method="bayes_binary",
-    # Holm correction applied by default across all model pairs
+    # correction="fdr_bh" is the default across all model pairs
 )
 print(report.quick_summary())
 
@@ -868,9 +868,9 @@ for label, stats in report.entity_stats.items():
 
   result_smooth_grid: {
     type: 'result',
-    method: 'compare_models \u2014 Smooth Bootstrap + Holm Correction',
+    method: 'compare_models \u2014 Smooth Bootstrap + Benjamini-Hochberg (FDR) Correction',
     tags: ['Numeric', 'Models \u00d7 Prompts Grid'],
-    description: 'For a grid of models \u00d7 prompt templates with numeric scores, compare_models() with a nested dict collapses each model\'s performance across templates and runs smooth bootstrap pairwise comparisons between models with Holm correction. This gives you a per-model ranking with calibrated CIs.',
+    description: 'For a grid of models \u00d7 prompt templates with numeric scores, compare_models() with a nested dict collapses each model\'s performance across templates and runs smooth bootstrap pairwise comparisons between models with Benjamini-Hochberg FDR correction. This gives you a per-model ranking with calibrated CIs.',
     code:
 `import promptstats as ps
 
@@ -889,14 +889,14 @@ report = ps.compare_models(
             "chain-of-thought": scores_c37_cot,
         },
     },
-    # smooth_bootstrap + Holm correction applied by default
+    # smooth_bootstrap + correction="fdr_bh" are defaults
 )
 print(report.quick_summary())
 
 # Per-model smooth bootstrap CIs:
 for label, stats in report.entity_stats.items():
     print(f"{label}: {stats.mean:.3f}  [{stats.ci_low:.3f}, {stats.ci_high:.3f}]")`,
-    why: `<p>compare_models() with a nested dict treats prompts as a structured axis of variation rather than as noise. It collapses across templates to produce per-model input distributions, then runs smooth bootstrap pairwise tests with Holm correction across all model pairs.</p>
+    why: `<p>compare_models() with a nested dict treats prompts as a structured axis of variation rather than as noise. It collapses across templates to produce per-model input distributions, then runs smooth bootstrap pairwise tests with Benjamini-Hochberg correction across all model pairs.</p>
 <p>This is the right tool when you want a single answer to &ldquo;which model wins overall?&rdquo; and you tested each model on the same set of prompts. If you also want to understand <em>which prompt works best for each model</em>, inspect the per-template breakdown in the returned bundle.</p>`,
     links: [
       { label: 'Simulation results', href: './index.html#recommendations' },
@@ -906,9 +906,9 @@ for label, stats in report.entity_stats.items():
 
   result_nested_grid: {
     type: 'result',
-    method: 'compare_models \u2014 Nested Bootstrap + Holm Correction',
+    method: 'compare_models \u2014 Nested Bootstrap + Benjamini-Hochberg (FDR) Correction',
     tags: ['Numeric', 'Models \u00d7 Prompts Grid', 'Repeated Runs'],
-    description: 'The full factorial setup with repeated runs: pass 2-D arrays (inputs \u00d7 runs) for each model\u2013template cell. compare_models() activates nested bootstrap automatically, propagating run-to-run variance through the template collapse and into each pairwise model CI. Holm correction controls the family-wise error rate across model comparisons.',
+    description: 'The full factorial setup with repeated runs: pass 2-D arrays (inputs \u00d7 runs) for each model\u2013template cell. compare_models() activates nested bootstrap automatically, propagating run-to-run variance through the template collapse and into each pairwise model CI. Benjamini-Hochberg correction (<code>fdr_bh</code>) controls expected false discoveries across model comparisons.',
     code:
 `import promptstats as ps
 
@@ -926,11 +926,11 @@ report = ps.compare_models(
             "few-shot":  scores_c37_fs_2d,
         },
     },
-    # Nested bootstrap + Holm correction both activate automatically
+    # Nested bootstrap + correction="fdr_bh" both activate automatically
 )
 print(report.quick_summary())`,
     why: `<p>Three sources of variance stack up in this setup: item-to-item difficulty, run-to-run stochasticity within each cell, and prompt-to-prompt sensitivity across templates. The nested bootstrap handles the first two by resampling runs within items (inner level) then resampling items (outer level). Template collapse handles the third.</p>
-<p>Skipping the nested bootstrap when R&nbsp;\u2265&nbsp;3 underestimates uncertainty and produces CIs that are too narrow. Skipping Holm inflates your false-positive rate across the model comparisons. Both corrections are free \u2014 they activate automatically from the array shape.</p>`,
+<p>Skipping the nested bootstrap when R&nbsp;\u2265&nbsp;3 underestimates uncertainty and produces CIs that are too narrow. Skipping multiple-comparisons correction inflates false discoveries across model comparisons. Both corrections are free \u2014 they activate automatically from the array shape.</p>`,
     links: [
       { label: 'Methods landscape', href: './index.html#bootstrap' },
       { label: 'Investigation: Finding the Best Model-Prompt Combo', href: './investigations/model-prompt-grid.html' },

@@ -174,8 +174,8 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--correction",
         choices=["holm", "bonferroni", "fdr_bh", "none"],
-        default="holm",
-        help="Multiple-comparisons p-value correction (default: holm).",
+        default="fdr_bh",
+        help="Multiple-comparisons p-value correction (default: fdr_bh).",
     )
     analyze.add_argument(
         "--reference",

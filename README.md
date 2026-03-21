@@ -52,7 +52,7 @@ The specific statistical tests the `promptstats.analyze()` method runs are:
     - Comparison method defaults to `method="auto"`:
         - **Smoothed bootstrap with a Gaussian KDE** (`method="smooth_bootstrap"`) in situations of non-binary data. It has been verified in our simulations that for eval-type data and small sample sizes especially, smoothed is superior to the other bootstrap methods considered (percentile, BCa, Bayesian).
         - **Bayesian pairwise from [`bayes_evals`](https://github.com/sambowyer/bayes_evals/tree/main) and McNemar's test**: Default methods for binary scores (0 or 1 only). Our simulations showed Bayesian pairwise was superior to bootstrap at small N. Note that Bayesian methods should technically be called credible intervals, but they estimate the confidence interval very closely.  
-    - Multiple-comparisons correction for p-values (defaults to **Holm**). 
+    - Multiple-comparisons correction for p-values (defaults to **Benjamini–Hochberg (fdr_bh)**). 
     - Also reports Wilcoxon signed-rank test p-value, in case you need it for people familiar with that test, although p-values from bootstrapped CIs are more robust
 
 - **Mean/median advantage vs reference** via `bootstrap_point_advantage(...)`:
