@@ -998,11 +998,12 @@
         <p>
           The most defensible interpretation is not "Bayesian always" or "frequentist always," but
           <em>method-by-data-type</em>. In our own simulations (see below): Wilson is strongest for binary
-          single-sample coverage, the authors' Bayesian paired is strongest for binary pairwise coverage, and
-          smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
-          By around N=50, methods tend to converge in performance, and by N=100+ they're all pretty good —
-          so the "don't use the CLT unless you have hundreds of datapoints" rule is too pessimistic on 
-          more powerful frequentist methods.
+          single-sample coverage, Bayesian paired is strongest for binary pairwise coverage at small-to-mid N,
+          and smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
+          However, in our larger-N runs, the <code>bayes_evals</code> Bayesian paired method breaks down around
+          N≈200+, producing overconfident intervals that can be dangerously wrong.
+          That is why <code>promptstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
+          Newcombe for speed and better accuracy at larger N.
         </p>
       </div>
 
@@ -1075,8 +1076,9 @@
             For binary A-vs-B comparisons, this method builds paired 2×2 counts
             (both correct, A-only, B-only, both wrong), then use a Dirichlet-multinomial style posterior
             with importance sampling. It reweights samples by likelihood and estimates posterior probabilities 
-            of the score difference. In our pairwise simulation results, this is closest to target coverage 
-            for N&lt;50 and performs comparably to other methods beyond that.
+            of the score difference. In our pairwise simulation results, this is strongest at small N,
+            but the <code>bayes_evals</code> implementation becomes unstable around N≈200+, where it can return
+            dangerously overconfident intervals.
           </div>
         </div>
         <div class="method-card highlight">
@@ -1100,16 +1102,17 @@
           <div class="method-card-name">Newcombe Score Interval</div>
           <div class="method-card-desc">
             The pairwise (paired-difference) analogue of the Wilson interval. The gold standard for
-            comparing two proportions on paired binary data. Simulation results confirm it as the best
-            method for binary pairwise comparisons.
+            comparing two proportions on paired binary data. In our simulations, this is the
+            safer high-N fallback for binary pairwise comparisons when Bayesian paired becomes unstable.
           </div>
         </div>
       </div>
       <p class="aside">
         ★ marks methods that were strongest in our simulations.
         Smooth bootstrap remains the default in <code>promptstats</code> for numeric and interval data;
-        for binary data, the package default remains Wilson + Newcombe, while Bayesian paired is shown here
-        as a strong research result for pairwise binary comparisons.
+        for binary data, <code>promptstats</code> uses Wilson for single-sample CIs and
+        Bayesian paired only for pairwise comparisons with <code>N &lt; 100</code>, then switches to
+        Newcombe at <code>N &ge; 100</code> for speed and better accuracy.
         <strong>Boundary note:</strong> for bounded data (0–1 floats, Likert scales), the Gaussian
         perturbation is applied without clamping — individual resampled values may stray slightly outside
         the data range. This does not materially affect coverage on the <em>mean</em> statistic, which
@@ -1304,7 +1307,7 @@
               <td class="center">0.0009</td>
               <td class="center">0.3213</td>
               <td class="center">+0.002</td>
-              <td class="cell-note">Binary-only paired Bayesian comparison; very close to target</td>
+              <td class="cell-note">Binary-only paired Bayesian comparison; near target in aggregate but breaks down around N≈200+ with overconfident CIs</td>
             </tr>
           </tbody>
         </table>
@@ -1317,13 +1320,15 @@
       <div class="callout callout-finding">
         <div class="callout-label">Surprising finding</div>
         <p>
-          Among binary Bayesian comparisons, paired Bayes tracks the target very closely (0.952). Surprisingly, 
-          Newcombe's score interval under-covers (0.916) despite being considered the gold standard 
-          for binary pairwise comparisons. Among bootstrap methods, Smooth bootstrap lands almost exactly on target (0.951 overall) with the widest intervals,
-          while BCa under-covers most severely (0.902). Smooth bootstrap's performance is surprising,
-          because smoothing technically shouldn't be performed on binary data. However, the performance only
-          is poor when N&lt;50, hence Bayesian paired comparison is the best choice for binary pairwise comparisons at small N, while smooth bootstrap is a 
-          strong alternative at larger N and is more conservative. 
+          Averaged across conditions, paired Bayes looks excellent (0.952), but this hides a critical failure mode:
+          around N≈200 and above, the <code>bayes_evals</code> paired method can collapse into dramatically
+          overconfident intervals. So the practical recommendation is conditional: use Bayesian paired only
+          at smaller sample sizes, then switch to Newcombe by N=100. Among bootstrap methods, Smooth bootstrap
+          remains the most conservative and best-calibrated general option, while BCa under-covers most severely (0.902).
+          Smooth boostrap's performance for binary data is especially impressive given that 
+          it is not designed for that data type and technically "wrong" to run it there, as one
+          cannot add Gaussian noise to binary data without straying outside the data range. But 
+          it still achives reasonable performance at N=30 and above. 
         </p>
       </div>
 
@@ -1339,17 +1344,24 @@
       </ul>
       <p>
         For pairwise comparisons in this simulation summary, <strong>Bayesian Paired Comparison</strong>
-        (0.952) and <strong>Smooth Bootstrap</strong> (0.951) are both near target, while
-        <strong>Newcombe score interval</strong> under-covers (0.916). That makes the practical trade-off
-        clear: Bayesian paired is most accurate here, while smooth bootstrap is the strongest frequentist
-        option and remains robust across mixed data types.
+        (0.952 aggregate) and <strong>Smooth Bootstrap</strong> (0.951) are both near target on average,
+        while <strong>Newcombe score interval</strong> under-covers overall (0.916). But the average masks
+        a severe regime issue: around N≈200+, the <code>bayes_evals</code> Bayesian paired method can fail
+        with overconfident CIs. (We ran additional simulations up to N=1000 confirming this pattern,
+        which the authors of the "Don't Use the CLT" paper may have missed as their evaluations end at N=100.
+        The reason why seems to be that the importance sampling procedure becomes unstable at larger N.) 
+        That makes the operational rule straightforward: Bayesian paired only below
+        N=100, then Newcombe for binary pairwise comparisons, with smooth bootstrap as the strongest
+        frequentist option across mixed data types.
       </p>
       <div class="callout callout-maxim">
         <div class="callout-label">Conclusion on Bayesian methods</div>
         <p>
           For binary single-sample estimates, use <strong>Wilson</strong>.
-          For pairwise comparisons, <strong>Bayesian paired</strong> is most accurate in this run,
-          with <strong>Smooth bootstrap</strong> as the strongest frequentist alternative.
+          For binary pairwise comparisons, use <strong>Bayesian paired</strong> only when <strong>N &lt; 100</strong>,
+          then switch to <strong>Newcombe</strong> at <strong>N &ge; 100</strong> for speed and better accuracy.
+          Around N≈200+, the <code>bayes_evals</code> paired method can become dangerously overconfident.
+          <strong>Smooth bootstrap</strong> remains the strongest frequentist alternative across mixed data types.
           For numeric/interval scores, smooth bootstrap remains the practical winner.
 
           Thus, while Bayesian methods can perform well for binary data, 
@@ -1434,11 +1446,12 @@
       <div class="rec-cards">
         <div class="rec-card">
           <div class="rec-card-when">Binary (0 / 1)</div>
-          <div class="rec-card-method">Wilson + Bayesian Paired</div>
+          <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Newcombe (N≥100)</div>
           <div class="rec-card-detail">
             Wilson score interval for single-sample CIs.
-            For pairwise comparisons in this simulation, Bayesian paired is closest to target
-            (with smooth bootstrap nearly identical and slightly more conservative when N=100 or greater).
+            For pairwise binary comparisons, use Bayesian paired only below N=100;
+            switch to Newcombe at N=100 and above due to high-N instability in <code>bayes_evals</code>
+            (including severe overconfidence around N≈200+).
           </div>
         </div>
         <div class="rec-card">
@@ -1494,8 +1507,8 @@
             <tr>
               <td>Pairwise comparison (A vs B)</td>
               <td>Binary</td>
-              <td><strong>Bayesian Paired Comparison</strong></td>
-              <td>Closest to target in this simulation; smooth bootstrap is strongest frequentist fallback</td>
+              <td><strong>Bayesian Paired (N &lt; 100), Newcombe (N &ge; 100)</strong></td>
+              <td>Bayesian paired is strong at small N but can fail around N≈200+; switch at N=100 for speed and better accuracy</td>
             </tr>
             <tr>
               <td>Pairwise comparison (A vs B)</td>
@@ -1603,7 +1616,8 @@ pstats.print_analysis_summary(analysis)</code></pre>
           <strong>smooth bootstrap</strong> for numeric/interval data.
           For binary data, it uses <strong>Wilson</strong> for point-advantage CIs;
           for pairwise comparisons it uses <strong>Bayesian paired</strong> when
-          <code>N &lt; 100</code>, and <strong>Newcombe</strong> when <code>N &ge; 100</code>.
+          <code>N &lt; 100</code>, and <strong>Newcombe</strong> when <code>N &ge; 100</code>
+          for speed and better accuracy at larger N.
           Multiple pairwise comparisons are corrected with the Benjamini-Hochberg method
           (<code>fdr_bh</code>) by default.
           Nested (two-level) bootstrap is used automatically for bootstrap-based analyses
