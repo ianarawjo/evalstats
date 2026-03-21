@@ -23,8 +23,8 @@ OUT_DIR = os.path.join(WEBSITE_DIR, "investigations")
 sys.path.insert(0, WEBSITE_DIR)
 from gen_stubs import INVESTIGATIONS, make_nav
 
-GITHUB_BASE = "https://github.com/ianarawjo/prompt-stats/blob/main/website/notebooks"
-COLAB_BASE  = "https://colab.research.google.com/github/ianarawjo/prompt-stats/blob/main/website/notebooks"
+GITHUB_BASE = "https://github.com/ianarawjo/promptstats/blob/main/website/notebooks"
+COLAB_BASE  = "https://colab.research.google.com/github/ianarawjo/promptstats/blob/main/website/notebooks"
 
 # ---------------------------------------------------------------------------
 # Notebook → HTML fragment
@@ -32,10 +32,24 @@ COLAB_BASE  = "https://colab.research.google.com/github/ianarawjo/prompt-stats/b
 
 def nb_to_html(nb_path, execute=False):
     """Return (html_fragment, had_error)."""
+    from traitlets.config import Config
     import nbformat
     from nbconvert import HTMLExporter
 
     nb = nbformat.read(nb_path, as_version=4)
+
+    for cell in nb.cells:
+        if cell.get("cell_type") != "code":
+            continue
+
+        source = cell.get("source", "")
+        if "ci_widget_html = r'''<!DOCTYPE html>" not in source:
+            continue
+
+        metadata = cell.setdefault("metadata", {})
+        tags = metadata.setdefault("tags", [])
+        if "remove-input" not in tags:
+            tags.append("remove-input")
 
     if execute:
         from nbconvert.preprocessors import ExecutePreprocessor
@@ -45,7 +59,13 @@ def nb_to_html(nb_path, execute=False):
         with open(nb_path, "w") as f:
             nbformat.write(nb, f)
 
-    exporter = HTMLExporter(template_name="basic")
+    config = Config()
+    config.HTMLExporter.preprocessors = [
+        "nbconvert.preprocessors.TagRemovePreprocessor",
+    ]
+    config.TagRemovePreprocessor.enabled = True
+    config.TagRemovePreprocessor.remove_input_tags = ["remove-input"]
+    exporter = HTMLExporter(template_name="basic", config=config)
     body, _resources = exporter.from_notebook_node(nb)
     return body
 

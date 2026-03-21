@@ -95,11 +95,11 @@
 
     <section>
       <div class="nb-toolbar">
-        <a class="nb-badge" href="https://colab.research.google.com/github/ianarawjo/prompt-stats/blob/main/website/notebooks/model-vs-model.ipynb" target="_blank" rel="noopener">
+        <a class="nb-badge" href="https://colab.research.google.com/github/ianarawjo/promptstats/blob/main/website/notebooks/model-vs-model.ipynb" target="_blank" rel="noopener">
           <img src="https://colab.research.google.com/assets/colab-badge.svg"
                alt="Open In Colab" height="20" />
         </a>
-        <a class="nb-badge-link" href="https://github.com/ianarawjo/prompt-stats/blob/main/website/notebooks/model-vs-model.ipynb" target="_blank" rel="noopener"
+        <a class="nb-badge-link" href="https://github.com/ianarawjo/promptstats/blob/main/website/notebooks/model-vs-model.ipynb" target="_blank" rel="noopener"
            >View .ipynb on GitHub</a>
       </div>
       <div class="nb-content">
@@ -253,6 +253,270 @@ Model B: mean=64.0%  95% CI [50.1%, 75.9%]
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
 <p>Note that <code>bayes_binary</code> is named as the test. Since we set <code>method="auto"</code>, <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> uses the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, like Newcombe (the pairwise sibling test to the Wilson score interval), you can tell <code>analyze</code> to use that method (here <code>method="newcombe"</code>).</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=3ce75fdd"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="Interactive-CI-Visualizer">Interactive CI Visualizer<a class="anchor-link" href="#Interactive-CI-Visualizer">¶</a></h2><p>Run the next cell to see an animated explanation of how repeated finite samples produce confidence intervals for the gap $(A - B)$.</p>
+<ul>
+<li>The top panel shows sampled model scores and sample means.</li>
+<li>The bottom panel stacks the resulting confidence intervals.</li>
+<li>Green intervals cover the true effect; red intervals miss it.</li>
+</ul>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered celltag_remove-input" id="cell-id=69296a1b">
+<div class="output_wrapper">
+<div class="output">
+<div class="output_area">
+<div class="prompt"></div>
+<div class="output_html rendered_html output_subarea">
+<iframe sandbox="allow-scripts" srcdoc='&lt;!DOCTYPE html&gt;
+&lt;html&gt;
+&lt;head&gt;
+  &lt;meta charset="utf-8" /&gt;
+  &lt;title&gt;LLM Eval: From Samples to Confidence Intervals&lt;/title&gt;
+  &lt;script src="https://d3js.org/d3.v7.min.js"&gt;&lt;/script&gt;
+  &lt;style&gt;
+    html, body {
+      background: #ffffff;
+      color: #111111;
+    }
+    body { font-family: sans-serif; margin: 0; padding: 12px; }
+    .curveA { stroke: #1f77b4; fill: none; }
+    .curveB { stroke: #ff7f0e; fill: none; }
+    .dotA { fill: #1f77b4; opacity: 0.6; }
+    .dotB { fill: #ff7f0e; opacity: 0.6; }
+    .meanA { stroke: #1f77b4; stroke-width: 2; }
+    .meanB { stroke: #ff7f0e; stroke-width: 2; }
+    .ci.hit { stroke: #2ca02c; }
+    .ci.miss { stroke: #d62728; }
+    .zero-line { stroke: black; stroke-dasharray: 4; }
+    .label { font-size: 12px; fill: #333; }
+    button { margin-right: 8px; margin-top: 8px; }
+  &lt;/style&gt;
+&lt;/head&gt;
+&lt;body&gt;
+
+&lt;label&gt;True difference:
+  &lt;input type="range" id="effect" min="0" max="0.3" step="0.01" value="0.05"&gt;
+  &lt;span id="effectVal"&gt;0.05&lt;/span&gt;
+&lt;/label&gt;
+
+&lt;br&gt;
+
+&lt;label&gt;Dataset size (n):
+  &lt;input type="range" id="n" min="10" max="200" step="10" value="50"&gt;
+  &lt;span id="nVal"&gt;50&lt;/span&gt;
+&lt;/label&gt;
+
+&lt;br&gt;
+
+&lt;button onclick="runAnimated()"&gt;Run 1 eval (animated)&lt;/button&gt;
+&lt;button onclick="resetPlot()"&gt;Reset&lt;/button&gt;
+
+&lt;svg id="top" width="800" height="250"&gt;&lt;/svg&gt;
+&lt;svg id="bottom" width="800" height="250"&gt;&lt;/svg&gt;
+
+&lt;p id="status"&gt;&lt;/p&gt;
+
+&lt;script&gt;
+const width = 800;
+
+const effectSlider = document.getElementById("effect");
+const nSlider = document.getElementById("n");
+
+effectSlider.oninput = () =&gt; {
+  document.getElementById("effectVal").innerText = effectSlider.value;
+  drawDistributions();
+};
+
+nSlider.oninput = () =&gt; {
+  document.getElementById("nVal").innerText = nSlider.value;
+};
+
+function getEffect() { return parseFloat(effectSlider.value); }
+function getN() { return parseInt(nSlider.value); }
+
+const x = d3.scaleLinear().domain([0,1]).range([50,750]);
+const y = d3.scaleLinear().domain([0,5]).range([200,20]);
+
+const topSvg = d3.select("#top");
+const bottomSvg = d3.select("#bottom");
+
+function normalPDF(x, mean, sd) {
+  return (1 / (sd * Math.sqrt(2*Math.PI))) *
+         Math.exp(-0.5 * ((x - mean)/sd)**2);
+}
+
+function drawDistributions() {
+  topSvg.selectAll("*").remove();
+
+  const effect = getEffect();
+  const base = 0.6;
+  const meanA = base + effect/2;
+  const meanB = base - effect/2;
+  const sd = 0.1;
+
+  const data = d3.range(0,1,0.01);
+
+  const lineA = d3.line()
+    .x(d =&gt; x(d))
+    .y(d =&gt; y(normalPDF(d, meanA, sd)));
+
+  const lineB = d3.line()
+    .x(d =&gt; x(d))
+    .y(d =&gt; y(normalPDF(d, meanB, sd)));
+
+  topSvg.append("path").datum(data).attr("class","curveA").attr("d", lineA);
+  topSvg.append("path").datum(data).attr("class","curveB").attr("d", lineB);
+
+  topSvg.append("text")
+    .attr("class","label")
+    .attr("x", 400)
+    .attr("y", 240)
+    .attr("text-anchor","middle")
+    .text("Model score");
+
+  topSvg.append("text")
+    .attr("class","label")
+    .attr("x", x(meanA))
+    .attr("y", 20)
+    .text("Model A");
+
+  topSvg.append("text")
+    .attr("class","label")
+    .attr("x", x(meanB))
+    .attr("y", 35)
+    .text("Model B");
+}
+
+let intervals = [];
+
+async function runAnimated() {
+  const effect = getEffect();
+  const n = getN();
+
+  const base = 0.6;
+  const sd = 0.1;
+
+  let samplesA = [];
+  let samplesB = [];
+
+  document.getElementById("status").innerText = "Sampling...";
+
+  for (let i = 0; i &lt; n; i++) {
+    const a = d3.randomNormal(base + effect/2, sd)();
+    const b = d3.randomNormal(base - effect/2, sd)();
+
+    samplesA.push(a);
+    samplesB.push(b);
+
+    topSvg.append("circle")
+      .attr("class","dotA")
+      .attr("cx", x(a))
+      .attr("cy", 210)
+      .attr("r", 3);
+
+    topSvg.append("circle")
+      .attr("class","dotB")
+      .attr("cx", x(b))
+      .attr("cy", 220)
+      .attr("r", 3);
+
+    await new Promise(r =&gt; setTimeout(r, 15));
+  }
+
+  const meanA = d3.mean(samplesA);
+  const meanB = d3.mean(samplesB);
+  const diff = meanA - meanB;
+
+  topSvg.append("line")
+    .attr("class","meanA")
+    .attr("x1", x(meanA))
+    .attr("x2", x(meanA))
+    .attr("y1", 0)
+    .attr("y2", 200);
+
+  topSvg.append("line")
+    .attr("class","meanB")
+    .attr("x1", x(meanB))
+    .attr("x2", x(meanB))
+    .attr("y1", 0)
+    .attr("y2", 200);
+
+  document.getElementById("status").innerText =
+    `Sample diff (A − B) = ${diff.toFixed(3)}`;
+
+  const se = Math.sqrt((sd**2)/n + (sd**2)/n);
+  const margin = 1.96 * se;
+  const ci = [diff - margin, diff + margin];
+
+  const contains = ci[0] &lt;= effect &amp;&amp; ci[1] &gt;= effect;
+  intervals.push({ci, contains, diff});
+
+  drawCI();
+}
+
+function drawCI() {
+  bottomSvg.selectAll("*").remove();
+
+  const xCI = d3.scaleLinear().domain([-0.3,0.3]).range([50,750]);
+
+  bottomSvg.append("text")
+    .attr("class","label")
+    .attr("x", 400)
+    .attr("y", 240)
+    .attr("text-anchor","middle")
+    .text("Performance difference (A − B)");
+
+  bottomSvg.append("line")
+    .attr("class","zero-line")
+    .attr("x1", xCI(0))
+    .attr("x2", xCI(0))
+    .attr("y1", 0)
+    .attr("y2", 250);
+
+  bottomSvg.selectAll(".ci")
+    .data(intervals)
+    .enter()
+    .append("line")
+    .attr("class", d =&gt; "ci " + (d.contains ? "hit" : "miss"))
+    .attr("x1", d =&gt; xCI(d.ci[0]))
+    .attr("x2", d =&gt; xCI(d.ci[1]))
+    .attr("y1", (d,i) =&gt; 20 + i*6)
+    .attr("y2", (d,i) =&gt; 20 + i*6)
+    .attr("stroke-width", 2);
+
+  const last = intervals[intervals.length - 1];
+  if (last) {
+    bottomSvg.append("text")
+      .attr("class","label")
+      .attr("x", xCI(last.ci[1]) + 5)
+      .attr("y", 24 + (intervals.length - 1)*6)
+      .text(`95% CI [${last.ci[0].toFixed(3)}, ${last.ci[1].toFixed(3)}]`);
+  }
+}
+
+function resetPlot() {
+  intervals = [];
+  topSvg.selectAll("*").remove();
+  bottomSvg.selectAll("*").remove();
+  drawDistributions();
+  document.getElementById("status").innerText = "";
+}
+
+drawDistributions();
+&lt;/script&gt;
+
+&lt;/body&gt;
+&lt;/html&gt;' style="width: 100%; max-width: 860px; height: 620px; border: 1px solid #d1d5db; border-radius: 8px;" title="Confidence interval visualizer">
+</iframe>
+</div>
+</div>
 </div>
 </div>
 </div>
