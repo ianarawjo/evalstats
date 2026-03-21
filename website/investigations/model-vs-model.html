@@ -128,7 +128,7 @@ This is more statistically powerful than treating the two samples as independent
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-data">
 <div class="input">
-<div class="prompt input_prompt">In [1]:</div>
+<div class="prompt input_prompt">In [6]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
@@ -190,7 +190,7 @@ deduce the most appropriate statistical test to run for the comparison.</p>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-ci">
 <div class="input">
-<div class="prompt input_prompt">In [2]:</div>
+<div class="prompt input_prompt">In [7]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">report</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
@@ -266,28 +266,118 @@ Model B  ███████████████████████�
 ───────────────────────────────────────────
 </code></pre>
 <p>we might just conclude that Model B is better, and call it a day. After all, we have <code>N=50</code> samples, and that sounds like a lot.</p>
-<p>This is where confidence intervals save us. Because we see:</p>
-<pre><code>Mean gap (Model A − Model B):  -8.0%
-95% CI:  [-24.1%, +9.0%]
-
-  axis: [-0.714, +0.714]  (· ±1σ spread, ─ 95% CI, ● mean, │ zero)
-  Model B (&lt;0) ················──────●─│────················      (&gt;0) Model A
-</code></pre>
-<p>and that 95% CI spans 0, we can't be sure what world we're in—one where Model B is truly better, or just bad luck of the draw. You wouldn't catch this, then you'd make a wrong choice, then users will suffer (in a minor way, but still one that will impact your bottom line).</p>
+<p>And we'd be <em>completely wrong!</em></p>
+<p>This is where confidence intervals save us. Because we see that the 95% CI spans 0, we can't be sure what world we're in—one where Model B is truly better, or just bad luck of the draw. Just looking at means, you wouldn't catch this, then you'd make a wrong choice, then users will suffer.</p>
 </div>
 </div>
 </div>
 <div class="cell border-box-sizing text_cell rendered" id="cell-id=f26b2d8b"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="Improving-the-test:-Prefer-to-have-multiple-runs">Improving the test: Prefer to have multiple runs<a class="anchor-link" href="#Improving-the-test:-Prefer-to-have-multiple-runs">¶</a></h2><p>Actually, there's something we should've done better here. LLMs are stochastic, but we just ran 50 inputs a single time through these models. That's actually a bad idea. If we want to be more precise, we should at least add multiple runs to quantify how much that performance is due to chance—say <code>N=3</code>.</p>
-<p>Let's do that now—let's add multiple runs, and see what happens.</p>
+<h2 id="Improving-the-test:-Prefer-to-have-multiple-runs">Improving the test: Prefer to have multiple runs<a class="anchor-link" href="#Improving-the-test:-Prefer-to-have-multiple-runs">¶</a></h2><p>Actually, there's something we should've done better here. LLMs are stochastic, but we just ran 50 inputs a single time through these models. That's actually a bad idea. If we want to be more precise, we should at least add multiple runs to quantify how much that performance is due to chance.</p>
+<p>Let's do that now—let's add multiple runs, say <code>N=5</code>, and see what happens.</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=6d26fb59">
+<div class="input">
+<div class="prompt input_prompt">In [8]:</div>
+<div class="inner_cell">
+<div class="input_area">
+<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">random</span>
+<span class="n">random</span><span class="o">.</span><span class="n">seed</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
+
+<span class="c1"># The number of "inputs" to the single prompt template under test,</span>
+<span class="c1"># which we can think of as 50 different questions or tasks that the models are being evaluated on.</span>
+<span class="n">N_INPUTS</span> <span class="o">=</span> <span class="mi">50</span>
+
+<span class="c1"># The number of runs per input, which could represent multiple evaluation runs with different random seeds </span>
+<span class="c1"># or conditions.</span>
+<span class="n">N_RUNS</span> <span class="o">=</span> <span class="mi">5</span>
+
+<span class="c1"># We'll use synthetic data to simulate the scores for Model A and Model B across these inputs and runs.</span>
+<span class="c1"># We use the same probabilities as before (0.70 for Model A and 0.65 for Model B) to </span>
+<span class="c1"># generate binary scores (1 for pass, 0 for fail).</span>
+<span class="n">model_a_runs</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="p">[</span><span class="mf">1.0</span> <span class="k">if</span> <span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">0.70</span> <span class="k">else</span> <span class="mf">0.0</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">N_RUNS</span><span class="p">)]</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">N_INPUTS</span><span class="p">)</span>
+<span class="p">]</span>
+<span class="n">model_b_runs</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="p">[</span><span class="mf">1.0</span> <span class="k">if</span> <span class="n">random</span><span class="o">.</span><span class="n">random</span><span class="p">()</span> <span class="o">&lt;</span> <span class="mf">0.65</span> <span class="k">else</span> <span class="mf">0.0</span> <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">N_RUNS</span><span class="p">)]</span>
+    <span class="k">for</span> <span class="n">_</span> <span class="ow">in</span> <span class="nb">range</span><span class="p">(</span><span class="n">N_INPUTS</span><span class="p">)</span>
+<span class="p">]</span>
+
+<span class="c1"># The data now looks like: </span>
+<span class="c1">#</span>
+<span class="c1"># model_a_runs = [</span>
+<span class="c1">#     [1.0, 1.0, 0.0],  # input 1, scores for runs 1-3</span>
+<span class="c1">#     [0.0, 1.0, 1.0],  # input 2, scores for runs 1-3</span>
+<span class="c1">#     [0.0, 0.0, 1.0],  # input 3, scores for runs 1-3</span>
+<span class="c1">#     ...</span>
+<span class="c1"># ]</span>
+<span class="c1">#</span>
+<span class="c1"># We have 50 inputs, and for each input we have 3 runs of scores for </span>
+<span class="c1"># Model A and Model B. Each score is either 1.0 (pass) or 0.0 (fail), </span>
+<span class="c1"># generated according to the specified probabilities.</span>
+
+<span class="c1"># We pass these nested lists directly to compare_models, which will automatically</span>
+<span class="c1"># interpret them as multiple runs per input and compute the appropriate statistics:</span>
+<span class="n">report_multirun</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
+    <span class="p">{</span><span class="s2">"Model A"</span><span class="p">:</span> <span class="n">model_a_runs</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">:</span> <span class="n">model_b_runs</span><span class="p">},</span>
+    <span class="n">method</span><span class="o">=</span><span class="s2">"auto"</span><span class="p">,</span>
+    <span class="n">rng</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">1</span><span class="p">),</span>
+<span class="p">)</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">mean</span><span class="p">(</span><span class="n">vals</span><span class="p">):</span>
+    <span class="k">return</span> <span class="nb">sum</span><span class="p">(</span><span class="n">vals</span><span class="p">)</span> <span class="o">/</span> <span class="nb">len</span><span class="p">(</span><span class="n">vals</span><span class="p">)</span>
+
+<span class="k">for</span> <span class="n">label</span><span class="p">,</span> <span class="n">rows</span> <span class="ow">in</span> <span class="p">{</span><span class="s2">"Model A"</span><span class="p">:</span> <span class="n">model_a_runs</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">:</span> <span class="n">model_b_runs</span><span class="p">}</span><span class="o">.</span><span class="n">items</span><span class="p">():</span>
+    <span class="n">run_means</span> <span class="o">=</span> <span class="p">[</span><span class="n">mean</span><span class="p">(</span><span class="n">run_vals</span><span class="p">)</span> <span class="k">for</span> <span class="n">run_vals</span> <span class="ow">in</span> <span class="nb">zip</span><span class="p">(</span><span class="o">*</span><span class="n">rows</span><span class="p">)]</span>
+    <span class="n">overall</span> <span class="o">=</span> <span class="n">mean</span><span class="p">([</span><span class="n">x</span> <span class="k">for</span> <span class="n">row</span> <span class="ow">in</span> <span class="n">rows</span> <span class="k">for</span> <span class="n">x</span> <span class="ow">in</span> <span class="n">row</span><span class="p">])</span>
+    <span class="n">run_means_str</span> <span class="o">=</span> <span class="p">[</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">m</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span> <span class="k">for</span> <span class="n">m</span> <span class="ow">in</span> <span class="n">run_means</span><span class="p">]</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">label</span><span class="si">}</span><span class="s2">: overall=</span><span class="si">{</span><span class="n">overall</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2"> | run means=</span><span class="si">{</span><span class="n">run_means_str</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="nb">print</span><span class="p">()</span>
+<span class="n">pair_multirun</span> <span class="o">=</span> <span class="n">report_multirun</span><span class="o">.</span><span class="n">pairwise</span><span class="o">.</span><span class="n">get</span><span class="p">(</span><span class="s2">"Model A"</span><span class="p">,</span> <span class="s2">"Model B"</span><span class="p">)</span>
+<span class="n">pair_multirun</span><span class="o">.</span><span class="n">summary</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+<div class="output_wrapper">
+<div class="output">
+<div class="output_area">
+<div class="prompt"></div>
+<div class="output_subarea output_stream output_stdout output_text">
+<pre>Model A: overall=72.0% | run means=['68.0%', '76.0%', '76.0%', '66.0%', '74.0%']
+Model B: overall=62.4% | run means=['50.0%', '70.0%', '68.0%', '64.0%', '60.0%']
+
+===============================
+ PAIRWISE: MODEL A VS. MODEL B 
+===============================
+  method: smooth bootstrap (n=10000)  |  N=50 inputs
+
+  Mean gap (Model A − Model B):  +9.6%
+  95% CI:  [+1.5%, +17.9%]
+
+  axis: [-0.371, +0.371]  (· ±1σ spread, ─ 95% CI, ● mean, │ zero)
+  Model B (&lt;0)              ···········│──────●─────············· (&gt;0) Model A
+
+  Effect size (rank-biserial r):  +0.451   p (Wilcoxon signed-rank) = 0.01323*  (significant)
+
+  Verdict: 'Model A' is significantly better than 'Model B' (CI excludes zero, Wilcoxon signed-rank p=0.0132).
+
+</pre>
+</div>
+</div>
 </div>
 </div>
 </div>
 <div class="cell border-box-sizing text_cell rendered" id="cell-id=65219df9"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
+<p>Great: now Model A is coming out on top, which is what we expected. The 95% CI is <code>[+1.5%, +17.9%]</code>, which means that after accounting for both input sampling noise and run-to-run model randomness, the plausible true gap is now positive: Model A is likely between about 1.5 and 17.9 percentage points better than Model B on this task setup. Unlike the earlier single-run result (where the CI crossed 0), this interval no longer includes zero, so the data now support a directional claim that Model A is reliably better under these conditions.</p>
+<p>As we see, multiple runs reduce the chance that one lucky (or unlucky) pass through stochastic models drives your conclusion.</p>
 </div>
 </div>
 </div>
@@ -632,7 +722,7 @@ fraction of CIs exclude zero (= empirical power).</p>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-power">
 <div class="input">
-<div class="prompt input_prompt">In [14]:</div>
+<div class="prompt input_prompt">In [ ]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="k">def</span><span class="w"> </span><span class="nf">empirical_power</span><span class="p">(</span><span class="n">p_a</span><span class="p">,</span> <span class="n">p_b</span><span class="p">,</span> <span class="n">n</span><span class="p">,</span> <span class="n">n_sims</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.05</span><span class="p">,</span> <span class="n">seed</span><span class="o">=</span><span class="mi">1</span><span class="p">):</span>
@@ -672,10 +762,6 @@ fraction of CIs exclude zero (= empirical power).</p>
 <div class="output_subarea output_stream output_stdout output_text">
 <pre>Power to detect 5% gap (binary scores, 95% CI):
 
-  N=  50  7%  ██
-  N= 100  13%  ███
-  N= 200  16%  ████
-  N= 400  29%  ████████
 </pre>
 </div>
 </div>
