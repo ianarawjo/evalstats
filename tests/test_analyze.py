@@ -155,7 +155,7 @@ def test_analyze_multimodel_recovers_best_model_and_best_pair():
     )
 
 
-def test_analyze_multimodel_single_prompt_warns_and_runs():
+def test_analyze_multimodel_single_prompt_runs_without_warning():
     rng = np.random.default_rng(2027)
     n_models = 3
     n_inputs = 180
@@ -183,12 +183,11 @@ def test_analyze_multimodel_single_prompt_warns_and_runs():
         input_labels=input_labels,
     )
 
-    with pytest.warns(UserWarning, match="Single-prompt multi-model analysis is supported"):
-        analysis = ps.analyze(
-            result,
-            n_bootstrap=1200,
-            rng=np.random.default_rng(13),
-        )
+    analysis = ps.analyze(
+        result,
+        n_bootstrap=1200,
+        rng=np.random.default_rng(13),
+    )
 
     assert isinstance(analysis, ps.MultiModelBundle)
 

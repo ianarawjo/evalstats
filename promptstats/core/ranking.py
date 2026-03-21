@@ -441,6 +441,36 @@ def bootstrap_point_advantage(
         rng = np.random.default_rng()
 
     # ------------------------------------------------------------------ #
+    # Single-template short-circuit (N == 1)                             #
+    # ------------------------------------------------------------------ #
+    n_templates = scores.shape[0]
+    if n_templates == 1:
+        if reference != "grand_mean" and reference != labels[0]:
+            # Preserve existing error behavior for unknown labels.
+            labels.index(reference)
+
+        cell_means = scores.mean(axis=2) if scores.ndim == 3 else scores
+        m_inputs = cell_means.shape[1]
+
+        zeros_1 = np.zeros(1, dtype=float)
+        advantages = np.zeros((1, m_inputs), dtype=float)
+        statistic_out = "mean" if method in {"wilson", "bayes_binary"} else statistic
+
+        return PointAdvantageResult(
+            labels=labels,
+            point_advantages=zeros_1.copy(),
+            bootstrap_ci_low=zeros_1.copy(),
+            bootstrap_ci_high=zeros_1.copy(),
+            spread_low=zeros_1.copy(),
+            spread_high=zeros_1.copy(),
+            reference="grand_mean" if reference == "grand_mean" else labels[0],
+            per_input_advantages=advantages,
+            n_bootstrap=0,
+            spread_percentiles=spread_percentiles,
+            statistic=statistic_out,
+        )
+
+    # ------------------------------------------------------------------ #
     # Wilson / Bayesian binary paths for binary (0/1) data               #
     # ------------------------------------------------------------------ #
     if method in {"wilson", "bayes_binary"}:

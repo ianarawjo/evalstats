@@ -113,43 +113,35 @@ from raw scores to a defensible conclusion.</p>
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=code-setup">
-<div class="input">
-<div class="prompt input_prompt">In [4]:</div>
-<div class="inner_cell">
-<div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">warnings</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
-<span class="kn">import</span><span class="w"> </span><span class="nn">promptstats</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pstats</span>
-
-<span class="n">warnings</span><span class="o">.</span><span class="n">filterwarnings</span><span class="p">(</span><span class="s2">"ignore"</span><span class="p">)</span>  <span class="c1"># suppress internal pipeline warnings</span>
-<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
-</pre></div>
-</div>
-</div>
-</div>
-</div>
 <div class="cell border-box-sizing text_cell rendered" id="cell-id=md-setup"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
-<h2 id="The-Setup">The Setup<a class="anchor-link" href="#The-Setup">¶</a></h2><p>We evaluate <strong>two models on the same 50 prompts</strong> (a <em>paired</em> design).
+<h2 id="The-Setup">The Setup<a class="anchor-link" href="#The-Setup">¶</a></h2><p>We evaluate <strong>two models on the <em>same</em> prompt template with 50s</strong> (a <em>paired</em> design).
 Each item gets a binary score: 1 if the model's response passes, 0 if it fails.
-We're using synthetic data here, but you can swap these scores with your own eval results.</p>
+This is a classic setup for ML benchmarks.</p>
 <p>The paired structure is key: because each prompt is seen by both models,
-we can compute a per-item <em>difference</em> and bootstrap that directly.
+we'll compute a per-item <em>difference</em> and bootstrap that directly.
 This is more statistically powerful than treating the two samples as independent.</p>
+<p>We'll use synthetic data here, but you can swap these scores with your own eval results.</p>
 </div>
 </div>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-data">
 <div class="input">
-<div class="prompt input_prompt">In [9]:</div>
+<div class="prompt input_prompt">In [1]:</div>
 <div class="inner_cell">
 <div class="input_area">
-<div class="highlight hl-ipython3"><pre><span></span><span class="n">N</span> <span class="o">=</span> <span class="mi">50</span>
+<div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">promptstats</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pstats</span>
+
+<span class="n">rng</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">42</span><span class="p">)</span>
+<span class="n">N</span> <span class="o">=</span> <span class="mi">50</span>
 
 <span class="c1"># Synthetic binary scores (1 = pass, 0 = fail)</span>
-<span class="c1"># True pass rates: Model A 0.70, Model B 0.65 — a 5-point gap in reality</span>
+<span class="c1"># We rig it so that the true mean of Model A = 0.70 (performance is 70% accurate on these inputs),</span>
+<span class="c1"># while Model B's true performance is 0.65. That's a 5-point gap.</span>
+<span class="c1"># We use `rng.binomial` to simulate the binary outcomes for each model across N samples:</span>
+<span class="c1"># we draw 0s and 1s with probabilities 0.70 and 0.65 for Models A and B, respectively.</span>
 <span class="n">scores_a</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">0.70</span><span class="p">,</span> <span class="n">N</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
 <span class="n">scores_b</span> <span class="o">=</span> <span class="n">rng</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="mf">0.65</span><span class="p">,</span> <span class="n">N</span><span class="p">)</span><span class="o">.</span><span class="n">astype</span><span class="p">(</span><span class="nb">float</span><span class="p">)</span>
 
@@ -169,9 +161,9 @@ This is more statistically powerful than treating the two samples as independent
 <div class="output_area">
 <div class="prompt"></div>
 <div class="output_subarea output_stream output_stdout output_text">
-<pre>Model A:  70.0%  (35/50 passed)
-Model B:  64.0%  (32/50 passed)
-Gap:     +6.0%
+<pre>Model A:  64.0%  (32/50 passed)
+Model B:  72.0%  (36/50 passed)
+Gap:     -8.0%
 </pre>
 </div>
 </div>
@@ -198,7 +190,7 @@ deduce the most appropriate statistical test to run for the comparison.</p>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=code-ci">
 <div class="input">
-<div class="prompt input_prompt">In [10]:</div>
+<div class="prompt input_prompt">In [2]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">report</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_models</span><span class="p">(</span>
@@ -225,23 +217,23 @@ deduce the most appropriate statistical test to run for the comparison.</p>
 <div class="output_area">
 <div class="prompt"></div>
 <div class="output_subarea output_stream output_stdout output_text">
-<pre>Model A: mean=70.0%  95% CI [56.2%, 80.9%]
-Model B: mean=64.0%  95% CI [50.1%, 75.9%]
+<pre>Model A: mean=64.0%  95% CI [50.1%, 75.9%]
+Model B: mean=72.0%  95% CI [58.3%, 82.5%]
 
 ===============================
  PAIRWISE: MODEL A VS. MODEL B 
 ===============================
   method: bayes binary (n=10000)  |  N=50 inputs
 
-  Mean gap (Model A − Model B):  +6.0%
-  95% CI:  [-11.9%, +22.2%]
+  Mean gap (Model A − Model B):  -8.0%
+  95% CI:  [-24.1%, +9.0%]
 
-  axis: [-0.712, +0.712]  (· ±1σ spread, ─ 95% CI, ● mean, │ zero)
-  Model B (&lt;0)     ················────│──●─────················· (&gt;0) Model A
+  axis: [-0.714, +0.714]  (· ±1σ spread, ─ 95% CI, ● mean, │ zero)
+  Model B (&lt;0) ················──────●─│────················      (&gt;0) Model A
 
-  Effect size (rank-biserial r):  +0.143   p (Wilcoxon signed-rank) = 0.5127  (not significant)
+  Effect size (rank-biserial r):  -0.200   p (Wilcoxon signed-rank) = 0.3711  (not significant)
 
-  Verdict: CI spans zero — the gap is not distinguishable from chance at N=50 (Wilcoxon signed-rank p=0.513). Collect more data to be sure.
+  Verdict: CI spans zero — the gap is not distinguishable from chance at N=50 (Wilcoxon signed-rank p=0.371). Collect more data to be sure.
 
 </pre>
 </div>
@@ -249,10 +241,53 @@ Model B: mean=64.0%  95% CI [50.1%, 75.9%]
 </div>
 </div>
 </div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=5347097a"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="What's-going-on-here?">What's going on here?<a class="anchor-link" href="#What's-going-on-here?">¶</a></h2><p>When you run a pairwise comparison, you're asking: "across my test inputs, which model tended to score higher, and by how much?" The <strong>mean gap</strong> is the answer—in this case, -8%, meaning Model B came out ahead by about 8 points on average. While that's a useful number, it's just a point estimate from 50 samples. On its own, it doesn't tell you how confident you should be that this gap reflects a real difference, rather than just the luck of which inputs you happened to test on.</p>
+<p>That's where the <strong>confidence interval (CI)</strong> comes in, and it's really the most important thing to look at. The CI of <code>[-24.1%, +9.0%]</code> (the <code>····──────●─│────···</code> in the plot) is telling you: given your data, the true underlying gap between these models could plausibly be anywhere in that range. Model B could be a lot better, or Model A could actually be slightly better — both are consistent with what you observed. The CI is wide here, and straddles zero <code>|</code> which represents "no difference" between Model A and B. Why? N=50 is a fairly small sample, and the model distributions aren't that large. This isn't a failure; it's the eval being honest with you about how much you can conclude. The goal as you collect more data is to watch that interval <em>narrow</em>, and pay attention to whether and how it does.</p>
+<p>The <strong>effect size</strong> (<code>r = -0.200</code>) and <strong>p-value</strong> (<code>p = 0.371</code>) are also reported here, but don't lean on them too hard. The p-value in particular is easy to misread as a pass/fail signal. With only 50 inputs, a p-value above 0.05 just means your sample is too small to rule out noise, which the wide CI already told you. The effect size is more useful: it's a standardised way of saying the gap is small-to-moderate in magnitude, which is worth knowing when you're deciding whether the difference even matters for your use case. (<code>prompstats</code> uses a rank-biserial effect index by default as we can't assume LLM responses follow a normal distribution.)</p>
+<p>Basically this plot tells us—we can't decide what model is better. We need to keep collecting eval inputs, and possibly expand our test set. If the 95% CI narrows and stabilizes such that it doesn't include 0—e.g., imagine the plot looks like:</p>
+<pre><code>Model B (&lt;0)   ··───●───··      |              (&gt;0) Model A
+</code></pre>
+<p>Then we might draw a firmer conclusion that Model B is reliably better for these inputs.</p>
+<p><em>*Note that <code>bayes_binary</code> is named as the test. Since we set <code>method="auto"</code>, <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> uses the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, like Newcombe (the pairwise sibling test to the Wilson score interval), you can tell <code>analyze</code> to use that method (here <code>method="newcombe"</code>).</em></p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=d0db7406"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="But-wait,-didn't-we-rig-Model-B-to-be-worse-than-Model-A?!">But wait, didn't we rig Model B to be <em>worse</em> than Model A?!<a class="anchor-link" href="#But-wait,-didn't-we-rig-Model-B-to-be-worse-than-Model-A?!">¶</a></h2><p>Actually, yes, good point. That's why statistics are so important. If we didn't have statistics and were eyeballing a bar chart:</p>
+<pre><code>Mean Accuracy
+───────────────────────────────────────────
+Model A  ████████████████████        64.0%
+Model B  ██████████████████████████  72.0%
+───────────────────────────────────────────
+</code></pre>
+<p>we might just conclude that Model B is better, and call it a day. After all, we have <code>N=50</code> samples, and that sounds like a lot.</p>
+<p>This is where confidence intervals save us. Because we see:</p>
+<pre><code>Mean gap (Model A − Model B):  -8.0%
+95% CI:  [-24.1%, +9.0%]
+
+  axis: [-0.714, +0.714]  (· ±1σ spread, ─ 95% CI, ● mean, │ zero)
+  Model B (&lt;0) ················──────●─│────················      (&gt;0) Model A
+</code></pre>
+<p>and that 95% CI spans 0, we can't be sure what world we're in—one where Model B is truly better, or just bad luck of the draw. You wouldn't catch this, then you'd make a wrong choice, then users will suffer (in a minor way, but still one that will impact your bottom line).</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=f26b2d8b"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="Improving-the-test:-Prefer-to-have-multiple-runs">Improving the test: Prefer to have multiple runs<a class="anchor-link" href="#Improving-the-test:-Prefer-to-have-multiple-runs">¶</a></h2><p>Actually, there's something we should've done better here. LLMs are stochastic, but we just ran 50 inputs a single time through these models. That's actually a bad idea. If we want to be more precise, we should at least add multiple runs to quantify how much that performance is due to chance—say <code>N=3</code>.</p>
+<p>Let's do that now—let's add multiple runs, and see what happens.</p>
+</div>
+</div>
+</div>
 <div class="cell border-box-sizing text_cell rendered" id="cell-id=65219df9"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
-<p>Note that <code>bayes_binary</code> is named as the test. Since we set <code>method="auto"</code>, <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> uses the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, like Newcombe (the pairwise sibling test to the Wilson score interval), you can tell <code>analyze</code> to use that method (here <code>method="newcombe"</code>).</p>
 </div>
 </div>
 </div>

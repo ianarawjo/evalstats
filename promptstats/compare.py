@@ -554,7 +554,7 @@ def compare_models(
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     ci: float = 0.95,
-    template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    template_model_collapse: Literal["mean", "as_runs", "auto"] = "auto",
     template_labels: Optional[list[str]] = None,
     rng: Optional[np.random.Generator] = None,
 ) -> CompareReport:
@@ -562,19 +562,19 @@ def compare_models(
 
     Parameters
     ----------
-        scores : dict
-            Mapping from model label to scores in one of these forms:
+    scores : dict
+        Mapping from model label to scores in one of these forms:
 
-            * ``{"model": array}`` where each array is:
-                - **1-D** ``(M,)`` for a single implicit template, or
-                - **2-D** ``(M, R)`` for a single implicit template with R runs.
-            * ``{"model": {"template": array}}`` where each inner array is:
-                - **1-D** ``(M,)``, or
-                - **2-D** ``(M, R)`` with R runs.
+        * ``{"model": array}`` where each array is:
+            - **1-D** ``(M,)`` for a single implicit template, or
+            - **2-D** ``(M, R)`` for a single implicit template with R runs.
+        * ``{"model": {"template": array}}`` where each inner array is:
+            - **1-D** ``(M,)``, or
+            - **2-D** ``(M, R)`` with R runs.
 
-            For the nested-dict form, all models must provide the same template
-            keys. If ``template_labels`` is omitted, inner-key order from the first
-            model is used.
+        For the nested-dict form, all models must provide the same template
+        keys. If ``template_labels`` is omitted, inner-key order from the first
+        model is used.
     alpha : float
         Significance threshold for declaring winner models.
     n_bootstrap : int
@@ -587,8 +587,25 @@ def compare_models(
         Central-tendency statistic: ``'mean'`` or ``'median'``.
     ci : float
         Confidence level for intervals.
-    template_model_collapse : {"mean", "as_runs"}
-        Passed through to :func:`analyze` for the template-level view.
+    template_model_collapse : {"mean", "as_runs", "auto"}
+        How to combine model scores in the template-level analysis
+        ("which template is best overall across models?").
+
+        Recommended: leave this as ``"auto"``.
+
+        * ``"auto"`` (default): picks the least surprising behavior.
+            - Single-template inputs: uses ``"mean"`` to avoid creating a
+                synthetic run axis from the model count.
+            - Multi-template inputs: uses ``"as_runs"`` to preserve
+                cross-model variability in template-level uncertainty.
+            - Explicit binary-only methods (``"wilson"``, ``"newcombe"``,
+                ``"fisher_exact"``, ``"bayes_binary"``): keeps ``"as_runs"``
+                so binary structure is preserved.
+        * ``"mean"``: average across models first.
+            Use this when you want a simple pooled template summary.
+        * ``"as_runs"``: treat models as run-like replicates.
+            Use this when you want template-level intervals to include
+            between-model variability.
     template_labels : list[str], optional
         Prompt-template labels. If omitted, defaults to
         ``template_0 ... template_{N-1}``.
@@ -654,6 +671,21 @@ def compare_models(
             f"Got {len(resolved_template_labels)} labels for N={n_templates}."
         )
 
+    if template_model_collapse == "auto":
+        binary_only_methods = {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+        resolved_template_model_collapse: Literal["mean", "as_runs"] = (
+            "mean"
+            if (n_templates == 1 and method not in binary_only_methods)
+            else "as_runs"
+        )
+    elif template_model_collapse in {"mean", "as_runs"}:
+        resolved_template_model_collapse = template_model_collapse
+    else:
+        raise ValueError(
+            f"Unknown template_model_collapse '{template_model_collapse}'. "
+            "Expected 'auto', 'mean', or 'as_runs'."
+        )
+
     scores_arr = np.stack(arrays, axis=0)
     input_labels = [f"input_{i}" for i in range(n_inputs)]
     benchmark = MultiModelBenchmark(
@@ -671,7 +703,7 @@ def compare_models(
         statistic=statistic,
         ci=ci,
         rng=rng,
-        template_model_collapse=template_model_collapse,
+        template_model_collapse=resolved_template_model_collapse,
     )
     if not isinstance(full_analysis, MultiModelBundle):
         raise RuntimeError("Expected multi-model analysis bundle from analyze().")

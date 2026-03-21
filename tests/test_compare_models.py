@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+import warnings
 
 import promptstats as ps
 from promptstats.compare import CompareReport, EntityStats
@@ -275,4 +276,51 @@ def test_compare_models_nested_template_dict_keys_must_match():
                 },
             },
             rng=_rng(25),
+        )
+
+
+def test_compare_models_auto_collapse_avoids_pseudo_run_warning_single_template():
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        report = ps.compare_models(
+            {
+                "m1": np.array([0.70, 0.72, 0.69, 0.71, 0.70]),
+                "m2": np.array([0.76, 0.77, 0.75, 0.78, 0.76]),
+            },
+            n_bootstrap=300,
+            rng=_rng(26),
+        )
+
+    assert isinstance(report, CompareReport)
+    two_run_msgs = [
+        str(w.message) for w in caught if "only 2 runs detected" in str(w.message)
+    ]
+    assert not two_run_msgs
+    assert report.full_analysis.template_level.benchmark.n_runs == 1
+
+
+def test_compare_models_explicit_as_runs_keeps_run_like_model_axis():
+    report = ps.compare_models(
+        {
+            "m1": np.array([0.70, 0.72, 0.69, 0.71, 0.70]),
+            "m2": np.array([0.76, 0.77, 0.75, 0.78, 0.76]),
+        },
+        template_model_collapse="as_runs",
+        n_bootstrap=300,
+        rng=_rng(27),
+    )
+
+    assert isinstance(report, CompareReport)
+    assert report.full_analysis.template_level.benchmark.n_runs == 2
+
+
+def test_compare_models_rejects_unknown_template_model_collapse():
+    with pytest.raises(ValueError, match="Unknown template_model_collapse"):
+        ps.compare_models(
+            {
+                "m1": np.array([0.70, 0.72, 0.69, 0.71, 0.70]),
+                "m2": np.array([0.76, 0.77, 0.75, 0.78, 0.76]),
+            },
+            template_model_collapse="median",  # type: ignore[arg-type]
+            rng=_rng(28),
         )

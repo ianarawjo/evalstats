@@ -12,6 +12,8 @@ Covers:
 
 from __future__ import annotations
 
+import warnings
+
 import numpy as np
 import pytest
 from scipy import stats
@@ -335,6 +337,31 @@ def test_bootstrap_point_advantage_wilson_specific_reference():
     idx_a = result.labels.index("A")
     assert result.bootstrap_ci_low[idx_a] == 0.0
     assert result.bootstrap_ci_high[idx_a] == 0.0
+
+
+def test_single_template_short_circuits_smooth_bootstrap():
+    rng = np.random.default_rng(2026)
+    scores = rng.binomial(1, 0.65, size=(1, 24, 5)).astype(float)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        result = bootstrap_point_advantage(
+            scores,
+            ["A"],
+            reference="grand_mean",
+            method="wilson",
+            ci=0.95,
+            rng=np.random.default_rng(2026),
+        )
+
+    np.testing.assert_allclose(result.point_advantages, [0.0])
+    np.testing.assert_allclose(result.bootstrap_ci_low, [0.0])
+    np.testing.assert_allclose(result.bootstrap_ci_high, [0.0])
+    np.testing.assert_allclose(result.spread_low, [0.0])
+    np.testing.assert_allclose(result.spread_high, [0.0])
+    assert result.n_bootstrap == 0
+    assert result.statistic == "mean"
+    assert not any("smooth_bootstrap" in str(w.message) for w in caught)
 
 
 # ---------------------------------------------------------------------------
