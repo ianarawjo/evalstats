@@ -222,6 +222,29 @@ def test_compare_models_accepts_flat_nested_arrays_for_runs():
     assert report.full_analysis.benchmark.template_labels == ["single_template"]
 
 
+def test_compare_models_multirun_uses_nested_bootstrap_for_pairwise():
+    rng = _rng(123)
+    n_inputs = 40
+    n_runs = 5
+
+    m1 = rng.normal(loc=0.70, scale=0.10, size=(n_inputs, n_runs))
+    m2 = rng.normal(loc=0.62, scale=0.10, size=(n_inputs, n_runs))
+
+    report = ps.compare_models(
+        {
+            "m1": m1,
+            "m2": m2,
+        },
+        method="auto",
+        n_bootstrap=500,
+        rng=_rng(124),
+    )
+
+    pair = report.pairwise.get("m1", "m2")
+    assert pair.n_runs == n_runs
+    assert "nested" in pair.test_method.lower()
+
+
 def test_compare_models_accepts_nested_template_dicts():
     report = ps.compare_models(
         {

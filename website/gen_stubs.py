@@ -6,7 +6,7 @@ INVESTIGATIONS = [
         "slug": "model-vs-model",
         "tier": "Foundations",
         "title": "Model A vs. Model B: Is the Gap Real?",
-        "subtitle": "You ran both models on your eval set. Model A scored 78%, Model B scored 75%. Is that a real difference? With N=50, the 95% CI on that 3-point gap often spans zero. Here&rsquo;s how to find out &mdash; and what to do when it does.",
+        "subtitle": "You ran both models on your eval set. Model A scored 64%, Model B scored 72%. Is that a real difference? Here&rsquo;s how to find out.",
         "intro": "The most fundamental question in LLM evaluation: does the observed score difference between two models reflect a genuine capability gap, or is it within the noise of your sample? This investigation walks through the complete statistical workflow &mdash; from raw scores to a defensible conclusion.",
         "learns": [
             ("How to compute a CI on the score difference", "Using Newcombe (binary) or smooth bootstrap (numeric), and how to interpret the resulting interval."),

@@ -244,43 +244,6 @@ def print_pairwise_summary(
     )
     print()
 
-    # --- Plain-language verdict ---
-    if sig:
-        if pair.point_diff > 0:
-            verdict = (
-                f"'{a}' is significantly better than '{b}' "
-                f"(CI excludes zero, {p_method_label} p={display_p_value:.3g})."
-            )
-        else:
-            verdict = (
-                f"'{b}' is significantly better than '{a}' "
-                f"(CI excludes zero, {p_method_label} p={display_p_value:.3g})."
-            )
-        verdict_color = _BRIGHT_GREEN if _ANSI else ""
-    else:
-        ci_spans_zero = pair.ci_low < 0 < pair.ci_high
-        if ci_spans_zero:
-            verdict = (
-                f"CI spans zero — the gap is not distinguishable from chance "
-                f"at N={pair.n_inputs} ({p_method_label} p={display_p_value:.3g}). "
-                f"Collect more data to be sure."
-            )
-        elif pair.ci_low >= 0:
-            verdict = (
-                f"Gap is positive but weak ({p_method_label} p={display_p_value:.3g}). "
-                f"Trending toward '{a}'; more data may confirm."
-            )
-        else:
-            verdict = (
-                f"Gap is negative but weak ({p_method_label} p={display_p_value:.3g}). "
-                f"Trending toward '{b}'; more data may confirm."
-            )
-        verdict_color = _YELLOW if _ANSI else ""
-
-    verdict_reset = _RESET if _ANSI else ""
-    print(f"  {_BOLD}Verdict:{_RESET} {verdict_color}{verdict}{verdict_reset}")
-    print()
-
 
 def print_compare_summary(
     report: "CompareReport",

@@ -520,10 +520,15 @@ class MultiModelBenchmark:
         """Aggregate each model's scores by averaging across templates.
 
         Each 'template' in the returned result represents one model, scored
-        by its mean cell-mean performance over all prompt templates.
+        by its mean performance over all prompt templates.
+
+        This aggregation preserves the runs axis (and evaluator axis, when
+        present) so downstream paired comparisons can still use seeded
+        nested-bootstrap procedures when ``R >= 3``.
         """
+        collapsed_scores = self.scores.mean(axis=1)
         return BenchmarkResult(
-            scores=self._get_3d_cell_means().mean(axis=1),  # (P, M)
+            scores=collapsed_scores,
             template_labels=self.model_labels,
             input_labels=self.input_labels,
             evaluator_names=self.evaluator_names,
