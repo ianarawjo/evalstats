@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="../inv.css" />
-
+  <link rel="stylesheet" href="../nb.css" />
   <script>(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.setAttribute('data-theme','dark')}catch(e){}})()</script>
 </head>
 <body>
@@ -94,36 +94,233 @@
   <article class="article-body">
 
     <section>
-      <h2>What This Investigation Covers</h2>
-      <p>Prompt comparison is the most common eval task &mdash; and one of the most statistically fraught. When you run k comparisons against a baseline (or all-pairs), you need multiple comparison correction or your &ldquo;best prompt&rdquo; is probably just the luckiest one.</p>
+      <div class="nb-toolbar">
+        <a class="nb-badge" href="https://colab.research.google.com/github/ianarawjo/promptstats/blob/main/website/notebooks/best-prompt.ipynb" target="_blank" rel="noopener">
+          <img src="https://colab.research.google.com/assets/colab-badge.svg"
+               alt="Open In Colab" height="20" />
+        </a>
+        <a class="nb-badge-link" href="https://github.com/ianarawjo/promptstats/blob/main/website/notebooks/best-prompt.ipynb" target="_blank" rel="noopener"
+           >View .ipynb on GitHub</a>
+      </div>
+      <div class="nb-content">
+        <div class="cell border-box-sizing text_cell rendered" id="cell-id=md00"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>You've been iterating on a prompt for a <strong>support ticket classifier</strong> — a backend system that routes incoming customer requests into one of four queues: <code>BILLING</code>, <code>TECHNICAL</code>, <code>ACCOUNT</code>, or <code>GENERAL</code>. Your first pass was rough, so you've tried eight different formulations: a minimal baseline, a role-framed variant, one with explicit category definitions, two few-shot variants (1-example and 3-example), a chain-of-thought approach, one that returns JSON, and one with negative framing ("do <em>not</em> confuse BILLING with ACCOUNT").</p>
+<p>After running the eval on 40 labeled tickets with a local Ollama model (<code>gemma3:1b</code>), the natural thing to do is compute mean accuracy per prompt and pick the winner. Let's do that.</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=cd01">
+<div class="input">
+<div class="prompt input_prompt">In [ ]:</div>
+<div class="inner_cell">
+<div class="input_area">
+<div class="highlight hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.pyplot</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">plt</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">matplotlib.ticker</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">mticker</span>
+<span class="kn">import</span><span class="w"> </span><span class="nn">numpy</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">np</span>
 
-      <h3>What you&rsquo;ll learn</h3>
-      <div class="learn-grid">
-      <div class="learn-item">
-        <div class="learn-item-num">01</div>
-        <p><strong>Why multiple comparisons inflate false positives</strong> &mdash; How running k tests at &alpha;=0.05 gives you roughly k&times;0.05 expected false discoveries without correction.</p>
-      </div>
-      <div class="learn-item">
-        <div class="learn-item-num">02</div>
-        <p><strong>Holm correction in practice</strong> &mdash; How Holm-Bonferroni works step by step, and why it gives more statistical power than plain Bonferroni without increasing false positives.</p>
-      </div>
-      <div class="learn-item">
-        <div class="learn-item-num">03</div>
-        <p><strong>Building CIs for each variant</strong> &mdash; How to compute smooth bootstrap or Wilson CIs for each prompt and visualize the full uncertainty picture.</p>
-      </div>
-      <div class="learn-item">
-        <div class="learn-item-num">04</div>
-        <p><strong>Reporting honestly</strong> &mdash; How to say &ldquo;Prompt C wins&rdquo; with appropriate hedging, and when the data says &ldquo;we can&rsquo;t tell.&rdquo;</p>
-      </div>
-      </div>
+<span class="c1"># Load eval results.</span>
+<span class="c1"># Columns: prompt_id, input_id, ticket, category, output, predicted, correct</span>
+<span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">read_csv</span><span class="p">(</span><span class="s2">"support_ticket_eval.csv"</span><span class="p">)</span>
 
-      <div class="coming-soon-card">
-        <div class="cs-icon">&#9879;</div>
-        <div class="cs-label">Investigation in progress</div>
-        <p class="cs-text">Full worked examples, interactive code, and simulation-backed
-          results are coming soon.
-          <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a>
-          for updates.</p>
+<span class="n">PROMPTS</span> <span class="o">=</span> <span class="p">[</span>
+    <span class="s2">"P0_baseline"</span><span class="p">,</span> <span class="s2">"P1_role"</span><span class="p">,</span> <span class="s2">"P2_definitions"</span><span class="p">,</span>
+    <span class="s2">"P3_few_shot_1"</span><span class="p">,</span> <span class="s2">"P4_few_shot_3"</span><span class="p">,</span>
+    <span class="s2">"P5_chain_of_thought"</span><span class="p">,</span> <span class="s2">"P6_json_output"</span><span class="p">,</span> <span class="s2">"P7_negative_framing"</span><span class="p">,</span>
+<span class="p">]</span>
+
+<span class="c1"># Mean accuracy per prompt</span>
+<span class="n">summary</span> <span class="o">=</span> <span class="p">(</span>
+    <span class="n">df</span><span class="o">.</span><span class="n">groupby</span><span class="p">(</span><span class="s2">"prompt_id"</span><span class="p">)[</span><span class="s2">"correct"</span><span class="p">]</span>
+    <span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+    <span class="o">.</span><span class="n">loc</span><span class="p">[</span><span class="n">PROMPTS</span><span class="p">]</span>
+    <span class="o">.</span><span class="n">rename</span><span class="p">(</span><span class="s2">"accuracy"</span><span class="p">)</span>
+    <span class="o">.</span><span class="n">to_frame</span><span class="p">()</span>
+    <span class="o">.</span><span class="n">assign</span><span class="p">(</span><span class="n">pct</span><span class="o">=</span><span class="k">lambda</span> <span class="n">d</span><span class="p">:</span> <span class="p">(</span><span class="n">d</span><span class="p">[</span><span class="s2">"accuracy"</span><span class="p">]</span> <span class="o">*</span> <span class="mi">100</span><span class="p">)</span><span class="o">.</span><span class="n">round</span><span class="p">(</span><span class="mi">1</span><span class="p">))</span>
+<span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="n">summary</span><span class="p">[</span><span class="s2">"pct"</span><span class="p">]</span><span class="o">.</span><span class="n">to_string</span><span class="p">())</span>
+
+<span class="c1"># Bar chart</span>
+<span class="n">fig</span><span class="p">,</span> <span class="n">ax</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mi">8</span><span class="p">,</span> <span class="mf">3.8</span><span class="p">))</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">bar</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">PROMPTS</span><span class="p">)),</span> <span class="n">summary</span><span class="p">[</span><span class="s2">"pct"</span><span class="p">],</span> <span class="n">color</span><span class="o">=</span><span class="s2">"#94b8e0"</span><span class="p">,</span> <span class="n">width</span><span class="o">=</span><span class="mf">0.6</span><span class="p">,</span> <span class="n">zorder</span><span class="o">=</span><span class="mi">3</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">axhline</span><span class="p">(</span>
+    <span class="n">summary</span><span class="o">.</span><span class="n">loc</span><span class="p">[</span><span class="s2">"P0_baseline"</span><span class="p">,</span> <span class="s2">"pct"</span><span class="p">],</span>
+    <span class="n">color</span><span class="o">=</span><span class="s2">"#777"</span><span class="p">,</span> <span class="n">lw</span><span class="o">=</span><span class="mf">1.2</span><span class="p">,</span> <span class="n">ls</span><span class="o">=</span><span class="s2">"--"</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Baseline (P0)"</span>
+<span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xticks</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">PROMPTS</span><span class="p">)))</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xticklabels</span><span class="p">(</span><span class="n">PROMPTS</span><span class="p">,</span> <span class="n">rotation</span><span class="o">=</span><span class="mi">35</span><span class="p">,</span> <span class="n">ha</span><span class="o">=</span><span class="s2">"right"</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">9</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylabel</span><span class="p">(</span><span class="s2">"Accuracy (%)"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_ylim</span><span class="p">(</span><span class="mi">0</span><span class="p">,</span> <span class="mi">100</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">yaxis</span><span class="o">.</span><span class="n">set_major_formatter</span><span class="p">(</span><span class="n">mticker</span><span class="o">.</span><span class="n">PercentFormatter</span><span class="p">())</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span>
+    <span class="s2">"Support ticket classification — 8 prompt variants</span><span class="se">\n</span><span class="s2">"</span>
+    <span class="s2">"(gemma3:1b · N=40 tickets each, temperature=0)"</span><span class="p">,</span>
+    <span class="n">fontsize</span><span class="o">=</span><span class="mi">10</span>
+<span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">(</span><span class="n">fontsize</span><span class="o">=</span><span class="mi">8</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">grid</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="s2">"y"</span><span class="p">,</span> <span class="n">alpha</span><span class="o">=</span><span class="mf">0.35</span><span class="p">,</span> <span class="n">zorder</span><span class="o">=</span><span class="mi">0</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">tight_layout</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=md02"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="The-multiple-comparisons-problem">The multiple comparisons problem<a class="anchor-link" href="#The-multiple-comparisons-problem">¶</a></h2><p>The scoreboard looks decisive. <code>P6_json_output</code> leads at <strong>67.5%</strong>, <code>P7_negative_framing</code> tanks at <strong>37.5%</strong> — a 30-point spread. Few-shot examples help (P3: 62.5%, P4: 65%). Chain-of-thought lands in the middle at 55%. And just adding a role persona alone (<code>P1_role</code>) somehow <em>hurt</em> by 2.5 points.</p>
+<p>But before declaring a winner, there's a problem: you just ran <strong>8 prompt variants on the same 40 tickets.</strong> Every additional comparison you add inflates your risk of a false positive — of calling something "the winner" when it's just lucky sampling noise. With 8 prompts and 28 possible pairwise comparisons, the chance of at least one spurious "significant" result at α = 0.05 is roughly:</p>
+<pre><code>P(≥1 false positive) = 1 − (1 − 0.05)^28 ≈ 76%
+</code></pre>
+<p>Even in the simpler framing of comparing each of 7 variants to a single baseline (7 tests):</p>
+<pre><code>P(≥1 false positive) = 1 − (1 − 0.05)^7 ≈ 30%
+</code></pre>
+<p>To see how this plays out in practice, let's run a simulation. We'll ask: if all 8 prompts were <em>equally good</em> — same true accuracy, just different samples — how large a spread between the best and worst would we typically see on 40 tickets?</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=cd03">
+<div class="input">
+<div class="prompt input_prompt">In [ ]:</div>
+<div class="inner_cell">
+<div class="input_area">
+<div class="highlight hl-python"><pre><span></span><span class="n">rng_sim</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">0</span><span class="p">)</span>
+
+<span class="n">N_PROMPTS</span> <span class="o">=</span> <span class="mi">8</span>
+<span class="n">N_TICKETS</span> <span class="o">=</span> <span class="mi">40</span>
+<span class="n">N_SIM</span> <span class="o">=</span> <span class="mi">10_000</span>
+<span class="n">TRUE_RATE</span> <span class="o">=</span> <span class="mf">0.55</span>  <span class="c1"># all 8 prompts equally good</span>
+
+<span class="c1"># For each of 10,000 simulated eval runs, draw binary scores for all 8 prompts</span>
+<span class="n">scores_sim</span> <span class="o">=</span> <span class="n">rng_sim</span><span class="o">.</span><span class="n">binomial</span><span class="p">(</span><span class="mi">1</span><span class="p">,</span> <span class="n">TRUE_RATE</span><span class="p">,</span> <span class="n">size</span><span class="o">=</span><span class="p">(</span><span class="n">N_SIM</span><span class="p">,</span> <span class="n">N_PROMPTS</span><span class="p">,</span> <span class="n">N_TICKETS</span><span class="p">))</span>
+<span class="n">means_sim</span> <span class="o">=</span> <span class="n">scores_sim</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">2</span><span class="p">)</span>  <span class="c1"># (N_SIM, N_PROMPTS)</span>
+
+<span class="c1"># Spread between the best and worst prompt in each run</span>
+<span class="n">spreads</span> <span class="o">=</span> <span class="n">means_sim</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span> <span class="o">-</span> <span class="n">means_sim</span><span class="o">.</span><span class="n">min</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+
+<span class="n">p50</span><span class="p">,</span> <span class="n">p90</span><span class="p">,</span> <span class="n">p95</span> <span class="o">=</span> <span class="n">np</span><span class="o">.</span><span class="n">percentile</span><span class="p">(</span><span class="n">spreads</span><span class="p">,</span> <span class="p">[</span><span class="mi">50</span><span class="p">,</span> <span class="mi">90</span><span class="p">,</span> <span class="mi">95</span><span class="p">])</span>
+<span class="n">our_spread</span> <span class="o">=</span> <span class="mf">0.675</span> <span class="o">-</span> <span class="mf">0.375</span>  <span class="c1"># P6_json_output vs P7_negative_framing</span>
+
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Simulation: </span><span class="si">{</span><span class="n">N_PROMPTS</span><span class="si">}</span><span class="s2"> equally-good prompts · true rate = </span><span class="si">{</span><span class="n">TRUE_RATE</span><span class="si">:</span><span class="s2">.0%</span><span class="si">}</span><span class="s2"> · N = </span><span class="si">{</span><span class="n">N_TICKETS</span><span class="si">}</span><span class="s2"> tickets"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"Results across </span><span class="si">{</span><span class="n">N_SIM</span><span class="si">:</span><span class="s2">,</span><span class="si">}</span><span class="s2"> simulated eval runs:"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Typical (median) best-vs-worst spread:  </span><span class="si">{</span><span class="n">p50</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Spread exceeded in 10% of runs:         </span><span class="si">{</span><span class="n">p90</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Spread exceeded in  5% of runs:         </span><span class="si">{</span><span class="n">p95</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Our observed best-vs-worst spread:      </span><span class="si">{</span><span class="n">our_spread</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">  (P6 vs P7)"</span><span class="p">)</span>
+<span class="n">p_as_extreme</span> <span class="o">=</span> <span class="p">(</span><span class="n">spreads</span> <span class="o">&gt;=</span> <span class="n">our_spread</span><span class="p">)</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  P(spread ≥ observed | all equal):       </span><span class="si">{</span><span class="n">p_as_extreme</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">()</span>
+<span class="c1"># Rank-winner inflation</span>
+<span class="n">top_means</span> <span class="o">=</span> <span class="n">means_sim</span><span class="o">.</span><span class="n">max</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Expected sample accuracy of the naive 'winner':  </span><span class="si">{</span><span class="n">top_means</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  True accuracy of every prompt:                   </span><span class="si">{</span><span class="n">TRUE_RATE</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"  Winner-inflation from always picking the top:   +</span><span class="si">{</span><span class="n">top_means</span><span class="o">.</span><span class="n">mean</span><span class="p">()</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="n">TRUE_RATE</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=md04"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<p>With N=40, the typical best-vs-worst spread across 8 equally-good prompts is already <strong>~22 percentage points</strong> — just from sampling noise. Our observed 30-point spread is not dramatically unusual. And when you always pick the highest-scoring prompt, selection bias inflates its apparent accuracy by several points relative to its true performance.</p>
+<h2 id="Correcting-for-multiple-comparisons-with-Holm%E2%80%93Bonferroni">Correcting for multiple comparisons with Holm–Bonferroni<a class="anchor-link" href="#Correcting-for-multiple-comparisons-with-Holm%E2%80%93Bonferroni">¶</a></h2><p>The standard fix is <strong>Holm–Bonferroni correction</strong> (usually just "Holm correction"). When you run <em>k</em> hypothesis tests simultaneously, Holm correction adjusts each test's threshold to keep your <em>family-wise error rate</em> — the probability of making even one false discovery across all tests — bounded at α = 0.05.</p>
+<p>It works by sorting your <em>k</em> p-values from smallest to largest, then checking each one against a progressively relaxed threshold: α/k, α/(k−1), α/(k−2), …, α/1. The first p-value that fails its threshold stops the procedure. This is strictly more powerful than plain Bonferroni (which applies α/k to every test), while providing the same strong error control.</p>
+<p><code>promptstats</code> applies Holm correction automatically when you pass <code>correction="holm"</code> to <code>compare_prompts</code>. Since our scores are binary (pass/fail), it selects the <code>bayes_binary</code> method automatically — which our simulation studies show is better calibrated than a plain bootstrap at small sample sizes.</p>
+<blockquote>
+<p><strong>Holm vs. FDR?</strong> The alternative, <code>correction="fdr_bh"</code> (Benjamini–Hochberg), controls the <em>false discovery rate</em> rather than the <em>family-wise</em> error rate. FDR is less conservative and favored when you have many comparisons and can tolerate a small fraction of false positives. Holm is the right choice here: we're making a deployment decision, and we want to be sure before calling any prompt the winner.</p>
+</blockquote>
+<p>Let's run the full analysis:</p>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=cd05">
+<div class="input">
+<div class="prompt input_prompt">In [ ]:</div>
+<div class="inner_cell">
+<div class="input_area">
+<div class="highlight hl-python"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">promptstats</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pstats</span>
+
+<span class="c1"># One score array per prompt (40 binary values each)</span>
+<span class="n">scores</span> <span class="o">=</span> <span class="p">{</span>
+    <span class="n">p</span><span class="p">:</span> <span class="n">df</span><span class="p">[</span><span class="n">df</span><span class="p">[</span><span class="s2">"prompt_id"</span><span class="p">]</span> <span class="o">==</span> <span class="n">p</span><span class="p">][</span><span class="s2">"correct"</span><span class="p">]</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
+    <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">PROMPTS</span>
+<span class="p">}</span>
+
+<span class="c1"># compare_prompts runs all pairwise comparisons with Holm correction.</span>
+<span class="n">report</span> <span class="o">=</span> <span class="n">pstats</span><span class="o">.</span><span class="n">compare_prompts</span><span class="p">(</span>
+    <span class="n">scores</span><span class="p">,</span>
+    <span class="n">correction</span><span class="o">=</span><span class="s2">"holm"</span><span class="p">,</span>
+    <span class="n">rng</span><span class="o">=</span><span class="n">np</span><span class="o">.</span><span class="n">random</span><span class="o">.</span><span class="n">default_rng</span><span class="p">(</span><span class="mi">42</span><span class="p">),</span>
+<span class="p">)</span>
+
+<span class="c1"># --- Per-prompt confidence intervals ---</span>
+<span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="s1">'Prompt'</span><span class="si">:</span><span class="s2">&lt;28</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="s1">'Accuracy'</span><span class="si">:</span><span class="s2">&gt;9</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="s1">'95% CI'</span><span class="si">:</span><span class="s2">&lt;22</span><span class="si">}</span><span class="s2">  Tier"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"-"</span> <span class="o">*</span> <span class="mi">70</span><span class="p">)</span>
+<span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">PROMPTS</span><span class="p">:</span>
+    <span class="n">s</span> <span class="o">=</span> <span class="n">report</span><span class="o">.</span><span class="n">model_stats</span><span class="p">[</span><span class="n">p</span><span class="p">]</span>
+    <span class="n">tier</span> <span class="o">=</span> <span class="s2">"top"</span> <span class="k">if</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">report</span><span class="o">.</span><span class="n">top_tier</span> <span class="k">else</span> <span class="s2">"lower"</span>
+    <span class="nb">print</span><span class="p">(</span><span class="sa">f</span><span class="s2">"</span><span class="si">{</span><span class="n">p</span><span class="si">:</span><span class="s2">&lt;28</span><span class="si">}</span><span class="s2">  </span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">mean</span><span class="si">:</span><span class="s2">&gt;8.1%</span><span class="si">}</span><span class="s2">  [</span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">ci_low</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">, </span><span class="si">{</span><span class="n">s</span><span class="o">.</span><span class="n">ci_high</span><span class="si">:</span><span class="s2">.1%</span><span class="si">}</span><span class="s2">]    </span><span class="si">{</span><span class="n">tier</span><span class="si">}</span><span class="s2">"</span><span class="p">)</span>
+
+<span class="c1"># --- Forest plot ---</span>
+<span class="kn">from</span><span class="w"> </span><span class="nn">matplotlib.lines</span><span class="w"> </span><span class="kn">import</span> <span class="n">Line2D</span>
+
+<span class="n">fig</span><span class="p">,</span> <span class="n">ax</span> <span class="o">=</span> <span class="n">plt</span><span class="o">.</span><span class="n">subplots</span><span class="p">(</span><span class="n">figsize</span><span class="o">=</span><span class="p">(</span><span class="mf">7.5</span><span class="p">,</span> <span class="mf">4.2</span><span class="p">))</span>
+<span class="k">for</span> <span class="n">i</span><span class="p">,</span> <span class="n">p</span> <span class="ow">in</span> <span class="nb">enumerate</span><span class="p">(</span><span class="nb">reversed</span><span class="p">(</span><span class="n">PROMPTS</span><span class="p">)):</span>
+    <span class="n">s</span> <span class="o">=</span> <span class="n">report</span><span class="o">.</span><span class="n">model_stats</span><span class="p">[</span><span class="n">p</span><span class="p">]</span>
+    <span class="n">color</span> <span class="o">=</span> <span class="s2">"#4a90d9"</span> <span class="k">if</span> <span class="n">p</span> <span class="ow">in</span> <span class="n">report</span><span class="o">.</span><span class="n">top_tier</span> <span class="k">else</span> <span class="s2">"#e07b7b"</span>
+    <span class="n">ax</span><span class="o">.</span><span class="n">plot</span><span class="p">([</span><span class="n">s</span><span class="o">.</span><span class="n">ci_low</span> <span class="o">*</span> <span class="mi">100</span><span class="p">,</span> <span class="n">s</span><span class="o">.</span><span class="n">ci_high</span> <span class="o">*</span> <span class="mi">100</span><span class="p">],</span> <span class="p">[</span><span class="n">i</span><span class="p">,</span> <span class="n">i</span><span class="p">],</span>
+            <span class="n">color</span><span class="o">=</span><span class="n">color</span><span class="p">,</span> <span class="n">lw</span><span class="o">=</span><span class="mf">2.8</span><span class="p">,</span> <span class="n">solid_capstyle</span><span class="o">=</span><span class="s2">"round"</span><span class="p">)</span>
+    <span class="n">ax</span><span class="o">.</span><span class="n">scatter</span><span class="p">([</span><span class="n">s</span><span class="o">.</span><span class="n">mean</span> <span class="o">*</span> <span class="mi">100</span><span class="p">],</span> <span class="p">[</span><span class="n">i</span><span class="p">],</span> <span class="n">color</span><span class="o">=</span><span class="n">color</span><span class="p">,</span> <span class="n">s</span><span class="o">=</span><span class="mi">60</span><span class="p">,</span> <span class="n">zorder</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+
+<span class="n">ax</span><span class="o">.</span><span class="n">axvline</span><span class="p">(</span><span class="mi">50</span><span class="p">,</span> <span class="n">color</span><span class="o">=</span><span class="s2">"#ccc"</span><span class="p">,</span> <span class="n">lw</span><span class="o">=</span><span class="mi">1</span><span class="p">,</span> <span class="n">ls</span><span class="o">=</span><span class="s2">"--"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_yticks</span><span class="p">(</span><span class="nb">range</span><span class="p">(</span><span class="nb">len</span><span class="p">(</span><span class="n">PROMPTS</span><span class="p">)))</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_yticklabels</span><span class="p">(</span><span class="nb">list</span><span class="p">(</span><span class="nb">reversed</span><span class="p">(</span><span class="n">PROMPTS</span><span class="p">)),</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">9</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_xlabel</span><span class="p">(</span><span class="s2">"Accuracy (%)"</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">xaxis</span><span class="o">.</span><span class="n">set_major_formatter</span><span class="p">(</span><span class="n">mticker</span><span class="o">.</span><span class="n">PercentFormatter</span><span class="p">())</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">set_title</span><span class="p">(</span><span class="s2">"95</span><span class="si">% c</span><span class="s2">onfidence intervals per prompt  (N=40 tickets each)"</span><span class="p">,</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<span class="n">ax</span><span class="o">.</span><span class="n">legend</span><span class="p">(</span><span class="n">handles</span><span class="o">=</span><span class="p">[</span>
+    <span class="n">Line2D</span><span class="p">([</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">color</span><span class="o">=</span><span class="s2">"#4a90d9"</span><span class="p">,</span> <span class="n">lw</span><span class="o">=</span><span class="mf">2.8</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Top tier (statistically tied)"</span><span class="p">),</span>
+    <span class="n">Line2D</span><span class="p">([</span><span class="mi">0</span><span class="p">],</span> <span class="p">[</span><span class="mi">0</span><span class="p">],</span> <span class="n">color</span><span class="o">=</span><span class="s2">"#e07b7b"</span><span class="p">,</span> <span class="n">lw</span><span class="o">=</span><span class="mf">2.8</span><span class="p">,</span> <span class="n">label</span><span class="o">=</span><span class="s2">"Lower tier"</span><span class="p">),</span>
+<span class="p">],</span> <span class="n">fontsize</span><span class="o">=</span><span class="mi">8</span><span class="p">,</span> <span class="n">loc</span><span class="o">=</span><span class="s2">"lower right"</span><span class="p">)</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">tight_layout</span><span class="p">()</span>
+<span class="n">plt</span><span class="o">.</span><span class="n">show</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=cd06">
+<div class="input">
+<div class="prompt input_prompt">In [ ]:</div>
+<div class="inner_cell">
+<div class="input_area">
+<div class="highlight hl-python"><pre><span></span><span class="n">report</span><span class="o">.</span><span class="n">summary</span><span class="p">()</span>
+</pre></div>
+</div>
+</div>
+</div>
+</div>
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=md07"><div class="prompt input_prompt">
+</div><div class="inner_cell">
+<div class="text_cell_render border-box-sizing rendered_html">
+<h2 id="Reading-the-results">Reading the results<a class="anchor-link" href="#Reading-the-results">¶</a></h2><p>The executive summary groups prompts into tiers based on which pairwise differences survive Holm correction.</p>
+<p><strong>Group #1 (tied at the top):</strong> <code>P6_json_output</code>, <code>P4_few_shot_3</code>, <code>P3_few_shot_1</code>, <code>P5_chain_of_thought</code>, <code>P0_baseline</code>, <code>P2_definitions</code>. These six prompts — spanning raw accuracies from <strong>45.0% to 67.5%</strong> — are statistically <em>indistinguishable</em> from one another at N=40. The confidence intervals are ~30 percentage points wide and overlap heavily. After Holm correction, no pairwise difference within this group survives.</p>
+<p><strong>Group #2 (confirmed underperformers):</strong> <code>P1_role</code> (42.5%) and <code>P7_negative_framing</code> (37.5%) are significantly <em>worse</em> than the top tier. This is the most actionable finding: two common prompt patterns genuinely hurt performance on this model. A role-only persona with no other guidance seems to confuse <code>gemma3:1b</code>, and negative/contrastive framing ("do NOT confuse BILLING with ACCOUNT") backfires badly.</p>
+<p><strong>What happened to the "winner"?</strong> <code>P6_json_output</code> at 67.5% looked like a clear leader. But its 95% CI is <code>[52.0%, 79.9%]</code>, and <code>P0_baseline</code>'s is <code>[30.7%, 60.2%]</code> — these intervals overlap by about 8 percentage points. With N=40, you simply don't have the resolution to confirm whether the 22-point gap between them is real. To reliably detect a 20-point gap at 80% power, you'd need roughly <strong>N=80–100 tickets</strong>. To detect a 10-point gap, closer to <strong>N=250+</strong>.</p>
+<p>The raw bar chart told a story. A lot of it was noise.</p>
+<blockquote>
+<p><strong>Honest reporting template.</strong> <em>"Among the six top-tier prompts, differences are within sampling noise at N=40. <code>P6_json_output</code> has the highest point estimate (67.5%) and is a reasonable provisional choice, but the margin over baseline is not statistically confirmed. <code>P1_role</code> and <code>P7_negative_framing</code> are confirmed underperformers and should be dropped. Re-run the eval with ~150 tickets to resolve the top-tier ranking."</em></p>
+</blockquote>
+</div>
+</div>
+</div>
+
       </div>
     </section>
   </article>

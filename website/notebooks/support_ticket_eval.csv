@@ -1,0 +1,371 @@
+prompt_id,input_id,ticket,category,output,predicted,correct
+P0_baseline,ticket_00,I was charged twice for my subscription this month.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_06,The price on your website doesn't match what I was charged.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_21,How do I add a team member to my organization?,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_25,How do I download all my data before I close my account?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,ticket_30,What's the difference between your basic and premium plans?,GENERAL,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_31,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_32,Can your platform integrate with Salesforce?,GENERAL,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_36,Do you offer discounts for nonprofits?,GENERAL,ACCOUNT,ACCOUNT,0
+P0_baseline,ticket_37,What's your uptime SLA?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,ACCOUNTING,,0
+P1_role,ticket_00,I was charged twice for my subscription this month.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,BILLING,BILLING,1
+P1_role,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,BILLING,BILLING,1
+P1_role,ticket_06,The price on your website doesn't match what I was charged.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,ticket_21,How do I add a team member to my organization?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P1_role,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P1_role,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P1_role,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,ticket_25,How do I download all my data before I close my account?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P1_role,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P1_role,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,ticket_30,What's the difference between your basic and premium plans?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,ticket_31,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,ticket_32,Can your platform integrate with Salesforce?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,ACCOUNT,ACCOUNT,0
+P1_role,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,ACCOUNT,ACCOUNT,0
+P1_role,ticket_36,Do you offer discounts for nonprofits?,GENERAL,ACCOUNT,ACCOUNT,0
+P1_role,ticket_37,What's your uptime SLA?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,ACCOUNT,ACCOUNT,0
+P2_definitions,ticket_00,I was charged twice for my subscription this month.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_06,The price on your website doesn't match what I was charged.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,BILLING,BILLING,1
+P2_definitions,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_21,How do I add a team member to my organization?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_25,How do I download all my data before I close my account?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P2_definitions,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_30,What's the difference between your basic and premium plans?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_31,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_32,Can your platform integrate with Salesforce?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_36,Do you offer discounts for nonprofits?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_37,What's your uptime SLA?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_00,I was charged twice for my subscription this month.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_06,The price on your website doesn't match what I was charged.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P3_few_shot_1,ticket_21,How do I add a team member to my organization?,ACCOUNT,ACCOUNT,ACCOUNT,1
+P3_few_shot_1,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,BILLING,BILLING,0
+P3_few_shot_1,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P3_few_shot_1,ticket_25,How do I download all my data before I close my account?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P3_few_shot_1,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P3_few_shot_1,ticket_30,What's the difference between your basic and premium plans?,GENERAL,BILLING,BILLING,0
+P3_few_shot_1,ticket_31,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_32,Can your platform integrate with Salesforce?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,GENERAL,GENERAL,1
+P3_few_shot_1,ticket_36,Do you offer discounts for nonprofits?,GENERAL,BILLING,BILLING,0
+P3_few_shot_1,ticket_37,What's your uptime SLA?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,BILLING,BILLING,0
+P4_few_shot_3,ticket_00,I was charged twice for my subscription this month.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_06,The price on your website doesn't match what I was charged.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,BILLING,BILLING,0
+P4_few_shot_3,ticket_21,How do I add a team member to my organization?,ACCOUNT,ACCOUNT,ACCOUNT,1
+P4_few_shot_3,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,BILLING,BILLING,0
+P4_few_shot_3,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P4_few_shot_3,ticket_25,How do I download all my data before I close my account?,ACCOUNT,BILLING,BILLING,0
+P4_few_shot_3,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P4_few_shot_3,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P4_few_shot_3,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P4_few_shot_3,ticket_30,What's the difference between your basic and premium plans?,GENERAL,BILLING,BILLING,0
+P4_few_shot_3,ticket_31,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_32,Can your platform integrate with Salesforce?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,GENERAL,GENERAL,1
+P4_few_shot_3,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,GENERAL,GENERAL,1
+P4_few_shot_3,ticket_36,Do you offer discounts for nonprofits?,GENERAL,BILLING,BILLING,0
+P4_few_shot_3,ticket_37,What's your uptime SLA?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,BILLING,BILLING,0
+P5_chain_of_thought,ticket_00,I was charged twice for my subscription this month.,BILLING,Category: BILLING,BILLING,1
+P5_chain_of_thought,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,"Category: BILLING
+
+The ticket concerns a billing discrepancy related to incorrect charges for a user on a lower-tier plan.",BILLING,1
+P5_chain_of_thought,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,"Category: BILLING
+
+The ticket concerns a billing issue – a canceled account being charged despite the cancellation date being three weeks prior – indicating a billing concern.",BILLING,1
+P5_chain_of_thought,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,"Category: BILLING
+
+The ticket concerns a refund request related to past usage, indicating a billing issue.",BILLING,1
+P5_chain_of_thought,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,Category: TECHNICAL,TECHNICAL,0
+P5_chain_of_thought,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,"Category: BILLING
+
+The ticket pertains to invoice-related inquiries and requests for historical records, indicating a billing concern.",BILLING,1
+P5_chain_of_thought,ticket_06,The price on your website doesn't match what I was charged.,BILLING,Category: BILLING,BILLING,1
+P5_chain_of_thought,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,"Category: TECHNICAL
+
+The ticket concerns a specific billing question about how the plan upgrade is calculated, indicating a technical issue.",TECHNICAL,0
+P5_chain_of_thought,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,"Category: TECHNICAL
+
+The ticket describes a technical issue – a declined card – requiring investigation and resolution.",TECHNICAL,0
+P5_chain_of_thought,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,Category: BILLING,BILLING,1
+P5_chain_of_thought,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,"Category: TECHNICAL
+
+The ticket describes a technical issue – a slow loading time – indicating a bug or performance problem.",TECHNICAL,1
+P5_chain_of_thought,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,"Category: TECHNICAL
+
+The ticket describes a technical error, indicating a bug or issue requiring investigation and resolution.",TECHNICAL,1
+P5_chain_of_thought,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,"Category: TECHNICAL
+
+The ticket describes a technical issue – a 403 error – related to authentication, indicating a bug or configuration problem.",TECHNICAL,1
+P5_chain_of_thought,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,Category: ACCOUNT,ACCOUNT,1
+P5_chain_of_thought,ticket_21,How do I add a team member to my organization?,ACCOUNT,"Category: TECHNICAL
+
+The ticket directly relates to a request for assistance with adding a user to an organization, indicating a technical issue requiring troubleshooting or guidance.",TECHNICAL,0
+P5_chain_of_thought,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,"Category: TECHNICAL
+
+The ticket describes a technical issue – a lost password and email reset failure – which falls under technical support.",TECHNICAL,0
+P5_chain_of_thought,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,Category: TECHNICAL,TECHNICAL,0
+P5_chain_of_thought,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,"Category: TECHNICAL
+
+The ticket concerns a request to modify a profile element, indicating a technical issue requiring a solution.",TECHNICAL,0
+P5_chain_of_thought,ticket_25,How do I download all my data before I close my account?,ACCOUNT,"Category: TECHNICAL
+
+The ticket directly relates to a technical issue – understanding how to retrieve data – and requires troubleshooting or solution-oriented assistance.",TECHNICAL,0
+P5_chain_of_thought,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,"Category: TECHNICAL
+
+The ticket concerns a technical issue – account access revocation – indicating a problem requiring resolution.",TECHNICAL,0
+P5_chain_of_thought,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,Category: ACCOUNT,ACCOUNT,1
+P5_chain_of_thought,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,"Category: TECHNICAL
+
+The ticket concerns a technical issue – account access – and asks for assistance with regaining access after a failed login attempt.",TECHNICAL,0
+P5_chain_of_thought,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,Category: ACCOUNT,ACCOUNT,1
+P5_chain_of_thought,ticket_30,What's the difference between your basic and premium plans?,GENERAL,Category: TECHNICAL,TECHNICAL,0
+P5_chain_of_thought,ticket_31,Do you have a mobile app for Android?,GENERAL,"Category: TECHNICAL
+
+The ticket directly asks about the availability and functionality of a specific feature – the mobile app – indicating a technical issue or question.",TECHNICAL,0
+P5_chain_of_thought,ticket_32,Can your platform integrate with Salesforce?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to a technical integration problem – the request to integrate with Salesforce – indicating a bug or issue requiring technical assistance.",TECHNICAL,0
+P5_chain_of_thought,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,"Category: ACCOUNT
+
+The ticket concerns user engagement and access to a product, indicating a request for a demonstration.",ACCOUNT,0
+P5_chain_of_thought,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to understanding and clarifying data retention policies, which falls under technical support concerns.",TECHNICAL,0
+P5_chain_of_thought,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,"Category: GENERAL
+
+The ticket asks about regulatory compliance, which falls under the general category of data privacy and legal requirements.",GENERAL,1
+P5_chain_of_thought,ticket_36,Do you offer discounts for nonprofits?,GENERAL,"Category: GENERAL
+
+The ticket asks about a specific feature or policy related to the company’s offerings, falling under a broad category of inquiries.",GENERAL,1
+P5_chain_of_thought,ticket_37,What's your uptime SLA?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to a technical inquiry – understanding the uptime SLA – indicating a problem-solving focus.",TECHNICAL,0
+P5_chain_of_thought,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to technical aspects of the API, specifically its compatibility and availability for developers using Python.",TECHNICAL,0
+P5_chain_of_thought,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,"Category: BILLING
+
+The ticket directly relates to understanding and potentially accessing pricing for a business model, which falls under billing inquiries.",BILLING,0
+P6_json_output,ticket_00,I was charged twice for my subscription this month.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_06,The price on your website doesn't match what I was charged.,BILLING,"```json
+{""category"": ""BILLING""}
+```",BILLING,1
+P6_json_output,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,ticket_21,How do I add a team member to my organization?,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,"{""category"": ""BILLING""}",BILLING,0
+P6_json_output,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,ticket_25,How do I download all my data before I close my account?,ACCOUNT,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,ticket_30,What's the difference between your basic and premium plans?,GENERAL,"{""category"": ""BILLING""}",BILLING,0
+P6_json_output,ticket_31,Do you have a mobile app for Android?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_32,Can your platform integrate with Salesforce?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,"{""category"": ""ACCOUNT""}",ACCOUNT,0
+P6_json_output,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,"{""category"": ""ACCOUNT""}",ACCOUNT,0
+P6_json_output,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,"{""category"": ""GENERAL""}",GENERAL,1
+P6_json_output,ticket_36,Do you offer discounts for nonprofits?,GENERAL,"{""category"": ""BILLING""}",BILLING,0
+P6_json_output,ticket_37,What's your uptime SLA?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,"{""category"": ""BILLING""}",BILLING,0
+P7_negative_framing,ticket_00,I was charged twice for my subscription this month.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_01,My invoice shows the wrong amount — I'm on the basic plan but billed for premium.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_02,I canceled my account three weeks ago but I'm still being charged.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_03,Can I get a refund for the past two months? I wasn't using the service.,BILLING,BILLING,BILLING,1
+P7_negative_framing,ticket_04,My payment method expired but your system still charged me somehow.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_05,I need copies of all my invoices from last year for tax purposes.,BILLING,BILLING,BILLING,1
+P7_negative_framing,ticket_06,The price on your website doesn't match what I was charged.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_07,I upgraded my plan mid-month — how is proration calculated?,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_08,My credit card was declined but I see a pending charge. Please clarify.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_09,I applied a discount code at checkout but my bill wasn't reduced.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_10,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_11,I can't upload files larger than 10 MB even though my plan allows 100 MB.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_12,The dashboard takes over 30 seconds to load. Has something changed?,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_13,I'm getting a 500 error when connecting to your API.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_14,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_15,My webhook notifications stopped working after last Tuesday's update.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_16,Search results are showing data from other users — this looks like a bug.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_17,The CSV export is missing three columns that were present last week.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_18,I set up SSO with Okta but users get a 403 error when logging in.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_19,The dark mode toggle in settings doesn't persist between sessions.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,ticket_20,I need to transfer my account to a different email address.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_21,How do I add a team member to my organization?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_22,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_23,Can I merge my two accounts? I accidentally created a second one.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_24,I want to change the name and logo on my organization profile.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_25,How do I download all my data before I close my account?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_26,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_27,Can I change my username? I recently got married and use a new name.,ACCOUNT,GENERAL,GENERAL,0
+P7_negative_framing,ticket_28,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_29,I need to add a secondary admin who can manage users on our team.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_30,What's the difference between your basic and premium plans?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_31,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_32,Can your platform integrate with Salesforce?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_33,I'm evaluating your product for my company — can someone schedule a demo?,GENERAL,GENERAL,GENERAL,1
+P7_negative_framing,ticket_34,What are your data retention policies? How long do you keep my data?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_35,Is your service compliant with GDPR and CCPA?,GENERAL,GENERAL,GENERAL,1
+P7_negative_framing,ticket_36,Do you offer discounts for nonprofits?,GENERAL,GENERAL,GENERAL,1
+P7_negative_framing,ticket_37,What's your uptime SLA?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_38,Can I use your API with Python? Is there an official SDK?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,ticket_39,We're a startup with 5 employees — do you have a startup pricing tier?,GENERAL,TECHNICAL,TECHNICAL,0
