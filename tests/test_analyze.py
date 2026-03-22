@@ -260,7 +260,7 @@ def test_print_pairwise_summary_prefers_wilcoxon_pvalue_for_non_exact_methods(ca
 
     assert "method: bayes binary (n=2000)" in out
     assert "p (Wilcoxon signed-rank) =" in out
-    assert "Wilcoxon signed-rank p=0.0312" in out
+    assert "p (Wilcoxon signed-rank) = 0.03125" in out
 
 
 def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
@@ -284,7 +284,7 @@ def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
     out = capsys.readouterr().out
 
     assert "p (McNemar exact) =" in out
-    assert "McNemar exact p=0.04" in out
+    assert "p (McNemar exact) = 0.04" in out
 
 
 def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):
