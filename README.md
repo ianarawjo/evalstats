@@ -309,4 +309,7 @@ For package build, release validation, and maintainer workflows, see [DEVELOPMEN
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+This repository uses two licenses:
+
+- **`promptstats` package** (everything outside `website/`) — [MIT](LICENSE).
+- **Stats for Evals Website** (everything in `website/`) — [CC BY-NC-ND 4.0](website/LICENSE). You may share it with attribution non-commercially, but commercial use and derivative works are not permitted. 

@@ -110,7 +110,7 @@
 Each item gets a binary score: 1 if the model's response passes, 0 if it fails.
 This is a classic setup for ML benchmarks.</p>
 <blockquote>
-<p>The paired structure is key: we can only run a reliable comparison of models if we ran them on the same inputs. If you evaluate 2 models on completely different inputs, that's not an eval, that's likely completely meaningless.</p>
+<p>The paired structure is key: we can only run a reliable comparison of models if we ran them on the same inputs. If you evaluate 2 models on completely different inputs, that's not an eval, that's completely meaningless.</p>
 </blockquote>
 <p>We'll use synthetic data here, but you can swap these scores with your own eval results.</p>
 </div>
@@ -177,11 +177,10 @@ Gap:     -8.0%
 <div class="text_cell_render border-box-sizing rendered_html">
 <h2 id="Computing-a-CI-on-the-Difference">Computing a CI on the Difference<a class="anchor-link" href="#Computing-a-CI-on-the-Difference">¶</a></h2><p>How can we do better, and reduce the chance of taking a wrong decision?</p>
 <p>Statistics can save us here, or more specifically, what's called a <strong>confidence interval</strong> (CI). If we compute a confidence interval, we quantify how (un)certain we are of our estimate.</p>
-<p>A 95% CI is a range computed from your sample such that, if you repeated the experiment many times, about 95% of those ranges would contain the true value (here, the true mean performance of the model). Think of it like a poll's margin of error: a wider CI means less certainty, a narrower CI means more. When the CI for a <em>gap</em> includes zero, the data can't rule out that the true difference is zero.</p>
-<p>We can use <code>promptstats</code>'s <code>compare_models()</code> function to get confidence intervals on each model's mean <em>and</em> on the gap between them. Internally, the function treats the aligned score arrays as a paired design (each row
-is the same prompt seen by both models) and bootstraps per-item differences.</p>
+<p>A 95% CI is a range computed from your sample such that, if you repeated the experiment many times, about 95% of those ranges would contain the true value (here, the true mean performance of the model). Think of it like a poll's margin of error: a wider CI means less certainty, a narrower CI means more. When the CI for a <em>pairwise comparison</em> includes zero, the data can't rule out that the <em>true</em> difference is zero (that there's no difference between the two things being compared).</p>
+<p>We can use <code>promptstats</code>'s <code>compare_models()</code> function to get confidence intervals on each model's mean <em>and</em> on the gap between them. Internally, the function treats the aligned score arrays as a paired design (each row is the same prompt seen by both models) and bootstraps per-item differences.</p>
 <blockquote>
-<p>We use <code>method="auto"</code>, which looks at the setup and input data types and tries to deduce the most appropriate statistical test to run for the comparison.</p>
+<p>Here, we use <code>method="auto"</code>, which looks at the setup and input data types and tries to deduce the most appropriate statistical test to run.</p>
 </blockquote>
 </div>
 </div>
@@ -237,15 +236,6 @@ Model B: mean=72.0%  95% CI [58.3%, 82.5%]
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=59410b86"><div class="prompt input_prompt">
-</div><div class="inner_cell">
-<div class="text_cell_render border-box-sizing rendered_html">
-<blockquote>
-<p>There are many ways to estimate confidence intervals. <code>prompstats</code> implements reasonable defaults, looking at your data type, conditions, and sample size and choosing a method backed by prior research and simulations. Here, notice that <code>bayes_binary</code> is named as the test. Since we set <code>method="auto"</code>, <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> uses the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, like Newcombe (the pairwise sibling test to the Wilson score interval), you can tell <code>analyze</code> to use that method (here <code>method="newcombe"</code>).</p>
-</blockquote>
-</div>
-</div>
-</div>
 <div class="cell border-box-sizing text_cell rendered" id="cell-id=5347097a"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
@@ -259,6 +249,9 @@ Model B: mean=72.0%  95% CI [58.3%, 82.5%]
 <pre><code>Model B (&lt;0)   ··───●───··      |              (&gt;0) Model A
 </code></pre>
 <p>Then we might draw a firmer conclusion that Model B is reliably better for these inputs. But, for now, we don't know.</p>
+<blockquote>
+<p>NOTE: There are <strong>many</strong> ways to estimate confidence intervals. When we set <code>method="auto"</code>, <code>prompstats</code> implements reasonable defaults, looking at your data type, conditions, and sample size and choosing a method backed by prior research and simulations. Here, notice that <code>bayes_binary</code> is named as the test. <code>promptstats</code> looked at our data and deduced it was binary (all 0 or 1s). Since we're also comparing the exact same inputs to two different models (a "pairwise" comparison), <code>promptstats</code> chose the Bayesian pairwise method from <code>bayes_evals</code> (<a href="https://github.com/sambowyer/bayes_evals">https://github.com/sambowyer/bayes_evals</a>) for calculating confidence intervals, as our simulations suggest it is the most reliable statistical method for this data type and sample size. However, if you'd like to use another method, you can (e.g., set <code>method="newcombe"</code>).</p>
+</blockquote>
 </div>
 </div>
 </div>
@@ -514,7 +507,7 @@ mistralai/ministral-8b-2512: 84.0% (95% CI: [67.5%, 94.1%])
 <div class="text_cell_render border-box-sizing rendered_html">
 <p>We don't reach a conclusion here, even with 3 runs per input, since there's not enough data to say. We're leaning towards <code>gpt-4.1-nano</code> being better for this prompt, but that difference could be chance.</p>
 <blockquote>
-<p><strong>On the <code>100.4%</code> CI upper bound, which looks weird:</strong> Bootstrap CIs don't know anything about the bounds of your data. They thus can slightly overshoot those bounds when the true value is near the boundary. Read <code>100.4%</code> as "consistent with near-perfect performance": the data support a very high accuracy for <code>gpt-4.1-nano</code>.</p>
+<p>On the <code>100.4%</code> CI upper bound, which looks weird: Bootstrap CIs don't know anything about the bounds of your data. They thus can slightly overshoot those bounds when the true value is near the boundary. Read <code>100.4%</code> as "consistent with near-perfect performance": the data support a very high accuracy for <code>gpt-4.1-nano</code>.</p>
 </blockquote>
 <h2 id="Bonus:-Couldn't-we-run-it-across-all-templates-to-get-a-tighter-estimate-of-model-performance?">Bonus: Couldn't we run it across all templates to get a tighter estimate of model performance?<a class="anchor-link" href="#Bonus:-Couldn't-we-run-it-across-all-templates-to-get-a-tighter-estimate-of-model-performance?">¶</a></h2><p>We could compare performance across all prompt templates in the dataset, but this might lead to inflated, over-confident conclusions. Why?</p>
 <p>Each template runs the exact same inputs. This means the results are correlated—a difficult input for one template is likely difficult for another—yet basic statistical procedures would treat these as entirely new, independent data points. This false sense of 'extra data' can lead to 95% CIs that look tight and confident but are actually unreliable.</p>

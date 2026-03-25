@@ -482,7 +482,7 @@ examples per category, 10 harder <strong>boundary cases</strong> that straddle t
 </tr>
 </tbody>
 </table>
-<p>We also ran each (prompt, ticket) pair <strong>5 times</strong> at temperature=0.7. Passing a <code>(M=120, R=5)</code>
+<p>We also ran each (prompt, ticket) pair <strong>5 times</strong> at temperature=1.0. Passing a <code>(M=120, R=5)</code>
 score matrix per prompt activates the <em>nested bootstrap</em> — resampling both tickets and runs within
 each ticket — so CIs reflect both sources of variance.</p>
 <p>The question: <strong>which lever actually moved the needle?</strong></p>
@@ -492,7 +492,7 @@ each ticket — so CIs reflect both sources of variance.</p>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=mc08">
 <div class="input">
-<div class="prompt input_prompt">In [22]:</div>
+<div class="prompt input_prompt">In [ ]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="c1"># Load the multi-run CSV (one row per prompt x ticket x run)</span>
@@ -510,7 +510,7 @@ each ticket — so CIs reflect both sources of variance.</p>
 <span class="n">run_acc</span><span class="p">[</span><span class="s2">"mean"</span><span class="p">]</span> <span class="o">=</span> <span class="n">run_acc</span><span class="o">.</span><span class="n">mean</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 <span class="n">run_acc</span><span class="p">[</span><span class="s2">"std"</span><span class="p">]</span>  <span class="o">=</span> <span class="n">run_acc</span><span class="o">.</span><span class="n">iloc</span><span class="p">[:,</span> <span class="p">:</span><span class="mi">5</span><span class="p">]</span><span class="o">.</span><span class="n">std</span><span class="p">(</span><span class="n">axis</span><span class="o">=</span><span class="mi">1</span><span class="p">)</span>
 
-<span class="nb">print</span><span class="p">(</span><span class="s2">"Per-run accuracy (temperature=0.7, 5 runs x 120 tickets):"</span><span class="p">)</span>
+<span class="nb">print</span><span class="p">(</span><span class="s2">"Per-run accuracy (temperature=1.0, 5 runs x 120 tickets):"</span><span class="p">)</span>
 <span class="nb">print</span><span class="p">(</span><span class="n">run_acc</span><span class="o">.</span><span class="n">to_string</span><span class="p">(</span><span class="n">float_format</span><span class="o">=</span><span class="s2">"</span><span class="si">{:.1%}</span><span class="s2">"</span><span class="o">.</span><span class="n">format</span><span class="p">))</span>
 </pre></div>
 </div>
@@ -538,13 +538,13 @@ P7_negative_framing  34.2%  30.8%  34.2%  32.5%  31.7% 32.7% 1.5%
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=63af1c09"><div class="prompt input_prompt">
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=09ae5118"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
-<p>Even across 120 tickets with harder cases included, the model is highly consistent across runs.
+<p>Even across 120 examples with harder cases included, the model is highly consistent across runs.
 <code>P2_definitions</code> and <code>P6_json_output</code> again have near-zero run-to-run variance. The highest
 standard deviation is about 2% (<code>P5_chain_of_thought</code>), and most prompts are well below that.</p>
-<p>Notice that the harder tickets are doing real work: the rankings are spreading out meaningfully.
+<p>Notice that the harder examples are doing work here: the rankings are spreading out meaningfully.
 <code>P6_json_output</code> (56.3%) is pulling ahead of <code>P2_definitions</code> (38.5%) by a much wider margin
 than the original 40-ticket eval suggested. The adversarial examples in particular are exposing
 that structured prompts (few-shot, JSON output) handle ambiguity far better than
@@ -553,9 +553,9 @@ definition-heavy or negatively-framed ones.</p>
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=864e6344">
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=3f5f7817">
 <div class="input">
-<div class="prompt input_prompt">In [23]:</div>
+<div class="prompt input_prompt">In [26]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="c1"># Reshape to {prompt: array of shape (120 tickets, 5 runs)}</span>
@@ -660,15 +660,15 @@ P7_negative_framing               28.7%       18.0%       17.7%       -10.7%    
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
 <p>Notice how much tighter the dark intervals are in the plot: those are the <strong>120-ticket, 5-run</strong> CIs, compared against the lighter <strong>original 40-ticket</strong> CIs for the same prompts.</p>
-<p>The main effect is from more (and harder) tickets. Extra runs help a little (if we plotted this, we would see), but the CI tightening here is dominated by expanding the eval set.</p>
+<p>The main effect is from more (and harder) eval items. Extra runs help a little (if we plotted this, we would see), but the CI tightening here is dominated by expanding the eval set.</p>
 <p>Also notice that our original CI estimates for <code>P6_json_output</code>, <code>P3_few_shot_1</code>, etc., were over-confident. Or were they?</p>
 <p>When we expanded our test set with harder examples, performance flattened a bit across the board. Still, though, the JSON output prompt seems to lead. Let's output a full summary to check which are the likely winners.</p>
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=09d6f85d">
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=42c319a2">
 <div class="input">
-<div class="prompt input_prompt">In [24]:</div>
+<div class="prompt input_prompt">In [27]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="n">report_mr</span><span class="o">.</span><span class="n">full_summary</span><span class="p">()</span>
@@ -778,14 +778,12 @@ P7_negative_framing  0.326667     0.0  0.457933  1.401837  1.0      0.0  0.0  0.
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=8e13c713"><div class="prompt input_prompt">
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=cfaf8242"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
 <h2 id="Conclusion:-What-actually-moved-the-needle">Conclusion: What actually moved the needle<a class="anchor-link" href="#Conclusion:-What-actually-moved-the-needle">¶</a></h2><p>The three-way CI width table and the 40T-vs-120T·5R forest plot tell the same story:</p>
 <ul>
-<li><strong>Ticket count led to a big improvement.</strong> Going from an eval with N=40 samples to 120 samples (with harder examples)
-cut CI widths by roughly 10 percentage points each. The harder boundary and adversarial examples do double duty: they
-add statistical power <em>and</em> they stress-test prompts in the regime where differences actually show up.</li>
+<li><strong>Expanding the size of our eval led to a big improvement.</strong> Going from an eval with N=40 samples to 120 samples (with harder examples) cut CI widths by roughly 10 percentage points each. The harder boundary and adversarial examples do double duty: they add statistical power <em>and</em> they stress-test prompts in the regime where differences actually show up.</li>
 <li><strong>Multiple runs weren't that informative here.</strong> Perhaps because <code>gemma3:1b</code> is such a small model, or because classification tasks are simpler, there wasn't a lot of variation in outputs, even though temperature was set to 1.0. The extra runs trim about ~1 pp off most CIs — real, but small. The model remains highly stable run-to-run (std ≈ 0–2%), so ticket count is still the main bottleneck.</li>
 </ul>
 <p>At 120 tickets, ranking differences are much clearer than in the 40-ticket pass. The highest
