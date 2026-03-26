@@ -19,6 +19,8 @@ from promptstats.core.router import (
 from promptstats.core.summary import print_analysis_summary
 from promptstats.vis.advantage import plot_point_advantage
 from promptstats.vis.critical_difference import plot_critical_difference
+from promptstats.vis.forest import plot_ci_forest
+from promptstats.vis.scoreboard import plot_accuracy_bar
 from promptstats.io import from_dataframe, DataLoadReport
 from promptstats.core.resampling import bayes_binary_ci_1d, bayes_paired_diff_ci
 from promptstats.core import bayes_evals
@@ -52,6 +54,8 @@ __all__ = [
     "print_analysis_summary",
     "plot_point_advantage",
     "plot_critical_difference",
+    "plot_ci_forest",
+    "plot_accuracy_bar",
     "from_dataframe",
     "DataLoadReport",
     "bayes_binary_ci_1d",

@@ -157,7 +157,7 @@ def test_compare_models_detects_clear_winner():
         rng=_rng(12),
     )
 
-    assert report.top_tier == ["stronger"]
+    assert report.unbeaten == ["stronger"]
     assert report.significant is True
     assert report.pairwise.get("weaker", "stronger").p_value < 0.05
 

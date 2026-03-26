@@ -222,7 +222,7 @@ def test_report_has_expected_attributes():
     assert set(report.labels) == {"a", "b"}
     assert set(report.means.keys()) == {"a", "b"}
     assert set(report.prompt_stats.keys()) == {"a", "b"}
-    assert report.top_tier in (None, ["a"], ["b"])
+    assert report.unbeaten in (None, ["a"], ["b"])
     assert isinstance(report.significant, bool)
     assert isinstance(report.quick_summary(), str) and len(report.quick_summary()) > 0
     assert isinstance(report.full_analysis, ps.AnalysisBundle)
@@ -336,20 +336,20 @@ def test_significant_difference_detected():
         n_bootstrap=2_000,
         rng=_rng(7),
     )
-    assert report.top_tier == ["b"]
+    assert report.unbeaten == ["b"]
     assert report.significant is True
     assert report.pairwise.get("a", "b").p_value < 0.05
 
 
 def test_no_significant_difference_detected():
-    """Identical scores should yield no top_tier (all tied)."""
+    """Identical scores should yield no unbeaten (all tied)."""
     scores = [0.8, 0.7, 0.9, 0.6, 0.8]
     report = ps.compare_prompts(
         {"a": scores, "b": scores},
         n_bootstrap=500,
         rng=_rng(),
     )
-    assert report.top_tier is None
+    assert report.unbeaten is None
     assert report.significant is False
 
 
@@ -366,7 +366,7 @@ def test_alpha_controls_winner_threshold():
         rng=_rng(1),
     )
     p = report_strict.pairwise.get("a", "b").p_value
-    assert p > report_strict.alpha or report_strict.top_tier is None
+    assert p > report_strict.alpha or report_strict.unbeaten is None
 
 
 # ---------------------------------------------------------------------------
@@ -399,8 +399,8 @@ def test_three_way_single_winner_has_highest_mean():
         n_bootstrap=2_000,
         rng=_rng(3),
     )
-    if report.top_tier is not None and len(report.top_tier) == 1:
-        assert report.top_tier[0] == max(report.means, key=report.means.get)
+    if report.unbeaten is not None and len(report.unbeaten) == 1:
+        assert report.unbeaten[0] == max(report.means, key=report.means.get)
 
 
 def test_winners_can_include_multiple_top_prompts():
@@ -416,8 +416,8 @@ def test_winners_can_include_multiple_top_prompts():
         rng=_rng(8),
     )
 
-    assert report.top_tier is not None
-    assert set(report.top_tier) == {"a", "b"}
+    assert report.unbeaten is not None
+    assert set(report.unbeaten) == {"a", "b"}
 
 
 # ---------------------------------------------------------------------------

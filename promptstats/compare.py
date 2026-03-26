@@ -53,10 +53,12 @@ class CompareReport:
         Per-entity descriptive statistics and bootstrapped absolute CIs.
         These CIs are single-sample (marginal) intervals, not pairwise
         difference intervals — use ``pairwise`` for the latter.
-    top_tier : list[str] or None
-        Labels of entities in the top significance tier (no other entity
-        significantly beats them). ``None`` when no significant differences
-        were found.
+    unbeaten : list[str] or None
+        Labels of entities that no other entity has been proven to beat
+        (correction-adjusted p < alpha).  These are the candidates you
+        cannot rule out with the current data — not necessarily the
+        strongest performers.  ``None`` when no significant pairwise
+        differences were found at all.
     pairwise : PairwiseMatrix
         All pairwise statistical comparison results, including effect sizes,
         CIs, and corrected p-values. Access via ``pairwise.get(a, b)``.
@@ -64,7 +66,7 @@ class CompareReport:
         The full internal analysis object. Use ``full_summary()`` to print
         the complete analysis, or access fields directly for advanced use.
     alpha : float
-        Significance threshold used to determine ``top_tier``.
+        Significance threshold used to determine ``unbeaten``.
     statistic : str
         Central-tendency statistic used (``'mean'`` or ``'median'``).
     method : str
@@ -78,7 +80,7 @@ class CompareReport:
 
     labels: list[str]
     entity_stats: dict[str, EntityStats]
-    top_tier: Optional[list[str]]
+    unbeaten: Optional[list[str]]
     pairwise: PairwiseMatrix
     full_analysis: AnalysisBundle | MultiModelBundle
     alpha: float = 0.05
@@ -103,13 +105,13 @@ class CompareReport:
     @property
     def significant(self) -> bool:
         """True when at least one significant pairwise difference was found."""
-        return self.top_tier is not None
+        return self.unbeaten is not None
 
     @property
     def winner(self) -> Optional[str]:
-        """The sole top-tier entity, or None when the top tier has multiple members or is empty."""
-        if self.top_tier and len(self.top_tier) == 1:
-            return self.top_tier[0]
+        """The sole unbeaten entity, or None when multiple are unbeaten or none are."""
+        if self.unbeaten and len(self.unbeaten) == 1:
+            return self.unbeaten[0]
         return None
 
     def quick_summary(self) -> str:
@@ -133,7 +135,7 @@ class CompareReport:
             diff, ci_lo, ci_hi, p = pair.point_diff, pair.ci_low, pair.ci_high, pair.p_value
             abs_str = f"{stat_name}={best_stat:.3f}, 95% CI [{best_stats.ci_low:.3f}, {best_stats.ci_high:.3f}]"
             diff_str = f"{delta_name}={diff:+.3f}, CI [{ci_lo:.3f}, {ci_hi:.3f}], p={p:.4g}"
-            if self.top_tier is not None:
+            if self.unbeaten is not None:
                 return (
                     f"'{best_label}' is significantly better than '{other}' "
                     f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
@@ -146,7 +148,7 @@ class CompareReport:
 
         # n > 2
         abs_str = f"{stat_name}={best_stat:.3f}, 95% CI [{best_stats.ci_low:.3f}, {best_stats.ci_high:.3f}]"
-        if self.top_tier is not None:
+        if self.unbeaten is not None:
             # Show comparison vs. runner-up (2nd-highest by mean).
             sorted_labels = sorted(
                 self.labels,
@@ -159,14 +161,14 @@ class CompareReport:
                 f"{delta_name} vs '{runner_up}'={pair.point_diff:+.3f}, "
                 f"CI [{pair.ci_low:.3f}, {pair.ci_high:.3f}], p={pair.p_value:.4g}"
             )
-            if len(self.top_tier) == 1:
+            if len(self.unbeaten) == 1:
                 return (
                     f"'{best_label}' is best {self.entity_name_singular} "
                     f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
                 )
-            tier_str = ", ".join(f"'{w}'" for w in self.top_tier)
+            unbeaten_str = ", ".join(f"'{w}'" for w in self.unbeaten)
             return (
-                f"Top {self.entity_name_singular} tier ({tier_str}); '{best_label}' leads "
+                f"Unbeaten {self.entity_name_singular}s ({unbeaten_str}); '{best_label}' leads "
                 f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
             )
 
@@ -204,17 +206,17 @@ class CompareReport:
         )
 
 
-def _compute_top_tier(
+def _compute_unbeaten(
     labels: list[str],
     pairwise: PairwiseMatrix,
     alpha: float,
 ) -> Optional[list[str]]:
-    """Compute the top significance tier from directed significant-better relations.
+    """Compute the set of unbeaten entities from directed significant-better relations.
 
     A directed edge i→j exists when i is significantly better than j
     (correction-adjusted p < alpha and positive point difference).
-    The top tier consists of labels with zero incoming edges (nothing beats them).
-    Returns ``None`` when no significant edges exist (all tied).
+    Unbeaten entities are those with zero incoming edges (nothing beats them).
+    Returns ``None`` when no significant edges exist at all.
     """
     incoming = {label: 0 for label in labels}
     edge_count = 0
@@ -233,8 +235,8 @@ def _compute_top_tier(
     if edge_count == 0:
         return None
 
-    top_tier = [label for label in labels if incoming[label] == 0]
-    return top_tier if top_tier else None
+    unbeaten = [label for label in labels if incoming[label] == 0]
+    return unbeaten if unbeaten else None
 
 
 def _normalize_compare_models_scores(
@@ -528,12 +530,12 @@ def compare_prompts(
             ci_high=ci_high,
         )
 
-    top_tier = _compute_top_tier(labels, full_analysis.pairwise, alpha)
+    top_tier = _compute_unbeaten(labels, full_analysis.pairwise, alpha)
 
     return CompareReport(
         labels=labels,
         entity_stats=entity_stats,
-        top_tier=top_tier,
+        unbeaten=top_tier,
         pairwise=full_analysis.pairwise,
         full_analysis=full_analysis,
         alpha=alpha,
@@ -751,12 +753,12 @@ def compare_models(
             ci_high=ci_high,
         )
 
-    top_tier = _compute_top_tier(labels, model_analysis.pairwise, alpha)
+    top_tier = _compute_unbeaten(labels, model_analysis.pairwise, alpha)
 
     return CompareReport(
         labels=labels,
         entity_stats=entity_stats,
-        top_tier=top_tier,
+        unbeaten=top_tier,
         pairwise=model_analysis.pairwise,
         full_analysis=full_analysis,
         alpha=alpha,
