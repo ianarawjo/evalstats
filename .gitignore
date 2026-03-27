@@ -13,6 +13,7 @@
 *.deepeval/
 dist/
 build/
+website/build/
 scripts/pypi_release_checks.sh
 simulations/plots/*
 simulations/out

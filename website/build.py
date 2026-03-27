@@ -23,10 +23,15 @@ import sys
 import argparse
 import re
 import html as html_lib
+import shutil
 
 WEBSITE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTEBOOKS_DIR = os.path.join(WEBSITE_DIR, "notebooks")
-OUT_DIR = os.path.join(WEBSITE_DIR, "investigations")
+BUILD_DIR = os.path.join(WEBSITE_DIR, "build")
+OUT_DIR = os.path.join(BUILD_DIR, "investigations")
+
+STATIC_FILES = ["choose.css", "index.css", "inv.css", "nb.css", "dark.js"]
+STATIC_DIRS = ["media"]
 
 sys.path.insert(0, WEBSITE_DIR)
 from gen_stubs import INVESTIGATIONS, make_nav
@@ -196,7 +201,7 @@ def make_head(title_tag, css_file, prefix="./", extra_css=""):
 # Each dict describes one page built from website/src/<slug>.html.
 #
 # Required keys:
-#   slug        Output filename (website/<slug>.html) and src/<slug>.html source.
+#   slug        Output filename (website/build/<slug>.html) and src/<slug>.html source.
 #   title_tag   Contents of <title>. For "article" type also used as <h1>.
 #   type        "full"    → src content placed directly between nav and footer.
 #               "article" → src content placed inside an inv-header + page-layout.
@@ -449,7 +454,7 @@ def build_pages(slugs=None):
 </html>
 """
 
-        out_path = os.path.join(WEBSITE_DIR, f"{slug}.html")
+        out_path = os.path.join(BUILD_DIR, f"{slug}.html")
         with open(out_path, "w") as f:
             f.write(html)
         print(f"  [page]     {slug}")
@@ -461,8 +466,23 @@ def build_pages(slugs=None):
 # Build
 # ---------------------------------------------------------------------------
 
-def build(slugs=None, execute=False):
+def prepare_build_dir():
+    """Create build directory and copy static assets needed by generated pages."""
+    os.makedirs(BUILD_DIR, exist_ok=True)
     os.makedirs(OUT_DIR, exist_ok=True)
+
+    for filename in STATIC_FILES:
+        src = os.path.join(WEBSITE_DIR, filename)
+        if os.path.exists(src):
+            shutil.copy2(src, os.path.join(BUILD_DIR, filename))
+
+    for dirname in STATIC_DIRS:
+        src = os.path.join(WEBSITE_DIR, dirname)
+        if os.path.isdir(src):
+            shutil.copytree(src, os.path.join(BUILD_DIR, dirname), dirs_exist_ok=True)
+
+def build(slugs=None, execute=False):
+    prepare_build_dir()
     os.makedirs(NOTEBOOKS_DIR, exist_ok=True)
 
     inv_by_slug = {inv["slug"]: inv for inv in INVESTIGATIONS}
@@ -520,8 +540,10 @@ if __name__ == "__main__":
         if inv_slugs:
             build(inv_slugs, execute=args.execute)
         if top_slugs:
+            prepare_build_dir()
             build_pages(top_slugs)
     elif args.pages:
+        prepare_build_dir()
         build_pages()
     else:
         build(execute=args.execute)
