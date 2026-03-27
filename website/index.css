@@ -11,6 +11,7 @@
       --text:     #18181b;
       --text-mid: #3f3f46;
       --text-dim: #71717a;
+      --text-faint: #a1a1aa;
       --border:   #e4e4e7;
 
       --orange:      #c94b0c;
@@ -22,6 +23,8 @@
       --green-soft:  #f0fdf4;
       --yellow-soft: #fefce8;
       --yellow-mid:  #fde68a;
+      --tooltip-bg: #fef9c3;
+      --tooltip-border: #facc15;
 
       --nav-bg: rgba(255,255,255,0.92);
 
@@ -40,6 +43,7 @@
       --text:     #e4e4e7;
       --text-mid: #a1a1aa;
       --text-dim: #52525b;
+      --text-faint: #3f3f46;
       --border:   #2d2d3a;
 
       --orange:      #f97316;
@@ -51,6 +55,8 @@
       --green-soft:  rgba(74,222,128,0.08);
       --yellow-soft: rgba(253,224,71,0.08);
       --yellow-mid:  rgba(253,224,71,0.22);
+      --tooltip-bg: #fef08a;
+      --tooltip-border: #eab308;
 
       --nav-bg: rgba(19,19,26,0.92);
     }
@@ -195,6 +201,7 @@
     .inv-nav {
       position: sticky;
       top: 72px;
+      z-index: 10;
       font-family: var(--font-sans);
       padding-right: 1.25rem;
       border-right: 1px solid var(--border);
@@ -259,7 +266,9 @@
     }
     .inv-group ul { list-style: none; padding: 0; margin: 0; }
     .inv-group li + li { margin-top: 0.05rem; }
-    .inv-group a {
+    .inv-group a,
+    .inv-group .inv-link-disabled {
+      position: relative;
       font-size: 0.77rem;
       line-height: 1.45;
       color: var(--text-mid);
@@ -270,7 +279,47 @@
       transition: background 0.12s, color 0.12s;
     }
     .inv-group a:hover { color: var(--text); background: var(--bg-soft); }
+    .inv-group .inv-link-disabled {
+      color: var(--text-faint);
+      cursor: not-allowed;
+    }
+    .inv-group .inv-link-disabled:hover {
+      color: var(--text-faint);
+      background: var(--bg-soft);
+    }
+    .inv-group .inv-link-disabled::after {
+      content: attr(data-tooltip);
+      position: absolute;
+      left: 0.45rem;
+      top: -0.14rem;
+      font-family: var(--font-sans);
+      font-size: 0.68rem;
+      font-weight: 500;
+      line-height: 1;
+      white-space: nowrap;
+      color: var(--text-mid);
+      background: var(--tooltip-bg);
+      border: 1px solid var(--tooltip-border);
+      border-radius: 4px;
+      box-shadow: 0 3px 10px rgba(0, 0, 0, 0.08);
+      padding: 0.28rem 0.42rem;
+      opacity: 0;
+      pointer-events: none;
+      transform: translateY(calc(-100% + 3px));
+      transition: opacity 0.14s ease, transform 0.14s ease;
+      z-index: 20;
+    }
+    .inv-group .inv-link-disabled:hover::after,
+    .inv-group .inv-link-disabled:focus-visible::after {
+      opacity: 1;
+      transform: translateY(calc(-100% - 1px));
+    }
     .inv-group a.active {
+      color: var(--orange);
+      font-weight: 500;
+      background: var(--orange-soft);
+    }
+    .inv-group .inv-link-disabled.active {
       color: var(--orange);
       font-weight: 500;
       background: var(--orange-soft);
@@ -481,9 +530,18 @@
       font-family: var(--font-sans);
       font-size: 0.9rem;
       line-height: 1.55;
-      color: var(--text);
+      color: var(--text-mid);
     }
-    .maxim-text strong { font-weight: 600; }
+    .maxim-text strong {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-family: var(--font-sans);
+      font-size: 0.95rem;
+      line-height: 1.35;
+      font-weight: 700;
+      letter-spacing: 0.01em;
+      color: var(--orange);
+    }
 
     /* ─── TABLES ──────────────────────────────────────────── */
     .table-wrap {

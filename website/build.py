@@ -245,13 +245,13 @@ PAGE_CONFIGS = [
     },
     {
         "slug":           "principles",
-        "title_tag":      "Core Principles \u2014 Stats for LLM Evals",
-        "title":          "Core Principles",
+        "title_tag":      "Principles \u2014 Stats for LLM Evals",
+        "title":          "Principles",
         "type":           "article",
         "css":            "inv.css",
         "active_nav":     None,
         "eyebrow":        "Guide",
-        "subtitle":       "The seven statistical principles that guide method selection and reporting in this guide.",
+        "subtitle":       "Declaring some principles and philosophy to guide our choices.",
         "active_sidebar": "principles",
     },
     {

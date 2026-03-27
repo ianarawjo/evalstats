@@ -1,17 +1,99 @@
-    <section>
-      <h2>Core Principles for Statistical Evals</h2>
-      <p>
-        This page is a focused, standalone reference for the core statistical principles
-        behind this guide &mdash; distilled from the main reference guide for quick consultation.
-      </p>
+<!-- ── SECTION: CORE PRINCIPLES ── -->
+<section id="principles">
+  <p>
+    Statistics is a complex and often confusing field, with a dizzying array of methods, tests, and metrics to choose from.
+    The purpose of this project is to identify reasonable defaults for statistical methods in the specific context of LLM evals. 
+    To do that, we need to establish some principles to guide our choices and to help us navigate the complex landscape.
+  </p>
+    <h2>Philosophy</h2>
+  <p>There are many different statistical philosophies to choose from. The most prominent ones are <a href="https://en.wikipedia.org/wiki/Frequentist_probability">frequentist</a> and <a href="https://en.wikipedia.org/wiki/Bayesian_statistics">Bayesian approaches</a>, but there are also variations, such as <a href="https://en.wikipedia.org/wiki/Estimation_statistics">estimation statistics</a> and <a href="https://en.wikipedia.org/wiki/Decision_theory">decision theory</a>.
+  The most well-known of these is frequentist statistics, centered around p-values and null hypothesis significance testing (NHST), as many scientific disciplines have historically relied on it.</p>
+  <p>This guide takes an estimation-first approach to stats advocated by the <a href="https://pubmed.ncbi.nlm.nih.gov/24220629/">New Statistics movement</a>, foregrounding confidence intervals (particularly bootstrapping), point estimates, effect sizes (magnitude of differences), pairwise differences, and visualization, rather than p-values which can easily mislead. 
+    That said, promptstats is ultimately frequentist and allows users to print p-values, should they wish it. It also leans into significance testing on CIs to estimate the most likely top performers among multiple candidates, for a quick summary of results.</p>
+  <p>There could be a Bayesian alternative to this guide (amid other alternative philosophies), which would change how we approach and report our evals analysis. Although promptstats uses some Bayesian methods (like <code>bayes_evals</code> to approximate CIs at low sample size for binary data), it is decidedly not a Bayesian framework. A Bayesian framework would require a complete rethinking of how promptstats quantifies and reports uncertainty. We intend to explore this mode in a future release.</p>
 
-      <div class="coming-soon-card">
-        <div class="cs-icon">&#9998;</div>
-        <div class="cs-label">Coming soon</div>
-        <p class="cs-text">
-          A concise, printable summary of the seven guiding principles &mdash; with brief justifications
-          and pointers to simulation evidence.
-          <a href="https://github.com/ianarawjo/promptstats">Follow on GitHub</a> for updates.
-        </p>
+  <h2>Principles</h2>
+  <p>Based on our philosophy, we establish the following principles to guide our statistical choices in the specific context of LLM evals:</p>
+  <div class="maxim-list">
+    <div class="maxim-item">
+      <span class="maxim-num">01</span>
+      <div class="maxim-text">
+        <strong>Err conservative by default.</strong>
+        LLM evals suffer from construct validity issues, noisy measurements, and often small sample sizes.
+        Basically, we should assume all evals are ill-designed, underpowered, and therefore noisy until proven otherwise. 
+        What's more, many evals concern safety. For instance, a wider confidence interval that actually contains the truth is far safer than
+        a narrow interval that misses it. Thus, we prefer tests and methods that sacrifice some statistical power to guard
+        against overconfidence.
       </div>
-    </section>
+    </div>
+    <div class="maxim-item">
+      <span class="maxim-num">02</span>
+      <div class="maxim-text">
+        <strong>Prefer confidence intervals over standard errors, and plot CIs as error bars.</strong>
+        Standard errors assume normality and symmetry. They collapse in the presence of
+        hierarchical data structure. Confidence intervals make fewer assumptions and communicate
+        uncertainty more honestly.
+        <em>This recommendation is consistent with the principles of estimation statistics, a widely-cited <a href="https://pubmed.ncbi.nlm.nih.gov/24220629/">movement</a> which changed how psychologists approach data analysis 
+          (specifically the guideline: "Prefer 95% CIs to SE bars. Routinely report 95% CIs, and use error bars to depict them in figures").
+        </em>
+      </div>
+    </div>
+    <div class="maxim-item">
+      <span class="maxim-num">03</span>
+      <div class="maxim-text">
+        <strong>Prefer pairwise tests whenever possible.</strong>
+        Pairwise comparisons (each item evaluated by both conditions) cancel shared noise, dramatically
+        reducing variance. This is especially important when eval items vary widely in difficulty.
+        Said differently, comparing two models on the same set of items is more powerful than comparing them on different sets, even if the latter are larger.
+        This guideline is also consistent with the "New Statistics" guideline to calculate CIs on differences rather than on raw means.
+      </div>
+    </div>
+    <div class="maxim-item">
+      <span class="maxim-num">04</span>
+      <div class="maxim-text">
+        <strong>Prefer non-parametric tests that don't assume normality.</strong>
+        LLM outputs—especially binary pass/fail, Likert scores, and bounded floats—are rarely
+        normally distributed. Methods like the bootstrap and tests like Wilcoxon Signed Ranks Test, Sign Test, and Mann-Whitney U make fewer assumptions
+        and are more robust to deviations from normality.
+      </div>
+    </div>
+    <div class="maxim-item">
+      <span class="maxim-num">05</span>
+      <div class="maxim-text">
+        <strong>Prefer means over medians in eval contexts.</strong>
+        LLM evals commonly operate in the 70–95% accuracy range with small, bounded scores.
+        Medians don't make sense for many data types (e.g., binary pass/fail or 1–5 Likert), 
+        and even when they do, they often fail to capture meaningful differences.
+        While medians are more robust to outliers, we actually want to capture outliers in evals, 
+        because they often represent important failure modes (e.g., model A fails on rare but critical cases, while model B performs well on those same cases).
+      </div>
+    </div>
+    <div class="maxim-item">
+      <span class="maxim-num">06</span>
+      <div class="maxim-text">
+        <strong>Enforce a minimum sample floor.</strong>
+        Statistics needs some data to work. We just stated that we should err conservative by default, 
+        because LLM evals are often poorly designed and thus noisy estimators. 
+        That means we need to enforce a minimum sample size floor below which we don't trust the results at all.
+        In our simulations, the N=30 floor is where methods start to become somewhat reliable, and below N=15 they're basically useless
+        or so prone to error as to be actively misleading. 
+        However, developers often start with small eval sets and expand them over time. 
+        Thus, we make a trade-off: we recommend setting a hard cut-off at N=15, below which no statistical tests are reported.
+        At range N=15-30, we can print a loud warning to developers, but still output stats. This strategy will, hopefully, 
+        push developers toward expanding their test sets. 
+      </div>
+    </div>
+    <div class="maxim-item">
+      <span class="maxim-num">07</span>
+      <div class="maxim-text">
+        <strong>Ground recommendations in Monte Carlo simulations.</strong>
+        Statistical defaults should be justified by empirical behavior, not by convention or even by trusting research papers.
+        Conventions were established for (likely) different data types and contexts than LLM evals, and may not be suited to our needs. 
+        Thus, whenever possible, we should run simulations that mirror real eval conditions to estimate how different methods 
+        perform across realistic data types, sample sizes, and noise. 
+        The <code>method="auto"</code> defaults in <code>prompstats</code> should adapt to sample size N and data type 
+        based on which methods performed best in simulations that reflect those conditions.
+      </div>
+    </div>
+  </div>
+</section>

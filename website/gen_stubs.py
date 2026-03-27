@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Generate investigation stub HTML pages."""
 
+import os
+
 INVESTIGATIONS = [
     {
         "slug": "model-vs-model",
@@ -191,14 +193,30 @@ SLUGS = [inv["slug"] for inv in INVESTIGATIONS]
 
 TIER_ORDER = ["Foundations", "Going Deeper", "Advanced"]
 
-def make_nav(active_slug, prefix="../"):
+
+def _default_disabled_slugs():
+    """Return investigation slugs that do not yet have notebook content."""
+    notebooks_dir = os.path.join(os.path.dirname(__file__), "notebooks")
+    disabled = set()
+    for inv in INVESTIGATIONS:
+        slug = inv["slug"]
+        nb_path = os.path.join(notebooks_dir, f"{slug}.ipynb")
+        if not os.path.exists(nb_path):
+            disabled.add(slug)
+    return disabled
+
+def make_nav(active_slug, prefix="../", disabled_slugs=None):
     """Build the left investigations sidebar.
 
     active_slug: slug of the current investigation, OR one of
                  "index" | "resources" | "choose" to highlight a guide link.
     prefix:      relative path prefix to reach the site root.
                  "../" for investigation pages, "./" for top-level pages.
+    disabled_slugs: optional set of investigation slugs to render as disabled.
     """
+    if disabled_slugs is None:
+        disabled_slugs = _default_disabled_slugs()
+
     groups = {}
     for inv in INVESTIGATIONS:
         groups.setdefault(inv["tier"], []).append(inv)
@@ -241,7 +259,14 @@ def make_nav(active_slug, prefix="../"):
         for inv in groups[tier]:
             active = ' class="active"' if inv["slug"] == active_slug else ''
             label = inv.get("nav_label", inv["title"].split(":")[0])
-            lines.append(f'        <li><a href="{inv_href(inv["slug"])}"{active}>{label}</a></li>')
+            if inv["slug"] in disabled_slugs:
+                disabled_cls = ' class="inv-link-disabled active"' if inv["slug"] == active_slug else ' class="inv-link-disabled"'
+                lines.append(
+                    f'        <li><span{disabled_cls} data-tooltip="Coming soon" '
+                    f'aria-label="{label} (coming soon)">{label}</span></li>'
+                )
+            else:
+                lines.append(f'        <li><a href="{inv_href(inv["slug"])}"{active}>{label}</a></li>')
         lines.append('      </ul>')
         lines.append('    </div>')
 
