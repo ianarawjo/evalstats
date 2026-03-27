@@ -144,8 +144,9 @@ _NAV_LINKS = [
     ("Why Statistics",   "{p}index.html#why-statistics",  None),
     ("Core Principles",  "{p}index.html#principles",      None),
     ("Simulation Study", "{p}index.html#simulation",      None),
-    ("Recommendations",  "{p}index.html#recommendations", None),
+    ("Recommendations", "{p}index.html#recommendations", None),
     ("Choose a Method",  "{p}choose.html",                "choose"),
+    ("Which Method?",    "{p}which-method.html",          "which-method"),
     ("Resources",        "{p}resources.html",             "resources"),
     ("promptstats",      "{p}index.html#promptstats",     None),
 ]
@@ -222,6 +223,17 @@ PAGE_CONFIGS = [
         "type":       "full",
         "css":        "index.css",
         "active_nav": None,
+    },
+    {
+        "slug":       "which-method",
+        "title_tag":  "Which Method? — Stats for LLM Evals",
+        "title":      "Which Method?",
+        "type":       "article",
+        "css":        "inv.css",
+        "active_nav": "which-method",
+        "eyebrow":    "Guide",
+        "subtitle":   "A concise summary of recommended statistical methods for LLM evaluation, organized by data type and analysis type.",
+        "active_sidebar": "which-method",
     },
     {
         "slug":       "choose",
