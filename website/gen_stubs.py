@@ -182,9 +182,10 @@ INVESTIGATIONS = [
     },
 ]
 
-BOOK_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>'
-PAPERS_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>'
-DIAMOND_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M7.5 1.5L14 7.5 7.5 13.5 1 7.5z" stroke="currentColor" stroke-width="1" fill="none"/><path d="M7.5 4L11 7.5 7.5 11 4 7.5z"/></svg>'
+BOOK_SVG       = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>'
+PAPERS_SVG     = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>'
+PRINCIPLES_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zm0 4h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zm0 4h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zM2.5 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1zm0 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1zm0 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z"/></svg>'
+ROADMAP_SVG    = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16s6-5.686 6-10A6 6 0 0 0 2 6c0 4.314 6 10 6 10zm0-7a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg>'
 
 SLUGS = [inv["slug"] for inv in INVESTIGATIONS]
 
@@ -204,9 +205,10 @@ def make_nav(active_slug, prefix="../"):
 
     # Guide links: (key, svg, href, label)
     guide_links = [
-        ("index",     BOOK_SVG,    f"{prefix}index.html",     "Stats Reference Guide"),
-        ("resources", PAPERS_SVG,  f"{prefix}resources.html", "Resources"),
-        ("choose",    DIAMOND_SVG, f"{prefix}choose.html",    "Choose a Method"),
+        ("index",      BOOK_SVG,       f"{prefix}index.html",       "About"),
+        ("principles", PRINCIPLES_SVG, f"{prefix}principles.html",  "Principles"),
+        ("roadmap",    ROADMAP_SVG,    f"{prefix}roadmap.html",     "Roadmap"),
+        ("resources",  PAPERS_SVG,     f"{prefix}resources.html",   "Resources"),
     ]
 
     # Investigation link path depends on depth
@@ -217,7 +219,7 @@ def make_nav(active_slug, prefix="../"):
 
     lines = []
     lines.append('  <nav class="inv-nav" aria-label="Investigations">')
-    lines.append('    <div class="inv-nav-header">Investigations</div>')
+    lines.append('    <div class="inv-nav-header">Guide</div>')
 
     for key, svg, href, label in guide_links:
         active_cls = " active" if active_slug == key else ""
@@ -225,6 +227,9 @@ def make_nav(active_slug, prefix="../"):
         lines.append(f'      {svg}')
         lines.append(f'      {label}')
         lines.append(f'    </a>')
+
+    lines.append('    <div class="inv-nav-guide-divider"></div>')
+    lines.append('    <div class="inv-nav-header inv-nav-header-section">Investigations</div>')
 
     for tier in TIER_ORDER:
         if tier not in groups:
@@ -319,7 +324,7 @@ def make_page(inv):
       <div class="coming-soon-card">
         <div class="cs-icon">&#9879;</div>
         <div class="cs-label">Investigation in progress</div>
-        <p class="cs-text">Full worked examples, interactive code, and simulation-backed results are coming soon. <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a> for updates.</p>
+        <p class="cs-text">Full worked examples, interactive code, and simulation-backed results are coming soon. <a href="https://github.com/ianarawjo/promptstats">Follow on GitHub</a> for updates.</p>
       </div>
     </section>
   </article>
@@ -329,9 +334,9 @@ def make_page(inv):
 <!-- FOOTER -->
 <footer class="site-footer">
   <div class="footer-inner">
-    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/promptstats">promptstats</a> project</p>
     <ul class="footer-links">
-      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
+      <li><a href="https://github.com/ianarawjo/promptstats">GitHub</a></li>
       <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
     </ul>
   </div>

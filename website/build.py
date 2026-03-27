@@ -123,9 +123,9 @@ FOOTER_HTML = """\
 <footer class="site-footer">
   <div class="footer-inner">
     <p>Statistics for LLM Evals &middot; A living document from the
-       <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
+       <a href="https://github.com/ianarawjo/promptstats">promptstats</a> project</p>
     <ul class="footer-links">
-      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
+      <li><a href="https://github.com/ianarawjo/promptstats">GitHub</a></li>
       <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
     </ul>
   </div>
@@ -247,7 +247,7 @@ PAGE_CONFIGS = [
         "active_nav":     None,
         "eyebrow":        "Guide",
         "subtitle":       "The seven statistical principles that guide method selection and reporting in this guide.",
-        "active_sidebar": None,
+        "active_sidebar": "principles",
     },
     {
         "slug":           "roadmap",
@@ -258,7 +258,7 @@ PAGE_CONFIGS = [
         "active_nav":     None,
         "eyebrow":        "Project",
         "subtitle":       "Planned additions to the guide, the promptstats library, and the simulation study.",
-        "active_sidebar": None,
+        "active_sidebar": "roadmap",
     },
 ]
 
@@ -289,7 +289,7 @@ def make_stub_content(inv):
         <div class="cs-label">Investigation in progress</div>
         <p class="cs-text">Full worked examples, interactive code, and simulation-backed
           results are coming soon.
-          <a href="https://github.com/ianarawjo/prompt-stats">Follow on GitHub</a>
+          <a href="https://github.com/ianarawjo/promptstats">Follow on GitHub</a>
           for updates.</p>
       </div>
     </section>"""
@@ -382,6 +382,13 @@ def build_pages(slugs=None):
 
         with open(src_path) as f:
             src_content = f.read()
+
+        # Keep sidebar content centralized in gen_stubs.py for index as well.
+        if slug == "index":
+            src_content = src_content.replace(
+                "{{INVESTIGATIONS_NAV}}",
+                make_nav(active_slug="index", prefix="./"),
+            )
 
         prefix    = "./"
         active    = page.get("active_nav")

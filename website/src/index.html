@@ -20,53 +20,8 @@
 <!-- ═══ MAIN LAYOUT ═══ -->
 <div class="page-layout">
 
-  <!-- ── Investigations sidebar ── -->
-  <nav class="inv-nav" aria-label="Investigations">
-    <div class="inv-nav-header">Investigations</div>
-    <a class="inv-nav-guide-link active" href="./index.html">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>
-      Stats Reference Guide
-    </a>
-    <a class="inv-nav-guide-link" href="./resources.html">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>
-      Resources
-    </a>
-    <a class="inv-nav-guide-link" href="./choose.html">
-      <svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M7.5 1.5L14 7.5 7.5 13.5 1 7.5z" stroke="currentColor" stroke-width="1" fill="none"/><path d="M7.5 4L11 7.5 7.5 11 4 7.5z"/></svg>
-      Choose a Method
-    </a>
-
-    <div class="inv-group">
-      <div class="inv-group-label">Foundations</div>
-      <ul>
-        <li><a href="./investigations/model-vs-model.html">Model A vs. Model B</a></li>
-        <li><a href="./investigations/best-prompt.html">Finding Your Best Prompt</a></li>
-        <li><a href="./investigations/multi-metric.html">Comparing Multiple Metrics</a></li>
-        <li><a href="./investigations/model-prompt-grid.html">Finding the Best Model-Prompt Combo</a></li>
-      </ul>
-    </div>
-
-    <div class="inv-group">
-      <div class="inv-group-label">Going Deeper</div>
-      <ul>
-        <li><a href="./investigations/before-after.html">Before / After Fine-Tune</a></li>
-        <li><a href="./investigations/prompt-sensitivity.html">Prompt Sensitivity</a></li>
-        <li><a href="./investigations/response-consistency.html">Checking Response Consistency</a></li>
-        <li><a href="./rag-factorial.html">Stats for RAG Pipelines</a></li>
-        <li><a href="./investigations/sample-size.html">Sample Size Planning</a></li>
-      </ul>
-    </div>
-
-    <div class="inv-group">
-      <div class="inv-group-label">Advanced</div>
-      <ul>
-        <li><a href="./investigations/regression-guard.html">Regression Guard</a></li>
-        <li><a href="./investigations/ranking-noise.html">When Rankings Flip</a></li>
-        <li><a href="./investigations/irr-human-annotations.html">Auditing Your LLM Judge</a></li>
-        <li><a href="./investigations/benchmark-distillation.html">Distilling a Benchmark</a></li>
-      </ul>
-    </div>
-  </nav>
+  <!-- sidebar injected by website/build.py via gen_stubs.make_nav() -->
+  {{INVESTIGATIONS_NAV}}
 
   <!-- Article body -->
   <article class="article-body">
