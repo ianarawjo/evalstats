@@ -1,37 +1,3 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Choose Your Statistical Method — Stats for LLM Evals</title>
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="./choose.css" />
-  <script>(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.setAttribute('data-theme','dark')}catch(e){}})()</script>
-</head>
-<body>
-
-<nav class="site-nav">
-  <div class="nav-inner">
-    <a class="nav-brand" href="./index.html">Stats for LLM Evals</a>
-    <ul class="nav-links">
-      <li><a href="./index.html#why-statistics">Why Statistics</a></li>
-      <li><a href="./index.html#principles">Core Principles</a></li>
-      <li><a href="./index.html#simulation">Simulation Study</a></li>
-      <li><a href="./index.html#recommendations">Recommendations</a></li>
-      <li><a href="./choose.html" class="active">Choose a Method</a></li>
-      <li><a href="./resources.html">Resources</a></li>
-      <li><a href="./index.html#promptstats">promptstats</a></li>
-    </ul>
-    <button class="dark-toggle" id="dark-toggle" aria-label="Toggle dark mode">
-      <svg id="dark-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-      </svg>
-    </button>
-  </div>
-</nav>
-
 <div class="hero">
   <div class="hero-eyebrow">Interactive Guide</div>
   <h1>Choose Your Statistical Method</h1>
@@ -766,18 +732,3 @@ function renderResult(node) {
 document.getElementById('reset-btn').addEventListener('click', resetFlow);
 renderFlow();
 </script>
-
-<footer class="site-footer">
-  <div class="footer-inner">
-    <p>Statistics for LLM Evals &middot; A living document from the
-       <a href="https://github.com/ianarawjo/prompt-stats">promptstats</a> project</p>
-    <ul class="footer-links">
-      <li><a href="https://github.com/ianarawjo/prompt-stats">GitHub</a></li>
-      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
-    </ul>
-  </div>
-</footer>
-
-<script src="./dark.js"></script>
-</body>
-</html>

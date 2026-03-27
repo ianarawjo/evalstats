@@ -3,12 +3,12 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Finding Your Best Prompt &mdash; Stats for LLM Evals</title>
+  <title>Finding Your Best Prompt — Stats for LLM Evals</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:ital,wght@0,400;0,500;0,600;1,400&family=IBM+Plex+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&family=IBM+Plex+Serif:ital,wght@0,300;0,400;0,600;0,700;1,300&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="../inv.css" />
   <link rel="stylesheet" href="../nb.css" />
+  <link rel="stylesheet" href="../inv.css" />
   <script>(function(){try{var t=localStorage.getItem('theme');if(t==='dark'||(!t&&window.matchMedia('(prefers-color-scheme: dark)').matches))document.documentElement.setAttribute('data-theme','dark')}catch(e){}})()</script>
 </head>
 <body>
@@ -22,6 +22,7 @@
       <li><a href="../index.html#simulation">Simulation Study</a></li>
       <li><a href="../index.html#recommendations">Recommendations</a></li>
       <li><a href="../choose.html">Choose a Method</a></li>
+      <li><a href="../resources.html">Resources</a></li>
       <li><a href="../index.html#promptstats">promptstats</a></li>
     </ul>
     <button class="dark-toggle" id="dark-toggle" aria-label="Toggle dark mode">
@@ -106,14 +107,15 @@
         <div class="cell border-box-sizing text_cell rendered" id="cell-id=md00"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
-<p>Say you've been iterating on a prompt for a <strong>support ticket classifier</strong>: a backend system that routes incoming customer requests into one of four queues: <code>BILLING</code>, <code>TECHNICAL</code>, <code>ACCOUNT</code>, or <code>GENERAL</code>. This system needs to run fast, so you're hoping to run it on a very small local model, <code>gemma3:1b</code>. You've tried eight different prompt variations: a zero-shot baseline, a role-framed variant, one with explicit category definitions, two few-shot variants (1-example and 3-example), a chain-of-thought approach, one that returns JSON, and one with negative framing ("do <em>not</em> confuse BILLING with ACCOUNT").</p>
-<p>After running the eval on 40 labeled tickets with a local Ollama model (<code>gemma3:1b</code>), the natural thing to do is compute mean accuracy per prompt and pick the winner. Let's do that.</p>
+<p>Say you've been iterating on a prompt for a <strong>support ticket classifier</strong>: a backend system that routes incoming customer requests into one of four queues: <code>BILLING</code>, <code>TECHNICAL</code>, <code>ACCOUNT</code>, or <code>GENERAL</code>. This system needs to run fast, so you're hoping to run it on a very small local model, <code>gemma3:1b</code>.</p>
+<p>You've tried eight different prompt template variations: a zero-shot baseline, a role-framed variant, one with explicit category definitions, two few-shot variants (1-example and 3-example), a chain-of-thought approach, one that returns JSON, and one with negative framing ("do <em>not</em> confuse BILLING with ACCOUNT").</p>
+<p>After running the eval on 40 labeled tickets with a local Ollama model (<code>gemma3:1b</code>), you compute mean accuracy per prompt in the hopes of finding the "winner":</p>
 </div>
 </div>
 </div>
 <div class="cell border-box-sizing code_cell rendered" id="cell-id=cd01">
 <div class="input">
-<div class="prompt input_prompt">In [1]:</div>
+<div class="prompt input_prompt">In [8]:</div>
 <div class="inner_cell">
 <div class="input_area">
 <div class="highlight hl-ipython3"><pre><span></span><span class="kn">import</span><span class="w"> </span><span class="nn">pandas</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">pd</span>
@@ -126,11 +128,9 @@
 <span class="c1"># Columns: prompt_id, input_id, ticket, category, output, predicted, correct</span>
 <span class="n">df</span> <span class="o">=</span> <span class="n">pd</span><span class="o">.</span><span class="n">read_csv</span><span class="p">(</span><span class="s2">"support_ticket_eval.csv"</span><span class="p">)</span>
 
-<span class="n">PROMPTS</span> <span class="o">=</span> <span class="p">[</span>
-    <span class="s2">"P0_baseline"</span><span class="p">,</span> <span class="s2">"P1_role"</span><span class="p">,</span> <span class="s2">"P2_definitions"</span><span class="p">,</span>
-    <span class="s2">"P3_few_shot_1"</span><span class="p">,</span> <span class="s2">"P4_few_shot_3"</span><span class="p">,</span>
-    <span class="s2">"P5_chain_of_thought"</span><span class="p">,</span> <span class="s2">"P6_json_output"</span><span class="p">,</span> <span class="s2">"P7_negative_framing"</span><span class="p">,</span>
-<span class="p">]</span>
+<span class="c1"># The CSV stores expected/predicted pairs (not precomputed scores),</span>
+<span class="c1"># so we compute per-prompt accuracy manually from `correct`.</span>
+<span class="n">PROMPTS</span> <span class="o">=</span> <span class="n">df</span><span class="p">[</span><span class="s2">"prompt_id"</span><span class="p">]</span><span class="o">.</span><span class="n">dropna</span><span class="p">()</span><span class="o">.</span><span class="n">drop_duplicates</span><span class="p">()</span><span class="o">.</span><span class="n">tolist</span><span class="p">()</span>
 
 <span class="c1"># Mean accuracy per prompt</span>
 <span class="n">scores_1run</span> <span class="o">=</span> <span class="p">{</span>
@@ -499,7 +499,7 @@ P7_negative_framing  34.2%  30.8%  34.2%  32.5%  31.7% 32.7% 1.5%
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=1aa3de14"><div class="prompt input_prompt">
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=fd0a151d"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
 <p>Even across 120 examples with harder cases included, the model is highly consistent across runs.
@@ -514,7 +514,7 @@ definition-heavy or negatively-framed ones.</p>
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=7d60c02e">
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=8cc94c7a">
 <div class="input">
 <div class="prompt input_prompt">In [6]:</div>
 <div class="inner_cell">
@@ -607,7 +607,7 @@ P7_negative_framing               28.7%       18.0%       17.7%       -10.7%    
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing code_cell rendered" id="cell-id=54f6230a">
+<div class="cell border-box-sizing code_cell rendered" id="cell-id=19bae889">
 <div class="input">
 <div class="prompt input_prompt">In [7]:</div>
 <div class="inner_cell">
@@ -719,7 +719,7 @@ P7_negative_framing  0.326667     0.0  0.457933  1.401837  1.0      0.0  0.0  0.
 </div>
 </div>
 </div>
-<div class="cell border-box-sizing text_cell rendered" id="cell-id=af52f45b"><div class="prompt input_prompt">
+<div class="cell border-box-sizing text_cell rendered" id="cell-id=7f094bd3"><div class="prompt input_prompt">
 </div><div class="inner_cell">
 <div class="text_cell_render border-box-sizing rendered_html">
 <h2 id="Conclusion:-What-actually-moved-the-needle">Conclusion: What actually moved the needle<a class="anchor-link" href="#Conclusion:-What-actually-moved-the-needle">¶</a></h2><p>The three-way CI width table and the 40T-vs-120T·5R forest plot tell the same story:</p>

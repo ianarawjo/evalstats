@@ -190,26 +190,41 @@ SLUGS = [inv["slug"] for inv in INVESTIGATIONS]
 
 TIER_ORDER = ["Foundations", "Going Deeper", "Advanced"]
 
-def make_nav(active_slug):
+def make_nav(active_slug, prefix="../"):
+    """Build the left investigations sidebar.
+
+    active_slug: slug of the current investigation, OR one of
+                 "index" | "resources" | "choose" to highlight a guide link.
+    prefix:      relative path prefix to reach the site root.
+                 "../" for investigation pages, "./" for top-level pages.
+    """
     groups = {}
     for inv in INVESTIGATIONS:
         groups.setdefault(inv["tier"], []).append(inv)
 
+    # Guide links: (key, svg, href, label)
+    guide_links = [
+        ("index",     BOOK_SVG,    f"{prefix}index.html",     "Stats Reference Guide"),
+        ("resources", PAPERS_SVG,  f"{prefix}resources.html", "Resources"),
+        ("choose",    DIAMOND_SVG, f"{prefix}choose.html",    "Choose a Method"),
+    ]
+
+    # Investigation link path depends on depth
+    def inv_href(slug):
+        if prefix == "../":
+            return f"./{slug}.html"
+        return f"{prefix}investigations/{slug}.html"
+
     lines = []
     lines.append('  <nav class="inv-nav" aria-label="Investigations">')
     lines.append('    <div class="inv-nav-header">Investigations</div>')
-    lines.append(f'    <a class="inv-nav-guide-link" href="../index.html">')
-    lines.append(f'      {BOOK_SVG}')
-    lines.append(f'      Stats Reference Guide')
-    lines.append(f'    </a>')
-    lines.append(f'    <a class="inv-nav-guide-link" href="../resources.html">')
-    lines.append(f'      {PAPERS_SVG}')
-    lines.append(f'      Resources')
-    lines.append(f'    </a>')
-    lines.append(f'    <a class="inv-nav-guide-link" href="../choose.html">')
-    lines.append(f'      {DIAMOND_SVG}')
-    lines.append(f'      Choose a Method')
-    lines.append(f'    </a>')
+
+    for key, svg, href, label in guide_links:
+        active_cls = " active" if active_slug == key else ""
+        lines.append(f'    <a class="inv-nav-guide-link{active_cls}" href="{href}">')
+        lines.append(f'      {svg}')
+        lines.append(f'      {label}')
+        lines.append(f'    </a>')
 
     for tier in TIER_ORDER:
         if tier not in groups:
@@ -221,7 +236,7 @@ def make_nav(active_slug):
         for inv in groups[tier]:
             active = ' class="active"' if inv["slug"] == active_slug else ''
             label = inv.get("nav_label", inv["title"].split(":")[0])
-            lines.append(f'        <li><a href="./{inv["slug"]}.html"{active}>{label}</a></li>')
+            lines.append(f'        <li><a href="{inv_href(inv["slug"])}"{active}>{label}</a></li>')
         lines.append('      </ul>')
         lines.append('    </div>')
 
