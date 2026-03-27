@@ -178,6 +178,71 @@ class CompareReport:
             f"({abs_str}; min p={min_p:.4g}, {correction_text}, {method_text})"
         )
 
+    def print_ci_table(self, *, sort_by: str = "input_order") -> None:
+        """Print a compact table of mean, 95% CI, and contention status per entity.
+
+        Gives a quick, readable overview of where each entity stands before
+        diving into pairwise tests.  Use ``summary()`` for the full statistical
+        breakdown including pairwise p-values and the leaderboard.
+
+        Parameters
+        ----------
+        sort_by : str
+            Row ordering: ``'input_order'`` (default, preserves the order
+            the entities were passed in), ``'mean'`` (descending), or
+            ``'label'`` (alphabetical).
+        """
+        n = len(self.labels)
+        if sort_by == "mean":
+            ordered = sorted(
+                self.labels,
+                key=lambda l: self.entity_stats[l].mean,
+                reverse=True,
+            )
+        elif sort_by == "label":
+            ordered = sorted(self.labels)
+        elif sort_by == "input_order":
+            ordered = list(self.labels)
+        else:
+            raise ValueError(
+                f"Unknown sort_by: {sort_by!r}. "
+                "Expected 'input_order', 'mean', or 'label'."
+            )
+
+        unbeaten_set = set(self.unbeaten) if self.unbeaten else None
+        no_sig = self.unbeaten is None
+
+        label_w = max(max(len(l) for l in self.labels),
+                      len(self.entity_name_singular.capitalize()))
+        entity_header = self.entity_name_singular.capitalize()
+        ci_col = 22
+
+        print(f"  {entity_header:<{label_w}}  {'Mean':>8}  {'95% CI':<{ci_col}}  Status")
+        print("  " + "-" * (label_w + 8 + ci_col + 16))
+        for label in ordered:
+            s = self.entity_stats[label]
+            ci_str = f"[{s.ci_low:.1%}, {s.ci_high:.1%}]"
+            if no_sig:
+                status = "—"
+            elif label in unbeaten_set:
+                status = "in contention"
+            else:
+                status = "outperformed"
+            print(f"  {label:<{label_w}}  {s.mean:>7.1%}  {ci_str:<{ci_col}}  {status}")
+
+    def print_pair(self, a: str, b: str) -> None:
+        """Print the pairwise comparison summary between two entities.
+
+        Convenience wrapper for ``report.pairwise.get(a, b).summary()``.
+
+        Parameters
+        ----------
+        a, b : str
+            Labels of the two entities to compare.  Order determines the
+            sign convention of the mean gap (a − b).
+        """
+        self.pairwise.get(a, b).summary()
+
     def summary(self) -> None:
         """Print a focused summary scoped to the entity comparison level.
 
