@@ -82,7 +82,7 @@ def get_bayes_posterior(data, prior=(1, 1)):
     b = n - a
     return stats.beta(a + prior[0], b + prior[1])
 
-def independent_intervals(df, alpha=0.05, prior=(1, 1)):
+def independent_intervals(df, alpha=0.01, prior=(1, 1)):
     '''
     Compute the credible interval for the parameter of a Bernoulli distribution. 
 

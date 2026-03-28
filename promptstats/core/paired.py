@@ -34,6 +34,7 @@ from .resampling import (
     _stat,
 )
 from .stats_utils import correct_pvalues
+from ..config import get_alpha_ci
 
 
 BAYES_BINARY_LARGE_N_THRESHOLD = 200
@@ -233,7 +234,7 @@ class PairedDiffResult:
         """Alias for ``rank_biserial``."""
         return self.rank_biserial
 
-    def summary(self, *, alpha: float = 0.05, correction: str = "") -> None:
+    def summary(self, *, alpha: float | None = None, correction: str = "") -> None:
         """Print a focused summary for this pairwise comparison.
 
         Displays the gap, an ASCII interval plot of the confidence interval,
@@ -242,7 +243,7 @@ class PairedDiffResult:
         Parameters
         ----------
         alpha : float
-            Significance threshold (default 0.05).
+            Significance threshold (default 0.01).
         correction : str
             Name of the multiple-comparisons correction applied, shown in the
             header when provided.
@@ -252,6 +253,8 @@ class PairedDiffResult:
         >>> pair = report.pairwise.get("Model A", "Model B")
         >>> pair.summary()
         """
+        if alpha is None:
+            alpha = get_alpha_ci()
         from .summary import print_pairwise_summary
         print_pairwise_summary(self, alpha=alpha, correction=correction)
 
@@ -391,7 +394,7 @@ class PairwiseMatrix:
             )
         raise KeyError(f"No comparison found for ({a}, {b})")
 
-    def summary(self, a: str, b: str, *, alpha: float = 0.05) -> None:
+    def summary(self, a: str, b: str, *, alpha: float | None = None) -> None:
         """Print a focused summary for the comparison between `a` and `b`.
 
         Retrieves the pairwise result via ``get(a, b)``, then delegates to
@@ -403,12 +406,14 @@ class PairwiseMatrix:
         a, b : str
             Entity labels.  The direction is always ``a − b``.
         alpha : float
-            Significance threshold (default 0.05).
+            Significance threshold (default 0.01).
 
         Examples
         --------
         >>> report.pairwise.summary("Model A", "Model B")
         """
+        if alpha is None:
+            alpha = get_alpha_ci()
         pair = self.get(a, b)
         pair.summary(alpha=alpha, correction=self.correction_method)
 

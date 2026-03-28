@@ -15,6 +15,7 @@ import numpy as np
 from .bundles import AnalysisBundle, MultiModelBundle
 from .paired import PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
+from ..config import get_alpha_ci
 
 if TYPE_CHECKING:
     from ..compare import CompareReport
@@ -141,7 +142,7 @@ def print_analysis_summary(
 def print_pairwise_summary(
     pair: PairedDiffResult,
     *,
-    alpha: float = 0.05,
+    alpha: float | None = None,
     correction: str = "",
     line_width: int = 50,
 ) -> None:
@@ -157,7 +158,7 @@ def print_pairwise_summary(
         A single pairwise comparison result, e.g. from
         ``report.pairwise.get("Model A", "Model B")``.
     alpha : float
-        Significance threshold (default 0.05).
+        Significance threshold (default 0.01).
     correction : str
         Name of the multiple-comparisons correction applied, e.g. ``'fdr_bh'``.
         Shown in the header when provided.
@@ -175,6 +176,8 @@ def print_pairwise_summary(
     >>> pair.summary()
     >>> report.pairwise.summary("Model A", "Model B")
     """
+    if alpha is None:
+        alpha = get_alpha_ci()
     a, b = pair.template_a, pair.template_b
     stat_label = pair.statistic.capitalize()
     ci_pct = int(round((1.0 - alpha) * 100))
@@ -1295,9 +1298,11 @@ def _print_factorial_interaction_plot(
     bundle: AnalysisBundle,
     *,
     factor_tests,
-    alpha: float = 0.05,
+    alpha: float | None = None,
 ) -> None:
     """Render an optional terminal interaction plot via plotext when interaction is significant."""
+    if alpha is None:
+        alpha = get_alpha_ci()
     info = bundle.factorial_lmm_info
     if info is None or factor_tests is None or len(factor_tests) == 0:
         return
@@ -1594,10 +1599,12 @@ def _critical_difference_groups(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
-    alpha: float = 0.05,
+    alpha: float | None = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> list[list[str]]:
     """Return contiguous, maximal non-significant rank bands."""
+    if alpha is None:
+        alpha = get_alpha_ci()
     if len(labels_sorted) < 2:
         return []
 
@@ -1659,10 +1666,12 @@ def _single_clear_winner_label(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
-    alpha: float = 0.05,
+    alpha: float | None = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> Optional[str]:
     """Return the unique label that significantly beats every other label."""
+    if alpha is None:
+        alpha = get_alpha_ci()
     if len(labels_sorted) < 2:
         return None
 
@@ -1702,10 +1711,12 @@ def _print_critical_difference_groups(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
-    alpha: float = 0.05,
+    alpha: float | None = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> None:
     """Print a short CD-style summary of statistically indistinguishable groups."""
+    if alpha is None:
+        alpha = get_alpha_ci()
     if len(labels_sorted) < 2:
         return
 
@@ -1760,7 +1771,7 @@ def _print_critical_difference_groups(
 def _assign_significance_groups(
     pairwise: PairwiseMatrix,
     labels_sorted: list[str],
-    alpha: float = 0.05,
+    alpha: float | None = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> dict[str, str]:
     """Assign numeric group IDs (#1, #2, #3…) to templates via CD-group analysis.
@@ -1769,6 +1780,8 @@ def _assign_significance_groups(
     Group #1 is the band that contains the rank-1 template. Any template not
     found in any CD group receives a unique ID (it is distinctly ranked).
     """
+    if alpha is None:
+        alpha = get_alpha_ci()
     groups = _critical_difference_groups(
         pairwise, labels_sorted=labels_sorted, alpha=alpha, p_source=p_source,
     )

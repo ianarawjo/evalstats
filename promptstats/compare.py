@@ -24,6 +24,7 @@ from .core.router import analyze, AnalysisBundle, MultiModelBundle
 from .core.summary import print_analysis_summary, print_compare_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
 from .core.resampling import bayes_bootstrap_means_1d, smooth_bootstrap_means_1d, bootstrap_means_1d, bca_interval_1d, resolve_resampling_method, bayes_binary_ci_1d, wilson_ci_1d
+from .config import get_alpha_ci
 
 
 # ---------------------------------------------------------------------------
@@ -66,7 +67,8 @@ class CompareReport:
         The full internal analysis object. Use ``full_summary()`` to print
         the complete analysis, or access fields directly for advanced use.
     alpha : float
-        Significance threshold used to determine ``unbeaten``.
+        Significance threshold used for CIs and for significance testing, if any,
+        which determines the ``unbeaten`` set and is used in the ``quick_summary()`` text.
     statistic : str
         Central-tendency statistic used (``'mean'`` or ``'median'``).
     method : str
@@ -83,7 +85,7 @@ class CompareReport:
     unbeaten: Optional[list[str]]
     pairwise: PairwiseMatrix
     full_analysis: AnalysisBundle | MultiModelBundle
-    alpha: float = 0.05
+    alpha: float = 0.01
     statistic: Literal["mean", "median"] = "mean"
     method: str = "smooth_bootstrap"
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh"
@@ -393,12 +395,11 @@ def _normalize_compare_models_scores(
 def compare_prompts(
     scores: dict,
     *,
-    alpha: float = 0.05,
+    alpha: float | None = None,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
-    ci: float = 0.95,
     rng: Optional[np.random.Generator] = None,
 ) -> CompareReport:
     """Compare prompt templates with bootstrapped statistical tests.
@@ -420,7 +421,7 @@ def compare_prompts(
         All arrays must share the same M (and R when 2-D).
 
     alpha : float
-        Significance threshold for declaring a winner (default 0.05).
+        Significance threshold for CIs and for declaring a winner (default 0.01).
         A prompt is named winner only if it beats at least one other prompt
         with a correction-adjusted p-value < alpha.
     n_bootstrap : int
@@ -435,8 +436,6 @@ def compare_prompts(
         ``'newcombe'``, ``'fisher_exact'``, or ``'sign_test'``.
     statistic : str
         Central-tendency statistic: ``'mean'`` (default) or ``'median'``.
-    ci : float
-        Confidence level for intervals (default 0.95).
     rng : np.random.Generator, optional
         Random-number generator for reproducibility.
 
@@ -473,6 +472,9 @@ def compare_prompts(
     ...     "v2":       [[0.85, 0.87, 0.84], [0.92, 0.90, 0.93]],
     ... })
     """
+    if alpha is None:
+        alpha = get_alpha_ci()
+    
     if not isinstance(scores, dict):
         raise TypeError(
             "scores must be a dict mapping prompt labels to score arrays. "
@@ -538,7 +540,7 @@ def compare_prompts(
         n_bootstrap=n_bootstrap,
         correction=correction,
         statistic=statistic,
-        ci=ci,
+        ci=1.0-alpha,
         rng=rng,
     )
 
@@ -550,7 +552,6 @@ def compare_prompts(
     # in each template's absolute location independently.
     # ------------------------------------------------------------------
     scores_2d = benchmark.get_2d_scores()  # (N, M)
-    alpha_ci = 1.0 - ci
     # Use the resolved method from the analysis bundle (may be 'bayes_binary',
     # 'newcombe', or a bootstrap variant), falling back to re-resolution.
     resolved_method = full_analysis.resolved_method or resolve_resampling_method(method, M)
@@ -570,22 +571,22 @@ def compare_prompts(
         point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
 
         if resolved_method == "wilson":
-            ci_low, ci_high = wilson_ci_1d(row, alpha_ci)
+            ci_low, ci_high = wilson_ci_1d(row, alpha)
         elif resolved_method == "bayes_bootstrap":
             boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
         elif resolved_method == "smooth_bootstrap":
             boot_stats = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
         else:
             boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
             if resolved_method == "bca":
-                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha_ci, statistic=statistic)
+                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha, statistic=statistic)
             else:
-                ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
-                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+                ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
 
         entity_stats[label] = EntityStats(
             mean=float(rob.mean[i]),
@@ -615,12 +616,11 @@ def compare_prompts(
 def compare_models(
     scores: dict,
     *,
-    alpha: float = 0.05,
+    alpha: float | None = None,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
-    ci: float = 0.95,
     template_model_collapse: Literal["mean", "as_runs", "auto"] = "auto",
     template_labels: Optional[list[str]] = None,
     rng: Optional[np.random.Generator] = None,
@@ -643,7 +643,7 @@ def compare_models(
         keys. If ``template_labels`` is omitted, inner-key order from the first
         model is used.
     alpha : float
-        Significance threshold for declaring winner models.
+        Significance threshold for CIs and for significance testing, if any.
     n_bootstrap : int
         Bootstrap resamples.
     correction : str
@@ -652,8 +652,6 @@ def compare_models(
         Bootstrap variant.
     statistic : str
         Central-tendency statistic: ``'mean'`` or ``'median'``.
-    ci : float
-        Confidence level for intervals.
     template_model_collapse : {"mean", "as_runs", "auto"}
         How to combine model scores in the template-level analysis
         ("which template is best overall across models?").
@@ -692,6 +690,8 @@ def compare_models(
     if rng is None:
         rng = np.random.default_rng()
 
+    if alpha is None:
+        alpha = get_alpha_ci()
     labels, arrays, normalized_template_labels = _normalize_compare_models_scores(
         scores,
         template_labels,
@@ -768,7 +768,7 @@ def compare_models(
         n_bootstrap=n_bootstrap,
         correction=correction,
         statistic=statistic,
-        ci=ci,
+        ci=1.0-alpha,
         rng=rng,
         template_model_collapse=resolved_template_model_collapse,
     )
@@ -777,7 +777,6 @@ def compare_models(
 
     model_analysis = full_analysis.model_level
     scores_2d = benchmark.get_model_mean_result().get_2d_scores()  # (P, M)
-    alpha_ci = 1.0 - ci
     resolved_method = model_analysis.resolved_method or resolve_resampling_method(method, n_inputs)
     # Pairwise-only methods need a single-sample fallback for entity stats CIs.
     # newcombe/fisher_exact/sign_test → smooth_bootstrap; bayes_binary → wilson.
@@ -793,22 +792,22 @@ def compare_models(
         point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
 
         if resolved_method == "wilson":
-            ci_low, ci_high = wilson_ci_1d(row, alpha_ci)
+            ci_low, ci_high = wilson_ci_1d(row, alpha)
         elif resolved_method == "bayes_bootstrap":
             boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
         elif resolved_method == "smooth_bootstrap":
             boot_stats = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
         else:
             boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
             if resolved_method == "bca":
-                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha_ci, statistic=statistic)
+                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha, statistic=statistic)
             else:
-                ci_low = float(np.percentile(boot_stats, 100 * alpha_ci / 2))
-                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha_ci / 2)))
+                ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
 
         entity_stats[label] = EntityStats(
             mean=float(rob.mean[i]),

@@ -450,6 +450,7 @@ def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
     report = ps.compare_prompts(
         {"A": a_scores.tolist(), "B": b_scores.tolist()},
         method="auto", rng=_rng(62), n_bootstrap=500,
+        alpha=0.05,
     )
     # Wilson CI for A: 11/20
     expected_lo_a, expected_hi_a = wilson_ci_1d(a_scores, alpha=0.05)
@@ -566,6 +567,7 @@ def test_compare_models_auto_binary_entity_stats_match_wilson():
     report = ps.compare_models(
         {"model_a": a_scores.tolist(), "model_b": b_scores.tolist()},
         method="auto", rng=_rng(73), n_bootstrap=500,
+        alpha=0.05,
     )
     expected_lo, expected_hi = wilson_ci_1d(a_scores, alpha=0.05)
     np.testing.assert_allclose(

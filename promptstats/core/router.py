@@ -32,6 +32,7 @@ from .bundles import (
 from .paired import all_pairwise
 from .ranking import bootstrap_ranks, bootstrap_point_advantage
 from .variance import robustness_metrics, seed_variance_decomposition
+from ..config import get_alpha_ci
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -44,7 +45,7 @@ def analyze(
     reference: str = "grand_mean",
     method: AnalyzeMethod = "auto",
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
-    ci: float = 0.95,
+    ci: Optional[float] = None,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     spread_percentiles: tuple[float, float] = (10, 90),
@@ -80,7 +81,7 @@ def analyze(
     method : str
         Statistical method for CIs and p-values:
 
-                * ``'auto'`` (default) — smooth bootstrap.
+        * ``'auto'`` (default) — smooth bootstrap.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
         * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).
@@ -121,7 +122,7 @@ def analyze(
         ``'pymer4'`` (wraps R/lme4, requires R with lme4 and emmeans).
         Ignored for bootstrap methods.
     ci : float
-        Confidence level for intervals (default 0.95).
+        Confidence level for intervals (default 0.99).
     n_bootstrap : int
         Number of bootstrap resamples (default 10,000).  When
         ``method='lmm'`` this controls the number of parametric
@@ -177,6 +178,9 @@ def analyze(
     """
     if rng is None:
         rng = np.random.default_rng()
+    
+    if ci is None:
+        ci = 1.0 - get_alpha_ci()
 
     if statistic not in {"mean", "median"}:
         raise ValueError(
@@ -197,7 +201,7 @@ def analyze(
             UserWarning,
             stacklevel=2,
         )
-
+    
     kwargs = dict(
         reference=reference,
         method=method,
@@ -318,7 +322,7 @@ def analyze_factorial(
     *,
     run_col: Optional[str] = None,
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
-    ci: float = 0.95,
+    ci: Optional[float] = None,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     reference: str = "grand_mean",
     spread_percentiles: tuple[float, float] = (10, 90),
@@ -383,7 +387,7 @@ def analyze_factorial(
         ``'statsmodels'`` (default) or ``'pymer4'``.
 
     ci : float
-        Confidence level for Wald intervals (default 0.95).
+        Confidence level for Wald intervals (default 0.99).
 
     correction : str
         Multiple-comparisons correction for pairwise tests:
@@ -558,6 +562,9 @@ def analyze_factorial(
     # ------------------------------------------------------------------
     if rng is None:
         rng = np.random.default_rng()
+    
+    if ci is None:
+        ci = 1.0 - get_alpha_ci()
 
     from .types import BenchmarkResult as _BR
     benchmark = _BR(

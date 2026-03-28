@@ -30,6 +30,7 @@ from promptstats.compare import (
     CompareReport,
     EntityStats,
 )
+from promptstats.config import set_alpha_ci, get_alpha_ci
 
 __version__ = "0.1.5"
 
@@ -66,6 +67,8 @@ __all__ = [
     "CompareReport",
     "EntityStats",
     "analyze_factorial",
+    "set_alpha_ci",
+    "get_alpha_ci",
 ]
 
 # LMMInfo and FactorialLMMInfo are exported lazily so that statsmodels/pymer4

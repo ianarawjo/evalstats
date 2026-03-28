@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 from promptstats.core.paired import FriedmanResult
+from promptstats.config import get_alpha_ci
 
 
 def _critical_difference(k: int, n: int, alpha: float) -> float:
@@ -55,7 +56,7 @@ def _sig_matrix(friedman: FriedmanResult) -> pd.DataFrame:
 
 def plot_critical_difference(
     friedman: FriedmanResult,
-    alpha: float = 0.05,
+    alpha: float | None = None,
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     ax: Optional["Axes"] = None,
@@ -83,6 +84,8 @@ def plot_critical_difference(
     -------
     matplotlib.figure.Figure
     """
+    if alpha is None:
+        alpha = get_alpha_ci()
     try:
         from scikit_posthocs import critical_difference_diagram
     except ImportError as exc:

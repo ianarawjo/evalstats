@@ -34,6 +34,7 @@ import matplotlib.pyplot as plt
 # for bivariate normal CDF
 from scipy.special import erf
 from scipy.stats import norm
+from ..config import get_alpha_ci
 
 
 def convert_to_df(data, model_names=None):
@@ -82,7 +83,7 @@ def get_bayes_posterior(data, prior=(1, 1)):
     b = n - a
     return stats.beta(a + prior[0], b + prior[1])
 
-def independent_intervals(df, alpha=0.05, prior=(1, 1)):
+def independent_intervals(df, alpha=None, prior=(1, 1)):
     '''
     Compute the credible interval for the parameter of a Bernoulli distribution. 
 
@@ -100,6 +101,8 @@ def independent_intervals(df, alpha=0.05, prior=(1, 1)):
     credible_interval_df: pd.DataFrame (shape [2,M])
         Lower and upper bounds (rows) of the credible interval for each model (columns)
     '''
+    if alpha is None:
+        alpha = get_alpha_ci()
     assert isinstance(df, pd.DataFrame), f"Data must be a pandas DataFrame (found {type(df)})"
     assert isinstance(alpha, float), f"Alpha must be a float (found {type(alpha)})"
     

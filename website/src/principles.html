@@ -20,7 +20,7 @@
     effect sizes (magnitude of differences), pairwise differences, and visualization, 
     rather than p-values. As many <a href="https://inria.hal.science/hal-01377894/file/fairstats-last.pdf">scientists</a> <a href="https://royalsocietypublishing.org/rsos/article/4/12/171085/93045">across</a> <a href="https://link.springer.com/article/10.1007/s10654-016-0149-3">fields</a> <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC1182327/">have</a> <a href="https://dl.acm.org/doi/abs/10.1145/2858036.2858465">recognized</a>,
     p-values encourage dichotomous thinking and overconfidence, which is especially dangerous 
-    in the context of LLM evals, where measurements are noisy and evals often have small sample sizes.
+    in the context of LLM evals, where measurements are noisy, sample sizes are often small, and tests are re-run frequently with every minor change to the model, prompt, or eval set.
     That said, <code class="library">promptstats</code> does allow users to print p-values and NHST tests, should they wish it,
     as many people are still familiar with that framework and may be requested to use it for communication with stakeholders (e.g., paper reviewers who request it).
     To provide "at a glance" decision support, <code class="library">promptstats</code> also leans into significance testing on CIs to estimate the most 
@@ -49,7 +49,9 @@
         Basically, we should assume all evals are ill-designed, underpowered, and therefore noisy until proven otherwise. 
         What's more, many evals concern safety. For instance, a wider confidence interval that actually contains the truth is far safer than
         a narrow interval that misses it. Thus, we prefer tests and methods that sacrifice some statistical power to guard
-        against overconfidence.
+        against overconfidence. By default, <code>promptstats</code> uses an alpha of 0.01 for CIs and p-values, which is more conservative than the traditional 0.05, 
+        as a Type I error risk of 5% is too high for the noisy, high-stakes, repeated-testing context of LLM evals. (Arguably, even 1% is too high, 
+        but we also don't want to be so conservative as to never find anything of importance.)
       </div>
     </div>
     <div class="maxim-item">
