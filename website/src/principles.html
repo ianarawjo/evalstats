@@ -34,7 +34,6 @@
     and expand them over time. Although <code class="library">promptstats</code> uses some Bayesian methods 
     (like <a href="https://github.com/sambowyer/bayes_evals"><code>bayes_evals</code></a> 
     to approximate CIs at low sample size for binary data), it is decidedly not a Bayesian framework. 
-    A Bayesian framework would require a complete rethinking of how <code class="library">promptstats</code> quantifies and reports uncertainty. 
     We intend to explore this mode in a future release.
   </p>
 
@@ -47,7 +46,7 @@
         <strong>Err conservative by default.</strong>
         LLM evals suffer from construct validity issues, noisy measurements, and often small sample sizes.
         Basically, we should assume all evals are ill-designed, underpowered, and therefore noisy until proven otherwise. 
-        What's more, many evals concern safety. For instance, a wider confidence interval that actually contains the truth is far safer than
+        What's more, many evals concern safety, and a wider confidence interval that actually contains the truth is far safer than
         a narrow interval that misses it. Thus, we prefer tests and methods that sacrifice some statistical power to guard
         against overconfidence. By default, <code>promptstats</code> uses an alpha of 0.01 for CIs and p-values, which is more conservative than the traditional 0.05, 
         as a Type I error risk of 5% is too high for the noisy, high-stakes, repeated-testing context of LLM evals. (Arguably, even 1% is too high, 

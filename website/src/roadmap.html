@@ -1,16 +1,118 @@
-    <section>
-      <h2>Project Roadmap</h2>
-      <p>
-        Planned additions to the guide, the <code>promptstats</code> library, and the simulation study.
-        Items are ordered roughly by priority.
-      </p>
+<section>
+  <p>
+    This roadmap covers planned investigations, library features, and simulation extensions.
+    Items are ordered roughly by priority. The current focus is on establishing solid defaults
+    for the most common eval tasks, with worked Jupyter notebooks, visual terminal outputs,
+    and plots for each.
+  </p>
 
-      <div class="coming-soon-card">
-        <div class="cs-icon">&#128204;</div>
-        <div class="cs-label">Coming soon</div>
-        <p class="cs-text">
-          A detailed roadmap covering planned investigations, library features, and simulation extensions.
-          <a href="https://github.com/ianarawjo/promptstats">Follow on GitHub</a> for updates.
-        </p>
-      </div>
-    </section>
+  <!-- ── CURRENT FOCUS ── -->
+  <h2>Current Focus</h2>
+  <p>
+    I am focused on covering the core cases every LLM practitioner encounters: 
+    comparing models, comparing prompts, and comparing model&times;prompt combinations,
+    across both single-run and multi-run (seed variance) settings. 
+    Multi-run analysis is treated as a first-class concern:
+    every single-run method has a nested-bootstrap counterpart when repeated sampling is
+    available. These settings will be supported by the core API and visual terminal outputs, 
+    and will be informed by Monte Carlo simulations testing quality of default statistical methods 
+    across realistic eval conditions.
+  </p>
+  <p>
+    Practitioners focused on the latest "hottest topics"—i.e., agent and RAG engineering—might worry that this roadmap 
+    is too focused on an "old" problem. First, prompts and models are foundational to all LLM-integrated systems, 
+    and getting the defaults right for those will cover a huge fraction of use cases.
+    Second, and more importantly, the terms "models" and "prompts" can later be abstracted and similar analysis methods re-used,
+    for instance to compare RAG pipeline configurations or component variations in agent architectures. 
+    Getting the defaults right is therefore really important, as it will lay the groundwork for more complex analyses.
+  </p>
+  <p>
+    Current investigations include:
+  </p>
+  <ul>
+    <li>
+      <a href="./investigations/model-vs-model.html"><strong>Model A vs. Model B: Is the Gap Real?</strong></a>:
+      CIs on the score difference (Newcombe / smooth bootstrap), single-run and multi-run
+      nested-bootstrap variants, minimum N to detect a given gap, and honest reporting of
+      statistical ties.
+    </li>
+    <li>
+      <a href="./investigations/best-prompt.html"><strong>Finding Your Best Prompt</strong></a>:
+      Per-variant CIs with multiple-comparison correction, single-run
+      and multi-run modes, and how to report &ldquo;Prompt C wins&rdquo; with appropriate
+      hedging.
+    </li>
+    <li>
+      <strong>Finding the Best Model&times;Prompt Combo</strong>:
+      Multi-comparison correction, factorial (two-way) analysis to
+      detect interaction effects, score-matrix heatmaps with CI width, and multi-run variants.
+      Includes <code>analyze_factorial()</code> for the common tagged-dataset format.
+      <em>In progress.</em>
+    </li>
+    <li>
+      <strong>Comparing Models Across Multiple Metrics</strong>:
+      Per-metric CIs, Pareto dominance as a weight-free criterion, composite score uncertainty,
+      and visualizations that surface tradeoffs rather than a pre-digested verdict.
+      <em>In progress.</em>
+    </li>
+  </ul>
+  <p>
+    Supporting these investigations: the <code>promptstats</code> library API
+    (<code>compare_models()</code>, <code>compare_prompts()</code>,
+    <code>analyze()</code>, <code>analyze_factorial()</code>) with
+    <code>.summary()</code> terminal output and <code>.plot()</code>;
+    and Monte Carlo simulations covering CI coverage and width across binary, continuous,
+    Likert, and grade-scale eval types at varied sample sizes.
+  </p>
+
+  <!-- ── NEAR-FUTURE ── -->
+  <h2>Near-Future Planned Foci</h2>
+  <p>
+    More nuanced investigations for practitioners who need to answer harder questions
+    about seed variance, fine-tune validation, pipeline optimization, and eval set sizing.
+  </p>
+  <ul>
+    <li>
+        <strong>Checking Response Consistency</strong>: Measuring run-to-run variance and related factors.
+    </li>
+    <li>
+        <strong>Before / After: Did My Fine-Tune Actually Help?</strong>: Simple before/after comparison methods.
+    </li>
+    <li>
+        <strong>How Many Eval Items Do I Actually Need?</strong>: Estimating required sample sizes.
+    </li>
+    <li>
+        <strong>Prompt Sensitivity Analysis</strong>: Exploring prompt effects and stability.
+    </li>
+    <li>
+        <strong>Stats for RAG Pipelines</strong>: Methods for analyzing RAG pipeline setups.
+    </li>
+    <li>
+        <strong>Regression Guard</strong>: Tools for regression detection and CI integration.
+    </li>
+    <li>
+        <strong>Auditing Your LLM Judge</strong>: Approaches for measuring annotation agreement.
+    </li>
+    <li>
+        <strong>When Model Rankings Are Just Noise</strong>: Assessing ranking reliability.
+    </li>
+    <li>
+        <strong>Distilling a Benchmark</strong>: Reducing and validating benchmark sets.
+    </li>
+  </ul>
+
+  <!-- ── FURTHER OUT ── -->
+  <h2>Far-Out Explorations</h2>
+  <p>
+    I intend to explore alternative statistical paradigms, like Bayesian methods and e-values, 
+    which could provide more nuanced insights and better support for the iterative, noisy nature of LLM evals.
+    However, I want to first provide some sound, "best effort" defaults within a more familiar frequentist framework,
+    which many practitioners are already using and which is still widely requested by stakeholders, reviewers, and auditors.
+    One idea here is for <code>promptstats</code> to add a Bayesian mode, where users can toggle between the two paradigms and get outputs 
+    that are consistent with the underlying philosophy without needed to change top-level API calls 
+    (e.g., <code>compare_models()</code> will report either frequentist or Bayesian outputs depending on the mode).
+    This guide would then have an "alternative universe" where the same website and investigation notebooks are re-framed through a Bayesian lens,
+    and unique Bayesian investigations are added (e.g., sequential testing and evidence combination across tests).
+  </p>
+
+</section>

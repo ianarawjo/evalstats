@@ -274,7 +274,7 @@ PAGE_CONFIGS = [
         "css":            "inv.css",
         "active_nav":     None,
         "eyebrow":        "Project",
-        "subtitle":       "Planned additions to the guide, the promptstats library, and the simulation study.",
+        "subtitle":       "Planned additions to the guide and the promptstats library.",
         "active_sidebar": "roadmap",
     },
 ]
