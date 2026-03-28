@@ -124,6 +124,7 @@ body {
   letter-spacing: 0.02em;
 }
 .nav-links a:hover { color: var(--text); }
+.nav-links a.active { color: var(--orange); font-weight: 600; }
 
 /* ─── INVESTIGATION HEADER ────────────────────────────── */
 .inv-header {
@@ -356,7 +357,25 @@ code {
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 0.12em 0.4em;
-  color: var(--orange);
+  color: var(--blue);
+  /* color: var(--orange); */
+}
+
+/* ─── PRE / CODE BLOCKS ───────────────────────────────── */
+pre {
+  background: var(--bg-code);
+  border-radius: var(--radius);
+  padding: 1.25rem 1.5rem;
+  overflow-x: auto;
+  margin: 1.25rem 0;
+}
+pre code {
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  background: none;
+  border: none;
+  padding: 0;
+  color: #c9d1d9;
 }
 
 /* ─── CALLOUT BOXES ───────────────────────────────────── */
@@ -382,11 +401,21 @@ code {
   border: 1px solid #bfdbfe;
 }
 .callout-info .callout-label { color: var(--blue); }
+.callout-maxim {
+  background: var(--orange-soft);
+  border: 1px solid var(--orange-mid);
+}
+.callout-maxim .callout-label { color: var(--orange); }
 .callout-warning {
   background: var(--yellow-soft);
   border: 1px solid var(--yellow-mid);
 }
 .callout-warning .callout-label { color: #92400e; }
+.callout-finding {
+  background: var(--green-soft);
+  border: 1px solid #bbf7d0;
+}
+.callout-finding .callout-label { color: var(--green); }
 
 /* ─── MAXIM LIST (principles page) ───────────────────── */
 .maxim-list {
@@ -590,6 +619,174 @@ code {
   color: #1e40af;
   background: var(--blue-soft);
   border-color: #bfdbfe;
+}
+
+/* ─── PULL QUOTE ──────────────────────────────────────── */
+.pull-quote {
+  border-left: 3px solid var(--orange);
+  padding: 0.6rem 1.25rem;
+  margin: 1.75rem 0;
+  font-size: 1.08rem;
+  line-height: 1.65;
+  color: var(--text-mid);
+  font-style: italic;
+}
+.pull-quote cite {
+  display: block;
+  font-style: normal;
+  font-family: var(--font-sans);
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
+}
+
+/* ─── TABLES ──────────────────────────────────────────── */
+.table-wrap {
+  overflow-x: auto;
+  margin: 1.5rem 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+}
+th {
+  background: var(--bg-soft);
+  text-align: left;
+  padding: 0.6rem 0.9rem;
+  font-weight: 600;
+  color: var(--text-mid);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+th.center, td.center { text-align: center; }
+td {
+  padding: 0.55rem 0.9rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+tr:last-child td { border-bottom: none; }
+tr:nth-child(even) td { background: var(--bg-soft); }
+.cell-best {
+  font-weight: 600;
+  color: var(--green);
+}
+.cell-worst {
+  color: #b91c1c;
+}
+.cell-note {
+  font-size: 0.75rem;
+  color: var(--text-dim);
+  font-style: italic;
+}
+.table-caption {
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  margin-top: 0.5rem;
+  line-height: 1.5;
+}
+.table-caption strong { color: var(--text-mid); }
+
+/* ─── SECTION INTRO ───────────────────────────────────── */
+.section-lead {
+  font-size: 1.08rem;
+  line-height: 1.75;
+  color: var(--text-mid);
+  margin-bottom: 1.5rem;
+  font-style: italic;
+}
+
+/* ─── METHOD GRID ─────────────────────────────────────── */
+.method-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.method-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1rem 1.15rem;
+  background: var(--bg);
+}
+.method-card-name {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 0.35rem;
+}
+.method-card-desc {
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text-mid);
+}
+.method-card.highlight {
+  border-color: var(--orange-mid);
+  background: var(--orange-soft);
+}
+.method-card.highlight .method-card-name { color: var(--orange); }
+
+/* ─── RECOMMENDATION CARDS ────────────────────────────── */
+.rec-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.rec-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.2rem;
+}
+.rec-card-when {
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 0.3rem;
+}
+.rec-card-method {
+  font-family: var(--font-sans);
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 0.4rem;
+}
+.rec-card-detail {
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--text-mid);
+}
+
+/* ─── INLINE FIGURE LABEL ─────────────────────────────── */
+.fig-label {
+  font-family: var(--font-sans);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 0.3rem;
+}
+
+/* ─── FOOTNOTE / ASIDE ────────────────────────────────── */
+.aside {
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  line-height: 1.6;
+  color: var(--text-dim);
+  border-left: 2px solid var(--border);
+  padding-left: 0.85rem;
+  margin: 1.25rem 0;
 }
 
 /* ─── RESPONSIVE ──────────────────────────────────────── */

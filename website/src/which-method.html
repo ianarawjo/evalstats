@@ -3,8 +3,13 @@
   <!-- ── SECTION: RECOMMENDATIONS ── -->
     <section id="recommendations">
         <h2>Recommendations and Defaults</h2>
-        <p class="section-lead">
-        A concise summary of the recommended defaults, organized by data type and analysis type.
+        <p>
+            Based on research and Monte Carlo simulations, we recommend the following methods for 
+            calculating confidence intervals and p-values in LLM eval contexts. 
+            These recommendations are implemented as the 
+            <code>method="auto"</code> defaults in <code>promptstats</code>, 
+            which adapt to data type and sample size based on which methods performed best in our simulations.
+            Note that the contents of this section are subject to change as gather more evidence for different situations.
         </p>
 
         <h3>By Data Type (Confidence Intervals)</h3>
@@ -150,16 +155,16 @@
     <section id="simulation">
       <h2>Simulation Study</h2>
       <p class="section-lead">
-        We ran simulation studies over eval-like distributions to compare methods head-to-head, 
+        We ran simulation studies over eval-like distributions to compare methods for calculating CIs head-to-head, 
         rather than relying solely on others' results.
       </p>
       <p>
-        The setup: rig realistic distributions, randomly sample from them, then measure how close each CI
-        method gets to the true value across repeated trials. Two estimands are tested: single-sample CIs
+        We rigged realistic distributions, randomly sampled from them, then measured how close each CI
+        method gets to the true value across repeated trials. Two estimands were tested: single-sample CIs
         (does the interval contain the true mean?) and pairwise difference CIs (does the interval contain
         the true difference?). Sample sizes: N = 10, 20, 30, 50, 100, 200. Bootstrap and Bayesian draws: 10,000. 
         Monte-Carlo trials: 2,000 per condition. Simulations are implemented in 
-        <code>simulations/sim_compare_boot.py</code>.
+        <code>simulations/</code> folder in the project repository.
       </p>
 
       <h3>Distributions Tested</h3>
@@ -372,8 +377,7 @@
         (0.952 aggregate) and <strong>Smooth Bootstrap</strong> (0.951) are both near target on average,
         while <strong>Newcombe score interval</strong> under-covers overall (0.916). But the average masks
         a severe regime issue: around N≈200+, the <code>bayes_evals</code> Bayesian paired method can fail
-        with overconfident CIs. (We ran additional simulations up to N=1000 confirming this pattern,
-        which the authors of the "Don't Use the CLT" paper may have missed as their evaluations end at N=100.
+        with overconfident CIs. (We ran additional simulations up to N=1000 confirming this pattern.
         The reason why seems to be that the importance sampling procedure becomes unstable at larger N.) 
         That makes the operational rule straightforward: Bayesian paired only below
         N=100, then Newcombe for binary pairwise comparisons, with smooth bootstrap as the strongest
@@ -400,8 +404,8 @@
 
       <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>
       <p>
-        Common wisdom says yes, but simulations can say otherwise. (GPT-5 seems convinced BCa is the go-to method,
-        for instance, and loves to suggest it.) One simulation study found:
+        Common wisdom says yes, but our simulations say otherwise. (GPT-5 seems convinced BCa is the go-to method,
+        for instance, and loves to suggest it.) One <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC6797821/">simulation study</a> found:
       </p>
       <div class="pull-quote">
         "Our simulation results revealed an outperformance of the percentile method over both BCa and
@@ -424,7 +428,7 @@
       </p>
       <p>
         <strong>Wilcoxon Signed Ranks</strong> is our recommended default for pairwise
-        comparisons. In this simulation, it is slightly conservative, consistently
+        comparisons for those adopting a NHST framework. In this simulation, it is slightly conservative, consistently
         performant across sample sizes, data types, and distributions, and does not show pathological
         behavior where Type I error is inflated above the nominal threshold
         (<code>&alpha; = 0.05</code>). Wilcoxon is a non-parametric test that 
@@ -439,7 +443,7 @@
       <p>For <a href="https://en.wikipedia.org/wiki/Multiple_comparisons_problem">multiple comparisons correction</a>, 
         we recommend the <strong>Benjamini-Hochberg</strong> procedure (<code>correction="fdr_bh"</code>), 
         which performed comparably to other methods in our simulation, but had the greatest power,
-        meaning it was most likely to avoid false negatives. 
+        meaning it was most likely to avoid false negatives, without affecting Type I error control. 
     </p>
       <div class="callout callout-warning">
         <div class="callout-label">Do not rely on NHST alone</div>

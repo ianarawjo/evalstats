@@ -322,33 +322,6 @@ pstats.print_analysis_summary(analysis)</code></pre>
           when repeated runs are present.
         </p>
       </div>
-
-      <h3>Further Reading and Related Work</h3>
-      <ul>
-        <li>
-          <a href="https://www.ncbi.nlm.nih.gov/pmc/articles/PMC6797821/" target="_blank">
-            Simulation study on bootstrap CI methods (Counsell &amp; Pek, 2019)
-          </a> — showed percentile bootstrap outperforms BCa in many practical settings.
-        </li>
-        <li>
-          Banks (1988), <em>"Some simple models of the data analysis problem,"</em>
-          <a href="https://www.jstor.org/stable/2336308" target="_blank">JSTOR</a> — early evidence
-          that smoothed (KDE-based) bootstrap outperforms alternatives for small N.
-        </li>
-        <li>
-          <a href="https://etheses.dur.ac.uk/15294/1/thesis_simkus_FINALversion.pdf" target="_blank">
-            Simkus thesis on the Banks-B bootstrap
-          </a> — argues this underappreciated method is particularly strong for small N.
-        </li>
-        <li>
-          Wilson (1927), "Probable inference, the law of succession, and statistical inference" —
-          the original Wilson score interval derivation.
-        </li>
-        <li>
-          Newcombe (1998), "Interval estimation for the difference between independent proportions" —
-          the Newcombe score interval for paired binary comparisons.
-        </li>
-      </ul>
     </section>
 
   </article>
@@ -372,22 +345,6 @@ pstats.print_analysis_summary(analysis)</code></pre>
         <ol class="toc-sub">
           <li><a href="#bootstrap">Method Overview</a></li>
           <li><a href="#bootstrap">Is BCa Actually Better?</a></li>
-        </ol>
-      </li>
-      <li>
-        <a href="#simulation">Simulation Study</a>
-        <ol class="toc-sub">
-          <li><a href="#simulation">Single-Sample</a></li>
-          <li><a href="#simulation">Pairwise</a></li>
-          <li><a href="#simulation">vs. Bayesian</a></li>
-        </ol>
-      </li>
-      <li>
-        <a href="#recommendations">Recommendations</a>
-        <ol class="toc-sub">
-          <li><a href="#recommendations">By Data Type</a></li>
-          <li><a href="#recommendations">By Analysis Type</a></li>
-          <li><a href="#recommendations">Sample Size Guidance</a></li>
         </ol>
       </li>
       <li><a href="#promptstats">promptstats</a></li>

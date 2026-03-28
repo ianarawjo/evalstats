@@ -185,7 +185,7 @@ INVESTIGATIONS = [
 ]
 
 BOOK_SVG       = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>'
-WHICH_METHOD_SVG = '<svg width="11" height="11" viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" fill="#e0e7ef"/><path d="M4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h8v1H4v-1z" fill="#3b4a6b"/><path d="M8 1v14" stroke="#3b4a6b" stroke-width="0.7"/></svg>'
+WHICH_METHOD_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#3b4a6b" stroke-width="1.5" fill="#e0e7ef"/><path d="M8 11.2v-1m0-5a2 2 0 0 1 2 2c0 1.5-2 1.5-2 3" stroke="#3b4a6b" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="12.2" r=".7" fill="#3b4a6b"/></svg>'
 PAPERS_SVG     = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>'
 PRINCIPLES_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zm0 4h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zm0 4h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zM2.5 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1zm0 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1zm0 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z"/></svg>'
 ROADMAP_SVG    = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M8 16s6-5.686 6-10A6 6 0 0 0 2 6c0 4.314 6 10 6 10zm0-7a3 3 0 1 1 0-6 3 3 0 0 1 0 6z"/></svg>'

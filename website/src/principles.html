@@ -5,12 +5,38 @@
     The purpose of this project is to identify reasonable defaults for statistical methods in the specific context of LLM evals. 
     To do that, we need to establish some principles to guide our choices and to help us navigate the complex landscape.
   </p>
-    <h2>Philosophy</h2>
-  <p>There are many different statistical philosophies to choose from. The most prominent ones are <a href="https://en.wikipedia.org/wiki/Frequentist_probability">frequentist</a> and <a href="https://en.wikipedia.org/wiki/Bayesian_statistics">Bayesian approaches</a>, but there are also variations, such as <a href="https://en.wikipedia.org/wiki/Estimation_statistics">estimation statistics</a> and <a href="https://en.wikipedia.org/wiki/Decision_theory">decision theory</a>.
-  The most well-known of these is frequentist statistics, centered around p-values and null hypothesis significance testing (NHST), as many scientific disciplines have historically relied on it.</p>
-  <p>This guide takes an estimation-first approach to stats advocated by the <a href="https://pubmed.ncbi.nlm.nih.gov/24220629/">New Statistics movement</a>, foregrounding confidence intervals (particularly bootstrapping), point estimates, effect sizes (magnitude of differences), pairwise differences, and visualization, rather than p-values which can easily mislead. 
-    That said, promptstats is ultimately frequentist and allows users to print p-values, should they wish it. It also leans into significance testing on CIs to estimate the most likely top performers among multiple candidates, for a quick summary of results.</p>
-  <p>There could be a Bayesian alternative to this guide (amid other alternative philosophies), which would change how we approach and report our evals analysis. Although promptstats uses some Bayesian methods (like <code>bayes_evals</code> to approximate CIs at low sample size for binary data), it is decidedly not a Bayesian framework. A Bayesian framework would require a complete rethinking of how promptstats quantifies and reports uncertainty. We intend to explore this mode in a future release.</p>
+  <h2>Philosophy</h2>
+  <p class="section-lead">
+    Estimation-first, conservative, non-parametric, pairwise, CI-focused, sample floor-enforcing, simulation-grounded, p-value permissive.
+  </p>
+  <p>
+    There are many different statistical philosophies to choose from. The most prominent ones are <a href="https://en.wikipedia.org/wiki/Frequentist_probability">frequentist</a> and <a href="https://en.wikipedia.org/wiki/Bayesian_statistics">Bayesian approaches</a>, but there are also variations, such as <a href="https://en.wikipedia.org/wiki/Estimation_statistics">estimation statistics</a> and <a href="https://en.wikipedia.org/wiki/Decision_theory">decision theory</a>.
+    The most well-known of these is frequentist statistics, centered around p-values and null hypothesis significance testing (NHST), as many scientific disciplines have historically relied on it.
+  </p>
+  <p>
+    This guide takes an estimation-first approach to stats advocated by the 
+    <a href="https://pubmed.ncbi.nlm.nih.gov/24220629/">New Statistics movement</a>, 
+    foregrounding confidence intervals (particularly bootstrapping), point estimates, 
+    effect sizes (magnitude of differences), pairwise differences, and visualization, 
+    rather than p-values. As many <a href="https://inria.hal.science/hal-01377894/file/fairstats-last.pdf">scientists</a> <a href="https://royalsocietypublishing.org/rsos/article/4/12/171085/93045">across</a> <a href="https://link.springer.com/article/10.1007/s10654-016-0149-3">fields</a> <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC1182327/">have</a> <a href="https://dl.acm.org/doi/abs/10.1145/2858036.2858465">recognized</a>,
+    p-values encourage dichotomous thinking and overconfidence, which is especially dangerous 
+    in the context of LLM evals, where measurements are noisy and evals often have small sample sizes.
+    That said, <code class="library">promptstats</code> does allow users to print p-values and NHST tests, should they wish it,
+    as many people are still familiar with that framework and may be requested to use it for communication with stakeholders (e.g., paper reviewers who request it).
+    To provide "at a glance" decision support, <code class="library">promptstats</code> also leans into significance testing on CIs to estimate the most 
+    likely top performers among multiple candidates.
+  </p>
+  <p>
+    There could be a Bayesian alternative to this guide (amid other alternative philosophies), 
+    which would change how we approach and report our evals analysis. 
+    The main benefit of a Bayesian approach in this context would be its support for sequential testing 
+    and combining evidence across tests, which is common in evals as developers often start with small test sets 
+    and expand them over time. Although <code class="library">promptstats</code> uses some Bayesian methods 
+    (like <a href="https://github.com/sambowyer/bayes_evals"><code>bayes_evals</code></a> 
+    to approximate CIs at low sample size for binary data), it is decidedly not a Bayesian framework. 
+    A Bayesian framework would require a complete rethinking of how <code class="library">promptstats</code> quantifies and reports uncertainty. 
+    We intend to explore this mode in a future release.
+  </p>
 
   <h2>Principles</h2>
   <p>Based on our philosophy, we establish the following principles to guide our statistical choices in the specific context of LLM evals:</p>
