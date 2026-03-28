@@ -79,9 +79,27 @@ body {
   font-family: var(--font-sans);
 }
 
+/* ─── NAV ICONS (GitHub, newsletter, dark toggle) ────── */
+.nav-icons {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+.nav-icon-link {
+  display: flex;
+  align-items: center;
+  padding: 0.3rem 0.4rem;
+  color: var(--text-dim);
+  border-radius: 6px;
+  transition: color 0.15s;
+}
+.nav-icon-link:hover { color: var(--text); }
+.nav-icon-link svg { display: block; }
+
 /* ─── DARK MODE TOGGLE ────────────────────────────────── */
 .dark-toggle {
-  margin-left: auto;
   background: none;
   border: 1px solid var(--border);
   border-radius: 6px;
