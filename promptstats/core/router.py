@@ -53,6 +53,7 @@ def analyze(
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    simultaneous_ci: bool = False,
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -130,6 +131,18 @@ def analyze(
     correction : str
         Multiple comparisons correction: ``'fdr_bh'`` (default),
         ``'holm'``, ``'bonferroni'``, or ``'none'``.
+    simultaneous_ci : bool
+        When ``True``, pairwise confidence intervals are simultaneous
+        (family-wise) rather than marginal.  Uses the studentized
+        bootstrap max-T method: all pairs share the same bootstrap
+        resamples, and the critical value *c* is the ``(1−α)`` quantile
+        of ``max_{(i,j)} |T_ij^b|`` where each ``T_ij^b`` is the
+        bootstrap statistic for pair *(i, j)* standardised by its
+        bootstrap SE.  Less conservative than Bonferroni because it
+        exploits the positive correlation between comparisons.  Only
+        applies to bootstrap-based methods; silently ignored for
+        ``'newcombe'``, ``'fisher_exact'``, ``'bayes_binary'``, and
+        ``'lmm'``.
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band in the advantage plot
         (default ``(10, 90)``).
@@ -201,7 +214,7 @@ def analyze(
             UserWarning,
             stacklevel=2,
         )
-    
+
     kwargs = dict(
         reference=reference,
         method=method,
@@ -213,6 +226,7 @@ def analyze(
         failure_threshold=failure_threshold,
         rng=rng,
         statistic=statistic,
+        simultaneous_ci=simultaneous_ci,
     )
 
     # ------------------------------------------------------------------
@@ -607,6 +621,7 @@ def _analyze_single(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
+    simultaneous_ci: bool = False,
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
     # LMM path — fit score ~ template + (1|input)
@@ -736,6 +751,7 @@ def _analyze_single(
         run_scores, labels,
         method=pairwise_method, ci=ci, n_bootstrap=n_bootstrap,
         correction=correction, rng=rng, statistic=statistic,
+        simultaneous_ci=simultaneous_ci,
     )
     mean_adv = bootstrap_point_advantage(
         run_scores, labels,
@@ -783,6 +799,7 @@ def _analyze_multi_model(
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
+    simultaneous_ci: bool = False,
 ) -> MultiModelBundle:
     kwargs = dict(
         reference=reference,
@@ -795,6 +812,7 @@ def _analyze_multi_model(
         failure_threshold=failure_threshold,
         rng=rng,
         statistic=statistic,
+        simultaneous_ci=simultaneous_ci,
     )
 
     per_model: Dict[str, AnalysisBundle] = {}

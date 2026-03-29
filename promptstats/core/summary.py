@@ -102,7 +102,7 @@ def print_analysis_summary(
         Mapping[str, MultiModelBundle],
     ],
     *,
-    top_pairwise: int = 5,
+    top_pairwise: int = None,
     line_width: int = 41,
 ) -> None:
     """Print a concise console summary of analyze() results."""
@@ -251,7 +251,7 @@ def print_pairwise_summary(
 def print_compare_summary(
     report: "CompareReport",
     *,
-    top_pairwise: int = 5,
+    top_pairwise: int = None,
     line_width: int = 41,
 ) -> None:
     """Print a focused summary for compare_prompts / compare_models results.
@@ -364,7 +364,7 @@ def _stability_emoji_label(instability: float) -> str:
 def _print_multi_model_summary(
     bundle: MultiModelBundle,
     *,
-    top_pairwise: int,
+    top_pairwise: int = None,
     line_width: int,
 ) -> None:
     _print_loud_section("Multi-Model Analysis Summary")
@@ -699,8 +699,9 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
 def _print_pairwise_section(
     bundle: AnalysisBundle,
     *,
-    top_pairwise: int,
+    top_pairwise: int = None,
     line_width: int,
+    sort: bool = True,
 ) -> None:
     """Print the pairwise comparisons block for an AnalysisBundle.
 
@@ -742,11 +743,17 @@ def _print_pairwise_section(
     if is_newcombe_pairwise or is_fisher_pairwise or is_sign_pairwise:
         pair_p_boot_col_width = max(pair_p_boot_col_width, len(p_first_header))
     _print_subsection("--- Pairwise Comparisons (lowest p-value first) ---")
-    pair_results = sorted(
-        bundle.pairwise.results.values(),
-        key=lambda r: (r.p_value, -abs(r.point_diff)),
-    )
-    max_pairs = max(0, min(top_pairwise, len(pair_results)))
+    pair_results = list(bundle.pairwise.results.values())
+    if sort:
+        pair_results = sorted(
+            pair_results,
+            key=lambda r: (r.p_value, -abs(r.point_diff)),
+        )
+    # By default, print all pairs unless top_pairwise is set
+    if top_pairwise is None:
+        max_pairs = len(pair_results)
+    else:
+        max_pairs = max(0, min(top_pairwise, len(pair_results)))
     # Friedman omnibus line (printed before the interval plot when pairs exist).
     if max_pairs > 0 and bundle.pairwise.friedman is not None:
         fr = bundle.pairwise.friedman
@@ -862,7 +869,7 @@ def _print_pairwise_section(
 def _print_bundle_summary(
     bundle: AnalysisBundle,
     *,
-    top_pairwise: int,
+    top_pairwise: int = None,
     line_width: int,
     item_singular: str = "template",
     item_plural: str = "templates",

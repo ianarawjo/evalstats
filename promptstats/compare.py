@@ -91,6 +91,7 @@ class CompareReport:
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh"
     entity_name_singular: str = "prompt"
     entity_name_plural: str = "prompts"
+    simultaneous_ci: bool = False
 
     @property
     def means(self) -> dict[str, float]:
@@ -401,6 +402,7 @@ def compare_prompts(
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     rng: Optional[np.random.Generator] = None,
+    simultaneous_ci: bool = False,
 ) -> CompareReport:
     """Compare prompt templates with bootstrapped statistical tests.
 
@@ -438,6 +440,13 @@ def compare_prompts(
         Central-tendency statistic: ``'mean'`` (default) or ``'median'``.
     rng : np.random.Generator, optional
         Random-number generator for reproducibility.
+    simultaneous_ci : bool
+        When ``True``, pairwise CIs are simultaneous (family-wise) rather
+        than marginal, using the studentized bootstrap max-T method.  Less
+        conservative than Bonferroni because it exploits the positive
+        correlation between comparisons sharing the same benchmark inputs.
+        Only supported for bootstrap-based methods; silently ignored for
+        ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``.
 
     Returns
     -------
@@ -542,6 +551,7 @@ def compare_prompts(
         statistic=statistic,
         ci=1.0-alpha,
         rng=rng,
+        simultaneous_ci=simultaneous_ci,
     )
 
     # ------------------------------------------------------------------
@@ -610,6 +620,7 @@ def compare_prompts(
         correction=correction,
         entity_name_singular="prompt",
         entity_name_plural="prompts",
+        simultaneous_ci=full_analysis.pairwise.simultaneous_ci,
     )
 
 
@@ -624,6 +635,7 @@ def compare_models(
     template_model_collapse: Literal["mean", "as_runs", "auto"] = "auto",
     template_labels: Optional[list[str]] = None,
     rng: Optional[np.random.Generator] = None,
+    simultaneous_ci: bool = False,
 ) -> CompareReport:
     """Compare models while accounting for prompt-template sensitivity.
 
@@ -771,6 +783,7 @@ def compare_models(
         ci=1.0-alpha,
         rng=rng,
         template_model_collapse=resolved_template_model_collapse,
+        simultaneous_ci=simultaneous_ci,
     )
     if not isinstance(full_analysis, MultiModelBundle):
         raise RuntimeError("Expected multi-model analysis bundle from analyze().")
@@ -831,4 +844,5 @@ def compare_models(
         correction=correction,
         entity_name_singular="model",
         entity_name_plural="models",
+        simultaneous_ci=model_analysis.pairwise.simultaneous_ci,
     )

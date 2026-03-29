@@ -32,6 +32,9 @@ from .resampling import (
     bayes_paired_diff_ci,
     is_binary_scores,
     _stat,
+    _nested_cell_mean_diffs,
+    _reduce_rows,
+    _weighted_medians_rows,
 )
 from .stats_utils import correct_pvalues
 from ..config import get_alpha_ci
@@ -369,6 +372,7 @@ class PairwiseMatrix:
     results: dict[tuple[str, str], PairedDiffResult]
     correction_method: str
     friedman: Optional[FriedmanResult] = None
+    simultaneous_ci: bool = False
 
     def get(self, a: str, b: str) -> PairedDiffResult:
         """Get the comparison result for templates a vs b."""
@@ -873,6 +877,246 @@ def _pairwise_diffs_seeded(
     )
 
 
+def _max_stat_simultaneous_cis(
+    scores: np.ndarray,
+    pairs: list[tuple[str, str]],
+    labels: list[str],
+    method: str,
+    ci: float,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"],
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Compute simultaneous CIs via the studentized bootstrap max-T method.
+
+    Uses shared resamples across all pairs so that the joint distribution of
+    the max standardized statistic naturally accounts for correlations between
+    comparisons (unlike Bonferroni, which assumes independence).
+
+    For each bootstrap replicate *b* and each pair *(i, j)*, the standardized
+    statistic is::
+
+        T_ij^b = (θ̂_ij^b − θ̂_ij) / SE_ij
+
+    where SE_ij = std({θ̂_ij^b}) over all B replicates.  The simultaneous
+    critical value *c* is the (1−α) quantile of::
+
+        M^b = max_{(i,j)} |T_ij^b|
+
+    and each simultaneous CI is [θ̂_ij − c·SE_ij, θ̂_ij + c·SE_ij].
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(N, M)`` or ``(N, M, R)``.  When ``R >= 3`` the seeded
+        nested bootstrap is used; otherwise scores are collapsed to 2-D.
+    pairs : list[tuple[str, str]]
+        All pairs for which simultaneous CIs should be computed, in the
+        canonical (label_a, label_b) storage order.
+    labels : list[str]
+        Template labels — used to map names to row indices in *scores*.
+    method : str
+        Bootstrap variant.  Supported: ``'bootstrap'``, ``'bca'``,
+        ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'auto'``
+        (treated as ``'smooth_bootstrap'``), ``'permutation'``,
+        ``'sign_test'``.  Methods that do not use bootstrap resampling
+        for CIs (``'newcombe'``, ``'fisher_exact'``, ``'bayes_binary'``,
+        ``'lmm'``) are not supported; an empty dict is returned for these.
+    ci : float
+        Desired simultaneous confidence level (e.g. 0.95).
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    rng : np.random.Generator
+    statistic : str
+        ``'mean'`` or ``'median'``.
+
+    Returns
+    -------
+    dict[tuple[str, str], tuple[float, float]]
+        Maps each pair to its ``(ci_low, ci_high)`` simultaneous CI.
+        Returns an empty dict for unsupported methods.
+    """
+    _BOOTSTRAP_COMPATIBLE = {
+        "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
+        "permutation", "sign_test", "auto",
+    }
+    # Resolve 'auto' to its concrete method
+    if method == "auto":
+        method = "smooth_bootstrap"
+
+    if method not in _BOOTSTRAP_COMPATIBLE or len(pairs) == 0:
+        return {}
+
+    k = len(pairs)
+    label_to_idx = {label: idx for idx, label in enumerate(labels)}
+    pair_indices = [(label_to_idx[a], label_to_idx[b]) for (a, b) in pairs]
+    alpha = 1.0 - ci
+
+    seeded = scores.ndim == 3 and scores.shape[2] >= 3
+
+    # ------------------------------------------------------------------
+    # Seeded path  (N, M, R) with R >= 3
+    # ------------------------------------------------------------------
+    if seeded:
+        M, R = scores.shape[1], scores.shape[2]
+
+        # Point estimates: statistic of per-input cell-mean differences.
+        point_ests = np.array([
+            _stat(scores[i].mean(axis=1) - scores[j].mean(axis=1), statistic)
+            for (i, j) in pair_indices
+        ])
+
+        boot_stats_cols: list[np.ndarray] = []
+
+        if method == "bayes_bootstrap":
+            # Shared inner run-resample indices and shared Dirichlet weights.
+            run_idx = rng.integers(0, R, size=(n_bootstrap, M, R))  # (B, M, R)
+            exp_mat = rng.exponential(1.0, size=(n_bootstrap, M))
+            outer_weights = exp_mat / exp_mat.sum(axis=1, keepdims=True)  # (B, M)
+            for (i, j) in pair_indices:
+                diffs = _nested_cell_mean_diffs(
+                    scores[i], scores[j], run_idx,
+                )  # (B, M) — no outer resampling; Dirichlet weights applied below
+                if statistic == "mean":
+                    boot_stats_cols.append(
+                        (outer_weights * diffs).sum(axis=1)
+                    )
+                else:
+                    boot_stats_cols.append(
+                        _weighted_medians_rows(diffs, outer_weights)
+                    )
+        else:
+            # Shared outer input indices and inner run indices.
+            input_idx = rng.integers(0, M, size=(n_bootstrap, M))  # (B, M)
+            run_idx = rng.integers(0, R, size=(n_bootstrap, M, R))  # (B, M, R)
+            for (i, j) in pair_indices:
+                if method == "smooth_bootstrap":
+                    from scipy.stats import gaussian_kde
+                    cell_diffs = scores[i].mean(axis=1) - scores[j].mean(axis=1)
+                    std_val = float(np.std(cell_diffs, ddof=1)) if M > 1 else 0.0
+                    h = 0.0
+                    if M >= 2 and np.isfinite(std_val) and std_val > 0:
+                        try:
+                            h = float(gaussian_kde(cell_diffs).factor * std_val)
+                        except np.linalg.LinAlgError:
+                            pass
+                    diffs = _nested_cell_mean_diffs(
+                        scores[i], scores[j], run_idx, input_idx,
+                    )  # (B, M)
+                    if h > 0.0:
+                        diffs = diffs + rng.normal(0.0, h, size=(n_bootstrap, M))
+                else:
+                    # bootstrap, bca, permutation, sign_test
+                    diffs = _nested_cell_mean_diffs(
+                        scores[i], scores[j], run_idx, input_idx,
+                    )  # (B, M)
+                boot_stats_cols.append(_reduce_rows(diffs, statistic))  # (B,)
+
+        boot_stats = np.column_stack(boot_stats_cols)  # (B, k)
+
+    # ------------------------------------------------------------------
+    # Non-seeded path  (N, M) or (N, M, R) with R < 3 collapsed to 2-D
+    # ------------------------------------------------------------------
+    else:
+        scores_2d = scores.mean(axis=2) if scores.ndim == 3 else scores  # (N, M)
+        M = scores_2d.shape[1]
+
+        # Per-pair diffs stacked: (k, M).
+        # diffs_mat[:, input_idx] uses numpy fancy indexing to produce
+        # shape (k, B, M), then .mean(axis=2).T → (B, k).
+        diffs_mat = np.stack(
+            [scores_2d[i] - scores_2d[j] for (i, j) in pair_indices],
+            axis=0,
+        )  # (k, M)
+
+        if statistic == "mean":
+            point_ests = diffs_mat.mean(axis=1)  # (k,)
+        else:
+            point_ests = np.median(diffs_mat, axis=1)  # (k,)
+
+        if method == "bayes_bootstrap":
+            # Shared Dirichlet weights over the M inputs.
+            exp_mat = rng.exponential(1.0, size=(n_bootstrap, M))
+            weights = exp_mat / exp_mat.sum(axis=1, keepdims=True)  # (B, M)
+            if statistic == "mean":
+                # (B, M) @ (M, k) → (B, k)
+                boot_stats = weights @ diffs_mat.T
+            else:
+                boot_stats = np.empty((n_bootstrap, k))
+                for p_idx in range(k):
+                    vals = np.broadcast_to(diffs_mat[p_idx], (n_bootstrap, M))
+                    boot_stats[:, p_idx] = _weighted_medians_rows(
+                        np.ascontiguousarray(vals), weights,
+                    )
+
+        elif method == "smooth_bootstrap":
+            from scipy.stats import gaussian_kde
+            # Per-pair KDE bandwidth; shared input indices.
+            bandwidths = np.zeros(k)
+            for p_idx in range(k):
+                d = diffs_mat[p_idx]
+                std_val = float(np.std(d, ddof=1)) if M > 1 else 0.0
+                if M >= 2 and np.isfinite(std_val) and std_val > 0:
+                    try:
+                        bandwidths[p_idx] = float(gaussian_kde(d).factor * std_val)
+                    except np.linalg.LinAlgError:
+                        pass
+
+            input_idx = rng.integers(0, M, size=(n_bootstrap, M))
+            # diffs_mat[:, input_idx] → (k, B, M)
+            resampled = diffs_mat[:, input_idx]
+            # Per-pair noise: (k, 1, 1) * (k, B, M)
+            noise = (
+                rng.normal(0.0, 1.0, size=(k, n_bootstrap, M))
+                * bandwidths[:, np.newaxis, np.newaxis]
+            )
+            resampled = resampled + noise  # (k, B, M)
+            if statistic == "mean":
+                boot_stats = resampled.mean(axis=2).T   # (B, k)
+            else:
+                boot_stats = np.median(resampled, axis=2).T  # (B, k)
+
+        else:
+            # bootstrap, bca, permutation, sign_test — shared integer indices.
+            input_idx = rng.integers(0, M, size=(n_bootstrap, M))
+            resampled = diffs_mat[:, input_idx]  # (k, B, M)
+            if statistic == "mean":
+                boot_stats = resampled.mean(axis=2).T   # (B, k)
+            else:
+                boot_stats = np.median(resampled, axis=2).T  # (B, k)
+
+    # ------------------------------------------------------------------
+    # Studentized max-T critical value and simultaneous CIs
+    # ------------------------------------------------------------------
+    se = np.std(boot_stats, axis=0, ddof=1)  # (k,)
+    valid = se > 1e-12
+
+    if not np.any(valid):
+        # All SEs degenerate; simultaneous CI cannot be computed.
+        return {}
+
+    se_safe = np.where(valid, se, 1.0)
+    T = (boot_stats - point_ests[np.newaxis, :]) / se_safe[np.newaxis, :]  # (B, k)
+
+    # Max over valid pairs only; quantile gives the (1−α) simultaneous critical value.
+    M_b = np.max(np.abs(T[:, valid]), axis=1)  # (B,)
+    c = float(np.quantile(M_b, ci))
+
+    sim_cis: dict[tuple[str, str], tuple[float, float]] = {}
+    for p_idx, pair in enumerate(pairs):
+        if valid[p_idx]:
+            half = c * se[p_idx]
+            sim_cis[pair] = (
+                float(point_ests[p_idx] - half),
+                float(point_ests[p_idx] + half),
+            )
+        else:
+            # SE is zero (constant differences); CI degenerates to a point.
+            sim_cis[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
+
+    return sim_cis
+
+
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
@@ -882,6 +1126,7 @@ def all_pairwise(
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
+    simultaneous_ci: bool = False,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -906,6 +1151,18 @@ def all_pairwise(
     statistic : str
         Point-estimate and bootstrap statistic: ``'median'`` (default) or
         ``'mean'``.
+    simultaneous_ci : bool
+        When ``True``, replace individual pairwise CIs with simultaneous
+        CIs computed via the studentized bootstrap max-T method.  All
+        pairs share the same bootstrap resamples so the joint distribution
+        of the max standardised statistic accounts for the correlation
+        between comparisons.  Each simultaneous CI is
+        ``[θ̂_ij ± c · SE_ij]`` where *c* is the ``(1−α)`` quantile of
+        ``max_{(i,j)} |T_ij^b|`` and ``SE_ij`` is the per-pair bootstrap
+        SE.  Less conservative than Bonferroni because it exploits the
+        positive correlation induced by the shared benchmark inputs.
+        Only supported for bootstrap-based methods; silently ignored for
+        ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``.
 
     Returns
     -------
@@ -960,6 +1217,39 @@ def all_pairwise(
                 wilcoxon_p=float(adj_wsr) if adj_wsr is not None else None,
             )
 
+    # Simultaneous CIs via studentized bootstrap max-T.
+    applied_simultaneous_ci = False
+    if simultaneous_ci and len(pairs) > 0:
+        sim_cis = _max_stat_simultaneous_cis(
+            scores=scores,
+            pairs=pairs,
+            labels=labels,
+            method=method,
+            ci=ci,
+            n_bootstrap=n_bootstrap,
+            rng=rng,
+            statistic=statistic,
+        )
+        if sim_cis:
+            applied_simultaneous_ci = True
+            for pair, (ci_low, ci_high) in sim_cis.items():
+                r = results[pair]
+                results[pair] = PairedDiffResult(
+                    template_a=r.template_a,
+                    template_b=r.template_b,
+                    point_diff=r.point_diff,
+                    std_diff=r.std_diff,
+                    ci_low=ci_low,
+                    ci_high=ci_high,
+                    p_value=r.p_value,
+                    test_method=f"{r.test_method} (simultaneous CI)",
+                    n_inputs=r.n_inputs,
+                    per_input_diffs=r.per_input_diffs,
+                    n_runs=r.n_runs,
+                    statistic=r.statistic,
+                    wilcoxon_p=r.wilcoxon_p,
+                )
+
     # Friedman omnibus + Nemenyi post-hoc (only meaningful for k >= 2).
     friedman: Optional[FriedmanResult] = None
     if len(labels) >= 2:
@@ -968,7 +1258,13 @@ def all_pairwise(
         except Exception:
             pass
 
-    return PairwiseMatrix(labels=labels, results=results, correction_method=correction, friedman=friedman)
+    return PairwiseMatrix(
+        labels=labels,
+        results=results,
+        correction_method=correction,
+        friedman=friedman,
+        simultaneous_ci=applied_simultaneous_ci,
+    )
 
 
 def vs_baseline(
