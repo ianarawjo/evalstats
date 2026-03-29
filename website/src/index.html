@@ -169,7 +169,7 @@
           However, in our larger-N runs, the <code>bayes_evals</code> Bayesian paired method breaks down around
           N≈200+, producing overconfident intervals that can be dangerously wrong.
           That is why <code>promptstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
-          Newcombe for speed and better accuracy at larger N.
+          bootstrap for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
         </p>
       </div>
 
@@ -268,7 +268,7 @@
           <div class="method-card-name">Newcombe Score Interval</div>
           <div class="method-card-desc">
             The pairwise (paired-difference) analogue of the Wilson interval. The gold standard for
-            comparing two proportions on paired binary data. In our simulations, this is the
+            comparing two proportions on paired binary data. In our simulations, this is a
             safer high-N fallback for binary pairwise comparisons when Bayesian paired becomes unstable.
           </div>
         </div>
@@ -278,7 +278,7 @@
         Smooth bootstrap remains the default in <code>promptstats</code> for numeric and interval data;
         for binary data, <code>promptstats</code> uses Wilson for single-sample CIs and
         Bayesian paired only for pairwise comparisons with <code>N &lt; 100</code>, then switches to
-        Newcombe at <code>N &ge; 100</code> for speed and better accuracy.
+        bootstrap at <code>N &ge; 100</code> for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
         <strong>Boundary note:</strong> for bounded data (0–1 floats, Likert scales), the Gaussian
         perturbation is applied without clamping — individual resampled values may stray slightly outside
         the data range. This does not materially affect coverage on the <em>mean</em> statistic, which
@@ -322,10 +322,10 @@ pstats.print_analysis_summary(analysis)</code></pre>
           <strong>smooth bootstrap</strong> for numeric/interval data.
           For binary data, it uses <strong>Wilson</strong> for point-advantage CIs;
           for pairwise comparisons it uses <strong>Bayesian paired</strong> when
-          <code>N &lt; 100</code>, and <strong>Newcombe</strong> when <code>N &ge; 100</code>
-          for speed and better accuracy at larger N.
-          Multiple pairwise comparisons are corrected with the Benjamini-Hochberg method
-          (<code>fdr_bh</code>) by default.
+          <code>N &lt; 100</code>, and <strong>bootstrap</strong> when <code>N &ge; 100</code>
+          for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
+          Multiple pairwise comparisons for p-values are corrected with the Benjamini-Hochberg method
+          (<code>fdr_bh</code>) by default; for bootstrap-based methods, simultaneous CIs are used with the studentized maxT method.
           Nested (two-level) bootstrap is used automatically for bootstrap-based analyses
           when repeated runs are present.
         </p>

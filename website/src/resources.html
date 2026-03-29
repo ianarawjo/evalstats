@@ -730,6 +730,32 @@
 
         <div class="paper-entry">
           <div class="paper-entry-title">
+            <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">
+              Post-selection confidence bounds for prediction performance
+            </a>
+          </div>
+          <div class="paper-entry-meta">Rink, P. &amp; Brannath, W. &mdash; Machine Learning, 2025</div>
+          <p class="paper-entry-summary">
+            When you evaluate N models and report the performance of the best one, the confidence
+            interval for that model is no longer valid: the selection step introduces optimism
+            bias that standard CIs don&rsquo;t account for. This paper constructs valid lower confidence
+            bounds that explicitly condition on the selection procedure, combining bootstrap tilting
+            with a max-T multiplicity correction to cover all candidate models simultaneously.
+            The result is a principled answer to a problem common in LLM eval workflows: reporting
+            the performance of the prompt or model that ranked highest in a sweep, without
+            acknowledging that the top rank is itself a noisy outcome. (Although we 
+            arrived at the need to use max-T correction on CIs independently, this paper provides a rigorous 
+            theoretical and simulation-backed foundation for that choice in an ML context.)
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">selection bias</span>
+            <span class="paper-tag">post-selection inference</span>
+            <span class="paper-tag">simultaneous CIs</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
             <a href="https://arxiv.org/abs/1807.03341" target="_blank">
               Troubling Trends in Machine Learning Scholarship
             </a>

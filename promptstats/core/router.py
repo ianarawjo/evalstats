@@ -695,25 +695,24 @@ def _analyze_single(
     # Auto-detect binary (0/1) evaluation data when method='auto'.
     # For binary data with N < 100: use the Bayesian paired model (Bowyer 2025)
     # for pairwise comparisons and Bayesian Beta posterior for advantage CIs.
-    # For binary data with N >= 100: switch to Newcombe score intervals for
-    # pairwise and Wilson for advantage (computationally lighter, accurate).
+    # For binary data with N >= 100: use bootstrap for pairwise comparisons (enables simultaneous_cis)
+    # and Wilson for advantage (computationally lighter, accurate).
     # Otherwise resolve 'auto' to its concrete bootstrap method so that
     # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
     advantage_method = method
     if method == "auto":
-        from .resampling import is_binary_scores
+        from .resampling import is_binary_scores, resolve_resampling_method
         if is_binary_scores(run_scores):
             M = run_scores.shape[1]
             # Single-sample advantage CIs always use Wilson for binary data.
-            # Pairwise: Bayesian model for N < 100, Newcombe for N >= 100.
+            # Pairwise: Bayesian model for N < 100, bootstrap for N >= 100 (enables simultaneous_cis).
             advantage_method = "wilson"
             if M < 100:
                 pairwise_method = "bayes_binary"
             else:
-                pairwise_method = "newcombe"
+                pairwise_method = resolve_resampling_method("bootstrap", M)
         else:
-            from .resampling import resolve_resampling_method
             pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
             advantage_method = pairwise_method
     elif method == "bayes_binary":

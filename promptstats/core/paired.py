@@ -938,19 +938,24 @@ def _max_stat_simultaneous_cis(
     """
     _BOOTSTRAP_COMPATIBLE = {
         "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
-        "permutation", "sign_test", "auto",
+        "permutation", "auto",
     }
     # Resolve 'auto' to its concrete method
     if method == "auto":
         method = "smooth_bootstrap"
 
     if method not in _BOOTSTRAP_COMPATIBLE or len(pairs) == 0:
+        import warnings
+        warnings.warn(
+            f"simultaneous_ci is not available for method '{method}'. "
+            "No simultaneous CIs will be computed. "
+            "To enable simultaneous CIs, use a bootstrap-compatible method such as 'smooth_bootstrap', 'bootstrap', or 'bayes_bootstrap'."
+        )
         return {}
 
     k = len(pairs)
     label_to_idx = {label: idx for idx, label in enumerate(labels)}
     pair_indices = [(label_to_idx[a], label_to_idx[b]) for (a, b) in pairs]
-    alpha = 1.0 - ci
 
     seeded = scores.ndim == 3 and scores.shape[2] >= 3
 
@@ -1018,6 +1023,43 @@ def _max_stat_simultaneous_cis(
     # Non-seeded path  (N, M) or (N, M, R) with R < 3 collapsed to 2-D
     # ------------------------------------------------------------------
     else:
+        def _batch_resample(
+            diffs_mat: np.ndarray,
+            input_idx: np.ndarray,
+            statistic: str,
+            batch_size: int = 128,
+            bandwidths: Optional[np.ndarray] = None,
+            noise_rng: Optional[np.random.Generator] = None,
+        ) -> np.ndarray:
+            """Memory-efficient joint resampling for Max-T statistics.
+
+            Processes bootstrap resamples in batches so that only a slice of
+            shape (batch, M, k) is live at once rather than the full (B, M, k).
+            When ``bandwidths`` and ``noise_rng`` are supplied, KDE noise is
+            added per-batch before aggregation (smooth bootstrap path).
+            """
+            M_mat = diffs_mat.T  # (M, k) — transposed for cache-friendly row access
+            B, M = input_idx.shape
+            k = diffs_mat.shape[0]
+            out = np.empty((B, k), dtype=diffs_mat.dtype)
+
+            for start in range(0, B, batch_size):
+                end = min(start + batch_size, B)
+                batch = end - start
+                # (batch, M, k)
+                chunk = M_mat[input_idx[start:end]]
+                if bandwidths is not None and noise_rng is not None:
+                    chunk = chunk + (
+                        noise_rng.normal(0.0, 1.0, size=(batch, M, k))
+                        * bandwidths[np.newaxis, np.newaxis, :]
+                    )
+                if statistic == "mean":
+                    out[start:end] = chunk.mean(axis=1)
+                else:
+                    out[start:end] = np.median(chunk, axis=1)
+
+            return out
+
         scores_2d = scores.mean(axis=2) if scores.ndim == 3 else scores  # (N, M)
         M = scores_2d.shape[1]
 
@@ -1063,27 +1105,16 @@ def _max_stat_simultaneous_cis(
                         pass
 
             input_idx = rng.integers(0, M, size=(n_bootstrap, M))
-            # diffs_mat[:, input_idx] → (k, B, M)
-            resampled = diffs_mat[:, input_idx]
-            # Per-pair noise: (k, 1, 1) * (k, B, M)
-            noise = (
-                rng.normal(0.0, 1.0, size=(k, n_bootstrap, M))
-                * bandwidths[:, np.newaxis, np.newaxis]
-            )
-            resampled = resampled + noise  # (k, B, M)
-            if statistic == "mean":
-                boot_stats = resampled.mean(axis=2).T   # (B, k)
-            else:
-                boot_stats = np.median(resampled, axis=2).T  # (B, k)
+            boot_stats = _batch_resample(
+                diffs_mat, input_idx, statistic,
+                bandwidths=bandwidths, noise_rng=rng,
+            )  # (B, k)
 
         else:
             # bootstrap, bca, permutation, sign_test — shared integer indices.
             input_idx = rng.integers(0, M, size=(n_bootstrap, M))
-            resampled = diffs_mat[:, input_idx]  # (k, B, M)
-            if statistic == "mean":
-                boot_stats = resampled.mean(axis=2).T   # (B, k)
-            else:
-                boot_stats = np.median(resampled, axis=2).T  # (B, k)
+            # _batch_resample already computes the per-pair statistic: (B, k)
+            boot_stats = _batch_resample(diffs_mat, input_idx, statistic)  # (B, k)
 
     # ------------------------------------------------------------------
     # Studentized max-T critical value and simultaneous CIs

@@ -16,12 +16,11 @@
         <div class="rec-cards">
         <div class="rec-card">
             <div class="rec-card-when">Binary (0 / 1)</div>
-            <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Newcombe (N≥100)</div>
+            <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Bootstrap (N≥100)</div>
             <div class="rec-card-detail">
-            Wilson score interval for single-sample CIs.
+            Wilson score interval for point estimate CIs.
             For pairwise binary comparisons, use Bayesian paired only below N=100;
-            switch to Newcombe at N=100 and above due to high-N instability in <code>bayes_evals</code>
-            (including severe overconfidence around N≈200+).
+            switch to bootstrap at N=100 and above for safety and CI multi-comparisons correction (simultaneous CIs) with the studentized maxT method.
             </div>
         </div>
         <div class="rec-card">
@@ -29,7 +28,9 @@
             <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
             <div class="rec-card-detail">
             Highest coverage across all N tested. Slightly conservative (wider CIs), which is
-            preferred in safety-critical eval contexts.
+            preferred in safety-critical eval contexts. (Bootstrap also allows us to easily 
+            calculate simultaneous CIs for multiple comparisons, which is a common scenario in prompt and model selection,
+            without relying upon overly conservative Bonferroni correction.)
             </div>
         </div>
         <div class="rec-card">
@@ -37,7 +38,7 @@
             <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
             <div class="rec-card-detail">
             Same story as continuous. Smooth bootstrap handles the discrete nature of Likert
-            scales more gracefully than percentile or BCa.
+            scales more gracefully than percentile or BCa. 
             </div>
         </div>
         <div class="rec-card">
@@ -77,8 +78,8 @@
             <tr>
                 <td>Pairwise comparison (A vs B)</td>
                 <td>Binary</td>
-                <td><strong>Bayesian Paired (N &lt; 100), Newcombe (N &ge; 100)</strong></td>
-                <td>Bayesian paired is strong at small N but can fail around N≈200+; switch at N=100 for speed and better accuracy</td>
+                <td><strong>Bayesian Paired (N &lt; 100), Bootstrap (N &ge; 100)</strong></td>
+                <td>Bayesian paired is strong at small N but can fail around N≈200+; switch at N=100 to bootstrap for safety and multi-comparisons correction</td>
             </tr>
             <tr>
                 <td>Pairwise comparison (A vs B)</td>
@@ -353,7 +354,7 @@
           Averaged across conditions, paired Bayes looks excellent (0.952), but this hides a critical failure mode:
           around N≈200 and above, the <code>bayes_evals</code> paired method can collapse into dramatically
           overconfident intervals. So the practical recommendation is conditional: use Bayesian paired only
-          at smaller sample sizes, then switch to Newcombe by N=100. Among bootstrap methods, Smooth bootstrap
+          at smaller sample sizes, then switch to regular bootstrap around N=100. Among bootstrap methods, Smooth bootstrap
           remains the most conservative and best-calibrated general option, while BCa under-covers most severely (0.902).
           Smooth boostrap's performance for binary data is especially impressive given that 
           it is not designed for that data type and technically "wrong" to run it there, as one
