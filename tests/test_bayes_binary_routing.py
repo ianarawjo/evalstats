@@ -9,12 +9,12 @@ Covers:
   - all_pairwise and vs_baseline with method='bayes_binary'
   - analyze() auto routing:
       · binary N < 100  → bayes_binary pairwise, Wilson advantage (n_bootstrap=0)
-      · binary N >= 100 → newcombe pairwise,    Wilson advantage (n_bootstrap=0)
+      · binary N >= 100 → bootstrap pairwise,    Wilson advantage (n_bootstrap=0)
       · non-binary      → smooth_bootstrap, n_bootstrap > 0
   - analyze() explicit method='bayes_binary':
       · binary data   → bayes_binary pairwise, Wilson advantage
       · non-binary    → ValueError
-  - Boundary: N=99 → bayes_binary, N=100 → newcombe
+  - Boundary: N=99 → bayes_binary, N=100 → bootstrap
   - resolved_method on AnalysisBundle reflects pairwise method
   - compare_prompts routing for binary data (auto and explicit bayes_binary)
   - compare_models routing for binary data
@@ -302,13 +302,13 @@ def test_analyze_auto_binary_small_n_advantage_uses_wilson():
     assert bundle.point_advantage.n_bootstrap == 0
 
 
-def test_analyze_auto_binary_large_n_pairwise_uses_newcombe():
-    """N=120 >= 100 → pairwise should use Newcombe."""
+def test_analyze_auto_binary_large_n_pairwise_uses_bootstrap():
+    """N=120 >= 100 → pairwise should use bootstrap."""
     scores = _binary_scores(2, 120, [0.7, 0.5], seed=32)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(32))
     pair = bundle.pairwise.get("A", "B")
-    assert "newcombe" in pair.test_method.lower()
+    assert "bootstrap" in pair.test_method.lower()
 
 
 def test_analyze_auto_binary_large_n_advantage_uses_wilson():
@@ -338,12 +338,12 @@ def test_analyze_auto_binary_resolved_method_is_bayes_binary():
     assert bundle.resolved_method == "bayes_binary"
 
 
-def test_analyze_auto_binary_resolved_method_is_newcombe_for_large_n():
-    """resolved_method on the bundle should be 'newcombe' for N >= 100."""
+def test_analyze_auto_binary_resolved_method_is_bootstrap_for_large_n():
+    """resolved_method on the bundle should be 'bootstrap' for N >= 100."""
     scores = _binary_scores(2, 100, [0.7, 0.5], seed=36)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(36))
-    assert bundle.resolved_method == "newcombe"
+    assert bundle.resolved_method == "bootstrap"
 
 
 # ---------------------------------------------------------------------------
@@ -359,13 +359,13 @@ def test_analyze_auto_boundary_99_uses_bayes_binary():
     assert bundle.resolved_method == "bayes_binary"
 
 
-def test_analyze_auto_boundary_100_uses_newcombe():
+def test_analyze_auto_boundary_100_uses_bootstrap():
     scores = _binary_scores(2, 100, [0.6, 0.4], seed=41)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(41))
     pair = bundle.pairwise.get("A", "B")
-    assert "newcombe" in pair.test_method.lower()
-    assert bundle.resolved_method == "newcombe"
+    assert "bootstrap" in pair.test_method.lower()
+    assert bundle.resolved_method == "bootstrap"
 
 
 # ---------------------------------------------------------------------------
@@ -462,8 +462,8 @@ def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
     )
 
 
-def test_compare_prompts_auto_binary_large_n_pairwise_newcombe():
-    """compare_prompts auto with binary N>=100 → pairwise uses Newcombe."""
+def test_compare_prompts_auto_binary_large_n_pairwise_bootstrap():
+    """compare_prompts auto with binary N>=100 → pairwise uses bootstrap."""
     rng = np.random.default_rng(63)
     scores = {
         "A": rng.binomial(1, 0.7, 110).astype(float).tolist(),
@@ -471,7 +471,7 @@ def test_compare_prompts_auto_binary_large_n_pairwise_newcombe():
     }
     report = ps.compare_prompts(scores, method="auto", rng=_rng(63))
     pair = report.pairwise.get("A", "B")
-    assert "newcombe" in pair.test_method.lower()
+    assert "bootstrap" in pair.test_method.lower()
 
 
 def test_compare_prompts_auto_binary_large_n_advantage_is_wilson():
@@ -546,8 +546,8 @@ def test_compare_models_auto_binary_small_n_advantage_is_wilson():
     assert report.full_analysis.model_level.point_advantage.n_bootstrap == 0
 
 
-def test_compare_models_auto_binary_large_n_pairwise_newcombe():
-    """compare_models auto with binary N>=100 → pairwise uses Newcombe."""
+def test_compare_models_auto_binary_large_n_pairwise_bootstrap():
+    """compare_models auto with binary N>=100 → pairwise uses bootstrap."""
     rng = np.random.default_rng(72)
     scores = {
         "model_a": rng.binomial(1, 0.7, 110).astype(float).tolist(),
@@ -555,7 +555,7 @@ def test_compare_models_auto_binary_large_n_pairwise_newcombe():
     }
     report = ps.compare_models(scores, method="auto", rng=_rng(72))
     pair = report.pairwise.get("model_a", "model_b")
-    assert "newcombe" in pair.test_method.lower()
+    assert "bootstrap" in pair.test_method.lower()
 
 
 def test_compare_models_auto_binary_entity_stats_match_wilson():

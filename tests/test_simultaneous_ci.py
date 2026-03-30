@@ -11,7 +11,12 @@ import numpy as np
 import pytest
 
 import promptstats as ps
-from promptstats.core.paired import _max_stat_simultaneous_cis, all_pairwise
+from promptstats.core.paired import (
+    _max_stat_simultaneous_cis,
+    _bonferroni_simultaneous_cis,
+    _simultaneous_cis_router,
+    all_pairwise,
+)
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -427,7 +432,8 @@ def test_all_pairwise_simultaneous_ci_false_by_default():
 
 
 def test_all_pairwise_test_method_string_annotated():
-    """test_method on each PairedDiffResult should contain '(simultaneous CI)'."""
+    """test_method on each PairedDiffResult should contain 'simultaneous CI'
+    and indicate which variant was used ('max-T' for bootstrap methods)."""
     scores = _rng(11).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
 
@@ -437,10 +443,14 @@ def test_all_pairwise_test_method_string_annotated():
         simultaneous_ci=True,
     )
 
+    assert mat.simultaneous_ci_method == "max_t"
     for a, b in [("a", "b"), ("a", "c"), ("b", "c")]:
-        assert "(simultaneous CI)" in mat.get(a, b).test_method, (
-            f"test_method for ({a},{b}) missing '(simultaneous CI)': "
-            f"{mat.get(a, b).test_method!r}"
+        tm = mat.get(a, b).test_method
+        assert "simultaneous CI" in tm, (
+            f"test_method for ({a},{b}) missing 'simultaneous CI': {tm!r}"
+        )
+        assert "max-T" in tm, (
+            f"test_method for ({a},{b}) missing 'max-T' variant label: {tm!r}"
         )
 
 
@@ -509,22 +519,26 @@ def test_compare_models_simultaneous_ci_propagates():
     assert report.simultaneous_ci is True
 
 
-def test_unsupported_method_via_compare_prompts_silently_ignored():
-    """When method='newcombe' (binary), simultaneous_ci is silently ignored:
-    the flag should be False on the returned report."""
+def test_unsupported_method_falls_back_to_bonferroni():
+    """When method='newcombe' (no bootstrap CIs), simultaneous_ci=True should
+    fall back to Bonferroni t-intervals rather than silently ignoring the flag.
+    The report should have simultaneous_ci=True and method='bonferroni'."""
     rng = _rng(40)
     scores = {
         "A": [int(x > 0.5) for x in rng.random(50)],
         "B": [int(x > 0.5) for x in rng.random(50)],
         "C": [int(x > 0.5) for x in rng.random(50)],
     }
-    # Should not raise
     report = ps.compare_prompts(
         scores, method="newcombe", simultaneous_ci=True,
         rng=_rng(40), n_bootstrap=200,
     )
-    # No bootstrap resamples for simultaneous CIs with newcombe
-    assert report.simultaneous_ci is False
+    assert report.simultaneous_ci is True
+    assert report.pairwise.simultaneous_ci_method == "bonferroni"
+    for a, b in [("A", "B"), ("A", "C"), ("B", "C")]:
+        tm = report.pairwise.get(a, b).test_method
+        assert "simultaneous CI" in tm
+        assert "Bonferroni" in tm
 
 
 def test_seeded_compare_prompts_simultaneous_ci():
@@ -542,4 +556,183 @@ def test_seeded_compare_prompts_simultaneous_ci():
     for a, b in [("A", "B"), ("A", "C"), ("B", "C")]:
         lo, hi = report.pairwise.get(a, b).ci_low, report.pairwise.get(a, b).ci_high
         assert lo <= hi and np.isfinite(lo) and np.isfinite(hi)
-        assert "(simultaneous CI)" in report.pairwise.get(a, b).test_method
+        assert "simultaneous CI" in report.pairwise.get(a, b).test_method
+
+
+# ---------------------------------------------------------------------------
+# Section 5 — Bonferroni fallback and router
+# ---------------------------------------------------------------------------
+
+def _make_results(scores_2d, labels, **kw):
+    """Helper: run all_pairwise and return results dict."""
+    mat = all_pairwise(scores_2d, labels, n_bootstrap=200, rng=_rng(0), **kw)
+    return mat.results, [(labels[i], labels[j])
+                         for i in range(len(labels))
+                         for j in range(i + 1, len(labels))]
+
+
+def test_bonferroni_returns_all_pairs():
+    """_bonferroni_simultaneous_cis returns a CI for every requested pair."""
+    scores = _rng(60).normal(0, 1, (3, 40))
+    labels = ["x", "y", "z"]
+    results, pairs = _make_results(scores, labels)
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    assert set(cis.keys()) == set(pairs)
+
+
+def test_bonferroni_bounds_finite_and_ordered():
+    """All Bonferroni CI bounds must be finite and lo <= hi."""
+    scores = _rng(61).normal(0, 1, (3, 40))
+    labels = ["x", "y", "z"]
+    results, pairs = _make_results(scores, labels)
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    for pair, (lo, hi) in cis.items():
+        assert np.isfinite(lo) and np.isfinite(hi), f"{pair}: non-finite bounds"
+        assert lo <= hi, f"{pair}: lo > hi"
+
+
+def test_bonferroni_wider_than_individual():
+    """Bonferroni simultaneous CIs must be at least as wide as individual CIs
+    (since they are corrected for multiple comparisons)."""
+    scores = _rng(62).normal(0, 1, (3, 50))
+    labels = ["x", "y", "z"]
+    results, pairs = _make_results(scores, labels)
+    cis_bonf = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    for pair in pairs:
+        r = results[pair]
+        ind_width = r.ci_high - r.ci_low
+        bonf_width = cis_bonf[pair][1] - cis_bonf[pair][0]
+        assert bonf_width >= ind_width - 1e-9, (
+            f"{pair}: Bonferroni width {bonf_width:.4f} < individual {ind_width:.4f}"
+        )
+
+
+def test_bonferroni_single_pair_equals_individual_t():
+    """With k=1, Bonferroni adjustment is a no-op, so the CI matches a
+    standard paired t-interval at the same level."""
+    from scipy import stats as scipy_stats
+    scores = _rng(63).normal(0, 1, (2, 40))
+    labels = ["a", "b"]
+    results, pairs = _make_results(scores, labels)
+    assert len(pairs) == 1
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    lo, hi = cis[pairs[0]]
+
+    diffs = results[pairs[0]].per_input_diffs
+    M = len(diffs)
+    se = float(np.std(diffs, ddof=1)) / np.sqrt(M)
+    t_crit = scipy_stats.t.ppf(0.975, df=M - 1)
+    expected_lo = float(np.mean(diffs)) - t_crit * se
+    expected_hi = float(np.mean(diffs)) + t_crit * se
+    np.testing.assert_allclose(lo, expected_lo, atol=1e-9)
+    np.testing.assert_allclose(hi, expected_hi, atol=1e-9)
+
+
+def test_bonferroni_empty_pairs_returns_empty():
+    assert _bonferroni_simultaneous_cis({}, [], ci=0.95) == {}
+
+
+def test_bonferroni_degenerate_zero_variance():
+    """When all diffs are identical, SE=0; CI should degenerate to a point."""
+    scores = np.ones((2, 30))
+    labels = ["a", "b"]
+    results, pairs = _make_results(scores, labels)
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    lo, hi = cis[pairs[0]]
+    assert lo == hi
+
+
+# --- Router tests ---
+
+def test_router_returns_max_stat_for_bootstrap():
+    """Router should choose 'max_t' for a bootstrap-compatible method."""
+    scores = _rng(70).normal(0, 1, (3, 40))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    cis, used = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method="bootstrap", ci=0.95, n_bootstrap=300,
+        rng=_rng(70), statistic="mean",
+    )
+    assert used == "max_t"
+    assert len(cis) == len(pairs)
+
+
+def test_router_falls_back_to_bonferroni_for_newcombe():
+    """Router should fall back to 'bonferroni' for analytical methods."""
+    # Use continuous scores but force method='newcombe' to trigger the fallback.
+    scores = _rng(71).normal(0, 1, (3, 40))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    cis, used = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method="newcombe", ci=0.95, n_bootstrap=300,
+        rng=_rng(71), statistic="mean",
+    )
+    assert used == "bonferroni"
+    assert len(cis) == len(pairs)
+    for pair, (lo, hi) in cis.items():
+        assert np.isfinite(lo) and np.isfinite(hi)
+        assert lo <= hi
+
+
+@pytest.mark.parametrize("method", ["bootstrap", "bca", "smooth_bootstrap",
+                                     "bayes_bootstrap", "permutation", "sign_test", "auto"])
+def test_router_max_stat_for_all_bootstrap_methods(method):
+    """All bootstrap-compatible methods should route to 'max_stat'."""
+    scores = _rng(72).normal(0, 1, (3, 35))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    _, used = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method=method, ci=0.95, n_bootstrap=200,
+        rng=_rng(72), statistic="mean",
+    )
+    assert used == "max_t", f"Expected max_t for method={method!r}, got {used!r}"
+
+
+def test_simultaneous_ci_method_field_max_t():
+    """PairwiseMatrix.simultaneous_ci_method is 'max_t' for bootstrap methods."""
+    scores = _rng(80).normal(0, 1, (3, 30))
+    labels = ["a", "b", "c"]
+    mat = all_pairwise(
+        scores, labels, method="bootstrap", n_bootstrap=200,
+        rng=_rng(80), simultaneous_ci=True, correction="none",
+    )
+    assert mat.simultaneous_ci is True
+    assert mat.simultaneous_ci_method == "max_t"
+
+
+def test_simultaneous_ci_method_field_bonferroni():
+    """PairwiseMatrix.simultaneous_ci_method is 'bonferroni' for analytical methods."""
+    scores = (_rng(81).random((3, 40)) > 0.5).astype(float)
+    labels = ["a", "b", "c"]
+    mat = all_pairwise(
+        scores, labels, method="newcombe", n_bootstrap=200,
+        rng=_rng(81), simultaneous_ci=True, correction="none",
+    )
+    assert mat.simultaneous_ci is True
+    assert mat.simultaneous_ci_method == "bonferroni"
+
+
+def test_simultaneous_ci_method_field_none_when_not_requested():
+    """PairwiseMatrix.simultaneous_ci_method is None when simultaneous_ci=False."""
+    scores = _rng(82).normal(0, 1, (3, 30))
+    labels = ["a", "b", "c"]
+    mat = all_pairwise(scores, labels, n_bootstrap=100, rng=_rng(82))
+    assert mat.simultaneous_ci is False
+    assert mat.simultaneous_ci_method is None
+
+
+def test_bonferroni_annotation_in_test_method():
+    """PairedDiffResult.test_method should contain 'Bonferroni' for the fallback."""
+    scores = (_rng(83).random((3, 40)) > 0.5).astype(float)
+    labels = ["a", "b", "c"]
+    mat = all_pairwise(
+        scores, labels, method="newcombe", n_bootstrap=200,
+        rng=_rng(83), simultaneous_ci=True, correction="none",
+    )
+    for a, b in [("a", "b"), ("a", "c"), ("b", "c")]:
+        tm = mat.get(a, b).test_method
+        assert "simultaneous CI" in tm, f"Missing 'simultaneous CI' in {tm!r}"
+        assert "Bonferroni" in tm, f"Missing 'Bonferroni' in {tm!r}"

@@ -373,6 +373,7 @@ class PairwiseMatrix:
     correction_method: str
     friedman: Optional[FriedmanResult] = None
     simultaneous_ci: bool = False
+    simultaneous_ci_method: Optional[str] = None  # 'max_t' or 'bonferroni'; None if not applied
 
     def get(self, a: str, b: str) -> PairedDiffResult:
         """Get the comparison result for templates a vs b."""
@@ -938,19 +939,13 @@ def _max_stat_simultaneous_cis(
     """
     _BOOTSTRAP_COMPATIBLE = {
         "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
-        "permutation", "auto",
+        "permutation", "sign_test", "auto",
     }
     # Resolve 'auto' to its concrete method
     if method == "auto":
         method = "smooth_bootstrap"
 
     if method not in _BOOTSTRAP_COMPATIBLE or len(pairs) == 0:
-        import warnings
-        warnings.warn(
-            f"simultaneous_ci is not available for method '{method}'. "
-            "No simultaneous CIs will be computed. "
-            "To enable simultaneous CIs, use a bootstrap-compatible method such as 'smooth_bootstrap', 'bootstrap', or 'bayes_bootstrap'."
-        )
         return {}
 
     k = len(pairs)
@@ -1148,6 +1143,105 @@ def _max_stat_simultaneous_cis(
     return sim_cis
 
 
+def _bonferroni_simultaneous_cis(
+    results: dict[tuple[str, str], "PairedDiffResult"],
+    pairs: list[tuple[str, str]],
+    ci: float,
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Bonferroni-corrected simultaneous CIs via per-pair paired t-intervals.
+
+    Each CI is recomputed at the Bonferroni-adjusted confidence level
+    ``1 − (1−ci)/k`` (where *k* = number of pairs) using the
+    ``per_input_diffs`` already stored in each :class:`PairedDiffResult`.
+    This makes the result independent of the original CI method, so it
+    works as a universal fallback for non-bootstrap methods such as
+    ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``.
+
+    Returns
+    -------
+    dict[tuple[str, str], tuple[float, float]]
+        Maps each pair to its ``(ci_low, ci_high)`` simultaneous CI.
+        Returns an empty dict when *pairs* is empty.
+    """
+    from scipy import stats as _scipy_stats
+
+    k = len(pairs)
+    if k == 0:
+        return {}
+
+    alpha_adj = (1.0 - ci) / k  # per-comparison alpha after Bonferroni
+
+    sim_cis: dict[tuple[str, str], tuple[float, float]] = {}
+    for pair in pairs:
+        r = results[pair]
+        diffs = r.per_input_diffs
+        M = len(diffs)
+        if M < 2:
+            sim_cis[pair] = (float(r.point_diff), float(r.point_diff))
+            continue
+        se = float(np.std(diffs, ddof=1)) / np.sqrt(M)
+        if se < 1e-12:
+            sim_cis[pair] = (float(r.point_diff), float(r.point_diff))
+            continue
+        t_crit = float(_scipy_stats.t.ppf(1.0 - alpha_adj / 2.0, df=M - 1))
+        half = t_crit * se
+        sim_cis[pair] = (float(r.point_diff - half), float(r.point_diff + half))
+
+    return sim_cis
+
+
+# Methods for which _max_stat_simultaneous_cis can produce bootstrap CIs.
+_SIMULTANEOUS_CI_BOOTSTRAP_METHODS = {
+    "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
+    "permutation", "sign_test", "auto",
+}
+
+
+def _simultaneous_cis_router(
+    scores: np.ndarray,
+    results: dict[tuple[str, str], "PairedDiffResult"],
+    pairs: list[tuple[str, str]],
+    labels: list[str],
+    method: str,
+    ci: float,
+    n_bootstrap: int,
+    rng: "np.random.Generator",
+    statistic: str,
+) -> tuple[dict[tuple[str, str], tuple[float, float]], str]:
+    """Route simultaneous CI computation to the best available method.
+
+    Prefers the studentized bootstrap max-T method
+    (:func:`_max_stat_simultaneous_cis`) when the chosen test *method* is
+    bootstrap-compatible.  Falls back to Bonferroni t-intervals
+    (:func:`_bonferroni_simultaneous_cis`) for analytical methods such as
+    ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``, and also
+    as a safety net if the bootstrap path returns an empty result.
+
+    Returns
+    -------
+    tuple[dict, str]
+        ``(cis, method_used)`` where *method_used* is ``'max_t'`` or
+        ``'bonferroni'``.
+    """
+    if method in _SIMULTANEOUS_CI_BOOTSTRAP_METHODS:
+        cis = _max_stat_simultaneous_cis(
+            scores=scores,
+            pairs=pairs,
+            labels=labels,
+            method=method,
+            ci=ci,
+            n_bootstrap=n_bootstrap,
+            rng=rng,
+            statistic=statistic,
+        )
+        if cis:
+            return cis, "max_t"
+
+    # Fallback: Bonferroni t-intervals work for any method.
+    cis = _bonferroni_simultaneous_cis(results=results, pairs=pairs, ci=ci)
+    return cis, "bonferroni"
+
+
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
@@ -1184,16 +1278,23 @@ def all_pairwise(
         ``'mean'``.
     simultaneous_ci : bool
         When ``True``, replace individual pairwise CIs with simultaneous
-        CIs computed via the studentized bootstrap max-T method.  All
-        pairs share the same bootstrap resamples so the joint distribution
-        of the max standardised statistic accounts for the correlation
-        between comparisons.  Each simultaneous CI is
-        ``[θ̂_ij ± c · SE_ij]`` where *c* is the ``(1−α)`` quantile of
-        ``max_{(i,j)} |T_ij^b|`` and ``SE_ij`` is the per-pair bootstrap
-        SE.  Less conservative than Bonferroni because it exploits the
-        positive correlation induced by the shared benchmark inputs.
-        Only supported for bootstrap-based methods; silently ignored for
-        ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``.
+        (family-wise) CIs.  The method is chosen automatically:
+
+        * **Bootstrap-compatible methods** (``'bootstrap'``, ``'bca'``,
+          ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'permutation'``,
+          ``'sign_test'``, ``'auto'``): studentized bootstrap max-T
+          (Romano–Wolf).  All pairs share the same bootstrap resamples so
+          the joint distribution of ``max_{(i,j)} |T_ij^b|`` accounts for
+          the correlation between comparisons.  Less conservative than
+          Bonferroni.
+        * **Analytical methods** (``'newcombe'``, ``'fisher_exact'``,
+          ``'bayes_binary'``): Bonferroni t-intervals at the
+          ``1 − (1−α)/k`` level, computed from ``per_input_diffs``.
+
+        The method actually used is recorded in
+        :attr:`PairwiseMatrix.simultaneous_ci_method` (``'max_stat'`` or
+        ``'bonferroni'``) and annotated in each result's ``test_method``
+        string.
 
     Returns
     -------
@@ -1248,11 +1349,13 @@ def all_pairwise(
                 wilcoxon_p=float(adj_wsr) if adj_wsr is not None else None,
             )
 
-    # Simultaneous CIs via studentized bootstrap max-T.
+    # Simultaneous CIs: bootstrap max-T when possible, Bonferroni otherwise.
     applied_simultaneous_ci = False
+    applied_simultaneous_ci_method: Optional[str] = None
     if simultaneous_ci and len(pairs) > 0:
-        sim_cis = _max_stat_simultaneous_cis(
+        sim_cis, sim_method = _simultaneous_cis_router(
             scores=scores,
+            results=results,
             pairs=pairs,
             labels=labels,
             method=method,
@@ -1263,6 +1366,12 @@ def all_pairwise(
         )
         if sim_cis:
             applied_simultaneous_ci = True
+            applied_simultaneous_ci_method = sim_method
+            ci_label = (
+                "simultaneous CI (max-T)"
+                if sim_method == "max_t"
+                else "simultaneous CI (Bonferroni)"
+            )
             for pair, (ci_low, ci_high) in sim_cis.items():
                 r = results[pair]
                 results[pair] = PairedDiffResult(
@@ -1273,7 +1382,7 @@ def all_pairwise(
                     ci_low=ci_low,
                     ci_high=ci_high,
                     p_value=r.p_value,
-                    test_method=f"{r.test_method} (simultaneous CI)",
+                    test_method=f"{r.test_method} ({ci_label})",
                     n_inputs=r.n_inputs,
                     per_input_diffs=r.per_input_diffs,
                     n_runs=r.n_runs,
@@ -1295,6 +1404,7 @@ def all_pairwise(
         correction_method=correction,
         friedman=friedman,
         simultaneous_ci=applied_simultaneous_ci,
+        simultaneous_ci_method=applied_simultaneous_ci_method,
     )
 
 

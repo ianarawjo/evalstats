@@ -399,8 +399,8 @@ def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
     assert bundle.point_advantage.n_bootstrap == 0
 
 
-def test_analyze_auto_detects_binary_and_uses_newcombe_for_large_n():
-    """For binary data with N >= 100, auto should use newcombe pairwise."""
+def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
+    """For binary data with N >= 100, auto should use bootstrap pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 2
     m_inputs = 120  # >= 100 threshold
@@ -411,9 +411,9 @@ def test_analyze_auto_detects_binary_and_uses_newcombe_for_large_n():
     result_obj = _make_benchmark(scores, ["low", "high"])
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
-    # Pairwise comparisons should use Newcombe for N >= 100
+    # Pairwise comparisons should use bootstrap for N >= 100
     pair = bundle.pairwise.get("low", "high")
-    assert "newcombe" in pair.test_method
+    assert "bootstrap" in pair.test_method
 
     # Advantage CIs should have n_bootstrap=0 (Wilson, no bootstrap)
     assert bundle.point_advantage.n_bootstrap == 0

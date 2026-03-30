@@ -91,7 +91,8 @@
                 <td>All pairwise comparisons (k templates)</td>
                 <td>Any</td>
                 <td>As above + <strong>multi-comparisons correction</strong></td>
-                <td>We recommend the Benjamini-Hochberg procedure (<code>correction="fdr_bh"</code>).</td>
+                <td>We recommend the max-T resampling procedure (<code>simultaneous_ci=True</code> will use max-T if the method is also bootstrap-based).
+                There is a <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w">precedent</a> for this in the ML literature.</td>
             </tr>
             <tr>
                 <td>Hierarchical data (multi-run)</td>
