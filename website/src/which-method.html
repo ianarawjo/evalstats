@@ -12,15 +12,16 @@
             Note that the contents of this section are subject to change as gather more evidence for different situations.
         </p>
 
-        <h3>By Data Type (Confidence Intervals)</h3>
+        <h3>Methods to Compute Confidence Intervals (By Data Type)</h3>
         <div class="rec-cards">
         <div class="rec-card">
             <div class="rec-card-when">Binary (0 / 1)</div>
             <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Bootstrap (N≥100)</div>
             <div class="rec-card-detail">
             Wilson score interval for point estimate CIs.
-            For pairwise binary comparisons, use Bayesian paired only below N=100;
-            switch to bootstrap at N=100 and above for safety and CI multi-comparisons correction (simultaneous CIs) with the studentized maxT method.
+            For pairwise binary comparisons, use Bayesian paired from <a href="https://github.com/sambowyer/bayes_evals" target="_blank"><code>bayes_evals</code></a> only below N=100;
+            switch to bootstrap at N=100 and above for safety and CI multi-comparisons correction (simultaneous CIs) with the studentized maxT method. (Warning:
+            around N≈200+, the paired method in <code>bayes_evals</code> collapses, hence the switch.)
             </div>
         </div>
         <div class="rec-card">
@@ -154,6 +155,26 @@
         <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
         <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
         <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals begin to become reliable.</p>
+    </section>
+
+    <section id="simultaneous-cis">
+      <h2>Simultaneous Confidence Intervals for Multiple Comparisons</h2>
+        <p>
+          When comparing multiple prompts or models, it is common to run multiple pairwise comparisons. In these cases, controlling the family-wise error rate (FWER) is essential to avoid spurious findings. The <strong>max-T resampling procedure</strong> is a well-established method in genomics and neuroscience for constructing <strong>simultaneous confidence intervals</strong> (CIs) that jointly cover all comparisons, rather than treating each CI in isolation (basically, it widens the CIs to ensure the alpha level is maintained across all comparisons). It also has very few assumptions, allowing for robust inference even when candidates are correlated. Despite its power and flexibility, max-T is virtually unknown in LLM evaluation and ML contexts.
+        </p>
+
+        <div class="callout callout-info">
+        <div class="callout-label">What is max-T?</div>
+        <p>
+          The max-T procedure works by resampling the data (e.g., via bootstrap), computing the test statistic (such as the difference in means) for all pairs in each resample, and then recording the maximum absolute value of the test statistics across all comparisons for each resample. The distribution of these maxima is then used to set CI bounds that guarantee the desired coverage <em>simultaneously</em> for all comparisons, not just marginally. This approach is less conservative than Bonferroni correction, yet provides strong control over false positives.
+        </p>
+        </div>
+        <p>
+          <code>promptstats</code> uses the max-T procedure by default whenever you output multiple pairwise comparisons with bootstrapped CIs. This ensures that the reported intervals account for the increased uncertainty from making many comparisons at once. For consistency, <code>promptstats</code> also applies the max-T correction to p-values when users request them, so that both CIs and p-values are corrected in the same principled way.
+        </p>
+        <p>
+          The max-T method is recommended by <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">Rink & Brannath, 2025</a>, a recent ML paper on multiple comparisons correction when comparing many candidate models that may be correlated. For more foundational background, see the <a href="resources.html#methods-used-in-promptstats">Methods Used in promptstats</a> and <a href="resources.html#statistical-pitfalls-in-ml">Statistical Pitfalls in ML</a> sections of the Resources page.
+        </p>
     </section>
   
     <!-- ── SECTION: SIMULATION ── -->
