@@ -423,12 +423,12 @@ def test_all_pairwise_simultaneous_ci_flag_true():
     assert mat.simultaneous_ci is True
 
 
-def test_all_pairwise_simultaneous_ci_false_by_default():
-    """PairwiseMatrix.simultaneous_ci defaults to False."""
+def test_all_pairwise_simultaneous_ci_true_by_default():
+    """PairwiseMatrix.simultaneous_ci defaults to True."""
     scores = _rng(10).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
     mat = all_pairwise(scores, labels, n_bootstrap=100, rng=_rng(10))
-    assert mat.simultaneous_ci is False
+    assert mat.simultaneous_ci is True
 
 
 def test_all_pairwise_test_method_string_annotated():
@@ -499,10 +499,10 @@ def test_compare_prompts_simultaneous_ci_propagates():
         assert lo <= hi and np.isfinite(lo) and np.isfinite(hi)
 
 
-def test_compare_prompts_simultaneous_ci_false_by_default():
+def test_compare_prompts_simultaneous_ci_true_by_default():
     scores = {"A": [0.7, 0.8, 0.6], "B": [0.65, 0.75, 0.55]}
     report = ps.compare_prompts(scores, rng=_rng(0), n_bootstrap=100)
-    assert report.simultaneous_ci is False
+    assert report.simultaneous_ci is True
 
 
 def test_compare_models_simultaneous_ci_propagates():
@@ -719,7 +719,7 @@ def test_simultaneous_ci_method_field_none_when_not_requested():
     """PairwiseMatrix.simultaneous_ci_method is None when simultaneous_ci=False."""
     scores = _rng(82).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
-    mat = all_pairwise(scores, labels, n_bootstrap=100, rng=_rng(82))
+    mat = all_pairwise(scores, labels, n_bootstrap=100, rng=_rng(82), simultaneous_ci=False)
     assert mat.simultaneous_ci is False
     assert mat.simultaneous_ci_method is None
 

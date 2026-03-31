@@ -91,7 +91,7 @@ class CompareReport:
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh"
     entity_name_singular: str = "prompt"
     entity_name_plural: str = "prompts"
-    simultaneous_ci: bool = False
+    simultaneous_ci: bool = True
 
     @property
     def means(self) -> dict[str, float]:
@@ -402,7 +402,7 @@ def compare_prompts(
     method: CompareMethod = "auto",
     statistic: Literal["mean", "median"] = "mean",
     rng: Optional[np.random.Generator] = None,
-    simultaneous_ci: bool = False,
+    simultaneous_ci: bool = True,
 ) -> CompareReport:
     """Compare prompt templates with bootstrapped statistical tests.
 
@@ -442,11 +442,9 @@ def compare_prompts(
         Random-number generator for reproducibility.
     simultaneous_ci : bool
         When ``True``, pairwise CIs are simultaneous (family-wise) rather
-        than marginal, using the studentized bootstrap max-T method.  Less
-        conservative than Bonferroni because it exploits the positive
-        correlation between comparisons sharing the same benchmark inputs.
-        Only supported for bootstrap-based methods; silently ignored for
-        ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``.
+        than marginal. If a bootstrap method, this uses the studentized 
+        bootstrap max-T method, which is less conservative than Bonferroni.
+        For other methods like Newcombe, Bonferroni is used.
 
     Returns
     -------
@@ -635,7 +633,7 @@ def compare_models(
     template_model_collapse: Literal["mean", "as_runs", "auto"] = "auto",
     template_labels: Optional[list[str]] = None,
     rng: Optional[np.random.Generator] = None,
-    simultaneous_ci: bool = False,
+    simultaneous_ci: bool = True,
 ) -> CompareReport:
     """Compare models while accounting for prompt-template sensitivity.
 

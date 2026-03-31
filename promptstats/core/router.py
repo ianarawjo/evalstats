@@ -53,7 +53,7 @@ def analyze(
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
-    simultaneous_ci: bool = False,
+    simultaneous_ci: bool = True,
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -132,17 +132,10 @@ def analyze(
         Multiple comparisons correction: ``'fdr_bh'`` (default),
         ``'holm'``, ``'bonferroni'``, or ``'none'``.
     simultaneous_ci : bool
-        When ``True``, pairwise confidence intervals are simultaneous
-        (family-wise) rather than marginal.  Uses the studentized
-        bootstrap max-T method: all pairs share the same bootstrap
-        resamples, and the critical value *c* is the ``(1−α)`` quantile
-        of ``max_{(i,j)} |T_ij^b|`` where each ``T_ij^b`` is the
-        bootstrap statistic for pair *(i, j)* standardised by its
-        bootstrap SE.  Less conservative than Bonferroni because it
-        exploits the positive correlation between comparisons.  Only
-        applies to bootstrap-based methods; silently ignored for
-        ``'newcombe'``, ``'fisher_exact'``, ``'bayes_binary'``, and
-        ``'lmm'``.
+        When ``True``, pairwise CIs are simultaneous (family-wise) rather
+        than marginal. If a bootstrap method, this uses the studentized 
+        bootstrap max-T method, which is less conservative than Bonferroni,
+        For other methods like Newcombe, Bonferroni is used.
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band in the advantage plot
         (default ``(10, 90)``).
@@ -621,7 +614,7 @@ def _analyze_single(
     failure_threshold: Optional[float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
-    simultaneous_ci: bool = False,
+    simultaneous_ci: bool = True,
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
     # LMM path — fit score ~ template + (1|input)
@@ -798,7 +791,7 @@ def _analyze_multi_model(
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
-    simultaneous_ci: bool = False,
+    simultaneous_ci: bool = True,
 ) -> MultiModelBundle:
     kwargs = dict(
         reference=reference,

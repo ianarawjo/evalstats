@@ -280,11 +280,18 @@ def print_compare_summary(
     )
     print()
 
+    _print_mean_advantage(
+        bundle,
+        item_singular=report.entity_name_singular,
+        line_width=line_width,
+    )
+    print()
     _print_pairwise_section(
         bundle,
         top_pairwise=top_pairwise,
         line_width=line_width,
     )
+    print()
     _print_executive_summary(bundle, item_singular=report.entity_name_singular)
 
 
@@ -483,10 +490,10 @@ def _print_multi_model_summary(
     ma_low = -ma_max_abs
     ma_high = ma_max_abs
     print()
-    _print_subsection(f"--- {stat_label} Advantage: All {n_show} (reference={ma.reference}) ---")
+    _print_subsection(f"--- {stat_label} Advantage: All {n_show} ---")
     print(
         f"  axis: [{ma_low:+.3f}, {ma_high:+.3f}]  "
-        f"(· spread, ─ CI, ● {stat_label.lower()}, │ zero)  "
+        f"(· spread, ─ CI, ● {stat_label.lower()}, │ grand mean)  "
         f"spread percentiles = ({low_p:g}, {high_p:g})"
     )
     print(
@@ -742,7 +749,7 @@ def _print_pairwise_section(
         p_first_header = "p (boot)"
     if is_newcombe_pairwise or is_fisher_pairwise or is_sign_pairwise:
         pair_p_boot_col_width = max(pair_p_boot_col_width, len(p_first_header))
-    _print_subsection("--- Pairwise Comparisons (lowest p-value first) ---")
+    _print_subsection(f"--- Pairwise Comparisons ({first_result.test_method}) ---")
     pair_results = list(bundle.pairwise.results.values())
     if sort:
         pair_results = sorted(
@@ -866,6 +873,82 @@ def _print_pairwise_section(
         )
 
 
+def _print_mean_advantage(
+    bundle: "AnalysisBundle",
+    *,
+    item_singular: str = "template",
+    line_width: int,
+    template_col_width: int = 24,
+) -> None:
+    """Print the Mean/Median Advantage interval-plot table for an AnalysisBundle."""
+    item_singular_title = item_singular.capitalize()
+    stat_label = bundle.point_advantage.statistic.capitalize()
+    is_wilson_adv = bundle.point_advantage.n_bootstrap == 0
+    _adv_ci_note = "Wilson CIs" if is_wilson_adv else "Bootstrap CIs"
+    _print_subsection(f"--- {stat_label} Advantage ({_adv_ci_note}) ---")
+    low_p, high_p = bundle.point_advantage.spread_percentiles
+    ma = bundle.point_advantage
+    ma_max_abs = max(
+        1e-12,
+        float(
+            np.max(
+                np.abs(
+                    np.concatenate(
+                        [
+                            ma.point_advantages,
+                            ma.bootstrap_ci_low,
+                            ma.bootstrap_ci_high,
+                            ma.spread_low,
+                            ma.spread_high,
+                        ]
+                    )
+                )
+            )
+        ),
+    )
+    ma_low = -ma_max_abs
+    ma_high = ma_max_abs
+    print(f"  axis: [{ma_low:+.3f}, {ma_high:+.3f}]  (· spread, ─ CI, ● {stat_label.lower()}, │ grand mean)  spread percentiles = ({low_p:g}, {high_p:g})")
+    print(
+        f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
+        f"{'CI Low':>9s} {'CI High':>9s} {'Spread Lo':>10s} {'Spread Hi':>10s}"
+    )
+    if ma.reference == "grand_mean":
+        ref_offset = float(np.mean(bundle.robustness.mean))
+    else:
+        try:
+            ref_idx = ma.labels.index(ma.reference)
+            ref_offset = float(bundle.robustness.mean[ref_idx])
+        except ValueError:
+            ref_offset = 0.0
+    for i, label in enumerate(ma.labels):
+        template_label = _truncate_label(label, template_col_width)
+        line = _ascii_interval_line(
+            mean=float(ma.point_advantages[i]),
+            ci_low=float(ma.bootstrap_ci_low[i]),
+            ci_high=float(ma.bootstrap_ci_high[i]),
+            spread_low=float(ma.spread_low[i]),
+            spread_high=float(ma.spread_high[i]),
+            axis_low=ma_low,
+            axis_high=ma_high,
+            width=line_width,
+        )
+        abs_point = float(ma.point_advantages[i]) + ref_offset
+        abs_ci_low = float(ma.bootstrap_ci_low[i]) + ref_offset
+        abs_ci_high = float(ma.bootstrap_ci_high[i]) + ref_offset
+        abs_spread_low = float(ma.spread_low[i]) + ref_offset
+        abs_spread_high = float(ma.spread_high[i]) + ref_offset
+        print(
+            f"  {template_label:<{template_col_width}s} "
+            f"{line:<{line_width}s} "
+            f"{abs_point:>7.3f} "
+            f"{abs_ci_low:>8.3f} "
+            f"{abs_ci_high:>8.3f} "
+            f"{abs_spread_low:>9.3f} "
+            f"{abs_spread_high:>9.3f}"
+        )
+
+
 def _print_bundle_summary(
     bundle: AnalysisBundle,
     *,
@@ -916,58 +999,12 @@ def _print_bundle_summary(
     print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
     print()
 
-    stat_label = bundle.point_advantage.statistic.capitalize()
-    is_wilson_adv = bundle.point_advantage.n_bootstrap == 0
-    _adv_ci_note = "Wilson CIs" if is_wilson_adv else "Bootstrap CIs"
-    _print_subsection(f"--- {stat_label} Advantage (reference={bundle.point_advantage.reference}, {_adv_ci_note}) ---")
-    low_p, high_p = bundle.point_advantage.spread_percentiles
-    ma = bundle.point_advantage
-    ma_max_abs = max(
-        1e-12,
-        float(
-            np.max(
-                np.abs(
-                    np.concatenate(
-                        [
-                            ma.point_advantages,
-                            ma.bootstrap_ci_low,
-                            ma.bootstrap_ci_high,
-                            ma.spread_low,
-                            ma.spread_high,
-                        ]
-                    )
-                )
-            )
-        ),
+    _print_mean_advantage(
+        bundle,
+        item_singular=item_singular,
+        line_width=line_width,
+        template_col_width=template_col_width,
     )
-    ma_low = -ma_max_abs
-    ma_high = ma_max_abs
-    print(f"  axis: [{ma_low:+.3f}, {ma_high:+.3f}]  (· spread, ─ CI, ● {stat_label.lower()}, │ zero)  spread percentiles = ({low_p:g}, {high_p:g})")
-    print(
-        f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
-        f"{'CI Low':>9s} {'CI High':>9s} {'Spread Lo':>10s} {'Spread Hi':>10s}"
-    )
-    for i, label in enumerate(bundle.point_advantage.labels):
-        template_label = _truncate_label(label, template_col_width)
-        line = _ascii_interval_line(
-            mean=float(bundle.point_advantage.point_advantages[i]),
-            ci_low=float(bundle.point_advantage.bootstrap_ci_low[i]),
-            ci_high=float(bundle.point_advantage.bootstrap_ci_high[i]),
-            spread_low=float(bundle.point_advantage.spread_low[i]),
-            spread_high=float(bundle.point_advantage.spread_high[i]),
-            axis_low=ma_low,
-            axis_high=ma_high,
-            width=line_width,
-        )
-        print(
-            f"  {template_label:<{template_col_width}s} "
-            f"{line:<{line_width}s} "
-            f"{bundle.point_advantage.point_advantages[i]:>+7.3f} "
-            f"{bundle.point_advantage.bootstrap_ci_low[i]:>+8.3f} "
-            f"{bundle.point_advantage.bootstrap_ci_high[i]:>+8.3f} "
-            f"{bundle.point_advantage.spread_low[i]:>+9.3f} "
-            f"{bundle.point_advantage.spread_high[i]:>+9.3f}"
-        )
     print()
 
     _print_pairwise_section(bundle, top_pairwise=top_pairwise, line_width=line_width)

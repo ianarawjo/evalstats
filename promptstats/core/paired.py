@@ -372,7 +372,7 @@ class PairwiseMatrix:
     results: dict[tuple[str, str], PairedDiffResult]
     correction_method: str
     friedman: Optional[FriedmanResult] = None
-    simultaneous_ci: bool = False
+    simultaneous_ci: bool = True
     simultaneous_ci_method: Optional[str] = None  # 'max_t' or 'bonferroni'; None if not applied
 
     def get(self, a: str, b: str) -> PairedDiffResult:
@@ -1251,7 +1251,7 @@ def all_pairwise(
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
-    simultaneous_ci: bool = False,
+    simultaneous_ci: bool = True,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -1286,7 +1286,7 @@ def all_pairwise(
           (Romano–Wolf).  All pairs share the same bootstrap resamples so
           the joint distribution of ``max_{(i,j)} |T_ij^b|`` accounts for
           the correlation between comparisons.  Less conservative than
-          Bonferroni.
+          Bonferroni and widely used in genomics for situations with many correlated tests. 
         * **Analytical methods** (``'newcombe'``, ``'fisher_exact'``,
           ``'bayes_binary'``): Bonferroni t-intervals at the
           ``1 − (1−α)/k`` level, computed from ``per_input_diffs``.
