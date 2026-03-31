@@ -432,8 +432,9 @@ def test_all_pairwise_simultaneous_ci_true_by_default():
 
 
 def test_all_pairwise_test_method_string_annotated():
-    """test_method on each PairedDiffResult should contain 'simultaneous CI'
-    and indicate which variant was used ('max-T' for bootstrap methods)."""
+    """PairwiseMatrix.simultaneous_ci_method should record the variant used
+    ('max_t' for bootstrap methods); the CI annotation is no longer baked into
+    each PairedDiffResult.test_method."""
     scores = _rng(11).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
 
@@ -444,14 +445,6 @@ def test_all_pairwise_test_method_string_annotated():
     )
 
     assert mat.simultaneous_ci_method == "max_t"
-    for a, b in [("a", "b"), ("a", "c"), ("b", "c")]:
-        tm = mat.get(a, b).test_method
-        assert "simultaneous CI" in tm, (
-            f"test_method for ({a},{b}) missing 'simultaneous CI': {tm!r}"
-        )
-        assert "max-T" in tm, (
-            f"test_method for ({a},{b}) missing 'max-T' variant label: {tm!r}"
-        )
 
 
 def test_all_pairwise_p_values_are_max_t_with_simultaneous_ci():
@@ -532,10 +525,6 @@ def test_unsupported_method_falls_back_to_bonferroni():
     )
     assert report.simultaneous_ci is True
     assert report.pairwise.simultaneous_ci_method == "bonferroni"
-    for a, b in [("A", "B"), ("A", "C"), ("B", "C")]:
-        tm = report.pairwise.get(a, b).test_method
-        assert "simultaneous CI" in tm
-        assert "Bonferroni" in tm
 
 
 def test_seeded_compare_prompts_simultaneous_ci():
@@ -550,10 +539,10 @@ def test_seeded_compare_prompts_simultaneous_ci():
         scores, simultaneous_ci=True, rng=_rng(50), n_bootstrap=300,
     )
     assert report.simultaneous_ci is True
+    assert report.pairwise.simultaneous_ci_method == "max_t"
     for a, b in [("A", "B"), ("A", "C"), ("B", "C")]:
         lo, hi = report.pairwise.get(a, b).ci_low, report.pairwise.get(a, b).ci_high
         assert lo <= hi and np.isfinite(lo) and np.isfinite(hi)
-        assert "simultaneous CI" in report.pairwise.get(a, b).test_method
 
 
 # ---------------------------------------------------------------------------
@@ -722,14 +711,11 @@ def test_simultaneous_ci_method_field_none_when_not_requested():
 
 
 def test_bonferroni_annotation_in_test_method():
-    """PairedDiffResult.test_method should contain 'Bonferroni' for the fallback."""
+    """PairwiseMatrix.simultaneous_ci_method should be 'bonferroni' for the fallback."""
     scores = (_rng(83).random((3, 40)) > 0.5).astype(float)
     labels = ["a", "b", "c"]
     mat = all_pairwise(
         scores, labels, method="newcombe", n_bootstrap=200,
         rng=_rng(83), simultaneous_ci=True, correction="none",
     )
-    for a, b in [("a", "b"), ("a", "c"), ("b", "c")]:
-        tm = mat.get(a, b).test_method
-        assert "simultaneous CI" in tm, f"Missing 'simultaneous CI' in {tm!r}"
-        assert "Bonferroni" in tm, f"Missing 'Bonferroni' in {tm!r}"
+    assert mat.simultaneous_ci_method == "bonferroni"

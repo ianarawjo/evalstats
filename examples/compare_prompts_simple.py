@@ -25,7 +25,6 @@ scores_dict = {
 report = pstats.compare_prompts(
     scores_dict,
     statistic="mean",
-    correction="holm",
     n_bootstrap=2_000,
     rng=np.random.default_rng(42),
 )

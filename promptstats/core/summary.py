@@ -308,8 +308,7 @@ def print_compare_summary(
         f"{n} {report.entity_name_plural} | "
         f"{n_inputs} inputs | "
         f"method={report.method} | "
-        f"correction={report.correction} | "
-        f"CI={ci_pct}%"
+        f"{ci_pct}% confidence intervals (CI)"
     )
     print()
 
@@ -677,7 +676,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
 
     _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
     _cross_ci_header = (
-        "Wilson CI" if cross.point_advantage.n_bootstrap == 0 else "Bootstrap CI"
+        "Wilson CI" if cross.point_advantage.n_bootstrap == 0 else "CI"
     )
     header = (
         f"  {'Model':<{model_w}s}"
@@ -816,7 +815,16 @@ def _print_pairwise_section(
 
     pair_p_col_width = max(10, len(p_col_header)) if p_col_header else 0
 
-    _print_subsection(f"--- Pairwise Comparisons ({first_result.test_method}) ---")
+    _pairwise_header_method = first_result.test_method
+    corr = bundle.pairwise.correction_method
+    if eff_p_source is not None and corr and corr != "none":
+        _pairwise_header_method += f" ({corr}-corrected p-values)"
+    sim_ci_method = bundle.pairwise.simultaneous_ci_method
+    if sim_ci_method == "max_t":
+        _pairwise_header_method += " (simultaneous CIs computed with max-T)"
+    elif sim_ci_method == "bonferroni":
+        _pairwise_header_method += " (simultaneous CIs computed with Bonferroni)"
+    _print_subsection(f"--- Pairwise Comparisons ({_pairwise_header_method}) ---")
     pair_results = list(bundle.pairwise.results.values())
     if sort:
         pair_results = sorted(
@@ -1875,7 +1883,7 @@ def _print_critical_difference_groups(
     if clear_winner is not None:
         print()
         print(
-            f"  {_BRIGHT_GREEN}-> Statistically distinguishable, clear winner:{_RESET} "
+            f"  {_BRIGHT_GREEN}-> Evidence suggests a clear best option:{_RESET} "
             f"'{_BOLD}{_BRIGHT_GREEN}{clear_winner}{_RESET}'"
         )
 
@@ -1948,7 +1956,7 @@ def _exec_verdict(
     group_1 = [l for l in labels_sorted if label_to_group.get(l) == "#1"]
     others = [l for l in group_1 if l != label]
     if not others:
-        return "Clear winner"
+        return "Likely best"
     if len(others) == 1:
         return f"Tied with {_truncate_label(others[0], 20)} as best"
     return f"Tied with {len(others)} others as best"
@@ -2004,7 +2012,7 @@ def _print_executive_summary(
     stab_w = 16
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
-    ci_col_header = "Wilson CI" if bundle.point_advantage.n_bootstrap == 0 else "Bootstrap CI"
+    ci_col_header = "Wilson CI" if bundle.point_advantage.n_bootstrap == 0 else "CI"
 
     # Header row (no ANSI codes so widths match exactly).
     header_parts = [

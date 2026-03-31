@@ -1357,7 +1357,7 @@ def all_pairwise(
                 ci_low=r.ci_low,
                 ci_high=r.ci_high,
                 p_value=float(adj_p),
-                test_method=f"{r.test_method} ({correction}-corrected p-values)",
+                test_method=r.test_method,
                 n_inputs=r.n_inputs,
                 per_input_diffs=r.per_input_diffs,
                 n_runs=r.n_runs,
@@ -1404,7 +1404,7 @@ def all_pairwise(
                         }
                         else r.p_value
                     ),
-                    test_method=f"{r.test_method} ({ci_label})",
+                    test_method=r.test_method,
                     n_inputs=r.n_inputs,
                     per_input_diffs=r.per_input_diffs,
                     n_runs=r.n_runs,

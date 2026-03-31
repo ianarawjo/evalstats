@@ -140,7 +140,7 @@ class CompareReport:
             diff_str = f"{delta_name}={diff:+.3f}, CI [{ci_lo:.3f}, {ci_hi:.3f}], p={p:.4g}"
             if self.unbeaten is not None:
                 return (
-                    f"'{best_label}' is significantly better than '{other}' "
+                    f"'{best_label}' significantly higher than '{other}' "
                     f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
                 )
             return (
@@ -166,7 +166,7 @@ class CompareReport:
             )
             if len(self.unbeaten) == 1:
                 return (
-                    f"'{best_label}' is best {self.entity_name_singular} "
+                    f"'{best_label}' appears to be the best {self.entity_name_singular} "
                     f"({abs_str}; {diff_str}, {correction_text}, {method_text})"
                 )
             unbeaten_str = ", ".join(f"'{w}'" for w in self.unbeaten)

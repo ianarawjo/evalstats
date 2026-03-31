@@ -641,7 +641,7 @@ def test_print_critical_difference_groups_includes_clear_winner_line(capsys):
     )
     out = capsys.readouterr().out
 
-    assert "Statistically distinguishable, clear winner" in out
+    assert "Evidence suggests a clear best option" in out
     assert "'Prompt A'" in out
     assert "Statistically indistinguishable rank bands" in out
 

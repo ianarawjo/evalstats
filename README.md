@@ -48,7 +48,7 @@ You can also plot within notebook environments (although this feature is being a
 The specific statistical tests the `promptstats.analyze()` method runs are:
 
 - **All pairwise prompt comparisons (paired by input)** via `all_pairwise(...)`:
-    - Computes mean or median difference (mean by default), bootstrapped confidence interval, and p-value for every prompt template pair.
+    - Computes mean or median difference (mean by default), bootstrapped 99% confidence interval, and p-value for every prompt template pair.
     - Comparison method defaults to `method="auto"`:
         - **Smoothed bootstrap with a Gaussian KDE** (`method="smooth_bootstrap"`) in situations of non-binary data. It has been verified in our simulations that for eval-type data and small sample sizes especially, smoothed is superior to the other bootstrap methods considered (percentile, BCa, Bayesian).
         - **Bayesian pairwise from [`bayes_evals`](https://github.com/sambowyer/bayes_evals/tree/main) and McNemar's test**: Default methods for binary scores (0 or 1 only). Our simulations showed Bayesian pairwise was superior to bootstrap at small N. Note that Bayesian methods should technically be called credible intervals, but they estimate the confidence interval very closely.  
@@ -150,7 +150,7 @@ for line in load_report.to_lines():
 analysis = pstats.analyze(benchmark)
 ```
 
-To visualize mean advantage relative to the grand mean, with bootstrapped confidence intervals:
+To visualize mean advantage relative to the grand mean, with bootstrapped 99% confidence intervals:
 
 ```python
 fig = pstats.plot_point_advantage(result, reference="grand_mean")
@@ -171,7 +171,7 @@ Why do people do evals this way? Well, they don't have the time, tools, or knowl
 
 ### Is one prompt "better" than others? Quantify uncertainty
 
-When you have scores for multiple prompt templates across a set of inputs, `promptstats` computes bootstrapped confidence intervals and pairwise significance tests so you can see not just which prompt scored highest on average, but how certain you can be about that ranking. It plots these to the terminal so you can check at a glance:
+When you have scores for multiple prompt templates across a set of inputs, `promptstats` computes bootstrapped 99% confidence intervals and pairwise significance tests so you can see not just which prompt scored highest on average, but how certain you can be about that ranking. It plots these to the terminal so you can check at a glance:
 
 ![Comparing across prompts output](docs/compare-prompts-output.png)
 
@@ -179,7 +179,7 @@ When you have scores for multiple prompt templates across a set of inputs, `prom
 
 A common failure mode in LLM benchmarking, both in academic papers and practitioner evaluations, is testing each model with a single prompt template and reporting the resulting scores as if they reflect stable model capabilities. In reality, model rankings can flip under semantically equivalent paraphrases of the same instruction. A benchmark result that says "Model A beats Model B" may be an artifact of prompt phrasing, not a meaningful capability difference. 
 
-Here, we can see the difference between OpenAI's `gpt-4.1-nano` and MistralAI's `ministral-8b-2512` on a small sentiment classification benchmark, quantified by bootstrapped confidence intervals:
+Here, we can see the difference between OpenAI's `gpt-4.1-nano` and MistralAI's `ministral-8b-2512` on a small sentiment classification benchmark, quantified by bootstrapped 99% confidence intervals:
 
 ![Comparing across models output](docs/compare-models-output.png)
 
