@@ -55,6 +55,30 @@ def _p_best_color(p: float) -> str:
     return ""
 
 
+def _rank_method_label(bundle: "AnalysisBundle") -> str:
+    """Return a short parenthetical note describing how ranks were computed.
+
+    Mirrors the method-mapping in ``bootstrap_rank_distribution`` so the label
+    reflects what was actually used, not the pairwise CI method.
+    """
+    method = (bundle.resolved_method or "bootstrap").lower()
+    # Map pairwise methods that don't drive ranking to their bootstrap equivalent.
+    if method in {"lmm", "permutation", "newcombe", "fisher", "sign", "bayes_binary"}:
+        rank_method = "bootstrap"
+    elif method == "bca":
+        rank_method = "BCA bootstrap"
+    elif method == "bayes_bootstrap":
+        rank_method = "Bayes bootstrap"
+    elif method == "smooth_bootstrap":
+        rank_method = "smooth bootstrap"
+    else:
+        rank_method = "bootstrap"
+
+    n = bundle.rank_dist.n_bootstrap
+    statistic = bundle.point_advantage.statistic.lower()
+    return f"{rank_method}, n={n}, ranked by {statistic}"
+
+
 def _pairwise_p_value_label(test_method: str) -> str:
     """Return a human-readable p-value method label for pairwise summaries."""
     method = test_method.lower()
@@ -253,12 +277,21 @@ def print_compare_summary(
     *,
     top_pairwise: int = None,
     line_width: int = 41,
+    p_value_method: Optional[str] = "auto",
 ) -> None:
     """Print a focused summary for compare_prompts / compare_models results.
 
     Shows only the pairwise comparisons and the executive leaderboard —
     scoped to the entity level (prompts or models) that was compared.
     For the full internal analysis use ``report.full_summary()`` instead.
+
+    Parameters
+    ----------
+    p_value_method : str or None
+        Which p-value to show in pairwise comparisons.  ``'auto'`` (default)
+        picks the method commensurate with the CI (bootstrap p for bootstrap
+        paths, Wilcoxon for others).  Options: ``'boot'``, ``'wsr'``,
+        ``'nem'``, or ``None`` to suppress p-values.
     """
     n = len(report.labels)
     # Get the AnalysisBundle appropriate to the entity-level comparison.
@@ -290,6 +323,7 @@ def print_compare_summary(
         bundle,
         top_pairwise=top_pairwise,
         line_width=line_width,
+        p_value_method=p_value_method,
     )
     print()
     _print_executive_summary(bundle, item_singular=report.entity_name_singular)
@@ -442,7 +476,7 @@ def _print_multi_model_summary(
     template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
     top_indices = np.argsort(-p_best)
     n_show = len(top_indices)
-    _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ---")
+    _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
     print(
         f"  {'Model':<{model_col_width}s} "
         f"{'Template':<{template_col_width}s} "
@@ -704,32 +738,42 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
 # ---------------------------------------------------------------------------
 
 def _print_pairwise_section(
-    bundle: AnalysisBundle,
+    bundle: "AnalysisBundle",
     *,
     top_pairwise: int = None,
     line_width: int,
     sort: bool = True,
+    p_value_method: Optional[str] = "auto",
 ) -> None:
     """Print the pairwise comparisons block for an AnalysisBundle.
 
     Extracted so it can be reused by both the full bundle summary and the
     focused CompareReport summary without duplicating code.
+
+    Parameters
+    ----------
+    p_value_method : str or None
+        Which p-value column to show.  ``'auto'`` (default) picks the method
+        most commensurate with the CI: bootstrap p-value for bootstrap CI
+        paths, exact-test p-value for newcombe/fisher/sign paths, and
+        Wilcoxon signed-rank for LMM/other paths.  Explicit choices:
+        ``'boot'`` (result.p_value), ``'wsr'`` (Wilcoxon signed-rank),
+        ``'nem'`` (Nemenyi post-hoc).  Pass ``None`` to suppress p-values.
     """
     pair_col_width = 32
     pair_stat_col_width = 8
     pair_ci_col_width = 9
     pair_sigma_col_width = 8
-    pair_p_boot_col_width = 10
-    pair_p_wsr_col_width = 9
-    pair_p_nem_col_width = 9
 
     # Determine statistic label from the first result (all share the same statistic).
     first_result = next(iter(bundle.pairwise.results.values()), None)
     pair_stat_label = first_result.statistic.capitalize() if first_result else "Mean"
-    # Detect binary exact-test paths: p_value column holds exact-test p-values.
+
+    # Detect CI method family for auto p-value selection.
     is_newcombe_pairwise = (
         first_result is not None
         and "newcombe" in first_result.test_method.lower()
+        and "fisher" not in first_result.test_method.lower()
     )
     is_fisher_pairwise = (
         first_result is not None
@@ -739,16 +783,34 @@ def _print_pairwise_section(
         first_result is not None
         and "sign test" in first_result.test_method.lower()
     )
-    if is_newcombe_pairwise:
-        p_first_header = "p (McNemar)"
-    elif is_fisher_pairwise:
-        p_first_header = "p (Fisher)"
-    elif is_sign_pairwise:
-        p_first_header = "p (sign)"
-    else:
-        p_first_header = "p (boot)"
-    if is_newcombe_pairwise or is_fisher_pairwise or is_sign_pairwise:
-        pair_p_boot_col_width = max(pair_p_boot_col_width, len(p_first_header))
+    is_bootstrap_path = (
+        first_result is not None
+        and "bootstrap" in first_result.test_method.lower()
+    )
+
+    # Resolve the effective p-value source and column header.
+    if p_value_method == "auto":
+        if is_newcombe_pairwise:
+            eff_p_source, p_col_header = "boot", "p (McNemar)"
+        elif is_fisher_pairwise:
+            eff_p_source, p_col_header = "boot", "p (Fisher)"
+        elif is_sign_pairwise:
+            eff_p_source, p_col_header = "boot", "p (sign)"
+        elif is_bootstrap_path:
+            eff_p_source, p_col_header = "boot", "p (boot)"
+        else:
+            eff_p_source, p_col_header = "wsr", "p (wsr)"
+    elif p_value_method == "boot":
+        eff_p_source, p_col_header = "boot", "p (boot)"
+    elif p_value_method == "wsr":
+        eff_p_source, p_col_header = "wsr", "p (wsr)"
+    elif p_value_method == "nem":
+        eff_p_source, p_col_header = "nem", "p (nem)"
+    else:  # None
+        eff_p_source, p_col_header = None, None
+
+    pair_p_col_width = max(10, len(p_col_header)) if p_col_header else 0
+
     _print_subsection(f"--- Pairwise Comparisons ({first_result.test_method}) ---")
     pair_results = list(bundle.pairwise.results.values())
     if sort:
@@ -756,11 +818,12 @@ def _print_pairwise_section(
             pair_results,
             key=lambda r: (r.p_value, -abs(r.point_diff)),
         )
-    # By default, print all pairs unless top_pairwise is set
+    # By default, print all pairs unless top_pairwise is set.
     if top_pairwise is None:
         max_pairs = len(pair_results)
     else:
         max_pairs = max(0, min(top_pairwise, len(pair_results)))
+
     # Friedman omnibus line (printed before the interval plot when pairs exist).
     if max_pairs > 0 and bundle.pairwise.friedman is not None:
         fr = bundle.pairwise.friedman
@@ -790,13 +853,15 @@ def _print_pairwise_section(
             f"  axis: [{pair_low:+.3f}, {pair_high:+.3f}]  "
             f"(· ±1σ, ─ CI, ● {pair_stat_label.lower()}, │ zero)"
         )
-        print(
+        header = (
             f"  {'Pair':<{pair_col_width}s} {'Interval Plot':<{line_width}s} "
             f"{pair_stat_label:>{pair_stat_col_width}s} "
             f"{'CI Low':>{pair_ci_col_width}s} {'CI High':>{pair_ci_col_width}s} "
-            f"{'r_rb':>{pair_sigma_col_width}s} "
-            f"{p_first_header:>{pair_p_boot_col_width}s} {'p (wsr)':>{pair_p_wsr_col_width}s} {'p (nem)':>{pair_p_nem_col_width}s}"
+            f"{'r_rb':>{pair_sigma_col_width}s}"
         )
+        if p_col_header:
+            header += f" {p_col_header:>{pair_p_col_width}s}"
+        print(header)
 
     for result in pair_results[:max_pairs]:
         line = _ascii_interval_line(
@@ -813,51 +878,50 @@ def _print_pairwise_section(
             f"{result.template_a} vs {result.template_b}",
             pair_col_width,
         )
-        p_boot_str = _format_p_value(result.p_value)
-        wsr_str = _format_p_value(result.wilcoxon_p)
-        nem_p = bundle.pairwise.friedman.get_nemenyi_p(result.template_a, result.template_b) if bundle.pairwise.friedman is not None else None
-        nem_str = _format_p_value(nem_p)
         d_val = result.rank_biserial
         d_str = f"{d_val:>{pair_sigma_col_width}.3f}"
-        print(
+        row = (
             f"  {pair_label:<{pair_col_width}s} "
             f"{line:<{line_width}s} "
             f"{result.point_diff:+{pair_stat_col_width}.4f} "
             f"{result.ci_low:+{pair_ci_col_width}.4f} "
             f"{result.ci_high:+{pair_ci_col_width}.4f} "
-            f"{d_str} "
-            f"{p_boot_str:>{pair_p_boot_col_width}s} "
-            f"{wsr_str:>{pair_p_wsr_col_width}s} "
-            f"{nem_str:>{pair_p_nem_col_width}s}"
+            f"{d_str}"
         )
+        if eff_p_source == "boot":
+            p_val = result.p_value
+        elif eff_p_source == "wsr":
+            p_val = result.wilcoxon_p
+        elif eff_p_source == "nem":
+            p_val = (
+                bundle.pairwise.friedman.get_nemenyi_p(result.template_a, result.template_b)
+                if bundle.pairwise.friedman is not None else None
+            )
+        else:
+            p_val = None
+        if eff_p_source is not None:
+            row += f" {_format_p_value(p_val):>{pair_p_col_width}s}"
+        print(row)
 
     if max_pairs == 0:
         print("  (no pairwise comparisons)")
     elif max_pairs > 0:
         print(f"  r_rb = rank biserial correlation (effect size: small≈0.1, medium≈0.3, large≈0.5)")
-        if is_newcombe_pairwise:
-            print(
-                f"  p (McNemar) = McNemar exact test (two-sided, uncorrected); "
-                f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
-                f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
-            )
-        elif is_fisher_pairwise:
-            print(
-                f"  p (Fisher) = Fisher's exact test (two-sided, uncorrected); "
-                f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
-                f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
-            )
-        elif is_sign_pairwise:
-            print(
-                f"  p (sign) = paired sign test (two-sided exact, ties dropped, uncorrected); "
-                f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
-                f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)"
-            )
-        else:
-            print(f"  p (boot) = bootstrap {bundle.pairwise.correction_method}-corrected; "
-                  f"p (wsr) = Wilcoxon signed-rank {bundle.pairwise.correction_method}-corrected; "
-                  f"p (nem) = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
-        print("  stars: * p<0.05, ** p<0.01, *** p<0.001")
+        if eff_p_source == "boot":
+            if is_newcombe_pairwise:
+                print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
+            elif is_fisher_pairwise:
+                print(f"  {p_col_header} = Fisher's exact test (two-sided, uncorrected)")
+            elif is_sign_pairwise:
+                print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")
+            else:
+                print(f"  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected)")
+        elif eff_p_source == "wsr":
+            print(f"  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected)")
+        elif eff_p_source == "nem":
+            print(f"  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
+        if eff_p_source is not None:
+            print("  stars: * p<0.01, ** p<0.001, *** p<0.0001")
         print()
         labels_sorted = [
             label
@@ -956,6 +1020,7 @@ def _print_bundle_summary(
     line_width: int,
     item_singular: str = "template",
     item_plural: str = "templates",
+    p_value_method: Optional[str] = "auto",
 ) -> None:
     template_col_width = 24
 
@@ -974,7 +1039,7 @@ def _print_bundle_summary(
     print(bundle.robustness.summary_table().to_string())
     print()
 
-    _print_subsection("--- Rank Probabilities ---")
+    _print_subsection(f"--- Rank Probabilities ({_rank_method_label(bundle)}) ---")
     max_rank_label_len = max((len(label) for label in bundle.rank_dist.labels), default=0)
     rank_label_col_width = min(40, max(len(item_singular_title) + 1, max_rank_label_len + 2))
     rank_bar_width = 14
@@ -1007,7 +1072,7 @@ def _print_bundle_summary(
     )
     print()
 
-    _print_pairwise_section(bundle, top_pairwise=top_pairwise, line_width=line_width)
+    _print_pairwise_section(bundle, top_pairwise=top_pairwise, line_width=line_width, p_value_method=p_value_method)
 
     # Seed variance section (only when seeded data is present).
     if bundle.seed_variance is not None:
@@ -1595,11 +1660,11 @@ def _p_value_stars(p_value: Optional[float]) -> str:
     """Return significance stars for p-value thresholds (*, **, ***)."""
     if p_value is None:
         return ""
-    if p_value < 0.001:
+    if p_value < 0.0001:
         return "***"
-    if p_value < 0.01:
+    if p_value < 0.001:
         return "**"
-    if p_value < 0.05:
+    if p_value < 0.01:
         return "*"
     return ""
 

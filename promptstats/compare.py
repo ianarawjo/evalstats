@@ -246,13 +246,22 @@ class CompareReport:
         """
         self.pairwise.get(a, b).summary()
 
-    def summary(self) -> None:
+    def summary(self, *, p_value_method: Optional[str] = "auto") -> None:
         """Print a focused summary scoped to the entity comparison level.
 
-        Shows pairwise comparisons and the executive leaderboard only.
+        Shows mean advantage, pairwise comparisons and the executive leaderboard.
         For the full internal analysis use ``full_summary()`` instead.
+
+        Parameters
+        ----------
+        p_value_method : str or None
+            Which p-value to show in pairwise comparisons.  ``'auto'``
+            (default) picks the method commensurate with the CI: bootstrap
+            p-value for bootstrap CI paths, Wilcoxon signed-rank for others.
+            Options: ``'boot'``, ``'wsr'``, ``'nem'``, or ``None`` to
+            suppress p-values entirely.
         """
-        print_compare_summary(self)
+        print_compare_summary(self, p_value_method=p_value_method)
 
     def full_summary(self) -> None:
         """Print the complete internal analysis (full AnalysisBundle / MultiModelBundle output)."""
