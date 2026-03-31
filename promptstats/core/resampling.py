@@ -255,14 +255,14 @@ def resolve_resampling_method(
 ) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]:
     """Resolve ``method='auto'`` to a concrete bootstrap method.
 
-    ``method='auto'`` always resolves to ``'smooth_bootstrap'``.
-    ``sample_size`` and BCa threshold arguments are retained for API
-    compatibility.
+    ``method='auto'`` resolves to ``'bootstrap'`` when ``sample_size >= 200``
+    (plain bootstrap is simpler and at least as accurate at that scale) and
+    ``'smooth_bootstrap'`` otherwise.
     ``'bayes_bootstrap'`` and ``'smooth_bootstrap'`` are passed through unchanged.
     """
-    _ = (sample_size, bca_min_n, bca_max_n)
+    _ = (bca_min_n, bca_max_n)
     if method == "auto":
-        return "smooth_bootstrap"
+        return "bootstrap" if sample_size >= 200 else "smooth_bootstrap"
     return method  # type: ignore[return-value]
 
 

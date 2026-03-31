@@ -25,28 +25,31 @@
         </div>
         <div class="rec-card">
             <div class="rec-card-when">Continuous (0–1 floats)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
+            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
             <div class="rec-card-detail">
             Highest coverage across all N tested. Slightly conservative (wider CIs), which is
-            preferred in safety-critical eval contexts. (Bootstrap also allows us to easily 
-            calculate simultaneous CIs for multiple comparisons, which is a common scenario in prompt and model selection,
-            without relying upon overly conservative Bonferroni correction.)
+            preferred in safety-critical eval contexts. At larger N, regular bootstrap is
+            more efficient and more on-target. (Bootstrap also allows us to  
+            calculate simultaneous CIs to correct FWER for multiple comparisons,
+            without relying upon overly conservative Bonferroni correction.) 
             </div>
         </div>
         <div class="rec-card">
             <div class="rec-card-when">Likert / Integer (e.g., 1–5)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
+            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
             <div class="rec-card-detail">
             Same story as continuous. Smooth bootstrap handles the discrete nature of Likert
-            scales more gracefully than percentile or BCa. 
+            scales more gracefully than percentile or BCa. At larger N, regular bootstrap is
+            more efficient and more on-target.
             </div>
         </div>
         <div class="rec-card">
             <div class="rec-card-when">Grades / Rubric (0–100)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE)</div>
+            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
             <div class="rec-card-detail">
             Bounded, potentially skewed. Smooth bootstrap is robust to skew and performs
             well even at N=10, making up for the over-confidence of other methods at small N.
+            At larger N, regular bootstrap is more efficient and more on-target.
             </div>
         </div>
         </div>

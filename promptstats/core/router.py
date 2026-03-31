@@ -83,7 +83,7 @@ def analyze(
     method : str
         Statistical method for CIs and p-values:
 
-        * ``'auto'`` (default) — smooth bootstrap.
+        * ``'auto'`` (default) — smooth bootstrap for N < 200, plain bootstrap for N ≥ 200.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
         * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).

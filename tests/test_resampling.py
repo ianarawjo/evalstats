@@ -16,9 +16,9 @@ from promptstats.core.resampling import (
 
 def test_resolve_resampling_method_auto_and_passthrough():
     assert resolve_resampling_method("auto", 14) == "smooth_bootstrap"
-    assert resolve_resampling_method("auto", 15) == "smooth_bootstrap"
-    assert resolve_resampling_method("auto", 200) == "smooth_bootstrap"
-    assert resolve_resampling_method("auto", 201) == "smooth_bootstrap"
+    assert resolve_resampling_method("auto", 199) == "smooth_bootstrap"
+    assert resolve_resampling_method("auto", 200) == "bootstrap"
+    assert resolve_resampling_method("auto", 201) == "bootstrap"
     assert resolve_resampling_method("bootstrap", 50) == "bootstrap"
     assert resolve_resampling_method("bca", 50) == "bca"
 
