@@ -33,18 +33,18 @@ def test_unsupported_methods_return_empty_dict():
     labels = ["m0", "m1", "m2"]
     pairs = [("m0", "m1"), ("m0", "m2")]
     for method in ["newcombe", "bayes_binary", "fisher_exact"]:
-        result = _max_stat_simultaneous_cis(
+        cis, pvals = _max_stat_simultaneous_cis(
             scores, pairs, labels, method, 0.95, 100, _rng(0), "mean"
         )
-        assert result == {}, f"Expected empty dict for method='{method}', got {result}"
+        assert cis == {}, f"Expected empty dict for method='{method}', got {cis}"
 
 
 def test_empty_pairs_returns_empty_dict():
     scores = _rng(0).normal(0, 1, (3, 20))
-    result = _max_stat_simultaneous_cis(
+    cis, pvals = _max_stat_simultaneous_cis(
         scores, [], ["m0", "m1", "m2"], "bootstrap", 0.95, 100, _rng(0), "mean"
     )
-    assert result == {}
+    assert cis == {}
 
 
 def test_degenerate_zero_variance_does_not_crash():
@@ -55,12 +55,12 @@ def test_degenerate_zero_variance_does_not_crash():
     pairs = [("a", "b"), ("b", "c")]
 
     # Must not raise
-    result = _max_stat_simultaneous_cis(
+    cis, pvals = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 100, _rng(0), "mean"
     )
-    assert isinstance(result, dict)
+    assert isinstance(cis, dict)
     # If CIs were returned, each must satisfy low <= high
-    for lo, hi in result.values():
+    for lo, hi in cis.values():
         assert lo <= hi
 
 
@@ -70,7 +70,7 @@ def test_returns_all_requested_pairs():
     labels = ["a", "b", "c", "d"]
     pairs = [("a", "b"), ("a", "c"), ("b", "d")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 200, _rng(1), "mean"
     )
 
@@ -83,7 +83,7 @@ def test_single_pair_returns_valid_ci():
     labels = ["a", "b"]
     pairs = [("a", "b")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 300, _rng(2), "mean"
     )
 
@@ -99,7 +99,7 @@ def test_ci_bounds_are_finite_and_ordered():
     labels = ["a", "b", "c", "d"]
     pairs = [("a", "b"), ("a", "c"), ("a", "d"), ("b", "c"), ("b", "d"), ("c", "d")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 300, _rng(3), "mean"
     )
 
@@ -124,7 +124,7 @@ def test_cis_are_symmetric_around_point_estimate_non_seeded():
     pairs = [("a", "b"), ("a", "c"), ("b", "c")]
     label_to_idx = {"a": 0, "b": 1, "c": 2}
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 500, rng, "mean"
     )
 
@@ -146,7 +146,7 @@ def test_cis_are_symmetric_around_point_estimate_seeded():
     pairs = [("x", "y"), ("x", "z")]
     label_to_idx = {"x": 0, "y": 1, "z": 2}
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 400, rng, "mean"
     )
 
@@ -176,11 +176,11 @@ def test_more_pairs_yields_wider_cis_same_bootstrap_resamples():
 
     for target in all_pairs:
         # k=1: only the target pair
-        ci_k1 = _max_stat_simultaneous_cis(
+        ci_k1, _ = _max_stat_simultaneous_cis(
             scores, [target], labels, "bootstrap", 0.95, 600, _rng(SEED), "mean"
         )
         # k=3: all pairs (same seed → same input_idx)
-        ci_k3 = _max_stat_simultaneous_cis(
+        ci_k3, _ = _max_stat_simultaneous_cis(
             scores, all_pairs, labels, "bootstrap", 0.95, 600, _rng(SEED), "mean"
         )
 
@@ -204,10 +204,10 @@ def test_more_pairs_yields_wider_cis_bayes_bootstrap():
     all_pairs = [("a", "b"), ("a", "c"), ("b", "c")]
     target = ("a", "b")
 
-    ci_k1 = _max_stat_simultaneous_cis(
+    ci_k1, _ = _max_stat_simultaneous_cis(
         scores, [target], labels, "bayes_bootstrap", 0.95, 600, _rng(SEED), "mean"
     )
-    ci_k3 = _max_stat_simultaneous_cis(
+    ci_k3, _ = _max_stat_simultaneous_cis(
         scores, all_pairs, labels, "bayes_bootstrap", 0.95, 600, _rng(SEED), "mean"
     )
 
@@ -242,7 +242,7 @@ def test_simultaneous_coverage_bootstrap():
     hits = 0
     for _ in range(n_simulations):
         scores = rng.normal(0.0, 1.0, (4, M))
-        cis = _max_stat_simultaneous_cis(
+        cis, _ = _max_stat_simultaneous_cis(
             scores, pairs, labels, "bootstrap", ci_level, n_bootstrap, rng, "mean"
         )
         if not cis:
@@ -272,7 +272,7 @@ def test_simultaneous_coverage_smooth_bootstrap():
     hits = 0
     for _ in range(n_simulations):
         scores = rng.normal(0.0, 1.0, (3, M))
-        cis = _max_stat_simultaneous_cis(
+        cis, _ = _max_stat_simultaneous_cis(
             scores, pairs, labels, "smooth_bootstrap", ci_level,
             n_bootstrap, rng, "mean"
         )
@@ -302,7 +302,7 @@ def test_all_supported_methods_return_valid_dict(method):
     labels = ["m0", "m1", "m2"]
     pairs = [("m0", "m1"), ("m0", "m2"), ("m1", "m2")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, method, 0.90, 200, _rng(1), "mean"
     )
 
@@ -322,7 +322,7 @@ def test_seeded_path_returns_valid_cis(method):
     labels = ["a", "b", "c"]
     pairs = [("a", "b"), ("a", "c"), ("b", "c")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, method, 0.95, 200, _rng(5), "mean"
     )
 
@@ -346,7 +346,7 @@ def test_seeded_path_all_three_methods_agree_in_direction():
     pairs = [("a", "b")]
 
     for method in ["bootstrap", "smooth_bootstrap", "bayes_bootstrap"]:
-        cis = _max_stat_simultaneous_cis(
+        cis, _ = _max_stat_simultaneous_cis(
             scores, pairs, labels, method, 0.95, 400, _rng(20), "mean"
         )
         lo, hi = cis[("a", "b")]
@@ -360,7 +360,7 @@ def test_median_statistic_returns_valid_cis():
     labels = ["a", "b", "c"]
     pairs = [("a", "b"), ("b", "c")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 300, _rng(7), "median"
     )
 
@@ -378,7 +378,7 @@ def test_median_statistic_ci_centered_at_median_point_estimate():
     labels = ["a", "b"]
     pairs = [("a", "b")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "bootstrap", 0.95, 500, rng, "median"
     )
 
@@ -394,7 +394,7 @@ def test_auto_method_resolves_to_smooth_bootstrap():
     labels = ["a", "b", "c"]
     pairs = [("a", "b"), ("a", "c"), ("b", "c")]
 
-    cis = _max_stat_simultaneous_cis(
+    cis, _ = _max_stat_simultaneous_cis(
         scores, pairs, labels, "auto", 0.95, 300, rng, "mean"
     )
 
@@ -454,29 +454,26 @@ def test_all_pairwise_test_method_string_annotated():
         )
 
 
-def test_all_pairwise_p_values_unchanged_by_simultaneous_ci():
-    """simultaneous_ci only changes CIs, not p-values."""
+def test_all_pairwise_p_values_are_max_t_with_simultaneous_ci():
+    """When simultaneous_ci=True and bootstrap method, p_value is the max-T
+    bootstrap p-value (FWER-controlled), not the marginal FDR-corrected one.
+
+    Max-T p-values must be in [0, 1] and are generally more conservative
+    (larger) than marginal FDR-corrected p-values.
+    """
     scores = _rng(12).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
 
-    mat_ind = all_pairwise(
-        scores, labels, method="bootstrap", ci=0.95,
-        n_bootstrap=300, correction="holm", rng=_rng(12),
-        simultaneous_ci=False,
-    )
     mat_sim = all_pairwise(
         scores, labels, method="bootstrap", ci=0.95,
         n_bootstrap=300, correction="holm", rng=_rng(12),
         simultaneous_ci=True,
     )
 
+    assert mat_sim.simultaneous_ci_method == "max_t"
     for a, b in [("a", "b"), ("a", "c"), ("b", "c")]:
-        np.testing.assert_allclose(
-            mat_ind.get(a, b).p_value,
-            mat_sim.get(a, b).p_value,
-            rtol=0,
-            err_msg=f"p-value changed for ({a},{b}) when simultaneous_ci=True",
-        )
+        p = mat_sim.get(a, b).p_value
+        assert 0.0 <= p <= 1.0, f"max-T p_value {p} out of [0,1] for ({a},{b})"
 
 
 def test_compare_prompts_simultaneous_ci_propagates():
@@ -649,7 +646,7 @@ def test_router_returns_max_stat_for_bootstrap():
     scores = _rng(70).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
-    cis, used = _simultaneous_cis_router(
+    cis, used, _ = _simultaneous_cis_router(
         scores, results, pairs, labels,
         method="bootstrap", ci=0.95, n_bootstrap=300,
         rng=_rng(70), statistic="mean",
@@ -664,7 +661,7 @@ def test_router_falls_back_to_bonferroni_for_newcombe():
     scores = _rng(71).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
-    cis, used = _simultaneous_cis_router(
+    cis, used, _ = _simultaneous_cis_router(
         scores, results, pairs, labels,
         method="newcombe", ci=0.95, n_bootstrap=300,
         rng=_rng(71), statistic="mean",
@@ -683,7 +680,7 @@ def test_router_max_stat_for_all_bootstrap_methods(method):
     scores = _rng(72).normal(0, 1, (3, 35))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
-    _, used = _simultaneous_cis_router(
+    _, used, _ = _simultaneous_cis_router(
         scores, results, pairs, labels,
         method=method, ci=0.95, n_bootstrap=200,
         rng=_rng(72), statistic="mean",

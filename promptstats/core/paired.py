@@ -946,7 +946,7 @@ def _max_stat_simultaneous_cis(
         method = "smooth_bootstrap"
 
     if method not in _BOOTSTRAP_COMPATIBLE or len(pairs) == 0:
-        return {}
+        return {}, {}
 
     k = len(pairs)
     label_to_idx = {label: idx for idx, label in enumerate(labels)}
@@ -1261,6 +1261,7 @@ def all_pairwise(
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     simultaneous_ci: bool = True,
+    omnibus: bool = False,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -1302,6 +1303,12 @@ def all_pairwise(
 
         The method actually used is recorded in
         :attr:`PairwiseMatrix.simultaneous_ci_method` (``'max_stat'`` or
+    omnibus : bool
+        When ``True``, run the Friedman omnibus test (with Nemenyi post-hoc)
+        alongside the pairwise comparisons.  Requires k ≥ 3.  Defaults to
+        ``False`` — the Friedman test is a NHST procedure that may not be
+        desirable in estimation-focused workflows.  The result is stored in
+        :attr:`PairwiseMatrix.friedman`.
         ``'bonferroni'``) and annotated in each result's ``test_method``
         string.
 
@@ -1390,7 +1397,13 @@ def all_pairwise(
                     std_diff=r.std_diff,
                     ci_low=ci_low,
                     ci_high=ci_high,
-                    p_value=sim_pvalues.get(pair, r.p_value),
+                    p_value=(
+                        sim_pvalues.get(pair, r.p_value)
+                        if sim_method == "max_t" and method in {
+                            "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto",
+                        }
+                        else r.p_value
+                    ),
                     test_method=f"{r.test_method} ({ci_label})",
                     n_inputs=r.n_inputs,
                     per_input_diffs=r.per_input_diffs,
@@ -1399,9 +1412,9 @@ def all_pairwise(
                     wilcoxon_p=r.wilcoxon_p,
                 )
 
-    # Friedman omnibus + Nemenyi post-hoc (only meaningful for k >= 2).
+    # Friedman omnibus + Nemenyi post-hoc (only when explicitly requested).
     friedman: Optional[FriedmanResult] = None
-    if len(labels) >= 2:
+    if omnibus and len(labels) >= 3:
         try:
             friedman = friedman_nemenyi(scores, labels)
         except Exception:

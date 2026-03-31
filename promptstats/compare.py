@@ -412,6 +412,7 @@ def compare_prompts(
     statistic: Literal["mean", "median"] = "mean",
     rng: Optional[np.random.Generator] = None,
     simultaneous_ci: bool = True,
+    omnibus: bool = False,
 ) -> CompareReport:
     """Compare prompt templates with bootstrapped statistical tests.
 
@@ -451,9 +452,13 @@ def compare_prompts(
         Random-number generator for reproducibility.
     simultaneous_ci : bool
         When ``True``, pairwise CIs are simultaneous (family-wise) rather
-        than marginal. If a bootstrap method, this uses the studentized 
+        than marginal. If a bootstrap method, this uses the studentized
         bootstrap max-T method, which is less conservative than Bonferroni.
         For other methods like Newcombe, Bonferroni is used.
+    omnibus : bool
+        When ``True`` and k ≥ 3, run the Friedman omnibus test (with Nemenyi
+        post-hoc).  Defaults to ``False`` — the Friedman test is a NHST
+        procedure that may not be desirable in estimation-focused workflows.
 
     Returns
     -------
@@ -559,6 +564,7 @@ def compare_prompts(
         ci=1.0-alpha,
         rng=rng,
         simultaneous_ci=simultaneous_ci,
+        omnibus=omnibus,
     )
 
     # ------------------------------------------------------------------
@@ -643,6 +649,7 @@ def compare_models(
     template_labels: Optional[list[str]] = None,
     rng: Optional[np.random.Generator] = None,
     simultaneous_ci: bool = True,
+    omnibus: bool = False,
 ) -> CompareReport:
     """Compare models while accounting for prompt-template sensitivity.
 
@@ -695,6 +702,9 @@ def compare_models(
         ``template_0 ... template_{N-1}``.
     rng : np.random.Generator, optional
         Random-number generator for reproducibility.
+    omnibus : bool
+        When ``True`` and k ≥ 3, run the Friedman omnibus test (with Nemenyi
+        post-hoc).  Defaults to ``False``.
     """
     if not isinstance(scores, dict):
         raise TypeError(
@@ -791,6 +801,7 @@ def compare_models(
         rng=rng,
         template_model_collapse=resolved_template_model_collapse,
         simultaneous_ci=simultaneous_ci,
+        omnibus=omnibus,
     )
     if not isinstance(full_analysis, MultiModelBundle):
         raise RuntimeError("Expected multi-model analysis bundle from analyze().")

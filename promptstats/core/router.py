@@ -54,6 +54,7 @@ def analyze(
     statistic: Literal["mean", "median"] = "mean",
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
     simultaneous_ci: bool = True,
+    omnibus: bool = False,
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -220,6 +221,7 @@ def analyze(
         rng=rng,
         statistic=statistic,
         simultaneous_ci=simultaneous_ci,
+        omnibus=omnibus,
     )
 
     # ------------------------------------------------------------------
@@ -615,6 +617,7 @@ def _analyze_single(
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
     simultaneous_ci: bool = True,
+    omnibus: bool = False,
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
     # LMM path — fit score ~ template + (1|input)
@@ -743,7 +746,7 @@ def _analyze_single(
         run_scores, labels,
         method=pairwise_method, ci=ci, n_bootstrap=n_bootstrap,
         correction=correction, rng=rng, statistic=statistic,
-        simultaneous_ci=simultaneous_ci,
+        simultaneous_ci=simultaneous_ci, omnibus=omnibus,
     )
     mean_adv = bootstrap_point_advantage(
         run_scores, labels,
@@ -792,6 +795,7 @@ def _analyze_multi_model(
     statistic: Literal["mean", "median"],
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
     simultaneous_ci: bool = True,
+    omnibus: bool = False,
 ) -> MultiModelBundle:
     kwargs = dict(
         reference=reference,
@@ -805,6 +809,7 @@ def _analyze_multi_model(
         rng=rng,
         statistic=statistic,
         simultaneous_ci=simultaneous_ci,
+        omnibus=omnibus,
     )
 
     per_model: Dict[str, AnalysisBundle] = {}
