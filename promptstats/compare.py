@@ -246,7 +246,7 @@ class CompareReport:
         """
         self.pairwise.get(a, b).summary()
 
-    def summary(self, *, p_value_method: Optional[str] = "auto") -> None:
+    def summary(self, *, p_value_method: Optional[str] = None) -> None:
         """Print a focused summary scoped to the entity comparison level.
 
         Shows mean advantage, pairwise comparisons and the executive leaderboard.

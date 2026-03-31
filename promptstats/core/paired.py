@@ -1119,7 +1119,7 @@ def _max_stat_simultaneous_cis(
 
     if not np.any(valid):
         # All SEs degenerate; simultaneous CI cannot be computed.
-        return {}
+        return {}, {}
 
     se_safe = np.where(valid, se, 1.0)
     T = (boot_stats - point_ests[np.newaxis, :]) / se_safe[np.newaxis, :]  # (B, k)
@@ -1127,8 +1127,10 @@ def _max_stat_simultaneous_cis(
     # Max over valid pairs only; quantile gives the (1−α) simultaneous critical value.
     M_b = np.max(np.abs(T[:, valid]), axis=1)  # (B,)
     c = float(np.quantile(M_b, ci))
+    B_total = len(M_b)
 
     sim_cis: dict[tuple[str, str], tuple[float, float]] = {}
+    max_t_pvalues: dict[tuple[str, str], float] = {}
     for p_idx, pair in enumerate(pairs):
         if valid[p_idx]:
             half = c * se[p_idx]
@@ -1136,11 +1138,16 @@ def _max_stat_simultaneous_cis(
                 float(point_ests[p_idx] - half),
                 float(point_ests[p_idx] + half),
             )
+            # Max-T p-value: proportion of max-T bootstrap statistics >= observed |t|.
+            t_obs = abs(float(point_ests[p_idx])) / float(se[p_idx])
+            extreme = int(np.sum(M_b >= t_obs))
+            max_t_pvalues[pair] = float((extreme + 1) / (B_total + 1))
         else:
             # SE is zero (constant differences); CI degenerates to a point.
             sim_cis[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
+            max_t_pvalues[pair] = 1.0
 
-    return sim_cis
+    return sim_cis, max_t_pvalues
 
 
 def _bonferroni_simultaneous_cis(
@@ -1219,12 +1226,14 @@ def _simultaneous_cis_router(
 
     Returns
     -------
-    tuple[dict, str]
-        ``(cis, method_used)`` where *method_used* is ``'max_t'`` or
-        ``'bonferroni'``.
+    tuple[dict, str, dict]
+        ``(cis, method_used, max_t_pvalues)`` where *method_used* is
+        ``'max_t'`` or ``'bonferroni'``.  *max_t_pvalues* maps each pair to
+        its max-T p-value when *method_used* is ``'max_t'``; empty dict
+        otherwise.
     """
     if method in _SIMULTANEOUS_CI_BOOTSTRAP_METHODS:
-        cis = _max_stat_simultaneous_cis(
+        cis, max_t_pvalues = _max_stat_simultaneous_cis(
             scores=scores,
             pairs=pairs,
             labels=labels,
@@ -1235,11 +1244,11 @@ def _simultaneous_cis_router(
             statistic=statistic,
         )
         if cis:
-            return cis, "max_t"
+            return cis, "max_t", max_t_pvalues
 
     # Fallback: Bonferroni t-intervals work for any method.
     cis = _bonferroni_simultaneous_cis(results=results, pairs=pairs, ci=ci)
-    return cis, "bonferroni"
+    return cis, "bonferroni", {}
 
 
 def all_pairwise(
@@ -1341,7 +1350,7 @@ def all_pairwise(
                 ci_low=r.ci_low,
                 ci_high=r.ci_high,
                 p_value=float(adj_p),
-                test_method=f"{r.test_method} ({correction}-corrected)",
+                test_method=f"{r.test_method} ({correction}-corrected p-values)",
                 n_inputs=r.n_inputs,
                 per_input_diffs=r.per_input_diffs,
                 n_runs=r.n_runs,
@@ -1353,7 +1362,7 @@ def all_pairwise(
     applied_simultaneous_ci = False
     applied_simultaneous_ci_method: Optional[str] = None
     if simultaneous_ci and len(pairs) > 0:
-        sim_cis, sim_method = _simultaneous_cis_router(
+        sim_cis, sim_method, sim_pvalues = _simultaneous_cis_router(
             scores=scores,
             results=results,
             pairs=pairs,
@@ -1368,9 +1377,9 @@ def all_pairwise(
             applied_simultaneous_ci = True
             applied_simultaneous_ci_method = sim_method
             ci_label = (
-                "simultaneous CI (max-T)"
+                "simultaneous CIs computed with max-T"
                 if sim_method == "max_t"
-                else "simultaneous CI (Bonferroni)"
+                else "simultaneous CIs computed with Bonferroni"
             )
             for pair, (ci_low, ci_high) in sim_cis.items():
                 r = results[pair]
@@ -1381,7 +1390,7 @@ def all_pairwise(
                     std_diff=r.std_diff,
                     ci_low=ci_low,
                     ci_high=ci_high,
-                    p_value=r.p_value,
+                    p_value=sim_pvalues.get(pair, r.p_value),
                     test_method=f"{r.test_method} ({ci_label})",
                     n_inputs=r.n_inputs,
                     per_input_diffs=r.per_input_diffs,

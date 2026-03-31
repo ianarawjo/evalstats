@@ -277,7 +277,7 @@ def print_compare_summary(
     *,
     top_pairwise: int = None,
     line_width: int = 41,
-    p_value_method: Optional[str] = "auto",
+    p_value_method: Optional[str] = None,
 ) -> None:
     """Print a focused summary for compare_prompts / compare_models results.
 
@@ -743,7 +743,7 @@ def _print_pairwise_section(
     top_pairwise: int = None,
     line_width: int,
     sort: bool = True,
-    p_value_method: Optional[str] = "auto",
+    p_value_method: Optional[str] = None,
 ) -> None:
     """Print the pairwise comparisons block for an AnalysisBundle.
 
@@ -788,6 +788,9 @@ def _print_pairwise_section(
         and "bootstrap" in first_result.test_method.lower()
     )
 
+    # Whether simultaneous max-T CIs were used (affects p-value source for bootstrap paths).
+    using_max_t = bundle.pairwise.simultaneous_ci_method == "max_t"
+
     # Resolve the effective p-value source and column header.
     if p_value_method == "auto":
         if is_newcombe_pairwise:
@@ -797,11 +800,13 @@ def _print_pairwise_section(
         elif is_sign_pairwise:
             eff_p_source, p_col_header = "boot", "p (sign)"
         elif is_bootstrap_path:
-            eff_p_source, p_col_header = "boot", "p (boot)"
+            eff_p_source = "max_t" if using_max_t else "boot"
+            p_col_header = "p (boot)"
         else:
             eff_p_source, p_col_header = "wsr", "p (wsr)"
     elif p_value_method == "boot":
-        eff_p_source, p_col_header = "boot", "p (boot)"
+        eff_p_source = "max_t" if (using_max_t and is_bootstrap_path) else "boot"
+        p_col_header = "p (boot)"
     elif p_value_method == "wsr":
         eff_p_source, p_col_header = "wsr", "p (wsr)"
     elif p_value_method == "nem":
@@ -888,7 +893,7 @@ def _print_pairwise_section(
             f"{result.ci_high:+{pair_ci_col_width}.4f} "
             f"{d_str}"
         )
-        if eff_p_source == "boot":
+        if eff_p_source in {"max_t", "boot"}:
             p_val = result.p_value
         elif eff_p_source == "wsr":
             p_val = result.wilcoxon_p
@@ -907,13 +912,15 @@ def _print_pairwise_section(
         print("  (no pairwise comparisons)")
     elif max_pairs > 0:
         print(f"  r_rb = rank biserial correlation (effect size: small≈0.1, medium≈0.3, large≈0.5)")
-        if eff_p_source == "boot":
+        if eff_p_source in {"max_t", "boot"}:
             if is_newcombe_pairwise:
                 print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
             elif is_fisher_pairwise:
                 print(f"  {p_col_header} = Fisher's exact test (two-sided, uncorrected)")
             elif is_sign_pairwise:
                 print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")
+            elif eff_p_source == "max_t":
+                print(f"  {p_col_header} = max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs)")
             else:
                 print(f"  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected)")
         elif eff_p_source == "wsr":
@@ -1020,7 +1027,7 @@ def _print_bundle_summary(
     line_width: int,
     item_singular: str = "template",
     item_plural: str = "templates",
-    p_value_method: Optional[str] = "auto",
+    p_value_method: Optional[str] = None,
 ) -> None:
     template_col_width = 24
 
