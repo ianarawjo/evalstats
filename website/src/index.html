@@ -300,16 +300,10 @@
       <div class="callout callout-info">
         <div class="callout-label">Auto-selection logic</div>
         <p>
-          When <code>method="auto"</code> (the default), <code>promptstats</code> uses:
-          <strong>smooth bootstrap</strong> for numeric/interval data.
-          For binary data, it uses <strong>Wilson</strong> for point-advantage CIs;
-          for pairwise comparisons it uses <strong>Bayesian paired</strong> when
-          <code>N &lt; 100</code>, and <strong>bootstrap</strong> when <code>N &ge; 100</code>
-          for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
-          Multiple pairwise comparisons for p-values are corrected with the Benjamini-Hochberg method
-          (<code>fdr_bh</code>) by default; for bootstrap-based methods, simultaneous CIs are used with the studentized maxT method.
-          Nested (two-level) bootstrap is used automatically for bootstrap-based analyses
-          when repeated runs are present.
+          When <code>method="auto"</code> (the default), <code>promptstats</code> picks the most
+          appropriate method based on your data type and sample size.
+          See <a href="which-method.html">Which Method?</a> for the full decision logic and
+          simulation evidence behind these defaults.
         </p>
       </div>
 
@@ -383,6 +377,57 @@ report.summary()</code></pre>
         More complete, runnable examples are in the
         <a href="https://github.com/ianarawjo/promptstats/tree/main/examples" target="_blank" rel="noopener">
           <code>examples/</code> folder on GitHub</a>.
+      </p>
+
+      <h3 id="cli">Using the CLI (no Python required)</h3>
+      <p>
+        Don't want to write Python? <code>promptstats</code> ships a command-line interface that reads
+        a CSV or Excel file and prints the full statistical report directly in your terminal.
+      </p>
+      <pre><code class="language-bash">promptstats analyze results.csv</code></pre>
+      <p>
+        For multi-model comparison, use a <strong>long/tidy format</strong> CSV with at minimum
+        <code>model</code>, <code>prompt</code>, <code>input</code>, and <code>score</code> columns:
+      </p>
+      <div style="overflow-x:auto; margin: 1rem 0;">
+        <table style="border-collapse:collapse; font-size:0.88rem; width:100%;">
+          <thead>
+            <tr style="background:var(--surface-2,#f5f5f5);">
+              <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">model</th>
+              <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">prompt</th>
+              <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">input</th>
+              <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">score</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.85</td></tr>
+            <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.72</td></tr>
+            <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.61</td></tr>
+            <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.54</td></tr>
+            <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gemma-3-4b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.77</td></tr>
+            <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gemma-3-4b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.69</td></tr>
+            <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gemma-3-4b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.60</td></tr>
+            <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gemma-3-4b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">ex_2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.55</td></tr>
+            <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p>
+        The CLI auto-detects the format. You can also pass an Excel file and specify a sheet,
+        save outputs to a file, or tweak the confidence level:
+      </p>
+      <pre><code class="language-bash"># Excel file, non-default sheet
+promptstats analyze results.xlsx --sheet "Eval Results"
+
+# Save a Markdown summary and a mean-advantage plot
+promptstats analyze results.csv --out report.md plot.png
+
+# 95 % CIs instead of the default 99 %
+promptstats analyze results.csv --ci 0.95</code></pre>
+      <p class="aside">
+        Column name aliases are accepted for convenience — e.g. <code>template</code> instead of
+        <code>prompt</code>, <code>item</code> instead of <code>input</code>, or <code>value</code>
+        instead of <code>score</code>. Run <code>promptstats analyze --help</code> for the full list.
       </p>
     </section>
 
