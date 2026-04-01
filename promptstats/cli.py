@@ -160,9 +160,46 @@ def _build_parser() -> argparse.ArgumentParser:
     analyze.add_argument(
         "--ci",
         type=float,
-        default=0.95,
+        default=None,
         metavar="FLOAT",
-        help="Confidence level for bootstrap intervals (default: 0.95).",
+        help=(
+            "Confidence level for intervals. If omitted, uses the project-wide "
+            "default from promptstats.config.get_alpha_ci() (0.99)."
+        ),
+    )
+    analyze.add_argument(
+        "--method",
+        choices=[
+            "auto",
+            "bootstrap",
+            "bca",
+            "bayes_bootstrap",
+            "smooth_bootstrap",
+            "permutation",
+            "sign_test",
+            "lmm",
+            "bayes_binary",
+            "wilson",
+            "newcombe",
+            "fisher_exact",
+        ],
+        default="auto",
+        metavar="METHOD",
+        help=(
+            "Inference method (default: auto). Use 'lmm' for mixed-effects modeling; "
+            "binary-only modes include 'bayes_binary', 'wilson', 'newcombe', and "
+            "'fisher_exact'."
+        ),
+    )
+    analyze.add_argument(
+        "--backend",
+        choices=["statsmodels", "pymer4"],
+        default="statsmodels",
+        metavar="BACKEND",
+        help=(
+            "LMM backend when --method lmm (default: statsmodels). "
+            "Ignored for non-LMM methods."
+        ),
     )
     analyze.add_argument(
         "--n-bootstrap",
@@ -193,6 +230,46 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="FLOAT",
         help="Report fraction of inputs scoring below this value (robustness table).",
+    )
+    analyze.add_argument(
+        "--spread-percentiles",
+        nargs=2,
+        type=float,
+        default=(10.0, 90.0),
+        metavar=("LOW", "HIGH"),
+        help=(
+            "Percentile band for intrinsic spread in advantage plots (default: 10 90)."
+        ),
+    )
+    analyze.add_argument(
+        "--statistic",
+        choices=["mean", "median"],
+        default="mean",
+        metavar="STAT",
+        help="Central tendency for estimates and resampling (default: mean).",
+    )
+    analyze.add_argument(
+        "--template-model-collapse",
+        choices=["mean", "as_runs"],
+        default="as_runs",
+        metavar="MODE",
+        help=(
+            "Multi-model template collapse mode: 'mean' or 'as_runs' (default: as_runs)."
+        ),
+    )
+    analyze.add_argument(
+        "--simultaneous-ci",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use simultaneous (family-wise) pairwise CIs (default: enabled). "
+            "Use --no-simultaneous-ci for marginal CIs."
+        ),
+    )
+    analyze.add_argument(
+        "--omnibus",
+        action="store_true",
+        help="Run an omnibus test in addition to pairwise comparisons.",
     )
     analyze.add_argument(
         "--top-pairwise",
@@ -298,14 +375,22 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     print("Running analysis ...", flush=True)
     try:
+        ci = getattr(args, "ci", None)
         analysis = analyze(
             result,
             evaluator_mode=evaluator_mode,
-            ci=args.ci,
-            n_bootstrap=args.n_bootstrap,
-            correction=args.correction,
             reference=args.reference,
-            failure_threshold=args.failure_threshold,
+            method=getattr(args, "method", "auto"),
+            backend=getattr(args, "backend", "statsmodels"),
+            ci=ci,
+            n_bootstrap=getattr(args, "n_bootstrap", 10_000),
+            correction=getattr(args, "correction", "fdr_bh"),
+            spread_percentiles=tuple(getattr(args, "spread_percentiles", (10, 90))),
+            failure_threshold=getattr(args, "failure_threshold", None),
+            statistic=getattr(args, "statistic", "mean"),
+            template_model_collapse=getattr(args, "template_model_collapse", "as_runs"),
+            simultaneous_ci=getattr(args, "simultaneous_ci", True),
+            omnibus=getattr(args, "omnibus", False),
         )
     except (ValueError, NotImplementedError) as exc:
         _die(str(exc))
@@ -319,13 +404,19 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     out_paths = getattr(args, "out", None)
     if out_paths:
+        if ci is None:
+            from promptstats.config import get_alpha_ci
+
+            ci_for_outputs = 1.0 - get_alpha_ci()
+        else:
+            ci_for_outputs = ci
         _write_outputs(
             out_paths=out_paths,
             summary_text=summary_text,
             analysis=analysis,
             reference=args.reference,
             n_bootstrap=args.n_bootstrap,
-            ci=args.ci,
+            ci=ci_for_outputs,
         )
 
 

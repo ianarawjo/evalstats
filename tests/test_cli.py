@@ -44,6 +44,101 @@ def _write_example_data(path: Path, df: pd.DataFrame) -> None:
     raise ValueError(f"unsupported test file suffix: {path.suffix}")
 
 
+def _make_binary_long_df(n_inputs: int = 20) -> pd.DataFrame:
+    rows = []
+    for evaluator_idx, evaluator in enumerate(["acc", "fluency"]):
+        for prompt_idx, prompt in enumerate(["Prompt A", "Prompt B"]):
+            for input_idx in range(n_inputs):
+                score = float(((input_idx + 2 * prompt_idx + evaluator_idx) % 3) == 0)
+                rows.append(
+                    {
+                        "prompt": prompt,
+                        "input": f"i{input_idx}",
+                        "evaluator": evaluator,
+                        "score": score,
+                    }
+                )
+    return pd.DataFrame(rows)
+
+
+_SMOKE_METHODS = [
+    "auto",
+    "bootstrap",
+    "bca",
+    "bayes_bootstrap",
+    "smooth_bootstrap",
+    "permutation",
+    "sign_test",
+    "lmm",
+    "bayes_binary",
+    "wilson",
+    "newcombe",
+    "fisher_exact",
+]
+
+
+_SMOKE_ANALYZE_CASES = [
+    (method, evaluator_mode, ci, statistic)
+    for method, evaluator_mode, ci, statistic in product(
+        _SMOKE_METHODS,
+        ["aggregate", "per_evaluator"],
+        [None, 0.95],
+        ["mean", "median"],
+    )
+    if not (method == "lmm" and statistic == "median")
+    if not (
+        method in {"bayes_binary", "wilson", "newcombe", "fisher_exact"}
+        and evaluator_mode == "aggregate"
+    )
+]
+
+
+# This test is a smoke test to check that the analyze command runs without error for 
+# a variety of option combinations.
+@pytest.mark.parametrize(
+    "method,evaluator_mode,ci,statistic",
+    _SMOKE_ANALYZE_CASES,
+)
+def test_cmd_analyze_smoke_runs_for_param_grid(
+    tmp_path,
+    capsys,
+    method,
+    evaluator_mode,
+    ci,
+    statistic,
+):
+    csv_path = tmp_path / "smoke_long_binary.csv"
+    _make_binary_long_df().to_csv(csv_path, index=False)
+
+    args = argparse.Namespace(
+        file=csv_path,
+        format="long",
+        sheet="0",
+        evaluator_mode=evaluator_mode,
+        ci=ci,
+        method=method,
+        backend="statsmodels",
+        n_bootstrap=30,
+        correction="fdr_bh",
+        spread_percentiles=(10.0, 90.0),
+        reference="Prompt A",
+        failure_threshold=0.5,
+        statistic=statistic,
+        template_model_collapse="as_runs",
+        simultaneous_ci=False,
+        omnibus=True,
+        top_pairwise=3,
+        out=None,
+    )
+
+    cli._cmd_analyze(args)
+    out = capsys.readouterr().out
+
+    assert "Running analysis ..." in out
+    assert "Prompts:" in out
+    assert len(out.strip()) > 0
+
+
 @pytest.mark.parametrize("suffix", [".csv", ".xlsx"])
 def test_load_file_reads_csv_and_xlsx_from_disk(tmp_path, suffix):
     df = pd.DataFrame(
@@ -76,26 +171,8 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     analysis_call = {}
     summary_call = {}
 
-    def fake_analyze(
-        benchmark,
-        evaluator_mode,
-        ci,
-        n_bootstrap,
-        correction,
-        reference,
-        failure_threshold,
-    ):
-        analysis_call.update(
-            {
-                "benchmark": benchmark,
-                "evaluator_mode": evaluator_mode,
-                "ci": ci,
-                "n_bootstrap": n_bootstrap,
-                "correction": correction,
-                "reference": reference,
-                "failure_threshold": failure_threshold,
-            }
-        )
+    def fake_analyze(benchmark, **kwargs):
+        analysis_call.update({"benchmark": benchmark, **kwargs})
         return {"ok": True}
 
     def fake_print_summary(analysis, top_pairwise):
@@ -123,11 +200,18 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     assert analysis_call["benchmark"].template_labels == ["Prompt A", "Prompt B"]
     assert analysis_call["benchmark"].input_labels == ["i1", "i2"]
     assert analysis_call["evaluator_mode"] == "aggregate"
+    assert analysis_call["reference"] == "grand_mean"
+    assert analysis_call["method"] == "auto"
+    assert analysis_call["backend"] == "statsmodels"
     assert analysis_call["ci"] == 0.95
     assert analysis_call["n_bootstrap"] == 100
     assert analysis_call["correction"] == "holm"
-    assert analysis_call["reference"] == "grand_mean"
+    assert analysis_call["spread_percentiles"] == (10, 90)
     assert analysis_call["failure_threshold"] == 0.2
+    assert analysis_call["statistic"] == "mean"
+    assert analysis_call["template_model_collapse"] == "as_runs"
+    assert analysis_call["simultaneous_ci"] is True
+    assert analysis_call["omnibus"] is False
     assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 7}
 
 
@@ -251,26 +335,8 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         report = type("Report", (), {"format_detected": detected_fmt})()
         return result, report
 
-    def fake_analyze(
-        benchmark,
-        evaluator_mode,
-        ci,
-        n_bootstrap,
-        correction,
-        reference,
-        failure_threshold,
-    ):
-        analysis_call.update(
-            {
-                "benchmark": benchmark,
-                "evaluator_mode": evaluator_mode,
-                "ci": ci,
-                "n_bootstrap": n_bootstrap,
-                "correction": correction,
-                "reference": reference,
-                "failure_threshold": failure_threshold,
-            }
-        )
+    def fake_analyze(benchmark, **kwargs):
+        analysis_call.update({"benchmark": benchmark, **kwargs})
         return {"ok": True}
 
     def fake_print_summary(analysis, top_pairwise):
@@ -286,10 +352,17 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.9,
+        method="permutation",
+        backend="statsmodels",
         n_bootstrap=1234,
         correction="fdr_bh",
+        spread_percentiles=(5.0, 95.0),
         reference="Prompt A",
         failure_threshold=0.2,
+        statistic="median",
+        template_model_collapse="mean",
+        simultaneous_ci=False,
+        omnibus=True,
         top_pairwise=11,
     )
 
@@ -303,11 +376,18 @@ def test_cmd_analyze_routes_format_and_forwards_options(
     assert analysis_call == {
         "benchmark": result,
         "evaluator_mode": "aggregate",
+        "reference": "Prompt A",
+        "method": "permutation",
+        "backend": "statsmodels",
         "ci": 0.9,
         "n_bootstrap": 1234,
         "correction": "fdr_bh",
-        "reference": "Prompt A",
+        "spread_percentiles": (5.0, 95.0),
         "failure_threshold": 0.2,
+        "statistic": "median",
+        "template_model_collapse": "mean",
+        "simultaneous_ci": False,
+        "omnibus": True,
     }
     assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 11}
     assert "Running analysis ..." in out
@@ -366,17 +446,9 @@ def test_cmd_analyze_allows_per_evaluator_for_multimodel(tmp_path, monkeypatch):
 
     analysis_call = {}
 
-    def fake_analyze(
-        benchmark,
-        evaluator_mode,
-        ci,
-        n_bootstrap,
-        correction,
-        reference,
-        failure_threshold,
-    ):
+    def fake_analyze(benchmark, **kwargs):
         analysis_call["benchmark"] = benchmark
-        analysis_call["evaluator_mode"] = evaluator_mode
+        analysis_call.update(kwargs)
         return {"accuracy": {"ok": True}}
 
     monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
