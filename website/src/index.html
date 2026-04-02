@@ -193,6 +193,47 @@
         assumptions. To trust these intervals, we need to use methods that are robust at small N. To understand
         which methods are robust, we would ideally run simulations that reflect the kinds of data we see in real evals.
       </p>
+
+      <h3>The Forgotten Paper on Statistical Comparisons in ML: Dem&scaron;ar (2006)</h3>
+      <p>
+        Before the LLM era, the machine learning community had a well-established answer to the question of how to
+        statistically compare multiple models across multiple evaluation sets. Janez Dem&scaron;ar&rsquo;s 2006
+        <em>Journal of Machine Learning Research</em> paper, <em>Statistical Comparisons of Classifiers over
+        Multiple Data Sets</em>, argued that parametric tests like ANOVA are routinely misapplied to classifier
+        comparisons, violating normality and independence assumptions. He recommended non-parametric alternatives—
+        the Wilcoxon signed-ranks test for two models, the Friedman test plus post-hoc corrections for
+        more than two—and introduced the <strong>critical difference (CD) diagram</strong> as a clean
+        visual for communicating the results.
+      </p>
+      <p>
+        The paper is highly cited in classical ML but has largely been forgotten in the LLM benchmark discourse.
+        That is a shame, because the situation Dem&scaron;ar addressed is precisely the one we face: many models
+        (or prompts), many evaluation sets (or items), non-normal distributions, and a need to make comparative claims that are statistically
+        honest about uncertainty.
+      </p>
+      <div class="callout callout-info">
+        <div class="callout-label">Why it still matters</div>
+        <p>
+          Dem&scaron;ar&rsquo;s core insight is that comparing the rank of methods averaged across datasets is more robust than
+          comparing raw means, and that multiple comparisons require explicit correction. This transfers directly
+          to LLM evals whenever you are comparing N prompts or models across M evaluation sets and asking which
+          is best.
+        </p>
+      </div>
+      <p>
+        That said, the framework needs adaptation for modern eval practice. CD diagrams and rank-band
+        visualizations are built around a narrow, rigid NHST pipeline: run a Friedman test, apply a post-hoc
+        correction (Nemenyi or Holm), then draw cliques of methods that are not significantly different. This
+        works, but it doesn't adapt to the estimation-first approach that we advocate, 
+        which focuses on effect sizes and confidence intervals rather than p-values.
+        If we want to run any other test than Friedman, essentially, we can't use the CD diagram as Dem&scaron;ar&rsquo;s paper defines it. 
+      </p>
+      <p>
+        But CD diagram is just a visualization! There's nothing stopping us from adapting it to other tests and other philosophies. In fact,
+         <code>promptstats</code> adapts the CD diagram to work with pairwise confidence intervals (adjusted for multiple comparisons)
+        and estimated ranks from a bootstrapped distribution. However, it also supports the traditional NHST Friedman test and CD diagrams 
+        generated from that, for users who want to run a more traditional analysis.
+      </p>
     </section>
 
     <!-- ── SECTION: BOOTSTRAP METHODS ── -->
