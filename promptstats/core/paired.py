@@ -237,7 +237,7 @@ class PairedDiffResult:
         """Alias for ``rank_biserial``."""
         return self.rank_biserial
 
-    def summary(self, *, alpha: float | None = None, correction: str = "") -> None:
+    def summary(self, *, alpha: Optional[float] = None, correction: str = "") -> None:
         """Print a focused summary for this pairwise comparison.
 
         Displays the gap, an ASCII interval plot of the confidence interval,
@@ -399,7 +399,7 @@ class PairwiseMatrix:
             )
         raise KeyError(f"No comparison found for ({a}, {b})")
 
-    def summary(self, a: str, b: str, *, alpha: float | None = None) -> None:
+    def summary(self, a: str, b: str, *, alpha: Optional[float] = None) -> None:
         """Print a focused summary for the comparison between `a` and `b`.
 
         Retrieves the pairwise result via ``get(a, b)``, then delegates to

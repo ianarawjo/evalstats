@@ -14,7 +14,7 @@ structures.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 import numpy as np
 
@@ -84,7 +84,7 @@ class CompareReport:
     entity_stats: dict[str, EntityStats]
     unbeaten: Optional[list[str]]
     pairwise: PairwiseMatrix
-    full_analysis: AnalysisBundle | MultiModelBundle
+    full_analysis: Union[AnalysisBundle, MultiModelBundle]
     alpha: float = 0.01
     statistic: Literal["mean", "median"] = "mean"
     method: str = "smooth_bootstrap"
@@ -246,7 +246,12 @@ class CompareReport:
         """
         self.pairwise.get(a, b).summary()
 
-    def summary(self, *, p_value_method: Optional[str] = None) -> None:
+    def summary(
+        self,
+        *,
+        p_value_method: Optional[str] = None,
+        pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    ) -> None:
         """Print a focused summary scoped to the entity comparison level.
 
         Shows mean advantage, pairwise comparisons and the executive leaderboard.
@@ -260,12 +265,24 @@ class CompareReport:
             p-value for bootstrap CI paths, Wilcoxon signed-rank for others.
             Options: ``'boot'``, ``'wsr'``, ``'nem'``, or ``None`` to
             suppress p-values entirely.
+        pairwise_sort : {"grouped", "significance"}
+            Row order for the pairwise table. ``"grouped"`` groups rows by
+            left item for readability, while ``"significance"`` sorts by
+            p-value first.
         """
-        print_compare_summary(self, p_value_method=p_value_method)
+        print_compare_summary(
+            self,
+            p_value_method=p_value_method,
+            pairwise_sort=pairwise_sort,
+        )
 
-    def full_summary(self) -> None:
+    def full_summary(
+        self,
+        *,
+        pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    ) -> None:
         """Print the complete internal analysis (full AnalysisBundle / MultiModelBundle output)."""
-        print_analysis_summary(self.full_analysis)
+        print_analysis_summary(self.full_analysis, pairwise_sort=pairwise_sort)
 
     def print(self) -> None:
         """Alias for ``summary()``."""
@@ -290,18 +307,25 @@ def _compute_unbeaten(
 ) -> Optional[list[str]]:
     """Compute the set of unbeaten entities from directed significant-better relations.
 
-    A directed edge i→j exists when i is significantly better than j
-    (correction-adjusted p < alpha and positive point difference).
+    When simultaneous CIs have been computed, significance is determined by
+    whether the pairwise CI excludes zero (consistent with the displayed CIs).
+    Otherwise, correction-adjusted p < alpha is used.
+
     Unbeaten entities are those with zero incoming edges (nothing beats them).
     Returns ``None`` when no significant edges exist at all.
     """
+    use_ci = pairwise.simultaneous_ci_method is not None
     incoming = {label: 0 for label in labels}
     edge_count = 0
 
     for i, a in enumerate(labels):
         for b in labels[i + 1:]:
             result = pairwise.get(a, b)
-            if result.p_value < alpha:
+            if use_ci:
+                sig = result.ci_low > 0 or result.ci_high < 0
+            else:
+                sig = result.p_value < alpha
+            if sig:
                 if result.point_diff > 0:
                     incoming[b] += 1
                     edge_count += 1
@@ -405,7 +429,7 @@ def _normalize_compare_models_scores(
 def compare_prompts(
     scores: dict,
     *,
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     method: CompareMethod = "auto",
@@ -640,7 +664,7 @@ def compare_prompts(
 def compare_models(
     scores: dict,
     *,
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     method: CompareMethod = "auto",

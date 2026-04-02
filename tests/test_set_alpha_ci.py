@@ -121,22 +121,23 @@ def test_alpha_affects_unbeaten_in_compare_prompts():
 
     # Verify the known p-value (sanity check)
     ref = ps.compare_prompts(
-        scores, method="sign_test", correction="none", alpha=0.05, rng=_rng(),
+        scores, method="sign_test", correction="none", simultaneous_ci=False, alpha=0.05, rng=_rng(),
     )
     p_val = ref.pairwise.get("a", "b").p_value
     assert p_val == pytest.approx(2 * (0.5 ** 6), abs=1e-9), (
         f"Unexpected sign-test p-value: {p_val}"
     )
 
-    # Loose alpha (> p_val): a significantly beats b → only a is unbeaten
+    # Loose alpha (> p_val): a significantly beats b → only a is unbeaten.
+    # Use simultaneous_ci=False to test the p-value-based significance path.
     report_loose = ps.compare_prompts(
-        scores, method="sign_test", correction="none", alpha=0.05, rng=_rng(),
+        scores, method="sign_test", correction="none", simultaneous_ci=False, alpha=0.05, rng=_rng(),
     )
     assert report_loose.unbeaten == ["a"]
 
     # Strict alpha (< p_val): no significant edge → unbeaten is None
     report_strict = ps.compare_prompts(
-        scores, method="sign_test", correction="none", alpha=0.01, rng=_rng(),
+        scores, method="sign_test", correction="none", simultaneous_ci=False, alpha=0.01, rng=_rng(),
     )
     assert report_strict.unbeaten is None
 
@@ -149,10 +150,11 @@ def test_global_alpha_affects_unbeaten_outcome():
         "b": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     }
 
-    # Via global: loose alpha → a is unbeaten
+    # Via global: loose alpha → a is unbeaten.
+    # Use simultaneous_ci=False to test the p-value-based significance path.
     set_alpha_ci(0.05)
     report_global_loose = ps.compare_prompts(
-        scores, method="sign_test", correction="none", rng=_rng(),
+        scores, method="sign_test", correction="none", simultaneous_ci=False, rng=_rng(),
     )
     assert report_global_loose.unbeaten == ["a"]
     assert report_global_loose.alpha == pytest.approx(0.05)
@@ -160,7 +162,7 @@ def test_global_alpha_affects_unbeaten_outcome():
     # Via global: strict alpha → no winner
     set_alpha_ci(0.01)
     report_global_strict = ps.compare_prompts(
-        scores, method="sign_test", correction="none", rng=_rng(),
+        scores, method="sign_test", correction="none", simultaneous_ci=False, rng=_rng(),
     )
     assert report_global_strict.unbeaten is None
     assert report_global_strict.alpha == pytest.approx(0.01)

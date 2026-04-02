@@ -128,6 +128,7 @@ def print_analysis_summary(
     *,
     top_pairwise: int = None,
     line_width: int = 41,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
 ) -> None:
     """Print a concise console summary of analyze() results."""
     if isinstance(analysis, MultiModelBundle):
@@ -135,6 +136,7 @@ def print_analysis_summary(
             analysis,
             top_pairwise=top_pairwise,
             line_width=line_width,
+            pairwise_sort=pairwise_sort,
         )
         return
 
@@ -143,6 +145,7 @@ def print_analysis_summary(
             analysis,
             top_pairwise=top_pairwise,
             line_width=line_width,
+            pairwise_sort=pairwise_sort,
         )
         return
 
@@ -153,12 +156,14 @@ def print_analysis_summary(
                 bundle,
                 top_pairwise=top_pairwise,
                 line_width=line_width,
+                pairwise_sort=pairwise_sort,
             )
         else:
             _print_bundle_summary(
                 bundle,
                 top_pairwise=top_pairwise,
                 line_width=line_width,
+                pairwise_sort=pairwise_sort,
             )
         print()
 
@@ -166,7 +171,7 @@ def print_analysis_summary(
 def print_pairwise_summary(
     pair: PairedDiffResult,
     *,
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     correction: str = "",
     line_width: int = 50,
 ) -> None:
@@ -278,6 +283,7 @@ def print_compare_summary(
     top_pairwise: int = None,
     line_width: int = 41,
     p_value_method: Optional[str] = None,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
 ) -> None:
     """Print a focused summary for compare_prompts / compare_models results.
 
@@ -292,6 +298,10 @@ def print_compare_summary(
         picks the method commensurate with the CI (bootstrap p for bootstrap
         paths, Wilcoxon for others).  Options: ``'boot'``, ``'wsr'``,
         ``'nem'``, or ``None`` to suppress p-values.
+    pairwise_sort : {"grouped", "significance"}
+        Row order for the pairwise table. ``"grouped"`` groups by the left
+        item (stable, scan-friendly), while ``"significance"`` orders by
+        p-value then absolute effect size.
     """
     n = len(report.labels)
     # Get the AnalysisBundle appropriate to the entity-level comparison.
@@ -323,6 +333,7 @@ def print_compare_summary(
         top_pairwise=top_pairwise,
         line_width=line_width,
         p_value_method=p_value_method,
+        pairwise_sort=pairwise_sort,
     )
     print()
     _print_executive_summary(bundle, item_singular=report.entity_name_singular)
@@ -406,6 +417,7 @@ def _print_multi_model_summary(
     *,
     top_pairwise: int = None,
     line_width: int,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
 ) -> None:
     _print_loud_section("Multi-Model Analysis Summary")
     print(f"Shape: {bundle.shape}")
@@ -428,6 +440,7 @@ def _print_multi_model_summary(
         line_width=line_width,
         item_singular="model",
         item_plural="models",
+        pairwise_sort=pairwise_sort,
     )
 
     print()
@@ -438,6 +451,7 @@ def _print_multi_model_summary(
         line_width=line_width,
         item_singular="template",
         item_plural="templates",
+        pairwise_sort=pairwise_sort,
     )
     best_idx = int(np.argmax(bundle.template_level.robustness.mean))
     best_template = bundle.template_level.benchmark.template_labels[best_idx]
@@ -460,6 +474,7 @@ def _print_multi_model_summary(
             model_bundle,
             top_pairwise=top_pairwise,
             line_width=line_width,
+            pairwise_sort=pairwise_sort,
         )
 
     print()
@@ -743,6 +758,7 @@ def _print_pairwise_section(
     line_width: int,
     sort: bool = True,
     p_value_method: Optional[str] = None,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
 ) -> None:
     """Print the pairwise comparisons block for an AnalysisBundle.
 
@@ -758,8 +774,12 @@ def _print_pairwise_section(
         Wilcoxon signed-rank for LMM/other paths.  Explicit choices:
         ``'boot'`` (result.p_value), ``'wsr'`` (Wilcoxon signed-rank),
         ``'nem'`` (Nemenyi post-hoc).  Pass ``None`` to suppress p-values.
+    pairwise_sort : {"grouped", "significance"}
+        Sorting strategy for pairwise rows. ``"grouped"`` keeps a stable
+        left-item grouping, while ``"significance"`` sorts by p-value then
+        absolute effect size.
     """
-    pair_col_width = 32
+    pair_item_col_width = 24
     pair_stat_col_width = 8
     pair_ci_col_width = 9
     pair_sigma_col_width = 8
@@ -826,16 +846,97 @@ def _print_pairwise_section(
         _pairwise_header_method += " (simultaneous CIs computed with Bonferroni)"
     _print_subsection(f"--- Pairwise Comparisons ({_pairwise_header_method}) ---")
     pair_results = list(bundle.pairwise.results.values())
-    if sort:
-        pair_results = sorted(
-            pair_results,
-            key=lambda r: (r.p_value, -abs(r.point_diff)),
+
+    # Canonical left/right ordering based on expected-rank order keeps rows
+    # readable by preventing arbitrary A/B flips between adjacent rows.
+    rank_order = {
+        label: idx
+        for idx, (_, label) in enumerate(
+            sorted(
+                zip(bundle.rank_dist.expected_ranks, bundle.rank_dist.labels),
+                key=lambda item: (float(item[0]), item[1]),
+            )
         )
+    }
+
+    if pair_results:
+        max_label_len = max(
+            max(len(r.template_a), len(r.template_b)) for r in pair_results
+        )
+        pair_item_col_width = min(30, max(12, max_label_len + 2))
+
+    normalized_rows = []
+    for result in pair_results:
+        a = result.template_a
+        b = result.template_b
+        pos_a = rank_order.get(a, len(rank_order))
+        pos_b = rank_order.get(b, len(rank_order))
+        swap = (pos_a > pos_b) or (pos_a == pos_b and a > b)
+
+        if swap:
+            left_item = b
+            right_item = a
+            point_diff = -float(result.point_diff)
+            ci_low = -float(result.ci_high)
+            ci_high = -float(result.ci_low)
+            rank_biserial = -float(result.rank_biserial)
+            left_pos = pos_b
+            right_pos = pos_a
+        else:
+            left_item = a
+            right_item = b
+            point_diff = float(result.point_diff)
+            ci_low = float(result.ci_low)
+            ci_high = float(result.ci_high)
+            rank_biserial = float(result.rank_biserial)
+            left_pos = pos_a
+            right_pos = pos_b
+
+        normalized_rows.append(
+            {
+                "left": left_item,
+                "right": right_item,
+                "left_pos": left_pos,
+                "right_pos": right_pos,
+                "point_diff": point_diff,
+                "ci_low": ci_low,
+                "ci_high": ci_high,
+                "std_diff": float(result.std_diff),
+                "rank_biserial": rank_biserial,
+                "p_value": result.p_value,
+                "wilcoxon_p": result.wilcoxon_p,
+            }
+        )
+
+    if pairwise_sort not in {"grouped", "significance"}:
+        raise ValueError("pairwise_sort must be 'grouped' or 'significance'.")
+
+    if sort:
+        if pairwise_sort == "grouped":
+            normalized_rows = sorted(
+                normalized_rows,
+                key=lambda row: (
+                    row["left_pos"],
+                    row["right_pos"],
+                    row["p_value"],
+                    -abs(row["point_diff"]),
+                ),
+            )
+        else:
+            normalized_rows = sorted(
+                normalized_rows,
+                key=lambda row: (
+                    row["p_value"],
+                    -abs(row["point_diff"]),
+                    row["left_pos"],
+                    row["right_pos"],
+                ),
+            )
     # By default, print all pairs unless top_pairwise is set.
     if top_pairwise is None:
-        max_pairs = len(pair_results)
+        max_pairs = len(normalized_rows)
     else:
-        max_pairs = max(0, min(top_pairwise, len(pair_results)))
+        max_pairs = max(0, min(top_pairwise, len(normalized_rows)))
 
     # Friedman omnibus line (printed before the interval plot when pairs exist).
     if max_pairs > 0 and bundle.pairwise.friedman is not None:
@@ -851,23 +952,25 @@ def _print_pairwise_section(
             1e-12,
             max(
                 max(
-                    abs(float(result.point_diff)),
-                    abs(float(result.ci_low)),
-                    abs(float(result.ci_high)),
-                    abs(float(result.point_diff - result.std_diff)),
-                    abs(float(result.point_diff + result.std_diff)),
+                    abs(float(row["point_diff"])),
+                    abs(float(row["ci_low"])),
+                    abs(float(row["ci_high"])),
+                    abs(float(row["point_diff"] - row["std_diff"])),
+                    abs(float(row["point_diff"] + row["std_diff"])),
                 )
-                for result in pair_results[:max_pairs]
+                for row in normalized_rows[:max_pairs]
             ),
         )
         pair_low = -pair_max_abs
         pair_high = pair_max_abs
         print(
-            f"  axis: [{pair_low:+.3f}, {pair_high:+.3f}]  "
-            f"(· ±1σ, ─ CI, ● {pair_stat_label.lower()}, │ zero)"
+            f"  legend: (· ±1σ, ─ CI, ● {pair_stat_label.lower()}, │ zero)    "
+            f"axis: [{pair_low:+.3f}, {pair_high:+.3f}]    "
+            "effect: Left - Right"
         )
         header = (
-            f"  {'Pair':<{pair_col_width}s} {'Interval Plot':<{line_width}s} "
+            f"  {'Left':<{pair_item_col_width}s} {'Right':<{pair_item_col_width}s} "
+            f"{'Interval Plot':<{line_width}s} "
             f"{pair_stat_label:>{pair_stat_col_width}s} "
             f"{'CI Low':>{pair_ci_col_width}s} {'CI High':>{pair_ci_col_width}s} "
             f"{'r_rb':>{pair_sigma_col_width}s}"
@@ -876,38 +979,37 @@ def _print_pairwise_section(
             header += f" {p_col_header:>{pair_p_col_width}s}"
         print(header)
 
-    for result in pair_results[:max_pairs]:
+    for row_data in normalized_rows[:max_pairs]:
         line = _ascii_interval_line(
-            mean=float(result.point_diff),
-            ci_low=float(result.ci_low),
-            ci_high=float(result.ci_high),
-            spread_low=float(result.point_diff - result.std_diff),
-            spread_high=float(result.point_diff + result.std_diff),
+            mean=float(row_data["point_diff"]),
+            ci_low=float(row_data["ci_low"]),
+            ci_high=float(row_data["ci_high"]),
+            spread_low=float(row_data["point_diff"] - row_data["std_diff"]),
+            spread_high=float(row_data["point_diff"] + row_data["std_diff"]),
             axis_low=pair_low,
             axis_high=pair_high,
             width=line_width,
         )
-        pair_label = _truncate_label(
-            f"{result.template_a} vs {result.template_b}",
-            pair_col_width,
-        )
-        d_val = result.rank_biserial
+        left_label = _truncate_label(str(row_data["left"]), pair_item_col_width)
+        right_label = _truncate_label(str(row_data["right"]), pair_item_col_width)
+        d_val = float(row_data["rank_biserial"])
         d_str = f"{d_val:>{pair_sigma_col_width}.3f}"
         row = (
-            f"  {pair_label:<{pair_col_width}s} "
+            f"  {left_label:<{pair_item_col_width}s} "
+            f"{right_label:<{pair_item_col_width}s} "
             f"{line:<{line_width}s} "
-            f"{result.point_diff:+{pair_stat_col_width}.4f} "
-            f"{result.ci_low:+{pair_ci_col_width}.4f} "
-            f"{result.ci_high:+{pair_ci_col_width}.4f} "
+            f"{float(row_data['point_diff']):+{pair_stat_col_width}.4f} "
+            f"{float(row_data['ci_low']):+{pair_ci_col_width}.4f} "
+            f"{float(row_data['ci_high']):+{pair_ci_col_width}.4f} "
             f"{d_str}"
         )
         if eff_p_source in {"max_t", "boot"}:
-            p_val = result.p_value
+            p_val = row_data["p_value"]
         elif eff_p_source == "wsr":
-            p_val = result.wilcoxon_p
+            p_val = row_data["wilcoxon_p"]
         elif eff_p_source == "nem":
             p_val = (
-                bundle.pairwise.friedman.get_nemenyi_p(result.template_a, result.template_b)
+                bundle.pairwise.friedman.get_nemenyi_p(str(row_data["left"]), str(row_data["right"]))
                 if bundle.pairwise.friedman is not None else None
             )
         else:
@@ -919,7 +1021,7 @@ def _print_pairwise_section(
     if max_pairs == 0:
         print("  (no pairwise comparisons)")
     elif max_pairs > 0:
-        print(f"  r_rb = rank biserial correlation (effect size: small≈0.1, medium≈0.3, large≈0.5)")
+        print(f"{_DIM}  r_rb = rank biserial correlation (effect size: small≈0.1, medium≈0.3, large≈0.5){_RESET}")
         if eff_p_source in {"max_t", "boot"}:
             if is_newcombe_pairwise:
                 print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
@@ -1036,6 +1138,7 @@ def _print_bundle_summary(
     item_singular: str = "template",
     item_plural: str = "templates",
     p_value_method: Optional[str] = None,
+    pairwise_sort: Literal["grouped", "significance"] = "grouped",
 ) -> None:
     template_col_width = 24
 
@@ -1087,7 +1190,13 @@ def _print_bundle_summary(
     )
     print()
 
-    _print_pairwise_section(bundle, top_pairwise=top_pairwise, line_width=line_width, p_value_method=p_value_method)
+    _print_pairwise_section(
+        bundle,
+        top_pairwise=top_pairwise,
+        line_width=line_width,
+        p_value_method=p_value_method,
+        pairwise_sort=pairwise_sort,
+    )
 
     # Seed variance section (only when seeded data is present).
     if bundle.seed_variance is not None:
@@ -1422,7 +1531,7 @@ def _print_factorial_interaction_plot(
     bundle: AnalysisBundle,
     *,
     factor_tests,
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
 ) -> None:
     """Render an optional terminal interaction plot via plotext when interaction is significant."""
     if alpha is None:
@@ -1723,25 +1832,39 @@ def _critical_difference_groups(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> list[list[str]]:
-    """Return contiguous, maximal non-significant rank bands."""
+    """Return contiguous, maximal non-significant rank bands.
+
+    When simultaneous CIs have been computed, significance is determined by
+    whether the pairwise CI excludes zero (consistent with the displayed CIs).
+    Otherwise, correction-adjusted p-values compared to *alpha* are used.
+    """
     if alpha is None:
         alpha = get_alpha_ci()
     if len(labels_sorted) < 2:
         return []
 
     n_labels = len(labels_sorted)
+    use_ci = pairwise.simultaneous_ci_method is not None
 
     def _all_pairs_nonsignificant(group_labels: list[str]) -> bool:
         for i in range(len(group_labels)):
             for j in range(i + 1, len(group_labels)):
-                p_value = _pairwise_rank_band_p(
-                    pairwise, group_labels[i], group_labels[j], p_source=p_source,
-                )
-                if p_value is None or p_value < alpha:
-                    return False
+                if use_ci:
+                    try:
+                        result = pairwise.get(group_labels[i], group_labels[j])
+                    except KeyError:
+                        return False
+                    if result.ci_low > 0 or result.ci_high < 0:
+                        return False
+                else:
+                    p_value = _pairwise_rank_band_p(
+                        pairwise, group_labels[i], group_labels[j], p_source=p_source,
+                    )
+                    if p_value is None or p_value < alpha:
+                        return False
         return True
 
     candidate_groups: list[list[str]] = []
@@ -1790,7 +1913,7 @@ def _single_clear_winner_label(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> Optional[str]:
     """Return the unique label that significantly beats every other label."""
@@ -1799,6 +1922,7 @@ def _single_clear_winner_label(
     if len(labels_sorted) < 2:
         return None
 
+    use_ci = pairwise.simultaneous_ci_method is not None
     winners: list[str] = []
     for candidate in labels_sorted:
         candidate_beats_all = True
@@ -1806,20 +1930,23 @@ def _single_clear_winner_label(
             if other == candidate:
                 continue
 
-            p_value = _pairwise_rank_band_p(
-                pairwise, candidate, other, p_source=p_source,
-            )
-            if p_value is None or p_value >= alpha:
-                candidate_beats_all = False
-                break
-
             try:
                 result = pairwise.get(candidate, other)
             except KeyError:
                 candidate_beats_all = False
                 break
 
-            if float(result.point_diff) <= 0.0:
+            if use_ci:
+                sig = result.ci_low > 0 or result.ci_high < 0
+                beats = float(result.point_diff) > 0
+            else:
+                p_value = _pairwise_rank_band_p(
+                    pairwise, candidate, other, p_source=p_source,
+                )
+                sig = p_value is not None and p_value < alpha
+                beats = float(result.point_diff) > 0
+
+            if not sig or not beats:
                 candidate_beats_all = False
                 break
 
@@ -1835,7 +1962,7 @@ def _print_critical_difference_groups(
     pairwise: PairwiseMatrix,
     *,
     labels_sorted: list[str],
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> None:
     """Print a short CD-style summary of statistically indistinguishable groups."""
@@ -1846,10 +1973,13 @@ def _print_critical_difference_groups(
 
     rank_pos = {label: idx + 1 for idx, label in enumerate(labels_sorted)}
 
-    source_label = {
-        "bootstrap": "p (boot)",
-        "wilcoxon": "p (wsr)",
-    }[p_source]
+    if pairwise.simultaneous_ci_method is not None:
+        source_label = f"CI, {pairwise.simultaneous_ci_method}"
+    else:
+        source_label = {
+            "bootstrap": "p (boot)",
+            "wilcoxon": "p (wsr)",
+        }[p_source]
 
     groups = _critical_difference_groups(
         pairwise,
@@ -1860,13 +1990,13 @@ def _print_critical_difference_groups(
     if not groups:
         print(
             f"  Statistically indistinguishable rank bands "
-            f"({source_label}, α={alpha:g}): none"
+            f"({source_label}): none"
         )
         return
 
     print(
-        f"  Statistically indistinguishable rank bands "
-        f"({source_label}, α={alpha:g}):"
+        f"  Statistically indistinguishable rank bands (similar info to critical-difference diagrams)"
+        f"({source_label}):"
     )
     for group in groups:
         start_rank = rank_pos[group[0]]
@@ -1895,7 +2025,7 @@ def _print_critical_difference_groups(
 def _assign_significance_groups(
     pairwise: PairwiseMatrix,
     labels_sorted: list[str],
-    alpha: float | None = None,
+    alpha: Optional[float] = None,
     p_source: Literal["bootstrap", "wilcoxon"] = "bootstrap",
 ) -> dict[str, str]:
     """Assign numeric group IDs (#1, #2, #3…) to templates via CD-group analysis.

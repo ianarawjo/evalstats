@@ -63,7 +63,7 @@ def _nested_cell_mean_diffs(
     scores_a: np.ndarray,
     scores_b: np.ndarray,
     run_idx: np.ndarray,
-    input_idx: np.ndarray | None = None,
+    input_idx: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Compute bootstrap-wise per-input diffs of inner-resampled cell means.
 
@@ -100,7 +100,7 @@ def _nested_cell_mean_diffs(
 def _inner_resample_cell_means(
     scores: np.ndarray,
     run_idx: np.ndarray,
-    input_idx: np.ndarray | None = None,
+    input_idx: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """Inner-resample per-input cell means for scores of shape ``(N, M, R)``."""
     _, M, _ = scores.shape

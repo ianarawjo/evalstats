@@ -15,7 +15,7 @@ This separates two fundamentally different concerns:
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Optional, Union
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -46,7 +46,7 @@ _PALETTE = {
 
 
 def plot_point_advantage(
-    result: BenchmarkResult | PointAdvantageResult,
+    result: Union[BenchmarkResult, PointAdvantageResult],
     reference: str = "grand_mean",
     n_bootstrap: int = 10_000,
     ci: float = 0.95,
