@@ -1974,7 +1974,7 @@ def _print_critical_difference_groups(
     rank_pos = {label: idx + 1 for idx, label in enumerate(labels_sorted)}
 
     if pairwise.simultaneous_ci_method is not None:
-        source_label = f"CI, {pairwise.simultaneous_ci_method}"
+        source_label = f"{(1-alpha)*100:.0f}% CI, {pairwise.simultaneous_ci_method}-adjusted"
     else:
         source_label = {
             "bootstrap": "p (boot)",
@@ -1995,8 +1995,8 @@ def _print_critical_difference_groups(
         return
 
     print(
-        f"  Statistically indistinguishable rank bands (similar info to critical-difference diagrams)"
-        f"({source_label}):"
+        f"  Statistically indistinguishable rank bands "
+        f"{_DIM}computed from {source_label} (similar to critical difference diagrams):{_RESET}"
     )
     for group in groups:
         start_rank = rank_pos[group[0]]

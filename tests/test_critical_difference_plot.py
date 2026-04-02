@@ -1,4 +1,5 @@
 import types
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -91,6 +92,8 @@ def test_plot_critical_difference_accepts_pairwise_and_uses_rank_bands(monkeypat
     assert float(sig_mat.loc["A", "C"]) == 0.0
 
     assert "Pairwise rank bands" in fig.axes[0].get_title(loc="left")
+    all_text = [t.get_text() for t in fig.texts] + [t.get_text() for t in fig.axes[0].texts]
+    assert any("Reference Nemenyi CD" in text for text in all_text)
 
 
 def test_plot_critical_difference_friedman_mode_still_works(monkeypatch):
@@ -159,3 +162,65 @@ def test_plot_critical_difference_accepts_compare_report_and_infers_ranks(monkey
     sig_mat = captured["sig_mat"]
     assert float(sig_mat.loc["A", "B"]) == 1.0
     assert float(sig_mat.loc["A", "C"]) == 0.0
+
+
+def test_plot_critical_difference_pairwise_prefers_attached_friedman_ranks(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cd_diagram(ranks, sig_mat, ax=None, alpha=0.05):
+        captured["ranks"] = dict(ranks)
+
+    fake_module = types.ModuleType("scikit_posthocs")
+    fake_module.critical_difference_diagram = fake_cd_diagram
+    monkeypatch.setitem(__import__("sys").modules, "scikit_posthocs", fake_module)
+
+    pairwise = _make_pairwise_for_overlap_bands()
+    pairwise.friedman = FriedmanResult(
+        statistic=8.5,
+        df=2,
+        p_value=0.014,
+        nemenyi_p={("A", "B"): 0.03, ("A", "C"): 0.002, ("B", "C"): 0.21},
+        avg_ranks={"A": 1.8, "B": 1.2, "C": 2.9},
+        n_inputs=40,
+        n_templates=3,
+    )
+
+    fig = plot_critical_difference(pairwise)
+    assert fig is not None
+    assert captured["ranks"] == {"A": 1.8, "B": 1.2, "C": 2.9}
+
+
+def test_plot_critical_difference_report_prefers_expected_ranks(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_cd_diagram(ranks, sig_mat, ax=None, alpha=0.05):
+        captured["ranks"] = dict(ranks)
+
+    fake_module = types.ModuleType("scikit_posthocs")
+    fake_module.critical_difference_diagram = fake_cd_diagram
+    monkeypatch.setitem(__import__("sys").modules, "scikit_posthocs", fake_module)
+
+    pairwise = _make_pairwise_for_overlap_bands()
+    fake_rank_dist = SimpleNamespace(
+        labels=["A", "B", "C"],
+        expected_ranks=np.array([2.4, 1.3, 2.9]),
+    )
+    fake_bundle = SimpleNamespace(rank_dist=fake_rank_dist)
+
+    report = CompareReport(
+        labels=["A", "B", "C"],
+        entity_stats={
+            "A": EntityStats(mean=0.70, median=0.70, std=0.05, ci_low=0.65, ci_high=0.75),
+            "B": EntityStats(mean=0.60, median=0.60, std=0.05, ci_low=0.55, ci_high=0.65),
+            "C": EntityStats(mean=0.50, median=0.50, std=0.05, ci_low=0.45, ci_high=0.55),
+        },
+        unbeaten=["A"],
+        pairwise=pairwise,
+        full_analysis=fake_bundle,
+    )
+
+    fig = plot_critical_difference(report)
+    assert fig is not None
+    assert captured["ranks"] == {"A": 2.4, "B": 1.3, "C": 2.9}
+    all_text = [t.get_text() for t in fig.texts] + [t.get_text() for t in fig.axes[0].texts]
+    assert any("Axis: E[Rank]" in text for text in all_text)

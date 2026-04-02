@@ -82,6 +82,63 @@ def _sig_matrix_from_rank_bands(
     return mat
 
 
+def _nemenyi_cd(*, n_templates: int, n_inputs: int, alpha: float) -> Optional[float]:
+    """Compute Demsar-style Nemenyi critical difference in rank units.
+
+    Returns ``None`` if scipy's studentized range quantile is unavailable.
+    """
+    try:
+        from scipy.stats import studentized_range
+    except Exception:
+        return None
+
+    if n_templates < 2 or n_inputs < 1:
+        return None
+
+    se = (n_templates * (n_templates + 1) / (6.0 * n_inputs)) ** 0.5
+    # In this codebase, Nemenyi p-values are computed as sf(q*sqrt(2), k, inf),
+    # so the q-threshold for CD is isf(alpha) / sqrt(2).
+    q_crit = float(studentized_range.isf(alpha, n_templates, float("inf")) / (2.0 ** 0.5))
+    return q_crit * se
+
+
+def _infer_pairwise_n_inputs(pairwise: PairwiseMatrix) -> Optional[int]:
+    """Infer common N (blocks/inputs) from pairwise entries, if consistent."""
+    if not pairwise.results:
+        return None
+    n_values = {int(res.n_inputs) for res in pairwise.results.values()}
+    if len(n_values) == 1:
+        n = next(iter(n_values))
+        return n if n > 0 else None
+    return None
+
+
+def _expected_ranks_from_report_like(report_like: object) -> Optional[dict[str, float]]:
+    """Extract E[Rank]-based axis positions from a report-like object.
+
+    Supports:
+    - CompareReport via report_like.full_analysis.rank_dist
+    - AnalysisBundle via report_like.rank_dist
+    """
+    full_analysis = getattr(report_like, "full_analysis", None)
+    rank_dist = getattr(full_analysis, "rank_dist", None)
+    if rank_dist is None:
+        rank_dist = getattr(report_like, "rank_dist", None)
+
+    labels = getattr(rank_dist, "labels", None)
+    expected_ranks = getattr(rank_dist, "expected_ranks", None)
+    if labels is None or expected_ranks is None:
+        return None
+    if len(labels) != len(expected_ranks):
+        return None
+
+    ranks = {
+        str(label): float(expected_ranks[i])
+        for i, label in enumerate(labels)
+    }
+    return ranks or None
+
+
 def plot_critical_difference(
     result: Union[FriedmanResult, PairwiseMatrix, "CompareReport", "AnalysisBundle"],
     *,
@@ -92,6 +149,7 @@ def plot_critical_difference(
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     ax: Optional["Axes"] = None,
+    show_method_note: bool = True,
 ) -> "Figure":
     """Plot a critical difference diagram from Friedman or pairwise results.
 
@@ -114,8 +172,11 @@ def plot_critical_difference(
     ranks : mapping[str, float], optional
         Rank values to place items on the CD axis (1 is best). Recommended
         when using ``pairwise`` so the axis reflects expected-rank estimates.
-        When omitted, ranks default to sequential values based on
-        ``labels_sorted`` (or ``pairwise.labels``).
+        When omitted in non-Friedman mode, the function uses this priority:
+        E[Rank] from rank distribution (if available), then Friedman
+        average ranks attached to pairwise results (if available), then
+        report mean order, then sequential values from ``labels_sorted``
+        (or ``pairwise.labels``).
     labels_sorted : list[str], optional
         Rank order (best to worst) used to compute contiguous rank bands in
         ``pairwise`` mode.
@@ -130,6 +191,10 @@ def plot_critical_difference(
         Plot title.  A descriptive default is generated when omitted.
     ax : Axes, optional
         Existing axes to draw into.  A new figure is created when omitted.
+    show_method_note : bool
+        When True (default), append a compact note below the title describing
+        how crossbar groupings were derived. In Friedman mode this includes
+        the Nemenyi critical difference (CD) when available.
 
     Returns
     -------
@@ -157,24 +222,52 @@ def plot_critical_difference(
             "Install it with: pip install scikit-posthocs"
         ) from exc
 
+    method_note: Optional[str] = None
+
     if isinstance(result, FriedmanResult):
         friedman = result
         k = friedman.n_templates
         ranks_dict = dict(friedman.avg_ranks)
         sig_mat = _sig_matrix(friedman)
+        cd_val = _nemenyi_cd(n_templates=friedman.n_templates, n_inputs=friedman.n_inputs, alpha=alpha)
+        if cd_val is None:
+            method_note = (
+                "Grouping: Nemenyi post-hoc (Friedman-based, FWER-controlled); "
+                f"alpha={alpha:.3g}."
+            )
+        else:
+            method_note = (
+                "Grouping: Nemenyi post-hoc (Friedman-based, FWER-controlled); "
+                f"alpha={alpha:.3g}, CD={cd_val:.3g} rank units."
+            )
     else:
         pairwise = result
+        axis_source = "sequential"
 
-        # If the caller passed a high-level report and omitted ranks, derive
-        # a stable best->worst ordering from absolute means.
+        # Default for non-Friedman mode: use E[Rank] if available.
+        if report_like is not None and ranks is None:
+            expected_rank_map = _expected_ranks_from_report_like(report_like)
+            if expected_rank_map:
+                ranks = expected_rank_map
+                if labels_sorted is None:
+                    labels_sorted = [
+                        label
+                        for label, _ in sorted(
+                            ranks.items(),
+                            key=lambda item: (float(item[1]), str(item[0])),
+                        )
+                    ]
+                axis_source = "E[Rank]"
+
+        # If still missing ranks, derive a stable best->worst ordering from
+        # report means when available.
         if report_like is not None and ranks is None:
             report_labels = getattr(report_like, "labels", None)
-            report_stats = getattr(report_like, "entity_stats", None)
-            if isinstance(report_labels, list) and isinstance(report_stats, Mapping):
+            report_means = getattr(report_like, "means", None)
+            if isinstance(report_labels, list) and isinstance(report_means, Mapping):
                 mean_items: list[tuple[str, float]] = []
                 for label in report_labels:
-                    stats = report_stats.get(label)
-                    mean_val = getattr(stats, "mean", None)
+                    mean_val = report_means.get(label)
                     if mean_val is None:
                         mean_items = []
                         break
@@ -188,6 +281,21 @@ def plot_critical_difference(
                     }
                     if labels_sorted is None:
                         labels_sorted = [label for label, _ in mean_items]
+                    axis_source = "mean order"
+
+        # If still missing ranks and a Friedman result is attached, use its
+        # average ranks (this is the canonical CD-axis definition).
+        if ranks is None and pairwise.friedman is not None:
+            ranks = dict(pairwise.friedman.avg_ranks)
+            if labels_sorted is None:
+                labels_sorted = [
+                    label
+                    for label, _ in sorted(
+                        ranks.items(),
+                        key=lambda item: (float(item[1]), str(item[0])),
+                    )
+                ]
+            axis_source = "Friedman avg_ranks"
 
         if ranks is not None:
             ranks_dict = {str(label): float(rank) for label, rank in ranks.items()}
@@ -204,6 +312,7 @@ def plot_critical_difference(
             else:
                 rank_sorted_labels = list(labels_sorted)
             ranks_dict = {label: float(i + 1) for i, label in enumerate(rank_sorted_labels)}
+            axis_source = "sequential"
 
         if labels_sorted is None:
             labels_for_groups = rank_sorted_labels
@@ -224,6 +333,34 @@ def plot_critical_difference(
             alpha=alpha,
             p_source=p_source,
         )
+        if pairwise.simultaneous_ci_method is not None:
+            method_note = (
+                "Grouping: simultaneous pairwise CIs "
+                f"({pairwise.simultaneous_ci_method}), alpha={alpha:.3g}."
+            )
+        else:
+            source_long = "bootstrap p-values" if p_source == "bootstrap" else "Wilcoxon p-values"
+            method_note = (
+                "Grouping: pairwise significance from "
+                f"{source_long}, alpha={alpha:.3g}."
+            )
+        method_note = f"Axis: {axis_source}. {method_note}"
+
+        # Optional reviewer-facing reference value: classic Nemenyi CD on the
+        # same k and inferred N. This is informational only in pairwise mode.
+        n_inputs_ref = _infer_pairwise_n_inputs(pairwise)
+        cd_ref = None
+        if n_inputs_ref is not None:
+            cd_ref = _nemenyi_cd(
+                n_templates=len(ranks_dict),
+                n_inputs=n_inputs_ref,
+                alpha=alpha,
+            )
+        if cd_ref is not None:
+            method_note = (
+                f"{method_note} Reference Nemenyi CD(k={len(ranks_dict)}, N={n_inputs_ref}) "
+                f"= {cd_ref:.3g} rank units (not used for grouping)."
+            )
 
     # Ensure matrix index/columns match rank labels and order.
     rank_labels = list(ranks_dict.keys())
@@ -257,10 +394,37 @@ def plot_critical_difference(
             title = f"Critical Difference Diagram  ·  Pairwise rank bands from {source}"
     ax.set_title(
         title,
-        fontsize=10, pad=10, loc="left", fontweight="semibold",
+        fontsize=10, pad=16, loc="left", fontweight="semibold",
     )
 
+    if show_method_note and method_note:
+        if own_fig:
+            fig.text(
+                0.01,
+                0.015,
+                method_note,
+                ha="left",
+                va="bottom",
+                fontsize=8,
+                alpha=0.85,
+            )
+        else:
+            ax.text(
+                0.0,
+                -0.12,
+                method_note,
+                transform=ax.transAxes,
+                ha="left",
+                va="bottom",
+                fontsize=8,
+                alpha=0.85,
+                clip_on=False,
+            )
+
     if own_fig:
-        fig.tight_layout()
+        if show_method_note and method_note:
+            fig.tight_layout(rect=(0.0, 0.08, 1.0, 0.98))
+        else:
+            fig.tight_layout()
 
     return fig
