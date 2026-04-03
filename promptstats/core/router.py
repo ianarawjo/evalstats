@@ -30,7 +30,7 @@ from .bundles import (
     AnalysisResult,
 )
 from .paired import all_pairwise
-from .ranking import bootstrap_ranks, bootstrap_point_advantage
+from .ranking import bootstrap_ranks
 from .variance import robustness_metrics, seed_variance_decomposition
 from ..config import get_alpha_ci
 
@@ -423,7 +423,7 @@ def analyze_factorial(
     Returns
     -------
     AnalysisBundle
-        All standard fields (``pairwise``, ``point_advantage``,
+        All standard fields (``pairwise``,
         ``robustness``, ``rank_dist``) are populated via the LMM path.
         ``bundle.factorial_lmm_info`` additionally contains:
 
@@ -635,7 +635,7 @@ def _analyze_single(
             )
             statistic = "mean"
         from .mixed_effects import lmm_analyze, FactorialLMMInfo
-        pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_result = lmm_analyze(
+        pairwise, rank_dist, robustness, seed_var, lmm_result = lmm_analyze(
             result,
             backend=backend,
             reference=reference,
@@ -664,23 +664,23 @@ def _analyze_single(
                 benchmark=result,
                 shape=shape,
                 pairwise=pairwise,
-                point_advantage=mean_adv,
                 robustness=robustness,
                 rank_dist=rank_dist,
                 seed_variance=seed_var,
                 factorial_lmm_info=lmm_result,
                 resolved_method="lmm",
+                resolved_ci_method="lmm",
             )
         return AnalysisBundle(
             benchmark=result,
             shape=shape,
             pairwise=pairwise,
-            point_advantage=mean_adv,
             robustness=robustness,
             rank_dist=rank_dist,
             seed_variance=seed_var,
             lmm_info=lmm_result,
             resolved_method="lmm",
+            resolved_ci_method="lmm",
         )
 
     # ------------------------------------------------------------------
@@ -709,21 +709,21 @@ def _analyze_single(
     # Otherwise resolve 'auto' to its concrete bootstrap method so that
     # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
-    advantage_method = method
+    robustness_method = method
     if method == "auto":
         from .resampling import is_binary_scores, resolve_resampling_method
         if is_binary_scores(run_scores):
             M = run_scores.shape[1]
-            # Single-sample advantage CIs always use Wilson for binary data.
+            # Single-sample marginal CIs always use Wilson for binary data.
             # Pairwise: Bayesian model for N < 100, bootstrap for N >= 100 (enables simultaneous_cis).
-            advantage_method = "wilson"
+            robustness_method = "wilson"
             if M < 100:
                 pairwise_method = "bayes_binary"
             else:
                 pairwise_method = resolve_resampling_method("bootstrap", M)
         else:
             pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
-            advantage_method = pairwise_method
+            robustness_method = pairwise_method
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
@@ -732,9 +732,9 @@ def _analyze_single(
                 "scores array contains non-binary values. Use is_binary_scores() "
                 "to check before calling, or choose a different method."
             )
-        # Single-sample advantage CIs use Wilson; pairwise uses the Bayesian model.
+        # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
-        advantage_method = "wilson"
+        robustness_method = "wilson"
     elif method in {"wilson", "newcombe", "fisher_exact"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
@@ -748,24 +748,18 @@ def _analyze_single(
         else:
             # In analyze(), explicit frequentist binary methods route to:
             #   - pairwise Newcombe + exact McNemar p-values
-            #   - point-advantage Wilson score CIs
+            #   - single-sample marginal Wilson score CIs
             pairwise_method = "newcombe"
-        advantage_method = "wilson"
+        robustness_method = "wilson"
     elif method == "sign_test":
         pairwise_method = "sign_test"
-        advantage_method = "smooth_bootstrap"
+        robustness_method = "smooth_bootstrap"
 
     pairwise = all_pairwise(
         run_scores, labels,
         method=pairwise_method, ci=ci, n_bootstrap=n_bootstrap,
         correction=correction, rng=rng, statistic=statistic,
         simultaneous_ci=simultaneous_ci, omnibus=omnibus,
-    )
-    mean_adv = bootstrap_point_advantage(
-        run_scores, labels,
-        reference=reference,
-        method=advantage_method, n_bootstrap=n_bootstrap,
-        spread_percentiles=spread_percentiles, rng=rng, statistic=statistic,
     )
     robustness = robustness_metrics(
         run_scores, labels,
@@ -774,7 +768,7 @@ def _analyze_single(
         rng=rng,
         alpha=1.0 - ci,
         statistic=statistic,
-        marginal_method=advantage_method,
+        marginal_method=robustness_method,
     )
     rank_dist = bootstrap_ranks(
         run_scores, labels,
@@ -789,11 +783,11 @@ def _analyze_single(
         benchmark=result,
         shape=shape,
         pairwise=pairwise,
-        point_advantage=mean_adv,
         robustness=robustness,
         rank_dist=rank_dist,
         seed_variance=seed_var,
         resolved_method=pairwise_method,
+        resolved_ci_method=robustness_method,
     )
 
 

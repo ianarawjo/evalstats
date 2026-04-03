@@ -299,7 +299,7 @@ def test_analyze_auto_binary_small_n_advantage_uses_wilson():
     scores = _binary_scores(2, 50, [0.7, 0.5], seed=31)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(31))
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_auto_binary_large_n_pairwise_uses_bootstrap():
@@ -316,7 +316,7 @@ def test_analyze_auto_binary_large_n_advantage_uses_wilson():
     scores = _binary_scores(2, 120, [0.7, 0.5], seed=33)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(33))
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_auto_non_binary_uses_smooth_bootstrap():
@@ -327,7 +327,7 @@ def test_analyze_auto_non_binary_uses_smooth_bootstrap():
                      method="auto", rng=_rng(34))
     pair = bundle.pairwise.get("A", "B")
     assert "smooth" in pair.test_method.lower()
-    assert bundle.point_advantage.n_bootstrap > 0
+    assert bundle.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_auto_binary_resolved_method_is_bayes_binary():
@@ -385,7 +385,7 @@ def test_analyze_explicit_bayes_binary_advantage_uses_wilson():
     scores = _binary_scores(3, 40, [0.7, 0.5, 0.3], seed=51)
     bundle = analyze(_benchmark(scores, ["A", "B", "C"]),
                      method="bayes_binary", rng=_rng(51))
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_explicit_bayes_binary_raises_for_non_binary():
@@ -438,7 +438,7 @@ def test_compare_prompts_auto_binary_small_n_advantage_is_wilson():
         "B": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
     report = ps.compare_prompts(scores, method="auto", rng=_rng(61))
-    assert report.full_analysis.point_advantage.n_bootstrap == 0
+    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
@@ -482,7 +482,7 @@ def test_compare_prompts_auto_binary_large_n_advantage_is_wilson():
         "B": rng.binomial(1, 0.4, 110).astype(float).tolist(),
     }
     report = ps.compare_prompts(scores, method="auto", rng=_rng(64))
-    assert report.full_analysis.point_advantage.n_bootstrap == 0
+    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_compare_prompts_explicit_bayes_binary_binary_data():
@@ -494,7 +494,7 @@ def test_compare_prompts_explicit_bayes_binary_binary_data():
     report = ps.compare_prompts(scores, method="bayes_binary", rng=_rng(65))
     pair = report.pairwise.get("A", "B")
     assert "bayes binary" in pair.test_method.lower()
-    assert report.full_analysis.point_advantage.n_bootstrap == 0
+    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_compare_prompts_explicit_bayes_binary_raises_for_non_binary():
@@ -516,7 +516,7 @@ def test_compare_prompts_auto_non_binary_uses_smooth_bootstrap():
     report = ps.compare_prompts(scores, method="auto", n_bootstrap=300, rng=_rng(67))
     pair = report.pairwise.get("A", "B")
     assert "smooth" in pair.test_method.lower()
-    assert report.full_analysis.point_advantage.n_bootstrap > 0
+    assert report.full_analysis.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 # ---------------------------------------------------------------------------
@@ -543,7 +543,7 @@ def test_compare_models_auto_binary_small_n_advantage_is_wilson():
         "model_b": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
     report = ps.compare_models(scores, method="auto", rng=_rng(71))
-    assert report.full_analysis.model_level.point_advantage.n_bootstrap == 0
+    assert report.full_analysis.model_level.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_compare_models_auto_binary_large_n_pairwise_bootstrap():

@@ -219,9 +219,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="grand_mean",
         metavar="LABEL",
         help=(
-            "Reference for mean advantage plot. 'grand_mean' (default) compares "
-            "each prompt template against the average. Pass a prompt template label to compare "
-            "everything against a specific baseline."
+            "Reference label retained for compatibility. In robustness-first mode, "
+            "absolute means and CIs are reported directly."
         ),
     )
     analyze.add_argument(
@@ -238,7 +237,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=(10.0, 90.0),
         metavar=("LOW", "HIGH"),
         help=(
-            "Percentile band for intrinsic spread in advantage plots (default: 10 90)."
+            "Retained for compatibility (default: 10 90)."
         ),
     )
     analyze.add_argument(
@@ -283,7 +282,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help=(
             "Print only the executive leaderboard (entity names, significance groups, "
-            "means, CIs, verdicts). Omits the full statistical breakdown — advantage "
+            "means, CIs, verdicts). Omits the full statistical breakdown — interval "
             "plots, pairwise tables, and robustness section. Useful for a quick result "
             "at a glance. Use --out to save the full analysis alongside."
         ),
@@ -295,7 +294,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Optional output artifact paths. Supported suffixes: .md/.txt (summary), "
-            ".json (structured analysis), and .png (mean-advantage plot)."
+            ".json (structured analysis), and .png (robustness interval plot)."
         ),
     )
     return parser
@@ -489,7 +488,7 @@ def _write_outputs(
     ci: float,
 ) -> None:
     from promptstats.core.router import AnalysisBundle, MultiModelBundle
-    from promptstats.vis.advantage import plot_point_advantage
+    from promptstats.vis.point_estimates import plot_point_estimates
 
     for raw in out_paths:
         out_path = Path(raw).expanduser().resolve()
@@ -517,9 +516,8 @@ def _write_outputs(
 
         if suffix == ".png":
             if isinstance(analysis, AnalysisBundle):
-                fig = plot_point_advantage(
+                fig = plot_point_estimates(
                     analysis.benchmark,
-                    reference=reference,
                     n_bootstrap=n_bootstrap,
                     ci=ci,
                 )
@@ -527,12 +525,11 @@ def _write_outputs(
                 print(f"Wrote plot: {out_path}")
                 continue
             if isinstance(analysis, MultiModelBundle):
-                fig = plot_point_advantage(
+                fig = plot_point_estimates(
                     analysis.model_level.benchmark,
-                    reference="grand_mean",
                     n_bootstrap=n_bootstrap,
                     ci=ci,
-                    title="Model-Level Mean Advantage",
+                    title="Model-Level Robustness Intervals",
                 )
                 fig.savefig(out_path, dpi=150, bbox_inches="tight")
                 print(f"Wrote plot: {out_path}")
@@ -542,20 +539,18 @@ def _write_outputs(
                 for evaluator_name, evaluator_analysis in analysis.items():
                     target = base.with_name(f"{base.name}_{evaluator_name}").with_suffix(".png")
                     if isinstance(evaluator_analysis, MultiModelBundle):
-                        fig = plot_point_advantage(
+                        fig = plot_point_estimates(
                             evaluator_analysis.model_level.benchmark,
-                            reference="grand_mean",
                             n_bootstrap=n_bootstrap,
                             ci=ci,
-                            title=f"Model-Level Mean Advantage ({evaluator_name})",
+                            title=f"Model-Level Robustness Intervals ({evaluator_name})",
                         )
                     else:
-                        fig = plot_point_advantage(
+                        fig = plot_point_estimates(
                             evaluator_analysis.benchmark,
-                            reference=reference,
                             n_bootstrap=n_bootstrap,
                             ci=ci,
-                            title=f"Mean Advantage ({evaluator_name})",
+                            title=f"Robustness Intervals ({evaluator_name})",
                         )
                     fig.savefig(target, dpi=150, bbox_inches="tight")
                     print(f"Wrote plot: {target}")

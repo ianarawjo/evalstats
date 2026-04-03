@@ -104,19 +104,8 @@ def _assert_factorial_bundles_close(
                 rtol=rtol,
             )
 
-    # Point-advantage outputs
-    pa_a = bundle_a.point_advantage
-    pa_b = bundle_b.point_advantage
-    assert pa_a.labels == pa_b.labels
-    assert pa_a.reference == pa_b.reference
-    assert pa_a.spread_percentiles == pa_b.spread_percentiles
-    assert pa_a.statistic == pa_b.statistic
-    assert_allclose(pa_a.point_advantages, pa_b.point_advantages, atol=atol, rtol=rtol)
     assert_allclose(bundle_a.robustness.ci_low, bundle_b.robustness.ci_low, atol=atol, rtol=rtol)
     assert_allclose(bundle_a.robustness.ci_high, bundle_b.robustness.ci_high, atol=atol, rtol=rtol)
-    assert_allclose(pa_a.spread_low, pa_b.spread_low, atol=atol, rtol=rtol)
-    assert_allclose(pa_a.spread_high, pa_b.spread_high, atol=atol, rtol=rtol)
-    assert_allclose(pa_a.per_input_advantages, pa_b.per_input_advantages, atol=atol, rtol=rtol)
 
     # Rank distribution
     rd_a = bundle_a.rank_dist
@@ -184,7 +173,6 @@ def test_smoke_no_runs():
     bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
     assert bundle is not None
     assert bundle.pairwise is not None
-    assert bundle.point_advantage is not None
     assert bundle.rank_dist is not None
     assert bundle.robustness is not None
 
@@ -195,7 +183,6 @@ def test_smoke_with_runs():
     bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     assert bundle is not None
     assert bundle.pairwise is not None
-    assert bundle.point_advantage is not None
     assert bundle.rank_dist is not None
     assert bundle.robustness is not None
 
@@ -429,19 +416,12 @@ def _assert_factorial_bundles_compatible(bundle_a, bundle_b, *, atol: float = 0.
                 f"sm={left.p_value:.4f} py={right.p_value:.4f}"
             )
 
-    # Point advantages: ordering and signs should match
-    pa_a = bundle_a.point_advantage
-    pa_b = bundle_b.point_advantage
-    assert pa_a.labels == pa_b.labels
-    assert pa_a.reference == pa_b.reference
-    assert_allclose(pa_a.point_advantages, pa_b.point_advantages, atol=atol)
-    assert np.sign(pa_a.point_advantages).tolist() == np.sign(pa_b.point_advantages).tolist()
-
     # Robustness means should be close (derived from raw data, not backend-specific)
     rb_a = bundle_a.robustness
     rb_b = bundle_b.robustness
     assert rb_a.labels == rb_b.labels
     assert_allclose(rb_a.mean, rb_b.mean, atol=atol)
+    assert np.sign(rb_a.mean).tolist() == np.sign(rb_b.mean).tolist()
 
     # LMM diagnostics
     info_a = bundle_a.factorial_lmm_info

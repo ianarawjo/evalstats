@@ -80,7 +80,7 @@ import numpy as np
 import scipy.stats
 
 from .paired import PairedDiffResult, PairwiseMatrix
-from .ranking import PointAdvantageResult, RankDistribution
+from .ranking import RankDistribution
 from .variance import RobustnessResult, SeedVarianceResult, robustness_metrics, seed_variance_decomposition
 from .stats_utils import correct_pvalues
 
@@ -566,72 +566,6 @@ def _build_advantage_contrast_matrix(N: int, ref_idx: Optional[int]) -> np.ndarr
     return L
 
 
-def _lmm_to_mean_advantage(
-    model: Any,
-    labels: list[str],
-    cell_means_2d: np.ndarray,
-    ci: float,
-    spread_percentiles: tuple[float, float],
-    reference: str,
-) -> PointAdvantageResult:
-    """Compute mean advantages from LMM fixed effects using the delta method.
-
-    Point estimates are the fitted LMM marginal means (equal to raw cell-mean
-    averages in the balanced design).  Confidence intervals use Wald intervals
-    derived from the fixed-effects variance–covariance matrix via the delta
-    method, so they correctly account for the correlated estimation of
-    treatment effects.
-
-    The intrinsic spread bands (``spread_low`` / ``spread_high``) are still
-    computed from raw cell-mean advantages, exactly as in the bootstrap path.
-
-    Notes
-    -----
-    ``n_bootstrap=0`` on the returned ``MeanAdvantageResult`` signals that
-    these are parametric Wald intervals, not bootstrap intervals.
-    """
-    N = len(labels)
-    alpha = 1 - ci
-
-    rf = model.result_fit
-    est_col = _col_pl(rf, ["estimate", "Estimate", "coefficient", "Coefficient"])
-    betas = rf[est_col].to_numpy()   # (N,): [intercept, β₁, …, β_{N-1}]
-
-    # Fitted template means
-    template_means = np.empty(N)
-    template_means[0] = betas[0]
-    template_means[1:] = betas[0] + betas[1:]
-
-    # Reference
-    if reference == "grand_mean":
-        ref_value = template_means.mean()
-        ref_idx   = None
-        ref_label = "grand_mean"
-    else:
-        ref_idx   = labels.index(reference)
-        ref_value = template_means[ref_idx]
-        ref_label = reference
-
-    mean_advantages = template_means - ref_value   # (N,)
-
-    # --- Raw cell-mean advantages for spread bands -------------------------
-    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
-        cell_means_2d, ref_idx, spread_percentiles
-    )
-
-    return PointAdvantageResult(
-        labels=labels,
-        point_advantages=mean_advantages,
-        spread_low=spread_low,
-        spread_high=spread_high,
-        reference=ref_label,
-        per_input_advantages=raw_advantages,
-        n_bootstrap=0,           # 0 = parametric Wald, not bootstrap
-        spread_percentiles=spread_percentiles,
-        statistic="mean",        # LMM is a mean-based model
-    )
-
-
 # ---------------------------------------------------------------------------
 # Rank distribution
 # ---------------------------------------------------------------------------
@@ -991,50 +925,6 @@ def _lmm_to_pairwise_sm(
     return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
 
 
-def _lmm_to_mean_advantage_sm(
-    sm_result: Any,
-    labels: list[str],
-    cell_means_2d: np.ndarray,
-    ci: float,
-    spread_percentiles: tuple[float, float],
-    reference: str,
-) -> PointAdvantageResult:
-    """Compute mean advantages from statsmodels fixed effects via delta method."""
-    N     = len(labels)
-    alpha = 1 - ci
-
-    template_means = _extract_template_means_sm(sm_result, labels)
-    vcov           = _get_vcov_sm(sm_result, labels)
-    df_val         = float(sm_result.df_resid)
-
-    if reference == "grand_mean":
-        ref_value = template_means.mean()
-        ref_idx   = None
-        ref_label = "grand_mean"
-    else:
-        ref_idx   = labels.index(reference)
-        ref_value = template_means[ref_idx]
-        ref_label = reference
-
-    mean_advantages = template_means - ref_value
-
-    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
-        cell_means_2d, ref_idx, spread_percentiles
-    )
-
-    return PointAdvantageResult(
-        labels=labels,
-        point_advantages=mean_advantages,
-        spread_low=spread_low,
-        spread_high=spread_high,
-        reference=ref_label,
-        per_input_advantages=raw_advantages,
-        n_bootstrap=0,
-        spread_percentiles=spread_percentiles,
-        statistic="mean",
-    )
-
-
 def _build_lmm_info_sm(sm_result: Any, n_obs: int) -> LMMInfo:
     """Extract ``LMMInfo`` from a fitted statsmodels ``MixedLMResults``."""
     sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
@@ -1371,61 +1261,6 @@ def _lmm_to_pairwise_factorial_sm(
     return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
 
 
-def _lmm_to_mean_advantage_factorial_sm(
-    sm_result: Any,
-    labels: list[str],
-    df_pandas: "pd.DataFrame",
-    cell_means_2d: np.ndarray,
-    ci: float,
-    spread_percentiles: tuple[float, float],
-    reference: str,
-) -> PointAdvantageResult:
-    """Mean advantages for a factorial LMM via the delta method.
-
-    Cell means come from the fitted fixed effects (``design_vec_i @ betas``).
-    CIs use the delta method applied to the contrast matrix
-    ``C[i] = design_vec_i − reference_vec``.
-    """
-    N     = len(labels)
-    alpha = 1 - ci
-
-    design_vecs = _get_template_design_vectors(sm_result, df_pandas, labels)
-    betas       = sm_result.fe_params.to_numpy()
-    vcov        = _get_fe_vcov_sm(sm_result)
-    df_val      = float(sm_result.df_resid)
-
-    template_means = design_vecs @ betas  # (N,)
-
-    if reference == "grand_mean":
-        ref_idx   = None
-        ref_value = template_means.mean()
-        ref_label = "grand_mean"
-        ref_vec   = design_vecs.mean(axis=0)  # (P,)
-    else:
-        ref_idx   = labels.index(reference)
-        ref_value = template_means[ref_idx]
-        ref_label = reference
-        ref_vec   = design_vecs[ref_idx]
-
-    mean_advantages = template_means - ref_value  # (N,)
-
-    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
-        cell_means_2d, ref_idx, spread_percentiles
-    )
-
-    return PointAdvantageResult(
-        labels=labels,
-        point_advantages=mean_advantages,
-        spread_low=spread_low,
-        spread_high=spread_high,
-        reference=ref_label,
-        per_input_advantages=raw_advantages,
-        n_bootstrap=0,
-        spread_percentiles=spread_percentiles,
-        statistic="mean",
-    )
-
-
 def _lmm_analyze_factorial_sm(
     result: Any,
     *,
@@ -1438,7 +1273,6 @@ def _lmm_analyze_factorial_sm(
     rng: np.random.Generator,
 ) -> tuple[
     PairwiseMatrix,
-    PointAdvantageResult,
     RankDistribution,
     RobustnessResult,
     Optional[SeedVarianceResult],
@@ -1448,7 +1282,7 @@ def _lmm_analyze_factorial_sm(
 
     Fits ``score ~ C(F1) * C(F2) * ... + (1|input)`` on cell-mean scores
     and returns the same tuple as :func:`lmm_analyze`:
-    ``(pairwise, mean_adv, rank_dist, robustness, seed_var, factorial_lmm_info)``.
+    ``(pairwise, rank_dist, robustness, seed_var, factorial_lmm_info)``.
     """
     _require_statsmodels()
 
@@ -1486,10 +1320,6 @@ def _lmm_analyze_factorial_sm(
         )
 
     pairwise = _lmm_to_pairwise_factorial_sm(sm_result, labels, df, cell_means_2d, ci, correction)
-    mean_adv = _lmm_to_mean_advantage_factorial_sm(
-        sm_result, labels, df, cell_means_2d, ci, spread_percentiles, reference
-    )
-
     design_vecs              = _get_template_design_vectors(sm_result, df, labels)
     template_means           = design_vecs @ sm_result.fe_params.to_numpy()
     sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
@@ -1497,7 +1327,7 @@ def _lmm_analyze_factorial_sm(
         template_means, sigma_input, sigma_resid, M, labels, n_sim, rng
     )
 
-    return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+    return pairwise, rank_dist, robustness, seed_var, lmm_info
 
 
 # ---------------------------------------------------------------------------
@@ -1832,58 +1662,6 @@ def _lmm_to_pairwise_factorial_pymer4(
     return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
 
 
-def _lmm_to_mean_advantage_factorial_pymer4(
-    model: Any,
-    labels: list[str],
-    df_pandas: "pd.DataFrame",
-    cell_means_2d: np.ndarray,
-    ci: float,
-    spread_percentiles: tuple[float, float],
-    reference: str,
-) -> PointAdvantageResult:
-    """Mean advantages for a pymer4 factorial LMM via the delta method.
-
-    Mirrors :func:`_lmm_to_mean_advantage_factorial_sm` using the R model
-    matrix (via rpy2) and pymer4's fixed-effect covariance matrix.
-    """
-    N     = len(labels)
-    alpha = 1 - ci
-
-    design_vecs    = _get_template_design_vectors_pymer4(model, df_pandas, labels)
-    betas          = _get_fe_params_pymer4(model)
-    vcov           = _get_vcov(model)
-    template_means = design_vecs @ betas
-
-    if reference == "grand_mean":
-        ref_idx   = None
-        ref_value = template_means.mean()
-        ref_label = "grand_mean"
-        ref_vec   = design_vecs.mean(axis=0)
-    else:
-        ref_idx   = labels.index(reference)
-        ref_value = template_means[ref_idx]
-        ref_label = reference
-        ref_vec   = design_vecs[ref_idx]
-
-    mean_advantages = template_means - ref_value
-
-    raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
-        cell_means_2d, ref_idx, spread_percentiles
-    )
-
-    return PointAdvantageResult(
-        labels=labels,
-        point_advantages=mean_advantages,
-        spread_low=spread_low,
-        spread_high=spread_high,
-        reference=ref_label,
-        per_input_advantages=raw_advantages,
-        n_bootstrap=0,
-        spread_percentiles=spread_percentiles,
-        statistic="mean",
-    )
-
-
 def _lmm_analyze_factorial_pymer4(
     result: Any,
     *,
@@ -1896,7 +1674,6 @@ def _lmm_analyze_factorial_pymer4(
     rng: np.random.Generator,
 ) -> tuple[
     PairwiseMatrix,
-    PointAdvantageResult,
     RankDistribution,
     RobustnessResult,
     Optional[SeedVarianceResult],
@@ -1956,10 +1733,6 @@ def _lmm_analyze_factorial_pymer4(
     pairwise = _lmm_to_pairwise_factorial_pymer4(
         model, labels, df_pandas, cell_means_2d, ci, correction
     )
-    mean_adv = _lmm_to_mean_advantage_factorial_pymer4(
-        model, labels, df_pandas, cell_means_2d, ci, spread_percentiles, reference
-    )
-
     design_vecs              = _get_template_design_vectors_pymer4(model, df_pandas, labels)
     template_means           = design_vecs @ _get_fe_params_pymer4(model)
     sigma_input, sigma_resid = _extract_variance_components(model)
@@ -1967,7 +1740,7 @@ def _lmm_analyze_factorial_pymer4(
         template_means, sigma_input, sigma_resid, M, labels, n_sim, rng
     )
 
-    return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+    return pairwise, rank_dist, robustness, seed_var, lmm_info
 
 
 # ---------------------------------------------------------------------------
@@ -1985,7 +1758,7 @@ def lmm_analyze(
     failure_threshold: Optional[float] = None,
     n_sim: int = 10_000,
     rng: Optional[np.random.Generator] = None,
-) -> "tuple[PairwiseMatrix, PointAdvantageResult, RankDistribution, RobustnessResult, Optional[SeedVarianceResult], LMMInfo | FactorialLMMInfo]":
+) -> "tuple[PairwiseMatrix, RankDistribution, RobustnessResult, Optional[SeedVarianceResult], LMMInfo | FactorialLMMInfo]":
     """Run the full LMM analysis pipeline on a ``BenchmarkResult``.
 
     Fits ``score ~ template + (1|input)`` on the cell-mean scores and maps
@@ -2002,14 +1775,14 @@ def lmm_analyze(
         fixed-effect covariance matrix.  pymer4 uses per-contrast Satterthwaite
         DFs via emmeans; statsmodels uses a single conservative residual DF.
     reference : str
-        Reference for mean advantage: ``'grand_mean'`` or a template label.
+        Retained for API compatibility. Ignored in robustness-only mode.
     ci : float
         Confidence level for Wald intervals (default 0.95).
     correction : str
         Multiple-comparisons correction: ``'fdr_bh'`` (default),
         ``'holm'``, ``'bonferroni'``, or ``'none'``.
     spread_percentiles : tuple[float, float]
-        Percentiles for the intrinsic variance band (default ``(10, 90)``).
+        Retained for API compatibility. Ignored in robustness-only mode.
     failure_threshold : float, optional
         Threshold for failure-rate computation in robustness metrics.
     n_sim : int
@@ -2021,7 +1794,7 @@ def lmm_analyze(
     Returns
     -------
     tuple
-        ``(pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info)``
+        ``(pairwise, rank_dist, robustness, seed_var, lmm_info)``
         where types match those returned by the bootstrap analysis path.
 
     Raises
@@ -2117,16 +1890,13 @@ def lmm_analyze(
             )
 
         pairwise = _lmm_to_pairwise_sm(sm_result, labels, cell_means_2d, ci, correction)
-        mean_adv = _lmm_to_mean_advantage_sm(
-            sm_result, labels, cell_means_2d, ci, spread_percentiles, reference
-        )
         template_means           = _extract_template_means_sm(sm_result, labels)
         sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
         rank_dist = _simulate_rank_dist(
             template_means, sigma_input, sigma_resid, M, labels, n_sim, rng
         )
 
-        return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+        return pairwise, rank_dist, robustness, seed_var, lmm_info
 
     # ------------------------------------------------------------------
     # pymer4 path (original implementation)
@@ -2143,9 +1913,6 @@ def lmm_analyze(
         )
 
     pairwise  = _lmm_to_pairwise(model, labels, cell_means_2d, ci, correction)
-    mean_adv  = _lmm_to_mean_advantage(
-        model, labels, cell_means_2d, ci, spread_percentiles, reference
-    )
     rank_dist = _lmm_to_rank_dist(model, labels, cell_means_2d, n_sim, rng)
     lmm_info  = _build_lmm_info(model, n_obs)
 
@@ -2158,4 +1925,4 @@ def lmm_analyze(
             stacklevel=3,
         )
 
-    return pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_info
+    return pairwise, rank_dist, robustness, seed_var, lmm_info

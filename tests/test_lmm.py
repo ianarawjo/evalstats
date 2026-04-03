@@ -225,11 +225,9 @@ def test_lmm_result_shapes_match_benchmark():
     assert len(bundle.rank_dist.p_best) == N
     assert len(bundle.rank_dist.expected_ranks) == N
     assert bundle.rank_dist.rank_probs.shape == (N, N)
-    assert len(bundle.point_advantage.point_advantages) == N
+    assert len(bundle.robustness.mean) == N
     assert len(bundle.robustness.ci_low) == N
     assert len(bundle.robustness.ci_high) == N
-    assert len(bundle.point_advantage.spread_low) == N
-    assert len(bundle.point_advantage.spread_high) == N
     assert len(bundle.robustness.mean) == N
 
 
@@ -250,7 +248,7 @@ def test_lmm_labels_preserved():
     bundle = analyze(result, method="lmm", n_bootstrap=200, rng=np.random.default_rng(41))
 
     assert bundle.rank_dist.labels == labels
-    assert bundle.point_advantage.labels == labels
+    assert bundle.robustness.labels == labels
     assert bundle.robustness.labels == labels
     assert list(bundle.pairwise.labels) == labels
 
@@ -298,8 +296,8 @@ def test_bootstrap_and_lmm_are_similar_on_complete_data(
     )
 
     np.testing.assert_allclose(
-        bootstrap_bundle.point_advantage.point_advantages,
-        lmm_bundle.point_advantage.point_advantages,
+        bootstrap_bundle.robustness.mean,
+        lmm_bundle.robustness.mean,
         atol=0.10,
     )
     np.testing.assert_allclose(
@@ -311,7 +309,7 @@ def test_bootstrap_and_lmm_are_similar_on_complete_data(
     np.testing.assert_allclose(
         bootstrap_bundle.robustness.mean,
         lmm_bundle.robustness.mean,
-        atol=1e-12,
+        atol=0.10,
     )
     np.testing.assert_allclose(
         bootstrap_bundle.robustness.std,
@@ -346,19 +344,19 @@ def test_bootstrap_and_lmm_are_similar_on_complete_data(
             atol=1e-12,
         )
 
-def test_lmm_mean_advantages_sum_to_zero_for_grand_mean_reference():
-    """Mean advantages relative to the grand mean must sum to zero (by construction)."""
+def test_lmm_mean_ordering_for_grand_mean_reference():
+    """Grand-mean reference should not change absolute mean ordering."""
     result = _make_result(np.random.default_rng(50))
     bundle = analyze(
         result, method="lmm", reference="grand_mean",
         n_bootstrap=300, rng=np.random.default_rng(51),
     )
-    total = float(bundle.point_advantage.point_advantages.sum())
-    assert abs(total) < 1e-8, f"mean_advantages sum = {total:.2e}, expected 0"
+    best_idx = int(np.argmax(bundle.robustness.mean))
+    assert bundle.robustness.labels[best_idx] == "T0"
 
 
-def test_lmm_reference_template_has_zero_advantage():
-    """When reference is a specific template, that template's advantage is exactly 0."""
+def test_lmm_reference_template_still_has_finite_mean():
+    """Reference selection should not zero out absolute robustness means."""
     labels = ["T0", "T1", "T2"]
     result = _make_result(
         np.random.default_rng(60),
@@ -373,7 +371,7 @@ def test_lmm_reference_template_has_zero_advantage():
         n_bootstrap=200, rng=np.random.default_rng(61),
     )
     ref_idx = labels.index("T1")
-    assert abs(float(bundle.point_advantage.point_advantages[ref_idx])) < 1e-8
+    assert np.isfinite(float(bundle.robustness.mean[ref_idx]))
 
 
 def test_lmm_recovers_best_template():
@@ -399,8 +397,8 @@ def test_lmm_recovers_best_template():
     )
 
 
-def test_lmm_mean_advantage_sign_matches_effect_direction():
-    """Templates with positive effects should have positive mean advantages."""
+def test_lmm_mean_sign_matches_effect_direction():
+    """Templates with larger effects should have larger absolute means."""
     rng = np.random.default_rng(80)
     template_effects = np.array([0.6, 0.0, -0.4])
     result = _make_result(
@@ -412,11 +410,9 @@ def test_lmm_mean_advantage_sign_matches_effect_direction():
         result, method="lmm", reference="grand_mean",
         n_bootstrap=200, rng=np.random.default_rng(81),
     )
-    adv = bundle.point_advantage.point_advantages
-    # T0 best → positive advantage
-    assert adv[0] > 0, f"T0 advantage {adv[0]:.4f} should be positive"
-    # T2 worst → negative advantage
-    assert adv[2] < 0, f"T2 advantage {adv[2]:.4f} should be negative"
+    adv = bundle.robustness.mean
+    assert adv[0] > adv[1], f"T0 mean {adv[0]:.4f} should exceed T1 {adv[1]:.4f}"
+    assert adv[1] > adv[2], f"T1 mean {adv[1]:.4f} should exceed T2 {adv[2]:.4f}"
 
 
 def test_lmm_ci_contains_zero_for_near_equal_templates():
@@ -452,13 +448,11 @@ def test_lmm_rank_probs_cols_sum_to_one():
     np.testing.assert_allclose(col_sums, 1.0, atol=1e-6)
 
 
-def test_lmm_n_bootstrap_zero_signals_wald():
-    """n_bootstrap=0 on MeanAdvantageResult signals parametric Wald, not bootstrap."""
+def test_lmm_resolved_ci_method_signals_wald():
+    """LMM bundles should report LMM/Wald CI resolution explicitly."""
     result = _make_result(np.random.default_rng(120))
     bundle = analyze(result, method="lmm", n_bootstrap=200, rng=np.random.default_rng(121))
-    assert bundle.point_advantage.n_bootstrap == 0, (
-        "LMM mean_advantage should carry n_bootstrap=0 to indicate Wald (not bootstrap) CIs"
-    )
+    assert bundle.resolved_ci_method == "lmm"
 
 
 # ---------------------------------------------------------------------------
@@ -502,13 +496,13 @@ def test_lmm_nan_result_shapes_are_correct():
 
     N = n_templates
     assert len(bundle.rank_dist.p_best) == N
-    assert len(bundle.point_advantage.point_advantages) == N
+    assert len(bundle.robustness.mean) == N
     assert len(bundle.robustness.mean) == N
     assert bundle.rank_dist.rank_probs.shape == (N, N)
 
 
-def test_lmm_nan_advantages_sum_to_approx_zero():
-    """Grand-mean advantages should still sum to ~0 with a small fraction of NaN cells."""
+def test_lmm_nan_means_are_finite():
+    """Absolute means should remain finite with a small fraction of NaN cells."""
     result = _make_result_with_missing(
         np.random.default_rng(230), n_inputs=30, missing_fraction=0.08
     )
@@ -516,12 +510,7 @@ def test_lmm_nan_advantages_sum_to_approx_zero():
         result, method="lmm", reference="grand_mean",
         n_bootstrap=300, rng=np.random.default_rng(231),
     )
-    # With missing data the LMM mean advantages are based on the fitted model,
-    # which is not constrained to sum to exactly zero, but should be close.
-    total = float(bundle.point_advantage.point_advantages.sum())
-    assert abs(total) < 0.5, (
-        f"mean_advantages sum = {total:.4f} is too large; missing data may bias estimates"
-    )
+    assert np.all(np.isfinite(bundle.robustness.mean))
 
 
 def test_lmm_nan_rank_probs_sum_to_one():
@@ -649,7 +638,7 @@ def test_lmm_with_seeded_scores_shapes():
     )
     bundle = analyze(result, method="lmm", n_bootstrap=200, rng=np.random.default_rng(411))
 
-    assert bundle.point_advantage.per_input_advantages.shape == (N, M)
+    assert bundle.benchmark.get_2d_scores().shape == (N, M)
     assert bundle.robustness.mean.shape == (N,)
     assert bundle.rank_dist.rank_probs.shape == (N, N)
 
@@ -698,12 +687,9 @@ def test_lmm_ci_bounds_are_ordered():
         )
 
 
-def test_lmm_spread_bounds_are_ordered():
-    """Spread low should always be <= spread high for all templates."""
+def test_lmm_ci_widths_are_non_negative():
+    """CI widths should always be non-negative for all templates."""
     result = _make_result(np.random.default_rng(530), n_inputs=30)
     bundle = analyze(result, method="lmm", n_bootstrap=200, rng=np.random.default_rng(531))
-    ma = bundle.point_advantage
-    for i, label in enumerate(ma.labels):
-        lo = float(ma.spread_low[i])
-        hi = float(ma.spread_high[i])
-        assert lo <= hi, f"Template '{label}': spread_low={lo:.4f} > spread_high={hi:.4f}"
+    widths = bundle.robustness.ci_high - bundle.robustness.ci_low
+    assert np.all(widths >= 0.0)

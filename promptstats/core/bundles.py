@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Dict, Optional, Union
 
 from .types import BenchmarkResult, MultiModelBenchmark
 from .paired import PairwiseMatrix
-from .ranking import RankDistribution, PointAdvantageResult
+from .ranking import RankDistribution
 from .variance import RobustnessResult, SeedVarianceResult
 
 if TYPE_CHECKING:
@@ -75,11 +75,9 @@ class AnalysisBundle:
         Detected structural properties used for routing.
     pairwise : PairwiseMatrix
         All pairwise statistical comparisons between templates.
-    point_advantage : PointAdvantageResult
-        Mean advantage of each template over a reference, with
-        epistemic CI and intrinsic spread bands. Optional, not output by default.
     robustness : RobustnessResult
-        Per-template robustness and variance metrics (on cell means).
+        Per-template absolute performance and robustness metrics
+        (on cell means), including marginal CI bounds.
     rank_dist : RankDistribution
         Bootstrap distribution over template rankings.
     seed_variance : SeedVarianceResult or None
@@ -98,11 +96,11 @@ class AnalysisBundle:
     pairwise: PairwiseMatrix
     robustness: RobustnessResult
     rank_dist: RankDistribution
-    point_advantage: PointAdvantageResult | None = None
     seed_variance: Optional[SeedVarianceResult] = None
     lmm_info: Optional["LMMInfo"] = None
     factorial_lmm_info: Optional["FactorialLMMInfo"] = None
     resolved_method: Optional[str] = None
+    resolved_ci_method: Optional[str] = None
 
 
 @dataclass

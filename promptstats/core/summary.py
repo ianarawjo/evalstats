@@ -75,8 +75,15 @@ def _rank_method_label(bundle: "AnalysisBundle") -> str:
         rank_method = "bootstrap"
 
     n = bundle.rank_dist.n_bootstrap
-    statistic = bundle.point_advantage.statistic.lower()
+    first_result = next(iter(bundle.pairwise.results.values()), None)
+    statistic = (first_result.statistic if first_result is not None else "mean").lower()
     return f"{rank_method}, n={n}, ranked by {statistic}"
+
+
+def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
+    """Return True when single-sample CIs were computed with Wilson intervals."""
+    method = (bundle.resolved_ci_method or "").lower()
+    return method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def _pairwise_p_value_label(test_method: str) -> str:
@@ -592,56 +599,50 @@ def _print_multi_model_summary(
             f"{_rank_hump_lane(expected_rank_i, n_ranked_items, width=rank_bar_width)}"
         )
 
-    ma = bundle.cross_model.point_advantage
     cross_rob = bundle.cross_model.robustness
-    stat_label = ma.statistic.capitalize()
-    low_p, high_p = ma.spread_percentiles
+    stat_label = "Mean"
 
     # Reference value (absolute scale) for the │ marker.
-    if ma.reference == "grand_mean":
-        ref_val = float(np.mean(cross_rob.mean))
-    else:
-        try:
-            ref_idx = ma.labels.index(ma.reference)
-            ref_val = float(cross_rob.mean[ref_idx])
-        except ValueError:
-            ref_val = float(np.mean(cross_rob.mean))
+    ref_val = float(np.mean(cross_rob.mean))
 
-    # Absolute spread bands.
-    abs_spread_lows = ma.spread_low + ref_val
-    abs_spread_highs = ma.spread_high + ref_val
-
-    # Axis bounds cover means, marginal CIs, and spread bands.
+    # Axis bounds cover means and marginal CIs.
     cross_means = cross_rob.mean
     cross_ci_lows = cross_rob.ci_low
     cross_ci_highs = cross_rob.ci_high
-    all_vals = np.concatenate([cross_means, cross_ci_lows, cross_ci_highs,
-                               abs_spread_lows, abs_spread_highs])
+    cross_std = cross_rob.std
+    cross_sigma_lows = cross_means - cross_std
+    cross_sigma_highs = cross_means + cross_std
+    all_vals = np.concatenate([
+        cross_means,
+        cross_ci_lows,
+        cross_ci_highs,
+        cross_sigma_lows,
+        cross_sigma_highs,
+    ])
     val_range = float(np.max(all_vals) - np.min(all_vals))
     pad = max(val_range * 0.05, 1e-4)
     ma_low = float(np.min(all_vals)) - pad
     ma_high = float(np.max(all_vals)) + pad
 
-    ref_label_str = ma.reference if ma.reference != "grand_mean" else "grand mean"
+    ref_label_str = "grand mean"
     print()
     _print_subsection(f"--- {stat_label} Performance: All {n_show} (marginal CIs) ---")
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]  "
-        f"(· spread, ─ CI, ● {stat_label.lower()}, │ {ref_label_str})  "
-        f"spread percentiles = ({low_p:g}, {high_p:g})"
+        f"(· ±1σ, ─ CI, ● {stat_label.lower()}, │ {ref_label_str})"
     )
     print(
         f"  {'Model':<{model_col_width}s} "
         f"{'Template':<{template_col_width}s} "
         f"{'Interval Plot':<{line_width}s} "
-        f"{stat_label:>8s} {'CI Low':>9s} {'CI High':>9s} {'Spread Lo':>10s} {'Spread Hi':>10s}"
+        f"{stat_label:>8s} {'CI Low':>9s} {'CI High':>9s}"
     )
 
     # Build a label→index map for cross_rob (labels may differ from ma.labels order).
     cross_labels = list(cross_rob.labels)
 
     for idx in top_indices[:n_show]:
-        pair_label = ma.labels[idx]
+        pair_label = rank_labels[idx]
         model_label, template_label = _split_model_template_label(pair_label)
         model_label = _truncate_label(model_label, model_col_width)
         template_label = _truncate_label(template_label, template_col_width)
@@ -652,14 +653,14 @@ def _print_multi_model_summary(
         abs_mean = float(cross_means[rob_idx])
         abs_ci_low = float(cross_ci_lows[rob_idx])
         abs_ci_high = float(cross_ci_highs[rob_idx])
-        abs_spread_low = float(abs_spread_lows[idx])
-        abs_spread_high = float(abs_spread_highs[idx])
+        abs_sigma_low = float(cross_sigma_lows[rob_idx])
+        abs_sigma_high = float(cross_sigma_highs[rob_idx])
         line = _ascii_interval_line(
             mean=abs_mean,
             ci_low=abs_ci_low,
             ci_high=abs_ci_high,
-            spread_low=abs_spread_low,
-            spread_high=abs_spread_high,
+            spread_low=abs_sigma_low,
+            spread_high=abs_sigma_high,
             axis_low=ma_low,
             axis_high=ma_high,
             width=line_width,
@@ -671,9 +672,7 @@ def _print_multi_model_summary(
             f"{line:<{line_width}s} "
             f"{abs_mean:>7.3f} "
             f"{abs_ci_low:>8.3f} "
-            f"{abs_ci_high:>8.3f} "
-            f"{abs_spread_low:>9.3f} "
-            f"{abs_spread_high:>9.3f}"
+            f"{abs_ci_high:>8.3f}"
         )
 
     print()
@@ -766,9 +765,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     ci_w = 15
 
     _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
-    _cross_ci_header = (
-        "Wilson CI" if cross.point_advantage.n_bootstrap == 0 else "CI"
-    )
+    _cross_ci_header = "Wilson CI" if _uses_wilson_ci(cross) else "CI"
     header = (
         f"  {'Model':<{model_w}s}"
         f"  {'Template':<{template_w}s}"
@@ -1133,66 +1130,59 @@ def _print_mean_advantage(
     line_width: int,
     template_col_width: int = 24,
 ) -> None:
-    """Print the Mean/Median performance interval-plot table for an AnalysisBundle.
+    """Print the absolute performance interval-plot table for an AnalysisBundle.
 
     Shows each entity's absolute mean with marginal bootstrap CIs (single-sample,
     independent per entity) and intrinsic spread bands.  A reference line marks
     the grand mean (or the specified reference entity) for visual comparison.
     """
     item_singular_title = item_singular.capitalize()
-    ma = bundle.point_advantage
-    stat_label = ma.statistic.capitalize()
+    stat_label = "Mean"
     rob = bundle.robustness
-    low_p, high_p = ma.spread_percentiles
-
-    # Resolve the reference value (absolute scale) for the │ marker.
-    if ma.reference == "grand_mean":
-        ref_val = float(np.mean(rob.mean))
-    else:
-        try:
-            ref_idx = ma.labels.index(ma.reference)
-            ref_val = float(rob.mean[ref_idx])
-        except ValueError:
-            ref_val = float(np.mean(rob.mean))
+    ref_val = float(np.mean(rob.mean))
 
     # Per-entity absolute values.
-    abs_means = np.array([float(rob.mean[i]) for i in range(len(ma.labels))])
+    abs_means = np.array([float(rob.mean[i]) for i in range(len(rob.labels))])
 
     abs_ci_lows = rob.ci_low
     abs_ci_highs = rob.ci_high
 
-    # Absolute spread bands (percentiles of per-input advantages, shifted).
-    abs_spread_lows = ma.spread_low + ref_val
-    abs_spread_highs = ma.spread_high + ref_val
+    # ±1σ spread around the absolute mean.
+    abs_sigma_lows = abs_means - rob.std
+    abs_sigma_highs = abs_means + rob.std
 
-    # Axis bounds: cover means, CIs, and spread bands.
-    all_vals = np.concatenate([abs_means, abs_ci_lows, abs_ci_highs,
-                               abs_spread_lows, abs_spread_highs])
+    # Axis bounds: cover means, CIs, and ±1σ spread.
+    all_vals = np.concatenate([
+        abs_means,
+        abs_ci_lows,
+        abs_ci_highs,
+        abs_sigma_lows,
+        abs_sigma_highs,
+    ])
     val_range = float(np.max(all_vals) - np.min(all_vals))
     pad = max(val_range * 0.05, 1e-4)
     ma_low = float(np.min(all_vals)) - pad
     ma_high = float(np.max(all_vals)) + pad
 
-    ci_note = "Wilson CIs" if ma.n_bootstrap == 0 else "marginal bootstrap CIs"
+    ci_note = "Wilson CIs" if _uses_wilson_ci(bundle) else "marginal bootstrap CIs"
     _print_subsection(f"--- {stat_label} Performance ({ci_note}) ---")
-    ref_label = ma.reference if ma.reference != "grand_mean" else "grand mean"
+    ref_label = "grand mean"
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]"
-        f"  (· spread, ─ CI, ● {stat_label.lower()}, │ {ref_label})"
-        f"  spread percentiles = ({low_p:g}, {high_p:g})"
+        f"  (· ±1σ, ─ CI, ● {stat_label.lower()}, │ {ref_label})"
     )
     print(
         f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
-        f"{'CI Low':>9s} {'CI High':>9s} {'Spread Lo':>10s} {'Spread Hi':>10s}"
+        f"{'CI Low':>9s} {'CI High':>9s}"
     )
-    for i, label in enumerate(ma.labels):
+    for i, label in enumerate(rob.labels):
         template_label = _truncate_label(label, template_col_width)
         line = _ascii_interval_line(
             mean=abs_means[i],
             ci_low=float(abs_ci_lows[i]),
             ci_high=float(abs_ci_highs[i]),
-            spread_low=float(abs_spread_lows[i]),
-            spread_high=float(abs_spread_highs[i]),
+            spread_low=float(abs_sigma_lows[i]),
+            spread_high=float(abs_sigma_highs[i]),
             axis_low=ma_low,
             axis_high=ma_high,
             width=line_width,
@@ -1203,9 +1193,7 @@ def _print_mean_advantage(
             f"{line:<{line_width}s} "
             f"{abs_means[i]:>7.3f} "
             f"{float(abs_ci_lows[i]):>8.3f} "
-            f"{float(abs_ci_highs[i]):>8.3f} "
-            f"{float(abs_spread_lows[i]):>9.3f} "
-            f"{float(abs_spread_highs[i]):>9.3f}"
+            f"{float(abs_ci_highs[i]):>8.3f}"
         )
 
 
@@ -2219,7 +2207,7 @@ def _print_executive_summary(
     stab_w = 16
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
-    ci_col_header = "Wilson CI" if bundle.point_advantage.n_bootstrap == 0 else "CI"
+    ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
 
     # Header row (no ANSI codes so widths match exactly).
     header_parts = [
