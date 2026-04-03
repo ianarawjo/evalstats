@@ -112,8 +112,8 @@ def _assert_factorial_bundles_close(
     assert pa_a.spread_percentiles == pa_b.spread_percentiles
     assert pa_a.statistic == pa_b.statistic
     assert_allclose(pa_a.point_advantages, pa_b.point_advantages, atol=atol, rtol=rtol)
-    assert_allclose(pa_a.bootstrap_ci_low, pa_b.bootstrap_ci_low, atol=atol, rtol=rtol)
-    assert_allclose(pa_a.bootstrap_ci_high, pa_b.bootstrap_ci_high, atol=atol, rtol=rtol)
+    assert_allclose(bundle_a.robustness.ci_low, bundle_b.robustness.ci_low, atol=atol, rtol=rtol)
+    assert_allclose(bundle_a.robustness.ci_high, bundle_b.robustness.ci_high, atol=atol, rtol=rtol)
     assert_allclose(pa_a.spread_low, pa_b.spread_low, atol=atol, rtol=rtol)
     assert_allclose(pa_a.spread_high, pa_b.spread_high, atol=atol, rtol=rtol)
     assert_allclose(pa_a.per_input_advantages, pa_b.per_input_advantages, atol=atol, rtol=rtol)

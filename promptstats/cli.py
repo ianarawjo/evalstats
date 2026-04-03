@@ -279,6 +279,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Number of pairwise comparisons to show in summary (default: 5).",
     )
     analyze.add_argument(
+        "--brief",
+        action="store_true",
+        help=(
+            "Print only the executive leaderboard (entity names, significance groups, "
+            "means, CIs, verdicts). Omits the full statistical breakdown — advantage "
+            "plots, pairwise tables, and robustness section. Useful for a quick result "
+            "at a glance. Use --out to save the full analysis alongside."
+        ),
+    )
+    analyze.add_argument(
         "--out",
         nargs="+",
         default=None,
@@ -398,7 +408,11 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     print()
     summary_buffer = io.StringIO()
     with redirect_stdout(summary_buffer):
-        print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
+        if getattr(args, "brief", False):
+            from promptstats.core.summary import print_brief_summary
+            print_brief_summary(analysis)
+        else:
+            print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
     summary_text = summary_buffer.getvalue()
     print(summary_text, end="")
 

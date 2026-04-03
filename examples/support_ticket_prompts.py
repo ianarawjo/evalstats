@@ -26,6 +26,7 @@ Requirements:
 Usage:
     python examples/support_ticket_prompts.py
     python examples/support_ticket_prompts.py --model gemma3:1b
+    python examples/support_ticket_prompts.py --n-inputs 15
     python examples/support_ticket_prompts.py --runs 3
     python examples/support_ticket_prompts.py --out path/to/output.csv
 """
@@ -33,6 +34,7 @@ Usage:
 import argparse
 import csv
 import json
+import random
 import re
 import time
 from pathlib import Path
@@ -378,19 +380,68 @@ def extract_category(output: str) -> str | None:
     return None
 
 
+def select_inputs(n_inputs: int | None, seed: int | None = None) -> list[tuple[int, str, str]]:
+    """Select up to n_inputs tickets, sampled as evenly as possible across classes.
+
+    Returns rows as (original_index, ticket_text, ground_truth_category).
+    """
+    all_rows = [(i, ticket, category) for i, (ticket, category) in enumerate(INPUTS)]
+    if n_inputs is None:
+        return all_rows
+
+    if n_inputs < 1 or n_inputs > len(INPUTS):
+        raise ValueError(f"n_inputs must be between 1 and {len(INPUTS)}")
+
+    rng = random.Random(seed)
+    by_category: dict[str, list[tuple[int, str, str]]] = {c: [] for c in VALID_CATEGORIES}
+    for row in all_rows:
+        by_category[row[2]].append(row)
+
+    for rows in by_category.values():
+        rng.shuffle(rows)
+
+    categories = sorted(VALID_CATEGORIES)
+    n_categories = len(categories)
+    base = n_inputs // n_categories
+    remainder = n_inputs % n_categories
+
+    per_category = {c: base for c in categories}
+    extra_order = categories[:]
+    rng.shuffle(extra_order)
+    for c in extra_order[:remainder]:
+        per_category[c] += 1
+
+    selected: list[tuple[int, str, str]] = []
+    for c in categories:
+        need = per_category[c]
+        available = len(by_category[c])
+        if need > available:
+            raise ValueError(
+                f"Requested {need} examples for {c}, but only {available} are available"
+            )
+        selected.extend(by_category[c][:need])
+
+    rng.shuffle(selected)
+    return selected
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 
-def run(model: str, out_path: Path, n_runs: int = 1) -> None:
+def run(model: str, out_path: Path, n_runs: int = 1, n_inputs: int | None = None, seed: int | None = None) -> None:
     n_prompts = len(PROMPT_IDS)
-    n_inputs = len(INPUTS)
+    selected_inputs = select_inputs(n_inputs=n_inputs, seed=seed)
+    n_selected_inputs = len(selected_inputs)
     temperature = 0.0 if n_runs == 1 else 1.0
-    total = n_prompts * n_inputs * n_runs
+    total = n_prompts * n_selected_inputs * n_runs
 
     print(f"Model       : {model}")
     print(f"Prompts     : {n_prompts}  ({', '.join(PROMPT_IDS)})")
-    print(f"Tickets     : {n_inputs}  (30 per category: 10 easy + 20 hard boundary cases)")
+    if n_inputs is None:
+        print(f"Tickets     : {n_selected_inputs}  (30 per category: 10 easy + 20 hard boundary cases)")
+    else:
+        print(f"Tickets     : {n_selected_inputs} sampled evenly across categories")
     print(f"Runs        : {n_runs}  (temperature={temperature})")
     print(f"Total calls : {total}\n")
 
@@ -401,7 +452,7 @@ def run(model: str, out_path: Path, n_runs: int = 1) -> None:
 
     for run_idx in range(1, n_runs + 1):
         for p_id, template in PROMPTS.items():
-            for i_idx, (ticket_text, ground_truth) in enumerate(INPUTS):
+            for orig_idx, ticket_text, ground_truth in selected_inputs:
                 prompt = template.format(ticket=ticket_text)
                 output = call_ollama(prompt, model, temperature=temperature)
                 predicted = extract_category(output)
@@ -410,7 +461,7 @@ def run(model: str, out_path: Path, n_runs: int = 1) -> None:
                 rows.append({
                     "prompt_id":    p_id,
                     "run_idx":      run_idx,
-                    "input_id":     INPUT_IDS[i_idx],
+                    "input_id":     INPUT_IDS[orig_idx],
                     "ticket":       ticket_text,
                     "category":     ground_truth,
                     "output":       output,
@@ -421,7 +472,7 @@ def run(model: str, out_path: Path, n_runs: int = 1) -> None:
                 done += 1
                 status = "✓" if correct else "✗"
                 print(
-                    f"  [{done:3d}/{total}] run {run_idx}/{n_runs} | {p_id:<24s} | ticket {i_idx:02d} | "
+                    f"  [{done:3d}/{total}] run {run_idx}/{n_runs} | {p_id:<24s} | ticket {orig_idx:02d} | "
                     f"truth={ground_truth:<9s} pred={str(predicted):<9s} {status} | "
                     f"'{output[:40]}'"
                 )
@@ -453,10 +504,15 @@ def main() -> None:
     parser.add_argument("--runs", type=int, default=1,
                         help="Number of runs per (prompt, ticket) pair (default: 1). "
                              "Runs > 1 use temperature=0.7 to capture stochasticity.")
+    parser.add_argument("--n-inputs", type=int, default=None,
+                        help="Optional number of tickets to evaluate. "
+                             "Randomly sampled as evenly as possible across categories.")
+    parser.add_argument("--seed", type=int, default=None,
+                        help="Optional random seed for --n-inputs sampling.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
                         help=f"Output CSV path (default: {DEFAULT_OUT})")
     args = parser.parse_args()
-    run(args.model, args.out, n_runs=args.runs)
+    run(args.model, args.out, n_runs=args.runs, n_inputs=args.n_inputs, seed=args.seed)
 
 
 if __name__ == "__main__":

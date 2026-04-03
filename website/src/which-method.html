@@ -13,8 +13,19 @@
         </p>
 
         <h3>Methods to Compute Confidence Intervals (By Data Type)</h3>
-        <div class="rec-cards">
-        <div class="rec-card">
+        <div class="rec-list">
+        <div class="rec-item">
+            <div class="rec-icon">
+            <!-- Binary: two-bar chart -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+                <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+                <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+                <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+            </svg>
+            </div>
+            <div class="rec-body">
             <div class="rec-card-when">Binary (0 / 1)</div>
             <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Bootstrap (N≥100)</div>
             <div class="rec-card-detail">
@@ -23,34 +34,34 @@
             switch to bootstrap at N=100 and above for safety and CI multi-comparisons correction (simultaneous CIs) with the studentized maxT method. (Warning:
             around N≈200+, the paired method in <code>bayes_evals</code> collapses, hence the switch.)
             </div>
-        </div>
-        <div class="rec-card">
-            <div class="rec-card-when">Continuous (0–1 floats)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
-            <div class="rec-card-detail">
-            Highest coverage across all N tested. Slightly conservative (wider CIs), which is
-            preferred in safety-critical eval contexts. At larger N, regular bootstrap is
-            more efficient and more on-target. (Bootstrap also allows us to  
-            calculate simultaneous CIs to correct FWER for multiple comparisons,
-            without relying upon overly conservative Bonferroni correction.) 
             </div>
         </div>
-        <div class="rec-card">
-            <div class="rec-card-when">Likert / Integer (e.g., 1–5)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
-            <div class="rec-card-detail">
-            Same story as continuous. Smooth bootstrap handles the discrete nature of Likert
-            scales more gracefully than percentile or BCa. At larger N, regular bootstrap is
-            more efficient and more on-target.
+        <div class="rec-item">
+            <div class="rec-icon">
+            <!-- Numeric: smooth density curve -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+                <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                      fill="currentColor" opacity="0.12"/>
+                <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                      stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
             </div>
-        </div>
-        <div class="rec-card">
-            <div class="rec-card-when">Grades / Rubric (0–100)</div>
+            <div class="rec-body">
+            <div class="rec-card-when">Numeric (floats, integers, Likert, grades)</div>
             <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
             <div class="rec-card-detail">
-            Bounded, potentially skewed. Smooth bootstrap is robust to skew and performs
-            well even at N=10, making up for the over-confidence of other methods at small N.
-            At larger N, regular bootstrap is more efficient and more on-target.
+            Smooth bootstrap with a Guassian KDE had the highest coverage rate across all CI methods tested
+            at small N sample sizes for numeric data. Smooth bootstrap acts like regular bootstrap, but 
+            <a href="https://towardsdatascience.com/the-math-behind-kernel-density-estimation-5deca75cba38/" target="_blank">adds Gaussian noise to each data point</a>—it treats each data point as a little fuzzy instead of exact.
+            It handled continuous (0–1 floats), discrete (Likert / integer), and bounded or skewed (grades, 0–100) data more gracefully
+            and robustly than other methods we tested, and it is slightly conservative, which is preferred in
+            LLM eval contexts since we can't trust our eval sets are all that representative, either. 
+            At larger N, regular bootstrap is more efficient and more on-target, 
+            and also supports simultaneous CIs for multi-comparisons correction. (Here, Scott's rule is used to set the bandwidth of the Gaussian kernel—this is more conservative than Silverman's rule, 
+            and makes an assumption of normality for the noise, but its conservativeness is preferred according to our principles,
+            and our simulations suggest it performs well in practice.)
+            </div>
             </div>
         </div>
         </div>
@@ -466,10 +477,21 @@
         That said, the Sign Test is also a reasonable choice for safety-critical settings
         where false positives are especially costly, because it is much more conservative than Wilcoxon.
       </p>
+      <p>
+        For comparing 3+ models/prompts, we recommend the <strong>Friedman test</strong> as the default, with 
+        Wilcoxon signed ranks as the post-hoc pairwise test. Friedman is a non-parametric test for comparing more than two related samples, 
+        it doesn't assume normality, and it's robust to homoscedasticity (variance of residuals). 
+        Friedman tests are already used in some ML contexts for comparing models,
+        as advocated by <a href="https://www.jmlr.org/papers/volume7/demsar06a/demsar06a.pdf">Demsar (2006)</a>.
+        Note that promptstats does not output Friedman by default, since <a href="principles.html">it does not foreground a NHST-style analysis pipeline</a>,
+        but it is available as an option for users who want to use it. 
+      </p>
       <p>For <a href="https://en.wikipedia.org/wiki/Multiple_comparisons_problem">multiple comparisons correction</a>, 
-        we recommend the <strong>Benjamini-Hochberg</strong> procedure (<code>correction="fdr_bh"</code>), 
-        which performed comparably to other methods in our simulation, but had the greatest power,
-        meaning it was most likely to avoid false negatives, without affecting Type I error control. 
+        we recommend the <strong>Benjamini-Hochberg</strong> procedure (<code>correction="fdr_bh"</code>)
+        to those in lower-stakes contexts, as it which performed comparably to other methods in our simulation, 
+        but had the greatest power among methods that maintained Type I error control.
+        In extremely safety-critical contexts, the <strong>Bonferroni-Holm</strong> correction (<code>correction="holm"</code>) 
+        is more appropriate for its strong control over false positives, albeit at the cost of increased false negatives.
     </p>
       <div class="callout callout-warning">
         <div class="callout-label">Do not rely on NHST alone</div>

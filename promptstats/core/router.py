@@ -646,6 +646,19 @@ def _analyze_single(
             n_sim=n_bootstrap,
             rng=rng,
         )
+        # Recompute robustness with marginal per-entity CIs (overrides the one
+        # inside lmm_analyze which does not compute them).
+        scores_2d = result.get_2d_scores()
+        robustness = robustness_metrics(
+            scores_2d,
+            robustness.labels,
+            failure_threshold=failure_threshold,
+            n_bootstrap=n_bootstrap,
+            rng=rng,
+            alpha=1.0 - ci,
+            statistic="mean",
+            marginal_method="smooth_bootstrap",
+        )
         if isinstance(lmm_result, FactorialLMMInfo):
             return AnalysisBundle(
                 benchmark=result,
@@ -751,12 +764,17 @@ def _analyze_single(
     mean_adv = bootstrap_point_advantage(
         run_scores, labels,
         reference=reference,
-        method=advantage_method, ci=ci, n_bootstrap=n_bootstrap,
+        method=advantage_method, n_bootstrap=n_bootstrap,
         spread_percentiles=spread_percentiles, rng=rng, statistic=statistic,
     )
     robustness = robustness_metrics(
         run_scores, labels,
         failure_threshold=failure_threshold,
+        n_bootstrap=n_bootstrap,
+        rng=rng,
+        alpha=1.0 - ci,
+        statistic=statistic,
+        marginal_method=advantage_method,
     )
     rank_dist = bootstrap_ranks(
         run_scores, labels,

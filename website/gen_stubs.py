@@ -185,6 +185,7 @@ INVESTIGATIONS = [
 ]
 
 BOOK_SVG       = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.5A1.5 1.5 0 012.5 1h11A1.5 1.5 0 0115 2.5v11a1.5 1.5 0 01-1.5 1.5h-11A1.5 1.5 0 011 13.5v-11zm1.5 0v11h11v-11h-11zM4 4h8v1H4V4zm0 3h8v1H4V7zm0 3h5v1H4v-1z"/></svg>'
+USAGE_SVG      = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M0 3a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3zm5.854 2.646a.5.5 0 1 0-.708.708L6.793 8l-1.647 1.646a.5.5 0 0 0 .708.708l2-2a.5.5 0 0 0 0-.708l-2-2zm3.146 4.354a.5.5 0 0 1 0-1h3a.5.5 0 0 1 0 1h-3z"/></svg>'
 WHICH_METHOD_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="7" stroke="#3b4a6b" stroke-width="1.5" fill="#e0e7ef"/><path d="M8 11.2v-1m0-5a2 2 0 0 1 2 2c0 1.5-2 1.5-2 3" stroke="#3b4a6b" stroke-width="1.2" stroke-linecap="round"/><circle cx="8" cy="12.2" r=".7" fill="#3b4a6b"/></svg>'
 PAPERS_SVG     = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 0h8a2 2 0 012 2v10a2 2 0 01-2 2H5a2 2 0 01-2-2V2a2 2 0 012-2zm0 1a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1V2a1 1 0 00-1-1H5zM1 4a1 1 0 00-1 1v10a1 1 0 001 1h8a1 1 0 001-1v-1h1v1a2 2 0 01-2 2H1a2 2 0 01-2-2V5a2 2 0 012-2h1v1H1z"/></svg>'
 PRINCIPLES_SVG = '<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M5 3.5h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zm0 4h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zm0 4h8a.5.5 0 0 1 0 1H5a.5.5 0 0 1 0-1zM2.5 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1zm0 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1zm0 4a.5.5 0 1 0 0-1 .5.5 0 0 0 0 1z"/></svg>'
@@ -225,6 +226,7 @@ def make_nav(active_slug, prefix="../", disabled_slugs=None):
     # Guide links: (key, svg, href, label)
     guide_links = [
         ("index",      BOOK_SVG,           f"{prefix}index.html",       "About"),
+        ("usage",      USAGE_SVG,          f"{prefix}usage.html",       "Example Usage"),
         ("principles", PRINCIPLES_SVG,     f"{prefix}principles.html",  "Principles"),
         ("which-method", WHICH_METHOD_SVG, f"{prefix}which-method.html", "Which Method?"),
         ("roadmap",    ROADMAP_SVG,        f"{prefix}roadmap.html",     "Roadmap"),

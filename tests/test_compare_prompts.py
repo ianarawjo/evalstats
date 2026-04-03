@@ -1,5 +1,6 @@
 import numpy as np
 import pytest
+from matplotlib.container import ErrorbarContainer
 
 import promptstats as ps
 from promptstats.compare import CompareReport, EntityStats
@@ -236,6 +237,38 @@ def test_report_means_are_correct():
     )
     assert report.means["a"] == pytest.approx(1 / 3, abs=1e-9)
     assert report.means["b"] == pytest.approx(1.0, abs=1e-9)
+
+
+def test_report_plot_bars_adds_ci_error_bars():
+    report = ps.compare_prompts(
+        {
+            "a": [1, 0, 1, 1, 0, 1, 0, 1],
+            "b": [1, 1, 1, 1, 0, 1, 1, 1],
+        },
+        n_bootstrap=300,
+        rng=_rng(17),
+    )
+
+    fig = report.plot_bars(as_percent=False)
+
+    assert fig is not None
+    assert any(isinstance(c, ErrorbarContainer) for c in fig.axes[0].containers)
+
+
+def test_report_plot_bars_can_disable_error_bars():
+    report = ps.compare_prompts(
+        {
+            "a": [1, 0, 1, 1, 0, 1, 0, 1],
+            "b": [1, 1, 1, 1, 0, 1, 1, 1],
+        },
+        n_bootstrap=300,
+        rng=_rng(23),
+    )
+
+    fig = report.plot_bars(as_percent=False, error_bars=False)
+
+    assert fig is not None
+    assert not any(isinstance(c, ErrorbarContainer) for c in fig.axes[0].containers)
 
 
 # ---------------------------------------------------------------------------

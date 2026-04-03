@@ -196,11 +196,11 @@ def test_advantage_ci_bounds_ordered():
     rng    = np.random.default_rng(10)
     result = _make_result(rng, n_templates=3, n_inputs=20)
     bundle = analyze(result, method="lmm", backend="statsmodels", rng=rng)
-    adv    = bundle.point_advantage
-    for i, label in enumerate(adv.labels):
-        assert adv.bootstrap_ci_low[i] <= adv.point_advantages[i] <= adv.bootstrap_ci_high[i], (
-            f"{label}: ci=[{adv.bootstrap_ci_low[i]:.4f}, {adv.bootstrap_ci_high[i]:.4f}], "
-            f"point={adv.point_advantages[i]:.4f}"
+    rob = bundle.robustness
+    for i, label in enumerate(rob.labels):
+        assert rob.ci_low[i] <= rob.mean[i] <= rob.ci_high[i], (
+            f"{label}: ci=[{rob.ci_low[i]:.4f}, {rob.ci_high[i]:.4f}], "
+            f"mean={rob.mean[i]:.4f}"
         )
 
 

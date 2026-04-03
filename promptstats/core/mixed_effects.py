@@ -614,19 +614,6 @@ def _lmm_to_mean_advantage(
 
     mean_advantages = template_means - ref_value   # (N,)
 
-    # --- Wald CIs via delta method -----------------------------------------
-    vcov = _get_vcov(model)     # (N, N)
-    L    = _build_advantage_contrast_matrix(N, ref_idx)   # (N, N)
-
-    # Variance of each advantage: var(L[i] @ beta) = L[i] @ vcov @ L[i].T
-    cov_adv  = L @ vcov @ L.T          # (N, N)
-    var_adv  = np.diag(cov_adv)        # (N,)
-    se_adv   = np.sqrt(np.maximum(var_adv, 0.0))
-
-    t_crit   = _t_crit_from_result_fit(model, alpha)
-    ci_low   = mean_advantages - t_crit * se_adv
-    ci_high  = mean_advantages + t_crit * se_adv
-
     # --- Raw cell-mean advantages for spread bands -------------------------
     raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
         cell_means_2d, ref_idx, spread_percentiles
@@ -635,8 +622,6 @@ def _lmm_to_mean_advantage(
     return PointAdvantageResult(
         labels=labels,
         point_advantages=mean_advantages,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -1033,15 +1018,6 @@ def _lmm_to_mean_advantage_sm(
 
     mean_advantages = template_means - ref_value
 
-    L       = _build_advantage_contrast_matrix(N, ref_idx)
-    cov_adv = L @ vcov @ L.T
-    var_adv = np.diag(cov_adv)
-    se_adv  = np.sqrt(np.maximum(var_adv, 0.0))
-
-    t_crit  = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
-    ci_low  = mean_advantages - t_crit * se_adv
-    ci_high = mean_advantages + t_crit * se_adv
-
     raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
         cell_means_2d, ref_idx, spread_percentiles
     )
@@ -1049,8 +1025,6 @@ def _lmm_to_mean_advantage_sm(
     return PointAdvantageResult(
         labels=labels,
         point_advantages=mean_advantages,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -1435,16 +1409,6 @@ def _lmm_to_mean_advantage_factorial_sm(
 
     mean_advantages = template_means - ref_value  # (N,)
 
-    # Delta method: var(advantage_i) = (design_i - ref_vec) @ vcov @ (design_i - ref_vec)
-    C       = design_vecs - ref_vec[np.newaxis, :]   # (N, P)
-    cov_adv = C @ vcov @ C.T                          # (N, N)
-    var_adv = np.diag(cov_adv)
-    se_adv  = np.sqrt(np.maximum(var_adv, 0.0))
-
-    t_crit  = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
-    ci_low  = mean_advantages - t_crit * se_adv
-    ci_high = mean_advantages + t_crit * se_adv
-
     raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
         cell_means_2d, ref_idx, spread_percentiles
     )
@@ -1452,8 +1416,6 @@ def _lmm_to_mean_advantage_factorial_sm(
     return PointAdvantageResult(
         labels=labels,
         point_advantages=mean_advantages,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -1904,20 +1866,6 @@ def _lmm_to_mean_advantage_factorial_pymer4(
         ref_vec   = design_vecs[ref_idx]
 
     mean_advantages = template_means - ref_value
-    C       = design_vecs - ref_vec[np.newaxis, :]
-    cov_adv = C @ vcov @ C.T
-    var_adv = np.diag(cov_adv)
-    se_adv  = np.sqrt(np.maximum(var_adv, 0.0))
-
-    rf       = model.result_fit
-    df_col_n = next(
-        (c for c in rf.columns if c.lower() in ("df", "df_error", "ddf", "denomdf")),
-        None,
-    )
-    df_val = float(rf[df_col_n].min()) if df_col_n else float(len(df_pandas) - N - 1)
-    t_crit = float(scipy.stats.t.ppf(1 - alpha / 2, df=df_val))
-    ci_low  = mean_advantages - t_crit * se_adv
-    ci_high = mean_advantages + t_crit * se_adv
 
     raw_advantages, spread_low, spread_high = _compute_raw_advantages_and_spread(
         cell_means_2d, ref_idx, spread_percentiles
@@ -1926,8 +1874,6 @@ def _lmm_to_mean_advantage_factorial_pymer4(
     return PointAdvantageResult(
         labels=labels,
         point_advantages=mean_advantages,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,

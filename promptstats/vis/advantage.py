@@ -89,18 +89,30 @@ def plot_point_advantage(
     """
     # Compute advantage if given raw BenchmarkResult
     if isinstance(result, BenchmarkResult):
+        from promptstats.core.variance import robustness_metrics
         scores = result.get_2d_scores()
         adv = bootstrap_point_advantage(
             scores=scores,
             labels=result.template_labels,
             reference=reference,
             n_bootstrap=n_bootstrap,
-            ci=ci,
             spread_percentiles=spread_percentiles,
             rng=rng,
         )
+        # Marginal CIs in advantage scale (subtract grand mean to align with x-axis).
+        rob = robustness_metrics(
+            scores, result.template_labels,
+            n_bootstrap=n_bootstrap, rng=rng, alpha=1.0 - ci,
+            statistic="mean", marginal_method="smooth_bootstrap",
+        )
+        grand_mean = float(np.mean(rob.mean))
+        _ci_lo_adv = rob.ci_low - grand_mean
+        _ci_hi_adv = rob.ci_high - grand_mean
     else:
         adv = result
+        # No marginal CIs available; degenerate to zero-width at each point.
+        _ci_lo_adv = adv.point_advantages.copy()
+        _ci_hi_adv = adv.point_advantages.copy()
 
     n = len(adv.labels)
 
@@ -117,8 +129,8 @@ def plot_point_advantage(
 
     labels = [adv.labels[i] for i in order]
     means = adv.point_advantages[order]
-    ci_lo = adv.bootstrap_ci_low[order]
-    ci_hi = adv.bootstrap_ci_high[order]
+    ci_lo = _ci_lo_adv[order]
+    ci_hi = _ci_hi_adv[order]
     sp_lo = adv.spread_low[order]
     sp_hi = adv.spread_high[order]
 
@@ -268,7 +280,7 @@ def plot_point_advantage(
             color=_PALETTE["ci_band"],
             linewidth=ci_lw,
             solid_capstyle="round",
-            label=f"{int(ci * 100)}% CI on mean (bootstrap, n={adv.n_bootstrap:,})",
+            label=f"{int(ci * 100)}% marginal CI on mean (n={n_bootstrap:,})",
         ),
         Line2D(
             [0], [0],

@@ -16,7 +16,7 @@ from promptstats.core.router import (
     BenchmarkShape,
     MultiModelBundle,
 )
-from promptstats.core.summary import print_analysis_summary
+from promptstats.core.summary import print_analysis_summary, print_brief_summary
 from promptstats.vis.advantage import plot_point_advantage
 from promptstats.vis.critical_difference import plot_critical_difference
 from promptstats.vis.forest import plot_ci_forest
@@ -53,6 +53,7 @@ __all__ = [
     "BenchmarkShape",
     "MultiModelBundle",
     "print_analysis_summary",
+    "print_brief_summary",
     "plot_point_advantage",
     "plot_critical_difference",
     "plot_ci_forest",

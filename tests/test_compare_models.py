@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 import warnings
+from matplotlib.container import ErrorbarContainer
 
 import promptstats as ps
 from promptstats.compare import CompareReport, EntityStats
@@ -144,6 +145,22 @@ def test_compare_models_returns_report_and_fields():
     assert isinstance(report.full_analysis, ps.MultiModelBundle)
     assert isinstance(report.quick_summary(), str)
     assert report.winner in (None, "model_a", "model_b")
+
+
+def test_compare_models_report_plot_bars_adds_ci_error_bars():
+    report = ps.compare_models(
+        {
+            "m1": np.array([1, 0, 1, 1, 0, 1, 0, 1], dtype=float),
+            "m2": np.array([1, 1, 1, 1, 0, 1, 1, 1], dtype=float),
+        },
+        n_bootstrap=300,
+        rng=_rng(41),
+    )
+
+    fig = report.plot_bars(as_percent=False)
+
+    assert fig is not None
+    assert any(isinstance(c, ErrorbarContainer) for c in fig.axes[0].containers)
 
 
 def test_compare_models_detects_clear_winner():

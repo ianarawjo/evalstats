@@ -315,11 +315,11 @@ def test_bootstrap_point_advantage_wilson_grand_mean():
 
     result = bootstrap_point_advantage(
         scores, ["A", "B", "C"],
-        reference="grand_mean", method="wilson", ci=0.95,
+        reference="grand_mean", method="wilson",
     )
     assert result.n_bootstrap == 0  # Wilson, no bootstrap
     assert len(result.point_advantages) == 3
-    assert np.all(result.bootstrap_ci_low <= result.bootstrap_ci_high)
+    assert np.all(result.spread_low <= result.spread_high)
 
 
 def test_bootstrap_point_advantage_wilson_specific_reference():
@@ -331,12 +331,11 @@ def test_bootstrap_point_advantage_wilson_specific_reference():
 
     result = bootstrap_point_advantage(
         scores, ["A", "B", "C"],
-        reference="A", method="wilson", ci=0.95,
+        reference="A", method="wilson",
     )
-    # Reference template A has zero advantage vs itself
+    # Reference template A has zero point advantage vs itself
     idx_a = result.labels.index("A")
-    assert result.bootstrap_ci_low[idx_a] == 0.0
-    assert result.bootstrap_ci_high[idx_a] == 0.0
+    assert result.point_advantages[idx_a] == 0.0
 
 
 def test_single_template_short_circuits_smooth_bootstrap():
@@ -350,13 +349,10 @@ def test_single_template_short_circuits_smooth_bootstrap():
             ["A"],
             reference="grand_mean",
             method="wilson",
-            ci=0.95,
             rng=np.random.default_rng(2026),
         )
 
     np.testing.assert_allclose(result.point_advantages, [0.0])
-    np.testing.assert_allclose(result.bootstrap_ci_low, [0.0])
-    np.testing.assert_allclose(result.bootstrap_ci_high, [0.0])
     np.testing.assert_allclose(result.spread_low, [0.0])
     np.testing.assert_allclose(result.spread_high, [0.0])
     assert result.n_bootstrap == 0

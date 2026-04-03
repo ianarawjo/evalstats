@@ -77,7 +77,7 @@ class AnalysisBundle:
         All pairwise statistical comparisons between templates.
     point_advantage : PointAdvantageResult
         Mean advantage of each template over a reference, with
-        epistemic CI and intrinsic spread bands.
+        epistemic CI and intrinsic spread bands. Optional, not output by default.
     robustness : RobustnessResult
         Per-template robustness and variance metrics (on cell means).
     rank_dist : RankDistribution
@@ -96,9 +96,9 @@ class AnalysisBundle:
     benchmark: BenchmarkResult
     shape: BenchmarkShape
     pairwise: PairwiseMatrix
-    point_advantage: PointAdvantageResult
     robustness: RobustnessResult
     rank_dist: RankDistribution
+    point_advantage: PointAdvantageResult | None = None
     seed_variance: Optional[SeedVarianceResult] = None
     lmm_info: Optional["LMMInfo"] = None
     factorial_lmm_info: Optional["FactorialLMMInfo"] = None

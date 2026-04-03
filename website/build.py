@@ -233,6 +233,17 @@ PAGE_CONFIGS = [
         "active_nav": None,
     },
     {
+        "slug":           "usage",
+        "title_tag":      "Example Usage \u2014 Stats for LLM Evals",
+        "title":          "Example Usage",
+        "type":           "article",
+        "css":            "inv.css",
+        "active_nav":     None,
+        "eyebrow":        "Guide",
+        "subtitle":       "A cheat sheet for common use cases \u2014 CLI commands and Python API, from install to reading results.",
+        "active_sidebar": "usage",
+    },
+    {
         "slug":       "which-method",
         "title_tag":  "Which Method? — Stats for LLM Evals",
         "title":      "Which Method?",
@@ -345,7 +356,12 @@ def make_page(inv, content_html, has_notebook=False):
     title    = inv["title"]
     subtitle = inv["subtitle"]
     nav_html = make_nav(slug, prefix="../")
-    nb_css   = '<link rel="stylesheet" href="../nb.css" />' if has_notebook else ""
+    _katex_ver = "0.16.21"
+    nb_css   = (
+        f'<link rel="stylesheet" href="../nb.css" />\n  '
+        f'<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@{_katex_ver}/dist/katex.min.css" '
+        f'crossorigin="anonymous" />'
+    ) if has_notebook else ""
     head_html = make_head(
         title_tag=f"{title} \u2014 Stats for LLM Evals",
         css_file="inv.css",
@@ -353,6 +369,19 @@ def make_page(inv, content_html, has_notebook=False):
         extra_css=nb_css,
     )
     top_nav = make_site_nav_html(prefix="../", active=None)
+    _katex_cdn = f"https://cdn.jsdelivr.net/npm/katex@{_katex_ver}/dist"
+    katex_js = f"""\
+<script defer src="{_katex_cdn}/katex.min.js" crossorigin="anonymous"></script>
+<script defer src="{_katex_cdn}/contrib/auto-render.min.js" crossorigin="anonymous"
+  onload="renderMathInElement(document.body, {{
+    delimiters: [
+      {{left: '$$', right: '$$', display: true}},
+      {{left: '\\\\[', right: '\\\\]', display: true}},
+      {{left: '$', right: '$', display: false}},
+      {{left: '\\\\(', right: '\\\\)', display: false}}
+    ],
+    throwOnError: false
+  }});"></script>""" if has_notebook else ""
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -384,6 +413,7 @@ def make_page(inv, content_html, has_notebook=False):
 {FOOTER_HTML}
 
 <script src="../dark.js"></script>
+{katex_js}
 </body>
 </html>
 """

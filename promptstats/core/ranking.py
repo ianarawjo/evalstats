@@ -20,17 +20,10 @@ import numpy as np
 from .resampling import (
     _stat,
     _weighted_median,
-    bca_interval_1d,
-    bayes_bootstrap_means_1d,
     bayes_bootstrap_resample_cell_means_once,
-    smooth_bootstrap_means_1d,
     smooth_bootstrap_resample_cell_means_once,
-    bootstrap_means_1d,
     nested_resample_cell_means_once,
     resolve_resampling_method,
-    wilson_ci_1d,
-    newcombe_paired_ci,
-    bayes_binary_ci_1d,
 )
 
 
@@ -104,10 +97,6 @@ class PointAdvantageResult:
     point_advantages : np.ndarray
         Shape (N,). Point-estimate advantage over reference for each template
         (mean or median depending on ``statistic``).
-    bootstrap_ci_low : np.ndarray
-        Shape (N,). Lower bound of bootstrap CI on the point advantage.
-    bootstrap_ci_high : np.ndarray
-        Shape (N,). Upper bound of bootstrap CI on the point advantage.
     spread_low : np.ndarray
         Shape (N,). Lower percentile of per-input advantage distribution.
     spread_high : np.ndarray
@@ -128,8 +117,6 @@ class PointAdvantageResult:
 
     labels: list[str]
     point_advantages: np.ndarray
-    bootstrap_ci_low: np.ndarray
-    bootstrap_ci_high: np.ndarray
     spread_low: np.ndarray
     spread_high: np.ndarray
     reference: str
@@ -390,7 +377,6 @@ def bootstrap_point_advantage(
     labels: list[str],
     reference: str = "grand_mean",
     n_bootstrap: int = 10_000,
-    ci: float = 0.95,
     spread_percentiles: tuple[float, float] = (10, 90),
     rng: Optional[np.random.Generator] = None,
     method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "wilson", "bayes_binary", "permutation"] = "auto",
@@ -459,8 +445,6 @@ def bootstrap_point_advantage(
         return PointAdvantageResult(
             labels=labels,
             point_advantages=zeros_1.copy(),
-            bootstrap_ci_low=zeros_1.copy(),
-            bootstrap_ci_high=zeros_1.copy(),
             spread_low=zeros_1.copy(),
             spread_high=zeros_1.copy(),
             reference="grand_mean" if reference == "grand_mean" else labels[0],
@@ -480,7 +464,7 @@ def bootstrap_point_advantage(
             return _smooth_bootstrap_point_advantage_seeded(
                 scores, labels,
                 reference=reference, n_bootstrap=n_bootstrap,
-                ci=ci, spread_percentiles=spread_percentiles,
+                spread_percentiles=spread_percentiles,
                 rng=rng, statistic=statistic,
             )
         flat = scores.mean(axis=2) if scores.ndim == 3 else scores
@@ -488,13 +472,11 @@ def bootstrap_point_advantage(
             return _bayes_binary_point_advantage(
                 flat, labels,
                 reference=reference,
-                alpha=1.0 - ci,
                 spread_percentiles=spread_percentiles,
             )
         return _wilson_point_advantage(
             flat, labels,
             reference=reference,
-            alpha=1.0 - ci,
             spread_percentiles=spread_percentiles,
         )
 
@@ -509,7 +491,6 @@ def bootstrap_point_advantage(
                 scores, labels,
                 reference=reference,
                 n_bootstrap=n_bootstrap,
-                ci=ci,
                 spread_percentiles=spread_percentiles,
                 rng=rng,
                 statistic=statistic,
@@ -519,7 +500,6 @@ def bootstrap_point_advantage(
                 scores, labels,
                 reference=reference,
                 n_bootstrap=n_bootstrap,
-                ci=ci,
                 spread_percentiles=spread_percentiles,
                 rng=rng,
                 statistic=statistic,
@@ -528,7 +508,6 @@ def bootstrap_point_advantage(
             scores, labels,
             reference=reference,
             n_bootstrap=n_bootstrap,
-            ci=ci,
             spread_percentiles=spread_percentiles,
             rng=rng,
             method=resolved_method,
@@ -542,9 +521,7 @@ def bootstrap_point_advantage(
         scores = scores.mean(axis=2)
 
     n_templates, m_inputs = scores.shape
-    alpha = 1 - ci
     effective_method = "bootstrap" if method == "permutation" else method
-    resolved_method = resolve_resampling_method(effective_method, m_inputs)
 
     if reference == "grand_mean":
         # Grand reference is always the per-input mean across templates.
@@ -568,44 +545,9 @@ def bootstrap_point_advantage(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    ci_low = np.empty(n_templates)
-    ci_high = np.empty(n_templates)
-
-    for i in range(n_templates):
-        vals = advantages[i]
-        if resolved_method == "bayes_bootstrap":
-            boot_stats = bayes_bootstrap_means_1d(
-                vals, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-            )
-            ci_low[i] = np.percentile(boot_stats, 100 * alpha / 2)
-            ci_high[i] = np.percentile(boot_stats, 100 * (1 - alpha / 2))
-        elif resolved_method == "smooth_bootstrap":
-            boot_stats = smooth_bootstrap_means_1d(
-                vals, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-            )
-            ci_low[i] = np.percentile(boot_stats, 100 * alpha / 2)
-            ci_high[i] = np.percentile(boot_stats, 100 * (1 - alpha / 2))
-        else:
-            boot_stats = bootstrap_means_1d(
-                vals, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-            )
-            if resolved_method == "bootstrap":
-                ci_low[i] = np.percentile(boot_stats, 100 * alpha / 2)
-                ci_high[i] = np.percentile(boot_stats, 100 * (1 - alpha / 2))
-            elif resolved_method == "bca":
-                low, high = bca_interval_1d(
-                    vals, float(point_adv[i]), boot_stats, alpha, statistic=statistic,
-                )
-                ci_low[i] = low
-                ci_high[i] = high
-            else:
-                raise ValueError(f"Unknown method: {method}")
-
     return PointAdvantageResult(
         labels=labels,
         point_advantages=point_adv,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -622,7 +564,6 @@ def _bootstrap_point_advantage_seeded(
     *,
     reference: str,
     n_bootstrap: int,
-    ci: float,
     spread_percentiles: tuple[float, float],
     rng: np.random.Generator,
     method: Literal["bootstrap", "bca", "permutation"],
@@ -630,15 +571,11 @@ def _bootstrap_point_advantage_seeded(
 ) -> PointAdvantageResult:
     """Point advantage with nested bootstrap for ``scores`` of shape ``(N, M, R)``."""
     N, M, _ = scores.shape
-    alpha = 1 - ci
 
     # ---- Point estimates from cell means --------------------------------
-    # Within-cell aggregation always uses mean (collapsing R runs per cell).
     cell_means = scores.mean(axis=2)   # (N, M)
 
     if reference == "grand_mean":
-        # Grand reference is always the per-input mean across templates.
-        # See bootstrap_point_advantage for the rationale.
         ref_scores = cell_means.mean(axis=0)   # (M,)
         ref_label = "grand_mean"
         ref_idx = None
@@ -655,49 +592,9 @@ def _bootstrap_point_advantage_seeded(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    # ---- Nested bootstrap replicates of point advantages ----------------
-    # Shape (n_bootstrap, N): for each iteration, the point advantage of
-    # every template after resampling inputs and runs.
-    boot_point_advs = np.empty((n_bootstrap, N))
-
-    for b in range(n_bootstrap):
-        boot_cell_means = nested_resample_cell_means_once(scores, rng)  # (N, M)
-
-        if ref_idx is None:
-            # Grand reference is always per-input mean (see bootstrap_point_advantage).
-            boot_ref = boot_cell_means.mean(axis=0)             # (M,)
-        else:
-            boot_ref = boot_cell_means[ref_idx]                 # (M,)
-
-        boot_adv = boot_cell_means - boot_ref[np.newaxis, :]    # (N, M)
-        if statistic == "median":
-            boot_point_advs[b] = np.median(boot_adv, axis=1)   # (N,)
-        else:
-            boot_point_advs[b] = boot_adv.mean(axis=1)         # (N,)
-
-    # ---- CIs per template -----------------------------------------------
-    ci_low = np.empty(N)
-    ci_high = np.empty(N)
-
-    for i in range(N):
-        boot_i = boot_point_advs[:, i]      # (B,)
-        if method in {"bootstrap", "permutation"}:
-            ci_low[i] = np.percentile(boot_i, 100 * alpha / 2)
-            ci_high[i] = np.percentile(boot_i, 100 * (1 - alpha / 2))
-        elif method == "bca":
-            # Jackknife over inputs (outer sampling unit) using cell-point advantages.
-            ci_low[i], ci_high[i] = bca_interval_1d(
-                advantages[i], float(point_adv[i]), boot_i, alpha,
-                statistic=statistic,
-            )
-        else:
-            raise ValueError(f"Unknown method: {method}")
-
     return PointAdvantageResult(
         labels=labels,
         point_advantages=point_adv,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -714,7 +611,6 @@ def _bayes_bootstrap_point_advantage_seeded(
     *,
     reference: str,
     n_bootstrap: int,
-    ci: float,
     spread_percentiles: tuple[float, float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
@@ -725,7 +621,6 @@ def _bayes_bootstrap_point_advantage_seeded(
     R runs uniformly for each input.
     """
     N, M, _ = scores.shape
-    alpha = 1 - ci
 
     cell_means = scores.mean(axis=2)   # (N, M) point-estimate cell means
 
@@ -746,34 +641,9 @@ def _bayes_bootstrap_point_advantage_seeded(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    boot_point_advs = np.empty((n_bootstrap, N))
-
-    for b in range(n_bootstrap):
-        boot_cell_means, w = bayes_bootstrap_resample_cell_means_once(scores, rng)  # (N, M), (M,)
-
-        if ref_idx is None:
-            boot_ref = boot_cell_means.mean(axis=0)         # (M,) grand mean ref
-        else:
-            boot_ref = boot_cell_means[ref_idx]             # (M,)
-
-        boot_adv = boot_cell_means - boot_ref[np.newaxis, :]  # (N, M)
-        if statistic == "median":
-            boot_point_advs[b] = np.array([_weighted_median(boot_adv[t], w) for t in range(N)])
-        else:
-            boot_point_advs[b] = boot_adv @ w              # (N,) Dirichlet-weighted mean
-
-    ci_low = np.empty(N)
-    ci_high = np.empty(N)
-    for i in range(N):
-        boot_i = boot_point_advs[:, i]
-        ci_low[i] = np.percentile(boot_i, 100 * alpha / 2)
-        ci_high[i] = np.percentile(boot_i, 100 * (1 - alpha / 2))
-
     return PointAdvantageResult(
         labels=labels,
         point_advantages=point_adv,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -790,7 +660,6 @@ def _smooth_bootstrap_point_advantage_seeded(
     *,
     reference: str,
     n_bootstrap: int,
-    ci: float,
     spread_percentiles: tuple[float, float],
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
@@ -800,10 +669,7 @@ def _smooth_bootstrap_point_advantage_seeded(
     Inner level resamples R runs uniformly; outer level resamples M inputs
     with replacement; Gaussian KDE noise is added to each resampled cell mean.
     """
-    from scipy.stats import gaussian_kde as _kde
-
     N, M, _ = scores.shape
-    alpha = 1 - ci
 
     cell_means = scores.mean(axis=2)   # (N, M)
 
@@ -824,41 +690,9 @@ def _smooth_bootstrap_point_advantage_seeded(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    # Per-template KDE bandwidths estimated from original cell means.
-    bws = np.zeros(N)
-    for t in range(N):
-        std_t = float(np.std(cell_means[t], ddof=1)) if M > 1 else 0.0
-        if std_t > 0.0 and M >= 2:
-            bws[t] = float(_kde(cell_means[t]).factor * std_t)
-
-    boot_point_advs = np.empty((n_bootstrap, N))
-
-    for b in range(n_bootstrap):
-        boot_cell_means = smooth_bootstrap_resample_cell_means_once(scores, bws, rng)  # (N, M)
-
-        if ref_idx is None:
-            boot_ref = boot_cell_means.mean(axis=0)             # (M,)
-        else:
-            boot_ref = boot_cell_means[ref_idx]                 # (M,)
-
-        boot_adv = boot_cell_means - boot_ref[np.newaxis, :]    # (N, M)
-        if statistic == "median":
-            boot_point_advs[b] = np.median(boot_adv, axis=1)
-        else:
-            boot_point_advs[b] = boot_adv.mean(axis=1)
-
-    ci_low = np.empty(N)
-    ci_high = np.empty(N)
-    for i in range(N):
-        boot_i = boot_point_advs[:, i]
-        ci_low[i] = np.percentile(boot_i, 100 * alpha / 2)
-        ci_high[i] = np.percentile(boot_i, 100 * (1 - alpha / 2))
-
     return PointAdvantageResult(
         labels=labels,
         point_advantages=point_adv,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -874,7 +708,6 @@ def _bayes_binary_point_advantage(
     labels: list[str],
     *,
     reference: str,
-    alpha: float,
     spread_percentiles: tuple[float, float],
 ) -> PointAdvantageResult:
     """Bayesian Beta-posterior CIs for per-template binary success rates, shifted by reference.
@@ -914,27 +747,9 @@ def _bayes_binary_point_advantage(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    ci_low = np.empty(n_templates)
-    ci_high = np.empty(n_templates)
-
-    if reference == "grand_mean":
-        for i in range(n_templates):
-            b_low, b_high = bayes_binary_ci_1d(scores[i], alpha)
-            ci_low[i] = b_low - grand_mean_p
-            ci_high[i] = b_high - grand_mean_p
-    else:
-        for i in range(n_templates):
-            if i == ref_idx:
-                ci_low[i] = 0.0
-                ci_high[i] = 0.0
-            else:
-                ci_low[i], ci_high[i] = newcombe_paired_ci(scores[i], ref_scores, alpha)
-
     return PointAdvantageResult(
         labels=labels,
         point_advantages=point_adv,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,
@@ -950,7 +765,6 @@ def _wilson_point_advantage(
     labels: list[str],
     *,
     reference: str,
-    alpha: float,
     spread_percentiles: tuple[float, float],
 ) -> PointAdvantageResult:
     """Wilson score CIs for per-template binary success rates, shifted by reference.
@@ -996,27 +810,9 @@ def _wilson_point_advantage(
     spread_low = np.percentile(advantages, spread_percentiles[0], axis=1)
     spread_high = np.percentile(advantages, spread_percentiles[1], axis=1)
 
-    ci_low = np.empty(n_templates)
-    ci_high = np.empty(n_templates)
-
-    if reference == "grand_mean":
-        for i in range(n_templates):
-            w_low, w_high = wilson_ci_1d(scores[i], alpha)
-            ci_low[i] = w_low - grand_mean_p
-            ci_high[i] = w_high - grand_mean_p
-    else:
-        for i in range(n_templates):
-            if i == ref_idx:
-                ci_low[i] = 0.0
-                ci_high[i] = 0.0
-            else:
-                ci_low[i], ci_high[i] = newcombe_paired_ci(scores[i], ref_scores, alpha)
-
     return PointAdvantageResult(
         labels=labels,
         point_advantages=point_adv,
-        bootstrap_ci_low=ci_low,
-        bootstrap_ci_high=ci_high,
         spread_low=spread_low,
         spread_high=spread_high,
         reference=ref_label,

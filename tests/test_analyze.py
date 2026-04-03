@@ -985,13 +985,14 @@ def test_analyze_bca_and_bootstrap_are_consistent(n_inputs):
         assert analysis_bca.rank_dist.labels[best_bca] == "Prompt A"
 
     # BCa CI widths should be in a similar ballpark to percentile bootstrap.
+    # Both now use marginal CIs stored on robustness.
     width_bootstrap = (
-        analysis_bootstrap.point_advantage.bootstrap_ci_high
-        - analysis_bootstrap.point_advantage.bootstrap_ci_low
+        analysis_bootstrap.robustness.ci_high
+        - analysis_bootstrap.robustness.ci_low
     )
     width_bca = (
-        analysis_bca.point_advantage.bootstrap_ci_high
-        - analysis_bca.point_advantage.bootstrap_ci_low
+        analysis_bca.robustness.ci_high
+        - analysis_bca.robustness.ci_low
     )
 
     # Avoid division-by-zero for degenerate cases (should be unlikely here).
@@ -1007,14 +1008,21 @@ def test_analyze_bca_and_bootstrap_are_consistent(n_inputs):
 
     # CI centers should also stay reasonably close.
     center_bootstrap = (
-        analysis_bootstrap.point_advantage.bootstrap_ci_high
-        + analysis_bootstrap.point_advantage.bootstrap_ci_low
+        analysis_bootstrap.robustness.ci_high
+        + analysis_bootstrap.robustness.ci_low
     ) / 2
     center_bca = (
-        analysis_bca.point_advantage.bootstrap_ci_high
-        + analysis_bca.point_advantage.bootstrap_ci_low
+        analysis_bca.robustness.ci_high
+        + analysis_bca.robustness.ci_low
     ) / 2
-    center_atol = 0.18 if n_inputs <= 20 else 0.08
+    # Marginal CIs on absolute [0,1] scale can differ more than paired-advantage
+    # CIs did; BCA correction shifts centers more at tiny n.
+    if n_inputs <= 10:
+        center_atol = 0.35
+    elif n_inputs <= 20:
+        center_atol = 0.18
+    else:
+        center_atol = 0.08
     np.testing.assert_allclose(center_bca, center_bootstrap, atol=center_atol)
 
 
@@ -1235,12 +1243,9 @@ def test_analyze_statistic_median_propagates_and_is_correct(method):
     np.testing.assert_allclose(ab_result.point_diff, expected_ab_diff, atol=1e-10)
 
     # Confidence intervals must be finite and properly ordered.
-    assert np.all(np.isfinite(analysis.point_advantage.bootstrap_ci_low))
-    assert np.all(np.isfinite(analysis.point_advantage.bootstrap_ci_high))
-    assert np.all(
-        analysis.point_advantage.bootstrap_ci_low
-        <= analysis.point_advantage.bootstrap_ci_high
-    )
+    assert np.all(np.isfinite(analysis.robustness.ci_low))
+    assert np.all(np.isfinite(analysis.robustness.ci_high))
+    assert np.all(analysis.robustness.ci_low <= analysis.robustness.ci_high)
 
     # The prompt with the highest median advantage should be Prompt A.
     best_idx = int(np.argmax(analysis.point_advantage.point_advantages))

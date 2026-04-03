@@ -226,8 +226,8 @@ def test_lmm_result_shapes_match_benchmark():
     assert len(bundle.rank_dist.expected_ranks) == N
     assert bundle.rank_dist.rank_probs.shape == (N, N)
     assert len(bundle.point_advantage.point_advantages) == N
-    assert len(bundle.point_advantage.bootstrap_ci_low) == N
-    assert len(bundle.point_advantage.bootstrap_ci_high) == N
+    assert len(bundle.robustness.ci_low) == N
+    assert len(bundle.robustness.ci_high) == N
     assert len(bundle.point_advantage.spread_low) == N
     assert len(bundle.point_advantage.spread_high) == N
     assert len(bundle.robustness.mean) == N
@@ -684,14 +684,14 @@ def test_lmm_five_templates():
 
 
 def test_lmm_ci_bounds_are_ordered():
-    """CI low should always be <= mean, and mean <= CI high, for all templates."""
+    """CI low should always be <= mean <= CI high, for all templates."""
     result = _make_result(np.random.default_rng(520), n_inputs=25)
     bundle = analyze(result, method="lmm", n_bootstrap=300, rng=np.random.default_rng(521))
-    ma = bundle.point_advantage
-    for i, label in enumerate(ma.labels):
-        lo = float(ma.bootstrap_ci_low[i])
-        mid = float(ma.point_advantages[i])
-        hi = float(ma.bootstrap_ci_high[i])
+    rob = bundle.robustness
+    for i, label in enumerate(rob.labels):
+        lo = float(rob.ci_low[i])
+        mid = float(rob.mean[i])
+        hi = float(rob.ci_high[i])
         assert lo <= mid <= hi, (
             f"Template '{label}': CI low={lo:.4f} mean={mid:.4f} high={hi:.4f} "
             "violates lo <= mean <= hi"

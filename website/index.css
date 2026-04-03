@@ -653,17 +653,32 @@
     }
     .method-card.highlight .method-card-name { color: var(--orange); }
 
-    /* ─── RECOMMENDATION CARDS ────────────────────────────── */
-    .rec-cards {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+    /* ─── RECOMMENDATION LIST ────────────────────────────── */
+    .rec-list {
+      display: flex;
+      flex-direction: column;
       gap: 1rem;
       margin: 1.5rem 0;
     }
-    .rec-card {
+    .rec-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 1.25rem;
       border: 1px solid var(--border);
       border-radius: var(--radius);
       padding: 1.1rem 1.2rem;
+    }
+    .rec-icon {
+      flex: 0 0 64px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding-top: 0.15rem;
+      color: var(--text);
+    }
+    .rec-body {
+      flex: 1;
+      min-width: 0;
     }
     .rec-card-when {
       font-family: var(--font-mono);
