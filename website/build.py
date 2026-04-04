@@ -24,6 +24,8 @@ import argparse
 import re
 import html as html_lib
 import shutil
+import json
+import datetime
 
 WEBSITE_DIR = os.path.dirname(os.path.abspath(__file__))
 NOTEBOOKS_DIR = os.path.join(WEBSITE_DIR, "notebooks")
@@ -38,6 +40,7 @@ from gen_stubs import INVESTIGATIONS, make_nav
 
 GITHUB_BASE = "https://github.com/ianarawjo/promptstats/blob/main/website/notebooks"
 COLAB_BASE  = "https://colab.research.google.com/github/ianarawjo/promptstats/blob/main/website/notebooks"
+BASE_URL    = "https://statsforevals.com"
 
 # ---------------------------------------------------------------------------
 # Notebook → HTML fragment
@@ -136,6 +139,47 @@ FOOTER_HTML = """\
   </div>
 </footer>"""
 
+# JSON-LD structured data for the index page.
+# WebSite establishes the site identity; SoftwareApplication covers the library.
+INDEX_JSON_LD = {
+    "@context": "https://schema.org",
+    "@graph": [
+        {
+            "@type": "WebSite",
+            "name": "Statistics for LLM Evals",
+            "url": BASE_URL + "/",
+            "description": (
+                "A research-backed guide to statistical methods for LLM and AI model evaluations. "
+                "Learn to compare models, prompts, and agents with confidence intervals and hypothesis tests."
+            ),
+            "author": {
+                "@type": "Person",
+                "name": "Ian Arawjo",
+                "url": "https://ianarawjo.com",
+                "jobTitle": "Assistant Professor",
+                "affiliation": {
+                    "@type": "Organization",
+                    "name": "Université de Montréal",
+                },
+            },
+        },
+        {
+            "@type": "SoftwareApplication",
+            "name": "promptstats",
+            "applicationCategory": "DeveloperApplication",
+            "url": "https://github.com/ianarawjo/promptstats",
+            "downloadUrl": "https://pypi.org/project/promptstats/",
+            "description": (
+                "A Python library that implements statistical defaults for analyzing "
+                "LLM evaluation results — confidence intervals, pairwise comparisons, "
+                "and multiple-comparison correction."
+            ),
+            "operatingSystem": "Any",
+            "programmingLanguage": "Python",
+        },
+    ],
+}
+
 # Canonical top-navigation links.
 # To add a new nav entry: append (display_text, href_template, active_key) here.
 # href_template uses {p} as the relative-path prefix ("./" or "../").
@@ -188,18 +232,61 @@ def make_site_nav_html(prefix="./", active=None):
 </nav>"""
 
 
-def make_head(title_tag, css_file, prefix="./", extra_css=""):
-    """Build the <head> block for any page."""
+def _plain_text(s):
+    """Strip HTML tags and unescape entities — safe for use in meta tag attributes."""
+    return html_lib.unescape(re.sub(r'<[^>]+>', '', s)).strip()
+
+
+def make_head(title_tag, css_file, prefix="./", extra_css="",
+              description="", canonical_url="", json_ld=None):
+    """Build the <head> block for any page.
+
+    description:   Plain-text meta description (≤160 chars). Populates
+                   <meta name="description"> and Open Graph / Twitter tags.
+    canonical_url: Full canonical URL for this page (https://statsforevals.com/...).
+    json_ld:       Optional dict to emit as a <script type="application/ld+json"> block.
+    """
     extra = f"\n  {extra_css}" if extra_css else ""
+
+    esc_desc  = html_lib.escape(description, quote=True) if description else ""
+    esc_title = html_lib.escape(title_tag, quote=True)
+    og_url    = canonical_url or (BASE_URL + "/")
+    og_img    = f"{BASE_URL}/media/evals_bar_chart_pastel.png"
+
+    seo_meta = ""
+    if description:
+        seo_meta += f'\n  <meta name="description" content="{esc_desc}" />'
+    if canonical_url:
+        seo_meta += f'\n  <link rel="canonical" href="{canonical_url}" />'
+    seo_meta += f"""
+  <meta name="author" content="Ian Arawjo" />
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Stats for LLM Evals" />
+  <meta property="og:title" content="{esc_title}" />
+  <meta property="og:description" content="{esc_desc}" />
+  <meta property="og:url" content="{og_url}" />
+  <meta property="og:image" content="{og_img}" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="{esc_title}" />
+  <meta name="twitter:description" content="{esc_desc}" />"""
+
+    json_ld_script = ""
+    if json_ld:
+        json_ld_script = (
+            '\n  <script type="application/ld+json">\n'
+            + json.dumps(json_ld, indent=2)
+            + '\n  </script>'
+        )
+
     return f"""\
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />{seo_meta}
   <title>{title_tag}</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="{IBM_PLEX_FONTS}" rel="stylesheet" />{extra}
-  <link rel="stylesheet" href="{prefix}{css_file}" />
+  <link rel="stylesheet" href="{prefix}{css_file}" />{json_ld_script}
   <script>{DARK_MODE_DETECT}</script>
 </head>"""
 
@@ -218,6 +305,8 @@ def make_head(title_tag, css_file, prefix="./", extra_css=""):
 #
 # Optional keys (all types):
 #   active_nav  Matches _NAV_LINKS active_key to highlight a top nav link.
+#   description Plain-text meta description (≤160 chars). Used in <meta name="description">
+#               and Open Graph / Twitter card tags.
 #
 # Optional keys (article type only):
 #   title       <h1> text if different from title_tag.
@@ -226,11 +315,16 @@ def make_head(title_tag, css_file, prefix="./", extra_css=""):
 #   active_sidebar  Passed to make_nav() as active_slug for the left sidebar.
 PAGE_CONFIGS = [
     {
-        "slug":       "index",
-        "title_tag":  "Statistics for LLM Evals",
-        "type":       "full",
-        "css":        "index.css",
-        "active_nav": None,
+        "slug":        "index",
+        "title_tag":   "Statistics for LLM Evals",
+        "type":        "full",
+        "css":         "index.css",
+        "active_nav":  None,
+        "description": (
+            "A research-backed guide to statistical methods for LLM and AI model evaluations. "
+            "Learn to compare models, prompts, and agents with confidence intervals, "
+            "bootstrap methods, and hypothesis tests."
+        ),
     },
     {
         "slug":           "usage",
@@ -242,37 +336,53 @@ PAGE_CONFIGS = [
         "eyebrow":        "Guide",
         "subtitle":       "A cheat sheet for common use cases \u2014 CLI commands and Python API, from install to reading results.",
         "active_sidebar": "usage",
+        "description": (
+            "Runnable examples for the promptstats Python library and CLI — compare models, "
+            "compare prompts, analyze eval CSVs, and read statistical confidence interval reports."
+        ),
     },
     {
-        "slug":       "which-method",
-        "title_tag":  "Which Method? — Stats for LLM Evals",
-        "title":      "Which Method?",
-        "type":       "article",
-        "css":        "inv.css",
-        "active_nav": "which-method",
-        "eyebrow":    "Guide",
-        "subtitle":   "A concise summary of recommended statistical methods for LLM evaluation, organized by data type and analysis type.",
+        "slug":           "which-method",
+        "title_tag":      "Which Method? — Stats for LLM Evals",
+        "title":          "Which Method?",
+        "type":           "article",
+        "css":            "inv.css",
+        "active_nav":     "which-method",
+        "eyebrow":        "Guide",
+        "subtitle":       "A concise summary of recommended statistical methods for LLM evaluation, organized by data type and analysis type.",
         "active_sidebar": "which-method",
+        "description": (
+            "Concise reference for choosing the right statistical method for LLM evaluation results. "
+            "Organized by data type (binary, continuous, Likert) and comparison type (single-sample, pairwise)."
+        ),
     },
     {
-        "slug":       "choose",
-        "title_tag":  "Choose Your Statistical Method \u2014 Stats for LLM Evals",
-        "type":       "full",
-        "css":        "choose.css",
-        "active_nav": "choose",
+        "slug":        "choose",
+        "title_tag":   "Choose Your Statistical Method \u2014 Stats for LLM Evals",
+        "type":        "full",
+        "css":         "choose.css",
+        "active_nav":  "choose",
+        "description": (
+            "An interactive decision tool to help you pick the right statistical method "
+            "for analyzing LLM evaluation results, based on your data type and research question."
+        ),
     },
     {
-        "slug":          "resources",
-        "title_tag":     "Resources \u2014 Stats for LLM Evals",
-        "title":         "Resources",
-        "type":          "article",
-        "css":           "inv.css",
-        "active_nav":    "resources",
-        "eyebrow":       "Reference",
-        "subtitle":      ("A curated survey of the key papers behind the methods and arguments "
-                          "in this guide \u2014 from foundational bootstrap theory to LLM eval "
-                          "methodology and statistical pitfalls."),
+        "slug":           "resources",
+        "title_tag":      "Resources \u2014 Stats for LLM Evals",
+        "title":          "Resources",
+        "type":           "article",
+        "css":            "inv.css",
+        "active_nav":     "resources",
+        "eyebrow":        "Reference",
+        "subtitle":       ("A curated survey of the key papers behind the methods and arguments "
+                           "in this guide \u2014 from foundational bootstrap theory to LLM eval "
+                           "methodology and statistical pitfalls."),
         "active_sidebar": "resources",
+        "description": (
+            "Curated bibliography of papers on statistical methods for AI and LLM evaluation — "
+            "bootstrap theory, benchmarking methodology, multiple comparisons, and common pitfalls."
+        ),
     },
     {
         "slug":           "principles",
@@ -284,6 +394,10 @@ PAGE_CONFIGS = [
         "eyebrow":        "Guide",
         "subtitle":       "Declaring some principles and philosophy to guide our choices.",
         "active_sidebar": "principles",
+        "description": (
+            "Core principles guiding the choice of statistical methods for LLM evaluations — "
+            "what to prioritize, what to avoid, and the philosophy behind this guide."
+        ),
     },
     {
         "slug":           "roadmap",
@@ -295,6 +409,10 @@ PAGE_CONFIGS = [
         "eyebrow":        "Project",
         "subtitle":       "Planned additions to the guide and the promptstats library.",
         "active_sidebar": "roadmap",
+        "description": (
+            "Planned features and upcoming investigations for the Stats for LLM Evals guide "
+            "and the promptstats Python library."
+        ),
     },
 ]
 
@@ -351,13 +469,15 @@ def make_notebook_content(nb_html, slug):
 
 
 def make_page(inv, content_html, has_notebook=False):
-    slug     = inv["slug"]
-    tier     = inv["tier"]
-    title    = inv["title"]
-    subtitle = inv["subtitle"]
-    nav_html = make_nav(slug, prefix="../")
-    _katex_ver = "0.16.21"
-    nb_css   = (
+    slug        = inv["slug"]
+    tier        = inv["tier"]
+    title       = inv["title"]
+    subtitle    = inv["subtitle"]
+    description = _plain_text(subtitle)[:160]
+    canonical   = f"{BASE_URL}/investigations/{slug}.html"
+    nav_html    = make_nav(slug, prefix="../")
+    _katex_ver  = "0.16.21"
+    nb_css = (
         f'<link rel="stylesheet" href="../nb.css" />\n  '
         f'<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@{_katex_ver}/dist/katex.min.css" '
         f'crossorigin="anonymous" />'
@@ -367,6 +487,8 @@ def make_page(inv, content_html, has_notebook=False):
         css_file="inv.css",
         prefix="../",
         extra_css=nb_css,
+        description=description,
+        canonical_url=canonical,
     )
     top_nav = make_site_nav_html(prefix="../", active=None)
     _katex_cdn = f"https://cdn.jsdelivr.net/npm/katex@{_katex_ver}/dist"
@@ -445,10 +567,19 @@ def build_pages(slugs=None):
                 make_nav(active_slug="index", prefix="./"),
             )
 
-        prefix    = "./"
-        active    = page.get("active_nav")
-        top_nav   = make_site_nav_html(prefix=prefix, active=active)
-        head_html = make_head(page["title_tag"], page["css"], prefix=prefix)
+        prefix      = "./"
+        active      = page.get("active_nav")
+        description = page.get("description", "")
+        canonical   = f"{BASE_URL}/" if slug == "index" else f"{BASE_URL}/{slug}.html"
+        json_ld     = INDEX_JSON_LD if slug == "index" else None
+        top_nav     = make_site_nav_html(prefix=prefix, active=active)
+        head_html   = make_head(
+            page["title_tag"], page["css"],
+            prefix=prefix,
+            description=description,
+            canonical_url=canonical,
+            json_ld=json_ld,
+        )
 
         if page["type"] == "full":
             html = f"""<!DOCTYPE html>
@@ -510,6 +641,60 @@ def build_pages(slugs=None):
         print(f"  [page]     {slug}")
 
     print(f"Built {len(targets)} top-level page(s).")
+
+
+# ---------------------------------------------------------------------------
+# Sitemap and robots.txt
+# ---------------------------------------------------------------------------
+
+def build_sitemap():
+    """Generate sitemap.xml in the build directory."""
+    today = datetime.date.today().isoformat()
+
+    urls = []
+    # Top-level pages — index gets highest priority
+    for page in PAGE_CONFIGS:
+        s = page["slug"]
+        loc = f"{BASE_URL}/" if s == "index" else f"{BASE_URL}/{s}.html"
+        priority = "1.0" if s == "index" else "0.8"
+        urls.append((loc, today, "weekly", priority))
+
+    # Investigation pages
+    for inv in INVESTIGATIONS:
+        loc = f"{BASE_URL}/investigations/{inv['slug']}.html"
+        urls.append((loc, today, "monthly", "0.6"))
+
+    entries = []
+    for loc, lastmod, changefreq, priority in urls:
+        entries.append(
+            f"  <url>\n"
+            f"    <loc>{loc}</loc>\n"
+            f"    <lastmod>{lastmod}</lastmod>\n"
+            f"    <changefreq>{changefreq}</changefreq>\n"
+            f"    <priority>{priority}</priority>\n"
+            f"  </url>"
+        )
+
+    sitemap = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+        + "\n".join(entries)
+        + "\n</urlset>\n"
+    )
+
+    out_path = os.path.join(BUILD_DIR, "sitemap.xml")
+    with open(out_path, "w") as f:
+        f.write(sitemap)
+    print("  [sitemap]  sitemap.xml")
+
+
+def build_robots():
+    """Generate robots.txt in the build directory."""
+    content = f"User-agent: *\nAllow: /\nSitemap: {BASE_URL}/sitemap.xml\n"
+    out_path = os.path.join(BUILD_DIR, "robots.txt")
+    with open(out_path, "w") as f:
+        f.write(content)
+    print("  [robots]   robots.txt")
 
 
 # ---------------------------------------------------------------------------
@@ -595,6 +780,10 @@ if __name__ == "__main__":
     elif args.pages:
         prepare_build_dir()
         build_pages()
+        build_sitemap()
+        build_robots()
     else:
         build(execute=args.execute)
         build_pages()
+        build_sitemap()
+        build_robots()
