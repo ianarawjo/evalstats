@@ -32,7 +32,7 @@ from promptstats.compare import (
 )
 from promptstats.config import set_alpha_ci, get_alpha_ci
 
-__version__ = "0.1.7"
+__version__ = "0.1.8"
 
 __all__ = [
     "BenchmarkResult",

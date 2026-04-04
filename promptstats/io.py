@@ -34,6 +34,8 @@ class DataLoadReport:
 
 
 ResultType = Union[BenchmarkResult, MultiModelBenchmark]
+_IMPLICIT_TEMPLATE_COL = "__promptstats_template__"
+_IMPLICIT_TEMPLATE_LABEL = "default_prompt"
 
 
 def from_dataframe(
@@ -88,8 +90,10 @@ def from_dataframe(
 def _detect_format(df: pd.DataFrame) -> Literal["wide", "long"]:
     cols_lower = {c.lower().strip() for c in df.columns}
     has_template = bool(cols_lower & {"template", "prompt", "prompt_template"})
+    has_input = bool(cols_lower & {"input", "example", "item", "id", "input_label"})
     has_score = bool(cols_lower & {"score", "value", "result", "metric"})
-    return "long" if (has_template and has_score) else "wide"
+    has_model = bool(cols_lower & {"model", "model_label", "model_name"})
+    return "long" if (has_score and has_input and (has_template or has_model)) else "wide"
 
 
 def _find_col(df: pd.DataFrame, aliases: list[str]) -> Optional[str]:
@@ -154,13 +158,28 @@ def _from_long(
     run_col = _find_col(df, ["run", "seed", "repeat", "run_id", "trial"])
     evaluator_col = _find_col(df, ["evaluator", "eval", "judge", "criterion", "metric_name"])
 
-    if template_col is None or input_col is None or score_col is None:
+    inject_implicit_template = (
+        template_col is None
+        and model_col is not None
+        and input_col is not None
+        and score_col is not None
+    )
+
+    if (template_col is None and not inject_implicit_template) or input_col is None or score_col is None:
         raise ValueError(
-            "long format requires prompt/template, input, and score columns "
+            "long format requires prompt/template (or model-only with implicit prompt), input, and score columns "
             "(aliases supported; see README quick start)"
         )
 
     working = df.copy()
+    if inject_implicit_template:
+        template_col = _IMPLICIT_TEMPLATE_COL
+        working[template_col] = _IMPLICIT_TEMPLATE_LABEL
+        report.notes.append(
+            "missing prompt/template column; injected implicit template label "
+            f"'{_IMPLICIT_TEMPLATE_LABEL}' for model/input/score long format"
+        )
+
     raw = working[score_col]
     working[score_col] = pd.to_numeric(working[score_col], errors="coerce")
     report.score_non_numeric_coerced += int(np.sum(working[score_col].isna() & raw.notna()))

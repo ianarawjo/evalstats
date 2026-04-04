@@ -416,19 +416,20 @@ PAGE_CONFIGS = [
 ]
 
 
-def make_stub_content(inv):
-    learns = inv["learns"]
+def make_intro_section(inv):
+    """Return the 'What This Investigation Covers' section HTML (no coming-soon card)."""
+    learns = inv.get("learns", [])
     learn_items = []
     for i, (label, desc) in enumerate(learns, 1):
         learn_items.append(f"""\
       <div class="learn-item">
         <div class="learn-item-num">{i:02d}</div>
-        <p><strong>{label}</strong> &mdash; {desc}</p>
+        <p><strong>{label}</strong>: {desc}</p>
       </div>""")
     learn_grid = "\n".join(learn_items)
 
     return f"""
-    <section>
+    <section class="inv-intro">
       <h2>What This Investigation Covers</h2>
       <p>{inv["intro"]}</p>
 
@@ -436,7 +437,14 @@ def make_stub_content(inv):
       <div class="learn-grid">
 {learn_grid}
       </div>
+      <p class="aside">Looking for quick usage examples? Check out the <a href="../usage.html">Example Usage</a> page.</p>
+    </section>"""
 
+
+def make_stub_content(inv):
+    intro_html = make_intro_section(inv)
+    return intro_html + """
+    <section>
       <div class="coming-soon-card">
         <div class="cs-icon">&#9879;</div>
         <div class="cs-label">Investigation in progress</div>
@@ -448,10 +456,11 @@ def make_stub_content(inv):
     </section>"""
 
 
-def make_notebook_content(nb_html, slug):
+def make_notebook_content(nb_html, slug, inv=None):
     nb_url    = f"{GITHUB_BASE}/{slug}.ipynb"
     colab_url = f"{COLAB_BASE}/{slug}.ipynb"
-    return f"""
+    intro_html = make_intro_section(inv) if (inv and inv.get("intro") and inv.get("learns")) else ""
+    return intro_html + f"""
     <section>
       <div class="nb-toolbar">
         <a class="nb-badge" href="{colab_url}" target="_blank" rel="noopener">
@@ -730,7 +739,7 @@ def build(slugs=None, execute=False):
             print(f"  [notebook] {slug}")
             try:
                 nb_html  = nb_to_html(nb_path, execute=execute)
-                content  = make_notebook_content(nb_html, slug)
+                content  = make_notebook_content(nb_html, slug, inv)
             except Exception as e:
                 print(f"    WARNING: nbconvert failed ({e}), falling back to stub")
                 content      = make_stub_content(inv)

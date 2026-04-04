@@ -96,6 +96,20 @@ def test_from_dataframe_auto_detects_wide_and_long():
     _, report_long = ps.from_dataframe(df_long, format="auto", return_report=True)
     assert report_long.format_detected == "long"
 
+    df_long_model_only = pd.DataFrame(
+        {
+            "model": ["m1", "m1", "m2", "m2"],
+            "input": ["i1", "i2", "i1", "i2"],
+            "score": [0.9, 0.8, 0.7, 0.6],
+        }
+    )
+    _, report_long_model_only = ps.from_dataframe(
+        df_long_model_only,
+        format="auto",
+        return_report=True,
+    )
+    assert report_long_model_only.format_detected == "long"
+
 
 def test_from_dataframe_wide_strict_incomplete_raises():
     df = pd.DataFrame(
@@ -141,8 +155,25 @@ def test_from_dataframe_long_missing_required_columns_raises():
         }
     )
 
-    with pytest.raises(ValueError, match="requires prompt/template, input, and score columns"):
+    with pytest.raises(ValueError, match="requires prompt/template"):
         ps.from_dataframe(df, format="long")
+
+
+def test_from_dataframe_long_model_input_score_injects_implicit_template():
+    df = pd.DataFrame(
+        {
+            "model": ["m1", "m1", "m2", "m2"],
+            "input": ["i1", "i2", "i1", "i2"],
+            "score": [0.9, 0.8, 0.7, 0.6],
+        }
+    )
+
+    result, report = ps.from_dataframe(df, format="long", return_report=True)
+
+    assert isinstance(result, ps.MultiModelBenchmark)
+    assert result.template_labels == ["default_prompt"]
+    assert result.scores.shape == (2, 1, 2)
+    assert any("injected implicit template label" in note for note in report.notes)
 
 
 def test_from_dataframe_repair_true_fills_partial_run_slots_and_counts():

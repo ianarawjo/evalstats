@@ -75,16 +75,18 @@
   <h3 id="your-csv">1. Prepare your CSV</h3>
   <p>
     <code>promptstats</code> expects a <strong>long-format</strong> (tidy) CSV: one row per
-    observation. At minimum you need <code>prompt</code>, <code>input</code>, and
-    <code>score</code> columns. The <code>input</code> column identifies which test case each
-    row belongs to — this lets <code>promptstats</code> use paired statistics that account
+    observation. At minimum you need <code>input</code> and <code>score</code>, plus either
+    <code>prompt</code>/<code>template</code> or <code>model</code>. 
+    The <code>input</code> column identifies which individual test case each
+    row belongs to (e.g., questions in a Q&A dataset), which this lets <code>promptstats</code> use paired statistics that account
     for per-input difficulty differences.
   </p>
   <p>
     If you evaluated each prompt multiple times per input (e.g. at different random seeds),
     add a <code>run</code> column. With 3 or more runs per cell, <code>promptstats</code>
-    automatically switches to a <em>nested bootstrap</em> that accounts for seed-level variance
-    on top of input-level variance, giving you more honest uncertainty estimates.
+    automatically switches to an appropriate method like <em>nested bootstrap</em> 
+    that accounts for run-level variance on top of input-level variance, 
+    giving you more honest uncertainty estimates.
   </p>
 
   <div style="overflow-x:auto; margin:1rem 0 1.5rem;">

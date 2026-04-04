@@ -9,25 +9,25 @@ INVESTIGATIONS = [
         "tier": "Foundations",
         "title": "Model A vs. Model B: Is the Gap Real?",
         "subtitle": "You ran both models on your eval set. Model A scored 64%, Model B scored 72%. Is that a real difference? Here&rsquo;s how to find out.",
-        "intro": "The most fundamental question in LLM evaluation: does the observed score difference between two models reflect a genuine capability gap, or is it within the noise of your sample? This investigation walks through the complete statistical workflow &mdash; from raw scores to a defensible conclusion.",
+        "intro": "We evaluate two models on 50 binary test cases, and the bar chart says the wrong model wins. This investigation builds from that synthetic example to a full statistical workflow: computing confidence intervals on the pairwise difference, tightening estimates with multiple runs, and validating the approach on a real sentiment analysis eval.",
         "learns": [
-            ("How to compute a CI on the score difference", "Using Newcombe (binary) or smooth bootstrap (numeric), and how to interpret the resulting interval."),
-            ("What &ldquo;statistically distinguishable&rdquo; means", "Why two models can have different means while still being statistically tied, and how to communicate that honestly."),
-            ("How sample size limits your conclusions", "The minimum N needed to detect a 2-point gap, a 5-point gap, or a 10-point gap at 95% confidence."),
-            ("Wilson vs. smooth bootstrap", "When to use each method based on your score type, and what you give up by choosing the wrong one."),
+            ("Why the apparent winner can be wrong", "An example where the model with the higher true rate loses in the sample, building intuition for why raw means at N=50 routinely mislead."),
+            ("How to compute a CI on the pairwise difference", "Using <code>pstats.compare_models()</code> for paired binary data, and reading the output interval to decide whether the gap is real."),
+            ("Why multiple runs improve your estimates", "Adding 10 runs per input activates the nested bootstrap, which accounts for both input-level and run-level variance and produces more honest uncertainty bounds."),
+            ("How to work with a real eval CSV", "Pivoting a tidy multi-run CSV from a sentiment analysis eval into the format <code>compare_models</code> expects: a complete data-loading walkthrough."),
         ],
     },
     {
         "slug": "best-prompt",
         "tier": "Foundations",
         "title": "Finding Your Best Prompt",
-        "subtitle": "You&rsquo;ve tested 8 prompt variants. The best scores 82%, the worst 71%. But comparing 8 variants inflates your false-positive risk by up to 8&times;. Here&rsquo;s how to find the real winner.",
-        "intro": "Prompt comparison is the most common eval task &mdash; and one of the most statistically fraught. When you run k comparisons against a baseline (or all-pairs), you need multiple comparison correction or your &ldquo;best prompt&rdquo; is probably just the luckiest one.",
+        "subtitle": "You&rsquo;ve tested 8 prompt variants on 40 inputs. The best scores 67.5%, the worst 37.5%. But with 28 possible comparisons, that 30-point spread has a ~12% chance of appearing even if all prompts are equally good. Here&rsquo;s how to find the real winner.",
+        "intro": "A concrete support ticket classifier eval (8 prompt variants, model <code>gemma3:1b</code>, N=20 examples) shows why prompt leaderboards are unreliable at small N. The investigation uses simultaneous confidence intervals to control the family-wise error rate across all pairwise comparisons, walks through reading rank tiers using critical difference diagrams, and shows what it takes to finally separate the best from the pack: a harder eval set with more tickets and multiple runs.",
         "learns": [
-            ("Why multiple comparisons inflate false positives", "How running k tests at &alpha;=0.05 gives you roughly k&times;0.05 expected false discoveries without correction."),
-            ("Holm correction in practice", "How Holm-Bonferroni works step by step, and why it gives more statistical power than plain Bonferroni without increasing false positives."),
-            ("Building CIs for each variant", "How to compute smooth bootstrap or Wilson CIs for each prompt and visualize the full uncertainty picture."),
-            ("Reporting honestly", "How to say &ldquo;Prompt C wins&rdquo; with appropriate hedging, and when the data says &ldquo;we can&rsquo;t tell.&rdquo;"),
+            ("Why prompt leaderboards lie at small N", "Raw accuracy bars at N=20 samples look decisive, but adding per-prompt 95% confidence intervals shows heavy overlap; even at N=40, the apparent winner is still uncertain."),
+            ("How to correct CIs when conducting many comparisons", "Simultaneous CIs control false positives by widening pairwise CIs to cover the full family of comparisons, keeping your family-wise error rate bounded."),
+            ("How to read rank tiers and report honestly", "Interpreting which prompts fall in the same statistical 'tier' based on whether their pairwise simultaneous CI excludes zero, and how critical difference diagrams help you see this info."),
+            ("Why you need more data than you think", "Expanding from 40 to 120 harder tickets and adding 5 runs per cell finally separates few-shot and JSON-output prompts from the rest."),
         ],
     },
     {
@@ -305,7 +305,7 @@ def make_page(inv):
         learn_items.append(f"""\
         <div class="learn-item">
           <div class="learn-item-num">{i:02d}</div>
-          <p><strong>{label}</strong> &mdash; {desc}</p>
+          <p><strong>{label}</strong>: {desc}</p>
         </div>""")
     learn_grid = "\n".join(learn_items)
 
