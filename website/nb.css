@@ -44,6 +44,8 @@
   color: var(--text-mid);
   font-style: italic;
 }
+.nb-content .text_cell_render,
+.nb-content .output_area .rendered_html { overflow-x: auto; }
 .nb-content .text_cell_render table {
   border-collapse: collapse;
   font-family: var(--font-sans);
@@ -108,7 +110,8 @@
   color: var(--text-mid);
   margin: 0;
   padding: 0.25rem 0;
-  white-space: pre-wrap;
+  white-space: pre;
+  overflow-x: auto;
   background: transparent;
 }
 .nb-content .output_area img {

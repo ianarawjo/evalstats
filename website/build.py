@@ -216,6 +216,11 @@ def make_site_nav_html(prefix="./", active=None):
 {items_html}
     </ul>
     <div class="nav-icons">
+      <button class="nav-menu-btn" id="nav-menu-btn" aria-label="Open navigation menu">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
+        </svg>
+      </button>
       <a class="nav-icon-link" href="https://github.com/ianarawjo/promptstats" target="_blank" rel="noopener" aria-label="GitHub">
         <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 012-.27 7.6 7.6 0 012 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
@@ -229,7 +234,48 @@ def make_site_nav_html(prefix="./", active=None):
       </button>
     </div>
   </div>
-</nav>"""
+</nav>
+
+<div class="mobile-nav-overlay" id="mobile-nav-overlay">
+  <div class="mobile-nav-drawer">
+    <div class="mobile-nav-header">
+      <a class="nav-brand" href="{prefix}index.html">Stats for LLM Evals</a>
+      <button class="mobile-nav-close" id="mobile-nav-close" aria-label="Close navigation">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+    <div class="mobile-nav-content" id="mobile-nav-content"></div>
+  </div>
+</div>
+<script>
+(function() {{
+  var btn = document.getElementById('nav-menu-btn');
+  var overlay = document.getElementById('mobile-nav-overlay');
+  var closeBtn = document.getElementById('mobile-nav-close');
+  var content = document.getElementById('mobile-nav-content');
+  var populated = false;
+  function openMenu() {{
+    if (!populated) {{
+      var invNav = document.querySelector('.inv-nav');
+      if (invNav) {{ content.innerHTML = invNav.outerHTML; }}
+      populated = true;
+    }}
+    overlay.classList.add('open');
+    document.body.style.overflow = 'hidden';
+  }}
+  function closeMenu() {{
+    overlay.classList.remove('open');
+    document.body.style.overflow = '';
+  }}
+  if (btn) btn.addEventListener('click', openMenu);
+  if (closeBtn) closeBtn.addEventListener('click', closeMenu);
+  if (overlay) overlay.addEventListener('click', function(e) {{
+    if (e.target === overlay) closeMenu();
+  }});
+}})();
+</script>"""
 
 
 def _plain_text(s):
