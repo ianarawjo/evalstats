@@ -39,7 +39,7 @@ this information. For instance, comparing models and prompts at the same time,
 
 ![Example terminal output with colors](docs/terminal-output-example.jpg)
 
-You can also plot within notebook environments (although this feature is being actively built out over time and the least developed at the moment). The `plot_point_advantage` function produces a chart showing each template's mean score advantage over the grand mean, with dual uncertainty bands — the narrow dark band is the bootstrapped CI on the mean, and the wide light band is the 10th–90th percentile spread (template consistency):
+You can also plot within notebook environments (although this feature is being actively built out over time and the least developed at the moment). The `plot_point_estimates` function produces a chart showing each template's absolute mean score with marginal confidence intervals:
 
 ![Mean advantage plot](docs/mean_advantage.png)
 
@@ -55,17 +55,12 @@ The specific statistical tests the `promptstats.analyze()` method runs are:
     - Multiple-comparisons correction for p-values (defaults to **Benjamini–Hochberg (fdr_bh)**). 
     - Also reports Wilcoxon signed-rank test p-value, in case you need it for people familiar with that test, although p-values from bootstrapped CIs are more robust
 
-- **Mean/median advantage vs reference** via `bootstrap_point_advantage(...)`:
-    - Advantage of each prompt template vs `reference="grand_mean"` (or a chosen template), on either the mean or median (mean by default). 
-    - Reports both a CI on the mean/median and a spread band (default 10th–90th percentile) to separate uncertainty from intrinsic variability.
-    - Defaults to smooth bootstrap when `method="auto"`, unless binary (0 and 1s) data is present, where it defaults to Wilson score intervals, which proved highly accurate CIs in our simulations and far outperformed other methods for binary data.
-
 - **Bootstrap rank distribution** via `bootstrap_ranks(...)`:
     - Estimates each prompt template’s `P(best)` and expected rank among the full list of prompt templates.
 
-- **Robustness metrics** via `robustness_metrics(...)`:
-    - Per-prompt template mean, std, CV, IQR, CVaR-10, and key percentiles.
-    - Optional failure-rate metric when `failure_threshold` is provided.
+- **Point estimates** via `robustness_metrics(...)`:
+    - Descriptive stats like mean, median, std, CV, IQR, CVaR-10, and key percentiles.
+    - Marginal confidence intervals on absolute means/medians.
 
 If your benchmark includes repeated runs (`R >= 3`), bootstrap-based analyses above use a **two-level nested bootstrap** (resample inputs, then runs within each input) so run-to-run stochasticity is propagated into CIs and rankings. In that case, `analyze()` also returns a seed/input variance decomposition via `seed_variance_decomposition(...)`.
 
@@ -150,11 +145,11 @@ for line in load_report.to_lines():
 analysis = pstats.analyze(benchmark)
 ```
 
-To visualize mean advantage relative to the grand mean, with bootstrapped 99% confidence intervals:
+To visualize absolute prompt performance with bootstrapped 99% confidence intervals:
 
 ```python
-fig = pstats.plot_point_advantage(result, reference="grand_mean")
-fig.savefig("advantage.png", dpi=150, bbox_inches="tight")
+fig = pstats.plot_point_estimates(result)
+fig.savefig("mean_performance.png", dpi=150, bbox_inches="tight")
 ```
 
 ## Motivation

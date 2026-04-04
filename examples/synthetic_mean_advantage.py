@@ -1,5 +1,5 @@
-"""Test and demo for promptstats: generates synthetic data and produces the
-mean advantage plot with dual uncertainty bands."""
+"""Test and demo for promptstats: generates synthetic data and produces a
+robustness-first interval plot."""
 
 import numpy as np
 
@@ -87,36 +87,40 @@ for i, label in enumerate(labels):
     )
 print()
 
-# --- Mean advantage (the key computation for the plot) ---
-adv = pstats.bootstrap_point_advantage(
-    scores, labels, reference="grand_mean", n_bootstrap=10_000, rng=rng,
+# --- Marginal CIs on absolute means ---
+rob_ci = pstats.robustness_metrics(
+    scores,
+    labels,
+    failure_threshold=4.0,
+    n_bootstrap=10_000,
+    rng=np.random.default_rng(42),
+    alpha=0.05,
+    statistic="mean",
+    marginal_method="smooth_bootstrap",
 )
-print("=== Mean Advantage over Grand Mean ===")
-print(f"{'Template':<25s} {'Mean':>7s} {'CI Low':>8s} {'CI High':>8s} {'Spread Lo':>10s} {'Spread Hi':>10s}")
+print("=== Absolute Mean Performance ===")
+print(f"{'Template':<25s} {'Mean':>7s} {'CI Low':>8s} {'CI High':>8s}")
 for i in range(len(labels)):
     print(
         f"  {labels[i]:<23s} "
-        f"{adv.point_advantages[i]:>+6.3f} "
-        f"{adv.bootstrap_ci_low[i]:>+7.3f} "
-        f"{adv.bootstrap_ci_high[i]:>+7.3f} "
-        f"{adv.spread_low[i]:>+9.3f} "
-        f"{adv.spread_high[i]:>+9.3f}"
+        f"{rob_ci.mean[i]:>+6.3f} "
+        f"{rob_ci.ci_low[i]:>+7.3f} "
+        f"{rob_ci.ci_high[i]:>+7.3f}"
     )
 print()
 
 # --- Generate the plot ---
-fig = pstats.plot_point_advantage(result, reference="grand_mean", rng=np.random.default_rng(42))
-fig.savefig("mean_advantage_plot.png", dpi=150, bbox_inches="tight")
-print("Saved: mean_advantage_plot.png")
+fig = pstats.plot_point_estimates(result, rng=np.random.default_rng(42))
+fig.savefig("robustness_interval_plot.png", dpi=150, bbox_inches="tight")
+print("Saved: robustness_interval_plot.png")
 
-# Also generate a version comparing against a specific baseline
-fig2 = pstats.plot_point_advantage(
+# Also generate a version with a custom title
+fig2 = pstats.plot_point_estimates(
     result,
-    reference="A: Reliable Winner",
-    title="Mean Advantage over 'A: Reliable Winner'",
+    title="Absolute Performance by Template",
     rng=np.random.default_rng(42),
 )
-fig2.savefig("mean_advantage_vs_baseline.png", dpi=150, bbox_inches="tight")
-print("Saved: mean_advantage_vs_baseline.png")
+fig2.savefig("robustness_interval_plot_titled.png", dpi=150, bbox_inches="tight")
+print("Saved: robustness_interval_plot_titled.png")
 
 print("\nDone!")

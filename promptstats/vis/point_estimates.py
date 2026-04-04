@@ -1,16 +1,7 @@
-"""Mean advantage plot with dual uncertainty bands.
+"""Absolute robustness interval plot.
 
-The signature promptstats visualization. For each template, shows:
-
-- A point for the mean advantage over a reference
-- A thin inner band for the bootstrap CI on the mean (epistemic uncertainty:
-  "how sure are we about the mean?")
-- A wider outer band for the score spread (intrinsic variance: "how
-  consistent is this template?")
-
-This separates two fundamentally different concerns:
-- Epistemic uncertainty shrinks with more benchmark inputs.
-- Intrinsic variance is a property of the template and won't shrink.
+Plots per-template absolute point estimates from ``RobustnessResult.mean`` with
+their marginal confidence intervals from ``ci_low``/``ci_high``.
 """
 
 from __future__ import annotations
@@ -25,7 +16,7 @@ if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
 from promptstats.core.types import BenchmarkResult
-from promptstats.core.ranking import bootstrap_point_advantage, PointAdvantageResult
+from promptstats.core.variance import RobustnessResult, robustness_metrics
 
 
 # -- Color palette --
@@ -45,37 +36,35 @@ _PALETTE = {
 }
 
 
-def plot_point_advantage(
-    result: Union[BenchmarkResult, PointAdvantageResult],
+def plot_point_estimates(
+    result: Union[BenchmarkResult, RobustnessResult],
     reference: str = "grand_mean",
     n_bootstrap: int = 10_000,
     ci: float = 0.95,
     spread_percentiles: tuple[float, float] = (10, 90),
-    sort_by: str = "advantage",
+    sort_by: str = "mean",
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     rng: Optional[np.random.Generator] = None,
 ) -> Figure:
-    """Plot point advantage with dual uncertainty bands.
+    """Plot absolute performance means with marginal confidence intervals.
 
     Parameters
     ----------
-    result : BenchmarkResult or PointAdvantageResult
-        Either raw benchmark data (will compute advantage internally) or
-        a pre-computed PointAdvantageResult.
+    result : BenchmarkResult or RobustnessResult
+        Either raw benchmark data (computed internally) or a pre-computed
+        robustness result.
     reference : str
-        Reference for advantage computation. Either 'grand_mean' or a
-        template label. Ignored if result is already a PointAdvantageResult.
+        Retained for backward compatibility. Ignored in robustness-first mode.
     n_bootstrap : int
-        Bootstrap iterations. Ignored if result is a PointAdvantageResult.
+        Bootstrap iterations used when computing robustness from raw data.
     ci : float
-        Confidence level. Ignored if result is a PointAdvantageResult.
+        Confidence level used when computing robustness from raw data.
     spread_percentiles : tuple[float, float]
-        Percentiles for the spread band. Ignored if result is a
-        PointAdvantageResult.
+        Retained for backward compatibility. Ignored in robustness-first mode.
     sort_by : str
-        Sort order: 'advantage' (descending by point advantage), 'label'
-        (alphabetical), or 'spread' (ascending by spread width).
+        Sort order: 'mean' (descending), 'label' (alphabetical),
+        or 'ci_width' (ascending).
     figsize : tuple[float, float], optional
         Figure size. Defaults to (10, 0.5 * N_templates + 1.5).
     title : str, optional
@@ -87,40 +76,40 @@ def plot_point_advantage(
     -------
     matplotlib.figure.Figure
     """
-    # Compute advantage if given raw BenchmarkResult
+    # Compute robustness if given raw BenchmarkResult.
     if isinstance(result, BenchmarkResult):
         scores = result.get_2d_scores()
-        adv = bootstrap_point_advantage(
-            scores=scores,
-            labels=result.template_labels,
-            reference=reference,
-            n_bootstrap=n_bootstrap,
-            ci=ci,
-            spread_percentiles=spread_percentiles,
-            rng=rng,
+        rob = robustness_metrics(
+            scores, result.template_labels,
+            n_bootstrap=n_bootstrap, rng=rng, alpha=1.0 - ci,
+            statistic="mean", marginal_method="smooth_bootstrap",
         )
     else:
-        adv = result
+        rob = result
 
-    n = len(adv.labels)
+    n = len(rob.labels)
 
     # Sort
-    if sort_by == "advantage":
-        order = np.argsort(-adv.point_advantages)
+    if sort_by == "mean":
+        order = np.argsort(-rob.mean)
     elif sort_by == "label":
-        order = np.argsort(adv.labels)
-    elif sort_by == "spread":
-        spread_widths = adv.spread_high - adv.spread_low
-        order = np.argsort(spread_widths)
+        order = np.argsort(rob.labels)
+    elif sort_by == "ci_width":
+        if rob.ci_low is None or rob.ci_high is None:
+            order = np.argsort(-rob.mean)
+        else:
+            order = np.argsort(rob.ci_high - rob.ci_low)
     else:
         raise ValueError(f"Unknown sort_by: {sort_by}")
 
-    labels = [adv.labels[i] for i in order]
-    means = adv.point_advantages[order]
-    ci_lo = adv.bootstrap_ci_low[order]
-    ci_hi = adv.bootstrap_ci_high[order]
-    sp_lo = adv.spread_low[order]
-    sp_hi = adv.spread_high[order]
+    labels = [rob.labels[i] for i in order]
+    means = rob.mean[order]
+    if rob.ci_low is None or rob.ci_high is None:
+        ci_lo = means.copy()
+        ci_hi = means.copy()
+    else:
+        ci_lo = rob.ci_low[order]
+        ci_hi = rob.ci_high[order]
 
     # Figure setup
     if figsize is None:
@@ -133,11 +122,11 @@ def plot_point_advantage(
     y_positions = np.arange(n)
 
     # Band thicknesses (line-based for a cleaner look)
-    spread_lw = 10
     ci_lw = 5
 
-    # Draw zero reference line
-    ax.axvline(x=0, color=_PALETTE["zero_line"], linewidth=1.2, zorder=1)
+    # Draw global mean reference line.
+    global_mean = float(np.mean(rob.mean))
+    ax.axvline(x=global_mean, color=_PALETTE["zero_line"], linewidth=1.2, zorder=1)
 
     # Subtle alternating rows to improve readability
     for i, y in enumerate(y_positions):
@@ -153,26 +142,7 @@ def plot_point_advantage(
         else:
             point_color = _PALETTE["point_zero"]
 
-        # Outer band: intrinsic spread (10th-90th percentile)
-        ax.plot(
-            [sp_lo[i], sp_hi[i]],
-            [y, y],
-            color=_PALETTE["spread_band"],
-            linewidth=spread_lw,
-            solid_capstyle="round",
-            zorder=2,
-        )
-        ax.plot(
-            [sp_lo[i], sp_hi[i]],
-            [y, y],
-            color=_PALETTE["spread_edge"],
-            linewidth=1.0,
-            solid_capstyle="round",
-            zorder=2.2,
-            alpha=0.9,
-        )
-
-        # Inner band: bootstrap CI on the mean
+        # Marginal CI on the mean
         ax.plot(
             [ci_lo[i], ci_hi[i]],
             [y, y],
@@ -182,7 +152,7 @@ def plot_point_advantage(
             zorder=3,
         )
 
-        # Center point: mean advantage
+        # Center point: mean value
         ax.plot(
             means[i], y,
             "o",
@@ -208,15 +178,10 @@ def plot_point_advantage(
     ax.set_yticklabels(labels, fontsize=10, color=_PALETTE["text"])
     ax.invert_yaxis()  # best template at top
 
-    ax.set_xlabel(
-        f"Advantage over {adv.reference}",
-        fontsize=10,
-        color=_PALETTE["text"],
-        labelpad=8,
-    )
+    ax.set_xlabel("Absolute score", fontsize=10, color=_PALETTE["text"], labelpad=8)
 
     # x-limits with breathing room
-    all_x = np.concatenate([sp_lo, sp_hi, ci_lo, ci_hi, means])
+    all_x = np.concatenate([ci_lo, ci_hi, means])
     x_min, x_max = np.min(all_x), np.max(all_x)
     if np.isclose(x_min, x_max):
         pad = 0.1 if np.isclose(x_min, 0.0) else max(0.05 * abs(x_min), 0.1)
@@ -238,11 +203,7 @@ def plot_point_advantage(
 
     # Title
     if title is None:
-        ref_desc = (
-            "grand mean" if adv.reference == "grand_mean"
-            else f"'{adv.reference}'"
-        )
-        title = f"Mean advantage over {ref_desc}"
+        title = "Absolute Performance (Robustness Means)"
 
     ax.set_title(
         title,
@@ -254,21 +215,13 @@ def plot_point_advantage(
     )
 
     # Legend
-    sp_lo_pct, sp_hi_pct = adv.spread_percentiles
     legend_handles = [
-        Line2D(
-            [0], [0],
-            color=_PALETTE["spread_band"],
-            linewidth=spread_lw,
-            solid_capstyle="round",
-            label=f"Score spread ({sp_lo_pct}th–{sp_hi_pct}th pctl)",
-        ),
         Line2D(
             [0], [0],
             color=_PALETTE["ci_band"],
             linewidth=ci_lw,
             solid_capstyle="round",
-            label=f"{int(ci * 100)}% CI on mean (bootstrap, n={adv.n_bootstrap:,})",
+            label=f"{int(ci * 100)}% marginal CI on mean (n={n_bootstrap:,})",
         ),
         Line2D(
             [0], [0],
@@ -278,7 +231,7 @@ def plot_point_advantage(
             markeredgecolor="white",
             markeredgewidth=1.0,
             markersize=6,
-            label="Mean advantage",
+            label="Mean score",
         ),
     ]
     ax.legend(
@@ -292,9 +245,9 @@ def plot_point_advantage(
         handlelength=2.5,
     )
 
-    # Annotation explaining the two bands
+    # Annotation
     ax.annotate(
-        "light band = template spread · dark band = uncertainty on mean",
+        "bars = uncertainty on mean; line = global mean",
         xy=(0.5, -0.02),
         xycoords="axes fraction",
         ha="center",

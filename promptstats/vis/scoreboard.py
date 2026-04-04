@@ -7,6 +7,7 @@ line to make relative gains immediately visible.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Optional, Union
 
 import matplotlib.pyplot as plt
@@ -29,12 +30,14 @@ _PALETTE = {
     "grid":          "#EEF1F4",  # very light  — y grid
     "text":          "#2D333B",  # dark slate  — axis labels
     "text_secondary":"#6B7280",  # muted gray  — tick labels
+    "errorbar":      "#2D333B",  # dark slate  — CI whiskers/caps
 }
 
 
 def plot_accuracy_bar(
     scores: Union[dict, "CompareReport"],  # noqa: F821
     baseline: Optional[str] = None,
+    cis: Optional[Mapping[str, Sequence[float]]] = None,
     sort_by: str = "input_order",
     as_percent: bool = True,
     figsize: Optional[tuple[float, float]] = None,
@@ -61,6 +64,12 @@ def plot_accuracy_bar(
         Label of a baseline entity.  A dashed reference line is drawn at
         its mean accuracy so gains and losses over the baseline are
         immediately visible.
+    cis : mapping[str, sequence[float]], optional
+        Optional confidence intervals per entity label, used to draw
+        vertical error bars on each bar.
+
+        Expected format: ``{label: (ci_low, ci_high)}`` in raw score units
+        (0-1), regardless of ``as_percent``.
     sort_by : str
         Bar ordering:
 
@@ -124,6 +133,45 @@ def plot_accuracy_bar(
     scale = 100.0 if as_percent else 1.0
     ordered_means = [means_raw[l] * scale for l in ordered_labels]
 
+    yerr = None
+    if cis is not None:
+        missing = [label for label in ordered_labels if label not in cis]
+        if missing:
+            raise ValueError(
+                "cis is missing labels present in scores: "
+                f"{missing}."
+            )
+
+        yerr_low = []
+        yerr_high = []
+        for label in ordered_labels:
+            ci_bounds = cis[label]
+            if len(ci_bounds) != 2:
+                raise ValueError(
+                    f"cis[{label!r}] must be a pair (ci_low, ci_high)."
+                )
+
+            ci_low = float(ci_bounds[0])
+            ci_high = float(ci_bounds[1])
+            mean = means_raw[label]
+
+            if ci_low > ci_high:
+                raise ValueError(
+                    f"cis[{label!r}] has ci_low > ci_high: "
+                    f"({ci_low}, {ci_high})."
+                )
+
+            if not (ci_low <= mean <= ci_high):
+                raise ValueError(
+                    f"Mean for {label!r} ({mean:.6g}) is outside the provided "
+                    f"CI ({ci_low:.6g}, {ci_high:.6g})."
+                )
+
+            yerr_low.append((mean - ci_low) * scale)
+            yerr_high.append((ci_high - mean) * scale)
+
+        yerr = np.vstack([yerr_low, yerr_high])
+
     # ---- figure setup -----------------------------------------------------
     own_fig = ax is None
     if own_fig:
@@ -138,7 +186,17 @@ def plot_accuracy_bar(
 
     # ---- bars -------------------------------------------------------------
     x = np.arange(n)
-    ax.bar(x, ordered_means, color=_PALETTE["bar"], width=0.6, zorder=3)
+    ax.bar(
+        x,
+        ordered_means,
+        color=_PALETTE["bar"],
+        width=0.6,
+        yerr=yerr,
+        ecolor=_PALETTE["errorbar"],
+        capsize=3,
+        error_kw={"elinewidth": 1.2, "capthick": 1.2, "zorder": 5},
+        zorder=3,
+    )
 
     # ---- baseline reference line ------------------------------------------
     if baseline is not None:

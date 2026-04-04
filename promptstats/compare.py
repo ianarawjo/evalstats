@@ -23,8 +23,10 @@ from .core.types import CompareMethod
 from .core.router import analyze, AnalysisBundle, MultiModelBundle
 from .core.summary import print_analysis_summary, print_compare_summary
 from .core.paired import PairwiseMatrix, PairedDiffResult
-from .core.resampling import bayes_bootstrap_means_1d, smooth_bootstrap_means_1d, bootstrap_means_1d, bca_interval_1d, resolve_resampling_method, bayes_binary_ci_1d, wilson_ci_1d
+
 from .config import get_alpha_ci
+
+_UNSET = object()
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +94,7 @@ class CompareReport:
     entity_name_singular: str = "prompt"
     entity_name_plural: str = "prompts"
     simultaneous_ci: bool = True
+    p_value_method: Optional[str] = None
 
     @property
     def means(self) -> dict[str, float]:
@@ -249,7 +252,7 @@ class CompareReport:
     def summary(
         self,
         *,
-        p_value_method: Optional[str] = None,
+        p_value_method=_UNSET,
         pairwise_sort: Literal["grouped", "significance"] = "grouped",
     ) -> None:
         """Print a focused summary scoped to the entity comparison level.
@@ -260,19 +263,23 @@ class CompareReport:
         Parameters
         ----------
         p_value_method : str or None
-            Which p-value to show in pairwise comparisons.  ``'auto'``
-            (default) picks the method commensurate with the CI: bootstrap
-            p-value for bootstrap CI paths, Wilcoxon signed-rank for others.
-            Options: ``'boot'``, ``'wsr'``, ``'nem'``, or ``None`` to
-            suppress p-values entirely.
+            Which p-value to show in pairwise comparisons.  When omitted,
+            uses the value stored on the report (set via ``p_values`` /
+            ``pairwise_test`` at analysis time; ``None`` by default, which
+            suppresses p-values).  Pass ``'auto'`` to let the display layer
+            pick the method commensurate with the CI, or set explicitly:
+            ``'boot'``, ``'wsr'``, ``'nem'``, or ``None`` to suppress.
         pairwise_sort : {"grouped", "significance"}
             Row order for the pairwise table. ``"grouped"`` groups rows by
             left item for readability, while ``"significance"`` sorts by
             p-value first.
         """
+        effective_p_value_method = (
+            self.p_value_method if p_value_method is _UNSET else p_value_method
+        )
         print_compare_summary(
             self,
-            p_value_method=p_value_method,
+            p_value_method=effective_p_value_method,
             pairwise_sort=pairwise_sort,
         )
 
@@ -287,6 +294,70 @@ class CompareReport:
     def print(self) -> None:
         """Alias for ``summary()``."""
         self.summary()
+
+    def plot_bars(
+        self,
+        *,
+        baseline: Optional[str] = None,
+        error_bars: bool = True,
+        sort_by: str = "input_order",
+        as_percent: bool = True,
+        figsize: Optional[tuple[float, float]] = None,
+        title: Optional[str] = None,
+        ax=None,
+    ):
+        """Plot a raw scoreboard bar chart for this report with CI error bars.
+
+        Convenience wrapper around :func:`promptstats.vis.plot_accuracy_bar`.
+        When called on a ``CompareReport``, per-entity confidence intervals are
+        inferred automatically from ``entity_stats`` and drawn as error bars.
+
+        Parameters
+        ----------
+        baseline : str, optional
+            Label of a baseline entity to draw as a dashed reference line.
+        error_bars : bool
+            When ``True`` (default), draw per-entity CI error bars.
+            Set to ``False`` to suppress error bars.
+        sort_by : str
+            Bar ordering: ``"input_order"`` (default), ``"mean"``, or
+            ``"label"``.
+        as_percent : bool
+            When ``True`` (default), display on a 0-100 percentage scale.
+            Set to ``False`` for raw 0-1 scale.
+        figsize : tuple[float, float], optional
+            Figure size used when creating a new figure.
+        title : str, optional
+            Custom plot title. Uses the default scoreboard title when omitted.
+        ax : matplotlib.axes.Axes, optional
+            Existing axes to draw into. A new figure is created when omitted.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        from promptstats.vis import plot_accuracy_bar
+
+        cis = None
+        if error_bars:
+            cis = {
+                label: (
+                    self.entity_stats[label].ci_low,
+                    self.entity_stats[label].ci_high,
+                )
+                for label in self.labels
+            }
+
+        return plot_accuracy_bar(
+            self,
+            baseline=baseline,
+            cis=cis,
+            sort_by=sort_by,
+            as_percent=as_percent,
+            figsize=figsize,
+            title=title,
+            ax=ax,
+        )
 
     def _best_label(self) -> str:
         return max(self.labels, key=lambda label: getattr(self.entity_stats[label], self.statistic))
@@ -437,6 +508,8 @@ def compare_prompts(
     rng: Optional[np.random.Generator] = None,
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_values: bool = False,
+    pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
 ) -> CompareReport:
     """Compare prompt templates with bootstrapped statistical tests.
 
@@ -589,58 +662,20 @@ def compare_prompts(
         rng=rng,
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
+        p_values=p_values,
+        pairwise_test=pairwise_test,
     )
-
-    # ------------------------------------------------------------------
-    # Per-template descriptive stats and bootstrapped CIs on the configured
-    # statistic.
-    # Cell means (averaged over runs) are used as the per-input observations
-    # for a single-level bootstrap — appropriate for estimating uncertainty
-    # in each template's absolute location independently.
-    # ------------------------------------------------------------------
-    scores_2d = benchmark.get_2d_scores()  # (N, M)
-    # Use the resolved method from the analysis bundle (may be 'bayes_binary',
-    # 'newcombe', or a bootstrap variant), falling back to re-resolution.
-    resolved_method = full_analysis.resolved_method or resolve_resampling_method(method, M)
-    # Newcombe/fisher_exact/sign_test are pairwise methods; use bayes_binary or wilson for single-sample CI.
-    # Pairwise-only methods need a single-sample fallback for entity stats CIs.
-    # newcombe/fisher_exact/sign_test → smooth_bootstrap; bayes_binary → wilson.
-    if resolved_method in {"newcombe", "fisher_exact", "sign_test"}:
-        resolved_method = "smooth_bootstrap"
-    elif resolved_method == "bayes_binary":
-        resolved_method = "wilson"
 
     rob = full_analysis.robustness  # RobustnessResult indexed parallel to labels
 
     entity_stats: dict[str, EntityStats] = {}
     for i, label in enumerate(labels):
-        row = scores_2d[i]  # (M,) cell means
-        point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
-
-        if resolved_method == "wilson":
-            ci_low, ci_high = wilson_ci_1d(row, alpha)
-        elif resolved_method == "bayes_bootstrap":
-            boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
-        elif resolved_method == "smooth_bootstrap":
-            boot_stats = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
-        else:
-            boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            if resolved_method == "bca":
-                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha, statistic=statistic)
-            else:
-                ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
-
         entity_stats[label] = EntityStats(
             mean=float(rob.mean[i]),
             median=float(rob.median[i]),
             std=float(rob.std[i]),
-            ci_low=ci_low,
-            ci_high=ci_high,
+            ci_low=float(rob.ci_low[i]),
+            ci_high=float(rob.ci_high[i]),
         )
 
     top_tier = _compute_unbeaten(labels, full_analysis.pairwise, alpha)
@@ -653,11 +688,12 @@ def compare_prompts(
         full_analysis=full_analysis,
         alpha=alpha,
         statistic=statistic,
-        method=full_analysis.resolved_method or resolved_method,
+        method=full_analysis.resolved_method,
         correction=correction,
         entity_name_singular="prompt",
         entity_name_plural="prompts",
         simultaneous_ci=full_analysis.pairwise.simultaneous_ci,
+        p_value_method=full_analysis.p_value_method,
     )
 
 
@@ -674,6 +710,8 @@ def compare_models(
     rng: Optional[np.random.Generator] = None,
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_values: bool = False,
+    pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
 ) -> CompareReport:
     """Compare models while accounting for prompt-template sensitivity.
 
@@ -826,50 +864,23 @@ def compare_models(
         template_model_collapse=resolved_template_model_collapse,
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
+        p_values=p_values,
+        pairwise_test=pairwise_test,
     )
     if not isinstance(full_analysis, MultiModelBundle):
         raise RuntimeError("Expected multi-model analysis bundle from analyze().")
 
     model_analysis = full_analysis.model_level
-    scores_2d = benchmark.get_model_mean_result().get_2d_scores()  # (P, M)
-    resolved_method = model_analysis.resolved_method or resolve_resampling_method(method, n_inputs)
-    # Pairwise-only methods need a single-sample fallback for entity stats CIs.
-    # newcombe/fisher_exact/sign_test → smooth_bootstrap; bayes_binary → wilson.
-    if resolved_method in {"newcombe", "fisher_exact", "sign_test"}:
-        resolved_method = "smooth_bootstrap"
-    elif resolved_method == "bayes_binary":
-        resolved_method = "wilson"
     rob = model_analysis.robustness
 
     entity_stats: dict[str, EntityStats] = {}
     for i, label in enumerate(labels):
-        row = scores_2d[i]
-        point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
-
-        if resolved_method == "wilson":
-            ci_low, ci_high = wilson_ci_1d(row, alpha)
-        elif resolved_method == "bayes_bootstrap":
-            boot_stats = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
-        elif resolved_method == "smooth_bootstrap":
-            boot_stats = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-            ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
-        else:
-            boot_stats = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
-            if resolved_method == "bca":
-                ci_low, ci_high = bca_interval_1d(row, point_est, boot_stats, alpha, statistic=statistic)
-            else:
-                ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
-                ci_high = float(np.percentile(boot_stats, 100 * (1.0 - alpha / 2)))
-
         entity_stats[label] = EntityStats(
             mean=float(rob.mean[i]),
             median=float(rob.median[i]),
             std=float(rob.std[i]),
-            ci_low=ci_low,
-            ci_high=ci_high,
+            ci_low=float(rob.ci_low[i]),
+            ci_high=float(rob.ci_high[i]),
         )
 
     top_tier = _compute_unbeaten(labels, model_analysis.pairwise, alpha)
@@ -882,9 +893,10 @@ def compare_models(
         full_analysis=full_analysis,
         alpha=alpha,
         statistic=statistic,
-        method=full_analysis.model_level.resolved_method or resolved_method,
+        method=full_analysis.model_level.resolved_method,
         correction=correction,
         entity_name_singular="model",
         entity_name_plural="models",
         simultaneous_ci=model_analysis.pairwise.simultaneous_ci,
+        p_value_method=model_analysis.p_value_method,
     )

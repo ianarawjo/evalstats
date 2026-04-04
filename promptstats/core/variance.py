@@ -50,6 +50,12 @@ class RobustnessResult:
         Fraction of inputs below threshold, if threshold was specified.
     failure_threshold : float or None
         The threshold used for failure_rate.
+    ci_low : np.ndarray or None
+        Per-entity lower bound of the marginal bootstrap CI on the configured
+        central-tendency statistic.  ``None`` when ``n_bootstrap`` was not
+        provided to ``robustness_metrics``.
+    ci_high : np.ndarray or None
+        Per-entity upper bound.  Symmetric with ``ci_low``.
     """
 
     labels: list[str]
@@ -62,6 +68,8 @@ class RobustnessResult:
     percentiles: dict[int, np.ndarray]
     failure_rate: Optional[np.ndarray]
     failure_threshold: Optional[float]
+    ci_low: Optional[np.ndarray] = None
+    ci_high: Optional[np.ndarray] = None
 
     def summary_table(self):
         """Return a pandas DataFrame summarizing all metrics."""
@@ -165,6 +173,12 @@ def robustness_metrics(
     labels: list[str],
     failure_threshold: Optional[float] = None,
     cv_min_mean: float = 0.0,
+    *,
+    n_bootstrap: Optional[int] = None,
+    rng: Optional[np.random.Generator] = None,
+    alpha: float = 0.01,
+    statistic: str = "mean",
+    marginal_method: str = "smooth_bootstrap",
 ) -> RobustnessResult:
     """Compute robustness metrics for each template.
 
@@ -186,6 +200,21 @@ def robustness_metrics(
         scale) to also suppress CV when the mean is so close to zero that the
         ratio becomes numerically large and practically uninterpretable.  In
         that regime ``std``, ``iqr``, or ``cvar_10`` are more informative.
+    n_bootstrap : int, optional
+        Number of bootstrap resamples for per-entity marginal CIs.  When
+        ``None`` (default), ``ci_low`` and ``ci_high`` on the returned result
+        are ``None``.
+    rng : np.random.Generator, optional
+        Random number generator for reproducibility.  A fresh generator is
+        created when ``None`` and ``n_bootstrap`` is provided.
+    alpha : float, optional
+        Significance level for marginal CIs (default 0.01, i.e. 99% CI).
+    statistic : str, optional
+        Central-tendency statistic for marginal CIs: ``'mean'`` (default) or
+        ``'median'``.
+    marginal_method : str, optional
+        Bootstrap method for marginal CIs: ``'smooth_bootstrap'`` (default),
+        ``'bootstrap'``, ``'bca'``, ``'bayes_bootstrap'``, or ``'wilson'``.
 
     Returns
     -------
@@ -194,7 +223,7 @@ def robustness_metrics(
     if scores.ndim == 3:
         scores = np.nanmean(scores, axis=2)  # (N, M) cell means
 
-    n_templates, m_inputs = scores.shape
+    n_templates, _m_inputs = scores.shape
 
     mean = np.nanmean(scores, axis=1)
     median = np.nanmedian(scores, axis=1)
@@ -226,6 +255,45 @@ def robustness_metrics(
         n_failed = np.sum(~np.isnan(scores) & (scores < failure_threshold), axis=1)
         failure_rate = np.where(n_valid > 0, n_failed / n_valid, np.nan)
 
+    ci_low_arr: Optional[np.ndarray] = None
+    ci_high_arr: Optional[np.ndarray] = None
+    if n_bootstrap is not None:
+        if rng is None:
+            rng = np.random.default_rng()
+        from .resampling import (
+            bootstrap_means_1d,
+            bayes_bootstrap_means_1d,
+            smooth_bootstrap_means_1d,
+            bca_interval_1d,
+            wilson_ci_1d,
+        )
+        ci_lows = []
+        ci_highs = []
+        for i in range(n_templates):
+            row = scores[i]  # (M,) — already collapsed to 2D above
+            point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
+            if marginal_method == "wilson":
+                lo, hi = wilson_ci_1d(row, alpha)
+            elif marginal_method == "bayes_bootstrap":
+                boot = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+                lo = float(np.percentile(boot, 100 * alpha / 2))
+                hi = float(np.percentile(boot, 100 * (1 - alpha / 2)))
+            elif marginal_method == "smooth_bootstrap":
+                boot = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+                lo = float(np.percentile(boot, 100 * alpha / 2))
+                hi = float(np.percentile(boot, 100 * (1 - alpha / 2)))
+            elif marginal_method == "bca":
+                boot = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+                lo, hi = bca_interval_1d(row, point_est, boot, alpha, statistic=statistic)
+            else:  # "bootstrap" and any other fallback
+                boot = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
+                lo = float(np.percentile(boot, 100 * alpha / 2))
+                hi = float(np.percentile(boot, 100 * (1 - alpha / 2)))
+            ci_lows.append(lo)
+            ci_highs.append(hi)
+        ci_low_arr = np.array(ci_lows)
+        ci_high_arr = np.array(ci_highs)
+
     return RobustnessResult(
         labels=labels,
         mean=mean,
@@ -237,6 +305,8 @@ def robustness_metrics(
         percentiles={10: p10, 25: p25, 50: p50, 75: p75, 90: p90},
         failure_rate=failure_rate,
         failure_threshold=failure_threshold,
+        ci_low=ci_low_arr,
+        ci_high=ci_high_arr,
     )
 
 

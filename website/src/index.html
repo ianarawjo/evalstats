@@ -90,113 +90,8 @@
       </p>
     </section>
 
-    <section id="whoami">
-      <h2>Who Am I?</h2>
-      <p>
-        I'm Ian Arawjo, a researcher and software engineer focused on AI evaluation.
-        In my day job, I'm an assistant professor of human-computer interaction, which inherited a lot of experiment design from psychology. 
-        I teach a methods course in HCI, including statistical analysis of experiment data with methods like mixed effects models. 
-        In the past, I've conducted research in LLM evaluation, creating tools like <a href="https://github.com/ianarawjo/ChainForge">ChainForge</a> and <a href="https://dl.acm.org/doi/abs/10.1145/3654777.3676450">EvalGen</a>
-        that had an impact on the design of evals platforms and pipelines, including LangSmith, Chroma, and Weights and Biases.
-        Basically, you should trust me because I have a rare combination of research experience in LLM evaluation, practical experience building widely-used LLM eval tooling, 
-        and formal training in experiment design and statistics.
-      </p>
-      <p>Now, I'm learning just like you.
-        I'm grounding recommendations in research and simulations, 
-        and updating this guide as I learn more. For instance, there's an alternative
-        philosophy of statistics, called Bayesian statistics, which would constitute a different 
-        set of principles, recommendations, and entire workflow than the frequentist methods I focus on here.
-        But <a href="principles.html"> we have to start somewhere</a>, and so for now, I'm adopting an <a href="principles.html">estimation-first approach</a>. If you know better, or if you have suggestions for how to improve the guide, please reach out!
-      </p>
-    </section>
-
-    <!-- ── SECTION: DEBUNKING ── -->
-    <section id="debunking">
-      <h2>Statistical Debates in LLM Evals</h2>
-      <p class="section-lead">
-        Two influential papers have shaped the discourse — one too pessimistic about frequentist methods,
-        one too optimistic about sample scale. Both need correction.
-      </p>
-
-      <h3>The "Don't Use the CLT" Paper</h3>
-      <p>
-        An ICML position paper titled <em>"Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred
-        Datapoints"</em> argues that for N&lt;300 samples you must use Bayesian statistics, and that
-        frequentist and bootstrap methods are untrustworthy at small N. But is that really true?
-      </p>
-      <!-- <p>
-        The paper runs simulations using the very generative models that it then assumes as the prior
-        distribution. In other words, the Bayesian approach is sold partly because it performs well in
-        simulations designed around a specific generative model — and then the Bayesian method that
-        matches that model performs well. This is circular. In a real evaluation you don't know the
-        true generative process.
-      </p> -->
-      <div class="callout callout-warning">
-        <div class="callout-label">Important methodological caveat</div>
-        <p>
-          The paper evaluates Bayesian methods under simulation assumptions closely aligned with those
-          Bayesian priors. That setup is valid for answering a specific question, but it can favor
-          Bayesian approaches relative to methods optimized for broader or misspecified settings.
-        </p>
-      </div>
-      <p>
-        Despite the broad title, the analysis is focused on Bernoulli (binary) outcomes.
-        It does not cover numeric/interval eval scores (e.g., Likert or 0–100 grades), and it compares
-        against a limited set of frequentist baselines rather than the strongest modern alternatives.
-      </p>
-      <p>
-        This matters because other <a href="https://arxiv.org/html/2404.12967v1" target="_blank">simulation work</a> has reported different rankings under different designs,
-        including settings where certain frequentist intervals achieve higher coverage than Bayesian variants:
-      </p>
-      <div class="pull-quote">
-        "In general, the Bayesian method had the lowest coverage rate... Studentized [bootstrapping] is preferable when the goal is to maximize
-        the coverage rate, while in cases where interval length is more important, the Bayesian method
-        should be favored."
-      </div>
-      <p>
-        In ML terms, this is a precision–recall style trade-off: some methods give tighter intervals,
-        others give higher coverage. Which is preferable depends on risk tolerance, data type,
-        and whether under-coverage or over-conservatism is the bigger error in your application.
-      </p>
-      <div class="callout callout-info">
-        <div class="callout-label">The real takeaway</div>
-        <p>
-          The most defensible interpretation is not "Bayesian always" or "frequentist always," but
-          <em>method-by-data-type</em>. In our own simulations (see below): Wilson is strongest for binary
-          single-sample coverage, Bayesian paired is strongest for binary pairwise coverage at small-to-mid N,
-          and smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
-          However, in our larger-N runs, the <code>bayes_evals</code> Bayesian paired method breaks down around
-          N≈200+, producing overconfident intervals that can be dangerously wrong.
-          That is why <code>promptstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
-          bootstrap for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
-        </p>
-      </div>
-
-      <h3>The "Evals Need Error Bars" Paper</h3>
-      <p>
-        In 2024, Evan Miller at Anthropic made an early, important case for error bars in evaluations.
-        The argument centered on standard errors: combine standard deviation with sample size, report
-        alongside the mean. 
-      </p>
-      <p>
-        This is reasonable, but limited for the evals landscape of today. The framework assumes thousands or hundreds of thousands of datapoints — as Anthropic's public
-        benchmarks have. That is not the world of most developers. A typical custom developer eval
-        has 20–100 items, not 10,000. At that scale:
-      </p>
-      <ul>
-        <li>Standard errors assume normal distributions of LLM outputs, which rarely hold.</li>
-        <li>They assume symmetry around the mean — also rarely true for bounded scores at high performance.</li>
-        <li>They collapse with hierarchical data (e.g., same inputs evaluated across multiple prompts and models).</li>
-      </ul>
-      <p>
-        What we want instead is confidence intervals on pairwise differences, with no strong distributional
-        assumptions. To trust these intervals, we need to use methods that are robust at small N. To understand
-        which methods are robust, we would ideally run simulations that reflect the kinds of data we see in real evals.
-      </p>
-    </section>
-
     <!-- ── SECTION: BOOTSTRAP METHODS ── -->
-    <section id="bootstrap">
+    <!-- <section id="bootstrap">
       <h2>Methods for Caculating Confidence Intervals</h2>
       <p class="section-lead">
         Not all methods are equal. Here is a concise map of the main approaches used in our simulations.
@@ -284,7 +179,7 @@
         is what <code>promptstats</code> estimates. Wilson and Newcombe are used for strictly binary
         data.
       </p>
-    </section>
+    </section> -->
 
     <!-- ── SECTION: PROMPTSTATS ── -->
     <section id="promptstats">
@@ -363,7 +258,7 @@ scores = {
 }
 
 report = pstats.compare_models(scores)
-report.summary()</code></pre>
+report.full_summary()</code></pre>
 
       <p>Example terminal output:</p>
       <div class="terminal-screenshot">
@@ -428,6 +323,39 @@ promptstats analyze results.csv --ci 0.95</code></pre>
         <code>prompt</code>, <code>item</code> instead of <code>input</code>, or <code>value</code>
         instead of <code>score</code>. Run <code>promptstats analyze --help</code> for the full list.
       </p>
+      <p>
+        For more details and example usage, check out the <a href="usage.html">Example Usage</a> page.
+      </p>
+    </section>
+
+    <!-- ── SECTION: WHOAMI ── -->
+    <section id="whoami">
+      <h2>Who Am I?</h2>
+      <p>
+        I'm <a href="https://ianarawjo.com" target="_blank">Ian Arawjo</a>, a researcher and software engineer focused on AI evaluation.
+        In the past, I've conducted research in LLM evaluation, creating tools like <a href="https://github.com/ianarawjo/ChainForge">ChainForge</a> and <a href="https://dl.acm.org/doi/abs/10.1145/3654777.3676450">EvalGen</a>
+        that had an influence on the design of evals platforms and pipelines, including LangSmith, Chroma, and Weights and Biases.
+        In my day job, I'm an Assistant Professor in the Computer Science and Operations Research department at Université de Montréal, which inherited a lot of experiment design from psychology. 
+        I teach a methods course in HCI, including statistical analysis of experiment data with methods like mixed effects models. 
+      </p>
+      <h3>Why are you making this project?</h3>
+      <p> To be honest with you, I'm a bit fed up with the state of affairs in LLM evals.
+        We haven't had good tools for analyzing eval results, and the norm is that no one even considers running statistics,
+          let alone running the right statistics for their data and research questions. As a result,
+          we're basically flying blind. Even academic papers on ML benchmarks, which are supposed to be rigorous, don't generally conduct any statistical tests. That needs to change. 
+        </p>
+        <p>In January 2024, I did some deep thinking about this issue when trying to add error bars to ChainForge's plots, 
+          but then got busy with many other things. Come 2026, we're still in the same situation. No one seems to be working on this problem,
+        yet from my perspective, it's basically the most pressing issue in AI evaluation today.</p>
+        </p>
+        <p>
+          So, I'm hoping that by creating this guide and the accompanying library, I can help raise the standard for statistical analysis in LLM evals, and make it easier for developers to make informed decisions based on their eval results.
+          Downstream applications like ChainForge could integrate <code>promptstats</code>, or the methods this guide recommends, 
+          to provide better statistical analysis and reporting for evals, and I hope other tools will do the same.
+        </p>
+        <p>That said, I don't claim to have all the answers. I'm learning as I go, trying to 
+        ground recommendations in research and simulations, 
+        and updating this guide as I learn more. If you have any feedback or suggestions, I'd be open to hearing them.</p>
     </section>
 
   </article>
@@ -438,21 +366,6 @@ promptstats analyze results.csv --ci 0.95</code></pre>
     <ol>
       <li><a href="#why-statistics">Why Statistics Matter</a></li>
       <li><a href="#design">Design of this Guide</a></li>
-      <li><a href="#principles">Core Principles</a></li>
-      <li>
-        <a href="#debunking">Debunking Misconceptions</a>
-        <ol class="toc-sub">
-          <li><a href="#debunking">"Don't Use the CLT"</a></li>
-          <li><a href="#debunking">"Evals Need Error Bars"</a></li>
-        </ol>
-      </li>
-      <li>
-        <a href="#bootstrap">Bootstrap Methods</a>
-        <ol class="toc-sub">
-          <li><a href="#bootstrap">Method Overview</a></li>
-          <li><a href="#bootstrap">Is BCa Actually Better?</a></li>
-        </ol>
-      </li>
       <li>
         <a href="#promptstats">promptstats</a>
         <ol class="toc-sub">
@@ -461,6 +374,7 @@ promptstats analyze results.csv --ci 0.95</code></pre>
           <li><a href="#compare-models-prompts">Models &times; Prompts</a></li>
         </ol>
       </li>
+      <li><a href="#whoami">Who Am I?</a></li>
     </ol>
   </nav>
 

@@ -575,7 +575,7 @@ def main() -> None:
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_advantage(
+    fig = pstats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(

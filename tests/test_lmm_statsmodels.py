@@ -80,7 +80,6 @@ def test_smoke_returns_bundle():
     bundle = analyze(result, method="lmm", backend="statsmodels", rng=rng)
     assert bundle is not None
     assert bundle.pairwise is not None
-    assert bundle.point_advantage is not None
     assert bundle.rank_dist is not None
     assert bundle.robustness is not None
 
@@ -141,7 +140,7 @@ def test_rank_dist_shape():
     bundle = analyze(result, method="lmm", backend="statsmodels", rng=rng)
     N = result.n_templates
     assert bundle.rank_dist.rank_probs.shape == (N, N)
-    assert bundle.point_advantage.point_advantages.shape == (N,)
+    assert bundle.robustness.mean.shape == (N,)
 
 
 # ---------------------------------------------------------------------------
@@ -154,8 +153,8 @@ def test_template_means_sign_recovery():
     result = _make_result(rng, n_templates=3, n_inputs=40,
                           template_effects=np.array([0.5, 0.0, -0.3]))
     bundle = analyze(result, method="lmm", backend="statsmodels", rng=rng)
-    adv    = bundle.point_advantage.point_advantages
-    labels = bundle.point_advantage.labels
+    adv    = bundle.robustness.mean
+    labels = bundle.robustness.labels
     idx_t0 = labels.index("T0")
     idx_t2 = labels.index("T2")
     assert adv[idx_t0] > adv[idx_t2], (
@@ -196,11 +195,11 @@ def test_advantage_ci_bounds_ordered():
     rng    = np.random.default_rng(10)
     result = _make_result(rng, n_templates=3, n_inputs=20)
     bundle = analyze(result, method="lmm", backend="statsmodels", rng=rng)
-    adv    = bundle.point_advantage
-    for i, label in enumerate(adv.labels):
-        assert adv.bootstrap_ci_low[i] <= adv.point_advantages[i] <= adv.bootstrap_ci_high[i], (
-            f"{label}: ci=[{adv.bootstrap_ci_low[i]:.4f}, {adv.bootstrap_ci_high[i]:.4f}], "
-            f"point={adv.point_advantages[i]:.4f}"
+    rob = bundle.robustness
+    for i, label in enumerate(rob.labels):
+        assert rob.ci_low[i] <= rob.mean[i] <= rob.ci_high[i], (
+            f"{label}: ci=[{rob.ci_low[i]:.4f}, {rob.ci_high[i]:.4f}], "
+            f"mean={rob.mean[i]:.4f}"
         )
 
 
@@ -271,10 +270,10 @@ def test_specific_reference():
     rng    = np.random.default_rng(17)
     result = _make_result(rng, n_templates=3, n_inputs=20)
     bundle = analyze(result, method="lmm", backend="statsmodels", reference="T0", rng=rng)
-    # Reference template should have near-zero advantage
-    labels = bundle.point_advantage.labels
+    # Reference selection should not zero out absolute robustness means.
+    labels = bundle.robustness.labels
     idx    = labels.index("T0")
-    assert abs(bundle.point_advantage.point_advantages[idx]) < 1e-10
+    assert np.isfinite(bundle.robustness.mean[idx])
 
 
 def test_test_method_string():

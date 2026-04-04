@@ -1,11 +1,11 @@
-from promptstats.vis.advantage import plot_point_advantage
+from promptstats.vis.point_estimates import plot_point_estimates
 from promptstats.vis.critical_difference import plot_critical_difference
 from promptstats.vis.forest import plot_ci_forest
 from promptstats.vis.heatmap import plot_model_prompt_heatmap
 from promptstats.vis.scoreboard import plot_accuracy_bar
 
 __all__ = [
-    "plot_point_advantage",
+    "plot_point_estimates",
     "plot_critical_difference",
     "plot_ci_forest",
     "plot_model_prompt_heatmap",

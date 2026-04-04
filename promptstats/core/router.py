@@ -30,13 +30,48 @@ from .bundles import (
     AnalysisResult,
 )
 from .paired import all_pairwise
-from .ranking import bootstrap_ranks, bootstrap_point_advantage
+from .ranking import bootstrap_ranks
 from .variance import robustness_metrics, seed_variance_decomposition
 from ..config import get_alpha_ci
 
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
+
+def _resolve_p_value_method(
+    p_values: bool,
+    pairwise_test: str,
+    omnibus: bool,
+) -> Optional[str]:
+    """Resolve the effective p-value display method for the bundle.
+
+    Returns one of: ``None`` (suppress), ``'auto'``, ``'boot'``, ``'wsr'``,
+    ``'nem'``.
+
+    Resolution rules:
+    - If ``p_values=False`` and ``pairwise_test='auto'``: suppress (``None``).
+    - ``pairwise_test='bootstrap'``  → ``'boot'``
+    - ``pairwise_test='wilcoxon'``   → ``'wsr'``
+    - ``pairwise_test='nemenyi'``    → ``'nem'``
+    - ``pairwise_test='auto'`` with ``p_values=True``:
+        - ``omnibus=True``  → ``'wsr'`` (Wilcoxon is the standard Friedman post-hoc)
+        - otherwise        → ``'auto'`` (display layer picks: boot for bootstrap
+          paths, Wilcoxon for LMM/other paths)
+    """
+    explicit = pairwise_test != "auto"
+    if not p_values and not explicit:
+        return None
+    if pairwise_test == "bootstrap":
+        return "boot"
+    if pairwise_test == "wilcoxon":
+        return "wsr"
+    if pairwise_test == "nemenyi":
+        return "nem"
+    # pairwise_test == 'auto' with p_values=True
+    if omnibus:
+        return "wsr"
+    return "auto"
+
 
 def analyze(
     result: Union[BenchmarkResult, MultiModelBenchmark],
@@ -55,6 +90,8 @@ def analyze(
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_values: bool = False,
+    pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -167,6 +204,26 @@ def analyze(
         * ``'as_runs'`` (default) treats models as additional runs to preserve
             cross-model variation in uncertainty estimates.
 
+    p_values : bool
+        When ``True``, p-values are shown in pairwise comparison tables.
+        Defaults to ``False`` (p-values suppressed).  Setting
+        ``pairwise_test`` to anything other than ``'auto'`` also enables
+        p-value display implicitly.
+    pairwise_test : str
+        Which p-value to compute for pairwise comparisons.  Only relevant
+        when ``p_values=True`` or ``pairwise_test`` is set explicitly.
+
+        * ``'auto'`` (default) — when ``omnibus=True``, uses Wilcoxon
+          signed-rank (the standard Friedman post-hoc); otherwise defers
+          to the display layer, which picks bootstrap p-values for
+          bootstrap CI paths and Wilcoxon for LMM/other paths.
+        * ``'bootstrap'`` — bootstrap p-value (from the resampling
+          distribution of the test statistic).
+        * ``'wilcoxon'`` — Wilcoxon signed-rank test p-value.  Can be
+          combined with bootstrap CIs (statistically inconsistent, but
+          permitted when explicitly requested).
+        * ``'nemenyi'`` — Nemenyi post-hoc p-value.
+
     Returns
     -------
     AnalysisResult
@@ -209,6 +266,8 @@ def analyze(
             stacklevel=2,
         )
 
+    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test, omnibus)
+
     kwargs = dict(
         reference=reference,
         method=method,
@@ -222,6 +281,7 @@ def analyze(
         statistic=statistic,
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
+        p_value_method=resolved_p_value_method,
     )
 
     # ------------------------------------------------------------------
@@ -423,7 +483,7 @@ def analyze_factorial(
     Returns
     -------
     AnalysisBundle
-        All standard fields (``pairwise``, ``point_advantage``,
+        All standard fields (``pairwise``,
         ``robustness``, ``rank_dist``) are populated via the LMM path.
         ``bundle.factorial_lmm_info`` additionally contains:
 
@@ -618,6 +678,7 @@ def _analyze_single(
     statistic: Literal["mean", "median"],
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_value_method: Optional[str] = None,
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
     # LMM path — fit score ~ template + (1|input)
@@ -635,7 +696,7 @@ def _analyze_single(
             )
             statistic = "mean"
         from .mixed_effects import lmm_analyze, FactorialLMMInfo
-        pairwise, mean_adv, rank_dist, robustness, seed_var, lmm_result = lmm_analyze(
+        pairwise, rank_dist, robustness, seed_var, lmm_result = lmm_analyze(
             result,
             backend=backend,
             reference=reference,
@@ -646,28 +707,43 @@ def _analyze_single(
             n_sim=n_bootstrap,
             rng=rng,
         )
+        # Recompute robustness with marginal per-entity CIs (overrides the one
+        # inside lmm_analyze which does not compute them).
+        scores_2d = result.get_2d_scores()
+        robustness = robustness_metrics(
+            scores_2d,
+            robustness.labels,
+            failure_threshold=failure_threshold,
+            n_bootstrap=n_bootstrap,
+            rng=rng,
+            alpha=1.0 - ci,
+            statistic="mean",
+            marginal_method="smooth_bootstrap",
+        )
         if isinstance(lmm_result, FactorialLMMInfo):
             return AnalysisBundle(
                 benchmark=result,
                 shape=shape,
                 pairwise=pairwise,
-                point_advantage=mean_adv,
                 robustness=robustness,
                 rank_dist=rank_dist,
                 seed_variance=seed_var,
                 factorial_lmm_info=lmm_result,
                 resolved_method="lmm",
+                resolved_ci_method="lmm",
+                p_value_method=p_value_method,
             )
         return AnalysisBundle(
             benchmark=result,
             shape=shape,
             pairwise=pairwise,
-            point_advantage=mean_adv,
             robustness=robustness,
             rank_dist=rank_dist,
             seed_variance=seed_var,
             lmm_info=lmm_result,
             resolved_method="lmm",
+            resolved_ci_method="lmm",
+            p_value_method=p_value_method,
         )
 
     # ------------------------------------------------------------------
@@ -696,21 +772,21 @@ def _analyze_single(
     # Otherwise resolve 'auto' to its concrete bootstrap method so that
     # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
-    advantage_method = method
+    robustness_method = method
     if method == "auto":
         from .resampling import is_binary_scores, resolve_resampling_method
         if is_binary_scores(run_scores):
             M = run_scores.shape[1]
-            # Single-sample advantage CIs always use Wilson for binary data.
+            # Single-sample marginal CIs always use Wilson for binary data.
             # Pairwise: Bayesian model for N < 100, bootstrap for N >= 100 (enables simultaneous_cis).
-            advantage_method = "wilson"
+            robustness_method = "wilson"
             if M < 100:
                 pairwise_method = "bayes_binary"
             else:
                 pairwise_method = resolve_resampling_method("bootstrap", M)
         else:
             pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
-            advantage_method = pairwise_method
+            robustness_method = pairwise_method
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
@@ -719,9 +795,9 @@ def _analyze_single(
                 "scores array contains non-binary values. Use is_binary_scores() "
                 "to check before calling, or choose a different method."
             )
-        # Single-sample advantage CIs use Wilson; pairwise uses the Bayesian model.
+        # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
-        advantage_method = "wilson"
+        robustness_method = "wilson"
     elif method in {"wilson", "newcombe", "fisher_exact"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
@@ -735,12 +811,12 @@ def _analyze_single(
         else:
             # In analyze(), explicit frequentist binary methods route to:
             #   - pairwise Newcombe + exact McNemar p-values
-            #   - point-advantage Wilson score CIs
+            #   - single-sample marginal Wilson score CIs
             pairwise_method = "newcombe"
-        advantage_method = "wilson"
+        robustness_method = "wilson"
     elif method == "sign_test":
         pairwise_method = "sign_test"
-        advantage_method = "smooth_bootstrap"
+        robustness_method = "smooth_bootstrap"
 
     pairwise = all_pairwise(
         run_scores, labels,
@@ -748,15 +824,14 @@ def _analyze_single(
         correction=correction, rng=rng, statistic=statistic,
         simultaneous_ci=simultaneous_ci, omnibus=omnibus,
     )
-    mean_adv = bootstrap_point_advantage(
-        run_scores, labels,
-        reference=reference,
-        method=advantage_method, ci=ci, n_bootstrap=n_bootstrap,
-        spread_percentiles=spread_percentiles, rng=rng, statistic=statistic,
-    )
     robustness = robustness_metrics(
         run_scores, labels,
         failure_threshold=failure_threshold,
+        n_bootstrap=n_bootstrap,
+        rng=rng,
+        alpha=1.0 - ci,
+        statistic=statistic,
+        marginal_method=robustness_method,
     )
     rank_dist = bootstrap_ranks(
         run_scores, labels,
@@ -771,11 +846,12 @@ def _analyze_single(
         benchmark=result,
         shape=shape,
         pairwise=pairwise,
-        point_advantage=mean_adv,
         robustness=robustness,
         rank_dist=rank_dist,
         seed_variance=seed_var,
         resolved_method=pairwise_method,
+        resolved_ci_method=robustness_method,
+        p_value_method=p_value_method,
     )
 
 
@@ -796,6 +872,7 @@ def _analyze_multi_model(
     template_model_collapse: Literal["mean", "as_runs"] = "as_runs",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_value_method: Optional[str] = None,
 ) -> MultiModelBundle:
     kwargs = dict(
         reference=reference,
@@ -810,6 +887,7 @@ def _analyze_multi_model(
         statistic=statistic,
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
+        p_value_method=p_value_method,
     )
 
     per_model: Dict[str, AnalysisBundle] = {}

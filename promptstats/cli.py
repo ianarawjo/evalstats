@@ -27,6 +27,8 @@ from typing import Union
 import numpy as np
 import pandas as pd
 
+from promptstats.config import set_alpha_ci
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -219,9 +221,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="grand_mean",
         metavar="LABEL",
         help=(
-            "Reference for mean advantage plot. 'grand_mean' (default) compares "
-            "each prompt template against the average. Pass a prompt template label to compare "
-            "everything against a specific baseline."
+            "Reference label retained for compatibility. In robustness-first mode, "
+            "absolute means and CIs are reported directly."
         ),
     )
     analyze.add_argument(
@@ -238,7 +239,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=(10.0, 90.0),
         metavar=("LOW", "HIGH"),
         help=(
-            "Percentile band for intrinsic spread in advantage plots (default: 10 90)."
+            "Retained for compatibility (default: 10 90)."
         ),
     )
     analyze.add_argument(
@@ -272,11 +273,44 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run an omnibus test in addition to pairwise comparisons.",
     )
     analyze.add_argument(
+        "--p-values",
+        action="store_true",
+        default=False,
+        help=(
+            "Show p-values in pairwise comparison tables. The test used is "
+            "determined by --pairwise-test (default: auto). When --omnibus is "
+            "also set, 'auto' selects Wilcoxon signed-rank as the Friedman "
+            "post-hoc; otherwise bootstrap p-values are shown for bootstrap "
+            "methods and Wilcoxon for LMM/other methods."
+        ),
+    )
+    analyze.add_argument(
+        "--pairwise-test",
+        choices=["auto", "bootstrap", "wilcoxon", "nemenyi"],
+        default="auto",
+        metavar="TEST",
+        help=(
+            "Pairwise p-value test to use when --p-values is enabled (or when "
+            "this flag is set explicitly, which also enables p-values). "
+            "Choices: 'auto' (default), 'bootstrap', 'wilcoxon', 'nemenyi'."
+        ),
+    )
+    analyze.add_argument(
         "--top-pairwise",
         type=int,
         default=5,
         metavar="INT",
         help="Number of pairwise comparisons to show in summary (default: 5).",
+    )
+    analyze.add_argument(
+        "--brief",
+        action="store_true",
+        help=(
+            "Print only the executive leaderboard (entity names, significance groups, "
+            "means, CIs, verdicts). Omits the full statistical breakdown — interval "
+            "plots, pairwise tables, and robustness section. Useful for a quick result "
+            "at a glance. Use --out to save the full analysis alongside."
+        ),
     )
     analyze.add_argument(
         "--out",
@@ -285,7 +319,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="PATH",
         help=(
             "Optional output artifact paths. Supported suffixes: .md/.txt (summary), "
-            ".json (structured analysis), and .png (mean-advantage plot)."
+            ".json (structured analysis), and .png (robustness interval plot)."
         ),
     )
     return parser
@@ -296,6 +330,10 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def _cmd_analyze(args: argparse.Namespace) -> None:
+    ci = getattr(args, "ci", None)
+    if ci is not None:
+        set_alpha_ci(1.0 - ci)
+
     path = args.file.expanduser().resolve()
     if not path.exists():
         _die(f"file not found: {path}")
@@ -375,7 +413,6 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     print("Running analysis ...", flush=True)
     try:
-        ci = getattr(args, "ci", None)
         analysis = analyze(
             result,
             evaluator_mode=evaluator_mode,
@@ -391,6 +428,8 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
             template_model_collapse=getattr(args, "template_model_collapse", "as_runs"),
             simultaneous_ci=getattr(args, "simultaneous_ci", True),
             omnibus=getattr(args, "omnibus", False),
+            p_values=getattr(args, "p_values", False),
+            pairwise_test=getattr(args, "pairwise_test", "auto"),
         )
     except (ValueError, NotImplementedError) as exc:
         _die(str(exc))
@@ -398,7 +437,11 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     print()
     summary_buffer = io.StringIO()
     with redirect_stdout(summary_buffer):
-        print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
+        if getattr(args, "brief", False):
+            from promptstats.core.summary import print_brief_summary
+            print_brief_summary(analysis)
+        else:
+            print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
     summary_text = summary_buffer.getvalue()
     print(summary_text, end="")
 
@@ -475,7 +518,7 @@ def _write_outputs(
     ci: float,
 ) -> None:
     from promptstats.core.router import AnalysisBundle, MultiModelBundle
-    from promptstats.vis.advantage import plot_point_advantage
+    from promptstats.vis.point_estimates import plot_point_estimates
 
     for raw in out_paths:
         out_path = Path(raw).expanduser().resolve()
@@ -503,9 +546,8 @@ def _write_outputs(
 
         if suffix == ".png":
             if isinstance(analysis, AnalysisBundle):
-                fig = plot_point_advantage(
+                fig = plot_point_estimates(
                     analysis.benchmark,
-                    reference=reference,
                     n_bootstrap=n_bootstrap,
                     ci=ci,
                 )
@@ -513,12 +555,11 @@ def _write_outputs(
                 print(f"Wrote plot: {out_path}")
                 continue
             if isinstance(analysis, MultiModelBundle):
-                fig = plot_point_advantage(
+                fig = plot_point_estimates(
                     analysis.model_level.benchmark,
-                    reference="grand_mean",
                     n_bootstrap=n_bootstrap,
                     ci=ci,
-                    title="Model-Level Mean Advantage",
+                    title="Model-Level Robustness Intervals",
                 )
                 fig.savefig(out_path, dpi=150, bbox_inches="tight")
                 print(f"Wrote plot: {out_path}")
@@ -528,20 +569,18 @@ def _write_outputs(
                 for evaluator_name, evaluator_analysis in analysis.items():
                     target = base.with_name(f"{base.name}_{evaluator_name}").with_suffix(".png")
                     if isinstance(evaluator_analysis, MultiModelBundle):
-                        fig = plot_point_advantage(
+                        fig = plot_point_estimates(
                             evaluator_analysis.model_level.benchmark,
-                            reference="grand_mean",
                             n_bootstrap=n_bootstrap,
                             ci=ci,
-                            title=f"Model-Level Mean Advantage ({evaluator_name})",
+                            title=f"Model-Level Robustness Intervals ({evaluator_name})",
                         )
                     else:
-                        fig = plot_point_advantage(
+                        fig = plot_point_estimates(
                             evaluator_analysis.benchmark,
-                            reference=reference,
                             n_bootstrap=n_bootstrap,
                             ci=ci,
-                            title=f"Mean Advantage ({evaluator_name})",
+                            title=f"Robustness Intervals ({evaluator_name})",
                         )
                     fig.savefig(target, dpi=150, bbox_inches="tight")
                     print(f"Wrote plot: {target}")

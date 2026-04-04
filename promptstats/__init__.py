@@ -2,7 +2,7 @@
 
 from promptstats.core.types import BenchmarkResult, MultiModelBenchmark
 from promptstats.core.paired import pairwise_differences, all_pairwise, vs_baseline, friedman_nemenyi, FriedmanResult
-from promptstats.core.ranking import bootstrap_ranks, bootstrap_point_advantage
+from promptstats.core.ranking import bootstrap_ranks
 from promptstats.core.variance import (
     robustness_metrics,
     seed_variance_decomposition,
@@ -16,8 +16,8 @@ from promptstats.core.router import (
     BenchmarkShape,
     MultiModelBundle,
 )
-from promptstats.core.summary import print_analysis_summary
-from promptstats.vis.advantage import plot_point_advantage
+from promptstats.core.summary import print_analysis_summary, print_brief_summary
+from promptstats.vis.point_estimates import plot_point_estimates
 from promptstats.vis.critical_difference import plot_critical_difference
 from promptstats.vis.forest import plot_ci_forest
 from promptstats.vis.scoreboard import plot_accuracy_bar
@@ -43,7 +43,6 @@ __all__ = [
     "friedman_nemenyi",
     "FriedmanResult",
     "bootstrap_ranks",
-    "bootstrap_point_advantage",
     "robustness_metrics",
     "seed_variance_decomposition",
     "SeedVarianceResult",
@@ -53,7 +52,8 @@ __all__ = [
     "BenchmarkShape",
     "MultiModelBundle",
     "print_analysis_summary",
-    "plot_point_advantage",
+    "print_brief_summary",
+    "plot_point_estimates",
     "plot_critical_difference",
     "plot_ci_forest",
     "plot_accuracy_bar",

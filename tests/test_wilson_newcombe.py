@@ -5,7 +5,7 @@ Covers:
   - newcombe_paired_ci in resampling.py
   - _mcnemar_p in paired.py
   - pairwise_differences with method='wilson'
-  - bootstrap_point_advantage with method='wilson'
+    - robustness_metrics with marginal_method='wilson'
   - is_binary_scores detection in resampling.py
   - analyze() auto-detecting binary data and using Wilson/Newcombe
 """
@@ -30,7 +30,7 @@ from promptstats.core.paired import (
     pairwise_differences,
     all_pairwise,
 )
-from promptstats.core.ranking import bootstrap_point_advantage
+from promptstats.core.variance import robustness_metrics
 from promptstats.core.types import BenchmarkResult
 from promptstats.core.router import analyze
 
@@ -302,10 +302,10 @@ def test_pairwise_differences_bayes_binary_warns_for_large_n():
 
 
 # ---------------------------------------------------------------------------
-# bootstrap_point_advantage with method='wilson'
+# robustness_metrics with marginal_method='wilson'
 # ---------------------------------------------------------------------------
 
-def test_bootstrap_point_advantage_wilson_grand_mean():
+def test_robustness_metrics_wilson_binary_ci():
     rng = np.random.default_rng(11)
     n_templates = 3
     m_inputs = 30
@@ -313,54 +313,59 @@ def test_bootstrap_point_advantage_wilson_grand_mean():
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
 
-    result = bootstrap_point_advantage(
+    result = robustness_metrics(
         scores, ["A", "B", "C"],
-        reference="grand_mean", method="wilson", ci=0.95,
+        n_bootstrap=500,
+        rng=np.random.default_rng(11),
+        alpha=0.05,
+        statistic="mean",
+        marginal_method="wilson",
     )
-    assert result.n_bootstrap == 0  # Wilson, no bootstrap
-    assert len(result.point_advantages) == 3
-    assert np.all(result.bootstrap_ci_low <= result.bootstrap_ci_high)
+    assert result.ci_low is not None
+    assert result.ci_high is not None
+    assert len(result.mean) == 3
+    assert np.all(result.ci_low <= result.mean)
+    assert np.all(result.mean <= result.ci_high)
 
 
-def test_bootstrap_point_advantage_wilson_specific_reference():
+def test_robustness_metrics_wilson_reference_template_mean_is_raw_mean():
     rng = np.random.default_rng(13)
     scores = np.zeros((3, 20))
     scores[0] = rng.binomial(1, 0.6, 20)
     scores[1] = rng.binomial(1, 0.8, 20)
     scores[2] = rng.binomial(1, 0.5, 20)
 
-    result = bootstrap_point_advantage(
+    result = robustness_metrics(
         scores, ["A", "B", "C"],
-        reference="A", method="wilson", ci=0.95,
+        n_bootstrap=500,
+        rng=np.random.default_rng(13),
+        alpha=0.05,
+        statistic="mean",
+        marginal_method="wilson",
     )
-    # Reference template A has zero advantage vs itself
     idx_a = result.labels.index("A")
-    assert result.bootstrap_ci_low[idx_a] == 0.0
-    assert result.bootstrap_ci_high[idx_a] == 0.0
+    assert result.mean[idx_a] == pytest.approx(float(np.mean(scores[0])))
 
 
-def test_single_template_short_circuits_smooth_bootstrap():
+def test_single_template_wilson_ci_short_circuit():
     rng = np.random.default_rng(2026)
     scores = rng.binomial(1, 0.65, size=(1, 24, 5)).astype(float)
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
-        result = bootstrap_point_advantage(
+        result = robustness_metrics(
             scores,
             ["A"],
-            reference="grand_mean",
-            method="wilson",
-            ci=0.95,
+            n_bootstrap=500,
             rng=np.random.default_rng(2026),
+            alpha=0.05,
+            statistic="mean",
+            marginal_method="wilson",
         )
 
-    np.testing.assert_allclose(result.point_advantages, [0.0])
-    np.testing.assert_allclose(result.bootstrap_ci_low, [0.0])
-    np.testing.assert_allclose(result.bootstrap_ci_high, [0.0])
-    np.testing.assert_allclose(result.spread_low, [0.0])
-    np.testing.assert_allclose(result.spread_high, [0.0])
-    assert result.n_bootstrap == 0
-    assert result.statistic == "mean"
+    assert result.ci_low is not None
+    assert result.ci_high is not None
+    np.testing.assert_allclose(result.mean, [np.mean(scores)])
     assert not any("smooth_bootstrap" in str(w.message) for w in caught)
 
 
@@ -396,7 +401,7 @@ def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
     assert "bayes binary" in pair.test_method
 
     # Advantage CIs should have n_bootstrap=0 (no resampling for bayes_binary)
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
@@ -416,7 +421,7 @@ def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
     assert "bootstrap" in pair.test_method
 
     # Advantage CIs should have n_bootstrap=0 (Wilson, no bootstrap)
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_non_binary_still_uses_smooth_bootstrap():
@@ -428,7 +433,7 @@ def test_analyze_non_binary_still_uses_smooth_bootstrap():
 
     pair = bundle.pairwise.get("A", "B")
     assert "smooth" in pair.test_method
-    assert bundle.point_advantage.n_bootstrap > 0
+    assert bundle.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_explicit_bootstrap_method_overrides_binary_detection():
@@ -456,7 +461,7 @@ def test_analyze_explicit_newcombe_forces_newcombe_even_when_n_small():
 
     pair = bundle.pairwise.get("low", "high")
     assert "newcombe" in pair.test_method
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_explicit_fisher_exact_uses_fisher_path():
@@ -472,7 +477,7 @@ def test_analyze_explicit_fisher_exact_uses_fisher_path():
 
     pair = bundle.pairwise.get("low", "high")
     assert "fisher exact" in pair.test_method
-    assert bundle.point_advantage.n_bootstrap == 0
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
 def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():

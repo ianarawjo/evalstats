@@ -1,0 +1,185 @@
+prompt_id,run_idx,input_id,ticket,category,output,predicted,correct
+P0_baseline,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,1,ticket_91,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,TECHNICAL,TECHNICAL,0
+P0_baseline,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P0_baseline,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,ACCOUNT,ACCOUNT,0
+P0_baseline,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P0_baseline,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,ACCOUNT,ACCOUNT,0
+P0_baseline,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,TECHNICAL,TECHNICAL,0
+P0_baseline,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P0_baseline,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,BILLING,BILLING,1
+P1_role,1,ticket_91,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,ACCOUNT,ACCOUNT,0
+P1_role,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,BILLING,BILLING,0
+P1_role,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P1_role,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,BILLING,BILLING,1
+P1_role,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,TECHNICAL,TECHNICAL,0
+P1_role,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P1_role,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,BILLING,BILLING,1
+P2_definitions,1,ticket_91,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,BILLING,BILLING,1
+P2_definitions,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,BILLING,BILLING,1
+P2_definitions,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,TECHNICAL,TECHNICAL,0
+P2_definitions,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P2_definitions,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,BILLING,BILLING,1
+P3_few_shot_1,1,ticket_91,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,BILLING,BILLING,0
+P3_few_shot_1,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,BILLING,BILLING,0
+P3_few_shot_1,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,BILLING,BILLING,1
+P3_few_shot_1,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,TECHNICAL,TECHNICAL,0
+P3_few_shot_1,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P3_few_shot_1,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,BILLING,BILLING,1
+P4_few_shot_3,1,ticket_91,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,ACCOUNT,ACCOUNT,1
+P4_few_shot_3,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,BILLING,BILLING,0
+P4_few_shot_3,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,BILLING,BILLING,0
+P4_few_shot_3,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,BILLING,BILLING,1
+P4_few_shot_3,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,TECHNICAL,TECHNICAL,0
+P4_few_shot_3,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P4_few_shot_3,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P5_chain_of_thought,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,Category: BILLING,BILLING,1
+P5_chain_of_thought,1,ticket_91,Do you have a mobile app for Android?,GENERAL,"Category: TECHNICAL
+
+The ticket directly asks about the availability and functionality of a specific feature – the mobile app – indicating a technical issue or question.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to a technical inquiry – defining recovery time objectives (RTO) and recovery point objectives (RPO) – which falls under technical support.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,"Category: TECHNICAL
+
+The ticket concerns a technical issue – account access revocation – indicating a problem requiring resolution.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to technical issues and configuration, specifically inquiring about a specific deployment model for regulated industries, indicating a technical problem.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,"Category: TECHNICAL
+
+Reasoning: The ticket directly asks about a specific service offering – professional services related to migration – indicating a technical issue or question.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,"Category: TECHNICAL
+
+The ticket concerns a technical issue – account access – and asks for assistance with regaining access after a failed login attempt.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,Category: BILLING - This ticket concerns a change in plan pricing and the lack of notification regarding the transition.,BILLING,1
+P5_chain_of_thought,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,"Category: TECHNICAL
+
+The ticket concerns a specific technical issue – offboarding a department – and requires a solution related to data management and potential integration, indicating a technical problem.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,"Category: TECHNICAL
+
+The ticket directly relates to a specific feature request – data residency – and asks about a potential limitation, indicating a technical issue.",TECHNICAL,0
+P5_chain_of_thought,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,"Category: BILLING
+
+The ticket concerns payment methods and whether the company can utilize bank transfers as an alternative to credit card, which falls under billing inquiries.",BILLING,1
+P5_chain_of_thought,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,"Category: BILLING
+
+The ticket concerns billing related to splitting a workspace, indicating a potential payment or charge-related issue.",BILLING,0
+P5_chain_of_thought,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,"Category: BILLING
+
+Reasoning: The ticket directly relates to a billing issue – a suspended workspace due to non-payment – indicating a payment-related concern.",BILLING,1
+P5_chain_of_thought,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,Category: TECHNICAL,TECHNICAL,0
+P5_chain_of_thought,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,Category: TECHNICAL,TECHNICAL,1
+P5_chain_of_thought,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,"Category: TECHNICAL
+
+The ticket describes a technical issue – a lost password and email reset failure – which falls under technical support.",TECHNICAL,0
+P6_json_output,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,1,ticket_91,Do you have a mobile app for Android?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,"{""category"": ""ACCOUNT""}",ACCOUNT,1
+P6_json_output,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P6_json_output,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,"{""category"": ""BILLING""}",BILLING,0
+P6_json_output,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,"{""category"": ""BILLING""}",BILLING,0
+P6_json_output,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,"{""category"": ""BILLING""}",BILLING,0
+P6_json_output,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,"{""category"": ""BILLING""}",BILLING,1
+P6_json_output,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,"{""category"": ""TECHNICAL""}",TECHNICAL,1
+P6_json_output,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,"{""category"": ""TECHNICAL""}",TECHNICAL,0
+P7_negative_framing,1,ticket_29,"We prepaid annually, yet the account still shows as past due.",BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_91,Do you have a mobile app for Android?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_30,The app crashes every time I try to export a report.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,1,ticket_58,Our API usage dashboard resets to zero every morning despite continuous traffic.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,1,ticket_112,What are your documented RTO and RPO targets for disaster recovery?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_53,"We enabled IP allowlisting, and now even approved office IPs get blocked randomly.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,1,ticket_66,My colleague left the company and I need to revoke their access immediately.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_111,Is there an on-prem or private cloud deployment option for regulated industries?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_118,Do you offer professional services for migration from a legacy ticketing platform?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_68,I'm locked out after too many failed login attempts. How do I regain access?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_17,I was on a grandfathered plan you discontinued — you moved me to a new plan without notice.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_89,What's the cleanest way to offboard a department while preserving shared assets they created?,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_114,Can enterprise contracts include data residency restricted to Canada only?,GENERAL,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_15,My company needs to pay by bank transfer rather than credit card. Is that supported?,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_75,We need to split our single workspace into two separate organizations for two business units.,ACCOUNT,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_11,Our workspace was suspended for non-payment even though I sent the wire transfer two weeks ago.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_48,"Since the UI update last week, keyboard shortcuts I depend on daily have stopped working.",TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,1,ticket_16,I upgraded mid-cycle and the charge looks different from what your pricing page describes.,BILLING,TECHNICAL,TECHNICAL,0
+P7_negative_framing,1,ticket_34,The iOS app keeps logging me out every few minutes.,TECHNICAL,TECHNICAL,TECHNICAL,1
+P7_negative_framing,1,ticket_62,I forgot my password and the reset email isn't arriving.,ACCOUNT,TECHNICAL,TECHNICAL,0

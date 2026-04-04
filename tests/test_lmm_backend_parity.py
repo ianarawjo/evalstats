@@ -178,17 +178,17 @@ def test_pairwise_point_diff_agreement():
             )
 
 
-def test_point_advantage_agreement():
-    """Per-template mean advantages must agree to within 0.01."""
+def test_robustness_mean_agreement():
+    """Per-template absolute means must agree to within 0.01."""
     rng    = np.random.default_rng(1)
     result = _make_result(rng)
     sm, py = _run_both(result)
 
     np.testing.assert_allclose(
-        sm.point_advantage.point_advantages,
-        py.point_advantage.point_advantages,
+        sm.robustness.mean,
+        py.robustness.mean,
         atol=0.01,
-        err_msg="point_advantages disagree between backends",
+        err_msg="robustness means disagree between backends",
     )
 
 
@@ -280,11 +280,11 @@ def test_advantage_ci_width_agreement():
     result = _make_result(rng, n_inputs=30)
     sm, py = _run_both(result)
 
-    sm_widths = sm.point_advantage.bootstrap_ci_high - sm.point_advantage.bootstrap_ci_low
-    py_widths = py.point_advantage.bootstrap_ci_high - py.point_advantage.bootstrap_ci_low
+    sm_widths = sm.robustness.ci_high - sm.robustness.ci_low
+    py_widths = py.robustness.ci_high - py.robustness.ci_low
     rel = np.abs(sm_widths - py_widths) / np.maximum(np.abs(py_widths), 1e-8)
     assert np.all(rel < 0.10), (
-        f"Advantage CI width relative differences: {rel.tolist()}"
+        f"Marginal CI width relative differences: {rel.tolist()}"
     )
 
 

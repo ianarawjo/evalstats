@@ -373,7 +373,7 @@ def main():
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_advantage(
+    fig = pstats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(
@@ -395,7 +395,7 @@ def main():
             template_labels=TEMPLATE_LABELS,
             input_labels=INPUT_LABELS,
         )
-        fig_e = pstats.plot_point_advantage(
+        fig_e = pstats.plot_point_estimates(
             ev_result,
             reference="grand_mean",
             title=f"Template Advantage — evaluator: {e_name}\n({MODEL})",
