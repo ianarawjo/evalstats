@@ -20,6 +20,9 @@ from ..config import get_alpha_ci
 if TYPE_CHECKING:
     from ..compare import CompareReport
 
+# Sentinel used as a default so callers can distinguish "not passed" from
+# "explicitly None (suppress p-values)".
+_UNSET = object()
 
 # ---------------------------------------------------------------------------
 # ANSI color helpers (disabled when stdout is not a TTY)
@@ -1204,9 +1207,11 @@ def _print_bundle_summary(
     line_width: int,
     item_singular: str = "template",
     item_plural: str = "templates",
-    p_value_method: Optional[str] = None,
+    p_value_method=_UNSET,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
 ) -> None:
+    if p_value_method is _UNSET:
+        p_value_method = bundle.p_value_method
     template_col_width = 24
 
     print(f"Shape: {bundle.shape}")

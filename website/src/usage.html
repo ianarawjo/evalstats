@@ -1,9 +1,12 @@
 <!-- EXAMPLE USAGE PAGE -->
-
-<!-- ── WORKFLOW DIAGRAM ── -->
-<section id="workflow">
-  <h2>The promptstats Workflow</h2>
-  <p>Three steps, no statistics PhD required.</p>
+<!-- ── SECTION: QUICK START ── -->
+<section id="quick-start">
+  <h2>Quick Start (CLI)</h2>
+  <p>
+    This guide walks you through running your first analysis using the command-line interface (CLI).
+    All you need is a CSV file of your eval scores in an expected format, and a few seconds to run the analysis and read the report.
+    The <code>promptstats</code> workflow can be described as:
+  </p>
 
   <div class="workflow-diagram" aria-label="promptstats workflow: collect scores, run analysis, read results">
     <svg viewBox="0 0 740 148" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:740px;display:block;margin:0 auto;">
@@ -63,162 +66,31 @@
     </svg>
   </div>
 
+  <h3 id="install">0. Install promptstats</h3>
+  <p>
+    You can install <code>promptstats</code> via pip or uv:
+  </p>
   <pre style="margin-top:1.5rem;"><code class="language-bash">pip install promptstats</code></pre>
-</section>
 
-
-<!-- ── SECTION: CLI ── -->
-<section id="cli">
-  <h2>CLI Quick Reference</h2>
-  <p class="section-lead">
-    The fastest path to results: drop your CSV in, get statistics out.
-    No Python required.
-  </p>
-
-  <h3 id="cli-basic">Basic usage</h3>
-  <pre><code class="language-bash"># Run full analysis — auto-detects data type and structure
-promptstats analyze results.csv
-
-# Brief executive leaderboard only (fastest read)
-promptstats analyze results.csv --brief
-
-# 95% confidence intervals instead of the default 99%
-promptstats analyze results.csv --ci 0.95</code></pre>
-
-  <h3 id="cli-output">Saving output</h3>
-  <pre><code class="language-bash"># Save Markdown summary + advantage plot
-promptstats analyze results.csv --out report.md plot.png
-
-# Save full structured results as JSON (for programmatic use)
-promptstats analyze results.csv --out analysis.json
-
-# Brief terminal + full Markdown saved to disk
-promptstats analyze results.csv --brief --out report.md</code></pre>
-
-  <h3 id="cli-excel">Excel files</h3>
-  <pre><code class="language-bash"># First sheet (default)
-promptstats analyze results.xlsx
-
-# Named sheet
-promptstats analyze results.xlsx --sheet "Eval Results"
-
-# Sheet by 0-based index
-promptstats analyze results.xlsx --sheet 2</code></pre>
-
-  <h3 id="cli-methods">Choosing a method</h3>
-  <pre><code class="language-bash"># Default: auto-detect (smooth bootstrap for numeric, Wilson for binary)
-promptstats analyze results.csv
-
-# Force mixed-effects model (LMM) — accounts for input-level random effects
-promptstats analyze results.csv --method lmm
-
-# More bootstrap resamples for higher precision (default: 10000)
-promptstats analyze results.csv --n-bootstrap 20000</code></pre>
-
-  <h3 id="cli-advanced">Reference baseline &amp; advanced flags</h3>
-  <pre><code class="language-bash"># Compare all prompts against a specific baseline instead of the grand mean
-promptstats analyze results.csv --reference "zero-shot"
-
-# Flag inputs scoring below a threshold in the robustness table
-promptstats analyze results.csv --failure-threshold 0.5
-
-# Show top 10 pairwise comparisons (default: 5)
-promptstats analyze results.csv --top-pairwise 10
-
-# Run the Friedman omnibus test before pairwise comparisons
-promptstats analyze results.csv --omnibus
-
-# Full option list
-promptstats analyze --help</code></pre>
-</section>
-
-
-<!-- ── SECTION: CSV FORMAT ── -->
-<section id="csv-format">
-  <h2>Input Format</h2>
+  <h3 id="your-csv">1. Prepare your CSV</h3>
   <p>
-    <code>promptstats</code> accepts two CSV/Excel layouts:
-    <strong>wide</strong> (one column per prompt template) and
-    <strong>long/tidy</strong> (one row per observation). Long format is
-    more flexible and recommended for multi-model or multi-run data.
+    <code>promptstats</code> expects a <strong>long-format</strong> (tidy) CSV: one row per
+    observation. At minimum you need <code>prompt</code>, <code>input</code>, and
+    <code>score</code> columns. The <code>input</code> column identifies which test case each
+    row belongs to — this lets <code>promptstats</code> use paired statistics that account
+    for per-input difficulty differences.
+  </p>
+  <p>
+    If you evaluated each prompt multiple times per input (e.g. at different random seeds),
+    add a <code>run</code> column. With 3 or more runs per cell, <code>promptstats</code>
+    automatically switches to a <em>nested bootstrap</em> that accounts for seed-level variance
+    on top of input-level variance, giving you more honest uncertainty estimates.
   </p>
 
-  <h3 id="wide-format">Wide format</h3>
-  <p>
-    Rows are inputs; columns are prompt templates (or models). Fastest
-    to create from a spreadsheet view.
-  </p>
-  <div style="overflow-x:auto; margin:1rem 0;">
+  <div style="overflow-x:auto; margin:1rem 0 1.5rem;">
     <table style="border-collapse:collapse; font-size:0.88rem; width:100%; font-family:'IBM Plex Mono',monospace;">
       <thead>
         <tr style="background:var(--surface-2,#f5f5f5);">
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">input</th>
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">zero-shot</th>
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">few-shot</th>
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">chain-of-thought</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.72</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.85</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.91</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_002</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.60</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.78</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.83</td></tr>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_003</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.88</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.90</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.87</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <h3 id="long-format">Long / tidy format</h3>
-  <p>
-    One row per observation. Required for multi-model data. The
-    <code>input</code> column links paired observations across
-    prompts/models so that paired statistical tests can account for
-    per-input difficulty differences.
-  </p>
-  <div style="overflow-x:auto; margin:1rem 0;">
-    <table style="border-collapse:collapse; font-size:0.88rem; width:100%; font-family:'IBM Plex Mono',monospace;">
-      <thead>
-        <tr style="background:var(--surface-2,#f5f5f5);">
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">model</th>
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">prompt</th>
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">input</th>
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">score</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.85</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.61</td></tr>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gemma-3-4b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.77</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gemma-3-4b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.60</td></tr>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td></tr>
-      </tbody>
-    </table>
-  </div>
-
-  <div class="callout callout-info">
-    <div class="callout-label">Column name aliases</div>
-    <p>
-      Column names are matched case-insensitively and a range of aliases are accepted:
-      <code>prompt</code> / <code>template</code> / <code>prompt_template</code> &mdash;
-      <code>input</code> / <code>example</code> / <code>item</code> / <code>id</code> &mdash;
-      <code>score</code> / <code>value</code> / <code>result</code> / <code>metric</code> &mdash;
-      <code>model</code> / <code>model_name</code> / <code>model_label</code>.
-      For repeated runs, add a <code>run</code> (or <code>seed</code> / <code>trial</code>) column.
-    </p>
-  </div>
-
-  <h3 id="multi-run-format">Multi-run format</h3>
-  <p>
-    When the same input is evaluated under the same prompt/model multiple times
-    (e.g., at different seeds), add a <code>run</code> column. With ≥ 3 runs per cell,
-    <code>promptstats</code> switches to a nested bootstrap that accounts for
-    seed-level variance on top of input-level variance — giving you more honest
-    uncertainty estimates.
-  </p>
-  <div style="overflow-x:auto; margin:1rem 0;">
-    <table style="border-collapse:collapse; font-size:0.88rem; width:100%; font-family:'IBM Plex Mono',monospace;">
-      <thead>
-        <tr style="background:var(--surface-2,#f5f5f5);">
-          <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">model</th>
           <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">prompt</th>
           <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">input</th>
           <th style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); text-align:left;">run</th>
@@ -226,39 +98,139 @@ promptstats analyze --help</code></pre>
         </tr>
       </thead>
       <tbody>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.85</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.82</td></tr>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">gpt-4o-mini</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">5-shot</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.88</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_a</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.68</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_a</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.71</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_a</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.74</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.82</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.79</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_b</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.85</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_c</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.89</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_c</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">1</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.93</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">prompt_c</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">q_001</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">2</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.91</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">…</td></tr>
       </tbody>
     </table>
   </div>
+
+  <div class="callout callout-info">
+    <div class="callout-label">Column name aliases</div>
+    <p>
+      Column names are matched case-insensitively. Accepted aliases:
+      <code>prompt</code> / <code>template</code> / <code>prompt_template</code> &mdash;
+      <code>input</code> / <code>example</code> / <code>item</code> / <code>id</code> &mdash;
+      <code>score</code> / <code>value</code> / <code>result</code> / <code>metric</code> &mdash;
+      <code>run</code> / <code>seed</code> / <code>trial</code>.
+      Add a <code>model</code> column for multi-model data.
+    </p>
+  </div>
+
+  <h3 id="run-analysis" style="margin-top:2rem;">2. Run the analysis</h3>
+  <p>
+    Point <code>promptstats analyze</code> at your file. It auto-detects the data type
+    (binary, continuous, Likert, etc.), recognizes the multi-run structure, and picks an
+    appropriate CI method automatically.
+  </p>
+  <pre><code class="language-bash">promptstats analyze results.csv</code></pre>
+
+  <h3 id="example-output" style="margin-top:2rem;">3. Read the output</h3>
+  <p>
+    The terminal report has three sections. Here's what you'd see for the
+    CSV above (20 inputs × 3 prompts × 3 runs, continuous scores):
+  </p>
+
+  <div class="ps-output"><pre>====================
+ PROMPTS COMPARISON
+====================
+3 prompts | 20 inputs | method=smooth_bootstrap | 99% confidence intervals (CI)
+
+--- Mean Performance (marginal bootstrap CIs) ---
+  axis: [0.561, 1.009]  (· ±1σ, ─ CI, ● mean, │ grand mean)
+  Prompt                   Interval Plot                                 Mean    CI Low   CI High
+  prompt_a                   ···──────●─────···│                       0.680    0.616    0.744
+  prompt_b                          ····──────●│─────····              0.776    0.707    0.846
+  prompt_c                                     │  ···─────●────···     0.906    0.852    0.957
+
+--- Pairwise Comparisons (nested smooth bootstrap (n=10000, R=3) (simultaneous CIs computed with max-T)) ---
+  legend: (· ±1σ, ─ CI, ● mean, │ zero)    axis: [-0.351, +0.351]    effect: Left - Right
+  Left         Right        Interval Plot                                 Mean    CI Low   CI High       ES
+  prompt_c     prompt_b                        ·│──────●──────···      +0.1297   +0.0235   +0.2359    0.790
+  prompt_c     prompt_a                         │     ··─────●─────··  +0.2261   +0.1345   +0.3177    0.990
+  prompt_b     prompt_a                     ··──│────●────────··       +0.0965   -0.0265   +0.2195    0.600
+  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5)
+
+  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 99% CI, max_t-adjusted:
+    #2–#3: [prompt_b ─ prompt_a]
+
+  -> Evidence suggests a clear best option: 'prompt_c'
+
+--- Executive Summary (Prompt leaderboard) ---
+  Prompt            Grp     Mean  CI               Stability         Verdict
+  ──────────────────────────────────────────────────────────────────────────
+  prompt_c           #1    0.906  [0.852, 0.957]   Stable            Likely best
+  prompt_b           #2    0.776  [0.707, 0.846]   Stable            Significant drop-off
+  prompt_a           #2    0.680  [0.616, 0.744]   Stable            Significant drop-off
+  ──────────────────────────────────────────────────────────────────────────</pre></div>
+
+  <p>
+    Start at the <strong>Executive Summary</strong> at the bottom. Entities in the same rank
+    group (<strong>#1</strong>, <strong>#2</strong>, …) are statistically indistinguishable
+    after multiple-comparisons correction — even if one has a higher mean. Here,
+    <code>prompt_c</code> is the clear best (<strong>#1</strong>), while
+    <code>prompt_b</code> and <code>prompt_a</code> both land in <strong>#2</strong>,
+    meaning the gap between them is not yet statistically significant.
+  </p>
+  <p>
+    The <strong>Pairwise Comparisons</strong> section shows a visual CI plot and effect-size
+    (ES) for each pair. When the CI interval plot spans the zero line (<code>│</code>), the
+    difference is not significant. The <strong>Statistically indistinguishable rank
+    bands</strong> line summarises which adjacent groups cannot be distinguished.
+  </p>
+
+  <h3 id="saving-output" style="margin-top:2rem;">Saving output</h3>
+  <pre><code class="language-bash"># Save a Markdown report and advantage plot
+promptstats analyze results.csv --out report.md plot.png
+
+# Save structured JSON for programmatic use
+promptstats analyze results.csv --out analysis.json
+
+# Print just the executive leaderboard (fastest read)
+promptstats analyze results.csv --brief</code></pre>
+
+  <p style="margin-top:1rem;">
+    See <code>promptstats analyze --help</code> for the full option list.
+  </p>
 </section>
 
 
 <!-- ── SECTION: PYTHON API ── -->
 <section id="python-api">
-  <h2>Python API Quick Reference</h2>
+  <h2>Python API</h2>
   <p>
-    All functions return structured result objects with a <code>.summary()</code>
-    method that prints the full terminal report.
+    All functions accept NumPy arrays or plain Python lists and return a result object
+    with a <code>.summary()</code> method that prints the same terminal report as the CLI.
   </p>
 
-  <h3 id="api-compare-prompts">Comparing prompt templates</h3>
+  <h3 id="api-compare-prompts">Comparing prompts</h3>
+  <p>
+    Pass a dict mapping prompt name → per-input score array.
+    Each array must be the same length and correspond to the same inputs (paired data).
+  </p>
   <pre><code class="language-python">import numpy as np
 import promptstats as pstats
 
 scores = {
-    "zero-shot":        np.array([0.72, 0.60, 0.88, 0.75, ...]),
-    "few-shot":         np.array([0.85, 0.78, 0.90, 0.82, ...]),
-    "chain-of-thought": np.array([0.91, 0.83, 0.87, 0.95, ...]),
+    "prompt_a": np.array([0.72, 0.60, 0.88, 0.75, ...]),
+    "prompt_b": np.array([0.85, 0.78, 0.90, 0.82, ...]),
+    "prompt_c": np.array([0.91, 0.83, 0.87, 0.95, ...]),
 }
 
 result = pstats.compare_prompts(scores)
-result.summary()          # full terminal report
-result.quick_summary()    # one-line verdict per template</code></pre>
+result.summary()        # full terminal report</code></pre>
 
   <h3 id="api-compare-models">Comparing models</h3>
+  <p>
+    Same interface as <code>compare_prompts</code>, keyed by model name instead.
+  </p>
   <pre><code class="language-python">scores = {
     "gpt-4o-mini":   np.array([0.82, 0.91, 0.78, ...]),
     "gemma-3-4b-it": np.array([0.75, 0.84, 0.71, ...]),
@@ -268,9 +240,13 @@ result.quick_summary()    # one-line verdict per template</code></pre>
 result = pstats.compare_models(scores)
 result.summary()</code></pre>
 
-  <h3 id="api-models-prompts">Models &times; prompts grid</h3>
-  <pre><code class="language-python"># Nested dict: outer = models, inner = prompt templates
-scores = {
+  <h3 id="api-models-prompts">Comparing models &times; prompts</h3>
+  <p>
+    Pass a nested dict — outer keys are models, inner keys are prompt templates.
+    <code>promptstats</code> reports statistics for every model–prompt combination,
+    letting you see whether a prompt improvement generalizes across models.
+  </p>
+  <pre><code class="language-python">scores = {
     "gpt-4o-mini": {
         "5-shot": np.array([0.79, 0.85, 0.83, ...]),
         "0-shot": np.array([0.61, 0.73, 0.69, ...]),
@@ -282,12 +258,123 @@ scores = {
 }
 
 result = pstats.compare_models(scores)
+result.full_summary()</code></pre>
+
+  <div class="ps-output"><pre>================================================
+ CROSS-MODEL RANKING (ALL MODEL/TEMPLATE PAIRS)
+================================================
+                  5-shot    0-shot
+  ─────────────────────────────────
+    gpt-4o-mini  0.814 █*  0.656 ·
+  gemma-3-4b-it  0.704 ▒   0.624 ·
+  ─────────────────────────────────
+  * = best pair by mean  |  heat: · (low) → █ (high), range [0.624, 0.814]
+
+--- Rank Probabilities: All 4 by P(Best) (smooth bootstrap, n=10000, ranked by mean) ---
+  Model           Template   P(Best)                  E[Rank]
+  gpt-4o-mini     5-shot     100.0% ██████████████     1.00 █▆▃───────────
+  gpt-4o-mini     0-shot       0.0% ░░░░░░░░░░░░░░     3.07 ───────▃▆█▆▃──
+  gemma-3-4b-it   5-shot       0.0% ░░░░░░░░░░░░░░     2.04 ──▃▆█▆▃───────
+  gemma-3-4b-it   0-shot       0.0% ░░░░░░░░░░░░░░     3.89 ───────────▃▆█
+
+--- Mean Performance: All 4 (marginal CIs) ---
+  axis: [0.517, 0.921]  (· ±1σ, ─ CI, ● mean, │ grand mean)
+  Model           Template Interval Plot                                 Mean    CI Low   CI High
+  gpt-4o-mini     5-shot                     │  ····────●─────····     0.814    0.770    0.860
+  gpt-4o-mini     0-shot       ·····─────●───│─·····                   0.656    0.604    0.711
+  gemma-3-4b-it   5-shot              ···────│●────···                 0.704    0.663    0.744
+  gemma-3-4b-it   0-shot     ····─────●────··│·                        0.624    0.579    0.670
+
+--- Executive Summary (Cross-model pair leaderboard) ---
+  Model            Template      Grp     Mean  CI               Verdict
+  ─────────────────────────────────────────────────────────────────────
+  gpt-4o-mini      5-shot         #1    0.814  [0.770, 0.860]   Likely best
+  gemma-3-4b-it    5-shot         #2    0.704  [0.663, 0.744]   Significant drop-off
+  gpt-4o-mini      0-shot         #2    0.656  [0.604, 0.711]   Significant drop-off
+  gemma-3-4b-it    0-shot         #3    0.624  [0.579, 0.670]   Significant drop-off
+  ─────────────────────────────────────────────────────────────────────</pre></div>
+
+  <p>
+    In the crossed leaderboard, <code>gpt-4o-mini / 5-shot</code> ranks first.
+    The <code>5-shot</code> setting is stronger for both models, and the
+    <code>gemma-3-4b-it / 5-shot</code> and <code>gpt-4o-mini / 0-shot</code>
+    rows landing in the same group (<strong>#2</strong>) indicate those two
+    middle conditions are not cleanly separated at this confidence level.
+  </p>
+
+  <h3 id="api-pvalues" style="margin-top:2rem;">Looking for p-values?</h3>
+  <p>
+    Pass <code>p_values=True</code> to print corrected p-values in the pairwise table.
+    You can optionally set <code>pairwise_test="wilcoxon"</code> to force Wilcoxon
+    signed-rank p-values (instead of auto-selection). With <code>omnibus=True</code>,
+    promptstats also prepends a <strong>Friedman omnibus test</strong> line before the
+    pairwise rows.
+  </p>
+  <pre><code class="language-python">scores = {
+    "gpt-4o-mini":   np.array([0.82, 0.91, 0.78, 0.86, 0.74, ...]),
+    "gemma-3-4b-it": np.array([0.75, 0.84, 0.71, 0.79, 0.68, ...]),
+    "qwen3-8b":      np.array([0.88, 0.93, 0.85, 0.91, 0.83, ...]),
+}
+
+result = pstats.compare_models(
+    scores,
+    omnibus=True,
+    p_values=True,
+    pairwise_test="wilcoxon",
+)
 result.summary()</code></pre>
 
-  <h3 id="api-analyze-csv">Analyze from a CSV / Excel file</h3>
+  <div class="ps-output"><pre>===================
+ MODELS COMPARISON
+===================
+3 models | 40 inputs | method=smooth_bootstrap | 99% confidence intervals (CI)
+
+--- Mean Performance (marginal bootstrap CIs) ---
+  axis: [0.683, 0.937]  (· ±1σ, ─ CI, ● mean, │ grand mean)
+  Model                    Interval Plot                                 Mean    CI Low   CI High
+  gpt-4o-mini                          ······───│─●────······          0.827    0.798    0.857
+  gemma-3-4b-it              ·····────●────·····│                      0.753    0.726    0.778
+  qwen3-8b                                    ··│··────●─────·····     0.863    0.836    0.891
+
+--- Pairwise Comparisons (smooth bootstrap (n=10000) (fdr_bh-corrected p-values) (simultaneous CIs computed with max-T)) ---
+  Friedman omnibus: χ²(2) = 28.950, p = 5.171e-07***
+  legend: (· ±1σ, ─ CI, ● mean, │ zero)    axis: [-0.193, +0.193]    effect: Left - Right
+  Left            Right           Interval Plot                                 Mean    CI Low   CI High       ES    p (wsr)
+  qwen3-8b        gpt-4o-mini                    ····─│───●────·····         +0.0361   -0.0082   +0.0804    0.429    0.01716
+  qwen3-8b        gemma-3-4b-it                       │  ····────●─────····  +0.1101   +0.0681   +0.1521    0.944 3.492e-09***
+  gpt-4o-mini     gemma-3-4b-it                     ··│··─────●─────·····    +0.0740   +0.0249   +0.1231    0.702 6.606e-05***
+  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5)
+  p (wsr) = Wilcoxon signed-rank (fdr_bh-corrected)
+  stars: * p<0.01, ** p<0.001, *** p<0.0001
+
+  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 99% CI, max_t-adjusted:
+    #1–#2: [qwen3-8b ─ gpt-4o-mini]
+
+--- Executive Summary (Model leaderboard) ---
+  Model             Grp     Mean  CI               Verdict
+  ────────────────────────────────────────────────────────
+  qwen3-8b           #1    0.863  [0.836, 0.891]   Tied with gpt-4o-mini as best
+  gpt-4o-mini        #1    0.827  [0.798, 0.857]   Tied with qwen3-8b as best
+  gemma-3-4b-it      #2    0.753  [0.726, 0.778]   Significant drop-off
+  ────────────────────────────────────────────────────────</pre></div>
+
+  <p>
+    The Friedman omnibus test (χ²(2) = 28.95, p &lt; 0.001) confirms there is overall
+    variation across models. In the pairwise comparisons, <code>qwen3-8b</code> vs
+    <code>gpt-4o-mini</code> has a CI that crosses zero ([-0.008, +0.080] — not
+    significant), so both land in rank group <strong>#1</strong>. The new
+    <code>p (wsr)</code> column reports corrected Wilcoxon p-values for each pair.
+    Only the gaps to <code>gemma-3-4b-it</code> are conclusive.
+  </p>
+
+  <h3 id="api-analyze-csv" style="margin-top:2rem;">Loading from a CSV or Excel file</h3>
+  <p>
+    <code>pstats.analyze()</code> mirrors the CLI — pass a file path and it handles
+    format detection automatically. Useful when you want to run the analysis from a
+    script or notebook.
+  </p>
   <pre><code class="language-python">import promptstats as pstats
 
-# Mirrors the CLI — auto-detects format and data type
 result = pstats.analyze("results.csv")
 result.summary()
 
@@ -296,19 +383,20 @@ result = pstats.analyze(
     "results.xlsx",
     sheet="Eval Results",
     ci=0.95,
-    method="lmm",        # mixed-effects model
+    method="lmm",       # mixed-effects model
     n_bootstrap=20000,
 )
 result.summary()</code></pre>
+</section>
 
-  <h3 id="api-brief">Brief executive summary</h3>
-  <pre><code class="language-python">import promptstats as pstats
 
-# After any analysis, print only the leaderboard
-result = pstats.analyze("results.csv")
-pstats.print_brief_summary(result)   # entity · group · mean · CI · verdict</code></pre>
-
-  <h3 id="api-options">Common options (all functions)</h3>
+<!-- ── SECTION: COMMON OPTIONS ── -->
+<section id="options">
+  <h2>Common Options</h2>
+  <p>
+    These parameters are accepted by all API functions (<code>compare_prompts</code>,
+    <code>compare_models</code>, <code>analyze</code>) and their CLI equivalents.
+  </p>
   <div style="overflow-x:auto; margin:1rem 0;">
     <table style="border-collapse:collapse; font-size:0.87rem; width:100%;">
       <thead>
@@ -322,74 +410,22 @@ pstats.print_brief_summary(result)   # entity · group · mean · CI · verdict<
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.99</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Confidence level. Use 0.95 for the traditional default.</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">method</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Auto-selects based on data type. Options: <code>"lmm"</code>, <code>"wilson"</code>, <code>"newcombe"</code>, <code>"bootstrap"</code>, <code>"smooth_bootstrap"</code>, <code>"bca"</code>, <code>"bayes_bootstrap"</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">n_bootstrap</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">10000</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Bootstrap resamples. Increase for smoother CI estimates.</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">correction</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"fdr_bh"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Multiple-comparison correction. Options: <code>"holm"</code>, <code>"bonferroni"</code>, <code>"fdr_bh"</code>, <code>"none"</code>.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">correction</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"holm"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Multiple-comparison correction. Options: <code>"holm"</code>, <code>"bonferroni"</code>, <code>"fdr_bh"</code>, <code>"none"</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">simultaneous_ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">True</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Family-wise CI correction (max-T). Set to False for marginal CIs.</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">statistic</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"mean"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Central tendency. Also supports <code>"median"</code>.</td></tr>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">reference</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"grand_mean"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Advantage plot reference. Pass a template label to compare against a specific baseline.</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">omnibus</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Run Friedman omnibus test before pairwise comparisons (k ≥ 3).</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">reference</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"grand_mean"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Comparison baseline for the advantage plot. Pass a template label to compare against a specific prompt or model.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">omnibus</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Run a Friedman omnibus test before pairwise comparisons (k ≥ 3).</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">p_values</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Show pairwise p-values in the report. CLI: <code>--p-values</code>.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">pairwise_test</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Pairwise p-value test. Options: <code>"auto"</code>, <code>"bootstrap"</code>, <code>"wilcoxon"</code>, <code>"nemenyi"</code>. CLI: <code>--pairwise-test TEST</code> (setting this explicitly also enables p-values).</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">failure_threshold</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">None</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Flag inputs scoring below this value in the robustness table.</td></tr>
       </tbody>
     </table>
   </div>
-</section>
 
-
-<!-- ── SECTION: READING OUTPUT ── -->
-<section id="reading-output">
-  <h2>Reading the Output</h2>
-  <p>
-    The terminal report has four main sections, printed in order:
-  </p>
-
-  <div class="method-grid" style="grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); margin-top:1rem;">
-    <div class="method-card">
-      <div class="method-card-name">Mean Performance</div>
-      <div class="method-card-desc">
-        ASCII forest plot showing each entity's mean score with
-        marginal bootstrap confidence interval. The <code>│</code> marker
-        shows the grand mean. Wider bars = more uncertainty.
-      </div>
-    </div>
-    <div class="method-card">
-      <div class="method-card-name">Pairwise Comparisons</div>
-      <div class="method-card-desc">
-        Table of all entity pairs, sorted by CI distance from zero.
-        Includes the difference CI and a significance verdict after
-        multiple-comparisons correction.
-      </div>
-    </div>
-    <div class="method-card">
-      <div class="method-card-name">Rank Probabilities</div>
-      <div class="method-card-desc">
-        Bootstrap-estimated probability that each entity holds each
-        rank position (1 = best). Wide distributions across ranks
-        signal ties or insufficient data.
-      </div>
-    </div>
-    <div class="method-card highlight">
-      <div class="method-card-name">Executive Summary ★</div>
-      <div class="method-card-desc">
-        The bottom leaderboard: entities grouped by statistical
-        significance (same letter = no clear difference). Also the
-        only section printed by <code>--brief</code>.
-      </div>
-    </div>
-  </div>
-
-  <div class="callout callout-info" style="margin-top:1.5rem;">
-    <div class="callout-label">Significance groups</div>
-    <p>
-      Entities sharing the same letter label (<strong>A</strong>, <strong>B</strong>, <strong>AB</strong>, …)
-      are <em>not</em> statistically distinguishable after multiple-comparisons correction.
-      If two entities both show label <strong>A</strong>, the data can't rule out that they
-      perform the same — even if one has a higher mean score.
-    </p>
-  </div>
-
-  <p class="aside" style="margin-top:1.5rem;">
+  <p style="margin-top:1rem;">
     Full runnable examples are in the
     <a href="https://github.com/ianarawjo/promptstats/tree/main/examples" target="_blank" rel="noopener">
     <code>examples/</code> folder on GitHub</a>.
-    Investigations with worked Jupyter notebooks are linked in the sidebar.
   </p>
 </section>
 
@@ -399,6 +435,24 @@ pstats.print_brief_summary(result)   # entity · group · mean · CI · verdict<
 <style>
   .article-body pre code.hljs { background: transparent; padding: 0; }
   .workflow-diagram { margin: 1.5rem 0 0.5rem; }
+
+  /* ── Notebook-style stdout output blocks ── */
+  .ps-output {
+    background: var(--bg-soft);
+    border-radius: var(--radius);
+    padding: 0.55rem 1.1rem;
+    margin: 0.5rem 0 1.25rem;
+    overflow-x: auto;
+  }
+  .ps-output pre {
+    font-family: var(--font-mono);
+    font-size: 0.84rem;
+    line-height: 1.6;
+    color: var(--text-mid);
+    margin: 0;
+    padding: 0.25rem 0;
+    white-space: pre;
+    background: transparent;
+  }
 </style>
 <script>hljs.highlightAll();</script>
-

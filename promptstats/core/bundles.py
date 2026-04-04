@@ -101,6 +101,7 @@ class AnalysisBundle:
     factorial_lmm_info: Optional["FactorialLMMInfo"] = None
     resolved_method: Optional[str] = None
     resolved_ci_method: Optional[str] = None
+    p_value_method: Optional[str] = None
 
 
 @dataclass

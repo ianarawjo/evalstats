@@ -27,6 +27,8 @@ from typing import Union
 import numpy as np
 import pandas as pd
 
+from promptstats.config import set_alpha_ci
+
 
 # ---------------------------------------------------------------------------
 # Entry point
@@ -271,6 +273,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Run an omnibus test in addition to pairwise comparisons.",
     )
     analyze.add_argument(
+        "--p-values",
+        action="store_true",
+        default=False,
+        help=(
+            "Show p-values in pairwise comparison tables. The test used is "
+            "determined by --pairwise-test (default: auto). When --omnibus is "
+            "also set, 'auto' selects Wilcoxon signed-rank as the Friedman "
+            "post-hoc; otherwise bootstrap p-values are shown for bootstrap "
+            "methods and Wilcoxon for LMM/other methods."
+        ),
+    )
+    analyze.add_argument(
+        "--pairwise-test",
+        choices=["auto", "bootstrap", "wilcoxon", "nemenyi"],
+        default="auto",
+        metavar="TEST",
+        help=(
+            "Pairwise p-value test to use when --p-values is enabled (or when "
+            "this flag is set explicitly, which also enables p-values). "
+            "Choices: 'auto' (default), 'bootstrap', 'wilcoxon', 'nemenyi'."
+        ),
+    )
+    analyze.add_argument(
         "--top-pairwise",
         type=int,
         default=5,
@@ -305,6 +330,10 @@ def _build_parser() -> argparse.ArgumentParser:
 # ---------------------------------------------------------------------------
 
 def _cmd_analyze(args: argparse.Namespace) -> None:
+    ci = getattr(args, "ci", None)
+    if ci is not None:
+        set_alpha_ci(1.0 - ci)
+
     path = args.file.expanduser().resolve()
     if not path.exists():
         _die(f"file not found: {path}")
@@ -384,7 +413,6 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
     print("Running analysis ...", flush=True)
     try:
-        ci = getattr(args, "ci", None)
         analysis = analyze(
             result,
             evaluator_mode=evaluator_mode,
@@ -400,6 +428,8 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
             template_model_collapse=getattr(args, "template_model_collapse", "as_runs"),
             simultaneous_ci=getattr(args, "simultaneous_ci", True),
             omnibus=getattr(args, "omnibus", False),
+            p_values=getattr(args, "p_values", False),
+            pairwise_test=getattr(args, "pairwise_test", "auto"),
         )
     except (ValueError, NotImplementedError) as exc:
         _die(str(exc))

@@ -26,6 +26,8 @@ from .core.paired import PairwiseMatrix, PairedDiffResult
 
 from .config import get_alpha_ci
 
+_UNSET = object()
+
 
 # ---------------------------------------------------------------------------
 # Shared stats/report dataclasses
@@ -92,6 +94,7 @@ class CompareReport:
     entity_name_singular: str = "prompt"
     entity_name_plural: str = "prompts"
     simultaneous_ci: bool = True
+    p_value_method: Optional[str] = None
 
     @property
     def means(self) -> dict[str, float]:
@@ -249,7 +252,7 @@ class CompareReport:
     def summary(
         self,
         *,
-        p_value_method: Optional[str] = None,
+        p_value_method=_UNSET,
         pairwise_sort: Literal["grouped", "significance"] = "grouped",
     ) -> None:
         """Print a focused summary scoped to the entity comparison level.
@@ -260,19 +263,23 @@ class CompareReport:
         Parameters
         ----------
         p_value_method : str or None
-            Which p-value to show in pairwise comparisons.  ``'auto'``
-            (default) picks the method commensurate with the CI: bootstrap
-            p-value for bootstrap CI paths, Wilcoxon signed-rank for others.
-            Options: ``'boot'``, ``'wsr'``, ``'nem'``, or ``None`` to
-            suppress p-values entirely.
+            Which p-value to show in pairwise comparisons.  When omitted,
+            uses the value stored on the report (set via ``p_values`` /
+            ``pairwise_test`` at analysis time; ``None`` by default, which
+            suppresses p-values).  Pass ``'auto'`` to let the display layer
+            pick the method commensurate with the CI, or set explicitly:
+            ``'boot'``, ``'wsr'``, ``'nem'``, or ``None`` to suppress.
         pairwise_sort : {"grouped", "significance"}
             Row order for the pairwise table. ``"grouped"`` groups rows by
             left item for readability, while ``"significance"`` sorts by
             p-value first.
         """
+        effective_p_value_method = (
+            self.p_value_method if p_value_method is _UNSET else p_value_method
+        )
         print_compare_summary(
             self,
-            p_value_method=p_value_method,
+            p_value_method=effective_p_value_method,
             pairwise_sort=pairwise_sort,
         )
 
@@ -501,6 +508,8 @@ def compare_prompts(
     rng: Optional[np.random.Generator] = None,
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_values: bool = False,
+    pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
 ) -> CompareReport:
     """Compare prompt templates with bootstrapped statistical tests.
 
@@ -653,6 +662,8 @@ def compare_prompts(
         rng=rng,
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
+        p_values=p_values,
+        pairwise_test=pairwise_test,
     )
 
     rob = full_analysis.robustness  # RobustnessResult indexed parallel to labels
@@ -682,6 +693,7 @@ def compare_prompts(
         entity_name_singular="prompt",
         entity_name_plural="prompts",
         simultaneous_ci=full_analysis.pairwise.simultaneous_ci,
+        p_value_method=full_analysis.p_value_method,
     )
 
 
@@ -698,6 +710,8 @@ def compare_models(
     rng: Optional[np.random.Generator] = None,
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    p_values: bool = False,
+    pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
 ) -> CompareReport:
     """Compare models while accounting for prompt-template sensitivity.
 
@@ -850,6 +864,8 @@ def compare_models(
         template_model_collapse=resolved_template_model_collapse,
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
+        p_values=p_values,
+        pairwise_test=pairwise_test,
     )
     if not isinstance(full_analysis, MultiModelBundle):
         raise RuntimeError("Expected multi-model analysis bundle from analyze().")
@@ -882,4 +898,5 @@ def compare_models(
         entity_name_singular="model",
         entity_name_plural="models",
         simultaneous_ci=model_analysis.pairwise.simultaneous_ci,
+        p_value_method=model_analysis.p_value_method,
     )

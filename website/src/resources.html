@@ -1,9 +1,9 @@
-
-
     <!-- ── SECTION: THE LLM EVAL STATISTICS DEBATE ── -->
     <section class="paper-section">
       <h2>LLM Eval Statistics and Debates</h2>
-      <p>Papers that have directly shaped how the field thinks about statistical rigor in LLM evaluation.</p>
+      <p>Papers that have directly shaped how the field thinks about statistical rigor in LLM evaluation. There's 
+        also some <a href="#commentary">commentary</a> on select papers, below the list of resources.
+      </p>
 
       <div class="paper-list">
 
@@ -972,6 +972,128 @@
           </div>
         </div>
 
+      </div>
+    </section>
+
+        <!-- ── SECTION: Commentary on select papers ── -->
+    <section id="commentary">
+      <h2>Commentary on select papers</h2>
+
+            <h3>The "Evals Need Error Bars" Paper</h3>
+      <p>
+        In 2024, Evan Miller at Anthropic made an early, important case for error bars in evaluations.
+        The argument centered on standard errors: combine standard deviation with sample size, report
+        alongside the mean. 
+      </p>
+      <p>
+        This is reasonable, but limited for the evals landscape of today. The framework assumes thousands or hundreds of thousands of datapoints — as Anthropic's public
+        benchmarks have. That is not the world of most developers. A typical custom developer eval
+        has 20–100 items, not 10,000. At that scale:
+      </p>
+      <ul>
+        <li>Standard errors assume normal distributions of LLM outputs, which rarely hold.</li>
+        <li>They assume symmetry around the mean — also rarely true for bounded scores at high performance.</li>
+        <li>They collapse with hierarchical data (e.g., same inputs evaluated across multiple prompts and models).</li>
+      </ul>
+      <p>
+        What we want instead is confidence intervals on pairwise differences, with no strong distributional
+        assumptions. To trust these intervals, we need to use methods that are robust at small N. To understand
+        which methods are robust, we would ideally run simulations that reflect the kinds of data we see in real evals.
+      </p>
+
+      <h3>The Forgotten Paper on Statistical Comparisons in ML: Dem&scaron;ar (2006)</h3>
+      <p>
+        Before the LLM era, the machine learning community had a well-established answer to the question of how to
+        statistically compare multiple models across multiple evaluation sets. Janez Dem&scaron;ar&rsquo;s 2006
+        <em>Journal of Machine Learning Research</em> paper, <em>Statistical Comparisons of Classifiers over
+        Multiple Data Sets</em>, argued that parametric tests like ANOVA are routinely misapplied to classifier
+        comparisons, violating normality and independence assumptions. He recommended non-parametric alternatives—
+        the Wilcoxon signed-ranks test for two models, the Friedman test plus post-hoc corrections for
+        more than two—and introduced the <strong>critical difference (CD) diagram</strong> as a clean
+        visual for communicating the results.
+      </p>
+      <p>
+        The paper is highly cited in classical ML but has largely been forgotten in the LLM benchmark discourse.
+        That is a shame, because the situation Dem&scaron;ar addressed is precisely the one we face: many models
+        (or prompts), many evaluation sets (or items), non-normal distributions, and a need to make comparative claims that are statistically
+        honest about uncertainty.
+      </p>
+      <div class="callout callout-info">
+        <div class="callout-label">Why it still matters</div>
+        <p>
+          Dem&scaron;ar&rsquo;s core insight is that comparing the rank of methods averaged across datasets is more robust than
+          comparing raw means, and that multiple comparisons require explicit correction. This transfers directly
+          to LLM evals whenever you are comparing N prompts or models across M evaluation sets and asking which
+          is best.
+        </p>
+      </div>
+      <p>
+        That said, the framework needs adaptation for modern eval practice. CD diagrams and rank-band
+        visualizations are built around a narrow, rigid NHST pipeline: run a Friedman test, apply a post-hoc
+        correction (Nemenyi or Holm), then draw cliques of methods that are not significantly different. This
+        works, but it doesn't adapt to the estimation-first approach that we advocate, 
+        which focuses on effect sizes and confidence intervals rather than p-values.
+        If we want to run any other test than Friedman, essentially, we can't use the CD diagram as Dem&scaron;ar&rsquo;s paper defines it. 
+      </p>
+      <p>
+        But CD diagram is just a visualization! There's nothing stopping us from adapting it to other tests and other philosophies. In fact,
+         <code>promptstats</code> adapts the CD diagram to work with pairwise confidence intervals (adjusted for multiple comparisons)
+        and estimated ranks from a bootstrapped distribution. However, it also supports the traditional NHST Friedman test and CD diagrams 
+        generated from that, for users who want to run a more traditional analysis.
+      </p>
+
+      <h3>The "Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred
+        Datapoints" Paper</h3>
+      <p>
+        An ICML position paper titled <em>"Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred
+        Datapoints"</em> argues that for N&lt;300 samples you must use Bayesian statistics, and that
+        frequentist and bootstrap methods are untrustworthy at small N. But is that really true?
+      </p>
+      <!-- <p>
+        The paper runs simulations using the very generative models that it then assumes as the prior
+        distribution. In other words, the Bayesian approach is sold partly because it performs well in
+        simulations designed around a specific generative model — and then the Bayesian method that
+        matches that model performs well. This is circular. In a real evaluation you don't know the
+        true generative process.
+      </p> -->
+      <div class="callout callout-warning">
+        <div class="callout-label">Important methodological caveat</div>
+        <p>
+          The paper evaluates Bayesian methods under simulation assumptions closely aligned with those
+          Bayesian priors. That setup is valid for answering a specific question, but it can favor
+          Bayesian approaches relative to methods optimized for broader or misspecified settings.
+        </p>
+      </div>
+      <p>
+        Despite the broad title, the analysis is focused on Bernoulli (binary) outcomes.
+        It does not cover numeric/interval eval scores (e.g., Likert or 0–100 grades), and it compares
+        against a limited set of frequentist baselines rather than the strongest modern alternatives.
+      </p>
+      <p>
+        This matters because other <a href="https://arxiv.org/html/2404.12967v1" target="_blank">simulation work</a> has reported different rankings under different designs,
+        including settings where certain frequentist intervals achieve higher coverage than Bayesian variants:
+      </p>
+      <div class="pull-quote">
+        "In general, the Bayesian method had the lowest coverage rate... Studentized [bootstrapping] is preferable when the goal is to maximize
+        the coverage rate, while in cases where interval length is more important, the Bayesian method
+        should be favored."
+      </div>
+      <p>
+        In ML terms, this is a precision–recall style trade-off: some methods give tighter intervals,
+        others give higher coverage. Which is preferable depends on risk tolerance, data type,
+        and whether under-coverage or over-conservatism is the bigger error in your application.
+      </p>
+      <div class="callout callout-info">
+        <div class="callout-label">The real takeaway</div>
+        <p>
+          In our own simulations (see below): Wilson is strongest for binary
+          single-sample coverage, Bayesian paired is strongest for binary pairwise coverage at small-to-mid N,
+          and smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
+          However, in our larger-N runs, the <code>bayes_evals</code> Bayesian paired method breaks down around
+          N≈200+, producing overconfident intervals that can be dangerously wrong.
+          That is why <code>promptstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
+          bootstrap for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
+        </p>
       </div>
     </section>
 

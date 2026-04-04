@@ -141,6 +141,19 @@ INVESTIGATIONS = [
         ],
     },
     {
+        "slug": "agent-monitoring",
+        "tier": "Advanced",
+        "title": "Agent monitoring with sequential hypothesis testing",
+        "subtitle": "Turn black-box verifier scores into a statistically guaranteed monitoring signal: detect failing trajectories early while controlling false alarms at a user-chosen error rate (&alpha;).",
+        "intro": "This investigation implements e-valuator as a model-agnostic statistical wrapper for agent monitoring. Rather than treating verifier scores as definitive, we frame trajectory failure detection as a sequential hypothesis test and convert step-wise scores into an e-process. The result is anytime-valid monitoring that can terminate likely-failing trajectories early, while guaranteeing that successful trajectories are flagged at most at your specified error level.",
+        "learns": [
+            ("Stage 1: Calibration and density-ratio estimation", "How to use labeled trajectory data to estimate the successful vs. unsuccessful score-sequence density ratio (for example with logistic regression) and construct the evidence process M_t."),
+            ("Stage 2: Sequential testing with anytime validity", "How to apply Algorithm 1 with Ville&rsquo;s inequality, set the decision threshold c_&alpha; = 1/&alpha;, and interpret M_t over time for successful and failing trajectories."),
+            ("Stage 3: PAC thresholds for higher power", "How to use a held-out calibration split and quantile-based PAC thresholds to build a less conservative decision rule that catches more failures earlier."),
+            ("Measuring early-termination efficiency", "How to quantify compute and token savings from stopping failing trajectories early, while preserving rigorous false-alarm guarantees."),
+        ],
+    },
+    {
         "slug": "irr-human-annotations",
         "nav_label": "Auditing Your LLM Judge",
         "tier": "Advanced",

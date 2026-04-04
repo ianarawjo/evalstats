@@ -215,6 +215,43 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 7}
 
 
+def test_cmd_analyze_sets_global_alpha_from_ci(tmp_path, monkeypatch):
+    csv_path = tmp_path / "data.csv"
+    csv_path.write_text("x,y\n1,2\n", encoding="utf-8")
+    df = pd.DataFrame({"input": ["i1", "i2"], "Prompt A": [1.0, 1.1], "Prompt B": [0.9, 1.0]})
+
+    captured = {"alpha": None}
+
+    args = argparse.Namespace(
+        file=csv_path,
+        format="wide",
+        sheet="0",
+        evaluator_mode="aggregate",
+        ci=0.95,
+        n_bootstrap=100,
+        correction="holm",
+        reference="grand_mean",
+        failure_threshold=None,
+        top_pairwise=5,
+    )
+
+    monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
+    monkeypatch.setattr(
+        "promptstats.io.from_dataframe",
+        lambda input_df, **kwargs: (
+            _make_single_model_result(),
+            type("Report", (), {"format_detected": "wide"})(),
+        ),
+    )
+    monkeypatch.setattr("promptstats.cli.set_alpha_ci", lambda alpha: captured.update(alpha=alpha))
+    monkeypatch.setattr("promptstats.core.router.analyze", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", lambda *a, **k: None)
+
+    cli._cmd_analyze(args)
+
+    assert captured["alpha"] == pytest.approx(0.05)
+
+
 def test_build_parser_accepts_all_option_permutations():
     parser = cli._build_parser()
 
@@ -388,6 +425,8 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         "template_model_collapse": "mean",
         "simultaneous_ci": False,
         "omnibus": True,
+        "p_values": False,
+        "pairwise_test": "auto",
     }
     assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 11}
     assert "Running analysis ..." in out
