@@ -375,9 +375,8 @@ PAGE_CONFIGS = [
         "css":            "inv.css",
         "active_nav":     "resources",
         "eyebrow":        "Reference",
-        "subtitle":       ("A curated survey of the key papers behind the methods and arguments "
-                           "in this guide \u2014 from foundational bootstrap theory to LLM eval "
-                           "methodology and statistical pitfalls."),
+        "subtitle":       ("A curated survey of the papers, articles, and books that influenced this guide, "
+                          "from theory to LLM eval methodology and statistics debates."),
         "active_sidebar": "resources",
         "description": (
             "Curated bibliography of papers on statistical methods for AI and LLM evaluation — "

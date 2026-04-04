@@ -396,6 +396,20 @@ pre code {
   color: #c9d1d9;
 }
 
+/* ─── BASH CODE BLOCKS ───────────────────────────────── */
+pre:has(code.language-bash) {
+  background: #371e00;
+  border-left: 3px solid var(--orange);
+}
+pre:has(code.language-bash) code {
+  color: #ffca1c;
+  font-weight: 600;
+  font-size: 11pt;
+}
+[data-theme="dark"] pre:has(code.language-bash) {
+  background: #120a00;
+}
+
 /* ─── CALLOUT BOXES ───────────────────────────────────── */
 .callout {
   border-radius: var(--radius);

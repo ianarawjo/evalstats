@@ -454,6 +454,18 @@
       color: #c9d1d9;
     }
 
+    /* ─── BASH CODE BLOCKS ───────────────────────────────── */
+    pre:has(code.language-bash) {
+      background: #1a0e00;
+      border-left: 3px solid var(--orange);
+    }
+    pre:has(code.language-bash) code {
+      color: #fbbf24;
+    }
+    [data-theme="dark"] pre:has(code.language-bash) {
+      background: #120a00;
+    }
+
     /* ─── PULL QUOTE ──────────────────────────────────────── */
     .pull-quote {
       border-left: 3px solid var(--orange);
