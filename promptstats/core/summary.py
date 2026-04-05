@@ -125,6 +125,77 @@ def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
 
 
 # ---------------------------------------------------------------------------
+# Behavioral agreement helpers
+# ---------------------------------------------------------------------------
+
+def _agreement_bar(n11: int, n10: int, n01: int, n00: int, width: int = 20) -> str:
+    """Build a proportional block-character bar for pass/fail agreement.
+
+    Segments (left to right):
+      █ (U+2588, FULL BLOCK)  — both pass (n11)
+      ░ (U+2591, LIGHT SHADE) — both fail (n00)
+      ▒ (U+2592, MEDIUM SHADE) — split/disagree (n10 + n01)
+
+    Uses largest-remainder rounding to guarantee exactly ``width`` characters.
+    """
+    N = n11 + n10 + n01 + n00
+    if N == 0:
+        bar = "\u2592" * width
+        return (_BRIGHT_RED + bar + _RESET) if _ANSI else bar
+    n_split = n10 + n01
+    counts = [n11, n00, n_split]
+    exact = [c / N * width for c in counts]
+    floored = [int(f) for f in exact]
+    remainder_order = sorted(range(3), key=lambda i: exact[i] - floored[i], reverse=True)
+    deficit = width - sum(floored)
+    for i in range(deficit):
+        floored[remainder_order[i]] += 1
+    segments = []
+    for ch, w, colored in zip(
+        ["\u2588", "\u2591", "\u2592"],
+        floored,
+        [False, False, True],
+    ):
+        if w == 0:
+            continue
+        text = ch * w
+        if colored and _ANSI:
+            text = _BRIGHT_RED + text + _RESET
+        segments.append(text)
+    return "".join(segments)
+
+
+def _mcc_strength(mcc: float) -> str:
+    """Return a short verbal label for an agreement MCC value."""
+    if mcc >= 0.7:
+        return "very strong"
+    if mcc >= 0.4:
+        return "strong"
+    if mcc >= 0.2:
+        return "moderate"
+    if mcc > -0.2:
+        return "weak"
+    if mcc > -0.5:
+        return "inverse (moderate)"
+    return "inverse (strong)"
+
+
+def _mcc_interpretation(mcc: float) -> str:
+    """Return a plain-language behavioral interpretation of an MCC agreement value."""
+    if mcc >= 0.7:
+        return "Performs nearly the same on the same items"
+    if mcc >= 0.4:
+        return "Performs similarly on the same items"
+    if mcc >= 0.2:
+        return "Disagree on some of the same items"
+    if mcc > -0.2:
+        return "Tends to disagree on same items"
+    if mcc > -0.5:
+        return "Disagrees most of the time on the same items"
+    return "Virtually the opposite behavior"
+
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
@@ -362,6 +433,22 @@ def print_pairwise_summary(
         f"  Effect size (rank-biserial r):  {d:+.3f}   "
         f"p ({p_method_label}) = {sig_color}{p_str}{sig_reset}  ({sig_label})"
     )
+
+    # --- Behavioral agreement (binary data only) ---
+    if pair.agreement_mcc is not None and pair.binary_confusion is not None:
+        mcc = pair.agreement_mcc
+        n11, n10, n01, n00 = pair.binary_confusion
+        N = n11 + n10 + n01 + n00
+        # bar = _agreement_bar(n11, n10, n01, n00, width=20)
+        strength = _mcc_strength(mcc)
+        # pct_pass = f"{100*n11/N:.0f}%" if N else "—"
+        # pct_fail = f"{100*n00/N:.0f}%" if N else "—"
+        # pct_split = f"{100*(n10+n01)/N:.0f}%" if N else "—"
+        interpretation = _mcc_interpretation(mcc)
+        print()
+        print(f"  Behavioral agreement (MCC):  {mcc:+.3f}  — {strength} overlap - {interpretation}")
+        # print(f"  [{bar}]  \u2588 both pass ({pct_pass})  \u2591 both fail ({pct_fail})  \u2592 disagree ({pct_split})")
+
     print()
 
 
@@ -964,6 +1051,8 @@ def _print_pairwise_section(
             left_pos = pos_a
             right_pos = pos_b
 
+        # binary_confusion is symmetric in n11/n00; n10/n01 swap with direction
+        # but for the bar we only need n_split = n10+n01, which is invariant.
         normalized_rows.append(
             {
                 "left": left_item,
@@ -977,6 +1066,8 @@ def _print_pairwise_section(
                 "rank_biserial": rank_biserial,
                 "p_value": result.p_value,
                 "wilcoxon_p": result.wilcoxon_p,
+                "agreement_mcc": result.agreement_mcc,
+                "binary_confusion": result.binary_confusion,
             }
         )
 
@@ -1124,6 +1215,44 @@ def _print_pairwise_section(
             labels_sorted=labels_sorted,
             p_source="bootstrap",
         )
+
+    # --- Behavioral Agreement subsection (binary data only) ---
+    agr_rows = [
+        r for r in normalized_rows[:max_pairs]
+        if r.get("agreement_mcc") is not None and r.get("binary_confusion") is not None
+    ]
+    agr_rows.sort(key=lambda row: float(row["agreement_mcc"]), reverse=True)
+    if agr_rows:
+        bar_width = 20
+        mcc_col_width = 6
+        strength_col_width = 14
+        agr_item_col_width = pair_item_col_width
+
+        _print_subsection("\n--- Pass/Fail Agreement ---")
+        print(f"  Are pairs getting the same items right and wrong?")
+        print(f"  \u2588 both pass  \u2591 both fail  {_BRIGHT_RED}\u2592{_RESET} disagree  "
+              f"(MCC: 1=identical, 0=random, \u22121=opposite)")
+        print()
+
+        agr_header = (
+            f"  {'Left':<{agr_item_col_width}s} {'Right':<{agr_item_col_width}s}"
+            f" {'Plot':<{bar_width+2}s} {'MCC':>{mcc_col_width}s}"
+            f"  {'Agreement':<{strength_col_width}s}  Interpretation"
+        )
+        print(agr_header)
+
+        for row in agr_rows:
+            n11, n10, n01, n00 = row["binary_confusion"]
+            bar = _agreement_bar(n11, n10, n01, n00, width=bar_width)
+            mcc = row["agreement_mcc"]
+            left_label = _truncate_label(str(row["left"]), agr_item_col_width)
+            right_label = _truncate_label(str(row["right"]), agr_item_col_width)
+            print(
+                f"  {left_label:<{agr_item_col_width}s} {right_label:<{agr_item_col_width}s}"
+                f" [{bar}] {mcc:>+{mcc_col_width}.3f}"
+                f"  {_mcc_strength(mcc):<{strength_col_width}s}  {_mcc_interpretation(mcc)}"
+            )
+        print()
 
 
 def _print_mean_advantage(

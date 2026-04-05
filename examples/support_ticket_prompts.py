@@ -26,6 +26,10 @@ Requirements:
 Usage:
     python examples/support_ticket_prompts.py
     python examples/support_ticket_prompts.py --model gemma3:1b
+    python examples/support_ticket_prompts.py --models gemma3:1b llama3.2:3b
+    python examples/support_ticket_prompts.py --reasoning
+    python examples/support_ticket_prompts.py --token-estimator tiktoken
+    python examples/support_ticket_prompts.py --token-estimator tiktoken --tiktoken-encoding o200k_base
     python examples/support_ticket_prompts.py --n-inputs 15
     python examples/support_ticket_prompts.py --runs 3
     python examples/support_ticket_prompts.py --out path/to/output.csv
@@ -33,12 +37,19 @@ Usage:
 
 import argparse
 import csv
+import importlib
 import json
 import random
 import re
 import time
 from pathlib import Path
 from urllib import error, request
+from typing import Any
+
+try:
+    tiktoken = importlib.import_module("tiktoken")
+except ImportError:  # Optional dependency.
+    tiktoken = None
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -197,6 +208,58 @@ INPUTS = [
     ("Is audit-log retention configurable per workspace, and what are the plan limits?",           "GENERAL"),
     ("Do you offer professional services for migration from a legacy ticketing platform?",         "GENERAL"),
     ("Are there contractual penalties or credits if monthly uptime falls below SLA commitments?",  "GENERAL"),
+
+    # Adding even more cases, with broken grammar / English and typos
+    # ── BILLING — noisy / shorthand / angry ───────────────────────────
+    ("charged twice again this month fix this", "BILLING"),
+    ("invoice wrong amount says premium im not on that plan", "BILLING"),
+    ("cancelled weeks ago why still charging me???", "BILLING"),
+    ("need refund wasnt even usind this", "BILLING"),
+    ("card expired but still got charged how", "BILLING"),
+    ("price on site not what i paid explain", "BILLING"),
+    ("used discount code didnt apply wtf", "BILLING"),
+    ("upgraded mid month math not adding up on bill", "BILLING"),
+    ("why pending charge when payment failed", "BILLING"),
+    ("need all invoice from last year asap taxes", "BILLING"),
+
+
+    # ── TECHNICAL — noisy / shorthand / angry ─────────────────────────
+    ("app keeps crashing when exporting fix pls", "TECHNICAL"),
+    ("cant upload files over 10mb even tho plan allows it", "TECHNICAL"),
+    ("dashboard slow like 30s load what changed", "TECHNICAL"),
+    ("api just returns 500 now nothing works", "TECHNICAL"),
+    ("ios app logs me out every few mins super annoying", "TECHNICAL"),
+    ("webhooks stopped after last update ???", "TECHNICAL"),
+    ("seeing other users data this is bad", "TECHNICAL"),
+    ("csv export missing columns again", "TECHNICAL"),
+    ("sso setup okta but users get 403", "TECHNICAL"),
+    ("dark mode resets every time why", "TECHNICAL"),
+
+
+    # ── ACCOUNT — noisy / shorthand / angry ───────────────────────────
+    ("need change account email asap", "ACCOUNT"),
+    ("how add new team member??", "ACCOUNT"),
+    ("password reset email not coming", "ACCOUNT"),
+    ("made 2 accounts by mistake can u merge", "ACCOUNT"),
+    ("change org name and logo where", "ACCOUNT"),
+    ("how download all data before closing acct", "ACCOUNT"),
+    ("remove user they left company urgent", "ACCOUNT"),
+    ("want change username got new name", "ACCOUNT"),
+    ("locked out too many attempts help", "ACCOUNT"),
+    ("want add another admin with permissions", "ACCOUNT"),
+
+
+    # ── GENERAL — noisy / shorthand / angry ───────────────────────────
+    ("difference basic vs premium??", "GENERAL"),
+    ("android app exist or no", "GENERAL"),
+    ("does this integrate with salesforce", "GENERAL"),
+    ("yo i need a demo for company who to talk to", "GENERAL"),
+    ("how long u keep data retention policy?", "GENERAL"),
+    ("bro you gdpr compliant or what?", "GENERAL"),
+    ("nonprofit discount available?", "GENERAL"),
+    ("uptime sla details??", "GENERAL"),
+    ("api python sdk official or not", "GENERAL"),
+    ("startup pricing for small team??", "GENERAL"),
 ]
 
 INPUT_IDS = [f"ticket_{i:02d}" for i in range(len(INPUTS))]
@@ -328,29 +391,129 @@ PROMPT_IDS = list(PROMPTS.keys())
 # Ollama
 # ---------------------------------------------------------------------------
 
-def call_ollama(prompt: str, model: str, temperature: float = 0.0) -> str:
+def estimate_token_count_heuristic(text: str) -> int:
+    """Rough token estimate from text (fast heuristic, not model-exact)."""
+    if not text:
+        return 0
+    # Split into words and punctuation-like chunks for a lightweight estimate.
+    return len(re.findall(r"\w+|[^\w\s]", text, flags=re.UNICODE))
+
+
+_TIKTOKEN_ENCODER_CACHE: dict[tuple[str, str], Any] = {}
+
+
+def _resolve_tiktoken_encoder(model: str, fallback_encoding: str = "cl100k_base") -> tuple[Any | None, str | None]:
+    """Resolve a tiktoken encoder for model names that may include Ollama tags."""
+    if tiktoken is None:
+        return None, None
+
+    cache_key = (model, fallback_encoding)
+    if cache_key in _TIKTOKEN_ENCODER_CACHE:
+        return _TIKTOKEN_ENCODER_CACHE[cache_key], "model"
+
+    base_model = model.split(":", 1)[0]
+    try:
+        encoder = tiktoken.encoding_for_model(base_model)
+        _TIKTOKEN_ENCODER_CACHE[cache_key] = encoder
+        return encoder, "model"
+    except KeyError:
+        try:
+            encoder = tiktoken.get_encoding(fallback_encoding)
+            _TIKTOKEN_ENCODER_CACHE[cache_key] = encoder
+            return encoder, f"fallback:{fallback_encoding}"
+        except KeyError:
+            return None, None
+
+
+def estimate_token_count(
+    text: str,
+    model: str,
+    estimator: str = "auto",
+    tiktoken_encoding: str = "o200k_base",
+) -> tuple[int, str]:
+    """Return token estimate and method label for auditability in output CSV."""
+    if not text:
+        return 0, "empty"
+
+    if estimator in {"auto", "tiktoken"}:
+        encoder, source = _resolve_tiktoken_encoder(model, fallback_encoding=tiktoken_encoding)
+        if encoder is not None:
+            return len(encoder.encode(text)), f"tiktoken:{source}"
+        if estimator == "tiktoken":
+            return estimate_token_count_heuristic(text), "heuristic(no-tiktoken)"
+
+    return estimate_token_count_heuristic(text), "heuristic"
+
+
+def call_ollama(
+    prompt: str,
+    model: str,
+    temperature: float = 0.0,
+    include_reasoning: bool = False,
+    num_predict: int | None = None,
+) -> dict[str, Any]:
+    options: dict[str, Any] = {"temperature": temperature}
+    if num_predict is not None:
+        options["num_predict"] = num_predict
+
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": prompt}],
         "stream": False,
-        "options": {"temperature": temperature, "num_predict": 128},
+        "options": options,
     }
-    req = request.Request(
-        OLLAMA_CHAT_URL,
-        data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with request.urlopen(req, timeout=120) as resp:
-            body = resp.read().decode("utf-8")
-    except error.URLError as exc:
-        raise RuntimeError(
-            "Could not reach Ollama at http://127.0.0.1:11434. "
-            "Is `ollama serve` running?"
-        ) from exc
-    data = json.loads(body)
-    return data.get("message", {}).get("content", "").strip()
+    reasoning_fallback = False
+
+    def _post(body_payload: dict[str, Any]) -> dict[str, Any]:
+        req = request.Request(
+            OLLAMA_CHAT_URL,
+            data=json.dumps(body_payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with request.urlopen(req, timeout=120) as resp:
+                body = resp.read().decode("utf-8")
+        except error.HTTPError as exc:
+            details = exc.read().decode("utf-8", errors="replace") if exc.fp else ""
+            raise RuntimeError(
+                f"Ollama request failed with HTTP {exc.code}. "
+                f"Response body: {details}"
+            ) from exc
+        except error.URLError as exc:
+            raise RuntimeError(
+                "Could not reach Ollama at http://127.0.0.1:11434. "
+                "Is `ollama serve` running?"
+            ) from exc
+
+        return json.loads(body)
+
+    if include_reasoning:
+        try:
+            data = _post({**payload, "think": True})
+        except RuntimeError as exc:
+            # Some Ollama/model combinations reject `think`; auto-fallback to normal output.
+            if "HTTP 400" in str(exc):
+                data = _post(payload)
+                reasoning_fallback = True
+            else:
+                raise
+    else:
+        data = _post(payload)
+
+    message = data.get("message", {})
+    output_text = str(message.get("content", "")).strip()
+    reasoning_text = str(
+        message.get("thinking", message.get("reasoning", data.get("thinking", "")))
+    ).strip()
+    return {
+        "output": output_text,
+        "reasoning": reasoning_text,
+        "reasoning_fallback": reasoning_fallback,
+        "total_duration_ms": round((int(data.get("total_duration", 0) or 0)) / 1_000_000, 2),
+        "prompt_eval_count": int(data.get("prompt_eval_count", 0) or 0),
+        "eval_count": int(data.get("eval_count", 0) or 0),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -429,20 +592,33 @@ def select_inputs(n_inputs: int | None, seed: int | None = None) -> list[tuple[i
 # Main
 # ---------------------------------------------------------------------------
 
-def run(model: str, out_path: Path, n_runs: int = 1, n_inputs: int | None = None, seed: int | None = None) -> None:
+def run(
+    models: list[str],
+    out_path: Path,
+    n_runs: int = 1,
+    n_inputs: int | None = None,
+    seed: int | None = None,
+    include_reasoning: bool = False,
+    token_estimator: str = "auto",
+    tiktoken_encoding: str = "o200k_base",
+    num_predict: int | None = None,
+) -> None:
     n_prompts = len(PROMPT_IDS)
     selected_inputs = select_inputs(n_inputs=n_inputs, seed=seed)
     n_selected_inputs = len(selected_inputs)
-    temperature = 0.0 if n_runs == 1 else 1.0
-    total = n_prompts * n_selected_inputs * n_runs
+    temperature = 0.0 if n_runs == 1 else 0.7
+    total = len(models) * n_prompts * n_selected_inputs * n_runs
 
-    print(f"Model       : {model}")
+    print(f"Models      : {', '.join(models)}")
     print(f"Prompts     : {n_prompts}  ({', '.join(PROMPT_IDS)})")
     if n_inputs is None:
         print(f"Tickets     : {n_selected_inputs}  (30 per category: 10 easy + 20 hard boundary cases)")
     else:
         print(f"Tickets     : {n_selected_inputs} sampled evenly across categories")
     print(f"Runs        : {n_runs}  (temperature={temperature})")
+    print(f"num_predict : {num_predict if num_predict is not None else 'default (unset)'}")
+    print(f"Reasoning   : {'enabled' if include_reasoning else 'disabled'}")
+    print(f"Token est.  : {token_estimator} (tiktoken encoding fallback={tiktoken_encoding})")
     print(f"Total calls : {total}\n")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -450,32 +626,75 @@ def run(model: str, out_path: Path, n_runs: int = 1, n_inputs: int | None = None
     done = 0
     t0 = time.time()
 
-    for run_idx in range(1, n_runs + 1):
-        for p_id, template in PROMPTS.items():
-            for orig_idx, ticket_text, ground_truth in selected_inputs:
-                prompt = template.format(ticket=ticket_text)
-                output = call_ollama(prompt, model, temperature=temperature)
-                predicted = extract_category(output)
-                correct = 1 if predicted == ground_truth else 0
+    for model in models:
+        warned_reasoning_fallback = False
+        for run_idx in range(1, n_runs + 1):
+            for p_id, template in PROMPTS.items():
+                for orig_idx, ticket_text, ground_truth in selected_inputs:
+                    prompt = template.format(ticket=ticket_text)
+                    response = call_ollama(
+                        prompt,
+                        model,
+                        temperature=temperature,
+                        include_reasoning=include_reasoning,
+                        num_predict=num_predict,
+                    )
+                    output = response["output"]
+                    reasoning = response["reasoning"]
 
-                rows.append({
-                    "prompt_id":    p_id,
-                    "run_idx":      run_idx,
-                    "input_id":     INPUT_IDS[orig_idx],
-                    "ticket":       ticket_text,
-                    "category":     ground_truth,
-                    "output":       output,
-                    "predicted":    predicted if predicted else "",
-                    "correct":      correct,
-                })
+                    if include_reasoning and response.get("reasoning_fallback") and not warned_reasoning_fallback:
+                        print(
+                            f"[warn] Reasoning output is not supported by Ollama model {model}. "
+                            "Auto-fallback is active (continuing without reasoning traces)."
+                        )
+                        warned_reasoning_fallback = True
 
-                done += 1
-                status = "✓" if correct else "✗"
-                print(
-                    f"  [{done:3d}/{total}] run {run_idx}/{n_runs} | {p_id:<24s} | ticket {orig_idx:02d} | "
-                    f"truth={ground_truth:<9s} pred={str(predicted):<9s} {status} | "
-                    f"'{output[:40]}'"
-                )
+                    predicted = extract_category(output)
+                    correct = 1 if predicted == ground_truth else 0
+
+                    # We don't have exact token counts for reasoning tokens from Ollama,
+                    # so we need to estimate them, we do this using tiktoken...
+                    reasoning_tokens_est, reasoning_token_method = estimate_token_count(
+                        reasoning,
+                        model,
+                        estimator=token_estimator,
+                        tiktoken_encoding=tiktoken_encoding,
+                    )
+
+                    # We do have exact eval counts from Ollama for the output tokens,
+                    # but these are only for output, not reasoning. 
+                    output_tokens_est = response["eval_count"]
+                    output_token_method = "ollama_eval_count"
+                    total_reasoning_output_tokens_est = reasoning_tokens_est + output_tokens_est
+
+                    rows.append({
+                        "model":       model,
+                        "prompt_id":   p_id,
+                        "run_idx":     run_idx,
+                        "input_id":    INPUT_IDS[orig_idx],
+                        "ticket":      ticket_text,
+                        "category":    ground_truth,
+                        "reasoning":   reasoning,
+                        "output":      output,
+                        "predicted":   predicted if predicted else "",
+                        "correct":     correct,
+                        "reasoning_tokens_est": reasoning_tokens_est,
+                        "reasoning_token_method": reasoning_token_method,
+                        "output_tokens_est": output_tokens_est,
+                        "output_token_method": output_token_method,
+                        "total_reasoning_output_tokens_est": total_reasoning_output_tokens_est,
+                        "total_duration_ms": response["total_duration_ms"],
+                        "prompt_eval_count": response["prompt_eval_count"],
+                        "eval_count": response["eval_count"],
+                    })
+
+                    done += 1
+                    status = "✓" if correct else "✗"
+                    print(
+                        f"  [{done:3d}/{total}] model={model:<16s} | run {run_idx}/{n_runs} | {p_id:<24s} | ticket {orig_idx:02d} | "
+                        f"truth={ground_truth:<9s} pred={str(predicted):<9s} {status} | "
+                        f"tok~{total_reasoning_output_tokens_est:<4d} | '{output[:40]}'"
+                    )
 
     elapsed = time.time() - t0
     print(f"\nCompleted in {elapsed:.1f}s")
@@ -488,19 +707,23 @@ def run(model: str, out_path: Path, n_runs: int = 1, n_inputs: int | None = None
     print(f"Saved: {out_path}")
 
     # Quick accuracy summary (averaged across runs)
-    print("\nAccuracy by prompt (mean across all runs):")
-    for p_id in PROMPT_IDS:
-        p_rows = [r for r in rows if r["prompt_id"] == p_id]
-        acc = sum(r["correct"] for r in p_rows) / len(p_rows)
-        bar = "█" * round(acc * 20)
-        print(f"  {p_id:<24s}  {acc:.1%}  {bar}")
+    print("\nAccuracy by model and prompt (mean across all runs):")
+    for model in models:
+        print(f"  {model}:")
+        for p_id in PROMPT_IDS:
+            p_rows = [r for r in rows if r["model"] == model and r["prompt_id"] == p_id]
+            acc = sum(r["correct"] for r in p_rows) / len(p_rows)
+            bar = "█" * round(acc * 20)
+            print(f"    {p_id:<24s}  {acc:.1%}  {bar}")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", default=DEFAULT_MODEL,
-                        help=f"Ollama model tag (default: {DEFAULT_MODEL})")
+                        help=f"Single Ollama model tag (default: {DEFAULT_MODEL}). Ignored when --models is provided.")
+    parser.add_argument("--models", nargs="+", default=None,
+                        help="One or more Ollama model tags. Example: --models gemma3:1b llama3.2:3b")
     parser.add_argument("--runs", type=int, default=1,
                         help="Number of runs per (prompt, ticket) pair (default: 1). "
                              "Runs > 1 use temperature=0.7 to capture stochasticity.")
@@ -509,10 +732,30 @@ def main() -> None:
                              "Randomly sampled as evenly as possible across categories.")
     parser.add_argument("--seed", type=int, default=None,
                         help="Optional random seed for --n-inputs sampling.")
+    parser.add_argument("--reasoning", action="store_true",
+                        help="Request reasoning traces from models that support thinking output. "
+                             "Adds reasoning and token-estimate columns to output rows.")
+    parser.add_argument("--num-predict", type=int, default=None,
+                        help="Optional max generated tokens per call. Unset by default.")
+    parser.add_argument("--token-estimator", choices=["auto", "tiktoken", "heuristic"], default="auto",
+                        help="Token estimation method. 'auto' prefers tiktoken when available and falls back to heuristic.")
+    parser.add_argument("--tiktoken-encoding", default="o200k_base",
+                        help="Fallback tiktoken encoding when model name is unknown to tiktoken (default: o200k_base).")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
                         help=f"Output CSV path (default: {DEFAULT_OUT})")
     args = parser.parse_args()
-    run(args.model, args.out, n_runs=args.runs, n_inputs=args.n_inputs, seed=args.seed)
+    models = args.models if args.models else [args.model]
+    run(
+        models,
+        args.out,
+        n_runs=args.runs,
+        n_inputs=args.n_inputs,
+        seed=args.seed,
+        include_reasoning=args.reasoning,
+        token_estimator=args.token_estimator,
+        tiktoken_encoding=args.tiktoken_encoding,
+        num_predict=args.num_predict,
+    )
 
 
 if __name__ == "__main__":

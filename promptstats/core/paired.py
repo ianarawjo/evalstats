@@ -178,6 +178,44 @@ def _paired_sign_test_p(diffs: np.ndarray) -> float:
     return min(max(p, 0.0), 1.0)
 
 
+def _compute_agreement_mcc(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+) -> tuple[float, tuple[int, int, int, int]]:
+    """Compute pairwise agreement MCC and confusion counts for two binary arrays.
+
+    Treats ``values_a`` and ``values_b`` as binary vectors (thresholded at 0.5)
+    and computes the Matthews Correlation Coefficient measuring how correlated
+    their pass/fail patterns are — independent of which model is "better."
+
+    MCC is symmetric: MCC(a, b) == MCC(b, a).  Range is [-1, 1]:
+      +1 = identical pass/fail patterns
+       0 = uncorrelated (independent errors)
+      -1 = perfectly opposite patterns
+
+    Returns
+    -------
+    (mcc, (n11, n10, n01, n00))
+        n11 = both pass, n10 = A passes B fails, n01 = A fails B passes,
+        n00 = both fail.
+    """
+    a = (np.asarray(values_a) >= 0.5).astype(int)
+    b = (np.asarray(values_b) >= 0.5).astype(int)
+    n11 = int(np.sum((a == 1) & (b == 1)))
+    n10 = int(np.sum((a == 1) & (b == 0)))
+    n01 = int(np.sum((a == 0) & (b == 1)))
+    n00 = int(np.sum((a == 0) & (b == 0)))
+    # MCC: TP=n11, TN=n00, FP=n01, FN=n10 (treating a as reference, b as prediction).
+    # Symmetric: swapping a↔b swaps FP↔FN, giving the same value.
+    tp, tn, fp, fn = n11, n00, n01, n10
+    denom_sq = float((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    if denom_sq == 0.0:
+        mcc = 0.0
+    else:
+        mcc = float((tp * tn - fp * fn) / (denom_sq ** 0.5))
+    return mcc, (n11, n10, n01, n00)
+
+
 def _paired_signflip_pvalue(
     diffs: np.ndarray,
     *,
@@ -220,6 +258,8 @@ class PairedDiffResult:
     n_runs: int = 1              # R used; 1 means no seed dimension
     statistic: str = "mean"      # 'mean' or 'median'
     wilcoxon_p: Optional[float] = None  # Wilcoxon signed-rank p-value (two-sided, on per_input_diffs)
+    agreement_mcc: Optional[float] = None  # pass/fail pattern correlation (binary data only)
+    binary_confusion: Optional[tuple[int, int, int, int]] = None  # (n11, n10, n01, n00)
 
     @property
     def rank_biserial(self) -> float:
@@ -381,6 +421,12 @@ class PairwiseMatrix:
             return self.results[(a, b)]
         if (b, a) in self.results:
             r = self.results[(b, a)]
+            # Flip confusion counts: swap n10 ↔ n01 (A and B are exchanged).
+            # agreement_mcc is symmetric so it stays the same.
+            flipped_conf: Optional[tuple[int, int, int, int]] = None
+            if r.binary_confusion is not None:
+                n11, n10, n01, n00 = r.binary_confusion
+                flipped_conf = (n11, n01, n10, n00)
             # Flip the result
             return PairedDiffResult(
                 template_a=a,
@@ -396,6 +442,8 @@ class PairwiseMatrix:
                 n_runs=r.n_runs,
                 statistic=r.statistic,
                 wilcoxon_p=r.wilcoxon_p,  # two-sided, so p is the same when flipping direction
+                agreement_mcc=r.agreement_mcc,
+                binary_confusion=flipped_conf,
             )
         raise KeyError(f"No comparison found for ({a}, {b})")
 
@@ -523,7 +571,17 @@ def pairwise_differences(
         ci_high: float,
         p_value: float,
         test_name: str,
+        values_a: Optional[np.ndarray] = None,
+        values_b: Optional[np.ndarray] = None,
     ) -> PairedDiffResult:
+        agr_mcc: Optional[float] = None
+        bin_conf: Optional[tuple[int, int, int, int]] = None
+        if (
+            values_a is not None
+            and values_b is not None
+            and is_binary_scores(np.stack([values_a, values_b]))
+        ):
+            agr_mcc, bin_conf = _compute_agreement_mcc(values_a, values_b)
         return PairedDiffResult(
             template_a=label_a,
             template_b=label_b,
@@ -538,6 +596,8 @@ def pairwise_differences(
             n_runs=1,
             statistic=statistic,
             wilcoxon_p=_wilcoxon_signed_rank_p(diffs),
+            agreement_mcc=agr_mcc,
+            binary_confusion=bin_conf,
         )
 
     # ------------------------------------------------------------------ #
@@ -574,6 +634,8 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name=f"bayes binary (n={n_bootstrap})",
+            values_a=values_a,
+            values_b=values_b,
         )
 
     # ------------------------------------------------------------------ #
@@ -599,6 +661,8 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name="newcombe (mcnemar p-value)",
+            values_a=values_a,
+            values_b=values_b,
         )
 
     if method == "fisher_exact":
@@ -635,6 +699,8 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name="fisher exact (newcombe ci)",
+            values_a=values_a,
+            values_b=values_b,
         )
 
     # ------------------------------------------------------------------ #
@@ -646,7 +712,9 @@ def pairwise_differences(
         if scores.ndim == 3:
             scores = scores.mean(axis=2)
 
-        diffs, _, point_d, std_d = _paired_stats(scores[idx_a], scores[idx_b])
+        _va_st = scores[idx_a]
+        _vb_st = scores[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(_va_st, _vb_st)
         alpha = 1.0 - ci
 
         boot_stats = bootstrap_means_1d(
@@ -671,6 +739,8 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name=test_name,
+            values_a=_va_st,
+            values_b=_vb_st,
         )
 
     # ------------------------------------------------------------------ #
@@ -686,7 +756,9 @@ def pairwise_differences(
     # ------------------------------------------------------------------ #
     # Standard (non-seeded) path                                          #
     # ------------------------------------------------------------------ #
-    diffs = scores[idx_a] - scores[idx_b]
+    _va_std = scores[idx_a]
+    _vb_std = scores[idx_b]
+    diffs = _va_std - _vb_std
     m = len(diffs)
     point_d = _stat(diffs, statistic)
     std_d = float(np.std(diffs, ddof=1))
@@ -755,6 +827,8 @@ def pairwise_differences(
         ci_high=ci_high,
         p_value=p_value,
         test_name=test_name,
+        values_a=_va_std,
+        values_b=_vb_std,
     )
 
 
@@ -861,6 +935,14 @@ def _pairwise_diffs_seeded(
 
     wilcoxon_p = _wilcoxon_signed_rank_p(cell_diffs)
 
+    # Agreement MCC for seeded binary data: use per-input majority vote.
+    agr_mcc: Optional[float] = None
+    bin_conf: Optional[tuple[int, int, int, int]] = None
+    if is_binary_scores(scores_a) and is_binary_scores(scores_b):
+        majority_a = (cell_means_a >= 0.5).astype(float)
+        majority_b = (cell_means_b >= 0.5).astype(float)
+        agr_mcc, bin_conf = _compute_agreement_mcc(majority_a, majority_b)
+
     return PairedDiffResult(
         template_a=label_a,
         template_b=label_b,
@@ -875,6 +957,8 @@ def _pairwise_diffs_seeded(
         n_runs=R,
         statistic=statistic,
         wilcoxon_p=wilcoxon_p,
+        agreement_mcc=agr_mcc,
+        binary_confusion=bin_conf,
     )
 
 
@@ -1363,6 +1447,8 @@ def all_pairwise(
                 n_runs=r.n_runs,
                 statistic=r.statistic,
                 wilcoxon_p=float(adj_wsr) if adj_wsr is not None else None,
+                agreement_mcc=r.agreement_mcc,
+                binary_confusion=r.binary_confusion,
             )
 
     # Simultaneous CIs: bootstrap max-T when possible, Bonferroni otherwise.
@@ -1410,6 +1496,8 @@ def all_pairwise(
                     n_runs=r.n_runs,
                     statistic=r.statistic,
                     wilcoxon_p=r.wilcoxon_p,
+                    agreement_mcc=r.agreement_mcc,
+                    binary_confusion=r.binary_confusion,
                 )
 
     # Friedman omnibus + Nemenyi post-hoc (only when explicitly requested).

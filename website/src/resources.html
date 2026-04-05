@@ -303,6 +303,31 @@
 
         <div class="paper-entry">
           <div class="paper-entry-title">
+            <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC7863449/" target="_blank">
+              The Matthews Correlation Coefficient (MCC) Is More Reliable Than Balanced Accuracy, Bookmaker Informedness, and Markedness in Two-Class Confusion Matrix Evaluation
+            </a>
+          </div>
+          <div class="paper-entry-meta">Chicco, D., T&ouml;tsch, N. &amp; Jurman, G. &mdash; BioData Mining, 2021</div>
+          <p class="paper-entry-summary">
+            Argues that MCC is the most informative single metric for binary classification: a high
+            MCC guarantees all four confusion-matrix rates are high (TPR, TNR, PPV, NPV), whereas
+            balanced accuracy or bookmaker informedness only guarantee three. Uses mathematical
+            derivations and worked examples to show scenarios where BA and BM signal near-perfect
+            performance while MCC correctly flags failure. Directly relevant to LLM binary evals:
+            when pass/fail or correct/incorrect scores are the output, choosing the wrong summary
+            metric can mask systematic failure modes on one class. A concrete companion to
+            Schaeffer et al.: not only does the shape of the metric matter (continuous vs.
+            discontinuous), but so does which confusion-matrix cell it is sensitive to.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">metric artifacts</span>
+            <span class="paper-tag">binary classification</span>
+            <span class="paper-tag">eval design</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
             <a href="https://aclanthology.org/P18-1082" target="_blank">
               A Call for Clarity in Reporting BLEU Scores
             </a>
