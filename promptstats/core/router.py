@@ -777,10 +777,19 @@ def _analyze_single(
         from .resampling import is_binary_scores, resolve_resampling_method
         if is_binary_scores(run_scores):
             M = run_scores.shape[1]
+            R = run_scores.shape[2]
             # Single-sample marginal CIs always use Wilson for binary data.
             # Pairwise: Bayesian model for N < 100, bootstrap for N >= 100 (enables simultaneous_cis).
             robustness_method = "wilson"
-            if M < 100:
+            if R >= 3:
+                # With nested runs, per-input cell means are proportions, not
+                # binary values, so bayes_binary cannot apply.  pairwise_differences
+                # would silently fall back to smooth_bootstrap anyway; set it
+                # explicitly here so the simultaneous-CI router receives a
+                # consistent (bootstrap-compatible) method string and doesn't
+                # fall back to Bonferroni t-intervals instead of max-T bootstrap.
+                pairwise_method = resolve_resampling_method("auto", M)
+            elif M < 100:
                 pairwise_method = "bayes_binary"
             else:
                 pairwise_method = resolve_resampling_method("bootstrap", M)
