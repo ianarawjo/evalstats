@@ -37,6 +37,7 @@ Usage:
 
 import argparse
 import csv
+import hashlib
 import importlib
 import json
 import random
@@ -58,6 +59,7 @@ except ImportError:  # Optional dependency.
 DEFAULT_MODEL = "gemma3:1b"
 OLLAMA_CHAT_URL = "http://127.0.0.1:11434/api/chat"
 DEFAULT_OUT = Path(__file__).parent.parent / "website" / "notebooks" / "best_prompt_eval.csv"
+DEFAULT_CACHE = Path(__file__).parent / "support_ticket_prompts_cache.jsonl"
 
 VALID_CATEGORIES = {"BILLING", "TECHNICAL", "ACCOUNT", "GENERAL"}
 
@@ -445,6 +447,72 @@ def estimate_token_count(
     return estimate_token_count_heuristic(text), "heuristic"
 
 
+def _cache_key_payload(
+    model: str,
+    ticket_text: str,
+    prompt_id: str,
+    prompt: str,
+    run_idx: int,
+    temperature: float,
+    include_reasoning: bool,
+    num_predict: int | None,
+) -> dict[str, Any]:
+    return {
+        "model": model,
+        "ticket_text": ticket_text,
+        "prompt_id": prompt_id,
+        # Include prompt hash so cache automatically invalidates if prompt text changes.
+        "prompt_sha256": hashlib.sha256(prompt.encode("utf-8")).hexdigest(),
+        "run_idx": run_idx,
+        "temperature": temperature,
+        "include_reasoning": include_reasoning,
+        "num_predict": num_predict,
+    }
+
+
+def _cache_key(cache_payload: dict[str, Any]) -> str:
+    return json.dumps(cache_payload, sort_keys=True, separators=(",", ":"))
+
+
+def load_cache(cache_path: Path) -> dict[str, dict[str, Any]]:
+    """Load line-delimited JSON cache into memory for fast key lookup."""
+    cache: dict[str, dict[str, Any]] = {}
+    if not cache_path.exists():
+        return cache
+
+    with cache_path.open("r", encoding="utf-8") as f:
+        for line_no, line in enumerate(f, start=1):
+            raw = line.strip()
+            if not raw:
+                continue
+            try:
+                row = json.loads(raw)
+            except json.JSONDecodeError:
+                print(f"[warn] Skipping malformed cache row at line {line_no} in {cache_path}")
+                continue
+
+            key = row.get("key")
+            response = row.get("response")
+            if isinstance(key, str) and isinstance(response, dict):
+                cache[key] = response
+
+    return cache
+
+
+def append_cache_entry(cache_path: Path, key: str, request_payload: dict[str, Any], response: dict[str, Any]) -> None:
+    """Append one response to cache immediately so partial progress survives crashes."""
+    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    record = {
+        "key": key,
+        "request": request_payload,
+        "response": response,
+        "cached_at_unix": time.time(),
+    }
+    with cache_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        f.flush()
+
+
 def call_ollama(
     prompt: str,
     model: str,
@@ -602,6 +670,7 @@ def run(
     token_estimator: str = "auto",
     tiktoken_encoding: str = "o200k_base",
     num_predict: int | None = None,
+    cache_path: Path | None = DEFAULT_CACHE,
 ) -> None:
     n_prompts = len(PROMPT_IDS)
     selected_inputs = select_inputs(n_inputs=n_inputs, seed=seed)
@@ -619,6 +688,12 @@ def run(
     print(f"num_predict : {num_predict if num_predict is not None else 'default (unset)'}")
     print(f"Reasoning   : {'enabled' if include_reasoning else 'disabled'}")
     print(f"Token est.  : {token_estimator} (tiktoken encoding fallback={tiktoken_encoding})")
+    if cache_path is None:
+        print("Cache       : disabled")
+        cache: dict[str, dict[str, Any]] = {}
+    else:
+        cache = load_cache(cache_path)
+        print(f"Cache       : {cache_path}  ({len(cache)} entries loaded)")
     print(f"Total calls : {total}\n")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -632,13 +707,34 @@ def run(
             for p_id, template in PROMPTS.items():
                 for orig_idx, ticket_text, ground_truth in selected_inputs:
                     prompt = template.format(ticket=ticket_text)
-                    response = call_ollama(
-                        prompt,
-                        model,
+                    cache_payload = _cache_key_payload(
+                        model=model,
+                        ticket_text=ticket_text,
+                        prompt_id=p_id,
+                        prompt=prompt,
+                        run_idx=run_idx,
                         temperature=temperature,
                         include_reasoning=include_reasoning,
                         num_predict=num_predict,
                     )
+                    key = _cache_key(cache_payload)
+
+                    from_cache = False
+                    if cache_path is not None and key in cache:
+                        response = cache[key]
+                        from_cache = True
+                    else:
+                        response = call_ollama(
+                            prompt,
+                            model,
+                            temperature=temperature,
+                            include_reasoning=include_reasoning,
+                            num_predict=num_predict,
+                        )
+                        if cache_path is not None:
+                            append_cache_entry(cache_path, key=key, request_payload=cache_payload, response=response)
+                            cache[key] = response
+
                     output = response["output"]
                     reasoning = response["reasoning"]
 
@@ -693,7 +789,7 @@ def run(
                     print(
                         f"  [{done:3d}/{total}] model={model:<16s} | run {run_idx}/{n_runs} | {p_id:<24s} | ticket {orig_idx:02d} | "
                         f"truth={ground_truth:<9s} pred={str(predicted):<9s} {status} | "
-                        f"tok~{total_reasoning_output_tokens_est:<4d} | '{output[:40]}'"
+                        f"tok~{total_reasoning_output_tokens_est:<4d} | {'[cache] ' if from_cache else ''}'{output[:40]}'"
                     )
 
     elapsed = time.time() - t0
@@ -741,10 +837,15 @@ def main() -> None:
                         help="Token estimation method. 'auto' prefers tiktoken when available and falls back to heuristic.")
     parser.add_argument("--tiktoken-encoding", default="o200k_base",
                         help="Fallback tiktoken encoding when model name is unknown to tiktoken (default: o200k_base).")
+    parser.add_argument("--cache-path", type=Path, default=DEFAULT_CACHE,
+                        help=f"JSONL cache path for incremental per-call persistence (default: {DEFAULT_CACHE}).")
+    parser.add_argument("--no-cache", action="store_true",
+                        help="Disable read/write cache behavior.")
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT,
                         help=f"Output CSV path (default: {DEFAULT_OUT})")
     args = parser.parse_args()
     models = args.models if args.models else [args.model]
+    cache_path = None if args.no_cache else args.cache_path
     run(
         models,
         args.out,
@@ -755,6 +856,7 @@ def main() -> None:
         token_estimator=args.token_estimator,
         tiktoken_encoding=args.tiktoken_encoding,
         num_predict=args.num_predict,
+        cache_path=cache_path,
     )
 
 
