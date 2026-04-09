@@ -205,6 +205,49 @@
           </div>
         </div>
 
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.800-2.ipd.pdf" target="_blank">
+              Practices for Automated Benchmark Evaluations of Language Models (NIST AI 800-2)
+            </a>
+          </div>
+          <div class="paper-entry-meta">NIST Center for AI Standards and Innovation &mdash; NIST AI 800-2 (Initial Public Draft), January 2026</div>
+          <p class="paper-entry-summary">
+            A companion to NIST AI 800-3, focused specifically on automated benchmark evaluation
+            practices for language models. Provides standardized guidance on how to design, run,
+            and report automated benchmark evaluations, with an eye toward reproducibility and
+            consistency across the AI research community. Where 800-3 addresses statistical modeling
+            and uncertainty quantification, 800-2 addresses the procedural infrastructure: how
+            benchmarks should be constructed, scored, and compared.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">standards &amp; policy</span>
+            <span class="paper-tag">benchmark design</span>
+            <span class="paper-tag">reproducibility</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://sage.cs.princeton.edu/documents/NIST_benchmark_reliability.pdf" target="_blank">
+              NIST Comment: Practices for Automated Benchmark Evaluations of Language Models
+            </a>
+          </div>
+          <div class="paper-entry-meta">Princeton SAGE Lab &mdash; Public comment on NIST AI 800-2, 2026</div>
+          <p class="paper-entry-summary">
+            A formal public comment submitted to the NIST AI 800-2 process by Princeton&rsquo;s
+            SAGE lab, focused on benchmark reliability concerns. Provides technical perspective on
+            the limitations and failure modes of automated LLM benchmarks from a research group
+            actively studying benchmark validity. A useful complement to the official NIST document,
+            representing practitioner and researcher pushback on where current benchmark evaluation
+            standards fall short.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">benchmark reliability</span>
+            <span class="paper-tag">standards &amp; policy</span>
+          </div>
+        </div>
+
       </div>
     </section>
 
@@ -576,6 +619,29 @@
 
         <div class="paper-entry">
           <div class="paper-entry-title">
+            <a href="https://link.springer.com/article/10.1023/A:1024068626366" target="_blank">
+              Inference for the Generalization Error
+            </a>
+          </div>
+          <div class="paper-entry-meta">Nadeau, C. &amp; Bengio, Y. &mdash; Machine Learning, 52, 2003</div>
+          <p class="paper-entry-summary">
+            Shows that the standard cross-validation variance estimator is biased because it ignores
+            the dependence between training sets in k-fold CV. Derives a corrected variance estimator
+            that accounts for both test-set variability and training-set randomness, yielding
+            significance tests that achieve the correct level rather than inflating type-I error.
+            The &ldquo;corrected resampled t-test&rdquo; from this paper is the standard reference
+            for rigorous hypothesis testing when comparing two algorithms on a single dataset via
+            repeated cross-validation.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">cross-validation</span>
+            <span class="paper-tag">hypothesis testing</span>
+            <span class="paper-tag">variance estimation</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
             <a href="https://www.jstor.org/stable/2336308" target="_blank">
               Some simple models of the data analysis problem
             </a>
@@ -683,6 +749,188 @@
 
         <div class="paper-entry">
           <div class="paper-entry-title">
+            <a href="https://jmlr.csail.mit.edu/papers/v9/garcia08a.html" target="_blank">
+              An Extension on &ldquo;Statistical Comparisons of Classifiers over Multiple Data Sets&rdquo; for All Pairwise Comparisons
+            </a>
+          </div>
+          <div class="paper-entry-meta">Garc&iacute;a, S. &amp; Herrera, F. &mdash; Journal of Machine Learning Research, 9, 2008</div>
+          <p class="paper-entry-summary">
+            Extends Dem&scaron;ar (2006) by providing rigorous post-hoc procedures specifically
+            for all pairwise comparisons among N classifiers, rather than comparisons against a
+            single control. Derives adjusted p-values (Holm, Shaffer, Bergmann-Hommel) that maintain
+            family-wise error rate control across the full n&times;(n&minus;1)/2 comparison matrix.
+            Essential companion to Dem&scaron;ar when the goal is to rank all prompts or models
+            against each other rather than against a single baseline.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">multiple comparisons</span>
+            <span class="paper-tag">pairwise post-hoc tests</span>
+            <span class="paper-tag">nonparametric methods</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/1505.02288" target="_blank">
+              Should We Really Use Post-Hoc Tests Based on Mean-Ranks?
+            </a>
+          </div>
+          <div class="paper-entry-meta">Benavoli, A., Corani, G. &amp; Mangili, F. &mdash; arXiv:1505.02288, 2015</div>
+          <p class="paper-entry-summary">
+            Demonstrates a troubling property of mean-rank post-hoc tests (Nemenyi, Bonferroni on
+            ranks): whether two algorithms are declared significantly different depends on which
+            other algorithms are included in the comparison set. Adding or removing an irrelevant
+            third algorithm can flip the significance verdict between two others &mdash; a violation
+            of basic statistical independence. Recommends pairwise sign-tests or Wilcoxon
+            signed-rank tests instead, which depend only on the two algorithms being directly
+            compared. A direct critique of the standard Dem&scaron;ar CD-diagram pipeline.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">rank-test dependence</span>
+            <span class="paper-tag">multiple comparisons</span>
+            <span class="paper-tag">nonparametric methods</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://www.jmlr.org/papers/volume18/16-305/16-305.pdf" target="_blank">
+              Time for a Change: a Tutorial for Comparing Multiple Classifiers Through Bayesian Analysis
+            </a>
+          </div>
+          <div class="paper-entry-meta">Benavoli, A., Corani, G., Dem&scaron;ar, J. &amp; Zaffalon, M. &mdash; JMLR, 18, 2017</div>
+          <p class="paper-entry-summary">
+            A tutorial-style paper by the same group as the 2015 critique above, proposing Bayesian
+            replacements for the Friedman/Nemenyi NHST pipeline. Rather than asking &ldquo;is
+            there a significant difference?,&rdquo; the Bayesian approach answers &ldquo;what is
+            the posterior probability that algorithm A outperforms B?&rdquo; and can incorporate a
+            region of practical equivalence (ROPE) to distinguish meaningful from negligible
+            differences. Includes practical Bayesian signed-rank and correlated t-tests with
+            software. The Bayesian estimation framing aligns closely with promptstats&rsquo;
+            CI-first philosophy.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">Bayesian methods</span>
+            <span class="paper-tag">multiple comparisons</span>
+            <span class="paper-tag">ROPE</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/1609.08905" target="_blank">
+              Statistical Comparison of Classifiers Through Bayesian Hierarchical Modelling
+            </a>
+          </div>
+          <div class="paper-entry-meta">Corani, G., Benavoli, A., Dem&scaron;ar, J., Mangili, F. &amp; Zaffalon, M. &mdash; arXiv:1609.08905, 2016</div>
+          <p class="paper-entry-summary">
+            Extends the Bayesian approach from Benavoli et al. (2017) by fitting a hierarchical
+            model across all datasets simultaneously rather than treating each independently. The
+            hierarchical structure pools information across datasets, reducing variance in posterior
+            estimates and making conclusions more stable when individual datasets are noisy or
+            small. Produces posterior probabilities that one classifier outperforms another with
+            joint analysis of the full multi-dataset structure.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">Bayesian methods</span>
+            <span class="paper-tag">hierarchical models</span>
+            <span class="paper-tag">multiple comparisons</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://arxiv.org/abs/2208.04935" target="_blank">
+              A Bayesian Bradley&ndash;Terry Model to Compare Multiple ML Algorithms on Multiple Data Sets
+            </a>
+          </div>
+          <div class="paper-entry-meta">Wainer, J. &mdash; arXiv:2208.04935, 2022</div>
+          <p class="paper-entry-summary">
+            Applies the Bradley&ndash;Terry paired-comparison model in a Bayesian framework to rank
+            multiple machine learning algorithms across datasets. Unlike rank-based non-parametric
+            tests, the Bradley&ndash;Terry model produces a full posterior over algorithm rankings
+            and allows defining regions of practical equivalence for any performance metric. Includes
+            R and Python implementations. Useful for LLM eval workflows where models or prompts
+            need to be ranked and the ranking uncertainty matters as much as the ranking itself.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">Bayesian methods</span>
+            <span class="paper-tag">ranking</span>
+            <span class="paper-tag">multiple comparisons</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://sci2s.ugr.es/sites/default/files/ficherosPublicaciones/1374_2011-Derrac-SWEVO.pdf" target="_blank">
+              A Practical Tutorial on the Use of Nonparametric Statistical Tests as a Methodology for Comparing Evolutionary and Swarm Intelligence Algorithms
+            </a>
+          </div>
+          <div class="paper-entry-meta">Derrac, J., Garc&iacute;a, S., Molina, D. &amp; Herrera, F. &mdash; Swarm and Evolutionary Computation, 1, 2011</div>
+          <p class="paper-entry-summary">
+            A hands-on tutorial walking through the full non-parametric testing workflow for
+            comparing algorithms across multiple benchmark problems: Wilcoxon signed-rank for
+            pairwise comparisons, Friedman for k-algorithm omnibus tests, and Holm/Shaffer/Bergmann
+            post-hoc corrections for multiple pairwise conclusions. Uses CEC&rsquo;2005
+            optimization benchmark results as running examples. Despite the evolutionary computing
+            framing, this is the most practically useful step-by-step reference for anyone applying
+            the Dem&scaron;ar framework to a new domain &mdash; including LLM evals.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">nonparametric methods</span>
+            <span class="paper-tag">tutorial</span>
+            <span class="paper-tag">multiple comparisons</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://epub.ub.uni-muenchen.de/4134/1/tr030.pdf" target="_blank">
+              Exploratory and Inferential Analysis of Benchmark Experiments
+            </a>
+          </div>
+          <div class="paper-entry-meta">Eugster, M.J.A., Hothorn, T. &amp; Leisch, F. &mdash; Technical Report, Ludwig Maximilians University Munich, 2008</div>
+          <p class="paper-entry-summary">
+            Presents a unified toolkit of exploratory and inferential methods for benchmark
+            experiment analysis, combining novel visualizations with parametric and non-parametric
+            tests to establish statistically sound algorithm rankings. Goes beyond the Dem&scaron;ar
+            pipeline by treating benchmark analysis as an exploratory data analysis problem first,
+            with formal inference as a secondary step. Useful for analysts who want richer visual
+            diagnostics of multi-algorithm, multi-dataset results before committing to a single
+            statistical summary.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">benchmark analysis</span>
+            <span class="paper-tag">exploratory analysis</span>
+            <span class="paper-tag">visualization</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://journal.r-project.org/articles/RJ-2016-017/" target="_blank">
+              scmamp: Statistical Comparison of Multiple Algorithms in Multiple Problems
+            </a>
+          </div>
+          <div class="paper-entry-meta">Calvo, B. &amp; Santaf&eacute;, G. &mdash; The R Journal, 2016</div>
+          <p class="paper-entry-summary">
+            An R package that unifies the full Dem&scaron;ar/Garc&iacute;a statistical comparison
+            workflow &mdash; data loading, hypothesis testing (Friedman, Wilcoxon, Holm, Shaffer),
+            CD diagram generation, and report output &mdash; into a single coherent API. Also
+            implements the Bayesian tests from Benavoli et al. (2017). The reference implementation
+            for anyone applying the non-parametric multi-algorithm comparison framework in R,
+            and a useful touchstone for understanding what promptstats&rsquo; CD diagram output
+            corresponds to in the classical literature.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">software</span>
+            <span class="paper-tag">multiple comparisons</span>
+            <span class="paper-tag">critical difference diagrams</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
             <a href="https://doi.org/10.1214/aos/1176345338" target="_blank">
               The Bayesian bootstrap
             </a>
@@ -765,6 +1013,62 @@
             <span class="paper-tag">estimation approach</span>
             <span class="paper-tag">effect sizes &amp; CIs</span>
             <span class="paper-tag">textbook</span>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ── SECTION: STATISTICAL TESTING IN NLP ── -->
+    <section class="paper-section">
+      <h2>Statistical Testing in NLP</h2>
+      <p>Papers on how statistical significance testing should be applied to NLP system comparisons &mdash; a direct precursor to the same questions now facing LLM evaluation.</p>
+
+      <div class="paper-list">
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://nlp.cs.berkeley.edu/pubs/BergKirkpatrick-Burkett-Klein_2012_Significance_paper.pdf" target="_blank">
+              An Empirical Investigation of Statistical Significance in NLP
+            </a>
+          </div>
+          <div class="paper-entry-meta">Berg-Kirkpatrick, T., Burkett, D. &amp; Klein, D. &mdash; EMNLP 2012</div>
+          <p class="paper-entry-summary">
+            Empirically examines the relationship between metric gains, test-set size, system
+            similarity, and statistical significance in NLP evaluation. Investigates whether
+            significance on a held-out test set predicts out-of-domain performance &mdash; an
+            external validity question that maps directly onto LLM eval practice. Uses bootstrap
+            resampling throughout. The findings ground subsequent debates: apparent improvements
+            in NLP are frequently within noise, and the conditions under which significance
+            generalizes are narrower than the field assumed.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">significance testing</span>
+            <span class="paper-tag">NLP evaluation</span>
+            <span class="paper-tag">bootstrap</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://aclanthology.org/P18-1128/" target="_blank">
+              The Hitchhiker&rsquo;s Guide to Testing Statistical Significance in Natural Language Processing
+            </a>
+          </div>
+          <div class="paper-entry-meta">Dror, R., Baumer, G., Shlomov, S. &amp; Reichart, R. &mdash; ACL 2018</div>
+          <p class="paper-entry-summary">
+            A survey and practical protocol for selecting the right significance test for NLP
+            comparisons, covering bootstrap, permutation, Wilcoxon, McNemar, and parametric tests
+            across different output types (sequences, labels, scores). A survey of ACL and TACL
+            2017 papers found that significance testing was frequently ignored or misapplied.
+            The paper&rsquo;s decision-tree protocol &mdash; choose a test based on output type,
+            sample size, and dependence structure &mdash; transfers directly to LLM eval: the
+            same choices arise when comparing models on classification, generation, or rating tasks.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag">significance testing</span>
+            <span class="paper-tag">NLP evaluation</span>
+            <span class="paper-tag">test selection</span>
           </div>
         </div>
 
