@@ -19,11 +19,11 @@ with two complementary phases:
      are applied to the same raw p-values, so runtime scales with bootstrap draws
      rather than (draws × n_corrections).
 
-The implementation intentionally reuses promptstats internals where possible so
+The implementation intentionally reuses evalstats internals where possible so
 results map directly to behavior in the library:
-  - promptstats.core.paired.pairwise_differences
-  - promptstats.core.paired.all_pairwise
-  - promptstats.core.paired.friedman_nemenyi
+  - evalstats.core.paired.pairwise_differences
+  - evalstats.core.paired.all_pairwise
+  - evalstats.core.paired.friedman_nemenyi
 
 Usage examples:
   python simulations/sim_compare_pvalues.py
@@ -54,13 +54,13 @@ import numpy as np
 import scipy.stats as stats
 
 with np.errstate(all="ignore"):
-    from promptstats.core.paired import (
+    from evalstats.core.paired import (
         pairwise_differences,
         all_pairwise,
         friedman_nemenyi,
         _mcnemar_p,
     )
-    from promptstats.core.stats_utils import correct_pvalues
+    from evalstats.core.stats_utils import correct_pvalues
 
 
 PAIRWISE_METHODS = [

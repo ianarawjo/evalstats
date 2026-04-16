@@ -1,4 +1,4 @@
-"""Global configuration for promptstats."""
+"""Global configuration for evalstats."""
 
 # We use a global variable to store the default alpha for CI analyses, 
 # which can be set by the user via set_alpha_ci() and is used by default in 

@@ -11,8 +11,8 @@ import warnings
 import numpy as np
 import pytest
 
-from promptstats import BenchmarkResult, analyze
-from promptstats.core.mixed_effects import LMMInfo
+from evalstats import BenchmarkResult, analyze
+from evalstats.core.mixed_effects import LMMInfo
 
 # ---------------------------------------------------------------------------
 # Module-level skip guard

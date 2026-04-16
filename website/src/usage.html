@@ -5,10 +5,10 @@
   <p>
     This guide walks you through running your first analysis using the command-line interface (CLI).
     All you need is a CSV file of your eval scores in an expected format, and a few seconds to run the analysis and read the report.
-    The <code>promptstats</code> workflow can be described as:
+    The <code>evalstats</code> workflow can be described as:
   </p>
 
-  <div class="workflow-diagram" aria-label="promptstats workflow: collect scores, run analysis, read results">
+  <div class="workflow-diagram" aria-label="evalstats workflow: collect scores, run analysis, read results">
     <svg viewBox="0 0 740 148" xmlns="http://www.w3.org/2000/svg" role="img" style="width:100%;max-width:740px;display:block;margin:0 auto;">
       <defs>
         <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
@@ -35,14 +35,14 @@
       <!-- Arrow 1 → 2 -->
       <line x1="216" y1="74" x2="262" y2="74" stroke="currentColor" stroke-opacity="0.4" stroke-width="1.5" marker-end="url(#arr)"/>
 
-      <!-- Box 2: promptstats -->
+      <!-- Box 2: evalstats -->
       <rect x="266" y="10" width="208" height="128" rx="10" fill="currentColor" opacity="0.10" stroke="currentColor" stroke-opacity="0.28" stroke-width="1.5"/>
       <!-- terminal icon -->
       <g transform="translate(353, 22)" opacity="0.65">
         <rect x="0" y="0" width="34" height="24" rx="3" fill="currentColor" opacity="0.18" stroke="currentColor" stroke-width="1.2"/>
         <text x="5" y="16" font-size="11" fill="currentColor" font-family="IBM Plex Mono, monospace" font-weight="500">&#62;_</text>
       </g>
-      <text x="370" y="72" text-anchor="middle" font-size="13" font-weight="700" fill="currentColor" font-family="IBM Plex Mono, monospace">promptstats</text>
+      <text x="370" y="72" text-anchor="middle" font-size="13" font-weight="700" fill="currentColor" font-family="IBM Plex Mono, monospace">evalstats</text>
       <text x="370" y="92" text-anchor="middle" font-size="10.5" fill="currentColor" opacity="0.62" font-family="IBM Plex Sans, sans-serif">auto-detects data type</text>
       <text x="370" y="109" text-anchor="middle" font-size="10.5" fill="currentColor" opacity="0.62" font-family="IBM Plex Sans, sans-serif">picks appropriate CI method</text>
       <text x="370" y="126" text-anchor="middle" font-size="10.5" fill="currentColor" opacity="0.62" font-family="IBM Plex Sans, sans-serif">applies multi-comparison correction</text>
@@ -66,24 +66,24 @@
     </svg>
   </div>
 
-  <h3 id="install">0. Install promptstats</h3>
+  <h3 id="install">0. Install evalstats</h3>
   <p>
-    You can install <code>promptstats</code> via pip or uv:
+    You can install <code>evalstats</code> via pip or uv:
   </p>
-  <pre style="margin-top:1.5rem;"><code class="language-bash">pip install promptstats</code></pre>
+  <pre style="margin-top:1.5rem;"><code class="language-bash">pip install evalstats</code></pre>
 
   <h3 id="your-csv">1. Prepare your CSV</h3>
   <p>
-    <code>promptstats</code> expects a <strong>long-format</strong> (tidy) CSV: one row per
+    <code>evalstats</code> expects a <strong>long-format</strong> (tidy) CSV: one row per
     observation. At minimum you need <code>input</code> and <code>score</code>, plus either
     <code>prompt</code>/<code>template</code> or <code>model</code>. 
     The <code>input</code> column identifies which individual test case each
-    row belongs to (e.g., questions in a Q&A dataset), which this lets <code>promptstats</code> use paired statistics that account
+    row belongs to (e.g., questions in a Q&A dataset), which this lets <code>evalstats</code> use paired statistics that account
     for per-input difficulty differences.
   </p>
   <p>
     If you evaluated each prompt multiple times per input (e.g. at different random seeds),
-    add a <code>run</code> column. With 3 or more runs per cell, <code>promptstats</code>
+    add a <code>run</code> column. With 3 or more runs per cell, <code>evalstats</code>
     automatically switches to an appropriate method like <em>nested bootstrap</em> 
     that accounts for run-level variance on top of input-level variance, 
     giving you more honest uncertainty estimates.
@@ -128,11 +128,11 @@
 
   <h3 id="run-analysis" style="margin-top:2rem;">2. Run the analysis</h3>
   <p>
-    Point <code>promptstats analyze</code> at your file. It auto-detects the data type
+    Point <code>evalstats analyze</code> at your file. It auto-detects the data type
     (binary, continuous, Likert, etc.), recognizes the multi-run structure, and picks an
     appropriate CI method automatically.
   </p>
-  <pre><code class="language-bash">promptstats analyze results.csv</code></pre>
+  <pre><code class="language-bash">evalstats analyze results.csv</code></pre>
 
   <h3 id="example-output" style="margin-top:2rem;">3. Read the output</h3>
   <p>
@@ -190,16 +190,16 @@
 
   <h3 id="saving-output" style="margin-top:2rem;">Saving output</h3>
   <pre><code class="language-bash"># Save a Markdown report and plot
-promptstats analyze results.csv --out report.md plot.png
+evalstats analyze results.csv --out report.md plot.png
 
 # Save structured JSON for programmatic use
-promptstats analyze results.csv --out analysis.json
+evalstats analyze results.csv --out analysis.json
 
 # Print just the executive leaderboard (fastest read)
-promptstats analyze results.csv --brief</code></pre>
+evalstats analyze results.csv --brief</code></pre>
 
   <p style="margin-top:1rem;">
-    See <code>promptstats analyze --help</code> for the full option list.
+    See <code>evalstats analyze --help</code> for the full option list.
   </p>
 </section>
 
@@ -218,7 +218,7 @@ promptstats analyze results.csv --brief</code></pre>
     Each array must be the same length and correspond to the same inputs (paired data).
   </p>
   <pre><code class="language-python">import numpy as np
-import promptstats as pstats
+import evalstats as estats
 
 scores = {
     "prompt_a": np.array([0.72, 0.60, 0.88, 0.75, ...]),
@@ -226,7 +226,7 @@ scores = {
     "prompt_c": np.array([0.91, 0.83, 0.87, 0.95, ...]),
 }
 
-result = pstats.compare_prompts(scores)
+result = estats.compare_prompts(scores)
 result.summary()        # full terminal report</code></pre>
 
   <h3 id="api-compare-models">Comparing models</h3>
@@ -239,13 +239,13 @@ result.summary()        # full terminal report</code></pre>
     "qwen3-8b":      np.array([0.88, 0.93, 0.85, ...]),
 }
 
-result = pstats.compare_models(scores)
+result = estats.compare_models(scores)
 result.summary()</code></pre>
 
   <h3 id="api-models-prompts">Comparing models &times; prompts</h3>
   <p>
     Pass a nested dict — outer keys are models, inner keys are prompt templates.
-    <code>promptstats</code> reports statistics for every model–prompt combination,
+    <code>evalstats</code> reports statistics for every model–prompt combination,
     letting you see whether a prompt improvement generalizes across models.
   </p>
   <pre><code class="language-python">scores = {
@@ -259,7 +259,7 @@ result.summary()</code></pre>
     },
 }
 
-result = pstats.compare_models(scores)
+result = estats.compare_models(scores)
 result.full_summary()</code></pre>
 
   <div class="ps-output"><pre>================================================
@@ -309,7 +309,7 @@ result.full_summary()</code></pre>
     Pass <code>p_values=True</code> to print corrected p-values in the pairwise table.
     You can optionally set <code>pairwise_test="wilcoxon"</code> to force Wilcoxon
     signed-rank p-values (instead of auto-selection). With <code>omnibus=True</code>,
-    promptstats also prepends a <strong>Friedman omnibus test</strong> line before the
+    evalstats also prepends a <strong>Friedman omnibus test</strong> line before the
     pairwise rows.
   </p>
   <pre><code class="language-python">scores = {
@@ -318,7 +318,7 @@ result.full_summary()</code></pre>
     "qwen3-8b":      np.array([0.88, 0.93, 0.85, 0.91, 0.83, ...]),
 }
 
-result = pstats.compare_models(
+result = estats.compare_models(
     scores,
     omnibus=True,
     p_values=True,
@@ -371,17 +371,17 @@ result.summary()</code></pre>
 
   <h3 id="api-analyze-csv" style="margin-top:2rem;">Loading from a CSV or Excel file</h3>
   <p>
-    <code>pstats.analyze()</code> mirrors the CLI — pass a file path and it handles
+    <code>estats.analyze()</code> mirrors the CLI — pass a file path and it handles
     format detection automatically. Useful when you want to run the analysis from a
     script or notebook.
   </p>
-  <pre><code class="language-python">import promptstats as pstats
+  <pre><code class="language-python">import evalstats as estats
 
-result = pstats.analyze("results.csv")
+result = estats.analyze("results.csv")
 result.summary()
 
 # With options
-result = pstats.analyze(
+result = estats.analyze(
     "results.xlsx",
     sheet="Eval Results",
     ci=0.95,
@@ -426,7 +426,7 @@ result.summary()</code></pre>
 
   <p style="margin-top:1rem;">
     Full runnable examples are in the
-    <a href="https://github.com/ianarawjo/promptstats/tree/main/examples" target="_blank" rel="noopener">
+    <a href="https://github.com/ianarawjo/evalstats/tree/main/examples" target="_blank" rel="noopener">
     <code>examples/</code> folder on GitHub</a>.
   </p>
 </section>

@@ -8,8 +8,8 @@ import pandas as pd
 import pytest
 from numpy.testing import assert_allclose
 
-import promptstats as ps
-from promptstats.core.mixed_effects import FactorialLMMInfo
+import evalstats as es
+from evalstats.core.mixed_effects import FactorialLMMInfo
 
 pytest.importorskip("statsmodels", reason="statsmodels not installed (pip install statsmodels)")
 
@@ -170,7 +170,7 @@ def _assert_factorial_bundles_close(
 def test_smoke_no_runs():
     rng = np.random.default_rng(0)
     data = _make_factorial_df(rng)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"])
     assert bundle is not None
     assert bundle.pairwise is not None
     assert bundle.rank_dist is not None
@@ -180,7 +180,7 @@ def test_smoke_no_runs():
 def test_smoke_with_runs():
     rng = np.random.default_rng(1)
     data = _make_factorial_df(rng, n_runs=5)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     assert bundle is not None
     assert bundle.pairwise is not None
     assert bundle.rank_dist is not None
@@ -194,7 +194,7 @@ def test_smoke_with_runs():
 def test_factorial_lmm_info_without_runs():
     rng = np.random.default_rng(2)
     data = _make_factorial_df(rng)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"])
     info = bundle.factorial_lmm_info
     assert isinstance(info, FactorialLMMInfo)
     assert set(info.factor_names) == {"chunker", "retrieval"}
@@ -211,7 +211,7 @@ def test_factorial_lmm_info_without_runs():
 def test_factorial_lmm_info_with_runs():
     rng = np.random.default_rng(3)
     data = _make_factorial_df(rng, n_runs=5)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     info = bundle.factorial_lmm_info
     assert isinstance(info, FactorialLMMInfo)
     assert set(info.factor_names) == {"chunker", "retrieval"}
@@ -226,7 +226,7 @@ def test_n_obs_without_runs():
     rng = np.random.default_rng(4)
     n_inputs, chunkers, retrievals = 20, ("fixed", "semantic"), ("bm25", "dense")
     data = _make_factorial_df(rng, n_inputs=n_inputs, chunkers=chunkers, retrievals=retrievals)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"])
     n_templates = len(chunkers) * len(retrievals)
     assert bundle.factorial_lmm_info.n_obs == n_templates * n_inputs
 
@@ -236,7 +236,7 @@ def test_n_obs_with_runs():
     n_inputs, n_runs = 20, 5
     chunkers, retrievals = ("fixed", "semantic"), ("bm25", "dense")
     data = _make_factorial_df(rng, n_inputs=n_inputs, n_runs=n_runs, chunkers=chunkers, retrievals=retrievals)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     n_templates = len(chunkers) * len(retrievals)
     # LMM fitted on individual observations: N_templates × M_inputs × R_runs
     assert bundle.factorial_lmm_info.n_obs == n_templates * n_inputs * n_runs
@@ -249,14 +249,14 @@ def test_n_obs_with_runs():
 def test_seed_variance_none_without_runs():
     rng = np.random.default_rng(6)
     data = _make_factorial_df(rng)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"])
     assert bundle.seed_variance is None
 
 
 def test_seed_variance_populated_with_runs():
     rng = np.random.default_rng(7)
     data = _make_factorial_df(rng, n_runs=5)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     assert bundle.seed_variance is not None
 
 
@@ -271,11 +271,11 @@ def test_n_obs_larger_with_runs():
 
     rng_no = np.random.default_rng(8)
     data_no = _make_factorial_df(rng_no, n_inputs=n_inputs, chunkers=chunkers, retrievals=retrievals)
-    bundle_no = ps.analyze_factorial(data_no, factors=["chunker", "retrieval"])
+    bundle_no = es.analyze_factorial(data_no, factors=["chunker", "retrieval"])
 
     rng_with = np.random.default_rng(8)
     data_with = _make_factorial_df(rng_with, n_inputs=n_inputs, n_runs=n_runs, chunkers=chunkers, retrievals=retrievals)
-    bundle_with = ps.analyze_factorial(data_with, factors=["chunker", "retrieval"], run_col="seed")
+    bundle_with = es.analyze_factorial(data_with, factors=["chunker", "retrieval"], run_col="seed")
 
     assert bundle_with.factorial_lmm_info.n_obs == bundle_no.factorial_lmm_info.n_obs * n_runs
 
@@ -287,7 +287,7 @@ def test_n_obs_larger_with_runs():
 def test_scores_shape_without_runs():
     rng = np.random.default_rng(10)
     data = _make_factorial_df(rng, n_inputs=20)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"])
     scores = bundle.benchmark.scores
     assert scores.ndim == 2
     assert scores.shape[0] == 4  # 2 chunkers × 2 retrievals
@@ -298,7 +298,7 @@ def test_scores_shape_with_runs():
     rng = np.random.default_rng(11)
     n_runs = 5
     data = _make_factorial_df(rng, n_inputs=20, n_runs=n_runs)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     scores = bundle.benchmark.scores
     assert scores.ndim == 3
     assert scores.shape[0] == 4   # templates
@@ -319,7 +319,7 @@ def test_effect_sizes_and_ranking_are_reasonable_no_runs():
         sigma_input=0.2,
         sigma_resid=0.1,
     )
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], n_sim=3000)
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], n_sim=3000)
 
     means = dict(zip(bundle.benchmark.template_labels, bundle.robustness.mean))
 
@@ -358,7 +358,7 @@ def test_effect_sizes_and_ranking_are_reasonable_with_runs():
         sigma_input=0.2,
         sigma_resid=0.1,
     )
-    bundle = ps.analyze_factorial(
+    bundle = es.analyze_factorial(
         data,
         factors=["chunker", "retrieval"],
         run_col="seed",
@@ -491,7 +491,7 @@ def test_backend_parity_statsmodels_vs_pymer4_request(n_runs: int):
     data = _make_factorial_df(rng_data, n_inputs=40, n_runs=n_runs)
     run_col = "seed"
 
-    bundle_sm = ps.analyze_factorial(
+    bundle_sm = es.analyze_factorial(
         data,
         factors=["chunker", "retrieval"],
         run_col=run_col,
@@ -500,7 +500,7 @@ def test_backend_parity_statsmodels_vs_pymer4_request(n_runs: int):
         rng=np.random.default_rng(4242),
     )
 
-    bundle_py = ps.analyze_factorial(
+    bundle_py = es.analyze_factorial(
         data,
         factors=["chunker", "retrieval"],
         run_col=run_col,
@@ -521,14 +521,14 @@ def test_missing_run_col_raises():
     rng = np.random.default_rng(12)
     data = _make_factorial_df(rng)
     with pytest.raises(ValueError, match="Columns not found"):
-        ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="nonexistent")
+        es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="nonexistent")
 
 
 def test_missing_factor_col_raises():
     rng = np.random.default_rng(13)
     data = _make_factorial_df(rng)
     with pytest.raises(ValueError, match="Columns not found"):
-        ps.analyze_factorial(data, factors=["chunker", "nonexistent"])
+        es.analyze_factorial(data, factors=["chunker", "nonexistent"])
 
 
 def test_r2_runs_treated_as_no_runs():
@@ -539,6 +539,6 @@ def test_r2_runs_treated_as_no_runs():
 
     rng = np.random.default_rng(14)
     data = _make_factorial_df(rng, n_inputs=n_inputs, n_runs=2, chunkers=chunkers, retrievals=retrievals)
-    bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
+    bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"], run_col="seed")
     # R=2 → is_seeded=False → LMM uses cell means → n_obs = N_templates * M_inputs
     assert bundle.factorial_lmm_info.n_obs == n_templates * n_inputs

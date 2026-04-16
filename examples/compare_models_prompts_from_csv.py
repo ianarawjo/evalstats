@@ -1,4 +1,4 @@
-"""Load a saved multi-model x prompt benchmark CSV and analyze it with promptstats.
+"""Load a saved multi-model x prompt benchmark CSV and analyze it with evalstats.
 
 This example compares models and prompts from a pre-collected dataset rather than
 calling any model APIs live.
@@ -26,7 +26,7 @@ from pathlib import Path
 
 import pandas as pd
 
-import promptstats as pstats
+import evalstats as estats
 
 
 DEFAULT_CSV = (
@@ -70,7 +70,7 @@ def _parse_args() -> argparse.Namespace:
             "newcombe",
             "fisher_exact",
         ],
-        help="Statistical method passed to promptstats.analyze(...).",
+        help="Statistical method passed to evalstats.analyze(...).",
     )
     parser.add_argument(
         "--correction",
@@ -85,7 +85,7 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Global alpha for confidence level and significance threshold "
-            "(for example 0.01 for 99%% CI). Uses promptstats default if omitted."
+            "(for example 0.01 for 99%% CI). Uses evalstats default if omitted."
         ),
     )
     return parser.parse_args()
@@ -111,7 +111,7 @@ def _prepare_long_df(raw_df: pd.DataFrame) -> pd.DataFrame:
         }
     )[["model", "prompt", "input", "run", "score"]].copy()
 
-    # Ensure numeric score for robust parsing by promptstats.from_dataframe.
+    # Ensure numeric score for robust parsing by evalstats.from_dataframe.
     long_df["score"] = pd.to_numeric(long_df["score"], errors="coerce")
     return long_df
 
@@ -122,7 +122,7 @@ def main() -> None:
     if args.alpha is not None:
         if not (0.0 < args.alpha < 1.0):
             raise ValueError("--alpha must be strictly between 0 and 1.")
-        pstats.set_alpha_ci(args.alpha)
+        estats.set_alpha_ci(args.alpha)
 
     csv_path = args.csv.expanduser().resolve()
     if not csv_path.exists():
@@ -137,9 +137,9 @@ def main() -> None:
         f"Prompts: {long_df['prompt'].nunique()} | Inputs: {long_df['input'].nunique()} | "
         f"Runs: {long_df['run'].nunique()}"
     )
-    print(f"Global alpha: {pstats.get_alpha_ci():.4f}")
+    print(f"Global alpha: {estats.get_alpha_ci():.4f}")
 
-    benchmark, load_report = pstats.from_dataframe(
+    benchmark, load_report = estats.from_dataframe(
         long_df,
         format="long",
         repair=True,
@@ -152,7 +152,7 @@ def main() -> None:
         print(" ", line)
 
     print("\n=== analyze(...): models + prompts ===")
-    analysis = pstats.analyze(
+    analysis = estats.analyze(
         benchmark,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -160,7 +160,7 @@ def main() -> None:
         n_bootstrap=args.n_bootstrap,
         correction=args.correction,
     )
-    pstats.print_analysis_summary(analysis, top_pairwise=10)
+    estats.print_analysis_summary(analysis, top_pairwise=10)
 
 
 if __name__ == "__main__":

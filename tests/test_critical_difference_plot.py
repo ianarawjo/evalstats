@@ -4,9 +4,9 @@ from types import SimpleNamespace
 import numpy as np
 import pandas as pd
 
-from promptstats.core.paired import FriedmanResult, PairedDiffResult, PairwiseMatrix
-from promptstats.compare import CompareReport, EntityStats
-from promptstats.vis.critical_difference import plot_critical_difference
+from evalstats.core.paired import FriedmanResult, PairedDiffResult, PairwiseMatrix
+from evalstats.compare import CompareReport, EntityStats
+from evalstats.vis.critical_difference import plot_critical_difference
 
 
 def _make_pairwise_for_overlap_bands() -> PairwiseMatrix:

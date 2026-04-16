@@ -6,8 +6,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from promptstats import cli
-from promptstats.core.types import BenchmarkResult, MultiModelBenchmark
+from evalstats import cli
+from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
 
 
 def _make_single_model_result() -> BenchmarkResult:
@@ -178,8 +178,8 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     def fake_print_summary(analysis, top_pairwise):
         summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise})
 
-    monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", fake_print_summary)
+    monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
+    monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", fake_print_summary)
 
     args = argparse.Namespace(
         file=file_path,
@@ -237,15 +237,15 @@ def test_cmd_analyze_sets_global_alpha_from_ci(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
     monkeypatch.setattr(
-        "promptstats.io.from_dataframe",
+        "evalstats.io.from_dataframe",
         lambda input_df, **kwargs: (
             _make_single_model_result(),
             type("Report", (), {"format_detected": "wide"})(),
         ),
     )
-    monkeypatch.setattr("promptstats.cli.set_alpha_ci", lambda alpha: captured.update(alpha=alpha))
-    monkeypatch.setattr("promptstats.core.router.analyze", lambda *a, **k: {"ok": True})
-    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", lambda *a, **k: None)
+    monkeypatch.setattr("evalstats.cli.set_alpha_ci", lambda alpha: captured.update(alpha=alpha))
+    monkeypatch.setattr("evalstats.core.router.analyze", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", lambda *a, **k: None)
 
     cli._cmd_analyze(args)
 
@@ -379,9 +379,9 @@ def test_cmd_analyze_routes_format_and_forwards_options(
     def fake_print_summary(analysis, top_pairwise):
         summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise})
 
-    monkeypatch.setattr("promptstats.io.from_dataframe", fake_from_dataframe)
-    monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", fake_print_summary)
+    monkeypatch.setattr("evalstats.io.from_dataframe", fake_from_dataframe)
+    monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
+    monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", fake_print_summary)
 
     args = argparse.Namespace(
         file=file_path,
@@ -455,7 +455,7 @@ def test_cmd_analyze_rejects_reference_not_in_templates(tmp_path):
         with pytest.MonkeyPatch.context() as mp:
             mp.setattr(cli, "_load_file", lambda path, sheet: df)
             mp.setattr(
-                "promptstats.io.from_dataframe",
+                "evalstats.io.from_dataframe",
                 lambda input_df, **kwargs: (
                     _make_single_model_result(),
                     type("Report", (), {"format_detected": "wide"})(),
@@ -492,14 +492,14 @@ def test_cmd_analyze_allows_per_evaluator_for_multimodel(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
     monkeypatch.setattr(
-        "promptstats.io.from_dataframe",
+        "evalstats.io.from_dataframe",
         lambda input_df, **kwargs: (
             _make_multi_model_result(),
             type("Report", (), {"format_detected": "long"})(),
         ),
     )
-    monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-    monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", lambda *a, **k: None)
+    monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
+    monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", lambda *a, **k: None)
 
     cli._cmd_analyze(args)
 
@@ -531,15 +531,15 @@ def test_cmd_analyze_writes_requested_outputs(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
     monkeypatch.setattr(
-        "promptstats.io.from_dataframe",
+        "evalstats.io.from_dataframe",
         lambda input_df, **kwargs: (
             _make_single_model_result(),
             type("Report", (), {"format_detected": "wide"})(),
         ),
     )
-    monkeypatch.setattr("promptstats.core.router.analyze", lambda *a, **k: {"ok": True})
+    monkeypatch.setattr("evalstats.core.router.analyze", lambda *a, **k: {"ok": True})
     monkeypatch.setattr(
-        "promptstats.core.summary.print_analysis_summary",
+        "evalstats.core.summary.print_analysis_summary",
         lambda *a, **k: print("mock summary"),
     )
 
@@ -549,7 +549,7 @@ def test_cmd_analyze_writes_requested_outputs(tmp_path, monkeypatch):
     assert out_json.exists()
     assert "mock summary" in out_md.read_text(encoding="utf-8")
     payload = out_json.read_text(encoding="utf-8")
-    assert "promptstats.analysis" in payload
+    assert "evalstats.analysis" in payload
 
 
 @pytest.mark.parametrize(
@@ -620,14 +620,14 @@ def test_cmd_analyze_maps_analysis_value_error(tmp_path, monkeypatch):
 
     monkeypatch.setattr(cli, "_load_file", lambda path, sheet: df)
     monkeypatch.setattr(
-        "promptstats.io.from_dataframe",
+        "evalstats.io.from_dataframe",
         lambda input_df, **kwargs: (
             _make_single_model_result(),
             type("Report", (), {"format_detected": "wide"})(),
         ),
     )
     monkeypatch.setattr(
-        "promptstats.core.router.analyze",
+        "evalstats.core.router.analyze",
         lambda *a, **k: (_ for _ in ()).throw(ValueError("analysis failed")),
     )
 
@@ -642,7 +642,7 @@ def test_main_dispatches_to_cmd_analyze(monkeypatch):
         called["args"] = args
 
     monkeypatch.setattr(cli, "_cmd_analyze", fake_cmd_analyze)
-    monkeypatch.setattr("sys.argv", ["promptstats", "analyze", "data.csv"])
+    monkeypatch.setattr("sys.argv", ["evalstats", "analyze", "data.csv"])
 
     cli.main()
 

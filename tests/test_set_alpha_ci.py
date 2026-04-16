@@ -3,8 +3,8 @@
 import pytest
 import numpy as np
 
-import promptstats as ps
-from promptstats.config import set_alpha_ci, get_alpha_ci
+import evalstats as es
+from evalstats.config import set_alpha_ci, get_alpha_ci
 
 
 # ---------------------------------------------------------------------------
@@ -59,7 +59,7 @@ def test_set_alpha_ci_rejects_greater_than_one():
 def test_compare_prompts_stores_global_alpha():
     """report.alpha should reflect the global alpha when none is passed."""
     set_alpha_ci(0.03)
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 1, 0, 1, 0], "b": [0, 0, 1, 0, 0]},
         method="fisher_exact",
         correction="none",
@@ -71,7 +71,7 @@ def test_compare_prompts_stores_global_alpha():
 def test_compare_prompts_explicit_alpha_overrides_global():
     """An explicit alpha= kwarg should take precedence over set_alpha_ci."""
     set_alpha_ci(0.03)
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 1, 0, 1, 0], "b": [0, 0, 1, 0, 0]},
         method="fisher_exact",
         correction="none",
@@ -88,7 +88,7 @@ def test_compare_prompts_explicit_alpha_overrides_global():
 def test_compare_models_stores_global_alpha():
     """report.alpha should reflect the global alpha when none is passed."""
     set_alpha_ci(0.03)
-    report = ps.compare_models(
+    report = es.compare_models(
         {
             "A": np.array([[1, 1, 0, 1, 0, 1, 0, 0, 1, 1],
                            [1, 0, 1, 1, 0, 1, 1, 0, 1, 0]]),
@@ -120,7 +120,7 @@ def test_alpha_affects_unbeaten_in_compare_prompts():
     }
 
     # Verify the known p-value (sanity check)
-    ref = ps.compare_prompts(
+    ref = es.compare_prompts(
         scores, method="sign_test", correction="none", simultaneous_ci=False, alpha=0.05, rng=_rng(),
     )
     p_val = ref.pairwise.get("a", "b").p_value
@@ -130,13 +130,13 @@ def test_alpha_affects_unbeaten_in_compare_prompts():
 
     # Loose alpha (> p_val): a significantly beats b → only a is unbeaten.
     # Use simultaneous_ci=False to test the p-value-based significance path.
-    report_loose = ps.compare_prompts(
+    report_loose = es.compare_prompts(
         scores, method="sign_test", correction="none", simultaneous_ci=False, alpha=0.05, rng=_rng(),
     )
     assert report_loose.unbeaten == ["a"]
 
     # Strict alpha (< p_val): no significant edge → unbeaten is None
-    report_strict = ps.compare_prompts(
+    report_strict = es.compare_prompts(
         scores, method="sign_test", correction="none", simultaneous_ci=False, alpha=0.01, rng=_rng(),
     )
     assert report_strict.unbeaten is None
@@ -153,7 +153,7 @@ def test_global_alpha_affects_unbeaten_outcome():
     # Via global: loose alpha → a is unbeaten.
     # Use simultaneous_ci=False to test the p-value-based significance path.
     set_alpha_ci(0.05)
-    report_global_loose = ps.compare_prompts(
+    report_global_loose = es.compare_prompts(
         scores, method="sign_test", correction="none", simultaneous_ci=False, rng=_rng(),
     )
     assert report_global_loose.unbeaten == ["a"]
@@ -161,7 +161,7 @@ def test_global_alpha_affects_unbeaten_outcome():
 
     # Via global: strict alpha → no winner
     set_alpha_ci(0.01)
-    report_global_strict = ps.compare_prompts(
+    report_global_strict = es.compare_prompts(
         scores, method="sign_test", correction="none", simultaneous_ci=False, rng=_rng(),
     )
     assert report_global_strict.unbeaten is None

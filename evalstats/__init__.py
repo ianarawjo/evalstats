@@ -1,14 +1,14 @@
-"""promptstats: Statistical analysis and visualization for prompt benchmarking."""
+"""evalstats: Statistical analysis and visualization for prompt benchmarking."""
 
-from promptstats.core.types import BenchmarkResult, MultiModelBenchmark
-from promptstats.core.paired import pairwise_differences, all_pairwise, vs_baseline, friedman_nemenyi, FriedmanResult
-from promptstats.core.ranking import bootstrap_ranks
-from promptstats.core.variance import (
+from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
+from evalstats.core.paired import pairwise_differences, all_pairwise, vs_baseline, friedman_nemenyi, FriedmanResult
+from evalstats.core.ranking import bootstrap_ranks
+from evalstats.core.variance import (
     robustness_metrics,
     seed_variance_decomposition,
     SeedVarianceResult,
 )
-from promptstats.core.router import (
+from evalstats.core.router import (
     analyze,
     analyze_factorial,
     AnalysisBundle,
@@ -16,21 +16,21 @@ from promptstats.core.router import (
     BenchmarkShape,
     MultiModelBundle,
 )
-from promptstats.core.summary import print_analysis_summary, print_brief_summary
-from promptstats.vis.point_estimates import plot_point_estimates
-from promptstats.vis.critical_difference import plot_critical_difference
-from promptstats.vis.forest import plot_ci_forest
-from promptstats.vis.scoreboard import plot_accuracy_bar
-from promptstats.io import from_dataframe, DataLoadReport
-from promptstats.core.resampling import bayes_binary_ci_1d, bayes_paired_diff_ci
-from promptstats.core import bayes_evals
-from promptstats.compare import (
+from evalstats.core.summary import print_analysis_summary, print_brief_summary
+from evalstats.vis.point_estimates import plot_point_estimates
+from evalstats.vis.critical_difference import plot_critical_difference
+from evalstats.vis.forest import plot_ci_forest
+from evalstats.vis.scoreboard import plot_accuracy_bar
+from evalstats.io import from_dataframe, DataLoadReport
+from evalstats.core.resampling import bayes_binary_ci_1d, bayes_paired_diff_ci
+from evalstats.core import bayes_evals
+from evalstats.compare import (
     compare_prompts,
     compare_models,
     CompareReport,
     EntityStats,
 )
-from promptstats.config import set_alpha_ci, get_alpha_ci
+from evalstats.config import set_alpha_ci, get_alpha_ci
 
 __version__ = "0.1.9"
 
@@ -73,10 +73,10 @@ __all__ = [
 
 # LMMInfo and FactorialLMMInfo are exported lazily so that statsmodels/pymer4
 # are not hard dependencies.  Access via:
-#   from promptstats.core.mixed_effects import LMMInfo, FactorialLMMInfo
+#   from evalstats.core.mixed_effects import LMMInfo, FactorialLMMInfo
 # or inspect bundle.lmm_info / bundle.factorial_lmm_info at runtime.
 try:
-    from promptstats.core.mixed_effects import LMMInfo, FactorialLMMInfo
+    from evalstats.core.mixed_effects import LMMInfo, FactorialLMMInfo
     __all__ = __all__ + ["LMMInfo", "FactorialLMMInfo"]
 except ImportError:
     pass

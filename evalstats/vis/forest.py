@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-from promptstats.compare import CompareReport
+from evalstats.compare import CompareReport
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +57,8 @@ def plot_ci_forest(
     ----------
     report : CompareReport
         Primary report — the CIs and tier colouring are drawn from this.
-        Returned by :func:`promptstats.compare_prompts` or
-        :func:`promptstats.compare_models`.
+        Returned by :func:`evalstats.compare_prompts` or
+        :func:`evalstats.compare_models`.
     compare_to : CompareReport, optional
         A second report to overlay for comparison (e.g. a smaller or
         single-run eval).  Its CIs are drawn in a lighter colour offset

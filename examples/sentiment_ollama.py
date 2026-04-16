@@ -1,8 +1,8 @@
-"""Demo: Real LLM evaluation using promptstats analyze router (Ollama).
+"""Demo: Real LLM evaluation using evalstats analyze router (Ollama).
 
 Calls a locally running Ollama model (e.g., gpt-oss:20b) to classify the sentiment
 of customer reviews using prompt template variants, scores outputs with
-code-based evaluators, and then runs `promptstats.analyze` in both aggregate
+code-based evaluators, and then runs `evalstats.analyze` in both aggregate
 and per-evaluator modes.
 
 Change MODEL to switch between different local Ollama models.
@@ -24,7 +24,7 @@ from urllib import error, request
 
 import numpy as np
 
-import promptstats as pstats
+import evalstats as estats
 
 # ---------------------------------------------------------------------------
 # The model and Ollama API URL
@@ -247,7 +247,7 @@ def run_benchmark() -> tuple[np.ndarray, list[list[str]]]:
     -------
     scores : np.ndarray
         Shape ``(N_templates, N_inputs, 1, N_evaluators)`` — the unit runs
-        axis (axis 2) matches the promptstats ``(N, M, R, K)`` convention.
+        axis (axis 2) matches the evalstats ``(N, M, R, K)`` convention.
     outputs : list[list[str]]
         Raw model outputs indexed by [template_idx][input_idx].
     """
@@ -297,7 +297,7 @@ def main():
 
     # raw_scores shape: (N_templates, N_inputs, 1, N_evaluators) — the unit
     # runs axis is already in place from run_benchmark.
-    result_3d = pstats.BenchmarkResult(
+    result_3d = estats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -310,7 +310,7 @@ def main():
     )
 
     print("=== analyze(..., evaluator_mode='per_evaluator') ===")
-    analysis_by_eval = pstats.analyze(
+    analysis_by_eval = estats.analyze(
         result_3d,
         evaluator_mode="per_evaluator",
         reference="grand_mean",
@@ -320,10 +320,10 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
+    estats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
 
     print("=== analyze(..., evaluator_mode='aggregate') ===")
-    analysis_agg = pstats.analyze(
+    analysis_agg = estats.analyze(
         result_3d,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -333,15 +333,15 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_agg, top_pairwise=8)
+    estats.print_analysis_summary(analysis_agg, top_pairwise=8)
     print()
 
-    result_2d = pstats.BenchmarkResult(
+    result_2d = estats.BenchmarkResult(
         scores=result_3d.get_2d_scores(),
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_estimates(
+    fig = estats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(

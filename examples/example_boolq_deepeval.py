@@ -1,11 +1,11 @@
 # example_boolq_deepeval.py
 #
 # Runs a small subset of BoolQ via deepeval for three models (OpenAI + OpenRouter),
-# then passes results to promptstats for comparative analysis.
+# then passes results to evalstats for comparative analysis.
 # Requires `deepeval`, `openai`, and API keys in the environment.
 #
 # Install deps:
-#   pip install deepeval openai promptstats
+#   pip install deepeval openai evalstats
 
 import os
 import pandas as pd
@@ -13,7 +13,7 @@ from deepeval.benchmarks import BoolQ
 from deepeval.models.base_model import DeepEvalBaseLLM
 from openai import OpenAI
 
-import promptstats  # your library
+import evalstats  # your library
 
 
 # ---------------------------------------------------------------------------
@@ -174,16 +174,16 @@ for model in models:
 
 
 # ---------------------------------------------------------------------------
-# 4. Pass results into promptstats
+# 4. Pass results into evalstats
 #
-#    promptstats.analyze() expects a BenchmarkResult / MultiModelBenchmark.
+#    evalstats.analyze() expects a BenchmarkResult / MultiModelBenchmark.
 #    Build a long-form DataFrame with canonical columns, then parse it via
-#    promptstats.from_dataframe(...).
+#    evalstats.from_dataframe(...).
 # ---------------------------------------------------------------------------
 
 results_long = pd.concat(results_by_model, ignore_index=True)
 
-benchmark_result, load_report = promptstats.from_dataframe(
+benchmark_result, load_report = evalstats.from_dataframe(
     results_long,
     format="long",
     return_report=True,
@@ -192,8 +192,8 @@ benchmark_result, load_report = promptstats.from_dataframe(
 for line in load_report.to_lines():
     print(line)
 
-analysis = promptstats.analyze(benchmark_result)
-promptstats.print_analysis_summary(analysis)
+analysis = evalstats.analyze(benchmark_result)
+evalstats.print_analysis_summary(analysis)
 
 """
 Output should look something like:

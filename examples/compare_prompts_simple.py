@@ -1,4 +1,4 @@
-"""Simple synthetic example for promptstats.compare_prompts.
+"""Simple synthetic example for evalstats.compare_prompts.
 
 Usage:
     python examples/compare_prompts_simple.py
@@ -6,7 +6,7 @@ Usage:
 
 import numpy as np
 
-import promptstats as pstats
+import evalstats as estats
 
 
 rng = np.random.default_rng(7)
@@ -22,7 +22,7 @@ scores_dict = {
     "prompt_c": rng.normal(loc=0.70, scale=0.12, size=n_inputs),
 }
 
-report = pstats.compare_prompts(
+report = estats.compare_prompts(
     scores_dict,
     statistic="mean",
     n_bootstrap=2_000,

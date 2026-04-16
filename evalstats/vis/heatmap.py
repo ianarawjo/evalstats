@@ -6,7 +6,7 @@ prompt templates.
 
 Typical use::
 
-    from promptstats.vis.heatmap import plot_model_prompt_heatmap
+    from evalstats.vis.heatmap import plot_model_prompt_heatmap
     fig = plot_model_prompt_heatmap(benchmark, metric_name="Originality")
     fig.savefig("heatmap.png", dpi=150, bbox_inches="tight")
 """
@@ -21,7 +21,7 @@ import numpy as np
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
-from promptstats.core.types import MultiModelBenchmark
+from evalstats.core.types import MultiModelBenchmark
 
 
 def plot_model_prompt_heatmap(
@@ -43,7 +43,7 @@ def plot_model_prompt_heatmap(
     Parameters
     ----------
     data : MultiModelBenchmark or np.ndarray
-        Either a :class:`~promptstats.core.types.MultiModelBenchmark` (the
+        Either a :class:`~evalstats.core.types.MultiModelBenchmark` (the
         model and prompt labels are taken from it) or a pre-computed 2-D
         ``(n_models, n_prompts)`` mean-score array.  When passing an array,
         supply *model_labels* and *prompt_labels* explicitly.

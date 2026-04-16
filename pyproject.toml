@@ -3,7 +3,7 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "promptstats"
+name = "evalstats"
 version = "0.1.9"
 description = "Statistically sane analysis methods for comparing prompt and LLM performance."
 readme = "README.md"
@@ -27,8 +27,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ianarawjo/promptstats"
-Repository = "https://github.com/ianarawjo/promptstats"
+Homepage = "https://github.com/ianarawjo/evalstats"
+Repository = "https://github.com/ianarawjo/evalstats"
 
 [project.optional-dependencies]
 interactive = ["plotly>=5.0"]
@@ -60,7 +60,7 @@ all = [
 dev = ["pytest>=7.0", "pytest-cov", "build>=1.0", "twine>=5.0"]
 
 [project.scripts]
-promptstats = "promptstats.cli:main"
+evalstats = "evalstats.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["promptstats*"]
+include = ["evalstats*"]

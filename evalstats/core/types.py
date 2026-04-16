@@ -1,4 +1,4 @@
-"""Core data types for promptstats."""
+"""Core data types for evalstats."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def _check_metadata_length(
 class BenchmarkResult:
     """Container for benchmark scores across templates and inputs.
 
-    The fundamental input to all promptstats analyses. Wraps a score matrix
+    The fundamental input to all evalstats analyses. Wraps a score matrix
     where every template has been evaluated on every input (complete design).
 
     Score array shape convention

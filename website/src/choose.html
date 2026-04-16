@@ -7,7 +7,7 @@
     <span class="dot"></span>
     <span>Recommendations backed by simulation study</span>
     <span class="dot"></span>
-    <span>Uses <a href="https://pypi.org/project/promptstats/" style="color:inherit">promptstats</a></span>
+    <span>Uses <a href="https://pypi.org/project/evalstats/" style="color:inherit">evalstats</a></span>
   </p>
 </div>
 
@@ -167,10 +167,10 @@ const FLOW = {
     tags: ['Binary', 'Single Sample'],
     description: 'The Wilson interval is a closed-form confidence interval for proportions. It dramatically outperforms all bootstrap methods at small N (even N = 10–30) and is instantaneous to compute. It is the recommended default whenever your eval scores are strictly 0 / 1.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # scores: list or array of 0s and 1s, one per eval item
-report = ps.compare_prompts(
+report = es.compare_prompts(
     {"my_prompt": scores},
     method="wilson",
 )
@@ -190,10 +190,10 @@ print(f"Mean: {stats.mean:.3f}  95% CI: [{stats.ci_low:.3f}, {stats.ci_high:.3f}
     tags: ['Binary', 'Pairwise A vs. B'],
     description: 'For binary A-vs-B comparisons, the Bayesian paired method builds the paired 2\u00d72 contingency table (win / lose / tie counts across items) and draws a posterior over the difference in proportions. Simulation results show it achieves the closest coverage to the 0.95 target, especially at small N.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # scores_a, scores_b: arrays of 0s and 1s for the same eval items
-report = ps.compare_prompts(
+report = es.compare_prompts(
     {"model_a": scores_a, "model_b": scores_b},
     method="bayes_binary",
 )
@@ -215,10 +215,10 @@ print(report.quick_summary())
     tags: ['Numeric', 'Single Sample'],
     description: 'Smooth bootstrap applies kernel density estimation (KDE) before resampling, producing confidence intervals that are better calibrated for bounded and discrete distributions like Likert scales and 0\u2013100 grade scores. It is the recommended default for all non-binary eval scores.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # scores: list or array of numeric eval scores (e.g., Likert 1-5, float 0-100)
-report = ps.compare_prompts(
+report = es.compare_prompts(
     {"my_prompt": scores},
     # method="smooth_bootstrap" is the default; no need to specify
 )
@@ -238,10 +238,10 @@ print(f"Mean: {stats.mean:.3f}  95% CI: [{stats.ci_low:.3f}, {stats.ci_high:.3f}
     tags: ['Numeric', 'Pairwise A vs. B'],
     description: 'Smooth bootstrap with Gaussian KDE is the recommended pairwise method for numeric scores. It draws resampled per-item differences between paired scores, producing a confidence interval on the true performance gap. Benjamini-Hochberg correction (<code>fdr_bh</code>) is the default for p-values (and is equivalent for a single pair).',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # scores_a, scores_b: numeric arrays, same length, same eval items
-report = ps.compare_prompts(
+report = es.compare_prompts(
     {"model_a": scores_a, "model_b": scores_b},
   # correction="fdr_bh" is the default
 )
@@ -264,17 +264,17 @@ print(f"\u0394 = {pair.point_diff:+.3f}  95% CI: [{pair.ci_low:.3f}, {pair.ci_hi
     tags: ['Numeric', 'Pairwise A vs. B', 'Repeated Runs'],
     description: 'When each eval item is run R \u2265 3 times, a nested two-level bootstrap separates run-to-run stochasticity from genuine performance differences. The outer loop resamples eval items; the inner loop resamples runs within each item. Pass 2-D arrays with shape (items \u00d7 runs).',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # scores_a, scores_b: 2-D arrays of shape (M items x R runs)
 # e.g., scores_a[i, r] is run r of model A on input i
-report = ps.compare_prompts(
+report = es.compare_prompts(
     {"model_a": scores_a_2d, "model_b": scores_b_2d},
     # Nested bootstrap activates automatically when R >= 3
 )
 print(report.quick_summary())`,
     why: `<p>When the same eval item is run multiple times (at temperature&nbsp;&gt;&nbsp;0, or with multiple LLM judges), a single-level bootstrap treats all runs as independent observations and underestimates variance &mdash; producing CIs that are too narrow and overconfident.</p>
-<p>The nested bootstrap first resamples runs within each item (inner level), then resamples items (outer level). This correctly propagates both sources of uncertainty into the final CI. Pass a 2-D array with at least 3 runs per item; <code>promptstats</code> detects the shape and switches to nested mode automatically.</p>`,
+<p>The nested bootstrap first resamples runs within each item (inner level), then resamples items (outer level). This correctly propagates both sources of uncertainty into the final CI. Pass a 2-D array with at least 3 runs per item; <code>evalstats</code> detects the shape and switches to nested mode automatically.</p>`,
     links: [
       { label: 'Methods landscape', href: './index.html#bootstrap' },
       { label: 'Investigation: Checking Response Consistency', href: './investigations/response-consistency.html' },
@@ -287,10 +287,10 @@ print(report.quick_summary())`,
     tags: ['Numeric', 'Multiple Variants (k > 2)'],
     description: 'When comparing k > 2 variants simultaneously, each pairwise comparison uses smooth bootstrap and the resulting p-values are adjusted with Benjamini-Hochberg FDR correction (<code>fdr_bh</code>). This controls the expected false discovery rate while retaining higher power than stricter family-wise controls.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # One score array per variant (all same length, same eval items)
-report = ps.compare_prompts({
+report = es.compare_prompts({
     "prompt_a": scores_a,
     "prompt_b": scores_b,
     "prompt_c": scores_c,
@@ -316,10 +316,10 @@ for (a, b), p_vals in report.pairwise_p_values.items():
     tags: ['Numeric', 'Multiple Variants (k\u00a0>\u00a02)', 'Repeated Runs'],
     description: 'The full pipeline for complex evals: nested bootstrap correctly propagates run-to-run variance into each pairwise CI, and Benjamini-Hochberg correction (<code>fdr_bh</code>) controls expected false discoveries across all k(k\u22121)/2 pairwise comparisons. Pass 2-D score arrays (items \u00d7 runs) for each variant.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # 2-D score arrays (M items x R runs) per variant
-report = ps.compare_prompts({
+report = es.compare_prompts({
     "prompt_a": scores_a_2d,
     "prompt_b": scores_b_2d,
     "prompt_c": scores_c_2d,
@@ -341,10 +341,10 @@ print(report.quick_summary())`,
     tags: ['Binary', 'Multiple Variants (k\u00a0>\u00a02)'],
     description: 'When comparing k\u00a0>\u00a02 binary conditions, all-pairs Bayesian paired comparisons are run and the resulting p-values are adjusted with Benjamini-Hochberg FDR correction (<code>fdr_bh</code>). The same compare_prompts() call handles any number of variants \u2014 just add more entries to the dict.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # One array of 0s and 1s per variant, same eval items in each
-report = ps.compare_prompts(
+report = es.compare_prompts(
     {
         "prompt_a": scores_a,
         "prompt_b": scores_b,
@@ -373,11 +373,11 @@ for label, stats in report.entity_stats.items():
     tags: ['Binary', 'Models \u00d7 Prompts Grid'],
     description: 'For a grid of models \u00d7 prompt templates with binary scores, compare_models() accepts a nested dict and aggregates each model\'s performance across templates. It then runs Bayesian paired comparisons between models with Benjamini-Hochberg FDR correction, giving you a per-model ranking with calibrated uncertainty.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # Nested dict: {"model": {"template": binary_scores_array}}
 # All models must have the same template keys and the same M inputs.
-report = ps.compare_models(
+report = es.compare_models(
     {
         "gpt-4.1": {
             "zero-shot": scores_g4_zs,   # 1-D array of 0s/1s, length M
@@ -410,11 +410,11 @@ for label, stats in report.entity_stats.items():
     tags: ['Numeric', 'Models \u00d7 Prompts Grid'],
     description: 'For a grid of models \u00d7 prompt templates with numeric scores, compare_models() with a nested dict collapses each model\'s performance across templates and runs smooth bootstrap pairwise comparisons between models with Benjamini-Hochberg FDR correction. This gives you a per-model ranking with calibrated CIs.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # Nested dict: {"model": {"template": numeric_scores_array}}
 # All models must have the same template keys and the same M inputs.
-report = ps.compare_models(
+report = es.compare_models(
     {
         "gpt-4.1": {
             "zero-shot":        scores_g4_zs,
@@ -448,12 +448,12 @@ for label, stats in report.entity_stats.items():
     tags: ['Numeric', 'Models \u00d7 Prompts Grid', 'Repeated Runs'],
     description: 'The full factorial setup with repeated runs: pass 2-D arrays (inputs \u00d7 runs) for each model\u2013template cell. compare_models() activates nested bootstrap automatically, propagating run-to-run variance through the template collapse and into each pairwise model CI. Benjamini-Hochberg correction (<code>fdr_bh</code>) controls expected false discoveries across model comparisons.',
     code:
-`import promptstats as ps
+`import evalstats as es
 
 # Nested dict: {"model": {"template": 2D_scores_array}}
 # Each 2-D array has shape (M inputs, R runs).
 # Nested bootstrap activates automatically when R >= 3.
-report = ps.compare_models(
+report = es.compare_models(
     {
         "gpt-4.1": {
             "zero-shot": scores_g4_zs_2d,    # shape (M, R)
@@ -682,7 +682,7 @@ function renderResult(node) {
   codeWrap.className = 'code-block-wrap';
   const codeLabel = document.createElement('div');
   codeLabel.className = 'code-block-label';
-  codeLabel.textContent = 'Python \u00b7 promptstats';
+  codeLabel.textContent = 'Python \u00b7 evalstats';
   const pre = document.createElement('pre');
   const code = document.createElement('code');
   code.textContent = node.code;  // textContent auto-escapes HTML

@@ -14,9 +14,9 @@ import warnings
 import numpy as np
 import pytest
 
-import promptstats as ps
-from promptstats import BenchmarkResult, analyze
-from promptstats.core.types import MultiModelBenchmark
+import evalstats as es
+from evalstats import BenchmarkResult, analyze
+from evalstats.core.types import MultiModelBenchmark
 
 # ---------------------------------------------------------------------------
 # Module-level skip guard: skip everything if pymer4 / R is not present.
@@ -31,7 +31,7 @@ pymer4 = pytest.importorskip(
 # activation fix is exercised here too — and so that a missing R / lme4
 # installation produces a clean skip rather than a confusing ImportError.
 try:
-    from promptstats.core.mixed_effects import _require_pymer4
+    from evalstats.core.mixed_effects import _require_pymer4
     _require_pymer4()
 except Exception:
     pytest.skip("pymer4 installed but R/lme4 not reachable", allow_module_level=True)
@@ -150,7 +150,7 @@ def _make_full_result_parametrized(
     )
 
 
-def _pairwise_mean_diffs(bundle: ps.AnalysisBundle) -> np.ndarray:
+def _pairwise_mean_diffs(bundle: es.AnalysisBundle) -> np.ndarray:
     """Return pairwise mean differences in a deterministic label order."""
     labels = list(bundle.pairwise.labels)
     diffs = []
@@ -169,9 +169,9 @@ def test_lmm_analyze_returns_analysis_bundle():
     result = _make_result(np.random.default_rng(0))
     bundle = analyze(result, method="lmm", n_bootstrap=500, rng=np.random.default_rng(1))
 
-    assert isinstance(bundle, ps.AnalysisBundle)
+    assert isinstance(bundle, es.AnalysisBundle)
     assert bundle.lmm_info is not None
-    assert isinstance(bundle.lmm_info, ps.LMMInfo)
+    assert isinstance(bundle.lmm_info, es.LMMInfo)
 
 
 def test_lmm_info_fields_are_finite():
@@ -467,7 +467,7 @@ def test_lmm_accepts_nan_cells():
     assert result.has_missing
     # Should not raise
     bundle = analyze(result, method="lmm", n_bootstrap=300, rng=np.random.default_rng(201))
-    assert isinstance(bundle, ps.AnalysisBundle)
+    assert isinstance(bundle, es.AnalysisBundle)
 
 
 def test_lmm_nan_emits_warning():
@@ -563,7 +563,7 @@ def test_lmm_nan_high_missing_fraction_still_runs():
     )
     # Should not raise (though results may be less reliable)
     bundle = analyze(result, method="lmm", n_bootstrap=200, rng=np.random.default_rng(271))
-    assert isinstance(bundle, ps.AnalysisBundle)
+    assert isinstance(bundle, es.AnalysisBundle)
     assert bundle.lmm_info is not None
 
 

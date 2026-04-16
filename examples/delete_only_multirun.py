@@ -32,7 +32,7 @@ import numpy as np
 
 from openai import OpenAI
 
-import promptstats as pstats
+import evalstats as estats
 
 
 # ---------------------------------------------------------------------------
@@ -362,7 +362,7 @@ def main():
     elapsed = time.time() - t0
     print(f"\nCompleted in {elapsed:.1f}s\n")
 
-    result = pstats.BenchmarkResult(
+    result = estats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -375,7 +375,7 @@ def main():
     )
 
     print("=== analyze(..., evaluator_mode='per_evaluator') ===")
-    analysis_by_eval = pstats.analyze(
+    analysis_by_eval = estats.analyze(
         result,
         evaluator_mode="per_evaluator",
         reference="grand_mean",
@@ -385,11 +385,11 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
+    estats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
     print()
 
     print("=== analyze(..., evaluator_mode='aggregate') ===")
-    analysis_agg = pstats.analyze(
+    analysis_agg = estats.analyze(
         result,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -399,14 +399,14 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_agg, top_pairwise=8)
+    estats.print_analysis_summary(analysis_agg, top_pairwise=8)
 
-    result_2d = pstats.BenchmarkResult(
+    result_2d = estats.BenchmarkResult(
         scores=result.get_2d_scores(),
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_estimates(
+    fig = estats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(

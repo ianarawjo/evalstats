@@ -504,7 +504,7 @@ def analyze_factorial(
     RAG pipeline with two factors (chunker × retrieval method):
 
     >>> import pandas as pd
-    >>> import promptstats as ps
+    >>> import evalstats as es
     >>> data = pd.DataFrame([
     ...     {"input_id": "q1", "chunker": "fixed_512", "retrieval": "bm25",  "score": 0.72},
     ...     {"input_id": "q1", "chunker": "fixed_512", "retrieval": "dense", "score": 0.85},
@@ -515,8 +515,8 @@ def analyze_factorial(
     ...     {"input_id": "q2", "chunker": "semantic",  "retrieval": "bm25",  "score": 0.65},
     ...     {"input_id": "q2", "chunker": "semantic",  "retrieval": "dense", "score": 0.82},
     ... ])
-    >>> bundle = ps.analyze_factorial(data, factors=["chunker", "retrieval"])
-    >>> ps.print_analysis_summary(bundle)
+    >>> bundle = es.analyze_factorial(data, factors=["chunker", "retrieval"])
+    >>> es.print_analysis_summary(bundle)
     """
     import pandas as pd
 

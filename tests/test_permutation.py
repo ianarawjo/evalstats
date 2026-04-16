@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-import promptstats as ps
-from promptstats.core.paired import pairwise_differences, _paired_sign_test_p
+import evalstats as es
+from evalstats.core.paired import pairwise_differences, _paired_sign_test_p
 
 
 def test_pairwise_permutation_detects_nonzero_paired_effect():
@@ -72,13 +72,13 @@ def test_analyze_accepts_permutation_method_with_runs():
     scores[0] = base + rng.normal(0.03, 0.02, size=(n_inputs, n_runs))
     scores[1] = base + rng.normal(-0.03, 0.02, size=(n_inputs, n_runs))
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=["A", "B"],
         input_labels=[f"i{i:02d}" for i in range(n_inputs)],
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         method="permutation",
         n_bootstrap=2000,
@@ -129,13 +129,13 @@ def test_analyze_accepts_sign_test_method_with_runs():
     scores[0] = base + rng.normal(0.03, 0.02, size=(n_inputs, n_runs))
     scores[1] = base + rng.normal(-0.03, 0.02, size=(n_inputs, n_runs))
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=["A", "B"],
         input_labels=[f"i{i:02d}" for i in range(n_inputs)],
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         method="sign_test",
         n_bootstrap=1500,

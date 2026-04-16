@@ -762,7 +762,7 @@ def bayes_paired_diff_ci(
 
     Implements the paired Dirichlet-multinomial model from Bowyer et al. (2025),
     "Don't use the CLT in LLM evals with fewer than a few hundred datapoints"
-    (``promptstats/core/bayes_evals.py``).  Uses importance sampling over a
+    (``evalstats/core/bayes_evals.py``).  Uses importance sampling over a
     bivariate Gaussian model to obtain the full posterior over
     ``theta_A - theta_B``, accounting for within-question correlation.
 

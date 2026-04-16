@@ -32,8 +32,8 @@ from urllib import error, request
 import numpy as np
 import pandas as pd
 
-from promptstats.core.router import analyze_factorial
-from promptstats.core.summary import print_analysis_summary
+from evalstats.core.router import analyze_factorial
+from evalstats.core.summary import print_analysis_summary
 
 
 MODEL = "gemma3:1b"

@@ -1,16 +1,16 @@
-"""Command-line interface for promptstats.
+"""Command-line interface for evalstats.
 
 Entry point declared in pyproject.toml::
 
     [project.scripts]
-    promptstats = "promptstats.cli:main"
+    evalstats = "evalstats.cli:main"
 
 Usage::
 
-    promptstats analyze data.csv
-    promptstats analyze data.xlsx --sheet "Results"
-    promptstats analyze data.csv --ci 0.90 --n-bootstrap 5000
-    promptstats analyze data.csv --evaluator-mode per_evaluator
+    evalstats analyze data.csv
+    evalstats analyze data.xlsx --sheet "Results"
+    evalstats analyze data.csv --ci 0.90 --n-bootstrap 5000
+    evalstats analyze data.csv --evaluator-mode per_evaluator
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Union
 import numpy as np
 import pandas as pd
 
-from promptstats.config import set_alpha_ci
+from evalstats.config import set_alpha_ci
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +112,7 @@ Long / tidy format  (one observation per row):
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="promptstats",
+        prog="evalstats",
         description="Statistical analysis for comparing prompt and model performance on benchmarks.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -166,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FLOAT",
         help=(
             "Confidence level for intervals. If omitted, uses the project-wide "
-            "default from promptstats.config.get_alpha_ci() (0.99)."
+            "default from evalstats.config.get_alpha_ci() (0.99)."
         ),
     )
     analyze.add_argument(
@@ -347,7 +347,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         _die(
             f"{exc}\n"
             "Install openpyxl for XLSX support:  pip install openpyxl\n"
-            "Or install with the xlsx extra:     pip install promptstats[xlsx]"
+            "Or install with the xlsx extra:     pip install evalstats[xlsx]"
         )
     except Exception as exc:
         _die(f"could not read file: {exc}")
@@ -355,7 +355,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     print(f"  {len(df)} rows × {len(df.columns)} columns: {list(df.columns)}")
 
     # --- Detect / parse format ---
-    from promptstats.io import from_dataframe
+    from evalstats.io import from_dataframe
 
     try:
         result, report = from_dataframe(
@@ -370,7 +370,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         print(f"  Detected format: {report.format_detected}")
 
     # --- Show what was loaded ---
-    from promptstats.core.types import BenchmarkResult, MultiModelBenchmark
+    from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
 
     if isinstance(result, MultiModelBenchmark):
         runs_str = f" × {result.n_runs} runs" if result.n_runs > 1 else ""
@@ -408,8 +408,8 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     print()
 
     # --- Run analysis ---
-    from promptstats.core.router import analyze
-    from promptstats.core.summary import print_analysis_summary
+    from evalstats.core.router import analyze
+    from evalstats.core.summary import print_analysis_summary
 
     print("Running analysis ...", flush=True)
     try:
@@ -438,7 +438,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     summary_buffer = io.StringIO()
     with redirect_stdout(summary_buffer):
         if getattr(args, "brief", False):
-            from promptstats.core.summary import print_brief_summary
+            from evalstats.core.summary import print_brief_summary
             print_brief_summary(analysis)
         else:
             print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
@@ -448,7 +448,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
     out_paths = getattr(args, "out", None)
     if out_paths:
         if ci is None:
-            from promptstats.config import get_alpha_ci
+            from evalstats.config import get_alpha_ci
 
             ci_for_outputs = 1.0 - get_alpha_ci()
         else:
@@ -490,7 +490,7 @@ def _load_file(path: Path, sheet: Union[int, str] = 0) -> pd.DataFrame:
 
 def _die(msg: str) -> None:
     sys.stdout.flush()
-    print(f"promptstats error: {msg}", file=sys.stderr)
+    print(f"evalstats error: {msg}", file=sys.stderr)
     sys.exit(1)
 
 
@@ -517,8 +517,8 @@ def _write_outputs(
     n_bootstrap: int,
     ci: float,
 ) -> None:
-    from promptstats.core.router import AnalysisBundle, MultiModelBundle
-    from promptstats.vis.point_estimates import plot_point_estimates
+    from evalstats.core.router import AnalysisBundle, MultiModelBundle
+    from evalstats.vis.point_estimates import plot_point_estimates
 
     for raw in out_paths:
         out_path = Path(raw).expanduser().resolve()
@@ -527,7 +527,7 @@ def _write_outputs(
 
         if suffix in {".txt", ".md"}:
             if suffix == ".md":
-                content = "# promptstats analysis\n\n```text\n" + summary_text.rstrip() + "\n```\n"
+                content = "# evalstats analysis\n\n```text\n" + summary_text.rstrip() + "\n```\n"
             else:
                 content = summary_text
             out_path.write_text(content, encoding="utf-8")
@@ -536,7 +536,7 @@ def _write_outputs(
 
         if suffix == ".json":
             payload = {
-                "type": "promptstats.analysis",
+                "type": "evalstats.analysis",
                 "summary": summary_text,
                 "analysis": _to_builtin(analysis),
             }

@@ -1,8 +1,8 @@
 import pytest
 from matplotlib.container import ErrorbarContainer
 
-from promptstats.compare import CompareReport, EntityStats
-from promptstats.vis.scoreboard import plot_accuracy_bar
+from evalstats.compare import CompareReport, EntityStats
+from evalstats.vis.scoreboard import plot_accuracy_bar
 
 
 def test_plot_accuracy_bar_adds_errorbars_from_explicit_cis():

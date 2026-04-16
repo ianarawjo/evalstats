@@ -26,16 +26,16 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-import promptstats as ps
-from promptstats.core.resampling import (
+import evalstats as es
+from evalstats.core.resampling import (
     bayes_binary_ci_1d,
     bayes_paired_diff_ci,
     is_binary_scores,
     wilson_ci_1d,
 )
-from promptstats.core.paired import pairwise_differences, all_pairwise, vs_baseline
-from promptstats.core.router import analyze
-from promptstats.core.types import BenchmarkResult
+from evalstats.core.paired import pairwise_differences, all_pairwise, vs_baseline
+from evalstats.core.router import analyze
+from evalstats.core.types import BenchmarkResult
 
 
 # ---------------------------------------------------------------------------
@@ -68,17 +68,17 @@ def _benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
 # ---------------------------------------------------------------------------
 
 def test_bayes_binary_ci_1d_is_exported():
-    assert callable(ps.bayes_binary_ci_1d)
+    assert callable(es.bayes_binary_ci_1d)
 
 
 def test_bayes_paired_diff_ci_is_exported():
-    assert callable(ps.bayes_paired_diff_ci)
+    assert callable(es.bayes_paired_diff_ci)
 
 
 def test_bayes_evals_module_is_exported():
-    import promptstats
-    assert hasattr(promptstats, "bayes_evals")
-    mod = promptstats.bayes_evals
+    import evalstats
+    assert hasattr(evalstats, "bayes_evals")
+    mod = evalstats.bayes_evals
     for fn in ("get_bayes_posterior", "paired_comparisons", "binorm_cdf"):
         assert hasattr(mod, fn), f"bayes_evals missing {fn}"
 
@@ -425,7 +425,7 @@ def test_compare_prompts_auto_binary_small_n_pairwise_bayes_binary():
         "A": rng.binomial(1, 0.7, 50).astype(float).tolist(),
         "B": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
-    report = ps.compare_prompts(scores, method="auto", rng=_rng(60))
+    report = es.compare_prompts(scores, method="auto", rng=_rng(60))
     pair = report.pairwise.get("A", "B")
     assert "bayes binary" in pair.test_method.lower()
 
@@ -437,7 +437,7 @@ def test_compare_prompts_auto_binary_small_n_advantage_is_wilson():
         "A": rng.binomial(1, 0.7, 50).astype(float).tolist(),
         "B": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
-    report = ps.compare_prompts(scores, method="auto", rng=_rng(61))
+    report = es.compare_prompts(scores, method="auto", rng=_rng(61))
     assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
@@ -447,7 +447,7 @@ def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
                          1., 1., 0., 1., 0., 1., 0., 1., 0., 1.])  # 11/20
     b_scores = np.array([0., 1., 1., 0., 0., 1., 0., 1., 0., 0.,
                          1., 0., 1., 0., 0., 1., 0., 0., 1., 0.])  # 8/20
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"A": a_scores.tolist(), "B": b_scores.tolist()},
         method="auto", rng=_rng(62), n_bootstrap=500,
         alpha=0.05,
@@ -469,7 +469,7 @@ def test_compare_prompts_auto_binary_large_n_pairwise_bootstrap():
         "A": rng.binomial(1, 0.7, 110).astype(float).tolist(),
         "B": rng.binomial(1, 0.4, 110).astype(float).tolist(),
     }
-    report = ps.compare_prompts(scores, method="auto", rng=_rng(63))
+    report = es.compare_prompts(scores, method="auto", rng=_rng(63))
     pair = report.pairwise.get("A", "B")
     assert "bootstrap" in pair.test_method.lower()
 
@@ -481,7 +481,7 @@ def test_compare_prompts_auto_binary_large_n_advantage_is_wilson():
         "A": rng.binomial(1, 0.7, 110).astype(float).tolist(),
         "B": rng.binomial(1, 0.4, 110).astype(float).tolist(),
     }
-    report = ps.compare_prompts(scores, method="auto", rng=_rng(64))
+    report = es.compare_prompts(scores, method="auto", rng=_rng(64))
     assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
@@ -491,7 +491,7 @@ def test_compare_prompts_explicit_bayes_binary_binary_data():
         "A": rng.binomial(1, 0.65, 40).astype(float).tolist(),
         "B": rng.binomial(1, 0.45, 40).astype(float).tolist(),
     }
-    report = ps.compare_prompts(scores, method="bayes_binary", rng=_rng(65))
+    report = es.compare_prompts(scores, method="bayes_binary", rng=_rng(65))
     pair = report.pairwise.get("A", "B")
     assert "bayes binary" in pair.test_method.lower()
     assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
@@ -504,7 +504,7 @@ def test_compare_prompts_explicit_bayes_binary_raises_for_non_binary():
         "B": rng.uniform(0, 1, 30).tolist(),
     }
     with pytest.raises(ValueError, match="binary"):
-        ps.compare_prompts(scores, method="bayes_binary", rng=_rng(66))
+        es.compare_prompts(scores, method="bayes_binary", rng=_rng(66))
 
 
 def test_compare_prompts_auto_non_binary_uses_smooth_bootstrap():
@@ -513,7 +513,7 @@ def test_compare_prompts_auto_non_binary_uses_smooth_bootstrap():
         "A": rng.uniform(0, 1, 30).tolist(),
         "B": rng.uniform(0, 1, 30).tolist(),
     }
-    report = ps.compare_prompts(scores, method="auto", n_bootstrap=300, rng=_rng(67))
+    report = es.compare_prompts(scores, method="auto", n_bootstrap=300, rng=_rng(67))
     pair = report.pairwise.get("A", "B")
     assert "smooth" in pair.test_method.lower()
     assert report.full_analysis.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
@@ -530,7 +530,7 @@ def test_compare_models_auto_binary_small_n_pairwise_bayes_binary():
         "model_a": rng.binomial(1, 0.7, 50).astype(float).tolist(),
         "model_b": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
-    report = ps.compare_models(scores, method="auto", rng=_rng(70))
+    report = es.compare_models(scores, method="auto", rng=_rng(70))
     pair = report.pairwise.get("model_a", "model_b")
     assert "bayes binary" in pair.test_method.lower()
 
@@ -542,7 +542,7 @@ def test_compare_models_auto_binary_small_n_advantage_is_wilson():
         "model_a": rng.binomial(1, 0.7, 50).astype(float).tolist(),
         "model_b": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
-    report = ps.compare_models(scores, method="auto", rng=_rng(71))
+    report = es.compare_models(scores, method="auto", rng=_rng(71))
     assert report.full_analysis.model_level.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
@@ -553,7 +553,7 @@ def test_compare_models_auto_binary_large_n_pairwise_bootstrap():
         "model_a": rng.binomial(1, 0.7, 110).astype(float).tolist(),
         "model_b": rng.binomial(1, 0.4, 110).astype(float).tolist(),
     }
-    report = ps.compare_models(scores, method="auto", rng=_rng(72))
+    report = es.compare_models(scores, method="auto", rng=_rng(72))
     pair = report.pairwise.get("model_a", "model_b")
     assert "bootstrap" in pair.test_method.lower()
 
@@ -564,7 +564,7 @@ def test_compare_models_auto_binary_entity_stats_match_wilson():
                          1., 1., 0., 1., 0., 1., 0., 1., 0., 1.])  # 11/20
     b_scores = np.array([0., 1., 1., 0., 0., 1., 0., 1., 0., 0.,
                          1., 0., 1., 0., 0., 1., 0., 0., 1., 0.])  # 8/20
-    report = ps.compare_models(
+    report = es.compare_models(
         {"model_a": a_scores.tolist(), "model_b": b_scores.tolist()},
         method="auto", rng=_rng(73), n_bootstrap=500,
         alpha=0.05,
@@ -592,7 +592,7 @@ def test_compare_models_explicit_bayes_binary_flat_raises():
         "model_b": rng.binomial(1, 0.45, 40).astype(float).tolist(),
     }
     with pytest.raises(ValueError, match="binary"):
-        ps.compare_models(scores, method="bayes_binary", rng=_rng(74))
+        es.compare_models(scores, method="bayes_binary", rng=_rng(74))
 
 
 def test_compare_models_explicit_bayes_binary_raises_for_non_binary():
@@ -602,4 +602,4 @@ def test_compare_models_explicit_bayes_binary_raises_for_non_binary():
         "model_b": rng.uniform(0, 1, 30).tolist(),
     }
     with pytest.raises(ValueError, match="binary"):
-        ps.compare_models(scores, method="bayes_binary", rng=_rng(75))
+        es.compare_models(scores, method="bayes_binary", rng=_rng(75))

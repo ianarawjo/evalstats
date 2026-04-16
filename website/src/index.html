@@ -1,6 +1,6 @@
 <!-- ═══ HERO ═══ -->
 <header class="hero">
-  <div class="hero-eyebrow">A Living Reference · promptstats Project</div>
+  <div class="hero-eyebrow">A Living Reference · evalstats Project</div>
   <h1>Statistics for LLM Evals</h1>
   <p class="hero-subtitle">
     Evals need statistics. But which ones, and how? A research-informed, 
@@ -10,9 +10,9 @@
   <div class="hero-meta">
     <span>Last updated: March 2026</span>
     <span class="dot"></span>
-    <a class="badge" href="https://github.com/ianarawjo/promptstats" target="_blank">
+    <a class="badge" href="https://github.com/ianarawjo/evalstats" target="_blank">
       <svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 012-.27 7.6 7.6 0 012 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
-      promptstats
+      evalstats
     </a>
   </div>
 </header>
@@ -49,7 +49,7 @@
       </p>
       <p>
         I'm compiling this guide to share the insights I've gained from months of research into statistical methods 
-        for LLM evals, and from building <code>promptstats</code> — a Python library that implements sane defaults
+        for LLM evals, and from building <code>evalstats</code> — a Python library that implements sane defaults
         for statistical analysis of eval results. I started this project because I was frustrated by the lack of 
         clear guidance on how to analyze eval results, and by the prevalence of misleading or inappropriate statistical 
         methods in the wild. 
@@ -84,7 +84,7 @@
         <li><strong>Researchers and practitioners of AI evaluation</strong>, who want to understand the statistical properties of different methods and see empirical evidence for which methods work best in which LLM evals contexts (and potentially write/run their own simulations to check this).</li>
       </ul>
       <p>
-        Thus, I'm using <code>promptstats</code> as a pioneer implementation of the principles and recommendations in this guide. 
+        Thus, I'm using <code>evalstats</code> as a pioneer implementation of the principles and recommendations in this guide. 
         The library is designed to be easy to use for the first group of users, but it also makes the example notebooks more concise for the second and third groups.
         That said, you can get something from this guide without using the library.
       </p>
@@ -169,32 +169,32 @@
       </div>
       <p class="aside">
         ★ marks methods that were strongest in our simulations.
-        Smooth bootstrap remains the default in <code>promptstats</code> for numeric and interval data;
-        for binary data, <code>promptstats</code> uses Wilson for single-sample CIs and
+        Smooth bootstrap remains the default in <code>evalstats</code> for numeric and interval data;
+        for binary data, <code>evalstats</code> uses Wilson for single-sample CIs and
         Bayesian paired only for pairwise comparisons with <code>N &lt; 100</code>, then switches to
         bootstrap at <code>N &ge; 100</code> for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
         <strong>Boundary note:</strong> for bounded data (0–1 floats, Likert scales), the Gaussian
         perturbation is applied without clamping — individual resampled values may stray slightly outside
         the data range. This does not materially affect coverage on the <em>mean</em> statistic, which
-        is what <code>promptstats</code> estimates. Wilson and Newcombe are used for strictly binary
+        is what <code>evalstats</code> estimates. Wilson and Newcombe are used for strictly binary
         data.
       </p>
     </section> -->
 
-    <!-- ── SECTION: PROMPTSTATS ── -->
-    <section id="promptstats">
-      <h2>The promptstats Library</h2>
+    <!-- ── SECTION: EVALSTATS ── -->
+    <section id="evalstats">
+      <h2>The evalstats Library</h2>
       <p>
-        <code>promptstats</code> implements all of the above defaults out of the box. You pass it data,
+        <code>evalstats</code> implements all of the above defaults out of the box. You pass it data,
         it runs the most appropriate statistics given your data format and structure, and it produces
         a human-readable report.
       </p>
-      <pre><code class="language-bash">pip install promptstats</code></pre>
+      <pre><code class="language-bash">pip install evalstats</code></pre>
 
       <div class="callout callout-info">
         <div class="callout-label">Auto-selection logic</div>
         <p>
-          When <code>method="auto"</code> (the default), <code>promptstats</code> picks the most
+          When <code>method="auto"</code> (the default), <code>evalstats</code> picks the most
           appropriate method based on your data type and sample size.
           See <a href="which-method.html">Which Method?</a> for the full decision logic and
           simulation evidence behind these defaults.
@@ -207,7 +207,7 @@
         <code>compare_prompts</code> tests all pairs and applies multiple-comparisons correction.
       </p>
       <pre><code class="language-python">import numpy as np
-import promptstats as pstats
+import evalstats as estats
 
 scores = {
     "zero-shot":        np.array([0.80, 0.90, 0.70, ...]),
@@ -215,7 +215,7 @@ scores = {
     "chain-of-thought": np.array([0.60, 0.70, 0.65, ...]),
 }
 
-report = pstats.compare_prompts(scores)
+report = estats.compare_prompts(scores)
 report.summary()</code></pre>
 
       <h3 id="compare-models">Comparing models</h3>
@@ -223,14 +223,14 @@ report.summary()</code></pre>
         Same interface, one key per model. Works with a single prompt template or with no templates.
       </p>
       <pre><code class="language-python">import numpy as np
-import promptstats as pstats
+import evalstats as estats
 
 scores = {
     "gpt-4o-mini": np.array([0.82, 0.91, 0.78, ...]),
     "gemma-3-4b":  np.array([0.75, 0.84, 0.71, ...]),
 }
 
-report = pstats.compare_models(scores)
+report = estats.compare_models(scores)
 report.summary()</code></pre>
 
       <h3 id="compare-models-prompts">Comparing models and prompts together</h3>
@@ -240,7 +240,7 @@ report.summary()</code></pre>
         simultaneous CIs across the full grid.
       </p>
       <pre><code class="language-python">import numpy as np
-import promptstats as pstats
+import evalstats as estats
 
 scores = {
     "gpt-4.1-nano": {
@@ -257,28 +257,28 @@ scores = {
     },
 }
 
-report = pstats.compare_models(scores)
+report = estats.compare_models(scores)
 report.full_summary()</code></pre>
 
       <p>Example terminal output:</p>
       <div class="terminal-screenshot">
         <img src="./media/terminal-output-example.jpg"
-             alt="Example terminal output from pstats.compare_models showing cross-model ranking, mean advantage CIs, and an executive summary leaderboard"
+             alt="Example terminal output from estats.compare_models showing cross-model ranking, mean advantage CIs, and an executive summary leaderboard"
              style="width:100%; border-radius: var(--radius); display:block;" />
       </div>
 
       <p class="aside" style="margin-top:1rem;">
         More complete, runnable examples are in the
-        <a href="https://github.com/ianarawjo/promptstats/tree/main/examples" target="_blank" rel="noopener">
+        <a href="https://github.com/ianarawjo/evalstats/tree/main/examples" target="_blank" rel="noopener">
           <code>examples/</code> folder on GitHub</a>.
       </p>
 
       <h3 id="cli">Using the CLI (no Python required)</h3>
       <p>
-        Don't want to write Python? <code>promptstats</code> ships a command-line interface that reads
+        Don't want to write Python? <code>evalstats</code> ships a command-line interface that reads
         a CSV or Excel file and prints the full statistical report directly in your terminal.
       </p>
-      <pre><code class="language-bash">promptstats analyze results.csv</code></pre>
+      <pre><code class="language-bash">evalstats analyze results.csv</code></pre>
       <p>
         For multi-model comparison, use a <strong>long/tidy format</strong> CSV with at minimum
         <code>model</code>, <code>prompt</code>, <code>input</code>, and <code>score</code> columns:
@@ -311,17 +311,17 @@ report.full_summary()</code></pre>
         save outputs to a file, or tweak the confidence level:
       </p>
       <pre><code class="language-bash"># Excel file, non-default sheet
-promptstats analyze results.xlsx --sheet "Eval Results"
+evalstats analyze results.xlsx --sheet "Eval Results"
 
 # Save a Markdown summary and a mean-advantage plot
-promptstats analyze results.csv --out report.md plot.png
+evalstats analyze results.csv --out report.md plot.png
 
 # 95 % CIs instead of the default 99 %
-promptstats analyze results.csv --ci 0.95</code></pre>
+evalstats analyze results.csv --ci 0.95</code></pre>
       <p class="aside">
         Column name aliases are accepted for convenience — e.g. <code>template</code> instead of
         <code>prompt</code>, <code>item</code> instead of <code>input</code>, or <code>value</code>
-        instead of <code>score</code>. Run <code>promptstats analyze --help</code> for the full list.
+        instead of <code>score</code>. Run <code>evalstats analyze --help</code> for the full list.
       </p>
       <p>
         For more details and example usage, check out the <a href="usage.html">Example Usage</a> page.
@@ -350,7 +350,7 @@ promptstats analyze results.csv --ci 0.95</code></pre>
         </p>
         <p>
           So, I'm hoping that by creating this guide and the accompanying library, I can help raise the standard for statistical analysis in LLM evals, and make it easier for developers to make informed decisions based on their eval results.
-          Downstream applications like ChainForge could integrate <code>promptstats</code>, or the methods this guide recommends, 
+          Downstream applications like ChainForge could integrate <code>evalstats</code>, or the methods this guide recommends, 
           to provide better statistical analysis and reporting for evals, and I hope other tools will do the same.
         </p>
         <p>That said, I don't claim to have all the answers. I'm learning as I go, trying to 
@@ -367,7 +367,7 @@ promptstats analyze results.csv --ci 0.95</code></pre>
       <li><a href="#why-statistics">Why Statistics Matter</a></li>
       <li><a href="#design">Design of this Guide</a></li>
       <li>
-        <a href="#promptstats">promptstats</a>
+        <a href="#evalstats">evalstats</a>
         <ol class="toc-sub">
           <li><a href="#compare-prompts">compare_prompts</a></li>
           <li><a href="#compare-models">compare_models</a></li>

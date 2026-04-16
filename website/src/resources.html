@@ -67,7 +67,7 @@
       </p>
       <p>
         But CD diagram is just a visualization! There's nothing stopping us from adapting it to other tests and other philosophies. In fact,
-         <code>promptstats</code> adapts the CD diagram to work with pairwise confidence intervals (adjusted for multiple comparisons)
+         <code>evalstats</code> adapts the CD diagram to work with pairwise confidence intervals (adjusted for multiple comparisons)
         and estimated ranks from a bootstrapped distribution. However, it also supports the traditional NHST Friedman test and CD diagrams 
         generated from that, for users who want to run a more traditional analysis.
       </p>
@@ -121,7 +121,7 @@
           and smooth bootstrap with kernel density estimation (KDE) is the most reliable general-purpose method across non-binary eval scores.
           However, in our larger-N runs, the <code>bayes_evals</code> Bayesian paired method breaks down around
           N≈200+, producing overconfident intervals that can be dangerously wrong.
-          Thus, <code>promptstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
+          Thus, <code>evalstats</code> uses Bayesian paired only when <code>N &lt; 100</code>, then switches to
           bootstrap for better accuracy at larger N and to take advantage of multi-comparisons correction for pairwise CIs.
         </p>
       </div>
@@ -150,7 +150,7 @@
             settings) via cluster-robust standard errors. The paper identified a genuine gap: the
             industry norm of reporting bare means without uncertainty is indefensible at any sample
             size. See the <a href="./index.html#debunking">Debunking section</a> for how
-            promptstats&rsquo; smooth bootstrap improves on SE-based intervals at small N.
+            evalstats&rsquo; smooth bootstrap improves on SE-based intervals at small N.
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag tag-debated">discussed in guide</span>
@@ -549,9 +549,9 @@
       </div>
     </section>
 
-    <!-- ── SECTION: METHODS USED IN PROMPTSTATS ── -->
+    <!-- ── SECTION: METHODS USED IN EVALSTATS ── -->
     <section class="paper-section">
-      <h2>Methods and Perspectives Used in promptstats</h2>
+      <h2>Methods and Perspectives Used in evalstats</h2>
       <p>Papers for some statistical methods implemented in the library, as well as the estimation approach to stats adopted here.</p>
 
       <div class="paper-list">
@@ -571,7 +571,7 @@
             The Wald interval (p&#x0302;&thinsp;&plusmn;&thinsp;z&sdot;SE) is a first-order approximation that fails badly here.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">single-sample binary CI</span>
           </div>
         </div>
@@ -586,13 +586,13 @@
           <p class="paper-entry-summary">
             Systematically compares 11 CI methods for the difference between two proportions. The
             Wilson-hybrid method (Method 10 in the paper) consistently achieves near-nominal coverage
-            across the full probability space tested. promptstats uses the paired-samples extension of
+            across the full probability space tested. evalstats uses the paired-samples extension of
             this method for pairwise binary comparisons between prompts or models evaluated on the same
             input set. Note: this paper addresses independent proportions; the paired variant used in
-            promptstats follows the same Wilson-square-root construction applied to paired differences.
+            evalstats follows the same Wilson-square-root construction applied to paired differences.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">pairwise binary CI</span>
           </div>
         </div>
@@ -609,10 +609,10 @@
             for estimating the sampling distribution of any statistic, without making distributional
             assumptions. Establishes the theoretical properties that make the bootstrap valid for
             smooth statistics and justifies its use for constructing CIs from finite samples.
-            All bootstrap methods in promptstats (percentile, BCa, smooth) trace their lineage here.
+            All bootstrap methods in evalstats (percentile, BCa, smooth) trace their lineage here.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">bootstrap foundation</span>
           </div>
         </div>
@@ -652,11 +652,11 @@
             bootstrap resamples, which smooths the discrete empirical distribution. Shows improved
             coverage over the plain percentile bootstrap for continuous data at small sample sizes,
             because the smoothing reduces the discretization artifacts that cause the standard bootstrap
-            to under-cover at small N. promptstats implements this as <code>smooth_bootstrap</code>
+            to under-cover at small N. evalstats implements this as <code>smooth_bootstrap</code>
             using Scott&rsquo;s rule (h&thinsp;=&thinsp;n<sup>&minus;1/5</sup>&thinsp;&times;&thinsp;s) for the bandwidth.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">smooth bootstrap default</span>
           </div>
         </div>
@@ -673,10 +673,10 @@
             Argues that Banks&rsquo; method is substantially underappreciated in the statistical literature
             and particularly effective for small-N settings where the standard bootstrap discretization
             error is largest. Provides theoretical coverage guarantees and simulation evidence consistent
-            with promptstats&rsquo; own simulation results favoring the smooth bootstrap.
+            with evalstats&rsquo; own simulation results favoring the smooth bootstrap.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">smooth bootstrap theory</span>
           </div>
         </div>
@@ -693,7 +693,7 @@
             loadings. Finds that the percentile method achieves better overall coverage than BCa in
             typical settings, and that BCa&rsquo;s reputation for superiority depends on conditions that
             are often not met. Although the domain (factor analysis) differs from LLM evals, the
-            qualitative finding is consistent with promptstats&rsquo; simulation results: BCa underperforms
+            qualitative finding is consistent with evalstats&rsquo; simulation results: BCa underperforms
             on pairwise comparisons, where the asymmetry it was designed to correct does not manifest cleanly.
           </p>
           <div class="paper-entry-tags">
@@ -713,11 +713,11 @@
             Introduces the Holm&ndash;Bonferroni step-down procedure: sort p-values in ascending order,
             then compare the k-th smallest against &alpha;/(m&minus;k+1). This is uniformly more powerful
             than plain Bonferroni while maintaining strong family-wise error rate control under any
-            dependence structure. Applied in promptstats when comparing k prompts or models simultaneously,
+            dependence structure. Applied in evalstats when comparing k prompts or models simultaneously,
             replacing the conventional but unnecessarily conservative Bonferroni correction.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">multiple comparisons</span>
           </div>
         </div>
@@ -737,10 +737,10 @@
             and the Friedman test with post-hoc corrections for more than two. Introduces the
             critical difference (CD) diagram &mdash; the standard visualization for showing which
             classifiers differ significantly after correcting for multiple comparisons. CD diagrams
-            are implemented in promptstats for multi-prompt and multi-model comparisons.
+            are implemented in evalstats for multi-prompt and multi-model comparisons.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">used in promptstats</span>
+            <span class="paper-tag tag-used">used in evalstats</span>
             <span class="paper-tag">multiple comparisons</span>
             <span class="paper-tag">critical difference diagrams</span>
             <span class="paper-tag">nonparametric methods</span>
@@ -806,7 +806,7 @@
             the posterior probability that algorithm A outperforms B?&rdquo; and can incorporate a
             region of practical equivalence (ROPE) to distinguish meaningful from negligible
             differences. Includes practical Bayesian signed-rank and correlated t-tests with
-            software. The Bayesian estimation framing aligns closely with promptstats&rsquo;
+            software. The Bayesian estimation framing aligns closely with evalstats&rsquo;
             CI-first philosophy.
           </p>
           <div class="paper-entry-tags">
@@ -919,7 +919,7 @@
             CD diagram generation, and report output &mdash; into a single coherent API. Also
             implements the Bayesian tests from Benavoli et al. (2017). The reference implementation
             for anyone applying the non-parametric multi-algorithm comparison framework in R,
-            and a useful touchstone for understanding what promptstats&rsquo; CD diagram output
+            and a useful touchstone for understanding what evalstats&rsquo; CD diagram output
             corresponds to in the classical literature.
           </p>
           <div class="paper-entry-tags">
@@ -945,7 +945,7 @@
             Stats Reference Guide.
           </p>
           <div class="paper-entry-tags">
-            <span class="paper-tag tag-used">available in promptstats</span>
+            <span class="paper-tag tag-used">available in evalstats</span>
             <span class="paper-tag">Bayesian bootstrap</span>
           </div>
         </div>
@@ -960,7 +960,7 @@
             on when each is appropriate. Explains why BCa often outperforms percentile in asymmetric
             situations, but also identifies conditions under which BCa fails &mdash; particularly when the
             acceleration constant estimate is unstable, which tends to occur in pairwise comparison
-            settings. Useful background for understanding the BCa coverage collapse in promptstats&rsquo; simulations.
+            settings. Useful background for understanding the BCa coverage collapse in evalstats&rsquo; simulations.
           </p>
           <div class="paper-entry-tags">
             <span class="paper-tag">bootstrap reference</span>

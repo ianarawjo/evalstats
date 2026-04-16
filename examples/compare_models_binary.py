@@ -1,4 +1,4 @@
-"""Binary (pass/fail) model comparison example for promptstats.compare_models.
+"""Binary (pass/fail) model comparison example for evalstats.compare_models.
 
 Scores are 0/1 values (e.g. a judge labelling each response as correct or not).
 Uses the Newcombe interval method, which is designed for binary proportions.
@@ -9,7 +9,7 @@ Usage:
 
 import numpy as np
 
-import promptstats as pstats
+import evalstats as estats
 
 
 rng = np.random.default_rng(7)
@@ -32,7 +32,7 @@ scores_dict = {
     "model_C": (z > -0.385).astype(float),
 }
 
-report = pstats.compare_models(
+report = estats.compare_models(
     scores_dict,
     method="auto",
     statistic="mean",

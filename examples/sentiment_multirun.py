@@ -1,8 +1,8 @@
-"""Demo: Real LLM evaluation using promptstats analyze router — multiple runs.
+"""Demo: Real LLM evaluation using evalstats analyze router — multiple runs.
 
 Like sentiment.py but runs each (template, input) pair N_RUNS=3 times with
 temperature > 0, populating the runs axis of BenchmarkResult so that
-promptstats can account for within-template variability.
+evalstats can account for within-template variability.
 
 Requirements:
     pip install openai
@@ -22,7 +22,7 @@ import numpy as np
 
 from openai import OpenAI
 
-import promptstats as pstats
+import evalstats as estats
 
 
 # ---------------------------------------------------------------------------
@@ -224,7 +224,7 @@ def run_benchmark(client: OpenAI) -> tuple[np.ndarray, list[list[list[str]]]]:
     -------
     scores : np.ndarray
         Shape ``(N_templates, N_inputs, N_runs, N_evaluators)`` matching the
-        promptstats ``(N, M, R, K)`` convention.
+        evalstats ``(N, M, R, K)`` convention.
     outputs : list[list[list[str]]]
         Raw model outputs indexed by [run_idx][template_idx][input_idx].
     """
@@ -283,7 +283,7 @@ def main():
     print(f"\nCompleted in {elapsed:.1f}s\n")
 
     # raw_scores shape: (N_templates, N_inputs, N_runs, N_evaluators)
-    result = pstats.BenchmarkResult(
+    result = estats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -296,7 +296,7 @@ def main():
     )
 
     print("=== analyze(..., evaluator_mode='per_evaluator') ===")
-    analysis_by_eval = pstats.analyze(
+    analysis_by_eval = estats.analyze(
         result,
         evaluator_mode="per_evaluator",
         reference="grand_mean",
@@ -306,10 +306,10 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
+    estats.print_analysis_summary(analysis_by_eval, top_pairwise=4)
 
     print("=== analyze(..., evaluator_mode='aggregate') ===")
-    analysis_agg = pstats.analyze(
+    analysis_agg = estats.analyze(
         result,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -319,15 +319,15 @@ def main():
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_agg, top_pairwise=8)
+    estats.print_analysis_summary(analysis_agg, top_pairwise=8)
     print()
 
-    result_2d = pstats.BenchmarkResult(
+    result_2d = estats.BenchmarkResult(
         scores=result.get_2d_scores(),
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_estimates(
+    fig = estats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(

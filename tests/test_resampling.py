@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from promptstats.core.resampling import (
+from evalstats.core.resampling import (
     bayes_bootstrap_means_1d,
     bca_interval_1d,
     bootstrap_ci_1d,

@@ -308,7 +308,7 @@ class CompareReport:
     ):
         """Plot a raw scoreboard bar chart for this report with CI error bars.
 
-        Convenience wrapper around :func:`promptstats.vis.plot_accuracy_bar`.
+        Convenience wrapper around :func:`evalstats.vis.plot_accuracy_bar`.
         When called on a ``CompareReport``, per-entity confidence intervals are
         inferred automatically from ``entity_stats`` and drawn as error bars.
 
@@ -336,7 +336,7 @@ class CompareReport:
         -------
         matplotlib.figure.Figure
         """
-        from promptstats.vis import plot_accuracy_bar
+        from evalstats.vis import plot_accuracy_bar
 
         cis = None
         if error_bars:
@@ -565,8 +565,8 @@ def compare_prompts(
     --------
     Binary pass/fail, two prompts:
 
-    >>> import promptstats as ps
-    >>> report = ps.compare_prompts({
+    >>> import evalstats as es
+    >>> report = es.compare_prompts({
     ...     "baseline": [1, 1, 0, 1, 0],
     ...     "v2":       [1, 1, 1, 1, 0],
     ... })
@@ -576,7 +576,7 @@ def compare_prompts(
 
     Three-way comparison with continuous scores:
 
-    >>> report = ps.compare_prompts({
+    >>> report = es.compare_prompts({
     ...     "zero-shot":        [0.80, 0.90, 0.70, 0.85],
     ...     "few-shot":         [0.75, 0.88, 0.65, 0.80],
     ...     "chain-of-thought": [0.82, 0.91, 0.73, 0.87],
@@ -585,7 +585,7 @@ def compare_prompts(
 
     Multi-run (nested bootstrap activated when R ≥ 3):
 
-    >>> report = ps.compare_prompts({
+    >>> report = es.compare_prompts({
     ...     "baseline": [[0.80, 0.82, 0.79], [0.90, 0.88, 0.91]],
     ...     "v2":       [[0.85, 0.87, 0.84], [0.92, 0.90, 0.93]],
     ... })

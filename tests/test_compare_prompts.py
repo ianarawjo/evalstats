@@ -2,8 +2,8 @@ import numpy as np
 import pytest
 from matplotlib.container import ErrorbarContainer
 
-import promptstats as ps
-from promptstats.compare import CompareReport, EntityStats
+import evalstats as es
+from evalstats.compare import CompareReport, EntityStats
 
 
 # ---------------------------------------------------------------------------
@@ -20,17 +20,17 @@ def _rng(seed: int = 0) -> np.random.Generator:
 
 def test_compare_prompts_requires_dict():
     with pytest.raises(TypeError, match="dict"):
-        ps.compare_prompts([[1, 0, 1], [1, 1, 1]])
+        es.compare_prompts([[1, 0, 1], [1, 1, 1]])
 
 
 def test_compare_prompts_requires_at_least_two_prompts():
     with pytest.raises(ValueError, match="at least 2"):
-        ps.compare_prompts({"only_one": [1, 0, 1]})
+        es.compare_prompts({"only_one": [1, 0, 1]})
 
 
 def test_compare_prompts_mismatched_input_lengths():
     with pytest.raises(ValueError, match="same number of inputs"):
-        ps.compare_prompts(
+        es.compare_prompts(
             {"a": [1, 0, 1], "b": [1, 1]},
             rng=_rng(),
         )
@@ -38,7 +38,7 @@ def test_compare_prompts_mismatched_input_lengths():
 
 def test_compare_prompts_mixed_1d_2d_raises():
     with pytest.raises(ValueError, match="mix of 1-D and 2-D"):
-        ps.compare_prompts(
+        es.compare_prompts(
             {"a": [1, 0, 1], "b": [[1, 0], [0, 1], [1, 1]]},
             rng=_rng(),
         )
@@ -46,7 +46,7 @@ def test_compare_prompts_mixed_1d_2d_raises():
 
 def test_compare_prompts_mismatched_run_counts():
     with pytest.raises(ValueError, match="same number of runs"):
-        ps.compare_prompts(
+        es.compare_prompts(
             {
                 "a": [[1, 0, 1], [0, 1, 1]],   # R=3
                 "b": [[1, 0], [0, 1]],           # R=2
@@ -57,7 +57,7 @@ def test_compare_prompts_mismatched_run_counts():
 
 def test_compare_prompts_wrong_ndim():
     with pytest.raises(ValueError, match="dimensions"):
-        ps.compare_prompts(
+        es.compare_prompts(
             {"a": np.ones((3, 2, 2)), "b": np.ones((3, 2, 2))},
             rng=_rng(),
         )
@@ -65,7 +65,7 @@ def test_compare_prompts_wrong_ndim():
 
 @pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_compare_prompts_accepts_explicit_binary_methods(method: str):
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {
             "a": [1, 0, 1, 1, 0, 1, 0, 1],
             "b": [0, 0, 1, 0, 0, 1, 0, 0],
@@ -84,7 +84,7 @@ def test_compare_prompts_accepts_explicit_binary_methods(method: str):
 @pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
 def test_compare_prompts_explicit_binary_methods_reject_non_binary(method: str):
     with pytest.raises(ValueError, match=r"requires binary \(0/1\) data"):
-        ps.compare_prompts(
+        es.compare_prompts(
             {
                 "a": [0.1, 0.4, 0.8, 0.6, 0.2],
                 "b": [0.2, 0.5, 0.7, 0.4, 0.3],
@@ -95,7 +95,7 @@ def test_compare_prompts_explicit_binary_methods_reject_non_binary(method: str):
 
 
 def test_compare_prompts_accepts_sign_test_for_non_binary_data():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {
             "a": [0.72, 0.75, 0.78, 0.74, 0.71, 0.73, 0.77, 0.76],
             "b": [0.66, 0.69, 0.70, 0.68, 0.65, 0.67, 0.71, 0.70],
@@ -117,7 +117,7 @@ def test_friedman_nemenyi_all_ties_returns_stable_values():
             [1.0, 1.0, 1.0, 1.0, 1.0],
         ]
     )
-    result = ps.friedman_nemenyi(scores, ["a", "b", "c"])
+    result = es.friedman_nemenyi(scores, ["a", "b", "c"])
     assert result.statistic == pytest.approx(0.0, abs=1e-12)
     assert result.p_value == pytest.approx(1.0, abs=1e-12)
     assert all(p == pytest.approx(1.0, abs=1e-12) for p in result.nemenyi_p.values())
@@ -132,7 +132,7 @@ def test_friedman_nemenyi_label_length_must_match_templates():
         ]
     )
     with pytest.raises(ValueError, match="labels length"):
-        ps.friedman_nemenyi(scores, ["a", "b"])
+        es.friedman_nemenyi(scores, ["a", "b"])
 
 
 def test_friedman_nemenyi_matches_r_reference_values():
@@ -188,7 +188,7 @@ def test_friedman_nemenyi_matches_r_reference_values():
     labels = ["template_A", "template_B", "template_C"]
 
     # R matrix is (N inputs, k templates); API expects (k, N).
-    result = ps.friedman_nemenyi(scores.T, labels)
+    result = es.friedman_nemenyi(scores.T, labels)
 
     # We expect the Friedman statistic, df, and p-value to match R's output
     assert result.statistic == pytest.approx(10.333333333333329, abs=1e-6)
@@ -206,7 +206,7 @@ def test_friedman_nemenyi_matches_r_reference_values():
 # ---------------------------------------------------------------------------
 
 def test_compare_prompts_returns_report():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 1, 0, 1, 0], "b": [1, 1, 1, 1, 0]},
         n_bootstrap=500,
         rng=_rng(),
@@ -215,7 +215,7 @@ def test_compare_prompts_returns_report():
 
 
 def test_report_has_expected_attributes():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 1, 0, 1, 0], "b": [1, 1, 1, 1, 0]},
         n_bootstrap=500,
         rng=_rng(),
@@ -226,11 +226,11 @@ def test_report_has_expected_attributes():
     assert report.unbeaten in (None, ["a"], ["b"])
     assert isinstance(report.significant, bool)
     assert isinstance(report.quick_summary(), str) and len(report.quick_summary()) > 0
-    assert isinstance(report.full_analysis, ps.AnalysisBundle)
+    assert isinstance(report.full_analysis, es.AnalysisBundle)
 
 
 def test_report_means_are_correct():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [0.0, 1.0, 0.0], "b": [1.0, 1.0, 1.0]},
         n_bootstrap=500,
         rng=_rng(),
@@ -240,7 +240,7 @@ def test_report_means_are_correct():
 
 
 def test_report_plot_bars_adds_ci_error_bars():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {
             "a": [1, 0, 1, 1, 0, 1, 0, 1],
             "b": [1, 1, 1, 1, 0, 1, 1, 1],
@@ -256,7 +256,7 @@ def test_report_plot_bars_adds_ci_error_bars():
 
 
 def test_report_plot_bars_can_disable_error_bars():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {
             "a": [1, 0, 1, 1, 0, 1, 0, 1],
             "b": [1, 1, 1, 1, 0, 1, 1, 1],
@@ -276,7 +276,7 @@ def test_report_plot_bars_can_disable_error_bars():
 # ---------------------------------------------------------------------------
 
 def test_prompt_stats_fields_present():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.85, 0.92, 0.75, 0.88] * 5},
         n_bootstrap=500,
         rng=_rng(),
@@ -295,7 +295,7 @@ def test_prompt_stats_fields_present():
 
 def test_prompt_stats_ci_ordering():
     """ci_low < ci_high for all templates."""
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.6, 0.5, 0.65, 0.55] * 5},
         n_bootstrap=500,
         rng=_rng(),
@@ -307,7 +307,7 @@ def test_prompt_stats_ci_ordering():
 
 def test_pairwise_p_values_populated_for_two_way():
     """2-way comparison: pairwise p-values should be accessible via PairwiseMatrix."""
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.6, 0.5, 0.65, 0.55] * 5},
         n_bootstrap=500,
         rng=_rng(),
@@ -319,7 +319,7 @@ def test_pairwise_p_values_populated_for_two_way():
 
 def test_pairwise_p_values_match_pairwise_matrix():
     """pairwise p-value should be accessible via PairwiseMatrix both directions."""
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.6, 0.5, 0.65, 0.55] * 5},
         n_bootstrap=500,
         rng=_rng(),
@@ -331,7 +331,7 @@ def test_pairwise_p_values_match_pairwise_matrix():
 
 def test_pairwise_p_values_present_for_all_nway_pairs():
     """N-way comparison: pairwise results should be present for all pairs."""
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {
             "a": [0.8, 0.9, 0.7] * 5,
             "b": [0.6, 0.5, 0.65] * 5,
@@ -344,7 +344,7 @@ def test_pairwise_p_values_present_for_all_nway_pairs():
 
 
 def test_get_pairwise_p_values_works_both_directions():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [0.8, 0.9, 0.7, 0.85] * 5, "b": [0.6, 0.5, 0.65, 0.55] * 5},
         n_bootstrap=500,
         rng=_rng(),
@@ -364,7 +364,7 @@ def test_significant_difference_detected():
     a_scores = rng.normal(loc=0.5, scale=0.1, size=100)
     b_scores = rng.normal(loc=0.8, scale=0.1, size=100)
 
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": a_scores, "b": b_scores},
         n_bootstrap=2_000,
         rng=_rng(7),
@@ -377,7 +377,7 @@ def test_significant_difference_detected():
 def test_no_significant_difference_detected():
     """Identical scores should yield no unbeaten (all tied)."""
     scores = [0.8, 0.7, 0.9, 0.6, 0.8]
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": scores, "b": scores},
         n_bootstrap=500,
         rng=_rng(),
@@ -392,7 +392,7 @@ def test_alpha_controls_winner_threshold():
     a = rng.normal(0.5, 0.1, 50)
     b = rng.normal(0.55, 0.1, 50)  # small difference
 
-    report_strict = ps.compare_prompts(
+    report_strict = es.compare_prompts(
         {"a": a, "b": b},
         alpha=0.001,
         n_bootstrap=1_000,
@@ -407,7 +407,7 @@ def test_alpha_controls_winner_threshold():
 # ---------------------------------------------------------------------------
 
 def test_three_way_comparison_returns_report():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {
             "zero-shot": [0.80, 0.90, 0.70, 0.85, 0.75] * 4,
             "few-shot":  [0.75, 0.88, 0.65, 0.80, 0.70] * 4,
@@ -427,7 +427,7 @@ def test_three_way_single_winner_has_highest_mean():
     b = rng.normal(0.6, 0.05, 200)
     c = rng.normal(0.4, 0.05, 200)
 
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": a, "b": b, "c": c},
         n_bootstrap=2_000,
         rng=_rng(3),
@@ -443,7 +443,7 @@ def test_winners_can_include_multiple_top_prompts():
     b = rng.normal(0.80, 0.02, 160)
     c = rng.normal(0.60, 0.02, 160)
 
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": a, "b": b, "c": c},
         n_bootstrap=2_000,
         rng=_rng(8),
@@ -462,8 +462,8 @@ def test_multirun_1d_equivalent_shape():
     scores_1d = {"a": [0.8, 0.7, 0.9], "b": [0.85, 0.75, 0.95]}
     scores_2d = {"a": [[0.8], [0.7], [0.9]], "b": [[0.85], [0.75], [0.95]]}
 
-    r1 = ps.compare_prompts(scores_1d, n_bootstrap=200, rng=_rng())
-    r2 = ps.compare_prompts(scores_2d, n_bootstrap=200, rng=_rng())
+    r1 = es.compare_prompts(scores_1d, n_bootstrap=200, rng=_rng())
+    r2 = es.compare_prompts(scores_2d, n_bootstrap=200, rng=_rng())
 
     assert r1.means == pytest.approx(r2.means, abs=1e-9)
 
@@ -474,7 +474,7 @@ def test_multirun_nested_bootstrap_activates():
     a = rng.normal(0.5, 0.1, (20, 3))
     b = rng.normal(0.7, 0.1, (20, 3))
 
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": a, "b": b},
         n_bootstrap=500,
         rng=_rng(6),
@@ -488,7 +488,7 @@ def test_multirun_mean_matches_flattened():
     a_runs = np.array([[0.8, 0.9, 0.7], [0.6, 0.5, 0.7]])  # (2 inputs, 3 runs)
     b_runs = np.array([[0.9, 0.8, 0.85], [0.7, 0.65, 0.72]])
 
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": a_runs, "b": b_runs},
         n_bootstrap=200,
         rng=_rng(),
@@ -504,7 +504,7 @@ def test_multirun_mean_matches_flattened():
 # ---------------------------------------------------------------------------
 
 def test_summary_is_nonempty_string():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 0, 1, 1, 0], "b": [1, 1, 1, 0, 1]},
         n_bootstrap=200,
         rng=_rng(),
@@ -514,7 +514,7 @@ def test_summary_is_nonempty_string():
 
 
 def test_summary_mentions_selected_statistic_and_correction():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 0, 1, 1, 0], "b": [1, 1, 1, 0, 1]},
         statistic="median",
         correction="bonferroni",
@@ -527,7 +527,7 @@ def test_summary_mentions_selected_statistic_and_correction():
 
 def test_summary_delegates_to_compare_summary(capsys):
     """summary() should call print_compare_summary and produce focused output."""
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"baseline": [0.8, 0.7, 0.9, 0.85] * 5, "new": [0.82, 0.75, 0.91, 0.87] * 5},
         n_bootstrap=200,
         rng=_rng(),
@@ -540,7 +540,7 @@ def test_summary_delegates_to_compare_summary(capsys):
 
 
 def test_print_is_alias_for_summary(capsys):
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"baseline": [0.8, 0.7, 0.9, 0.85] * 5, "new": [0.82, 0.75, 0.91, 0.87] * 5},
         n_bootstrap=200,
         rng=_rng(),
@@ -556,7 +556,7 @@ def test_print_is_alias_for_summary(capsys):
 # ---------------------------------------------------------------------------
 
 def test_pairwise_get_works_both_directions():
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         {"a": [1, 0, 1, 1], "b": [0, 1, 0, 1]},
         n_bootstrap=200,
         rng=_rng(),

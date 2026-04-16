@@ -1,8 +1,8 @@
-"""Demo: Real LLM evaluation using promptstats.
+"""Demo: Real LLM evaluation using evalstats.
 
 Calls gpt-4.1-nano to classify the sentiment of customer reviews using four
 prompt template variants, scores outputs with code-based evaluators, then
-feeds results into promptstats for statistical analysis and visualization.
+feeds results into evalstats for statistical analysis and visualization.
 
 Requirements:
     pip install openai
@@ -22,7 +22,7 @@ import numpy as np
 
 from openai import OpenAI
 
-import promptstats as pstats
+import evalstats as estats
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +232,7 @@ def run_benchmark(client: OpenAI) -> tuple[np.ndarray, list[list[str]]]:
     -------
     scores : np.ndarray
         Shape ``(N_templates, N_inputs, 1, N_evaluators)`` — the unit runs
-        axis (axis 2) matches the promptstats ``(N, M, R, K)`` convention.
+        axis (axis 2) matches the evalstats ``(N, M, R, K)`` convention.
     outputs : list[list[str]]
         Raw model outputs indexed by [template_idx][input_idx].
     """
@@ -307,7 +307,7 @@ def main():
     # raw_scores shape: (N_templates, N_inputs, 1, N_evaluators) — the unit
     # runs axis is already in place from run_benchmark.
     # -----------------------------------------------------------------------
-    result_3d = pstats.BenchmarkResult(
+    result_3d = estats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -325,7 +325,7 @@ def main():
     # -----------------------------------------------------------------------
     # Robustness metrics
     # -----------------------------------------------------------------------
-    rob = pstats.robustness_metrics(scores_2d, TEMPLATE_LABELS, failure_threshold=0.5)
+    rob = estats.robustness_metrics(scores_2d, TEMPLATE_LABELS, failure_threshold=0.5)
     print("=== Robustness Metrics (averaged evaluators) ===")
     print(rob.summary_table().to_string())
     print()
@@ -340,7 +340,7 @@ def main():
     for label_a, label_b in pairs:
         idx_a = TEMPLATE_LABELS.index(label_a)
         idx_b = TEMPLATE_LABELS.index(label_b)
-        diff = pstats.pairwise_differences(
+        diff = estats.pairwise_differences(
             scores_2d, idx_a, idx_b, label_a, label_b,
             method="bootstrap", rng=rng,
         )
@@ -354,7 +354,7 @@ def main():
     # -----------------------------------------------------------------------
     # Bootstrap ranking
     # -----------------------------------------------------------------------
-    ranks = pstats.bootstrap_ranks(scores_2d, TEMPLATE_LABELS, n_bootstrap=5_000, rng=rng)
+    ranks = estats.bootstrap_ranks(scores_2d, TEMPLATE_LABELS, n_bootstrap=5_000, rng=rng)
     print("=== Bootstrap Rank Probabilities ===")
     template_col_width = min(40, max(len("Template") + 1, max(len(label) for label in TEMPLATE_LABELS) + 2))
     print(f"  {'Template':<{template_col_width}s} {'P(Best)':>9s} {'E[Rank]':>9s}")
@@ -368,12 +368,12 @@ def main():
     # -----------------------------------------------------------------------
     # Mean advantage plot — composite (average evaluators)
     # -----------------------------------------------------------------------
-    result_2d = pstats.BenchmarkResult(
+    result_2d = estats.BenchmarkResult(
         scores=scores_2d,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_estimates(
+    fig = estats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(
@@ -390,12 +390,12 @@ def main():
     # -----------------------------------------------------------------------
     for e_idx, e_name in enumerate(EVALUATOR_NAMES):
         ev_scores = raw_scores[:, :, 0, e_idx]
-        ev_result = pstats.BenchmarkResult(
+        ev_result = estats.BenchmarkResult(
             scores=ev_scores,
             template_labels=TEMPLATE_LABELS,
             input_labels=INPUT_LABELS,
         )
-        fig_e = pstats.plot_point_estimates(
+        fig_e = estats.plot_point_estimates(
             ev_result,
             reference="grand_mean",
             title=f"Template Advantage — evaluator: {e_name}\n({MODEL})",

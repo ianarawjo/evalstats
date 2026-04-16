@@ -18,11 +18,11 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-import promptstats as ps
-from promptstats import cli
-from promptstats.core.router import _resolve_p_value_method
-from promptstats.core.bundles import AnalysisBundle
-from promptstats.core.types import BenchmarkResult
+import evalstats as es
+from evalstats import cli
+from evalstats.core.router import _resolve_p_value_method
+from evalstats.core.bundles import AnalysisBundle
+from evalstats.core.types import BenchmarkResult
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +124,7 @@ class TestResolvePValueMethod:
 class TestAnalyzeStoresPValueMethod:
     def _bundle(self, **kw) -> AnalysisBundle:
         bench = _make_benchmark(_scores_2prompt())
-        result = ps.analyze(bench, n_bootstrap=200, rng=_rng(), **kw)
+        result = es.analyze(bench, n_bootstrap=200, rng=_rng(), **kw)
         assert isinstance(result, AnalysisBundle)
         return result
 
@@ -156,7 +156,7 @@ class TestAnalyzeStoresPValueMethod:
 
     def test_multimodel_stores_p_value_method(self):
         bench = _make_benchmark(_scores_2prompt())
-        from promptstats.core.types import MultiModelBenchmark
+        from evalstats.core.types import MultiModelBenchmark
         scores = np.stack([bench.scores, bench.scores * 0.9], axis=0)
         mmb = MultiModelBenchmark(
             scores=scores,
@@ -164,8 +164,8 @@ class TestAnalyzeStoresPValueMethod:
             template_labels=bench.template_labels,
             input_labels=bench.input_labels,
         )
-        result = ps.analyze(mmb, n_bootstrap=200, rng=_rng(), p_values=True)
-        from promptstats.core.bundles import MultiModelBundle
+        result = es.analyze(mmb, n_bootstrap=200, rng=_rng(), p_values=True)
+        from evalstats.core.bundles import MultiModelBundle
         assert isinstance(result, MultiModelBundle)
         assert result.model_level.p_value_method == "auto"
         assert result.template_level.p_value_method == "auto"
@@ -177,11 +177,11 @@ class TestAnalyzeStoresPValueMethod:
 
 class TestComparePropagatesPValueMethod:
     def test_default_report_p_value_method_is_none(self):
-        report = ps.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
+        report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
         assert report.p_value_method is None
 
     def test_p_values_true_report_stores_auto(self):
-        report = ps.compare_prompts(
+        report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), p_values=True
         )
         assert report.p_value_method == "auto"
@@ -192,7 +192,7 @@ class TestComparePropagatesPValueMethod:
         ("nemenyi", "nem"),
     ])
     def test_explicit_pairwise_test_in_report(self, test, expected):
-        report = ps.compare_prompts(
+        report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), pairwise_test=test
         )
         assert report.p_value_method == expected
@@ -202,7 +202,7 @@ class TestComparePropagatesPValueMethod:
             "M1": _scores_2prompt(n=40, seed=0)["A"],
             "M2": _scores_2prompt(n=40, seed=1)["B"],
         }
-        report = ps.compare_models(scores, n_bootstrap=200, rng=_rng(), p_values=True)
+        report = es.compare_models(scores, n_bootstrap=200, rng=_rng(), p_values=True)
         assert report.p_value_method == "auto"
 
 
@@ -217,10 +217,10 @@ class TestPrintAnalysisSummaryOutput:
         import io
         from contextlib import redirect_stdout
         bench = _make_benchmark(_scores_3prompt())
-        bundle = ps.analyze(bench, n_bootstrap=300, rng=_rng(), **kw)
+        bundle = es.analyze(bench, n_bootstrap=300, rng=_rng(), **kw)
         buf = io.StringIO()
         with redirect_stdout(buf):
-            ps.print_analysis_summary(bundle)
+            es.print_analysis_summary(bundle)
         return buf.getvalue()
 
     def test_default_no_p_values_in_output(self):
@@ -265,19 +265,19 @@ class TestCompareReportSummaryOutput:
         return buf.getvalue()
 
     def test_default_no_p_values(self):
-        report = ps.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
+        report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
         out = self._summary(report)
         assert not _has_p_column(out)
 
     def test_p_values_true_shows_column(self):
-        report = ps.compare_prompts(
+        report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), p_values=True
         )
         out = self._summary(report)
         assert _has_p_column(out)
 
     def test_pairwise_test_wilcoxon_shows_wsr(self):
-        report = ps.compare_prompts(
+        report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), pairwise_test="wilcoxon"
         )
         out = self._summary(report)
@@ -285,7 +285,7 @@ class TestCompareReportSummaryOutput:
 
     def test_explicit_override_suppresses(self):
         # Even if the report has p_value_method='auto', passing None should suppress.
-        report = ps.compare_prompts(
+        report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), p_values=True
         )
         assert report.p_value_method is not None
@@ -294,7 +294,7 @@ class TestCompareReportSummaryOutput:
 
     def test_explicit_override_enables(self):
         # Even if the report has p_value_method=None (default), passing 'wsr' should show.
-        report = ps.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
+        report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
         assert report.p_value_method is None
         out = self._summary(report, p_value_method="wsr")
         assert "p (wsr)" in out
@@ -349,12 +349,12 @@ class TestCLIForwarding:
             captured.update(kwargs)
             return {"ok": True}
 
-        monkeypatch.setattr("promptstats.io.from_dataframe", lambda df, **kw: (
+        monkeypatch.setattr("evalstats.io.from_dataframe", lambda df, **kw: (
             _make_benchmark(_scores_2prompt()),
             type("R", (), {"format_detected": "long"})(),
         ))
-        monkeypatch.setattr("promptstats.core.router.analyze", fake_analyze)
-        monkeypatch.setattr("promptstats.core.summary.print_analysis_summary", lambda *a, **k: None)
+        monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
+        monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", lambda *a, **k: None)
 
         args = argparse.Namespace(
             file=file_path,

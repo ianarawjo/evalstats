@@ -356,7 +356,7 @@ def print_pairwise_summary(
     Examples
     --------
     >>> pair = report.pairwise.get("Model A", "Model B")
-    >>> from promptstats.core.summary import print_pairwise_summary
+    >>> from evalstats.core.summary import print_pairwise_summary
     >>> print_pairwise_summary(pair)
 
     Or use the convenience method directly on the pair or the matrix:

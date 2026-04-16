@@ -38,8 +38,8 @@ STATIC_DIRS = ["media"]
 sys.path.insert(0, WEBSITE_DIR)
 from gen_stubs import INVESTIGATIONS, make_nav
 
-GITHUB_BASE = "https://github.com/ianarawjo/promptstats/blob/main/website/notebooks"
-COLAB_BASE  = "https://colab.research.google.com/github/ianarawjo/promptstats/blob/main/website/notebooks"
+GITHUB_BASE = "https://github.com/ianarawjo/evalstats/blob/main/website/notebooks"
+COLAB_BASE  = "https://colab.research.google.com/github/ianarawjo/evalstats/blob/main/website/notebooks"
 BASE_URL    = "https://statsforevals.com"
 
 # ---------------------------------------------------------------------------
@@ -131,10 +131,10 @@ FOOTER_HTML = """\
 <footer class="site-footer">
   <div class="footer-inner">
     <p>Statistics for LLM Evals &middot; A living document from the
-       <a href="https://github.com/ianarawjo/promptstats">promptstats</a> project</p>
+       <a href="https://github.com/ianarawjo/evalstats">evalstats</a> project</p>
     <ul class="footer-links">
-      <li><a href="https://github.com/ianarawjo/promptstats">GitHub</a></li>
-      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
+      <li><a href="https://github.com/ianarawjo/evalstats">GitHub</a></li>
+      <li><a href="https://pypi.org/project/evalstats/">PyPI</a></li>
     </ul>
   </div>
 </footer>"""
@@ -165,10 +165,10 @@ INDEX_JSON_LD = {
         },
         {
             "@type": "SoftwareApplication",
-            "name": "promptstats",
+            "name": "evalstats",
             "applicationCategory": "DeveloperApplication",
-            "url": "https://github.com/ianarawjo/promptstats",
-            "downloadUrl": "https://pypi.org/project/promptstats/",
+            "url": "https://github.com/ianarawjo/evalstats",
+            "downloadUrl": "https://pypi.org/project/evalstats/",
             "description": (
                 "A Python library that implements statistical defaults for analyzing "
                 "LLM evaluation results — confidence intervals, pairwise comparisons, "
@@ -192,7 +192,7 @@ _NAV_LINKS = [
     ("Choose a Method",  "{p}choose.html",                "choose"),
     ("Which Method?",    "{p}which-method.html",          "which-method"),
     ("Resources",        "{p}resources.html",             "resources"),
-    ("promptstats",      "{p}index.html#promptstats",     None),
+    ("evalstats",      "{p}index.html#evalstats",     None),
 ]
 
 
@@ -221,7 +221,7 @@ def make_site_nav_html(prefix="./", active=None):
           <line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/>
         </svg>
       </button>
-      <a class="nav-icon-link" href="https://github.com/ianarawjo/promptstats" target="_blank" rel="noopener" aria-label="GitHub">
+      <a class="nav-icon-link" href="https://github.com/ianarawjo/evalstats" target="_blank" rel="noopener" aria-label="GitHub">
         <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 005.47 7.59c.4.07.55-.17.55-.38l-.01-1.49c-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 012-.27 7.6 7.6 0 012 .27c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48l-.01 2.2c0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       </a>
       <a class="nav-icon-link" href="https://substack.com/@statsforevals" target="_blank" rel="noopener" aria-label="Newsletter" style="margin-right: 0.3rem;">
@@ -383,7 +383,7 @@ PAGE_CONFIGS = [
         "subtitle":       "A cheat sheet for common use cases \u2014 CLI commands and Python API, from install to reading results.",
         "active_sidebar": "usage",
         "description": (
-            "Runnable examples for the promptstats Python library and CLI — compare models, "
+            "Runnable examples for the evalstats Python library and CLI — compare models, "
             "compare prompts, analyze eval CSVs, and read statistical confidence interval reports."
         ),
     },
@@ -452,11 +452,11 @@ PAGE_CONFIGS = [
         "css":            "inv.css",
         "active_nav":     None,
         "eyebrow":        "Project",
-        "subtitle":       "Planned additions to the guide and the promptstats library.",
+        "subtitle":       "Planned additions to the guide and the evalstats library.",
         "active_sidebar": "roadmap",
         "description": (
             "Planned features and upcoming investigations for the Stats for LLM Evals guide "
-            "and the promptstats Python library."
+            "and the evalstats Python library."
         ),
     },
 ]
@@ -496,7 +496,7 @@ def make_stub_content(inv):
         <div class="cs-label">Investigation in progress</div>
         <p class="cs-text">Full worked examples, interactive code, and simulation-backed
           results are coming soon.
-          <a href="https://github.com/ianarawjo/promptstats">Follow on GitHub</a>
+          <a href="https://github.com/ianarawjo/evalstats">Follow on GitHub</a>
           for updates.</p>
       </div>
     </section>"""

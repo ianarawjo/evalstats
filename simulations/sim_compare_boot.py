@@ -70,7 +70,7 @@ from bayes_evals import binorm_cdf  # noqa: E402
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
-    from promptstats.core.resampling import (
+    from evalstats.core.resampling import (
         bootstrap_ci_1d,
         bca_interval_1d,
         bayes_bootstrap_means_1d,
@@ -832,7 +832,7 @@ def _pairwise_ci(
     *,
     statistic: str = "mean",
 ) -> tuple[float, float]:
-    """Compute CI for paired mean/median difference A-B using promptstats logic."""
+    """Compute CI for paired mean/median difference A-B using evalstats logic."""
     n_inputs, runs = a.shape
     resolved_method = resolve_resampling_method(method, n_inputs)
 

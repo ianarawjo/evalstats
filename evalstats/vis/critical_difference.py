@@ -2,7 +2,7 @@
 
 Delegates rendering to ``scikit_posthocs.critical_difference_diagram``,
 which implements the Demšar (2006) layout.  This module is responsible for
-translating a :class:`~promptstats.core.paired.FriedmanResult` into the
+translating a :class:`~evalstats.core.paired.FriedmanResult` into the
 inputs that function expects (a rank dict and a symmetric p-value DataFrame)
 and for wrapping the result in a properly sized, titled Figure.
 
@@ -22,11 +22,11 @@ import matplotlib.pyplot as plt
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
-    from promptstats.compare import CompareReport
-    from promptstats.core.bundles import AnalysisBundle
+    from evalstats.compare import CompareReport
+    from evalstats.core.bundles import AnalysisBundle
 
-from promptstats.core.paired import FriedmanResult, PairwiseMatrix
-from promptstats.config import get_alpha_ci
+from evalstats.core.paired import FriedmanResult, PairwiseMatrix
+from evalstats.config import get_alpha_ci
 
 
 def _sig_matrix(friedman: FriedmanResult) -> pd.DataFrame:
@@ -58,7 +58,7 @@ def _sig_matrix_from_rank_bands(
     - 1.0 means non-significant (connected)
     - 0.0 means significant (not connected)
     """
-    from promptstats.core.summary import _critical_difference_groups
+    from evalstats.core.summary import _critical_difference_groups
 
     groups = _critical_difference_groups(
         pairwise,
@@ -160,7 +160,7 @@ def plot_critical_difference(
     Parameters
     ----------
     result : FriedmanResult | PairwiseMatrix | CompareReport | AnalysisBundle
-        Either output of :func:`promptstats.friedman_nemenyi` (Friedman mode)
+        Either output of :func:`evalstats.friedman_nemenyi` (Friedman mode)
         or a pairwise results matrix (pairwise mode). You can also pass a
         ``compare_prompts``/``compare_models`` report object; in that case
         ``report.pairwise`` is used automatically.

@@ -10,8 +10,8 @@ Tests are grouped into four sections:
 import numpy as np
 import pytest
 
-import promptstats as ps
-from promptstats.core.paired import (
+import evalstats as es
+from evalstats.core.paired import (
     _max_stat_simultaneous_cis,
     _bonferroni_simultaneous_cis,
     _simultaneous_cis_router,
@@ -478,7 +478,7 @@ def test_compare_prompts_simultaneous_ci_propagates():
         "C": _rng(22).normal(0.60, 0.1, 40).tolist(),
     }
 
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         scores, simultaneous_ci=True, rng=_rng(20), n_bootstrap=400,
     )
 
@@ -491,7 +491,7 @@ def test_compare_prompts_simultaneous_ci_propagates():
 
 def test_compare_prompts_simultaneous_ci_true_by_default():
     scores = {"A": [0.7, 0.8, 0.6], "B": [0.65, 0.75, 0.55]}
-    report = ps.compare_prompts(scores, rng=_rng(0), n_bootstrap=100)
+    report = es.compare_prompts(scores, rng=_rng(0), n_bootstrap=100)
     assert report.simultaneous_ci is True
 
 
@@ -503,7 +503,7 @@ def test_compare_models_simultaneous_ci_propagates():
         "Llama":  rng.normal(0.65, 0.1, 40).tolist(),
         "Mistral": rng.normal(0.60, 0.1, 40).tolist(),
     }
-    report = ps.compare_models(
+    report = es.compare_models(
         scores, simultaneous_ci=True, rng=_rng(30), n_bootstrap=300,
     )
     assert report.simultaneous_ci is True
@@ -519,7 +519,7 @@ def test_unsupported_method_falls_back_to_bonferroni():
         "B": [int(x > 0.5) for x in rng.random(50)],
         "C": [int(x > 0.5) for x in rng.random(50)],
     }
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         scores, method="newcombe", simultaneous_ci=True,
         rng=_rng(40), n_bootstrap=200,
     )
@@ -535,7 +535,7 @@ def test_seeded_compare_prompts_simultaneous_ci():
         "B": rng.normal(0.65, 0.1, (30, 4)).tolist(),
         "C": rng.normal(0.60, 0.1, (30, 4)).tolist(),
     }
-    report = ps.compare_prompts(
+    report = es.compare_prompts(
         scores, simultaneous_ci=True, rng=_rng(50), n_bootstrap=300,
     )
     assert report.simultaneous_ci is True

@@ -19,8 +19,8 @@ Run (when R is available):
 import numpy as np
 import pytest
 
-from promptstats import BenchmarkResult, analyze
-from promptstats.core.mixed_effects import LMMInfo
+from evalstats import BenchmarkResult, analyze
+from evalstats.core.mixed_effects import LMMInfo
 
 # ---------------------------------------------------------------------------
 # Skip guards — both backends must be present
@@ -34,7 +34,7 @@ pymer4 = pytest.importorskip(
 )
 
 try:
-    from promptstats.core.mixed_effects import _require_pymer4
+    from evalstats.core.mixed_effects import _require_pymer4
     _require_pymer4()
 except Exception:
     pytest.skip("pymer4 installed but R/lme4 not reachable", allow_module_level=True)

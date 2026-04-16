@@ -25,7 +25,7 @@ Usage::
 import numpy as np
 import pandas as pd
 
-import promptstats as ps
+import evalstats as es
 
 
 # ---------------------------------------------------------------------------
@@ -84,7 +84,7 @@ print(
 # Run the factorial analysis
 # ---------------------------------------------------------------------------
 
-bundle = ps.analyze_factorial(
+bundle = es.analyze_factorial(
     data,
     factors=["chunker", "retrieval"],
     random_effect="input_id",
@@ -93,7 +93,7 @@ bundle = ps.analyze_factorial(
 )
 
 # ---------------------------------------------------------------------------
-# Print results with the standard PromptStats summary renderer
+# Print results with the standard EvalStats summary renderer
 # ---------------------------------------------------------------------------
 
 ps.print_analysis_summary(bundle, top_pairwise=10)

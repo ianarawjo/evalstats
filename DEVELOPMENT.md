@@ -17,9 +17,9 @@ For a clean install smoke test from the built wheel:
 python -m venv .pkgtest-venv
 . .pkgtest-venv/bin/activate
 python -m pip install -U pip
-python -m pip install dist/promptstats-*.whl
-python -c "import promptstats as p; print(p.__version__)"
-promptstats --help
+python -m pip install dist/evalstats-*.whl
+python -c "import evalstats as p; print(p.__version__)"
+evalstats --help
 ```
 
 For runtime checks:

@@ -7,7 +7,7 @@
             Based on research and Monte Carlo simulations, we recommend the following methods for 
             calculating confidence intervals and p-values in LLM eval contexts. 
             These recommendations are implemented as the 
-            <code>method="auto"</code> defaults in <code>promptstats</code>, 
+            <code>method="auto"</code> defaults in <code>evalstats</code>, 
             which adapt to data type and sample size based on which methods performed best in our simulations.
             Note that the contents of this section are subject to change as gather more evidence for different situations.
         </p>
@@ -147,7 +147,7 @@
                 <td>Multiple pairwise tests (k variants)</td>
                 <td>Any</td>
                 <td><strong>Benjamini-Hochberg</strong> (<code>fdr_bh</code>)</td>
-                <td>Default correction in <code>promptstats</code>; controls expected false discovery rate with better power than stricter family-wise procedures.</td>
+                <td>Default correction in <code>evalstats</code>; controls expected false discovery rate with better power than stricter family-wise procedures.</td>
             </tr>
             </tbody>
         </table>
@@ -181,10 +181,10 @@
         </p>
         </div>
         <p>
-          <code>promptstats</code> uses the max-T procedure by default whenever you output multiple pairwise comparisons with bootstrapped CIs. This ensures that the reported intervals account for the increased uncertainty from making many comparisons at once. For consistency, <code>promptstats</code> also applies the max-T correction to p-values when users request them, so that both CIs and p-values are corrected in the same principled way.
+          <code>evalstats</code> uses the max-T procedure by default whenever you output multiple pairwise comparisons with bootstrapped CIs. This ensures that the reported intervals account for the increased uncertainty from making many comparisons at once. For consistency, <code>evalstats</code> also applies the max-T correction to p-values when users request them, so that both CIs and p-values are corrected in the same principled way.
         </p>
         <p>
-          The max-T method is recommended by <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">Rink & Brannath, 2025</a>, a recent ML paper on multiple comparisons correction when comparing many candidate models that may be correlated. For more foundational background, see the <a href="resources.html#methods-used-in-promptstats">Methods Used in promptstats</a> and <a href="resources.html#statistical-pitfalls-in-ml">Statistical Pitfalls in ML</a> sections of the Resources page.
+          The max-T method is recommended by <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">Rink & Brannath, 2025</a>, a recent ML paper on multiple comparisons correction when comparing many candidate models that may be correlated. For more foundational background, see the <a href="resources.html#methods-used-in-evalstats">Methods Used in evalstats</a> and <a href="resources.html#statistical-pitfalls-in-ml">Statistical Pitfalls in ML</a> sections of the Resources page.
         </p>
     </section>
   
@@ -483,7 +483,7 @@
         it doesn't assume normality, and it's robust to homoscedasticity (variance of residuals). 
         Friedman tests are already used in some ML contexts for comparing models,
         as advocated by <a href="https://www.jmlr.org/papers/volume7/demsar06a/demsar06a.pdf">Demsar (2006)</a>.
-        Note that promptstats does not output Friedman by default, since <a href="principles.html">it does not foreground a NHST-style analysis pipeline</a>,
+        Note that evalstats does not output Friedman by default, since <a href="principles.html">it does not foreground a NHST-style analysis pipeline</a>,
         but it is available as an option for users who want to use it. 
       </p>
       <p>For <a href="https://en.wikipedia.org/wiki/Multiple_comparisons_problem">multiple comparisons correction</a>, 

@@ -1,9 +1,9 @@
-"""Test and demo for promptstats: generates synthetic data and produces a
+"""Test and demo for evalstats: generates synthetic data and produces a
 robustness-first interval plot."""
 
 import numpy as np
 
-import promptstats as pstats
+import evalstats as estats
 
 # --- Synthetic benchmark data ---
 # 6 templates, 100 inputs, designed to illustrate different behaviors
@@ -49,7 +49,7 @@ labels = [
 input_labels = [f"input_{i:03d}" for i in range(M)]
 
 # --- Create BenchmarkResult ---
-result = pstats.BenchmarkResult(
+result = estats.BenchmarkResult(
     scores=scores,
     template_labels=labels,
     input_labels=input_labels,
@@ -59,13 +59,13 @@ print(f"Created BenchmarkResult: {result.n_templates} templates × {result.n_inp
 print()
 
 # --- Robustness metrics ---
-rob = pstats.robustness_metrics(scores, labels, failure_threshold=4.0)
+rob = estats.robustness_metrics(scores, labels, failure_threshold=4.0)
 print("=== Robustness Summary ===")
 print(rob.summary_table().to_string())
 print()
 
 # --- Pairwise differences (A vs C as an interesting pair) ---
-diff_ac = pstats.pairwise_differences(
+diff_ac = estats.pairwise_differences(
     scores, 0, 2, labels[0], labels[2], method="auto", rng=rng,
 )
 print(f"=== Pairwise: {diff_ac.template_a} vs {diff_ac.template_b} ===")
@@ -76,7 +76,7 @@ print(f"  Effect size (rank-biserial): {diff_ac.effect_size:.3f}")
 print()
 
 # --- Bootstrap ranking ---
-ranks = pstats.bootstrap_ranks(scores, labels, n_bootstrap=10_000, rng=rng)
+ranks = estats.bootstrap_ranks(scores, labels, n_bootstrap=10_000, rng=rng)
 print("=== Bootstrap Rank Probabilities ===")
 template_col_width = min(40, max(len("Template") + 1, max(len(label) for label in labels) + 2))
 print(f"{'Template':<{template_col_width}s} {'P(Best)':>8s} {'E[Rank]':>8s}")
@@ -88,7 +88,7 @@ for i, label in enumerate(labels):
 print()
 
 # --- Marginal CIs on absolute means ---
-rob_ci = pstats.robustness_metrics(
+rob_ci = estats.robustness_metrics(
     scores,
     labels,
     failure_threshold=4.0,
@@ -110,12 +110,12 @@ for i in range(len(labels)):
 print()
 
 # --- Generate the plot ---
-fig = pstats.plot_point_estimates(result, rng=np.random.default_rng(42))
+fig = estats.plot_point_estimates(result, rng=np.random.default_rng(42))
 fig.savefig("robustness_interval_plot.png", dpi=150, bbox_inches="tight")
 print("Saved: robustness_interval_plot.png")
 
 # Also generate a version with a custom title
-fig2 = pstats.plot_point_estimates(
+fig2 = estats.plot_point_estimates(
     result,
     title="Absolute Performance by Template",
     rng=np.random.default_rng(42),

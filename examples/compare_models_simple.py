@@ -1,4 +1,4 @@
-"""Simple synthetic example for promptstats.compare_models.
+"""Simple synthetic example for evalstats.compare_models.
 
 Usage:
     python examples/compare_models_simple.py
@@ -6,7 +6,7 @@ Usage:
 
 import numpy as np
 
-import promptstats as pstats
+import evalstats as estats
 
 
 rng = np.random.default_rng(7)
@@ -33,7 +33,7 @@ scores_dict = {
     },
 }
 
-report = pstats.compare_models(
+report = estats.compare_models(
     scores_dict,
     statistic="mean",
     correction="holm",

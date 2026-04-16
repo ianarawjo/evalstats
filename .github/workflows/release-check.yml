@@ -38,9 +38,9 @@ jobs:
           python -m venv .pkgtest-venv
           . .pkgtest-venv/bin/activate
           python -m pip install --upgrade pip
-          python -m pip install dist/promptstats-*.whl
-          python -c "import promptstats as p; print(p.__version__)"
-          promptstats analyze --help
+          python -m pip install dist/evalstats-*.whl
+          python -c "import evalstats as p; print(p.__version__)"
+          evalstats analyze --help
 
       - name: Run tests (no LMM/R required)
         run: |

@@ -1,15 +1,15 @@
 import numpy as np
 import pytest
 
-import promptstats as ps
-from promptstats.core.summary import (
+import evalstats as es
+from evalstats.core.summary import (
     _assign_significance_groups,
     _critical_difference_groups,
     _print_critical_difference_groups,
     _single_clear_winner_label,
     print_pairwise_summary,
 )
-from promptstats.core.paired import PairedDiffResult, PairwiseMatrix
+from evalstats.core.paired import PairedDiffResult, PairwiseMatrix
 
 
 def test_analyze_single_model_recovers_means_and_best_prompt():
@@ -36,20 +36,20 @@ def test_analyze_single_model_recovers_means_and_best_prompt():
     # Keep values in a plausible scoring range.
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
     # Run the top-level analysis entrypoint.
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=1500,
         rng=np.random.default_rng(7),
     )
 
-    assert isinstance(analysis, ps.AnalysisBundle)
+    assert isinstance(analysis, es.AnalysisBundle)
 
     # Estimated means should be close to the generating means.
     # We use a tolerance because the data is sampled and finite.
@@ -112,21 +112,21 @@ def test_analyze_multimodel_recovers_best_model_and_best_pair():
             )
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.MultiModelBenchmark(
+    result = es.MultiModelBenchmark(
         scores=scores,
         model_labels=model_labels,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=1800,
         rng=np.random.default_rng(11),
     )
 
     # Multi-model inputs should route to a MultiModelBundle.
-    assert isinstance(analysis, ps.MultiModelBundle)
+    assert isinstance(analysis, es.MultiModelBundle)
 
     # Model-level winner should be Model 2.
     model_best_idx = int(np.argmax(analysis.model_level.rank_dist.p_best))
@@ -174,20 +174,20 @@ def test_analyze_multimodel_single_prompt_runs_without_warning():
         )
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.MultiModelBenchmark(
+    result = es.MultiModelBenchmark(
         scores=scores,
         model_labels=model_labels,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=1200,
         rng=np.random.default_rng(13),
     )
 
-    assert isinstance(analysis, ps.MultiModelBundle)
+    assert isinstance(analysis, es.MultiModelBundle)
 
     # Best model should still be recovered from model-level ranking.
     model_best_idx = int(np.argmax(analysis.model_level.rank_dist.p_best))
@@ -208,19 +208,19 @@ def test_print_summary_includes_critical_difference_groups(capsys):
         ],
         dtype=float,
     )
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=["Prompt A", "Prompt B", "Prompt C", "Prompt D"],
         input_labels=[f"i{i}" for i in range(scores.shape[1])],
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=300,
         rng=np.random.default_rng(42),
     )
 
-    ps.print_analysis_summary(analysis, top_pairwise=3)
+    es.print_analysis_summary(analysis, top_pairwise=3)
     out = capsys.readouterr().out
 
     assert "Statistically indistinguishable" in out
@@ -658,14 +658,14 @@ def test_analyze_multimodel_template_collapse_as_runs_preserves_model_variance()
         ],
         dtype=float,
     )
-    result = ps.MultiModelBenchmark(
+    result = es.MultiModelBenchmark(
         scores=scores,
         model_labels=model_labels,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=300,
         rng=np.random.default_rng(99),
@@ -692,7 +692,7 @@ def test_analyze_rejects_unknown_template_model_collapse():
         ],
         dtype=float,
     )
-    result = ps.MultiModelBenchmark(
+    result = es.MultiModelBenchmark(
         scores=scores,
         model_labels=["m1", "m2"],
         template_labels=["Prompt A", "Prompt B"],
@@ -700,7 +700,7 @@ def test_analyze_rejects_unknown_template_model_collapse():
     )
 
     with pytest.raises(ValueError, match="Unknown template_model_collapse"):
-        ps.analyze(result, template_model_collapse="median")
+        es.analyze(result, template_model_collapse="median")
 
 
 def test_analyze_seeded_multirun_populates_seed_variance_and_ordering():
@@ -730,20 +730,20 @@ def test_analyze_seeded_multirun_populates_seed_variance_and_ordering():
             )
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=1600,
         rng=np.random.default_rng(9),
     )
 
     # R >= 3 enables seed-variance decomposition in the output bundle.
-    assert isinstance(analysis, ps.AnalysisBundle)
+    assert isinstance(analysis, es.AnalysisBundle)
     assert analysis.seed_variance is not None
 
     seed_var = analysis.seed_variance
@@ -790,7 +790,7 @@ def test_analyze_multimodel_per_evaluator_returns_mapping():
     )
     scores = np.clip(scores, 0.0, 1.0)
 
-    result = ps.MultiModelBenchmark(
+    result = es.MultiModelBenchmark(
         scores=scores,
         model_labels=["Model A", "Model B"],
         template_labels=["Prompt A", "Prompt B"],
@@ -798,7 +798,7 @@ def test_analyze_multimodel_per_evaluator_returns_mapping():
         evaluator_names=["accuracy", "format"],
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         evaluator_mode="per_evaluator",
         n_bootstrap=400,
@@ -808,7 +808,7 @@ def test_analyze_multimodel_per_evaluator_returns_mapping():
     assert isinstance(analysis, dict)
     assert set(analysis.keys()) == {"accuracy", "format"}
     for bundle in analysis.values():
-        assert isinstance(bundle, ps.MultiModelBundle)
+        assert isinstance(bundle, es.MultiModelBundle)
 
 
 def test_analyze_per_evaluator_returns_expected_winners():
@@ -861,14 +861,14 @@ def test_analyze_per_evaluator_returns_expected_winners():
 
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
         evaluator_names=evaluator_names,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         evaluator_mode="per_evaluator",
         n_bootstrap=1400,
@@ -880,7 +880,7 @@ def test_analyze_per_evaluator_returns_expected_winners():
     assert set(analysis.keys()) == set(evaluator_names)
 
     for evaluator_name in evaluator_names:
-        assert isinstance(analysis[evaluator_name], ps.AnalysisBundle)
+        assert isinstance(analysis[evaluator_name], es.AnalysisBundle)
         # Runs axis is preserved during evaluator slicing.
         assert analysis[evaluator_name].seed_variance is not None
 
@@ -938,27 +938,27 @@ def test_analyze_bca_and_bootstrap_are_consistent(n_inputs):
     )
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis_bootstrap = ps.analyze(
+    analysis_bootstrap = es.analyze(
         result,
         method="bootstrap",
         n_bootstrap=1700,
         rng=np.random.default_rng(101),
     )
-    analysis_bca = ps.analyze(
+    analysis_bca = es.analyze(
         result,
         method="bca",
         n_bootstrap=1700,
         rng=np.random.default_rng(101),
     )
 
-    assert isinstance(analysis_bootstrap, ps.AnalysisBundle)
-    assert isinstance(analysis_bca, ps.AnalysisBundle)
+    assert isinstance(analysis_bootstrap, es.AnalysisBundle)
+    assert isinstance(analysis_bca, es.AnalysisBundle)
 
     # Point estimates should agree very closely regardless of CI method.
     np.testing.assert_allclose(
@@ -1047,19 +1047,19 @@ def test_analyze_pathological_many_prompts_recovers_best_prompt():
         )
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=300,
         rng=np.random.default_rng(17),
     )
 
-    assert isinstance(analysis, ps.AnalysisBundle)
+    assert isinstance(analysis, es.AnalysisBundle)
 
     best_idx = int(np.argmax(analysis.rank_dist.p_best))
     assert analysis.rank_dist.labels[best_idx] == "Prompt 00"
@@ -1099,20 +1099,20 @@ def test_analyze_pathological_many_models_recovers_best_model_and_pair():
             )
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.MultiModelBenchmark(
+    result = es.MultiModelBenchmark(
         scores=scores,
         model_labels=model_labels,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=8,
         rng=np.random.default_rng(21),
     )
 
-    assert isinstance(analysis, ps.MultiModelBundle)
+    assert isinstance(analysis, es.MultiModelBundle)
 
     model_best_idx = int(np.argmax(analysis.model_level.rank_dist.p_best))
     assert analysis.model_level.rank_dist.labels[model_best_idx] == "Model 00"
@@ -1149,19 +1149,19 @@ def test_analyze_pathological_many_runs_detects_seed_noise_and_winner():
 
     scores = np.clip(scores, 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=260,
         rng=np.random.default_rng(31),
     )
 
-    assert isinstance(analysis, ps.AnalysisBundle)
+    assert isinstance(analysis, es.AnalysisBundle)
     assert analysis.seed_variance is not None
 
     best_idx = int(np.argmax(analysis.rank_dist.p_best))
@@ -1202,13 +1202,13 @@ def test_analyze_statistic_median_propagates_and_is_correct(method):
         ]
     )
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         statistic="median",
         method=method,
@@ -1216,7 +1216,7 @@ def test_analyze_statistic_median_propagates_and_is_correct(method):
         rng=np.random.default_rng(42),
     )
 
-    assert isinstance(analysis, ps.AnalysisBundle)
+    assert isinstance(analysis, es.AnalysisBundle)
 
     # statistic label must propagate to all result objects.
     for pair_result in analysis.pairwise.results.values():
@@ -1291,20 +1291,20 @@ def test_analyze_median_and_mean_diverge_on_heavy_tailed_data():
 
     scores = np.clip(np.vstack([scores_a, scores_b]), 0.0, 10.0)
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=prompt_labels,
         input_labels=input_labels,
     )
 
-    analysis_mean = ps.analyze(
+    analysis_mean = es.analyze(
         result,
         statistic="mean",
         method="bootstrap",
         n_bootstrap=2000,
         rng=np.random.default_rng(7),
     )
-    analysis_median = ps.analyze(
+    analysis_median = es.analyze(
         result,
         statistic="median",
         method="bootstrap",
@@ -1365,12 +1365,12 @@ def test_pairwise_wilcoxon_matches_scipy_and_is_symmetric_on_flip():
     )
     diffs = scores[0] - scores[1]
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=["A", "B"],
         input_labels=[f"item_{i}" for i in range(scores.shape[1])],
     )
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         method="bootstrap",
         correction="none",
@@ -1395,12 +1395,12 @@ def test_pairwise_wilcoxon_is_none_when_all_differences_are_zero():
         dtype=float,
     )
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=["A", "B"],
         input_labels=[f"item_{i}" for i in range(scores.shape[1])],
     )
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         method="bootstrap",
         correction="none",
@@ -1423,20 +1423,20 @@ def test_pairwise_wilcoxon_respects_multiple_testing_correction():
     )
     labels = ["A", "B", "C"]
 
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=labels,
         input_labels=[f"item_{i}" for i in range(scores.shape[1])],
     )
 
-    analysis_raw = ps.analyze(
+    analysis_raw = es.analyze(
         result,
         method="bootstrap",
         correction="none",
         n_bootstrap=300,
         rng=np.random.default_rng(103),
     )
-    analysis_bonf = ps.analyze(
+    analysis_bonf = es.analyze(
         result,
         method="bootstrap",
         correction="bonferroni",
@@ -1461,13 +1461,13 @@ def test_rank_distribution_splits_mass_evenly_when_all_templates_tie():
 
     # All templates are exactly tied on every input.
     scores = np.ones((n_templates, n_inputs), dtype=float)
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=600,
         rng=np.random.default_rng(2026),
@@ -1493,13 +1493,13 @@ def test_rank_distribution_splits_top_tie_between_templates():
         ],
         dtype=float,
     )
-    result = ps.BenchmarkResult(
+    result = es.BenchmarkResult(
         scores=scores,
         template_labels=labels,
         input_labels=input_labels,
     )
 
-    analysis = ps.analyze(
+    analysis = es.analyze(
         result,
         n_bootstrap=600,
         rng=np.random.default_rng(2027),

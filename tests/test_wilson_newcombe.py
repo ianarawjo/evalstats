@@ -18,21 +18,21 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from promptstats.core.resampling import (
+from evalstats.core.resampling import (
     is_binary_scores,
     wilson_ci,
     wilson_ci_1d,
     newcombe_paired_ci,
 )
-from promptstats.core.paired import (
+from evalstats.core.paired import (
     _mcnemar_p,
     _fisher_exact_p,
     pairwise_differences,
     all_pairwise,
 )
-from promptstats.core.variance import robustness_metrics
-from promptstats.core.types import BenchmarkResult
-from promptstats.core.router import analyze
+from evalstats.core.variance import robustness_metrics
+from evalstats.core.types import BenchmarkResult
+from evalstats.core.router import analyze
 
 
 # ---------------------------------------------------------------------------

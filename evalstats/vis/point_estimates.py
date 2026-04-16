@@ -15,8 +15,8 @@ from matplotlib.lines import Line2D
 if TYPE_CHECKING:
     from matplotlib.figure import Figure
 
-from promptstats.core.types import BenchmarkResult
-from promptstats.core.variance import RobustnessResult, robustness_metrics
+from evalstats.core.types import BenchmarkResult
+from evalstats.core.variance import RobustnessResult, robustness_metrics
 
 
 # -- Color palette --

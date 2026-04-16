@@ -57,7 +57,7 @@
     </li>
   </ul>
   <p>
-    Supporting these investigations: the <code>promptstats</code> library API
+    Supporting these investigations: the <code>evalstats</code> library API
     (<code>compare_models()</code>, <code>compare_prompts()</code>,
     <code>analyze()</code>, <code>analyze_factorial()</code>) with
     <code>.summary()</code> terminal output and <code>.plot()</code>;
@@ -108,7 +108,7 @@
     which could provide more nuanced insights and better support for the iterative, noisy nature of LLM evals.
     However, I want to first provide some sound, "best effort" defaults within a more familiar frequentist framework,
     which many practitioners are already using and which is still widely requested by stakeholders, reviewers, and auditors.
-    One idea here is for <code>promptstats</code> to add a Bayesian mode, where users can toggle between the two paradigms and get outputs 
+    One idea here is for <code>evalstats</code> to add a Bayesian mode, where users can toggle between the two paradigms and get outputs 
     that are consistent with the underlying philosophy without needed to change top-level API calls 
     (e.g., <code>compare_models()</code> will report either frequentist or Bayesian outputs depending on the mode).
     This guide would then have an "alternative universe" where the same website and investigation notebooks are re-framed through a Bayesian lens,

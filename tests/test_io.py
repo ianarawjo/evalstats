@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import promptstats as ps
+import evalstats as es
 
 
 def test_from_dataframe_returns_result_and_report_with_coercions():
@@ -14,14 +14,14 @@ def test_from_dataframe_returns_result_and_report_with_coercions():
         }
     )
 
-    result, report = ps.from_dataframe(
+    result, report = es.from_dataframe(
         df,
         format="long",
         strict_complete_design=False,
         return_report=True,
     )
 
-    assert isinstance(result, ps.BenchmarkResult)
+    assert isinstance(result, es.BenchmarkResult)
     assert report.format_detected == "long"
     assert report.score_non_numeric_coerced == 1
     assert report.duplicate_groups_collapsed == 1
@@ -37,9 +37,9 @@ def test_from_dataframe_can_allow_incomplete_design_when_not_strict():
         }
     )
 
-    result = ps.from_dataframe(df, format="long", strict_complete_design=False)
+    result = es.from_dataframe(df, format="long", strict_complete_design=False)
 
-    assert isinstance(result, ps.BenchmarkResult)
+    assert isinstance(result, es.BenchmarkResult)
     assert result.has_missing
 
 
@@ -62,9 +62,9 @@ def test_from_dataframe_multimodel_with_runs_and_evaluators():
                         )
     df = pd.DataFrame(rows)
 
-    result = ps.from_dataframe(df, format="long")
+    result = es.from_dataframe(df, format="long")
 
-    assert isinstance(result, ps.MultiModelBenchmark)
+    assert isinstance(result, es.MultiModelBenchmark)
     assert result.scores.shape == (2, 2, 2, 3, 2)
 
 
@@ -72,7 +72,7 @@ def test_from_dataframe_rejects_unknown_format():
     df = pd.DataFrame({"input": ["i1"], "A": [0.9], "B": [0.8]})
 
     with pytest.raises(ValueError, match="format must be one of"):
-        ps.from_dataframe(df, format="csv")
+        es.from_dataframe(df, format="csv")
 
 
 def test_from_dataframe_auto_detects_wide_and_long():
@@ -83,7 +83,7 @@ def test_from_dataframe_auto_detects_wide_and_long():
             "Prompt B": [0.7, 0.6],
         }
     )
-    _, report_wide = ps.from_dataframe(df_wide, format="auto", return_report=True)
+    _, report_wide = es.from_dataframe(df_wide, format="auto", return_report=True)
     assert report_wide.format_detected == "wide"
 
     df_long = pd.DataFrame(
@@ -93,7 +93,7 @@ def test_from_dataframe_auto_detects_wide_and_long():
             "score": [0.9, 0.8, 0.7, 0.6],
         }
     )
-    _, report_long = ps.from_dataframe(df_long, format="auto", return_report=True)
+    _, report_long = es.from_dataframe(df_long, format="auto", return_report=True)
     assert report_long.format_detected == "long"
 
     df_long_model_only = pd.DataFrame(
@@ -103,7 +103,7 @@ def test_from_dataframe_auto_detects_wide_and_long():
             "score": [0.9, 0.8, 0.7, 0.6],
         }
     )
-    _, report_long_model_only = ps.from_dataframe(
+    _, report_long_model_only = es.from_dataframe(
         df_long_model_only,
         format="auto",
         return_report=True,
@@ -121,7 +121,7 @@ def test_from_dataframe_wide_strict_incomplete_raises():
     )
 
     with pytest.raises(ValueError, match="Incomplete design"):
-        ps.from_dataframe(df, format="wide", strict_complete_design=True)
+        es.from_dataframe(df, format="wide", strict_complete_design=True)
 
 
 def test_from_dataframe_wide_non_strict_tracks_coercion_note():
@@ -133,14 +133,14 @@ def test_from_dataframe_wide_non_strict_tracks_coercion_note():
         }
     )
 
-    result, report = ps.from_dataframe(
+    result, report = es.from_dataframe(
         df,
         format="wide",
         strict_complete_design=False,
         return_report=True,
     )
 
-    assert isinstance(result, ps.BenchmarkResult)
+    assert isinstance(result, es.BenchmarkResult)
     assert result.has_missing
     assert report.score_non_numeric_coerced == 1
     assert any("non-numeric score value" in note for note in report.notes)
@@ -156,7 +156,7 @@ def test_from_dataframe_long_missing_required_columns_raises():
     )
 
     with pytest.raises(ValueError, match="requires prompt/template"):
-        ps.from_dataframe(df, format="long")
+        es.from_dataframe(df, format="long")
 
 
 def test_from_dataframe_long_model_input_score_injects_implicit_template():
@@ -168,9 +168,9 @@ def test_from_dataframe_long_model_input_score_injects_implicit_template():
         }
     )
 
-    result, report = ps.from_dataframe(df, format="long", return_report=True)
+    result, report = es.from_dataframe(df, format="long", return_report=True)
 
-    assert isinstance(result, ps.MultiModelBenchmark)
+    assert isinstance(result, es.MultiModelBenchmark)
     assert result.template_labels == ["default_prompt"]
     assert result.scores.shape == (2, 1, 2)
     assert any("injected implicit template label" in note for note in report.notes)
@@ -189,7 +189,7 @@ def test_from_dataframe_repair_true_fills_partial_run_slots_and_counts():
         ]
     )
 
-    result, report = ps.from_dataframe(
+    result, report = es.from_dataframe(
         df,
         format="long",
         repair=True,
@@ -197,7 +197,7 @@ def test_from_dataframe_repair_true_fills_partial_run_slots_and_counts():
         return_report=True,
     )
 
-    assert isinstance(result, ps.BenchmarkResult)
+    assert isinstance(result, es.BenchmarkResult)
     assert report.run_nan_values_filled == 1
     b_idx = result.template_labels.index("B")
     i2_idx = result.input_labels.index("i2")
@@ -218,7 +218,7 @@ def test_from_dataframe_repair_false_keeps_partial_run_missing_slots():
         ]
     )
 
-    result, report = ps.from_dataframe(
+    result, report = es.from_dataframe(
         df,
         format="long",
         repair=False,
@@ -226,7 +226,7 @@ def test_from_dataframe_repair_false_keeps_partial_run_missing_slots():
         return_report=True,
     )
 
-    assert isinstance(result, ps.BenchmarkResult)
+    assert isinstance(result, es.BenchmarkResult)
     assert report.run_nan_values_filled == 0
     b_idx = result.template_labels.index("B")
     i2_idx = result.input_labels.index("i2")
@@ -252,9 +252,9 @@ def test_from_dataframe_alias_columns_are_supported_for_multimodel_runs_evals():
                         )
     df = pd.DataFrame(rows)
 
-    result, report = ps.from_dataframe(df, format="auto", return_report=True)
+    result, report = es.from_dataframe(df, format="auto", return_report=True)
 
-    assert isinstance(result, ps.MultiModelBenchmark)
+    assert isinstance(result, es.MultiModelBenchmark)
     assert result.scores.shape == (2, 2, 2, 3, 2)
     assert report.format_detected == "long"
     assert report.score_non_numeric_coerced == 0
@@ -271,7 +271,7 @@ def test_from_dataframe_duplicate_groups_are_collapsed_with_mean():
         ]
     )
 
-    result, report = ps.from_dataframe(df, format="long", return_report=True)
+    result, report = es.from_dataframe(df, format="long", return_report=True)
 
     assert report.duplicate_groups_collapsed == 1
     a_idx = result.template_labels.index("A")
@@ -293,7 +293,7 @@ def test_from_dataframe_multimodel_missing_in_one_model_mentions_model_in_error(
     )
 
     with pytest.raises(ValueError, match="model 'm2'"):
-        ps.from_dataframe(df, format="long", strict_complete_design=True)
+        es.from_dataframe(df, format="long", strict_complete_design=True)
 
 
 def test_data_load_report_to_lines_contains_key_fields():
@@ -305,7 +305,7 @@ def test_data_load_report_to_lines_contains_key_fields():
         }
     )
 
-    _, report = ps.from_dataframe(df, format="long", return_report=True)
+    _, report = es.from_dataframe(df, format="long", return_report=True)
     lines = report.to_lines()
 
     assert any("requested=long" in line for line in lines)

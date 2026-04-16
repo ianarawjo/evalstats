@@ -1,7 +1,7 @@
-"""Demo: compare two small models using promptstats multi-model analysis.
+"""Demo: compare two small models using evalstats multi-model analysis.
 
 Copies the workflow of llm_sentiment_router.py, but runs two models and routes through
-the MultiModelBenchmark path in `promptstats.core.router.analyze`.
+the MultiModelBenchmark path in `evalstats.core.router.analyze`.
 
 Like sentiment_multirun.py, this version runs each (model, template, input)
 triple multiple times (N_RUNS=3) with temperature > 0 so the runs axis is
@@ -38,7 +38,7 @@ import numpy as np
 
 from openai import OpenAI
 
-import promptstats as pstats
+import evalstats as estats
 
 
 # ---------------------------------------------------------------------------
@@ -246,7 +246,7 @@ def run_multi_model_benchmark(clients: dict[str, OpenAI]) -> tuple[np.ndarray, d
     -------
     scores : np.ndarray
         Shape ``(N_models, N_templates, N_inputs, N_runs, N_evaluators)``
-        matching the promptstats ``(P, N, M, R, K)``
+        matching the evalstats ``(P, N, M, R, K)``
         convention.
     outputs_by_model : dict[str, list[list[list[str]]]]
         Raw outputs keyed by model label, indexed [run_idx][template_idx][input_idx].
@@ -385,7 +385,7 @@ def demo_compare_models() -> None:
         print("\nNo interactive stdin detected; continuing without pause.")
 
     # raw_scores shape: (N_models, N_templates, N_inputs, N_runs, N_evaluators)
-    multi_result = pstats.MultiModelBenchmark(
+    multi_result = estats.MultiModelBenchmark(
         scores=raw_scores,
         model_labels=model_labels,
         template_labels=TEMPLATE_LABELS,
@@ -400,7 +400,7 @@ def demo_compare_models() -> None:
     )
 
     print("=== analyze(..., evaluator_mode='aggregate') ===")
-    analysis = pstats.analyze(
+    analysis = estats.analyze(
         multi_result,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -410,7 +410,7 @@ def demo_compare_models() -> None:
         failure_threshold=0.5,
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis, top_pairwise=8)
+    estats.print_analysis_summary(analysis, top_pairwise=8)
 
     print("\nDone!")
 

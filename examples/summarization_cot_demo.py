@@ -16,7 +16,7 @@ Summaries are scored by an LLM judge on two dimensions (each 0–1):
   faithfulness — does the summary accurately reflect the source?
   coherence    — is the summary clear and readable?
 
-With 30 documents and 3 runs each, promptstats reveals not just which prompt
+With 30 documents and 3 runs each, evalstats reveals not just which prompt
 has the highest mean score, but which has the lowest variance — the property
 that matters most when deploying to production.
 
@@ -41,7 +41,7 @@ import time
 import numpy as np
 from openai import OpenAI
 
-import promptstats as pstats
+import evalstats as estats
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +459,7 @@ def run_benchmark(client: OpenAI) -> np.ndarray:
     -------
     scores : np.ndarray
         Shape ``(N_templates, N_inputs, N_runs, N_evaluators)``
-        matching the promptstats ``(N, M, R, K)`` convention.
+        matching the evalstats ``(N, M, R, K)`` convention.
     """
     n_evals = len(EVALUATOR_NAMES)
     scores = np.zeros((N_TEMPLATES, N_INPUTS, N_RUNS, n_evals))
@@ -524,7 +524,7 @@ def main() -> None:
     print(f"\nCompleted in {elapsed:.1f}s\n")
 
     # Build BenchmarkResult — shape (N_templates, N_inputs, N_runs, N_evaluators)
-    result = pstats.BenchmarkResult(
+    result = estats.BenchmarkResult(
         scores=raw_scores,
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
@@ -540,7 +540,7 @@ def main() -> None:
     # Per-evaluator breakdown — faithfulness and coherence separately
     # ------------------------------------------------------------------
     print("=== analyze(evaluator_mode='per_evaluator') — faithfulness & coherence ===")
-    analysis_per = pstats.analyze(
+    analysis_per = estats.analyze(
         result,
         evaluator_mode="per_evaluator",
         reference="grand_mean",
@@ -549,13 +549,13 @@ def main() -> None:
         correction="holm",
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_per, top_pairwise=4)
+    estats.print_analysis_summary(analysis_per, top_pairwise=4)
 
     # ------------------------------------------------------------------
     # Full analysis — evaluators averaged into a single composite score
     # ------------------------------------------------------------------
     print("=== analyze(evaluator_mode='aggregate') — composite score ===")
-    analysis_agg = pstats.analyze(
+    analysis_agg = estats.analyze(
         result,
         evaluator_mode="aggregate",
         reference="grand_mean",
@@ -564,18 +564,18 @@ def main() -> None:
         correction="holm",
         rng=np.random.default_rng(0),
     )
-    pstats.print_analysis_summary(analysis_agg, top_pairwise=6)
+    estats.print_analysis_summary(analysis_agg, top_pairwise=6)
     print()
 
     # ------------------------------------------------------------------
     # Save advantage plot (composite score, faithfulness + coherence averaged)
     # ------------------------------------------------------------------
-    result_2d = pstats.BenchmarkResult(
+    result_2d = estats.BenchmarkResult(
         scores=result.get_2d_scores(),
         template_labels=TEMPLATE_LABELS,
         input_labels=INPUT_LABELS,
     )
-    fig = pstats.plot_point_estimates(
+    fig = estats.plot_point_estimates(
         result_2d,
         reference="grand_mean",
         title=(

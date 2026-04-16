@@ -12,7 +12,7 @@ INVESTIGATIONS = [
         "intro": "We evaluate two models on 50 binary test cases, and the bar chart says the wrong model wins. This investigation builds from that synthetic example to a full statistical workflow: computing confidence intervals on the pairwise difference, tightening estimates with multiple runs, and validating the approach on a real sentiment analysis eval.",
         "learns": [
             ("Why the apparent winner can be wrong", "An example where the model with the higher true rate loses in the sample, building intuition for why raw means at N=50 routinely mislead."),
-            ("How to compute a CI on the pairwise difference", "Using <code>pstats.compare_models()</code> for paired binary data, and reading the output interval to decide whether the gap is real."),
+            ("How to compute a CI on the pairwise difference", "Using <code>estats.compare_models()</code> for paired binary data, and reading the output interval to decide whether the gap is real."),
             ("Why multiple runs improve your estimates", "Adding 10 runs per input activates the nested bootstrap, which accounts for both input-level and run-level variance and produces more honest uncertainty bounds."),
             ("How to work with a real eval CSV", "Pivoting a tidy multi-run CSV from a sentiment analysis eval into the format <code>compare_models</code> expects: a complete data-loading walkthrough."),
         ],
@@ -334,7 +334,7 @@ def make_page(inv):
       <li><a href="../index.html#simulation">Simulation Study</a></li>
       <li><a href="../index.html#recommendations">Recommendations</a></li>
       <li><a href="../choose.html">Choose a Method</a></li>
-      <li><a href="../index.html#promptstats">promptstats</a></li>
+      <li><a href="../index.html#evalstats">evalstats</a></li>
     </ul>
   </div>
 </nav>
@@ -366,7 +366,7 @@ def make_page(inv):
       <div class="coming-soon-card">
         <div class="cs-icon">&#9879;</div>
         <div class="cs-label">Investigation in progress</div>
-        <p class="cs-text">Full worked examples, interactive code, and simulation-backed results are coming soon. <a href="https://github.com/ianarawjo/promptstats">Follow on GitHub</a> for updates.</p>
+        <p class="cs-text">Full worked examples, interactive code, and simulation-backed results are coming soon. <a href="https://github.com/ianarawjo/evalstats">Follow on GitHub</a> for updates.</p>
       </div>
     </section>
   </article>
@@ -376,10 +376,10 @@ def make_page(inv):
 <!-- FOOTER -->
 <footer class="site-footer">
   <div class="footer-inner">
-    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/promptstats">promptstats</a> project</p>
+    <p>Statistics for LLM Evals &middot; A living document from the <a href="https://github.com/ianarawjo/evalstats">evalstats</a> project</p>
     <ul class="footer-links">
-      <li><a href="https://github.com/ianarawjo/promptstats">GitHub</a></li>
-      <li><a href="https://pypi.org/project/promptstats/">PyPI</a></li>
+      <li><a href="https://github.com/ianarawjo/evalstats">GitHub</a></li>
+      <li><a href="https://pypi.org/project/evalstats/">PyPI</a></li>
     </ul>
   </div>
 </footer>

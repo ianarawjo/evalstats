@@ -58,7 +58,7 @@ def plot_accuracy_bar(
         * ``dict[str, float]`` — pre-computed mean per entity.
         * ``dict[str, array-like]`` — raw score arrays; means are computed
           internally.
-        * :class:`~promptstats.compare.CompareReport` — uses the
+        * :class:`~evalstats.compare.CompareReport` — uses the
           ``entity_stats`` means from the report.
     baseline : str, optional
         Label of a baseline entity.  A dashed reference line is drawn at
@@ -91,7 +91,7 @@ def plot_accuracy_bar(
     matplotlib.figure.Figure
     """
     # ---- normalise input --------------------------------------------------
-    from promptstats.compare import CompareReport
+    from evalstats.compare import CompareReport
 
     entity_name = "prompt"
 
