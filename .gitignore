@@ -17,5 +17,6 @@ website/build/
 scripts/pypi_release_checks.sh
 simulations/plots/*
 simulations/out
+scripts/*
 TODO.md
 *.jsonl

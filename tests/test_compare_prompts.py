@@ -272,7 +272,7 @@ def test_report_plot_bars_can_disable_error_bars():
 
 
 # ---------------------------------------------------------------------------
-# prompt_stats: PromptStats per template
+# prompt_stats: EvalStats per template
 # ---------------------------------------------------------------------------
 
 def test_prompt_stats_fields_present():
