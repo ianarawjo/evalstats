@@ -30,7 +30,7 @@ OpenEval  (--source openeval)
   https://huggingface.co/datasets/human-centered-eval/OpenEval
   No approval required (CC-BY-NC-4.0).
   Benchmarks:
-    binary     mmlu_pro, gpqa, boolq, imdb
+    binary     mmlu-pro, gpqa, boolq, imdb
     continuous cnndm, xsum  (ROUGE/BERTScore ∈ [0,1])
     (likert/grades: stubs — add when suitable benchmarks are identified)
   Three-table schema: bench | item (56K rows) | response (584K rows)
@@ -46,7 +46,7 @@ Usage
 
   # OpenEval
   python simulations/sim_dove.py --source openeval
-  python simulations/sim_dove.py --source openeval --benchmarks mmlu_pro cnndm
+  python simulations/sim_dove.py --source openeval --benchmarks mmlu-pro cnndm
   python simulations/sim_dove.py --source openeval --list-models
   python simulations/sim_dove.py --source openeval --models gpt-4o gpt-4o-mini
 
@@ -64,6 +64,7 @@ import csv
 import io
 import json
 import os
+import re
 import sys
 import time
 import warnings
@@ -174,38 +175,38 @@ DOVE_DEFAULT_BENCHMARKS: list[str] = ["hellaswag", "arc_challenge"]
 
 OPENEVAL_REPO = "human-centered-eval/OpenEval"
 
-# Known model names in OpenEval (as of dataset v1).
-# Run `--source openeval --list-models` to print all available names.
-OPENEVAL_DEFAULT_MODELS: list[str] = [
-    # These are illustrative; confirm exact names with --list-models
-    "gpt-4.1-mini",
-    "gpt-4o",
-    "o4-mini",
-    "DeepSeek-R1",
-    "falcon-7b",
-    "gemma-2-27b-it",
-    "gemma-3-4b-it",
-    "llama-2-70b",
-    "qwen-3-80b-instruct",
-    "qwen-2-7b-instruct",
-    "redpajama-incite-7b-chat",
-    "vicuna-13b-v1.3",
+# response_id format: {source}_{YYYYMMDDTHHMMSSZ}_{index}_{model_name}_{run}
+# item_id  is just  : {source}_{YYYYMMDDTHHMMSSZ}_{index}
+# Extracting source + item_id from response_id avoids loading the item table entirely.
+_OE_RESP_ID_RE = re.compile(r"^(.+?)_(\d{8}T\d{6}Z)_(\d+)")
+
+# Curated default (model, benchmark_id) pairs for OpenEval.
+# Each pair is confirmed to have data in the dataset; the cross-product of all
+# models × all benchmarks does NOT work because coverage is sparse.
+# Run --list-models --benchmarks <id> to discover more valid combinations.
+OPENEVAL_DEFAULT_PAIRS: list[tuple[str, str]] = [
+    ("falcon-7b-instruct",    "mmlu-pro"),      # binary  — knowledge/reasoning
+    ("gpt-4o",                "culturalbench"),  # binary  — cultural knowledge
+    ("o4-mini",               "opentom"),        # binary  — theory-of-mind
+    ("llama-65b",   "bbq"),            # binary  — social-bias QA
 ]
 
 
 @dataclass
 class OpenEvalBenchmarkSpec:
-    benchmark_id: str    # must match item_metadata.source value in the dataset
+    benchmark_id: str    # must match the source prefix in response_id (before the timestamp)
     eval_type: str       # "binary" | "continuous" | "likert" | "grades"
     description: str
     metric_name: str | None = None  # None = use first score entry for each response
 
 
-# Benchmark IDs match the `benchmark_name` values in OpenEval's bench table.
+# Benchmark IDs must match the source component in response_id
+# (i.e. the part before _{YYYYMMDDTHHMMSSZ}_ in each response_id).
+# Run --list-benchmarks to see the exact IDs present in the dataset.
 OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
     # ── Binary (0/1 correct) ───────────────────────────────────────────────
-    "mmlu_pro": OpenEvalBenchmarkSpec(
-        benchmark_id="mmlu_pro",
+    "mmlu-pro": OpenEvalBenchmarkSpec(
+        benchmark_id="mmlu-pro",
         eval_type="binary",
         description="MMLU-Pro knowledge/reasoning (0/1 correct)",
     ),
@@ -229,16 +230,33 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
         eval_type="binary",
         description="TruthfulQA truthfulness evaluation (0/1)",
     ),
+    "culturalbench": OpenEvalBenchmarkSpec(
+        benchmark_id="culturalbench",
+        eval_type="binary",
+        description="CulturalBench cultural knowledge QA (0/1 correct)",
+    ),
+    "opentom": OpenEvalBenchmarkSpec(
+        benchmark_id="opentom",
+        eval_type="binary",
+        description="OpenToM Theory-of-Mind reasoning QA (0/1 correct)",
+    ),
+    "bbq": OpenEvalBenchmarkSpec(
+        benchmark_id="bbq",
+        eval_type="binary",
+        description="BBQ social-bias benchmark for QA (0/1 correct)",
+    ),
     # ── Continuous ∈ [0, 1] — generation quality metrics ──────────────────
     "cnndm": OpenEvalBenchmarkSpec(
         benchmark_id="cnndm",
         eval_type="continuous",
-        description="CNN/DailyMail summarization (ROUGE/BERTScore ∈ [0,1])",
+        description="CNN/DailyMail summarization ROUGE-L ∈ [0,1]",
+        metric_name="rouge_l",   # parallel-list layout: rouge_1/rouge_2/rouge_l/summac
     ),
     "xsum": OpenEvalBenchmarkSpec(
         benchmark_id="xsum",
         eval_type="continuous",
-        description="XSUM abstractive summarization (ROUGE/BERTScore ∈ [0,1])",
+        description="XSUM abstractive summarization ROUGE-L ∈ [0,1]",
+        metric_name="rouge_l",   # same parallel-list layout as cnndm
     ),
     # ── Stubs for Likert / grades ──────────────────────────────────────────
     # Uncomment once a suitable OpenEval benchmark with ordinal scores is confirmed:
@@ -250,7 +268,11 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
     # ),
 }
 
-OPENEVAL_DEFAULT_BENCHMARKS: list[str] = ["mmlu_pro", "gpqa", "boolq", "imdb", "truthfulqa", "cnndm", "xsum"]
+OPENEVAL_DEFAULT_BENCHMARKS: list[str] = [
+    "mmlu-pro", "gpqa", "boolq", "imdb", "truthfulqa",
+    "culturalbench", "opentom", "bbq",
+    "cnndm", "xsum",
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -491,50 +513,96 @@ def _oe_get_model_name(model_val: Any) -> str | None:
     return None
 
 
-def _oe_get_item_source(item_metadata_val: Any) -> str | None:
-    """Extract source benchmark name from item_metadata field."""
-    obj = _oe_parse(item_metadata_val)
-    if isinstance(obj, dict):
-        return obj.get("source")
-    return None
+def _oe_parse_response_id(response_id: str) -> tuple[str, str] | tuple[None, None]:
+    """
+    Extract (source_benchmark, item_id) from an OpenEval response_id.
+
+    response_id format: {source}_{YYYYMMDDTHHMMSSZ}_{index}_{model}_{run}
+    item_id      =    : {source}_{YYYYMMDDTHHMMSSZ}_{index}
+
+    Returns (None, None) if the format does not match.
+    This avoids needing the item table entirely.
+    """
+    m = _OE_RESP_ID_RE.match(response_id)
+    if m is None:
+        return None, None
+    source = m.group(1)
+    item_id = f"{source}_{m.group(2)}_{m.group(3)}"
+    return source, item_id
 
 
 def _oe_extract_score(scores_val: Any, metric_name: str | None) -> float | None:
     """
     Extract a numeric score from OpenEval's scores field.
 
-    scores_val is a list of dicts (or a JSON string encoding that list):
-        [{"metric": {"name": "...", ...}, "value": <float>}, ...]
+    Three observed layouts — all handled:
 
-    If metric_name is None, returns the value from the first entry.
-    If metric_name is given, finds the entry whose metric.name matches.
-    Returns None if no suitable entry is found.
+    Layout A — list-of-dicts (schema-documented):
+        [{"metric": {"name": "accuracy", ...}, "value": 1.0}, ...]
+
+    Layout B — dict with scalar value:
+        {"metric": {"name": "accuracy", ...}, "value": 1.0}
+
+    Layout C — dict with parallel metric-list + value-list (observed in practice):
+        {"metric": [{"name": "rouge_1", ...}, {"name": "rouge_l", ...}, ...],
+         "value":  [0.42, 0.38, ...]}
+        The i-th value corresponds to the i-th metric descriptor.
+
+    If metric_name is None, returns the value from the first entry/metric.
+    Returns None if no suitable entry or value is found.
     """
-    entries = _oe_parse(scores_val)
-    if not isinstance(entries, list) or len(entries) == 0:
-        return None
+    data = _oe_parse(scores_val)
 
-    def _entry_metric_name(e: Any) -> str | None:
-        if not isinstance(e, dict):
+    # ── Layout A: list-of-dicts ──────────────────────────────────────────
+    if isinstance(data, list):
+        if not data:
             return None
-        metric = _oe_parse(e.get("metric"))
-        if isinstance(metric, dict):
-            return metric.get("name")
-        return None
 
-    if metric_name is None:
-        entry = entries[0]
+        def _list_entry_metric_name(e: Any) -> str | None:
+            if not isinstance(e, dict):
+                return None
+            metric = _oe_parse(e.get("metric"))
+            if isinstance(metric, dict):
+                return metric.get("name")
+            return None
+
+        if metric_name is None:
+            entry = data[0]
+        else:
+            entry = next(
+                (e for e in data if _list_entry_metric_name(e) == metric_name), None
+            )
+            if entry is None:
+                return None
+
+        if not isinstance(entry, dict):
+            return None
+        val = entry.get("value")
+
+    elif isinstance(data, dict):
+        metrics_raw = _oe_parse(data.get("metric"))
+        value_raw = data.get("value")
+
+        if isinstance(metrics_raw, list) and isinstance(value_raw, list):
+            # ── Layout C: parallel metric-list + value-list ──────────────
+            if not value_raw:
+                return None
+            if metric_name is None:
+                val = value_raw[0]
+            else:
+                val = None
+                for m_obj, v in zip(metrics_raw, value_raw):
+                    m_obj = _oe_parse(m_obj)
+                    if isinstance(m_obj, dict) and m_obj.get("name") == metric_name:
+                        val = v
+                        break
+        else:
+            # ── Layout B: dict with scalar value ─────────────────────────
+            val = value_raw
+
     else:
-        entry = next(
-            (e for e in entries if _entry_metric_name(e) == metric_name),
-            None,
-        )
-        if entry is None:
-            return None
-
-    if not isinstance(entry, dict):
         return None
-    val = entry.get("value")
+
     if val is None:
         return None
     try:
@@ -543,17 +611,24 @@ def _oe_extract_score(scores_val: Any, metric_name: str | None) -> float | None:
         return None
 
 
-def _oe_find_item_id(response_id: str, item_id_set: set[str]) -> str | None:
-    """
-    Find the item_id that is a prefix of response_id.
-
-    OpenEval guarantees response_id.startswith(item_id).  We try all
-    candidate prefix lengths from longest to shortest to find the match.
-    """
-    for length in range(len(response_id), 0, -1):
-        candidate = response_id[:length]
-        if candidate in item_id_set:
-            return candidate
+def _oe_first_metric_name(scores_val: Any) -> str | None:
+    """Return the name of the first metric in the scores field (for logging)."""
+    data = _oe_parse(scores_val)
+    if isinstance(data, list) and data:
+        e0 = data[0]
+        if isinstance(e0, dict):
+            metric = _oe_parse(e0.get("metric"))
+            if isinstance(metric, dict):
+                return metric.get("name")
+    elif isinstance(data, dict):
+        metric = _oe_parse(data.get("metric"))
+        if isinstance(metric, dict):
+            return metric.get("name")
+        if isinstance(metric, list) and metric:
+            # Layout C: parallel list — first element of metric list
+            m0 = _oe_parse(metric[0])
+            if isinstance(m0, dict):
+                return m0.get("name")
     return None
 
 
@@ -562,194 +637,248 @@ def list_openeval_models(
     openeval_repo: str = OPENEVAL_REPO,
     hf_token: str | None = None,
     cache_dir: str | None = None,
-) -> list[str]:
-    """Return a sorted list of all unique model names present in OpenEval."""
+    benchmark_filter: list[str] | None = None,
+) -> dict[str, dict[str, int]]:
+    """
+    Return {model_name: {benchmark_source: response_count}}.
+
+    If *benchmark_filter* is given, only count responses for those benchmarks
+    (models with zero matching responses are omitted from the result).
+
+    Scans the response table once via response_id regex — no item table needed.
+    """
     try:
         from datasets import load_dataset
     except ImportError:
         raise ImportError("pip install datasets")
 
-    print("Loading OpenEval response table to enumerate models (may take a while) …")
+    filter_set = set(benchmark_filter) if benchmark_filter else None
+    msg = (
+        f"Scanning OpenEval responses for benchmarks {sorted(filter_set)} …"
+        if filter_set else
+        "Scanning OpenEval response table for model names and benchmark coverage …"
+    )
+    print(msg)
     ds = load_dataset(
         openeval_repo, "response", split="train",
         token=hf_token, cache_dir=cache_dir,
     )
-    names: set[str] = set()
+    counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for row in ds:
         name = _oe_get_model_name(row.get("model"))
-        if name:
-            names.add(name)
-    return sorted(names)
+        source, _ = _oe_parse_response_id(row.get("response_id", ""))
+        if name and source:
+            if filter_set is None or source in filter_set:
+                counts[name][source] += 1
+    # Convert inner defaultdicts and drop models with no matching responses
+    return {
+        model: dict(bench_counts)
+        for model, bench_counts in counts.items()
+        if bench_counts
+    }
+
+
+def list_openeval_benchmarks(
+    *,
+    openeval_repo: str = OPENEVAL_REPO,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+) -> dict[str, int]:
+    """
+    Return {benchmark_source: response_count} for all benchmarks in OpenEval.
+
+    Extracted from response_id via regex — no item table needed.
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    print("Scanning OpenEval response table for benchmark IDs …")
+    ds = load_dataset(
+        openeval_repo, "response", split="train",
+        token=hf_token, cache_dir=cache_dir,
+    )
+    counts: dict[str, int] = defaultdict(int)
+    for row in ds:
+        source, _ = _oe_parse_response_id(row.get("response_id", ""))
+        if source:
+            counts[source] += 1
+    return dict(sorted(counts.items()))
 
 
 def build_openeval_corpora(
-    models: list[str] | None,
-    benchmark_ids: list[str],
+    pairs: list[tuple[str, str]],
     *,
     openeval_repo: str = OPENEVAL_REPO,
     hf_token: str | None = None,
     cache_dir: str | None = None,
     min_corpus_size: int = 50,
-    n_models_auto: int = 6,
 ) -> list[Corpus]:
     """
-    Load OpenEval corpora for the given models and benchmarks.
+    Load OpenEval corpora for the given (model, benchmark_id) pairs.
 
-    Joining strategy
-    ----------------
-    OpenEval stores data across two tables:
-      • item  (56K rows, 94 MB)  — maps item_id → source benchmark
-      • response (584K rows, 6.4 GB) — model responses with scores
+    Strategy (no item table needed)
+    --------------------------------
+    The response_id encodes both the benchmark source and item_id:
+        response_id = "{source}_{YYYYMMDDTHHMMSSZ}_{index}_{model}_{run}"
+        item_id     = "{source}_{YYYYMMDDTHHMMSSZ}_{index}"
 
-    The response.response_id is guaranteed to start with the corresponding
-    item.item_id.  We load the item table first (cheap), build a set of
-    item_ids for each requested benchmark, then iterate the response table
-    (filtered to requested models) and prefix-match each response_id to its
-    item_id.
+    Pairs must be confirmed to have data; the full cross-product of all models
+    × all benchmarks does NOT work — OpenEval coverage is sparse. Use
+    --list-models --benchmarks <id> to discover valid combinations.
 
-    If models is None or empty, the top-n_models_auto most frequent models
-    by response count are selected automatically.
+    If a benchmark ID is not in OPENEVAL_BENCHMARK_SPECS, run --list-benchmarks.
     """
     try:
         from datasets import load_dataset
     except ImportError:
         raise ImportError("pip install datasets")
 
-    unknown = [b for b in benchmark_ids if b not in OPENEVAL_BENCHMARK_SPECS]
+    # Validate benchmark IDs
+    unknown = [b for _, b in pairs if b not in OPENEVAL_BENCHMARK_SPECS]
     if unknown:
-        print(f"Warning: unknown OpenEval benchmark IDs {unknown}. Available: {list(OPENEVAL_BENCHMARK_SPECS)}")
-        benchmark_ids = [b for b in benchmark_ids if b in OPENEVAL_BENCHMARK_SPECS]
-    if not benchmark_ids:
+        print(
+            f"Warning: unknown OpenEval benchmark IDs {sorted(set(unknown))}.\n"
+            f"  Run --list-benchmarks to see exact IDs present in the dataset.\n"
+            f"  Known IDs: {list(OPENEVAL_BENCHMARK_SPECS)}"
+        )
+        pairs = [(m, b) for m, b in pairs if b in OPENEVAL_BENCHMARK_SPECS]
+    if not pairs:
         return []
 
-    benchmark_ids_set = set(benchmark_ids)
+    pairs_set: set[tuple[str, str]] = set(pairs)      # (model, benchmark)
+    benchmark_ids_set = {b for _, b in pairs}
+    models_set        = {m for m, _ in pairs}
 
-    # ── Step 1: item table → {benchmark → set(item_ids)} ─────────────────
-    print("Loading OpenEval item table (~94 MB) …")
-    item_ds = load_dataset(
-        openeval_repo, "item", split="train",
-        token=hf_token, cache_dir=cache_dir,
-    )
-
-    bench_item_ids: dict[str, set[str]] = defaultdict(set)
-    for row in item_ds:
-        source = _oe_get_item_source(row.get("item_metadata"))
-        if source in benchmark_ids_set:
-            bench_item_ids[source].add(row["item_id"])
-
-    all_target_item_ids: set[str] = set().union(*bench_item_ids.values())
-    item_to_bench: dict[str, str] = {
-        iid: bench for bench, ids in bench_item_ids.items() for iid in ids
-    }
-
-    found_benches = set(bench_item_ids.keys())
-    missing = benchmark_ids_set - found_benches
-    if missing:
-        print(f"  Warning: no items found for benchmarks: {missing}")
-    for bench, ids in bench_item_ids.items():
-        print(f"  {bench}: {len(ids)} items")
-
-    if not all_target_item_ids:
-        print("No items found for requested benchmarks.")
-        return []
-
-    # ── Step 2: response table — filter by model, collect scores ──────────
+    # ── Load + filter response table ──────────────────────────────────────
     print("Loading OpenEval response table (~6.4 GB; cached after first download) …")
     response_ds = load_dataset(
         openeval_repo, "response", split="train",
         token=hf_token, cache_dir=cache_dir,
     )
 
-    # Auto-discover models if none specified
-    models_set: set[str] | None = None
-    if not models:
-        print(f"  No models specified — counting responses to pick top {n_models_auto} …")
-        model_counts: dict[str, int] = defaultdict(int)
-        for row in response_ds:
-            name = _oe_get_model_name(row.get("model"))
-            if name:
-                model_counts[name] += 1
-        top = sorted(model_counts, key=lambda m: -model_counts[m])[:n_models_auto]
-        print(f"  Auto-selected models: {top}")
-        models_set = set(top)
-    else:
-        models_set = set(models)
-
-    # Filter response table to requested models (reduces from 584K → ~tens of K rows)
-    print(f"  Filtering responses for {len(models_set)} model(s) …")
+    print(f"  Filtering to {len(pairs)} (model, benchmark) pairs …")
 
     def _keep_row(batch: dict) -> list[bool]:
-        return [_oe_get_model_name(m) in models_set for m in batch["model"]]
+        keep = []
+        for rid, model_val in zip(batch["response_id"], batch["model"]):
+            source, _ = _oe_parse_response_id(rid)
+            if source not in benchmark_ids_set:
+                keep.append(False)
+                continue
+            mname = _oe_get_model_name(model_val)
+            keep.append((mname, source) in pairs_set)
+        return keep
 
     response_ds = response_ds.filter(_keep_row, batched=True, batch_size=5_000)
-    print(f"  {len(response_ds):,} responses remain after model filter.")
+    n_filtered = len(response_ds)
+    print(f"  {n_filtered:,} responses match requested pairs.")
 
-    # ── Step 3: accumulate scores per (model, benchmark) ─────────────────
-    # score_accum[(model_name, benchmark_id)] = list of float scores
+    if n_filtered == 0:
+        print(
+            "  No responses found. Tips:\n"
+            "    • Run --list-benchmarks to verify benchmark source IDs.\n"
+            "    • Run --list-models --benchmarks <ids> to verify model names."
+        )
+        return []
+
+    # Per-pair breakdown — lets the user spot missing combos before the accumulation pass.
+    pair_counts: dict[tuple[str, str], int] = defaultdict(int)
+    for row in response_ds:
+        src, _ = _oe_parse_response_id(row.get("response_id", ""))
+        mname = _oe_get_model_name(row.get("model"))
+        if mname and src:
+            pair_counts[(mname, src)] += 1
+
+    print("  Response counts per pair:")
+    any_zero = False
+    for model_name, bench in pairs:
+        n = pair_counts.get((model_name, bench), 0)
+        flag = "  ← no data!" if n == 0 else ""
+        print(f"    {model_name}/{bench}: {n:,}{flag}")
+        if n == 0:
+            any_zero = True
+    if any_zero:
+        print("  Tip: run --list-models --benchmarks <ids> to find models with data.")
+    print()
+
+    # ── Accumulate scores; deduplicate by item_id ─────────────────────────
     score_accum: dict[tuple[str, str], list[float]] = defaultdict(list)
-    # track which metric name was first seen per benchmark for reporting
+    seen_items: dict[tuple[str, str], set[str]] = defaultdict(set)
     metric_seen: dict[str, str] = {}
+    n_dedup = 0
+    n_no_score = 0
+    _score_fail_samples: list[Any] = []   # raw scores fields that failed, for diagnostics
 
     for row in response_ds:
-        model_name = _oe_get_model_name(row.get("model"))
-        if model_name is None or model_name not in models_set:
-            continue
-
         response_id = row.get("response_id", "")
-        item_id = _oe_find_item_id(response_id, all_target_item_ids)
-        if item_id is None:
+        source, item_id = _oe_parse_response_id(response_id)
+        if source is None:
             continue
 
-        bench = item_to_bench.get(item_id)
-        if bench is None:
+        model_name = _oe_get_model_name(row.get("model"))
+        if model_name is None or (model_name, source) not in pairs_set:
             continue
 
-        spec = OPENEVAL_BENCHMARK_SPECS[bench]
-        score = _oe_extract_score(row.get("scores"), spec.metric_name)
+        key = (model_name, source)
+
+        # Deduplicate: keep only first response per (item_id, model, benchmark)
+        if item_id in seen_items[key]:
+            n_dedup += 1
+            continue
+        seen_items[key].add(item_id)
+
+        spec = OPENEVAL_BENCHMARK_SPECS[source]
+        scores_raw = row.get("scores")
+        score = _oe_extract_score(scores_raw, spec.metric_name)
         if score is None or not np.isfinite(score):
+            n_no_score += 1
+            if len(_score_fail_samples) < 5:
+                _score_fail_samples.append(scores_raw)
             continue
 
-        # Record the first metric name seen for each benchmark (for logging)
-        if bench not in metric_seen:
-            entries = _oe_parse(row.get("scores"))
-            if isinstance(entries, list) and entries:
-                mname = None
-                e0 = entries[0]
-                if isinstance(e0, dict):
-                    m = _oe_parse(e0.get("metric"))
-                    if isinstance(m, dict):
-                        mname = m.get("name")
-                if mname:
-                    metric_seen[bench] = mname
+        if source not in metric_seen:
+            mname = _oe_first_metric_name(scores_raw)
+            if mname:
+                metric_seen[source] = mname
 
-        score_accum[(model_name, bench)].append(float(score))
+        score_accum[key].append(float(score))
 
-    # ── Step 4: build Corpus objects ──────────────────────────────────────
+    if n_dedup > 0:
+        print(f"  {n_dedup:,} duplicate (item × model) rows removed.")
+    if n_no_score > 0:
+        print(f"  {n_no_score:,} rows skipped (score missing or non-finite).")
+        if _score_fail_samples:
+            print("  Sample 'scores' field values that failed extraction:")
+            for i, raw in enumerate(_score_fail_samples):
+                r = repr(raw)
+                if len(r) > 300:
+                    r = r[:300] + " …"
+                print(f"    [{i}] type={type(raw).__name__}  value={r}")
+
+    # ── Build Corpus objects (preserve pair order) ────────────────────────
     corpora: list[Corpus] = []
-    for bench in benchmark_ids:
+    seen_benches: set[str] = set()
+    for model_name, bench in pairs:
         spec = OPENEVAL_BENCHMARK_SPECS[bench]
-        mname = metric_seen.get(bench, "?")
-        print(f"\n  Benchmark: {bench}  [metric used: {mname}]")
-        for model_name in sorted(models_set):
-            scores_list = score_accum.get((model_name, bench), [])
-            arr = np.array(scores_list, dtype=float)
-            arr = arr[np.isfinite(arr)]
-            if len(arr) < min_corpus_size:
-                print(
-                    f"  Skip  {model_name}/{bench}: "
-                    f"N={len(arr)} < {min_corpus_size}"
-                )
-                continue
-            print(
-                f"  OK    {model_name}/{bench}: "
-                f"N={len(arr)}, mean={np.mean(arr):.4f}"
-            )
-            corpora.append(Corpus(
-                model=model_name, benchmark_id=bench,
-                eval_type=spec.eval_type, source="openeval",
-                scores=arr, corpus_mean=float(np.mean(arr)),
-                corpus_size=len(arr),
-            ))
+        if bench not in seen_benches:
+            mname = metric_seen.get(bench, spec.metric_name or "first")
+            print(f"\n  Benchmark: {bench}  [metric used: {mname}]")
+            seen_benches.add(bench)
+        scores_list = score_accum.get((model_name, bench), [])
+        arr = np.array(scores_list, dtype=float)
+        arr = arr[np.isfinite(arr)]
+        if len(arr) < min_corpus_size:
+            print(f"  Skip  {model_name}/{bench}: N={len(arr)} < {min_corpus_size}")
+            continue
+        print(f"  OK    {model_name}/{bench}: N={len(arr)}, mean={np.mean(arr):.4f}")
+        corpora.append(Corpus(
+            model=model_name, benchmark_id=bench,
+            eval_type=spec.eval_type, source="openeval",
+            scores=arr, corpus_mean=float(np.mean(arr)),
+            corpus_size=len(arr),
+        ))
 
     print(f"\n  {len(corpora)} corpora loaded successfully.\n")
     return corpora
@@ -1349,6 +1478,14 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--list-benchmarks",
+        action="store_true",
+        help=(
+            "Print all available benchmark IDs (with response counts) for the chosen "
+            "source and exit.  Useful for discovering IDs to pass to --benchmarks."
+        ),
+    )
+    parser.add_argument(
         "--benchmarks",
         nargs="+",
         default=None,   # resolved per source below
@@ -1473,27 +1610,105 @@ def main() -> None:
             print(f"Browse: https://huggingface.co/datasets/{DOVE_REPO}/tree/main")
             print(f"\nPreset default models:\n  " + "\n  ".join(DOVE_DEFAULT_MODELS))
         else:
-            models = list_openeval_models(
+            bench_filter = args.benchmarks  # None → show all benchmarks
+            coverage = list_openeval_models(
+                openeval_repo=OPENEVAL_REPO, hf_token=hf_token, cache_dir=args.cache_dir,
+                benchmark_filter=bench_filter,
+            )
+            target_benches = sorted(bench_filter) if bench_filter else None
+            if bench_filter:
+                print(f"\nOpenEval models with data for benchmarks {bench_filter} "
+                      f"({len(coverage)} models):")
+            else:
+                print(f"\nOpenEval model names ({len(coverage)} total):")
+
+            if not coverage:
+                print("  (none found — check benchmark IDs with --list-benchmarks)")
+            elif target_benches:
+                # Tabular view: one column per requested benchmark
+                col_w = max(len(b) for b in target_benches)
+                header = "  {:<35s}  {}".format(
+                    "Model",
+                    "  ".join(f"{b:>{col_w}}" for b in target_benches),
+                )
+                print(header)
+                print("  " + "-" * (len(header) - 2))
+                for model_name, bench_counts in sorted(coverage.items()):
+                    row_cells = []
+                    for b in target_benches:
+                        n = bench_counts.get(b, 0)
+                        row_cells.append(f"{n:>{col_w},}" if n else f"{'—':>{col_w}}")
+                    print(f"  {model_name:<35s}  {'  '.join(row_cells)}")
+            else:
+                # No filter: show a full benchmark matrix for readability
+                all_benches = sorted({b for counts in coverage.values() for b in counts})
+                model_w = max(35, max(len(m) for m in coverage))
+                col_ws = {
+                    b: max(len(b), max(len(f"{counts.get(b, 0):,}") for counts in coverage.values()))
+                    for b in all_benches
+                }
+                header = "  {:<{mw}s}  {}".format(
+                    "Model",
+                    "  ".join(f"{b:>{col_ws[b]}}" for b in all_benches),
+                    mw=model_w,
+                )
+                print(header)
+                print("  " + "-" * (len(header) - 2))
+                for model_name, bench_counts in sorted(coverage.items()):
+                    row_cells = []
+                    for b in all_benches:
+                        n = bench_counts.get(b, 0)
+                        row_cells.append(f"{n:>{col_ws[b]},}" if n else f"{'—':>{col_ws[b]}}")
+                    print(f"  {model_name:<{model_w}s}  {'  '.join(row_cells)}")
+        return
+
+    # ── --list-benchmarks shortcut ────────────────────────────────────────
+    if args.list_benchmarks:
+        if source == "dove":
+            print("DOVE_Lite benchmark IDs (available in this simulation):")
+            for bid, spec in DOVE_BENCHMARK_SPECS.items():
+                print(f"  {bid:20s}  eval_type={spec.eval_type}  file={spec.filename}")
+        else:
+            counts = list_openeval_benchmarks(
                 openeval_repo=OPENEVAL_REPO, hf_token=hf_token, cache_dir=args.cache_dir,
             )
-            print(f"\nOpenEval model names ({len(models)} total):")
-            for m in models:
-                print(f"  {m}")
+            print(f"\nOpenEval benchmark sources ({len(counts)} total, sorted by name):")
+            for bench_id, count in counts.items():
+                known = bench_id in OPENEVAL_BENCHMARK_SPECS
+                tag = ""
+                if known:
+                    spec = OPENEVAL_BENCHMARK_SPECS[bench_id]
+                    tag = f"  eval_type={spec.eval_type}  ← supported"
+                print(f"  {bench_id:25s}  {count:6,} responses{tag}")
         return
 
     # ── Resolve defaults per source ───────────────────────────────────────
     if source == "dove":
         benchmarks = args.benchmarks or DOVE_DEFAULT_BENCHMARKS
         models = args.models or DOVE_DEFAULT_MODELS
+        oe_pairs = []   # not used for DOVE
     else:
-        benchmarks = args.benchmarks or OPENEVAL_DEFAULT_BENCHMARKS
-        models = args.models or OPENEVAL_DEFAULT_MODELS
+        # OpenEval: work with explicit (model, benchmark) pairs, not a cross-product,
+        # because dataset coverage is sparse.
+        if args.models is None and args.benchmarks is None:
+            # Use curated defaults — confirmed to have data
+            oe_pairs = OPENEVAL_DEFAULT_PAIRS
+        else:
+            # Explicit override: form cross-product from whichever args were given
+            bms = args.benchmarks or list(dict.fromkeys(b for _, b in OPENEVAL_DEFAULT_PAIRS))
+            mds = args.models     or list(dict.fromkeys(m for m, _ in OPENEVAL_DEFAULT_PAIRS))
+            oe_pairs = [(m, b) for m in mds for b in bms]
+        benchmarks = list(dict.fromkeys(b for _, b in oe_pairs))
+        models     = list(dict.fromkeys(m for m, _ in oe_pairs))
 
     # ── Print run config ──────────────────────────────────────────────────
     print(f"\nReal-Data Bootstrap CI Simulation")
     print(f"  Source          : {source}")
-    print(f"  Benchmarks      : {benchmarks}")
-    print(f"  Models          : {models if models else '(auto-discover)'}")
+    if source == "openeval":
+        print(f"  Pairs           : {oe_pairs}")
+    else:
+        print(f"  Benchmarks      : {benchmarks}")
+        print(f"  Models          : {models}")
     print(f"  Reps per cell   : {args.reps}")
     print(f"  Bootstrap draws : {args.bootstrap_n}")
     print(f"  Alpha / CI level: {args.alpha} / {(1 - args.alpha):.0%}")
@@ -1511,7 +1726,7 @@ def main() -> None:
         )
     else:
         corpora = build_openeval_corpora(
-            models=models, benchmark_ids=benchmarks,
+            pairs=oe_pairs,
             openeval_repo=OPENEVAL_REPO, hf_token=hf_token,
             cache_dir=args.cache_dir, min_corpus_size=args.min_corpus_size,
         )
@@ -1522,10 +1737,12 @@ def main() -> None:
                 "  • HuggingFace access approval for nlphuji/DOVE_Lite\n"
                 "  • Login: huggingface-cli login  (or --hf-token TOKEN)\n"
                 "  • Model directory names match exactly (see --list-models)\n"
+                "  • Benchmark IDs: see --list-benchmarks\n"
             ),
             "openeval": (
-                "  • Run --list-models to see available model names\n"
-                "  • Benchmark IDs match item_metadata.source values\n"
+                "  • Run --list-models to see available model names (with their benchmark coverage)\n"
+                "  • Run --list-benchmarks to see all benchmark IDs in the dataset\n"
+                "  • Benchmark IDs are extracted from response_id prefix (e.g. 'mmlu-pro', 'cnndm')\n"
                 "  • Login may be needed: huggingface-cli login\n"
             ),
         }
