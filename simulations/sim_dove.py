@@ -155,18 +155,27 @@ DOVE_BENCHMARK_SPECS: dict[str, DoveBenchmarkSpec] = {
         eval_type="binary",
         description="HumanEval code generation pass@1 (0/1)",
     ),
-    # ── Stubs for other eval types ─────────────────────────────────────────
-    # Uncomment and fill in once a suitable DOVE file is confirmed:
-    #
-    # "continuous_TODO": DoveBenchmarkSpec(
-    #     benchmark_id="continuous_TODO",
-    #     file_name="PLACEHOLDER.parquet",
-    #     eval_type="continuous",
-    #     description="PLACEHOLDER: generation benchmark with [0,1] quality scores",
-    # ),
+    "quality": DoveBenchmarkSpec(
+        benchmark_id="quality",
+        file_name="quality.parquet",
+        eval_type="binary",
+        description="QuALITY long-context reading comprehension (0/1 correct)",
+    ),
+    "cnn_dailymail": DoveBenchmarkSpec(
+        benchmark_id="cnn_dailymail",
+        file_name="cnn_dailymail.parquet",
+        eval_type="continuous",
+        description="CNN/DailyMail summarization quality score in [0,1]",
+    ),
+    "wmt14.cs-en": DoveBenchmarkSpec(
+        benchmark_id="wmt14.cs-en",
+        file_name="wmt14.cs-en.parquet",
+        eval_type="continuous",
+        description="WMT14 Czech-to-English translation quality score in [0,1]",
+    ),
 }
 
-DOVE_DEFAULT_BENCHMARKS: list[str] = ["hellaswag", "arc_challenge"]
+DOVE_DEFAULT_BENCHMARKS: list[str] = list(DOVE_BENCHMARK_SPECS)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1667,7 +1676,7 @@ def main() -> None:
         if source == "dove":
             print("DOVE_Lite benchmark IDs (available in this simulation):")
             for bid, spec in DOVE_BENCHMARK_SPECS.items():
-                print(f"  {bid:20s}  eval_type={spec.eval_type}  file={spec.filename}")
+                print(f"  {bid:20s}  eval_type={spec.eval_type}  file={spec.file_name}")
         else:
             counts = list_openeval_benchmarks(
                 openeval_repo=OPENEVAL_REPO, hf_token=hf_token, cache_dir=args.cache_dir,
