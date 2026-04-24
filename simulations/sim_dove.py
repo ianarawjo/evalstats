@@ -94,7 +94,7 @@ with warnings.catch_warnings():
 # Shared constants
 # ─────────────────────────────────────────────────────────────────────────────
 
-SOURCES = ["dove", "openeval"]
+SOURCES = ["dove", "openeval", "all"]
 
 METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]
 WILSON_METHOD = "wilson"
@@ -112,15 +112,39 @@ RESULTS_MODES = ["save", "off"]
 
 DOVE_REPO = "nlphuji/DOVE_Lite"
 
-# Representative models spanning a range of accuracy tiers.
-# Names match directory names in DOVE_Lite exactly.
-DOVE_DEFAULT_MODELS: list[str] = [
-    "Llama-3.2-1B-Instruct",       # small — lower accuracy tier
-    "OLMoE-1B-7B-0924-Instruct",   # MoE 1B active — lower-mid tier
-    "Mistral-7B-Instruct-v0.3",    # mid tier
-    "Meta-Llama-3-8B-Instruct",    # mid tier
-    "GPT-4o-mini",                 # upper-mid tier
-    "Llama-3.3-70B-Instruct",      # high accuracy tier
+# Curated default (model, benchmark_id) pairs for DOVE_Lite.
+# Each pair is confirmed to have data; the cross-product of all models × all
+# benchmarks does NOT work because coverage varies by model family (e.g.
+# GPT-4o-mini/Llama-3.3-70B have humaneval/cnn_dailymail/wmt14 but not
+# hellaswag/arc_challenge; OLMoE lacks quality).
+# Run explore_dove.py to discover more valid combinations.
+DOVE_DEFAULT_PAIRS: list[tuple[str, str]] = [
+    # hellaswag — commonsense NLI (0/1 correct)
+    ("Llama-3.2-1B-Instruct",     "hellaswag"),   # small — lower accuracy tier
+    ("OLMoE-1B-7B-0924-Instruct", "hellaswag"),   # MoE 1B active — lower-mid tier
+    ("Mistral-7B-Instruct-v0.3",  "hellaswag"),   # mid tier
+    ("Meta-Llama-3-8B-Instruct",  "hellaswag"),   # mid tier
+    # arc_challenge — science QA (0/1 correct)
+    ("Llama-3.2-1B-Instruct",     "arc_challenge"),
+    ("OLMoE-1B-7B-0924-Instruct", "arc_challenge"),
+    ("Mistral-7B-Instruct-v0.3",  "arc_challenge"),
+    ("Meta-Llama-3-8B-Instruct",  "arc_challenge"),
+    # gsm8k — grade-school math (0/1); humaneval excluded (DOVE uses fractional test-case scores)
+    ("GPT-4o-mini",               "gsm8k"),       # upper-mid tier
+    ("Llama-3.3-70B-Instruct",    "gsm8k"),       # high accuracy tier
+    # squad — reading comprehension (0/1)
+    ("GPT-4o-mini",               "squad"),
+    ("Llama-3.3-70B-Instruct",    "squad"),
+    # quality — long-context reading comprehension (0/1); OLMoE lacks this file
+    ("Llama-3.2-1B-Instruct",     "quality"),
+    ("Mistral-7B-Instruct-v0.3",  "quality"),
+    ("Meta-Llama-3-8B-Instruct",  "quality"),
+    # cnn_dailymail — summarization quality score in [0,1]
+    ("GPT-4o-mini",               "cnn_dailymail"),
+    ("Llama-3.3-70B-Instruct",    "cnn_dailymail"),
+    # wmt14.cs-en — translation quality score in [0,1]
+    ("GPT-4o-mini",               "wmt14.cs-en"),
+    ("Llama-3.3-70B-Instruct",    "wmt14.cs-en"),
 ]
 
 
@@ -149,11 +173,17 @@ DOVE_BENCHMARK_SPECS: dict[str, DoveBenchmarkSpec] = {
         eval_type="binary",
         description="ARC Challenge science QA (0/1 correct)",
     ),
-    "humaneval": DoveBenchmarkSpec(
-        benchmark_id="humaneval",
-        file_name="humaneval.parquet",
+    "gsm8k": DoveBenchmarkSpec(
+        benchmark_id="gsm8k",
+        file_name="gsm8k.parquet",
         eval_type="binary",
-        description="HumanEval code generation pass@1 (0/1)",
+        description="GSM8K grade-school math (0/1 correct)",
+    ),
+    "squad": DoveBenchmarkSpec(
+        benchmark_id="squad",
+        file_name="squad.parquet",
+        eval_type="binary",
+        description="SQuAD reading comprehension (0/1 correct)",
     ),
     "quality": DoveBenchmarkSpec(
         benchmark_id="quality",
@@ -175,7 +205,7 @@ DOVE_BENCHMARK_SPECS: dict[str, DoveBenchmarkSpec] = {
     ),
 }
 
-DOVE_DEFAULT_BENCHMARKS: list[str] = list(DOVE_BENCHMARK_SPECS)
+DOVE_DEFAULT_BENCHMARKS: list[str] = list(dict.fromkeys(b for _, b in DOVE_DEFAULT_PAIRS))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -194,10 +224,22 @@ _OE_RESP_ID_RE = re.compile(r"^(.+?)_(\d{8}T\d{6}Z)_(\d+)")
 # models × all benchmarks does NOT work because coverage is sparse.
 # Run --list-models --benchmarks <id> to discover more valid combinations.
 OPENEVAL_DEFAULT_PAIRS: list[tuple[str, str]] = [
-    ("falcon-7b-instruct",    "mmlu-pro"),      # binary  — knowledge/reasoning
-    ("gpt-4o",                "culturalbench"),  # binary  — cultural knowledge
-    ("o4-mini",               "opentom"),        # binary  — theory-of-mind
-    ("llama-65b",   "bbq"),            # binary  — social-bias QA
+    ("falcon-7b-instruct",       "mmlu-pro"),      # binary  — knowledge/reasoning (metric: chain_of_thought_correctness; low mean reflects CoT format mismatch, not knowledge)
+    ("gpt-4o",                   "culturalbench"), # binary  — cultural knowledge
+    ("o4-mini",                  "opentom"),       # binary  — theory-of-mind
+    ("llama-65b",                "bbq"),           # binary  — social-bias QA
+    ("vicuna-13b-v1.3",          "cnndm"),         # continuous — summarization ROUGE
+    ("DeepSeek-V3-0324",         "do-not-answer"), # binary  — safety refusal
+    ("DeepSeek-R1",              "emobench"),      # binary  — emotional intelligence
+    ("qwen-3-80b-instruct",      "gpqa"),          # binary  — graduate science reasoning
+    ("gpt-4.1-mini",             "hi-tom"),        # binary  — higher-order ToM (o1-mini excluded: quasi_prefix_exact_match scores all zeros, likely response-format mismatch)
+    ("gemma-3-27b-it",           "ifeval"),        # binary  — instruction following
+    ("falcon-40b-instruct",      "imdb"),          # binary  — sentiment classification
+    ("qwen-2.5-72b-instruct",    "omni-math"),     # binary  — math reasoning
+    ("kimi-k2",                  "salad-bench"),   # binary  — safety alignment
+    ("redpajama-incite-base-7b", "xsum"),          # continuous — summarization ROUGE
+    ("grok-4",                   "hi-tom"),
+    ("phi-4",                    "truthfulqa"),    # continuous — BLEU-max ÷ 100 → [0,1]
 ]
 
 
@@ -207,6 +249,7 @@ class OpenEvalBenchmarkSpec:
     eval_type: str       # "binary" | "continuous" | "likert" | "grades"
     description: str
     metric_name: str | None = None  # None = use first score entry for each response
+    score_scale: float = 1.0        # multiply extracted score by this factor (e.g. 0.01 to normalise 0–100 → 0–1)
 
 
 # Benchmark IDs must match the source component in response_id
@@ -236,8 +279,10 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
     ),
     "truthfulqa": OpenEvalBenchmarkSpec(
         benchmark_id="truthfulqa",
-        eval_type="binary",
-        description="TruthfulQA truthfulness evaluation (0/1)",
+        eval_type="continuous",
+        description="TruthfulQA BLEU-max fluency/truthfulness score ∈ [0,1]",
+        metric_name="bleu_max",
+        score_scale=0.01,  # OpenEval stores bleu_max as 0–100; normalise to [0,1]
     ),
     "culturalbench": OpenEvalBenchmarkSpec(
         benchmark_id="culturalbench",
@@ -254,6 +299,36 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
         eval_type="binary",
         description="BBQ social-bias benchmark for QA (0/1 correct)",
     ),
+    "bold": OpenEvalBenchmarkSpec(
+        benchmark_id="bold",
+        eval_type="binary",
+        description="BOLD bias-sensitive generation benchmark",
+    ),
+    "do-not-answer": OpenEvalBenchmarkSpec(
+        benchmark_id="do-not-answer",
+        eval_type="binary",
+        description="Do-Not-Answer safety refusal benchmark",
+    ),
+    "hi-tom": OpenEvalBenchmarkSpec(
+        benchmark_id="hi-tom",
+        eval_type="binary",
+        description="Hi-ToM higher-order theory-of-mind reasoning benchmark",
+    ),
+    "ifeval": OpenEvalBenchmarkSpec(
+        benchmark_id="ifeval",
+        eval_type="binary",
+        description="Instruction-following evaluation benchmark",
+    ),
+    "omni-math": OpenEvalBenchmarkSpec(
+        benchmark_id="omni-math",
+        eval_type="binary",
+        description="Omni-Math mathematical reasoning benchmark",
+    ),
+    "salad-bench": OpenEvalBenchmarkSpec(
+        benchmark_id="salad-bench",
+        eval_type="binary",
+        description="SALAD-Bench safety/alignment benchmark",
+    ),
     # ── Continuous ∈ [0, 1] — generation quality metrics ──────────────────
     "cnndm": OpenEvalBenchmarkSpec(
         benchmark_id="cnndm",
@@ -267,6 +342,11 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
         description="XSUM abstractive summarization ROUGE-L ∈ [0,1]",
         metric_name="rouge_l",   # same parallel-list layout as cnndm
     ),
+    "emobench": OpenEvalBenchmarkSpec(
+        benchmark_id="emobench",
+        eval_type="likert",
+        description="EmoBench emotional intelligence benchmark",
+    ),
     # ── Stubs for Likert / grades ──────────────────────────────────────────
     # Uncomment once a suitable OpenEval benchmark with ordinal scores is confirmed:
     #
@@ -277,11 +357,7 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
     # ),
 }
 
-OPENEVAL_DEFAULT_BENCHMARKS: list[str] = [
-    "mmlu-pro", "gpqa", "boolq", "imdb", "truthfulqa",
-    "culturalbench", "opentom", "bbq",
-    "cnndm", "xsum",
-]
+OPENEVAL_DEFAULT_BENCHMARKS: list[str] = list(dict.fromkeys(b for _, b in OPENEVAL_DEFAULT_PAIRS))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -352,8 +428,23 @@ def _dove_extract_scores(dataset: Any) -> np.ndarray:
 
 
 def _dove_extract_instance_indices(dataset: Any) -> np.ndarray | None:
-    """Return per-row hf_index values for deduplication, or None if unavailable."""
-    if "instance" not in dataset.column_names:
+    """Return per-row item indices for deduplication, or None if unavailable.
+
+    Tries two schemas in order:
+    1. Flat schema (most DOVE_Lite files): top-level 'sample_index' int column.
+    2. Nested schema: 'instance.sample_identifier.hf_index'.
+    """
+    col_names = dataset.column_names
+
+    # Flat schema — present in all inspected DOVE_Lite parquet files
+    if "sample_index" in col_names:
+        try:
+            return np.array(dataset["sample_index"], dtype=int)
+        except Exception:
+            pass
+
+    # Nested schema fallback
+    if "instance" not in col_names:
         return None
     instance_col = dataset["instance"]
     if not (isinstance(instance_col, list) and len(instance_col) > 0):
@@ -377,10 +468,12 @@ def _dove_deduplicate(
     scores: np.ndarray,
     indices: np.ndarray | None,
 ) -> np.ndarray:
-    """Keep one score per unique hf_index (first occurrence = canonical prompt).
+    """Keep one score per unique item index (first occurrence).
 
-    DOVE contains multiple prompt perturbations per instance.  We keep the
-    first occurrence so each row corresponds to one input item.
+    DOVE contains multiple prompt perturbations per item. Keeping the first
+    occurrence per unique sample_index (or hf_index) ensures each element of
+    the returned array corresponds to an independent benchmark item, satisfying
+    the IID assumption required by the bootstrap CI methods.
     """
     if indices is None:
         return scores
@@ -420,14 +513,22 @@ def load_dove_corpus(
             token=hf_token, cache_dir=cache_dir,
         )
     except Exception:
+        # Try alternate shot counts in priority order.
+        # Some models only have 5_shot data (e.g. GPT-4o-mini, Llama-3.3-70B).
+        fallbacks = []
+        for n in (5, 2, 3):
+            if n != spec.shots:
+                fallbacks.append(f"{model}/{spec.language}/{n}_shot/{spec.file_name}")
         if spec.shots > 0:
-            alt = f"{model}/{spec.language}/{spec.shots}_shots/{spec.file_name}"
+            fallbacks.append(f"{model}/{spec.language}/{spec.shots}_shots/{spec.file_name}")
+        for alt in fallbacks:
             tried.append(alt)
             try:
                 dataset = load_dataset(
                     dove_repo, data_files=alt, split="train",
                     token=hf_token, cache_dir=cache_dir,
                 )
+                break
             except Exception:
                 pass
 
@@ -467,35 +568,32 @@ def load_dove_corpus(
 
 
 def build_dove_corpora(
-    models: list[str],
-    benchmark_ids: list[str],
+    pairs: list[tuple[str, str]],
     *,
     dove_repo: str = DOVE_REPO,
     hf_token: str | None = None,
     cache_dir: str | None = None,
     min_corpus_size: int = 50,
 ) -> list[Corpus]:
-    """Load all (model, benchmark) corpora from DOVE_Lite."""
-    unknown = [b for b in benchmark_ids if b not in DOVE_BENCHMARK_SPECS]
+    """Load (model, benchmark) corpora from DOVE_Lite for the given pairs."""
+    unknown = [(m, b) for m, b in pairs if b not in DOVE_BENCHMARK_SPECS]
     if unknown:
-        print(f"Warning: unknown DOVE benchmark IDs {unknown}. Available: {list(DOVE_BENCHMARK_SPECS)}")
-        benchmark_ids = [b for b in benchmark_ids if b in DOVE_BENCHMARK_SPECS]
+        print(f"Warning: unknown DOVE benchmark IDs {[b for _, b in unknown]}. Available: {list(DOVE_BENCHMARK_SPECS)}")
+        pairs = [(m, b) for m, b in pairs if b in DOVE_BENCHMARK_SPECS]
 
-    total = len(models) * len(benchmark_ids)
-    print(f"\nLoading DOVE_Lite corpora ({total} model × benchmark combinations) …")
+    print(f"\nLoading DOVE_Lite corpora ({len(pairs)} model × benchmark pairs) …")
 
     corpora: list[Corpus] = []
-    for model in models:
-        for bid in benchmark_ids:
-            c = load_dove_corpus(
-                model, DOVE_BENCHMARK_SPECS[bid],
-                dove_repo=dove_repo, hf_token=hf_token,
-                cache_dir=cache_dir, min_size=min_corpus_size,
-            )
-            if c is not None:
-                corpora.append(c)
+    for model, bid in pairs:
+        c = load_dove_corpus(
+            model, DOVE_BENCHMARK_SPECS[bid],
+            dove_repo=dove_repo, hf_token=hf_token,
+            cache_dir=cache_dir, min_size=min_corpus_size,
+        )
+        if c is not None:
+            corpora.append(c)
 
-    print(f"  {len(corpora)}/{total} corpora loaded successfully.\n")
+    print(f"  {len(corpora)}/{len(pairs)} corpora loaded successfully.\n")
     return corpora
 
 
@@ -852,7 +950,7 @@ def build_openeval_corpora(
             if mname:
                 metric_seen[source] = mname
 
-        score_accum[key].append(float(score))
+        score_accum[key].append(float(score) * spec.score_scale)
 
     if n_dedup > 0:
         print(f"  {n_dedup:,} duplicate (item × model) rows removed.")
@@ -1501,7 +1599,7 @@ def main() -> None:
         metavar="ID",
         help=(
             "Benchmark IDs to run. "
-            f"DOVE defaults: {DOVE_DEFAULT_BENCHMARKS}. "
+            f"DOVE defaults (from DOVE_DEFAULT_PAIRS): {DOVE_DEFAULT_BENCHMARKS}. "
             f"OpenEval defaults: {OPENEVAL_DEFAULT_BENCHMARKS}. "
             f"DOVE available: {list(DOVE_BENCHMARK_SPECS)}. "
             f"OpenEval available: {list(OPENEVAL_BENCHMARK_SPECS)}."
@@ -1617,7 +1715,9 @@ def main() -> None:
         if source == "dove":
             print("DOVE_Lite model names are the top-level directory names in the repo.")
             print(f"Browse: https://huggingface.co/datasets/{DOVE_REPO}/tree/main")
-            print(f"\nPreset default models:\n  " + "\n  ".join(DOVE_DEFAULT_MODELS))
+            print(f"\nPreset default pairs (model, benchmark):")
+            for m, b in DOVE_DEFAULT_PAIRS:
+                print(f"  {m:<38}  {b}")
         else:
             bench_filter = args.benchmarks  # None → show all benchmarks
             coverage = list_openeval_models(
@@ -1692,32 +1792,38 @@ def main() -> None:
         return
 
     # ── Resolve defaults per source ───────────────────────────────────────
-    if source == "dove":
-        benchmarks = args.benchmarks or DOVE_DEFAULT_BENCHMARKS
-        models = args.models or DOVE_DEFAULT_MODELS
-        oe_pairs = []   # not used for DOVE
+    if source in ("dove", "all"):
+        if args.models is None and args.benchmarks is None:
+            dove_pairs = DOVE_DEFAULT_PAIRS
+        else:
+            bms = args.benchmarks or list(dict.fromkeys(b for _, b in DOVE_DEFAULT_PAIRS))
+            mds = args.models     or list(dict.fromkeys(m for m, _ in DOVE_DEFAULT_PAIRS))
+            dove_pairs = [(m, b) for m in mds for b in bms]
     else:
+        dove_pairs = []
+
+    if source in ("openeval", "all"):
         # OpenEval: work with explicit (model, benchmark) pairs, not a cross-product,
         # because dataset coverage is sparse.
         if args.models is None and args.benchmarks is None:
-            # Use curated defaults — confirmed to have data
             oe_pairs = OPENEVAL_DEFAULT_PAIRS
         else:
-            # Explicit override: form cross-product from whichever args were given
             bms = args.benchmarks or list(dict.fromkeys(b for _, b in OPENEVAL_DEFAULT_PAIRS))
             mds = args.models     or list(dict.fromkeys(m for m, _ in OPENEVAL_DEFAULT_PAIRS))
             oe_pairs = [(m, b) for m in mds for b in bms]
-        benchmarks = list(dict.fromkeys(b for _, b in oe_pairs))
-        models     = list(dict.fromkeys(m for m, _ in oe_pairs))
+    else:
+        oe_pairs = []
+
+    benchmarks = list(dict.fromkeys(b for _, b in dove_pairs + oe_pairs))
+    models     = list(dict.fromkeys(m for m, _ in dove_pairs + oe_pairs))
 
     # ── Print run config ──────────────────────────────────────────────────
     print(f"\nReal-Data Bootstrap CI Simulation")
     print(f"  Source          : {source}")
-    if source == "openeval":
-        print(f"  Pairs           : {oe_pairs}")
-    else:
-        print(f"  Benchmarks      : {benchmarks}")
-        print(f"  Models          : {models}")
+    if dove_pairs:
+        print(f"  DOVE pairs      : {dove_pairs}")
+    if oe_pairs:
+        print(f"  OpenEval pairs  : {oe_pairs}")
     print(f"  Reps per cell   : {args.reps}")
     print(f"  Bootstrap draws : {args.bootstrap_n}")
     print(f"  Alpha / CI level: {args.alpha} / {(1 - args.alpha):.0%}")
@@ -1727,35 +1833,27 @@ def main() -> None:
     print(f"  Cache dir       : {args.cache_dir or 'HF default'}")
 
     # ── Load corpora ──────────────────────────────────────────────────────
-    if source == "dove":
-        corpora = build_dove_corpora(
-            models=models, benchmark_ids=benchmarks,
+    corpora = []
+    if dove_pairs:
+        corpora += build_dove_corpora(
+            pairs=dove_pairs,
             dove_repo=DOVE_REPO, hf_token=hf_token,
             cache_dir=args.cache_dir, min_corpus_size=args.min_corpus_size,
         )
-    else:
-        corpora = build_openeval_corpora(
+    if oe_pairs:
+        corpora += build_openeval_corpora(
             pairs=oe_pairs,
             openeval_repo=OPENEVAL_REPO, hf_token=hf_token,
             cache_dir=args.cache_dir, min_corpus_size=args.min_corpus_size,
         )
 
     if not corpora:
-        hints = {
-            "dove": (
-                "  • HuggingFace access approval for nlphuji/DOVE_Lite\n"
-                "  • Login: huggingface-cli login  (or --hf-token TOKEN)\n"
-                "  • Model directory names match exactly (see --list-models)\n"
-                "  • Benchmark IDs: see --list-benchmarks\n"
-            ),
-            "openeval": (
-                "  • Run --list-models to see available model names (with their benchmark coverage)\n"
-                "  • Run --list-benchmarks to see all benchmark IDs in the dataset\n"
-                "  • Benchmark IDs are extracted from response_id prefix (e.g. 'mmlu-pro', 'cnndm')\n"
-                "  • Login may be needed: huggingface-cli login\n"
-            ),
-        }
-        print(f"\nNo corpora loaded. Check:\n{hints.get(source, '')}")
+        hints = (
+            "  • HuggingFace access approval for nlphuji/DOVE_Lite (DOVE)\n"
+            "  • Login: huggingface-cli login  (or --hf-token TOKEN)\n"
+            "  • Model/benchmark names must match exactly (see --list-models, --list-benchmarks)\n"
+        )
+        print(f"\nNo corpora loaded. Check:\n{hints}")
         sys.exit(1)
 
     # ── Simulate ──────────────────────────────────────────────────────────
