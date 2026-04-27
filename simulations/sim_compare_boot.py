@@ -2,7 +2,7 @@
 """
 sim_compare_boot.py — Bootstrap CI method comparison across eval score types.
 
-Compares four bootstrap confidence-interval methods by running Monte Carlo
+Compares five bootstrap confidence-interval methods by running Monte Carlo
 simulations where the true population mean is known exactly.
 
 Methods:
@@ -10,6 +10,7 @@ Methods:
   bca              Bias-corrected and accelerated (BCa) bootstrap
   bayes_bootstrap  Bayesian (Dirichlet-weighted) bootstrap
   smooth_bootstrap Smoothed (KDE-perturbed) bootstrap
+  bootstrap_t      Studentized (bootstrap-t) bootstrap
     wilson           Wilson score CI for single-sample binary means
     newcombe_score   Newcombe score CI for paired binary differences
     bayes_indep      Beta-conjugate Bayesian interval for binary means
@@ -60,7 +61,9 @@ from typing import Any, Callable
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import scipy.stats as stats
+import seaborn as sns
 from scipy.stats import norm
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -72,6 +75,7 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from evalstats.core.resampling import (
         bootstrap_ci_1d,
+        bootstrap_t_ci_1d,
         bca_interval_1d,
         bayes_bootstrap_means_1d,
         smooth_bootstrap_means_1d,
@@ -80,6 +84,9 @@ with warnings.catch_warnings():
         bayes_bootstrap_diffs_nested,
         smooth_bootstrap_diffs_nested,
         resolve_resampling_method,
+        wald_ci_1d,
+        clopper_pearson_ci_1d,
+        t_interval_ci_1d,
     )
 
 
@@ -87,15 +94,21 @@ with warnings.catch_warnings():
 # Constants
 # ---------------------------------------------------------------------------
 
-METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]
+METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]
 WILSON_METHOD = "wilson"
 NEWCOMBE_METHOD = "newcombe_score"
 BAYES_SINGLE_METHOD = "bayes_indep"
 BAYES_PAIR_INDEP_METHOD = "bayes_indep_comp"
 BAYES_PAIR_PAIRED_METHOD = "bayes_paired_comp"
+WALD_METHOD = "wald"
+CP_METHOD = "clopper_pearson"
+T_INTERVAL_METHOD = "t_interval"
 REPORT_METHODS = METHODS + [
+    T_INTERVAL_METHOD,
     WILSON_METHOD,
     NEWCOMBE_METHOD,
+    WALD_METHOD,
+    CP_METHOD,
     BAYES_SINGLE_METHOD,
     BAYES_PAIR_INDEP_METHOD,
     BAYES_PAIR_PAIRED_METHOD,
@@ -684,8 +697,10 @@ class SimResult:
     n: int
     method: str
     n_reps: int
-    covered: int      # number of reps where CI contained the true estimand
+    covered: int        # number of reps where CI contained the true estimand
     total_width: float  # sum of CI widths across reps
+    total_time: float = 0.0     # sum of per-rep CI wall-clock times (seconds)
+    total_time_sq: float = 0.0  # sum of squared per-rep times (for SE via Var=E[x²]−E[x]²)
 
 
 def _stat(values: np.ndarray, statistic: str = "mean") -> float:
@@ -853,6 +868,8 @@ def _pairwise_ci(
                 float(np.percentile(boot_stats, 100 * (1 - alpha / 2))),
             )
 
+        if resolved_method == "bootstrap_t":
+            return bootstrap_t_ci_1d(cell_diffs, observed, n_bootstrap, alpha, rng, statistic=statistic)
         boot_stats = bootstrap_diffs_nested(a, b, n_bootstrap, rng, statistic=statistic)
         if resolved_method == "bca":
             return bca_interval_1d(cell_diffs, observed, boot_stats, alpha, statistic=statistic)
@@ -876,6 +893,8 @@ def _pairwise_ci(
             float(np.percentile(boot_stats, 100 * alpha / 2)),
             float(np.percentile(boot_stats, 100 * (1 - alpha / 2))),
         )
+    if resolved_method == "bootstrap_t":
+        return bootstrap_t_ci_1d(diffs, observed, n_bootstrap, alpha, rng, statistic=statistic)
 
     boot_stats = bootstrap_means_1d(diffs, n_bootstrap, rng, statistic=statistic)
     if resolved_method == "bca":
@@ -906,13 +925,14 @@ def run_simulation(
 
     for scenario in scenarios:
         for n in sample_sizes:
-            active_methods = METHODS.copy()
+            active_methods = METHODS + [T_INTERVAL_METHOD]
             if scenario.eval_type == "binary":
-                active_methods.append(WILSON_METHOD)
-                active_methods.append(BAYES_SINGLE_METHOD)
+                active_methods += [WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
 
             covered: dict[str, int] = {m: 0 for m in active_methods}
             total_w: dict[str, float] = {m: 0.0 for m in active_methods}
+            total_t: dict[str, float] = {m: 0.0 for m in active_methods}
+            total_t_sq: dict[str, float] = {m: 0.0 for m in active_methods}
 
             for _rep in range(n_reps):
                 values = scenario.generate(rng, n)
@@ -925,6 +945,7 @@ def run_simulation(
                 )
 
                 for method in METHODS:
+                    _t0 = time.perf_counter()
                     try:
                         with warnings.catch_warnings():
                             warnings.simplefilter("ignore", UserWarning)
@@ -937,24 +958,68 @@ def run_simulation(
                                 rng=rng,
                             )
                     except Exception:
-                        # Degenerate case: point CI at observed mean
                         ci_low = ci_high = obs_mean
+                    _el = time.perf_counter() - _t0
+                    total_t[method] += _el
+                    total_t_sq[method] += _el * _el
 
                     if ci_low <= scenario.true_mean <= ci_high:
                         covered[method] += 1
                     total_w[method] += ci_high - ci_low
 
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = t_interval_ci_1d(values, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[T_INTERVAL_METHOD] += _el
+                total_t_sq[T_INTERVAL_METHOD] += _el * _el
+                if ci_low <= scenario.true_mean <= ci_high:
+                    covered[T_INTERVAL_METHOD] += 1
+                total_w[T_INTERVAL_METHOD] += ci_high - ci_low
+
                 if scenario.eval_type == "binary":
                     successes = int(np.sum(values))
+
+                    _t0 = time.perf_counter()
                     ci_low, ci_high = _wilson_ci(successes, n, alpha)
+                    _el = time.perf_counter() - _t0
+                    total_t[WILSON_METHOD] += _el
+                    total_t_sq[WILSON_METHOD] += _el * _el
                     if ci_low <= scenario.true_mean <= ci_high:
                         covered[WILSON_METHOD] += 1
                     total_w[WILSON_METHOD] += ci_high - ci_low
 
+                    _t0 = time.perf_counter()
+                    ci_low, ci_high = wald_ci_1d(values, alpha)
+                    _el = time.perf_counter() - _t0
+                    total_t[WALD_METHOD] += _el
+                    total_t_sq[WALD_METHOD] += _el * _el
+                    if ci_low <= scenario.true_mean <= ci_high:
+                        covered[WALD_METHOD] += 1
+                    total_w[WALD_METHOD] += ci_high - ci_low
+
+                    _t0 = time.perf_counter()
+                    try:
+                        ci_low, ci_high = clopper_pearson_ci_1d(values, alpha)
+                    except Exception:
+                        ci_low = ci_high = obs_mean
+                    _el = time.perf_counter() - _t0
+                    total_t[CP_METHOD] += _el
+                    total_t_sq[CP_METHOD] += _el * _el
+                    if ci_low <= scenario.true_mean <= ci_high:
+                        covered[CP_METHOD] += 1
+                    total_w[CP_METHOD] += ci_high - ci_low
+
+                    _t0 = time.perf_counter()
                     try:
                         ci_low, ci_high = _bayes_indep_ci(values, alpha)
                     except Exception:
                         ci_low = ci_high = obs_mean
+                    _el = time.perf_counter() - _t0
+                    total_t[BAYES_SINGLE_METHOD] += _el
+                    total_t_sq[BAYES_SINGLE_METHOD] += _el * _el
                     if ci_low <= scenario.true_mean <= ci_high:
                         covered[BAYES_SINGLE_METHOD] += 1
                     total_w[BAYES_SINGLE_METHOD] += ci_high - ci_low
@@ -969,6 +1034,8 @@ def run_simulation(
                         n_reps=n_reps,
                         covered=covered[method],
                         total_width=total_w[method],
+                        total_time=total_t[method],
+                        total_time_sq=total_t_sq[method],
                     )
                 )
 
@@ -1143,6 +1210,19 @@ def _rule(width: int, char: str = "─") -> str:
     return char * width
 
 
+def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
+    """Return (avg_ms, se_ms) for CI wall-clock time, pooled over all reps in subset."""
+    total_reps = sum(r.n_reps for r in subset)
+    if total_reps <= 0:
+        return float("nan"), float("nan")
+    sum_t = sum(r.total_time for r in subset)
+    sum_t2 = sum(r.total_time_sq for r in subset)
+    avg = sum_t / total_reps
+    var = max(0.0, sum_t2 / total_reps - avg * avg)
+    se = float(np.sqrt(var / total_reps))
+    return avg * 1000.0, se * 1000.0
+
+
 def _print_grid(
     title: str,
     row_labels: list[str],
@@ -1278,6 +1358,22 @@ def print_report(
             cells=wid_cells,
         )
 
+        # Cost grid
+        time_cells: dict[tuple[str, str], str] = {}
+        for m in method_labels:
+            for i, n in enumerate(sample_sizes):
+                subset = [r for r in results if r.eval_type == et and r.method == m and r.n == n]
+                avg_ms, se_ms = _time_stats(subset)
+                if np.isfinite(avg_ms):
+                    time_cells[(m, n_labels[i])] = f"{avg_ms:.3f}±{se_ms:.3f}"
+        _print_grid(
+            "Mean CI Time (ms) ± SE",
+            row_labels=method_labels,
+            col_labels=n_labels,
+            cells=time_cells,
+            col_w=13,
+        )
+
     # ----------------------------------------------------------------
     # Worst-coverage scenarios (averaged across methods)
     # ----------------------------------------------------------------
@@ -1338,8 +1434,8 @@ def print_report(
         c_prev, t_prev = all_counts[m]
         all_counts[m] = (c_prev + c, t_prev + t)
 
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MCSE':>7}  {'Band95':>13}  {'Width':>8}  {'Dev':>8}")
-    print(f"  {'─'*20}  {'─'*6}  {'─'*7}  {'─'*13}  {'─'*8}  {'─'*8}")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MCSE':>7}  {'Band95':>13}  {'Width':>8}  {'Dev':>8}  {'Time(ms)':>14}")
+    print(f"  {'─'*20}  {'─'*6}  {'─'*7}  {'─'*13}  {'─'*8}  {'─'*8}  {'─'*14}")
     for m in method_labels:
         mc = float(np.mean(all_cov[m]))
         mw = float(np.mean(all_wid[m]))
@@ -1347,9 +1443,80 @@ def print_report(
         mark = _cov_marker(mc, target)
         c_tot, t_tot = all_counts[m]
         _, mcse, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        avg_ms, se_ms = _time_stats([r for r in results if r.method == m])
+        time_str = f"{avg_ms:.3f}±{se_ms:.3f}" if np.isfinite(avg_ms) else "─"
         print(
-            f"  {m:<20}  {mc:>5.3f}{mark}  {mcse:>7.4f}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {dev:>+8.3f}"
+            f"  {m:<20}  {mc:>5.3f}{mark}  {mcse:>7.4f}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {dev:>+8.3f}  {time_str:>14}"
         )
+    print()
+
+    # ── Cost × coverage transfer analysis ────────────────────────────────
+    print(f"\n{'─'*72}")
+    print("  COST × COVERAGE TRANSFER ANALYSIS")
+    print("  Methods ranked by mean CI time (cheapest first) within each eval type.")
+    print("  ★ = cheapest adequate method (coverage ≥ target−0.04) at that N.")
+    print(f"{'─'*72}")
+
+    for et in EVAL_TYPES:
+        et_results = [r for r in results if r.eval_type == et]
+        if not et_results:
+            continue
+        et_methods = [m for m in method_labels if any(r.method == m for r in et_results)]
+
+        method_avg_time: dict[str, float] = {}
+        for m in et_methods:
+            avg_ms, _ = _time_stats([r for r in et_results if r.method == m])
+            method_avg_time[m] = avg_ms if np.isfinite(avg_ms) else float("inf")
+
+        sorted_methods = sorted(et_methods, key=lambda m: method_avg_time[m])
+
+        # For each N, find cheapest adequate method
+        cheapest_adequate: dict[str, str] = {}
+        for i, n in enumerate(sample_sizes):
+            nl = n_labels[i]
+            for m in sorted_methods:
+                cov = mean_cov(et, m, n)
+                if not np.isnan(cov) and cov >= target - 0.04:
+                    cheapest_adequate[nl] = m
+                    break
+
+        print(f"\n  [{et}]")
+        col_w_t = 16
+        col_w_c = 9
+        hdr = (f"  {'Method':<20}  {'Time(ms)±SE':>{col_w_t}}"
+               + "".join(f"  {nl:>{col_w_c}}" for nl in n_labels))
+        print(hdr)
+        print(f"  {'─'*20}  {'─'*col_w_t}" + "".join(f"  {'─'*col_w_c}" for _ in n_labels))
+
+        for m in sorted_methods:
+            avg_ms, se_ms = _time_stats([r for r in et_results if r.method == m])
+            time_str = f"{avg_ms:.3f}±{se_ms:.3f}" if np.isfinite(avg_ms) else "─"
+            row = f"  {m:<20}  {time_str:>{col_w_t}}"
+            for i, n in enumerate(sample_sizes):
+                nl = n_labels[i]
+                cov = mean_cov(et, m, n)
+                if np.isnan(cov):
+                    row += f"  {'─':>{col_w_c}}"
+                else:
+                    star = "★" if cheapest_adequate.get(nl) == m else " "
+                    cell = f"{cov:.3f}{_cov_marker(cov, target)}{star}"
+                    row += f"  {cell:>{col_w_c + 1}}"
+            print(row)
+
+        slowest_ms = max(
+            (method_avg_time[m] for m in sorted_methods if np.isfinite(method_avg_time[m])),
+            default=float("nan"),
+        )
+        print(f"\n  Transfer summary:")
+        for i, n in enumerate(sample_sizes):
+            nl = n_labels[i]
+            ca = cheapest_adequate.get(nl)
+            if ca is None:
+                print(f"    {nl}: no method achieved adequate coverage")
+            else:
+                ca_ms = method_avg_time[ca]
+                speedup = slowest_ms / ca_ms if ca_ms > 0 else float("inf")
+                print(f"    {nl}: {ca:<22} {ca_ms:.4f} ms  ({speedup:.0f}× faster than slowest bootstrap)")
     print()
 
 
@@ -1498,6 +1665,381 @@ def save_metric_plot(
     print(f"Saved plot: {out}")
 
 
+_METHOD_COLORS: dict[str, str] = {
+    "bootstrap":          "#1f77b4",
+    "bca":                "#2ca02c",
+    "bayes_bootstrap":    "#ff7f0e",
+    "smooth_bootstrap":   "#9467bd",
+    "bootstrap_t":        "#d62728",
+    "t_interval":         "#8c564b",
+    "wilson":             "#e377c2",
+    "wald":               "#7f7f7f",
+    "clopper_pearson":    "#bcbd22",
+    "bayes_indep":        "#17becf",
+    "newcombe_score":     "#aec7e8",
+    "bayes_indep_comp":   "#ffbb78",
+    "bayes_paired_comp":  "#98df8a",
+}
+_N_MARKERS = ["o", "s", "^", "D", "v", "p", "h", "*"]
+
+
+def save_cost_plot(
+    *,
+    results: list[SimResult],
+    alpha: float,
+    n_reps: int,
+    estimand_label: str,
+    out_path: str,
+) -> None:
+    """Scatter plot: x = mean CI time (log ms), y = coverage; one subplot per eval type."""
+    if not results:
+        print(f"Skipped cost plot (no data): {out_path}")
+        return
+
+    target = 1.0 - alpha
+    present_methods = {r.method for r in results}
+    method_labels = [m for m in REPORT_METHODS if m in present_methods]
+    sample_sizes = sorted({r.n for r in results})
+
+    nrows = len(EVAL_TYPES)
+    fig, axes = plt.subplots(
+        nrows=nrows, ncols=1,
+        figsize=(11.5, 4.5 * nrows),
+        squeeze=False,
+        gridspec_kw={"hspace": 0.45},
+    )
+
+    size_marker = {n: _N_MARKERS[i % len(_N_MARKERS)] for i, n in enumerate(sample_sizes)}
+
+    for row_idx, et in enumerate(EVAL_TYPES):
+        ax = axes[row_idx][0]
+        et_results = [r for r in results if r.eval_type == et]
+
+        ax.axhspan(max(0.0, target - 0.04), min(1.0, target + 0.04),
+                   color="#DDDDDD", alpha=0.40, zorder=0)
+        ax.axhline(target, color="black", linewidth=1.1, linestyle="--", zorder=1)
+
+        legend_method_handles = []
+        legend_n_handles = []
+        n_handles_seen: set[int] = set()
+
+        for m in method_labels:
+            color = _METHOD_COLORS.get(m, "#333333")
+            m_results = [r for r in et_results if r.method == m]
+            if not m_results:
+                continue
+            method_plotted = False
+            for n in sample_sizes:
+                subset = [r for r in m_results if r.n == n]
+                if not subset:
+                    continue
+                avg_ms, se_ms = _time_stats(subset)
+                if not np.isfinite(avg_ms) or avg_ms <= 0:
+                    continue
+                cov = float(np.mean([r.covered / r.n_reps for r in subset]))
+                marker = size_marker[n]
+                xerr = 1.96 * se_ms
+
+                ax.errorbar(
+                    avg_ms, cov,
+                    xerr=xerr,
+                    fmt=marker, color=color,
+                    markersize=7, markeredgewidth=0.8, markeredgecolor="white",
+                    elinewidth=1.0, capsize=3, capthick=1.0,
+                    alpha=0.88, zorder=3,
+                )
+                if not method_plotted:
+                    legend_method_handles.append(
+                        plt.Line2D([0], [0], marker="o", color="w",
+                                   markerfacecolor=color, markersize=8, label=m)
+                    )
+                    method_plotted = True
+                if n not in n_handles_seen:
+                    legend_n_handles.append(
+                        plt.Line2D([0], [0], marker=marker, color="w",
+                                   markerfacecolor="#555555", markersize=8, label=f"n={n}")
+                    )
+                    n_handles_seen.add(n)
+
+        ax.set_xscale("log")
+        ax.set_xlabel("Mean CI time (ms) — log scale  [error bars: ±1.96 SE]", fontsize=9.5)
+        ax.set_ylabel("Coverage rate", fontsize=9.5)
+        ax.set_title(f"eval type: {et}", fontsize=10.5)
+        ax.set_ylim(max(0.0, target - 0.20), min(1.01, target + 0.12))
+        ax.grid(axis="y", linestyle="--", linewidth=0.55, alpha=0.45)
+        ax.grid(axis="x", linestyle=":", linewidth=0.45, alpha=0.35)
+        ax.tick_params(labelsize=8.5)
+
+        if not et_results:
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+
+        leg1 = ax.legend(
+            handles=legend_method_handles,
+            title="Method",
+            loc="upper left",
+            bbox_to_anchor=(1.02, 1.0),
+            borderaxespad=0.0,
+            fontsize=7.5,
+            title_fontsize=8,
+            framealpha=0.85,
+            ncol=1,
+        )
+        ax.add_artist(leg1)
+        if legend_n_handles:
+            ax.legend(
+                handles=legend_n_handles,
+                title="Sample size",
+                loc="lower left",
+                bbox_to_anchor=(1.02, 0.0),
+                borderaxespad=0.0,
+                fontsize=7.5,
+                title_fontsize=8,
+                framealpha=0.85,
+            )
+
+    fig.suptitle(
+        f"Cost × Coverage Trade-off\n"
+        f"Estimand: {estimand_label}  |  x = mean CI compute time  |  y = empirical coverage  |"
+        f"  target = {target:.0%}  |  reps={n_reps}",
+        fontsize=10.5,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=[0.02, 0.02, 0.80, 0.93])
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved cost plot: {out}")
+
+
+def save_coverage_vs_n_plot(
+    *,
+    results: list[SimResult],
+    sample_sizes: list[int],
+    alpha: float,
+    n_reps: int,
+    estimand_label: str,
+    out_path: str,
+) -> None:
+    """Coverage vs. sample size line plots — one subplot per eval type, all methods overlaid."""
+    if not results:
+        print(f"Skipped coverage-vs-n plot (no data): {out_path}")
+        return
+
+    target = 1.0 - alpha
+    present_methods = {r.method for r in results}
+    method_labels = [m for m in REPORT_METHODS if m in present_methods]
+
+    rows = [
+        {
+            "eval_type": r.eval_type,
+            "scenario": r.scenario,
+            "method": r.method,
+            "n": r.n,
+            "coverage": r.covered / r.n_reps,
+        }
+        for r in results
+    ]
+    df = pd.DataFrame(rows)
+    df = df[df["method"].isin(method_labels)]
+
+    # Average across reps within each (eval_type, scenario, method, n) cell,
+    # then compute mean ± std across scenarios.
+    scenario_level = (
+        df.groupby(["eval_type", "scenario", "method", "n"], as_index=False)
+          .agg(coverage=("coverage", "mean"))
+    )
+    agg = (
+        scenario_level.groupby(["eval_type", "method", "n"], as_index=False)
+        .agg(
+            coverage_mean=("coverage", "mean"),
+            coverage_std=("coverage", "std"),
+            coverage_count=("coverage", "count"),
+        )
+    )
+
+    eval_types_present = [et for et in EVAL_TYPES if et in agg["eval_type"].values]
+    if not eval_types_present:
+        print(f"Skipped coverage-vs-n plot (no eval types): {out_path}")
+        return
+
+    palette = {m: _METHOD_COLORS.get(m, "#333333") for m in method_labels}
+
+    fig, axes = plt.subplots(
+        1, len(eval_types_present),
+        figsize=(5.5 * len(eval_types_present), 5),
+        squeeze=False,
+    )
+
+    for col_idx, et in enumerate(eval_types_present):
+        ax = axes[0][col_idx]
+        et_agg = agg[agg["eval_type"] == et].copy()
+        et_methods = [m for m in method_labels if m in et_agg["method"].values]
+
+        sns.lineplot(
+            data=et_agg,
+            x="n",
+            y="coverage_mean",
+            hue="method",
+            hue_order=et_methods,
+            palette=palette,
+            marker="o",
+            ax=ax,
+        )
+
+        for method, sub in et_agg.groupby("method"):
+            if sub["coverage_std"].isna().all():
+                continue
+            color = _METHOD_COLORS.get(str(method), "#333333")
+            se = sub["coverage_std"] / np.sqrt(sub["coverage_count"])
+            ax.errorbar(
+                sub["n"],
+                sub["coverage_mean"],
+                yerr=se,
+                fmt="o-",
+                color=color,
+                capsize=3,
+                alpha=0.9,
+            )
+
+        ns = sorted(et_agg["n"].unique())
+        ax.set_xticks(ns)
+        ax.set_xticklabels([str(n) for n in ns])
+        ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2)
+        ax.set_xlabel("Sample size (n)")
+        ax.set_ylabel("Empirical coverage" if col_idx == 0 else "")
+        ax.set_title(et.upper())
+        ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
+
+    fig.suptitle(
+        f"Coverage vs. Sample Size\n"
+        f"Estimand: {estimand_label} | reps={n_reps} | alpha={alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved coverage-vs-n plot: {out}")
+
+
+def save_width_vs_n_plot(
+    *,
+    results: list[SimResult],
+    sample_sizes: list[int],
+    alpha: float,
+    n_reps: int,
+    estimand_label: str,
+    out_path: str,
+) -> None:
+    """Mean CI width vs. sample size line plots — one subplot per eval type, all methods overlaid."""
+    if not results:
+        print(f"Skipped width-vs-n plot (no data): {out_path}")
+        return
+
+    present_methods = {r.method for r in results}
+    method_labels = [m for m in REPORT_METHODS if m in present_methods]
+
+    rows = [
+        {
+            "eval_type": r.eval_type,
+            "scenario": r.scenario,
+            "method": r.method,
+            "n": r.n,
+            "width": r.total_width / r.n_reps,
+        }
+        for r in results
+    ]
+    df = pd.DataFrame(rows)
+    df = df[df["method"].isin(method_labels)]
+
+    scenario_level = (
+        df.groupby(["eval_type", "scenario", "method", "n"], as_index=False)
+          .agg(width=("width", "mean"))
+    )
+    agg = (
+        scenario_level.groupby(["eval_type", "method", "n"], as_index=False)
+        .agg(
+            width_mean=("width", "mean"),
+            width_std=("width", "std"),
+            width_count=("width", "count"),
+        )
+    )
+
+    eval_types_present = [et for et in EVAL_TYPES if et in agg["eval_type"].values]
+    if not eval_types_present:
+        print(f"Skipped width-vs-n plot (no eval types): {out_path}")
+        return
+
+    palette = {m: _METHOD_COLORS.get(m, "#333333") for m in method_labels}
+
+    fig, axes = plt.subplots(
+        1, len(eval_types_present),
+        figsize=(5.5 * len(eval_types_present), 5),
+        squeeze=False,
+    )
+
+    for col_idx, et in enumerate(eval_types_present):
+        ax = axes[0][col_idx]
+        et_agg = agg[agg["eval_type"] == et].copy()
+        et_methods = [m for m in method_labels if m in et_agg["method"].values]
+
+        sns.lineplot(
+            data=et_agg,
+            x="n",
+            y="width_mean",
+            hue="method",
+            hue_order=et_methods,
+            palette=palette,
+            marker="o",
+            ax=ax,
+        )
+
+        for method, sub in et_agg.groupby("method"):
+            if sub["width_std"].isna().all():
+                continue
+            color = _METHOD_COLORS.get(str(method), "#333333")
+            se = sub["width_std"] / np.sqrt(sub["width_count"])
+            ax.errorbar(
+                sub["n"],
+                sub["width_mean"],
+                yerr=se,
+                fmt="o-",
+                color=color,
+                capsize=3,
+                alpha=0.9,
+            )
+
+        ns = sorted(et_agg["n"].unique())
+        ax.set_xticks(ns)
+        ax.set_xticklabels([str(n) for n in ns])
+        ax.set_xlabel("Sample size (n)")
+        ax.set_ylabel("Mean CI width" if col_idx == 0 else "")
+        ax.set_title(et.upper())
+        ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
+
+    fig.suptitle(
+        f"CI Width vs. Sample Size\n"
+        f"Estimand: {estimand_label} | reps={n_reps} | alpha={alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+
+    out = Path(out_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved width-vs-n plot: {out}")
+
+
 def save_results_artifacts(
     *,
     results: list[SimResult],
@@ -1529,12 +2071,15 @@ def save_results_artifacts(
                 "mcse",
                 "band95_low",
                 "band95_high",
+                "avg_time_ms",
+                "se_time_ms",
             ]
         )
         for r in results:
             coverage = r.covered / r.n_reps
             mean_width = r.total_width / r.n_reps
             _, mcse, lo, hi = _mc_proportion_stats(r.covered, r.n_reps)
+            avg_ms, se_ms = _time_stats([r])
             writer.writerow(
                 [
                     r.eval_type,
@@ -1549,6 +2094,8 @@ def save_results_artifacts(
                     f"{mcse:.8f}",
                     f"{lo:.8f}",
                     f"{hi:.8f}",
+                    f"{avg_ms:.6f}" if np.isfinite(avg_ms) else "",
+                    f"{se_ms:.6f}" if np.isfinite(se_ms) else "",
                 ]
             )
 
@@ -1731,6 +2278,44 @@ def _run_benchmark(
                 out_path=str(Path(plots_dir) / per_n_file_name),
                 sample_size_filter=n,
             )
+
+        cost_file_name = (
+            f"sim_compare_boot_{estimand}_{scenario_suite}_"
+            f"runs{runs}_stat{statistic}_reps{reps}_cost_coverage_{stamp}.png"
+        )
+        save_cost_plot(
+            results=results,
+            alpha=alpha,
+            n_reps=reps,
+            estimand_label=estimand_label,
+            out_path=str(Path(plots_dir) / cost_file_name),
+        )
+
+        cov_vs_n_file_name = (
+            f"sim_compare_boot_{estimand}_{scenario_suite}_"
+            f"runs{runs}_stat{statistic}_reps{reps}_coverage_vs_n_{stamp}.png"
+        )
+        save_coverage_vs_n_plot(
+            results=results,
+            sample_sizes=sizes,
+            alpha=alpha,
+            n_reps=reps,
+            estimand_label=estimand_label,
+            out_path=str(Path(plots_dir) / cov_vs_n_file_name),
+        )
+
+        wid_vs_n_file_name = (
+            f"sim_compare_boot_{estimand}_{scenario_suite}_"
+            f"runs{runs}_stat{statistic}_reps{reps}_width_vs_n_{stamp}.png"
+        )
+        save_width_vs_n_plot(
+            results=results,
+            sample_sizes=sizes,
+            alpha=alpha,
+            n_reps=reps,
+            estimand_label=estimand_label,
+            out_path=str(Path(plots_dir) / wid_vs_n_file_name),
+        )
 
 
 def main() -> None:

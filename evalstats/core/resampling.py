@@ -133,6 +133,119 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def wald_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
+    """Wald (normal-approximation) confidence interval for a binomial proportion.
+
+    ``p̂ ± z_{α/2} · sqrt(p̂(1−p̂)/n)``, clamped to [0, 1].
+
+    Known to under-cover near p=0 or p=1 and over-cover near p=0.5; included
+    as the standard baseline that more accurate methods (Wilson, BCa, …) are
+    compared against.
+
+    Parameters
+    ----------
+    successes : int
+        Number of successes.
+    n : int
+        Total number of trials.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [0, 1].
+    """
+    if n <= 0:
+        return (0.0, 0.0)
+    elif not (0 <= successes <= n):
+        raise ValueError("successes must be in [0, n]")
+    p_hat = successes / n
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    radius = z * np.sqrt(p_hat * (1.0 - p_hat) / n)
+    return (max(0.0, float(p_hat - radius)), min(1.0, float(p_hat + radius)))
+
+
+def wald_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Wald CI for a 1-D binary (0/1) array."""
+    n = len(values)
+    successes = int(np.sum(values))
+    return wald_ci(successes, n, alpha)
+
+
+def clopper_pearson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
+    """Clopper-Pearson 'exact' confidence interval for a binomial proportion.
+
+    Uses the Beta-distribution quantile inversion::
+
+        lo = Beta(α/2;  k,   n−k+1)
+        hi = Beta(1−α/2; k+1, n−k)
+
+    Guarantees at least nominal coverage for all p and n (conservative).
+
+    Parameters
+    ----------
+    successes : int
+        Number of successes (k).
+    n : int
+        Total number of trials.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval in [0, 1].
+    """
+    if n <= 0:
+        return (0.0, 1.0)
+    k = int(successes)
+    lo = float(stats.beta.ppf(alpha / 2.0, k, n - k + 1)) if k > 0 else 0.0
+    hi = float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) if k < n else 1.0
+    return (lo, hi)
+
+
+def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Clopper-Pearson CI for a 1-D binary (0/1) array."""
+    n = len(values)
+    successes = int(np.sum(values))
+    return clopper_pearson_ci(successes, n, alpha)
+
+
+def t_interval_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Student's t confidence interval for the mean of a 1-D array.
+
+    ``x̄ ± t_{n−1, α/2} · s/√n``
+
+    Valid for approximately normal data; converges to the correct interval
+    by CLT for large n regardless of distribution.  This is the standard
+    frequentist baseline for continuous-score data.
+
+    Returns a degenerate point interval ``(x̄, x̄)`` when n ≤ 1 or s = 0.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed values.
+    alpha : float
+        Significance level (1 − confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    n = len(values)
+    if n <= 1:
+        mean = float(np.mean(values)) if n == 1 else 0.0
+        return (mean, mean)
+    mean = float(np.mean(values))
+    se = float(np.std(values, ddof=1)) / np.sqrt(n)
+    if se <= 0.0 or not np.isfinite(se):
+        return (mean, mean)
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=n - 1))
+    return (mean - t_crit * se, mean + t_crit * se)
+
+
 def wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     """Wilson score confidence interval for a binomial proportion.
 
@@ -247,12 +360,12 @@ def newcombe_paired_ci(
 
 
 def resolve_resampling_method(
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto"],
     sample_size: int,
     *,
     bca_min_n: int = 15,
     bca_max_n: int = 200,
-) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]:
+) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]:
     """Resolve ``method='auto'`` to a concrete bootstrap method.
 
     ``method='auto'`` resolves to ``'bootstrap'`` when ``sample_size >= 200``
@@ -581,22 +694,112 @@ def smooth_bootstrap_resample_cell_means_once(
     return cell_means
 
 
-def bootstrap_ci_1d(
+def bootstrap_t_ci_1d(
     values: np.ndarray,
     observed_stat: float,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"],
     n_bootstrap: int,
     alpha: float,
     rng: np.random.Generator,
     statistic: Literal["mean", "median"] = "mean",
 ) -> tuple[float, float]:
-    """Bootstrap, BCa, Bayesian bootstrap, or smoothed bootstrap CI for a 1-D array.
+    """Bootstrap-t (studentized bootstrap) CI for a 1-D array.
+
+    Inverts the distribution of the studentized pivot
+    ``t* = (θ̂* − θ̂) / SE*`` rather than ``θ̂*`` directly, giving
+    second-order accuracy — the same theoretical order as BCa but via a
+    different route.  The CI is::
+
+        [θ̂ − t*_{1−α/2} · SE,  θ̂ − t*_{α/2} · SE]
+
+    For ``statistic='mean'``, SE = ``std(sample) / sqrt(n)`` (both observed
+    and bootstrap).
+
+    For ``statistic='median'``, this routine falls back to percentile bootstrap and emits a
+    warning.  A proper median bootstrap-t requires a replicate-wise median SE
+    estimator, which is not implemented here.
+
+    Falls back to the plain percentile bootstrap when the observed SE is zero
+    (degenerate sample).
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed values.
+    observed_stat : float
+        The statistic computed on the original sample (mean or median).
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    alpha : float
+        Significance level (1 − confidence level).
+    rng : np.random.Generator
+        Random number generator.
+    statistic : str
+        ``'mean'`` (default) or ``'median'``.
+    """
+    if statistic == "median":
+        warnings.warn(
+            "bootstrap_t_ci_1d: bootstrap-t studentization is implemented for "
+            "'mean'; falling back to percentile bootstrap for 'median'.",
+            UserWarning,
+            stacklevel=3,
+        )
+        boot_stats = bootstrap_means_1d(values, n_bootstrap, rng, statistic="median")
+        return _percentile_interval(boot_stats, alpha)
+
+    n = len(values)
+
+    # ── Generate bootstrap samples ────────────────────────────────────────
+    chunk_size = max(1, min(n_bootstrap, 4096, max(1, int(1_000_000 // max(n, 1)))))
+    boot_stats = np.empty(n_bootstrap, dtype=float)
+    boot_ses   = np.empty(n_bootstrap, dtype=float)
+
+    start = 0
+    while start < n_bootstrap:
+        stop = min(start + chunk_size, n_bootstrap)
+        idx = rng.integers(0, n, size=(stop - start, n))
+        samples = values[idx]                                   # (chunk, n)
+        boot_stats[start:stop] = samples.mean(axis=1)
+        boot_ses[start:stop] = np.std(samples, ddof=1, axis=1) / np.sqrt(n)
+        start = stop
+
+    # ── Observed SE ───────────────────────────────────────────────────────
+    se_obs = float(np.std(values, ddof=1)) / np.sqrt(n)
+
+    if se_obs <= 0.0 or not np.isfinite(se_obs):
+        return _percentile_interval(boot_stats, alpha)
+
+    # ── Studentized pivots ────────────────────────────────────────────────
+    valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+    t_stats = (boot_stats[valid] - observed_stat) / boot_ses[valid]
+
+    t_lo = float(np.percentile(t_stats, 100.0 * alpha / 2))
+    t_hi = float(np.percentile(t_stats, 100.0 * (1.0 - alpha / 2)))
+    return (
+        float(observed_stat - t_hi * se_obs),
+        float(observed_stat - t_lo * se_obs),
+    )
+
+
+def bootstrap_ci_1d(
+    values: np.ndarray,
+    observed_stat: float,
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"],
+    n_bootstrap: int,
+    alpha: float,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> tuple[float, float]:
+    """Bootstrap, BCa, Bayesian bootstrap, smoothed bootstrap, or bootstrap-t CI for a 1-D array.
 
     Parameters
     ----------
     statistic : str
         ``'mean'`` (default) or ``'median'``.
     """
+    if method == "bootstrap_t":
+        return bootstrap_t_ci_1d(values, observed_stat, n_bootstrap, alpha, rng, statistic=statistic)
     if method == "bayes_bootstrap":
         boot_stats = bayes_bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
         return _percentile_interval(boot_stats, alpha)
