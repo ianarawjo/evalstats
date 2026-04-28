@@ -246,6 +246,263 @@ def t_interval_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     return (mean - t_crit * se, mean + t_crit * se)
 
 
+def beta_ci_1d(
+    values: np.ndarray,
+    alpha: float,
+    n_bootstrap: int = 2000,
+    rng: Optional[np.random.Generator] = None,
+) -> tuple[float, float]:
+    """Parametric-bootstrap Beta CI for the mean of bounded [0, 1] data.
+
+    Fits a Beta(a, b) distribution via **method of moments** (matching the
+    sample mean and variance), then estimates the sampling distribution of the
+    mean by drawing ``n_bootstrap`` synthetic samples of the same size from
+    the fitted distribution and taking equal-tailed percentiles.
+
+    Using method-of-moments rather than MLE ensures the fitted Beta variance
+    always equals the empirical sample variance, preventing coverage collapse
+    for misspecified or zero-inflated distributions at large n.
+
+    Falls back to :func:`t_interval_ci_1d` when the MOM fit is degenerate
+    (e.g. all values equal, or sample variance ≥ x̄(1−x̄)).
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed scores in [0, 1].
+    alpha : float
+        Significance level (1 − confidence level).
+    n_bootstrap : int
+        Number of parametric bootstrap replicates (default 2000).
+    rng : np.random.Generator, optional
+        Random-number generator for reproducibility.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [0, 1].
+    """
+    n = len(values)
+    if n <= 0:
+        return (0.0, 1.0)
+    vals = np.asarray(values, dtype=float)
+    x_bar = float(np.mean(vals))
+    s2 = float(np.var(vals, ddof=1))
+    if s2 <= 0.0 or not np.isfinite(s2) or x_bar <= 0.0 or x_bar >= 1.0:
+        return t_interval_ci_1d(vals, alpha)
+    # Method-of-moments: concentration κ = a+b from mean and variance
+    # σ² = μ(1−μ)/(κ+1)  →  κ = μ(1−μ)/σ² − 1
+    conc = x_bar * (1.0 - x_bar) / s2 - 1.0
+    if conc <= 0.0:
+        return t_interval_ci_1d(vals, alpha)
+    a = x_bar * conc
+    b = (1.0 - x_bar) * conc
+    if rng is None:
+        rng = np.random.default_rng()
+    boot_means = rng.beta(a, b, size=(n_bootstrap, n)).mean(axis=1)
+    lo = float(np.percentile(boot_means, 100.0 * alpha / 2.0))
+    hi = float(np.percentile(boot_means, 100.0 * (1.0 - alpha / 2.0)))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def logit_t_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Logit-transform t-interval (delta method) for [0, 1]-bounded data.
+
+    Applies the delta method to obtain a CI for the arithmetic mean E[X]:
+
+    1. Compute the sample mean x̄ and its standard error SE = s/√n.
+    2. Map to the logit scale: g = log(x̄/(1−x̄)).
+    3. Propagate uncertainty: SE_logit ≈ SE / (x̄(1−x̄)).
+    4. Form a t-interval on the logit scale: g ± t_{n−1} · SE_logit.
+    5. Back-transform via the sigmoid to recover bounds on [0, 1].
+
+    This targets E[X] directly (not E[logit(X)]), and the asymmetric
+    back-transformed interval is better calibrated than a symmetric t-interval
+    for skewed or boundary-hugging distributions.
+
+    Raises ``ValueError`` if any value lies outside [0, 1].
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed scores in [0, 1].
+    alpha : float
+        Significance level (1 − confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [0, 1].
+    """
+    n = len(values)
+    if n <= 1:
+        mean = float(np.mean(values)) if n == 1 else 0.0
+        return (mean, mean)
+    vals = np.asarray(values, dtype=float)
+    if np.any(vals < 0.0) or np.any(vals > 1.0):
+        raise ValueError("logit_t_ci_1d requires all values in [0, 1]")
+    x_bar = float(np.mean(vals))
+    se = float(np.std(vals, ddof=1)) / np.sqrt(n)
+    if se <= 0.0 or not np.isfinite(se) or x_bar <= 0.0 or x_bar >= 1.0:
+        return (x_bar, x_bar)
+    # Delta method: SE of logit(x̄) ≈ SE(x̄) / (x̄(1−x̄))
+    logit_mean = float(np.log(x_bar / (1.0 - x_bar)))
+    se_logit = se / (x_bar * (1.0 - x_bar))
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=n - 1))
+    lo = float(1.0 / (1.0 + np.exp(-(logit_mean - t_crit * se_logit))))
+    hi = float(1.0 / (1.0 + np.exp(-(logit_mean + t_crit * se_logit))))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def nig_ci_1d(
+    values: np.ndarray,
+    alpha: float,
+    m0: float = 0.5,
+    k0: float = 1.0,
+    a0: float = 2.0,
+    b0: float = 0.0625,
+) -> tuple[float, float]:
+    """Normal-Inverse-Gamma Bayesian credible interval for continuous data.
+
+    Places a NIG(m₀, κ₀, α₀, β₀) conjugate prior on (μ, σ²) and returns an
+    equal-tailed (1−α) credible interval for μ.  The marginal posterior is::
+
+        μ | data  ~  t(2αₙ,  mₙ,  √(βₙ / (αₙ κₙ)))
+
+    with posterior hyperparameters updated analytically.
+
+    Default prior encodes weak knowledge that scores live in [0, 1]: centre
+    m₀=0.5, worth κ₀=1 pseudo-observation, prior variance of σ² centred at
+    b₀/(a₀−1)=0.0625 (i.e. σ≈0.25).  With κ₀→0 and α₀→−½ this recovers
+    the frequentist t-interval exactly.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed scores.
+    alpha : float
+        Significance level (1 − confidence level).
+    m0, k0, a0, b0 : float
+        Prior hyperparameters (mean, strength, shape, rate).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    vals = np.asarray(values, dtype=float)
+    n = len(vals)
+    if n == 0:
+        scale = float(np.sqrt(b0 * (k0 + 1.0) / (a0 * k0)))
+        lo = float(stats.t.ppf(alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        hi = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        return (lo, hi)
+    x_bar = float(np.mean(vals))
+    ss = float(np.sum((vals - x_bar) ** 2))
+    # Posterior hyperparameter updates
+    kn = k0 + n
+    mn = (k0 * m0 + n * x_bar) / kn
+    an = a0 + n / 2.0
+    bn = b0 + 0.5 * ss + (k0 * n) / (2.0 * kn) * (x_bar - m0) ** 2
+    scale = float(np.sqrt(bn / (an * kn)))
+    if scale <= 0.0 or not np.isfinite(scale):
+        return (mn, mn)
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * an))
+    return (mn - t_crit * scale, mn + t_crit * scale)
+
+
+def el_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Empirical-likelihood confidence interval for the mean (Owen 1988/1990).
+
+    Constructs the profile empirical-likelihood ratio CI::
+
+        EL-CI = {θ : −2 log R(θ) ≤ χ²(1, 1−α)}
+
+    where R(θ) = max ∏ nᵢpᵢ s.t. Σpᵢ=1, Σpᵢxᵢ=θ.  The Lagrange multiplier
+    λ(θ) is found via root-finding; the CI bounds are located by binary search
+    exploiting the convexity of −2 log R.
+
+    EL is nonparametric and Bartlett-correctable (coverage error O(n⁻²) vs
+    O(n⁻¹) for bootstrap), making it attractive for small samples with skewed
+    or bounded distributions.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed values.
+    alpha : float
+        Significance level (1 − confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    from scipy.optimize import brentq as _brentq
+
+    n = len(values)
+    if n <= 1:
+        mean = float(np.mean(values)) if n == 1 else 0.0
+        return (mean, mean)
+    vals = np.asarray(values, dtype=float)
+    x_bar = float(np.mean(vals))
+    x_min, x_max = float(np.min(vals)), float(np.max(vals))
+    if x_min == x_max:
+        return (x_min, x_max)
+
+    crit = float(stats.chi2.ppf(1.0 - alpha, df=1))
+
+    def neg2logR(theta: float) -> float:
+        if theta <= x_min or theta >= x_max:
+            return np.inf
+        d = vals - theta
+        d_pos, d_neg = d[d > 0], d[d < 0]
+        # Feasible range: all (1 + lambda*d_i) > 0
+        lam_lo = (-1.0 / d_pos.max() + 1e-12) if len(d_pos) else -1e15
+        lam_hi = (-1.0 / d_neg.min() - 1e-12) if len(d_neg) else  1e15
+        if lam_lo >= lam_hi:
+            return np.inf
+        def _constraint(l: float) -> float:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                terms = d / (1.0 + l * d)
+            s = float(np.sum(terms))
+            # constraint is monotonically decreasing: +∞ near lam_lo, −∞ near lam_hi
+            return s if np.isfinite(s) else np.sign((lam_lo + lam_hi) / 2 - l) * 1e15
+
+        try:
+            lam = _brentq(_constraint, lam_lo, lam_hi, xtol=1e-12, rtol=1e-8, maxiter=500)
+        except ValueError:
+            return np.inf
+        log_terms = np.log(1.0 + lam * d)
+        if not np.all(np.isfinite(log_terms)):
+            return np.inf
+        return float(2.0 * np.sum(log_terms))
+
+    def excess(theta: float) -> float:
+        return neg2logR(theta) - crit
+
+    span_l = x_bar - x_min
+    span_r = x_max - x_bar
+    try:
+        lo = _brentq(
+            excess,
+            x_min + 1e-8 * span_l,
+            x_bar - 1e-10 * span_l,
+            xtol=1e-8, maxiter=200,
+        )
+    except (ValueError, Exception):
+        lo = x_min
+    try:
+        hi = _brentq(
+            excess,
+            x_bar + 1e-10 * span_r,
+            x_max - 1e-8 * span_r,
+            xtol=1e-8, maxiter=200,
+        )
+    except (ValueError, Exception):
+        hi = x_max
+
+    return (float(lo), float(hi))
+
+
 def wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     """Wilson score confidence interval for a binomial proportion.
 

@@ -92,6 +92,10 @@ with warnings.catch_warnings():
         wald_ci,
         clopper_pearson_ci,
         t_interval_ci_1d,
+        beta_ci_1d,
+        logit_t_ci_1d,
+        nig_ci_1d,
+        el_ci_1d,
     )
 
 
@@ -107,7 +111,13 @@ BAYES_SINGLE_METHOD = "bayes_indep"
 WALD_METHOD = "wald"
 CP_METHOD = "clopper_pearson"
 T_INTERVAL_METHOD = "t_interval"
-REPORT_METHODS = METHODS + [T_INTERVAL_METHOD, WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
+BETA_METHOD = "beta"
+LOGIT_T_METHOD = "logit_t"
+NIG_METHOD = "nig"
+EL_METHOD = "el"
+# Methods only applied to continuous (non-binary) eval types
+CONTINUOUS_EXTRA_METHODS = [BETA_METHOD, LOGIT_T_METHOD, NIG_METHOD, EL_METHOD]
+REPORT_METHODS = METHODS + [T_INTERVAL_METHOD, WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD] + CONTINUOUS_EXTRA_METHODS
 
 PROGRESS_MODES = ["bar", "cell", "off"]
 PLOT_MODES = ["save", "off"]
@@ -164,6 +174,7 @@ class DoveBenchmarkSpec:
     description: str
     language: str = "en"
     shots: int = 0
+    score_bounds: tuple[float, float] | None = None  # (lo, hi) → rescale to [0,1]; None = already unit-scale
 
 
 # Benchmarks currently implemented. Stubs show where to add other eval types
@@ -258,6 +269,7 @@ class OpenEvalBenchmarkSpec:
     description: str
     metric_name: str | None = None  # None = use first score entry for each response
     score_scale: float = 1.0        # multiply extracted score by this factor (e.g. 0.01 to normalise 0–100 → 0–1)
+    score_bounds: tuple[float, float] | None = None  # (lo, hi) → rescale to [0,1]; None = already unit-scale
 
 
 # Benchmark IDs must match the source component in response_id
@@ -314,8 +326,9 @@ OPENEVAL_BENCHMARK_SPECS: dict[str, OpenEvalBenchmarkSpec] = {
     ),
     "do-not-answer": OpenEvalBenchmarkSpec(
         benchmark_id="do-not-answer",
-        eval_type="continuous", # min 0 max 6, clustered at 0s 
-        description="Do-Not-Answer safety refusal benchmark",
+        eval_type="continuous",
+        description="Do-Not-Answer safety refusal benchmark (scores 0–6, rescaled to [0,1])",
+        score_bounds=(0.0, 6.0),
     ),
     "hi-tom": OpenEvalBenchmarkSpec(
         benchmark_id="hi-tom",
@@ -570,6 +583,10 @@ def load_dove_corpus(
             f"N={len(scores)}, mean={np.mean(scores):.4f}{dup_note}\n"
             f"        {_score_dist_summary(scores, spec.eval_type)}"
         )
+
+    if spec.score_bounds is not None:
+        lo, hi = spec.score_bounds
+        scores = (scores - lo) / (hi - lo)
 
     return Corpus(
         model=model, benchmark_id=spec.benchmark_id, eval_type=spec.eval_type,
@@ -990,6 +1007,9 @@ def build_openeval_corpora(
         if len(arr) < min_corpus_size:
             print(f"  Skip  {model_name}/{bench}: N={len(arr)} < {min_corpus_size}")
             continue
+        if spec.score_bounds is not None:
+            lo, hi = spec.score_bounds
+            arr = (arr - lo) / (hi - lo)
         print(
             f"  OK    {model_name}/{bench}: N={len(arr)}, mean={np.mean(arr):.4f}\n"
             f"        {_score_dist_summary(arr, spec.eval_type)}"
@@ -1159,6 +1179,8 @@ def run_simulation(
             active_methods = METHODS + [T_INTERVAL_METHOD]
             if is_binary:
                 active_methods += [WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
+            else:
+                active_methods += CONTINUOUS_EXTRA_METHODS
 
             covered: dict[str, int] = {m: 0 for m in active_methods}
             total_w: dict[str, float] = {m: 0.0 for m in active_methods}
@@ -1207,6 +1229,27 @@ def run_simulation(
                 if ci_low <= true_mean <= ci_high:
                     covered[T_INTERVAL_METHOD] += 1
                 total_w[T_INTERVAL_METHOD] += ci_high - ci_low
+
+                if not is_binary:
+                    continuous_method_fns = {
+                        BETA_METHOD: beta_ci_1d,
+                        LOGIT_T_METHOD: logit_t_ci_1d,
+                        NIG_METHOD: nig_ci_1d,
+                        EL_METHOD: el_ci_1d,
+                    }
+                    for _method in continuous_method_fns:
+                        _fn = continuous_method_fns[_method]
+                        _t0 = time.perf_counter()
+                        try:
+                            ci_low, ci_high = _fn(values, alpha)
+                        except Exception:
+                            ci_low = ci_high = obs_mean
+                        _el = time.perf_counter() - _t0
+                        total_t[_method] += _el
+                        total_t_sq[_method] += _el * _el
+                        if ci_low <= true_mean <= ci_high:
+                            covered[_method] += 1
+                        total_w[_method] += ci_high - ci_low
 
                 if is_binary:
                     successes = _binary_successes(values)
@@ -1597,8 +1640,36 @@ _METHOD_COLORS: dict[str, str] = {
     "wald":               "#7f7f7f",
     "clopper_pearson":    "#bcbd22",
     "bayes_indep":        "#17becf",
+    "beta":               "#f0027f",
+    "logit_t":            "#a6761d",
+    "nig":                "#888888",
+    "el":                 "#00441b",
 }
 _N_MARKERS = ["o", "s", "^", "D", "v", "p", "h", "*"]
+
+
+def _set_sparse_numeric_xticklabels(
+    ax: Any,
+    ns: list[int],
+    *,
+    max_labels: int = 8,
+) -> None:
+    """Set numeric x ticks while labeling only a readable subset when crowded."""
+    if not ns:
+        return
+
+    ns_sorted = sorted(ns)
+    ax.set_xticks(ns_sorted)
+
+    if len(ns_sorted) <= max_labels:
+        ax.set_xticklabels([str(n) for n in ns_sorted])
+        return
+
+    keep_idxs = set(np.linspace(0, len(ns_sorted) - 1, max_labels, dtype=int).tolist())
+    keep_idxs.add(0)
+    keep_idxs.add(len(ns_sorted) - 1)
+    labels = [str(n) if i in keep_idxs else "" for i, n in enumerate(ns_sorted)]
+    ax.set_xticklabels(labels)
 
 
 def save_cost_plot(
@@ -1809,28 +1880,41 @@ def save_coverage_vs_n_plot(
             hue="method",
             hue_order=et_methods,
             palette=palette,
-            marker="o",
+            marker=None,
+            linewidth=1.0,
+            alpha=0.70,
             ax=ax,
         )
 
         for method, sub in et_agg.groupby("method"):
             if sub["coverage_std"].isna().all():
                 continue
+            sub = sub.sort_values("n")
             color = _METHOD_COLORS.get(str(method), "#333333")
             se = sub["coverage_std"] / np.sqrt(sub["coverage_count"])
             ax.errorbar(
                 sub["n"],
                 sub["coverage_mean"],
                 yerr=se,
-                fmt="o-",
+                fmt="none",
                 color=color,
-                capsize=3,
-                alpha=0.9,
+                elinewidth=0.8,
+                capsize=2,
+                alpha=0.45,
+            )
+            ax.scatter(
+                sub["n"],
+                sub["coverage_mean"],
+                s=28,
+                color=color,
+                edgecolors="white",
+                linewidths=0.6,
+                alpha=0.85,
+                zorder=3,
             )
 
         ns = sorted(et_agg["n"].unique())
-        ax.set_xticks(ns)
-        ax.set_xticklabels([str(n) for n in ns])
+        _set_sparse_numeric_xticklabels(ax, ns)
         ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2)
         ax.set_xlabel("Sample size (n)")
         ax.set_ylabel("Empirical coverage" if col_idx == 0 else "")
@@ -1920,28 +2004,41 @@ def save_width_vs_n_plot(
             hue="method",
             hue_order=et_methods,
             palette=palette,
-            marker="o",
+            marker=None,
+            linewidth=1.0,
+            alpha=0.70,
             ax=ax,
         )
 
         for method, sub in et_agg.groupby("method"):
             if sub["width_std"].isna().all():
                 continue
+            sub = sub.sort_values("n")
             color = _METHOD_COLORS.get(str(method), "#333333")
             se = sub["width_std"] / np.sqrt(sub["width_count"])
             ax.errorbar(
                 sub["n"],
                 sub["width_mean"],
                 yerr=se,
-                fmt="o-",
+                fmt="none",
                 color=color,
-                capsize=3,
-                alpha=0.9,
+                elinewidth=0.8,
+                capsize=2,
+                alpha=0.45,
+            )
+            ax.scatter(
+                sub["n"],
+                sub["width_mean"],
+                s=28,
+                color=color,
+                edgecolors="white",
+                linewidths=0.6,
+                alpha=0.85,
+                zorder=3,
             )
 
         ns = sorted(et_agg["n"].unique())
-        ax.set_xticks(ns)
-        ax.set_xticklabels([str(n) for n in ns])
+        _set_sparse_numeric_xticklabels(ax, ns)
         ax.set_xlabel("Sample size (n)")
         ax.set_ylabel("Mean CI width" if col_idx == 0 else "")
         ax.set_title(et.upper())

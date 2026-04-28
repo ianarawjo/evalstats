@@ -1885,23 +1885,37 @@ def save_coverage_vs_n_plot(
             hue="method",
             hue_order=et_methods,
             palette=palette,
-            marker="o",
+            marker=None,
+            linewidth=1.0,
+            alpha=0.70,
             ax=ax,
         )
 
         for method, sub in et_agg.groupby("method"):
             if sub["coverage_std"].isna().all():
                 continue
+            sub = sub.sort_values("n")
             color = _METHOD_COLORS.get(str(method), "#333333")
             se = sub["coverage_std"] / np.sqrt(sub["coverage_count"])
             ax.errorbar(
                 sub["n"],
                 sub["coverage_mean"],
                 yerr=se,
-                fmt="o-",
+                fmt="none",
                 color=color,
-                capsize=3,
-                alpha=0.9,
+                elinewidth=0.8,
+                capsize=2,
+                alpha=0.45,
+            )
+            ax.scatter(
+                sub["n"],
+                sub["coverage_mean"],
+                s=28,
+                color=color,
+                edgecolors="white",
+                linewidths=0.6,
+                alpha=0.85,
+                zorder=3,
             )
 
         ns = sorted(et_agg["n"].unique())
@@ -1997,23 +2011,37 @@ def save_width_vs_n_plot(
             hue="method",
             hue_order=et_methods,
             palette=palette,
-            marker="o",
+            marker=None,
+            linewidth=1.0,
+            alpha=0.70,
             ax=ax,
         )
 
         for method, sub in et_agg.groupby("method"):
             if sub["width_std"].isna().all():
                 continue
+            sub = sub.sort_values("n")
             color = _METHOD_COLORS.get(str(method), "#333333")
             se = sub["width_std"] / np.sqrt(sub["width_count"])
             ax.errorbar(
                 sub["n"],
                 sub["width_mean"],
                 yerr=se,
-                fmt="o-",
+                fmt="none",
                 color=color,
-                capsize=3,
-                alpha=0.9,
+                elinewidth=0.8,
+                capsize=2,
+                alpha=0.45,
+            )
+            ax.scatter(
+                sub["n"],
+                sub["width_mean"],
+                s=28,
+                color=color,
+                edgecolors="white",
+                linewidths=0.6,
+                alpha=0.85,
+                zorder=3,
             )
 
         ns = sorted(et_agg["n"].unique())
