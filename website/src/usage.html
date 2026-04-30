@@ -143,9 +143,9 @@
   <div class="ps-output"><pre>====================
  PROMPTS COMPARISON
 ====================
-3 prompts | 20 inputs | method=smooth_bootstrap | 99% confidence intervals (CI)
+3 prompts | 20 inputs | method=nig | 99% confidence intervals (CI)
 
---- Mean Performance (marginal bootstrap CIs) ---
+--- Mean Performance (marginal NIG CIs) ---
   axis: [0.561, 1.009]  (· ±1σ, ─ CI, ● mean, │ grand mean)
   Prompt                   Interval Plot                                 Mean    CI Low   CI High
   prompt_a                   ···──────●─────···│                       0.680    0.616    0.744
@@ -329,9 +329,9 @@ result.summary()</code></pre>
   <div class="ps-output"><pre>===================
  MODELS COMPARISON
 ===================
-3 models | 40 inputs | method=smooth_bootstrap | 99% confidence intervals (CI)
+3 models | 40 inputs | method=nig | 99% confidence intervals (CI)
 
---- Mean Performance (marginal bootstrap CIs) ---
+--- Mean Performance (marginal NIG CIs) ---
   axis: [0.683, 0.937]  (· ±1σ, ─ CI, ● mean, │ grand mean)
   Model                    Interval Plot                                 Mean    CI Low   CI High
   gpt-4o-mini                          ······───│─●────······          0.827    0.798    0.857

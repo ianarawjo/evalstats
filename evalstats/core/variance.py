@@ -257,8 +257,9 @@ def robustness_metrics(
 
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
-    if n_bootstrap is not None:
-        if rng is None:
+    _analytical = {"wilson", "nig", "t_interval"}
+    if n_bootstrap is not None or marginal_method in _analytical:
+        if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
         from .resampling import (
             bootstrap_means_1d,
@@ -266,6 +267,9 @@ def robustness_metrics(
             smooth_bootstrap_means_1d,
             bca_interval_1d,
             wilson_ci_1d,
+            nig_ci_1d,
+            t_interval_ci_1d,
+            bootstrap_t_ci_1d,
         )
         ci_lows = []
         ci_highs = []
@@ -274,6 +278,12 @@ def robustness_metrics(
             point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
             if marginal_method == "wilson":
                 lo, hi = wilson_ci_1d(row, alpha)
+            elif marginal_method == "nig":
+                lo, hi = nig_ci_1d(row, alpha)
+            elif marginal_method == "t_interval":
+                lo, hi = t_interval_ci_1d(row, alpha)
+            elif marginal_method == "bootstrap_t":
+                lo, hi = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng)
             elif marginal_method == "bayes_bootstrap":
                 boot = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
                 lo = float(np.percentile(boot, 100 * alpha / 2))

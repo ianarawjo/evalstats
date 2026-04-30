@@ -774,7 +774,7 @@ def _analyze_single(
     pairwise_method = method
     robustness_method = method
     if method == "auto":
-        from .resampling import is_binary_scores, resolve_resampling_method
+        from .resampling import is_binary_scores, is_bounded_01_scores, resolve_resampling_method
         if is_binary_scores(run_scores):
             M = run_scores.shape[1]
             R = run_scores.shape[2]
@@ -794,8 +794,17 @@ def _analyze_single(
             else:
                 pairwise_method = resolve_resampling_method("bootstrap", M)
         else:
-            pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
-            robustness_method = pairwise_method
+            M = run_scores.shape[1]
+            pairwise_method = resolve_resampling_method(method, M)
+            if is_bounded_01_scores(run_scores):
+                # Continuous [0,1] data: NIG credible interval for marginal CIs.
+                robustness_method = "nig"
+            elif M >= 60:
+                # Unbounded numeric, large sample: t-interval is near-perfect and fast.
+                robustness_method = "t_interval"
+            else:
+                # Unbounded numeric, small sample: bootstrap-t for second-order accuracy.
+                robustness_method = "bootstrap_t"
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):

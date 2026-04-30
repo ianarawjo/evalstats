@@ -133,6 +133,31 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def is_bounded_01_scores(scores: np.ndarray) -> bool:
+    """Return True if all finite values in *scores* lie within [0, 1].
+
+    Used to auto-detect continuous [0, 1] evaluation data (e.g. normalised
+    accuracy, ROUGE, similarity scores) so that :func:`analyze` can switch to
+    the NIG credible interval for single-sample marginal CIs.  Call
+    :func:`is_binary_scores` first; if that returns True the data is binary
+    and NIG is not appropriate.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array.
+
+    Returns
+    -------
+    bool
+    """
+    flat = scores.ravel()
+    finite = flat[np.isfinite(flat)]
+    if len(finite) == 0:
+        return False
+    return bool(np.all(finite >= 0.0) and np.all(finite <= 1.0))
+
+
 def wald_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     """Wald (normal-approximation) confidence interval for a binomial proportion.
 

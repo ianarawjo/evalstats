@@ -1296,7 +1296,17 @@ def _print_mean_advantage(
     ma_low = float(np.min(all_vals)) - pad
     ma_high = float(np.max(all_vals)) + pad
 
-    ci_note = "Wilson CIs" if _uses_wilson_ci(bundle) else "marginal bootstrap CIs"
+    _ci_method = (bundle.resolved_ci_method or "").lower()
+    if _uses_wilson_ci(bundle):
+        ci_note = "Wilson CIs"
+    elif _ci_method == "nig":
+        ci_note = "marginal NIG CIs"
+    elif _ci_method == "t_interval":
+        ci_note = "marginal t CIs"
+    elif _ci_method == "bootstrap_t":
+        ci_note = "marginal bootstrap-t CIs"
+    else:
+        ci_note = "marginal bootstrap CIs"
     _print_subsection(f"--- {stat_label} Performance ({ci_note}) ---")
     ref_label = "grand mean"
     print(

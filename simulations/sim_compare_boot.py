@@ -49,6 +49,8 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import itertools
+import multiprocessing as mp
 import os
 import sys
 import time
@@ -67,8 +69,12 @@ import seaborn as sns
 from scipy.stats import norm
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
-if _HERE not in sys.path:
-    sys.path.insert(0, _HERE)
+_ROOT = os.path.dirname(_HERE)
+# Ensure both simulations/ (for bayes_evals) and the project root (for evalstats
+# source) are on the path before any installed copies in site-packages.
+for _p in [_HERE, _ROOT]:
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
 from bayes_evals import binorm_cdf  # noqa: E402
 
 with warnings.catch_warnings():
@@ -87,6 +93,10 @@ with warnings.catch_warnings():
         wald_ci_1d,
         clopper_pearson_ci_1d,
         t_interval_ci_1d,
+        beta_ci_1d,
+        logit_t_ci_1d,
+        nig_ci_1d,
+        el_ci_1d,
     )
 
 
@@ -103,6 +113,13 @@ BAYES_PAIR_PAIRED_METHOD = "bayes_paired_comp"
 WALD_METHOD = "wald"
 CP_METHOD = "clopper_pearson"
 T_INTERVAL_METHOD = "t_interval"
+BETA_METHOD = "beta"
+LOGIT_T_METHOD = "logit_t"
+NIG_METHOD = "nig"
+EL_METHOD = "el"
+# Methods only applied to continuous (non-binary) eval types
+CONTINUOUS_EXTRA_METHODS = [BETA_METHOD, LOGIT_T_METHOD, NIG_METHOD, EL_METHOD]
+PAIRWISE_EXTRA_METHODS = [T_INTERVAL_METHOD, NIG_METHOD, EL_METHOD]
 REPORT_METHODS = METHODS + [
     T_INTERVAL_METHOD,
     WILSON_METHOD,
@@ -112,7 +129,7 @@ REPORT_METHODS = METHODS + [
     BAYES_SINGLE_METHOD,
     BAYES_PAIR_INDEP_METHOD,
     BAYES_PAIR_PAIRED_METHOD,
-]
+] + CONTINUOUS_EXTRA_METHODS
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
 SCENARIO_SUITES = ["standard", "expanded"]
 PROGRESS_MODES = ["bar", "cell", "off"]
@@ -139,6 +156,9 @@ class PairScenario:
     eval_type: str
     generate_pair: Callable[[np.random.Generator, int, int], tuple[np.ndarray, np.ndarray]]
     true_diff: float
+    icc: float = 0.0       # intraclass correlation of per-input scores
+    cohens_d: float = 0.0  # standardized effect size (delta / total_std)
+    is_null: bool = False  # True when delta=0 (used for Type I error measurement)
 
 
 class _ProgressReporter:
@@ -207,7 +227,12 @@ def _estimate_true_mean_mc(
     seed: int = 0,
     n_mc: int = 500_000,
 ) -> float:
-    """Estimate population mean via large Monte Carlo draw for complex generators."""
+    """Estimate population mean via large Monte Carlo draw for complex generators.
+
+    Uses n_mc=500,000 samples. For all scenarios used here the resulting MC
+    standard error is < 0.001 (well below the CI widths under study), so
+    estimand error is negligible relative to method-comparison noise.
+    """
     rng = np.random.default_rng(seed)
     return float(np.mean(generate(rng, n_mc)))
 
@@ -268,6 +293,53 @@ def build_scenarios(suite: str = "standard") -> list[Scenario]:
             )
         )
 
+    # logit-normal is a principled model for bounded continuous scores
+    # (common in LLM rubric outputs); always included in standard suite.
+    def _gen_logit_normal(rng: np.random.Generator, n: int) -> np.ndarray:
+        logits = rng.normal(-0.35, 1.35, size=n)
+        return 1.0 / (1.0 + np.exp(-logits))
+
+    scenarios.append(
+        Scenario(
+            label="logit-normal(mu=-0.35,s=1.35)",
+            eval_type="continuous",
+            generate=_gen_logit_normal,
+            true_mean=_estimate_true_mean_mc(_gen_logit_normal),
+        )
+    )
+
+    # Zero-inflated and one-inflated — point-mass spike at the boundary mixed
+    # with a Beta component.  Models extreme low/high LLM performance: a model
+    # that almost always fails produces a spike at 0; a near-ceiling model
+    # produces a spike at 1.  True means are computed analytically.
+    def _gen_zero_inflated(rng: np.random.Generator, n: int) -> np.ndarray:
+        spike = rng.random(n) < 0.70
+        return np.where(spike, 0.0, rng.beta(2.0, 4.0, n))
+
+    scenarios.append(
+        Scenario(
+            label="zero-inflated(π=0.70,Beta(2,4))",
+            eval_type="continuous",
+            generate=_gen_zero_inflated,
+            # E[X] = 0.70*0 + 0.30*Beta_mean = 0.30 * 2/(2+4)
+            true_mean=0.30 * (2.0 / 6.0),
+        )
+    )
+
+    def _gen_one_inflated(rng: np.random.Generator, n: int) -> np.ndarray:
+        spike = rng.random(n) < 0.70
+        return np.where(spike, 1.0, rng.beta(4.0, 2.0, n))
+
+    scenarios.append(
+        Scenario(
+            label="one-inflated(π=0.70,Beta(4,2))",
+            eval_type="continuous",
+            generate=_gen_one_inflated,
+            # E[X] = 0.70*1 + 0.30*Beta_mean = 0.70 + 0.30 * 4/(4+2)
+            true_mean=0.70 + 0.30 * (4.0 / 6.0),
+        )
+    )
+
     if suite == "expanded":
         def _gen_mix_continuous(rng: np.random.Generator, n: int) -> np.ndarray:
             selector = rng.binomial(1, 0.55, size=n).astype(bool)
@@ -285,53 +357,61 @@ def build_scenarios(suite: str = "standard") -> list[Scenario]:
             )
         )
 
-        def _gen_logit_normal(rng: np.random.Generator, n: int) -> np.ndarray:
-            logits = rng.normal(-0.35, 1.35, size=n)
-            return 1.0 / (1.0 + np.exp(-logits))
-
-        scenarios.append(
-            Scenario(
-                label="logit-normal(mu=-0.35,s=1.35)",
-                eval_type="continuous",
-                generate=_gen_logit_normal,
-                true_mean=_estimate_true_mean_mc(_gen_logit_normal),
-            )
-        )
-
     # ------------------------------------------------------------------
-    # Likert 1–5: discrete integer scores
+    # Likert 1–5: latent-normal model (consistent with build_pair_scenarios)
     # ------------------------------------------------------------------
-    likert_vals = np.array([1.0, 2.0, 3.0, 4.0, 5.0])
-    likert_specs = [
-        ("uniform",       [0.20, 0.20, 0.20, 0.20, 0.20]),
-        ("skewed-low",    [0.40, 0.30, 0.15, 0.10, 0.05]),
-        ("skewed-high",   [0.05, 0.10, 0.15, 0.30, 0.40]),
-        ("bimodal",       [0.35, 0.10, 0.10, 0.10, 0.35]),
-        ("center-peaked", [0.05, 0.15, 0.60, 0.15, 0.05]),
+    # Each generator draws from N(mu_lat, sigma_lat) on a latent scale, then
+    # rounds to integers in {1,...,5} via rint+clip.  Using the same generative
+    # family as build_pair_scenarios ensures that single-sample and pairwise
+    # results are directly comparable.  True means are estimated via MC
+    # (n_mc=500,000; SE < 0.001).
+
+    def _make_likert_normal(mu: float, sigma: float) -> Callable[[np.random.Generator, int], np.ndarray]:
+        def _gen(rng: np.random.Generator, n: int, _m: float = mu, _s: float = sigma) -> np.ndarray:
+            return np.clip(np.rint(rng.normal(_m, _s, n)), 1.0, 5.0)
+        return _gen
+
+    def _make_likert_bimodal(mu1: float, mu2: float, sigma: float) -> Callable[[np.random.Generator, int], np.ndarray]:
+        def _gen(rng: np.random.Generator, n: int, _m1: float = mu1, _m2: float = mu2, _s: float = sigma) -> np.ndarray:
+            sel = rng.random(n) < 0.5
+            latents = np.where(sel, rng.normal(_m1, _s, n), rng.normal(_m2, _s, n))
+            return np.clip(np.rint(latents), 1.0, 5.0)
+        return _gen
+
+    # Standard suite: five shapes covering the main families
+    _likert_standard = [
+        ("uniform",       _make_likert_normal(3.0, 2.0)),    # high variance → flat
+        ("skewed-low",    _make_likert_normal(2.0, 1.1)),    # mass at 1–2
+        ("skewed-high",   _make_likert_normal(4.0, 1.1)),    # mass at 4–5
+        ("bimodal",       _make_likert_bimodal(1.5, 4.5, 0.65)),  # peaks at extremes
+        ("center-peaked", _make_likert_normal(3.0, 0.55)),   # sharp peak at 3
     ]
-    if suite == "expanded":
-        likert_specs.extend(
-            [
-                ("near-floor", [0.62, 0.22, 0.10, 0.04, 0.02]),
-                ("near-ceiling", [0.02, 0.04, 0.10, 0.22, 0.62]),
-                ("polarized", [0.47, 0.06, 0.04, 0.06, 0.37]),
-                ("flat-middle", [0.10, 0.30, 0.20, 0.30, 0.10]),
-            ]
-        )
-
-    for label, probs in likert_specs:
-        probs_ = np.array(probs, dtype=float)
-        true_mean_ = float(np.dot(likert_vals, probs_))
+    for label, gen in _likert_standard:
         scenarios.append(
             Scenario(
                 label=label,
                 eval_type="likert",
-                generate=lambda rng, n, _p=probs_: rng.choice(
-                    np.array([1.0, 2.0, 3.0, 4.0, 5.0]), size=n, p=_p
-                ),
-                true_mean=true_mean_,
+                generate=gen,
+                true_mean=_estimate_true_mean_mc(gen),
             )
         )
+
+    if suite == "expanded":
+        _likert_expanded = [
+            ("near-floor",   _make_likert_normal(1.5, 0.65)),       # mostly 1s
+            ("near-ceiling", _make_likert_normal(4.5, 0.65)),       # mostly 5s
+            ("polarized",    _make_likert_bimodal(1.3, 4.7, 0.50)), # extreme bimodal
+            ("flat-middle",  _make_likert_normal(3.0, 1.4)),        # moderate spread
+        ]
+        for label, gen in _likert_expanded:
+            scenarios.append(
+                Scenario(
+                    label=label,
+                    eval_type="likert",
+                    generate=gen,
+                    true_mean=_estimate_true_mean_mc(gen),
+                )
+            )
 
     # ------------------------------------------------------------------
     # Grades 0–100: truncated normals of varying centre and spread
@@ -366,38 +446,88 @@ def build_scenarios(suite: str = "standard") -> list[Scenario]:
             )
         )
 
+    # Mixture of 3 normal components — captures bimodal/trimodal grade
+    # distributions common in LLM evals (fail / partial / full credit).
+    def _gen_grade_mixture(rng: np.random.Generator, n: int) -> np.ndarray:
+        flags = rng.choice(3, size=n, p=[0.20, 0.50, 0.30])
+        vals = np.empty(n, dtype=float)
+        for bucket, mu, sigma in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
+            mask = flags == bucket
+            vals[mask] = rng.normal(mu, sigma, size=int(np.sum(mask)))
+        return np.clip(vals, 0.0, 100.0)
+
+    scenarios.append(
+        Scenario(
+            label="mixture-truncnorm(3 components)",
+            eval_type="grades",
+            generate=_gen_grade_mixture,
+            true_mean=_estimate_true_mean_mc(_gen_grade_mixture),
+        )
+    )
+
+    # Heavy-tailed t(df=3) — models grade distributions with occasional
+    # outlier runs (model crashes, OOD inputs, etc.).
+    def _gen_grade_heavy_tail(rng: np.random.Generator, n: int) -> np.ndarray:
+        vals = 52.0 + 16.0 * rng.standard_t(df=3.0, size=n)
+        return np.clip(vals, 0.0, 100.0)
+
+    scenarios.append(
+        Scenario(
+            label="heavy-tail t(df=3)",
+            eval_type="grades",
+            generate=_gen_grade_heavy_tail,
+            true_mean=_estimate_true_mean_mc(_gen_grade_heavy_tail),
+        )
+    )
+
     if suite == "expanded":
-        def _gen_grade_mixture(rng: np.random.Generator, n: int) -> np.ndarray:
-            flags = rng.choice(3, size=n, p=[0.20, 0.50, 0.30])
-            vals = np.empty(n, dtype=float)
-            for bucket, mu, sigma in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
-                mask = flags == bucket
-                vals[mask] = rng.normal(mu, sigma, size=int(np.sum(mask)))
-            return np.clip(vals, 0.0, 100.0)
+        # Zero-spiked and hundred-spiked grades — point-mass spike at floor/ceiling
+        # mixed with a truncated-normal body.  Models complete failure (spike at 0)
+        # and near-perfect performance (spike at 100) common in LLM coding/math evals.
+        def _gen_grade_zero_spiked(rng: np.random.Generator, n: int) -> np.ndarray:
+            spike = rng.random(n) < 0.40
+            body = np.clip(rng.normal(45.0, 20.0, n), 0.0, 100.0)
+            return np.where(spike, 0.0, body)
 
         scenarios.append(
             Scenario(
-                label="mixture-truncnorm(3 components)",
+                label="zero-spiked(π=0.40,N(45,20))",
                 eval_type="grades",
-                generate=_gen_grade_mixture,
-                true_mean=_estimate_true_mean_mc(_gen_grade_mixture),
+                generate=_gen_grade_zero_spiked,
+                true_mean=_estimate_true_mean_mc(_gen_grade_zero_spiked),
             )
         )
 
-        def _gen_grade_heavy_tail(rng: np.random.Generator, n: int) -> np.ndarray:
-            vals = 52.0 + 16.0 * rng.standard_t(df=3.0, size=n)
-            return np.clip(vals, 0.0, 100.0)
+        def _gen_grade_hundred_spiked(rng: np.random.Generator, n: int) -> np.ndarray:
+            spike = rng.random(n) < 0.40
+            body = np.clip(rng.normal(65.0, 18.0, n), 0.0, 100.0)
+            return np.where(spike, 100.0, body)
 
         scenarios.append(
             Scenario(
-                label="heavy-tail t(df=3)",
+                label="hundred-spiked(π=0.40,N(65,18))",
                 eval_type="grades",
-                generate=_gen_grade_heavy_tail,
-                true_mean=_estimate_true_mean_mc(_gen_grade_heavy_tail),
+                generate=_gen_grade_hundred_spiked,
+                true_mean=_estimate_true_mean_mc(_gen_grade_hundred_spiked),
             )
         )
 
     return scenarios
+
+
+def _binary_conc_from_icc(icc: float) -> float:
+    """Beta concentration for Bernoulli input probabilities giving target ICC.
+
+    For a Bernoulli-Beta hierarchical model where per-input success probabilities
+    are drawn from Beta(conc*p0, conc*(1-p0)), the intraclass correlation of
+    observed scores is ICC = 1/(conc + 1).  Inverted: conc = 1/ICC - 1.
+    """
+    return max(1.0 / max(icc, 1e-9) - 1.0, 0.1)
+
+
+def _beta_var(a: float, b: float) -> float:
+    """Variance of Beta(a, b)."""
+    return a * b / ((a + b) ** 2 * (a + b + 1))
 
 
 def _estimate_true_pair_diff(
@@ -406,281 +536,259 @@ def _estimate_true_pair_diff(
     seed: int = 0,
     n_mc: int = 300_000,
 ) -> float:
-    """Estimate E[cell_mean(A) - cell_mean(B)] via a large synthetic sample."""
+    """Estimate E[cell_mean(A) - cell_mean(B)] via a large synthetic sample.
+
+    Uses n_mc=300,000 items (single run). For all pairwise scenarios used here
+    the resulting MC standard error on the true diff is < 0.002, negligible
+    relative to the CI widths under study.
+    """
     rng = np.random.default_rng(seed)
     a, b = generate_pair(rng, n_mc, 1)
     return float(np.mean(a[:, 0] - b[:, 0]))
 
 
-def build_pair_scenarios(suite: str = "standard") -> list[PairScenario]:
-    """Return paired-difference scenarios mirroring prompt/model comparisons."""
+def build_pair_scenarios(
+    suite: str = "standard",
+    icc_values: list[float] | tuple[float, ...] = (0.10, 0.25, 0.40),
+    cohens_d_values: list[float] | tuple[float, ...] = (0.3,),
+    include_null: bool = False,
+) -> list[PairScenario]:
+    """Return paired-difference scenarios parameterised by ICC and Cohen's d.
+
+    Data-generating processes are reparameterised so that the intraclass
+    correlation (ICC = between-input variance / total variance) and the
+    standardised effect size (Cohen's d = delta / total_std) are explicit
+    inputs.  This makes the sweep principled and reviewer-defensible.
+
+    ICC definitions per eval type
+    ──────────────────────────────
+    Binary   : Bernoulli-Beta hierarchical model.  Per-input success probs
+               p_i ~ Beta(conc·p0, conc·(1-p0)), giving ICC = 1/(conc+1).
+    Continuous: Beta base distribution with ICC-derived Gaussian noise.
+               ICC = Var(base) / (Var(base) + 2·noise_std²).
+    Likert   : Latent-normal model.  ICC = base_std² / total_var,
+               total_std fixed at ``_LIKERT_TOTAL_STD`` on the latent scale.
+    Grades   : Same latent-normal structure; total_std = ``_GRADES_TOTAL_STD``.
+
+    Parameters
+    ----------
+    suite : str
+        ``'standard'`` or ``'expanded'``.
+    icc_values : sequence of float
+        ICC values to sweep.  Each value generates a separate batch of
+        scenarios.  Default: (0.10, 0.25, 0.40).
+    cohens_d_values : sequence of float
+        Non-null standardised effect sizes to evaluate.  Default: (0.3,).
+        A null (d=0) variant is automatically prepended when
+        ``include_null=True``.
+    include_null : bool
+        If True, prepend d=0 scenarios for every (eval_type, shape, icc)
+        combination.  These are flagged ``is_null=True`` in ``PairScenario``
+        and are used to measure Type I error rates.
+    """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
 
     scenarios: list[PairScenario] = []
 
-    # Binary 0/1 with paired input difficulty and a fixed uplift for template B.
-    for label, base_p, delta in [
-        ("binary-balanced", 0.5, 0.08),
-        ("binary-high", 0.8, 0.05),
-        ("binary-low", 0.2, 0.05),
-    ]:
-        base_p_, delta_ = base_p, delta
+    icc_list = list(icc_values)
+    d_list = list(cohens_d_values)
+    if include_null:
+        d_list = [0.0] + [d for d in d_list if d > 0.0]
 
-        def _gen_binary(
-            rng: np.random.Generator,
-            n: int,
-            runs: int,
-            _bp: float = base_p_,
-            _d: float = delta_,
-        ) -> tuple[np.ndarray, np.ndarray]:
-            conc = 12.0
-            alpha = _bp * conc
-            beta = (1.0 - _bp) * conc
-            p_a = rng.beta(alpha, beta, size=(n, 1))
-            p_b = np.clip(p_a + _d, 0.0, 1.0)
-            a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
-            b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
-            return a, b
+    # ── Latent-scale standard deviations for Likert / Grades ───────────────
+    # These fix the total marginal std for each score type so that Cohen's d
+    # has a concrete, consistent meaning across ICC levels.
+    _LIKERT_TOTAL_STD = 1.2   # latent scale, maps to {1,...,5} after rounding
+    _GRADES_TOTAL_STD = 20.0  # [0, 100] scale
 
-        scenarios.append(
-            PairScenario(
-                label=label,
-                eval_type="binary",
-                generate_pair=_gen_binary,
-                true_diff=_estimate_true_pair_diff(_gen_binary),
-            )
-        )
-
+    # ── Binary ─────────────────────────────────────────────────────────────
+    # ICC = 1/(conc+1)  ←→  conc = 1/ICC - 1
+    # total_std ≈ sqrt(p0·(1-p0))  (marginal Bernoulli std at base rate p0)
+    # delta = d · total_std  (probability-scale uplift for template B)
+    binary_shapes: list[tuple[str, float]] = [
+        ("binary-balanced", 0.5),
+        ("binary-high", 0.8),
+        ("binary-low", 0.2),
+    ]
     if suite == "expanded":
-        for label, base_p, delta, conc in [
-            ("binary-rare-events", 0.05, 0.03, 7.0),
-            ("binary-near-ceiling", 0.93, 0.02, 10.0),
-        ]:
-            base_p_, delta_, conc_ = base_p, delta, conc
+        binary_shapes += [
+            ("binary-rare", 0.05),
+            ("binary-near-ceil", 0.93),
+        ]
 
-            def _gen_binary_ext(
-                rng: np.random.Generator,
-                n: int,
-                runs: int,
-                _bp: float = base_p_,
-                _d: float = delta_,
-                _c: float = conc_,
-            ) -> tuple[np.ndarray, np.ndarray]:
-                alpha = _bp * _c
-                beta = (1.0 - _bp) * _c
-                p_a = rng.beta(alpha, beta, size=(n, 1))
-                p_b = np.clip(p_a + _d, 0.0, 1.0)
-                a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
-                b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
-                return a, b
+    for icc in icc_list:
+        conc = _binary_conc_from_icc(icc)
+        for shape_label, base_p in binary_shapes:
+            total_std = float(np.sqrt(base_p * (1.0 - base_p)))
+            for d in d_list:
+                delta = d * total_std
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                bp_, delta_, conc_ = base_p, delta, conc
 
-            scenarios.append(
-                PairScenario(
-                    label=label,
-                    eval_type="binary",
-                    generate_pair=_gen_binary_ext,
-                    true_diff=_estimate_true_pair_diff(_gen_binary_ext),
-                )
-            )
+                def _gen_binary(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _bp: float = bp_, _d: float = delta_, _c: float = conc_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    p_a = rng.beta(_bp * _c, (1.0 - _bp) * _c, size=(n, 1))
+                    p_b = np.clip(p_a + _d, 0.0, 1.0)
+                    a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
+                    b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
+                    return a, b
 
-    # Continuous [0,1] with paired latent difficulty + bounded noise.
-    for label, a, b, delta, sigma in [
-        ("continuous-uniform", 1.0, 1.0, 0.06, 0.10),
-        ("continuous-right-skew", 2.0, 8.0, 0.04, 0.08),
-        ("continuous-left-skew", 8.0, 2.0, 0.04, 0.08),
-    ]:
-        a_, b_, delta_, sigma_ = a, b, delta, sigma
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_binary)
+                scenarios.append(PairScenario(
+                    label=label, eval_type="binary",
+                    generate_pair=_gen_binary, true_diff=true_diff,
+                    icc=icc, cohens_d=d, is_null=is_null,
+                ))
 
-        def _gen_continuous(
-            rng: np.random.Generator,
-            n: int,
-            runs: int,
-            _a: float = a_,
-            _b: float = b_,
-            _d: float = delta_,
-            _s: float = sigma_,
-        ) -> tuple[np.ndarray, np.ndarray]:
-            base = rng.beta(_a, _b, size=(n, 1))
-            shared = rng.normal(0.0, _s, size=(n, runs))
-            indiv_a = rng.normal(0.0, _s * 0.5, size=(n, runs))
-            indiv_b = rng.normal(0.0, _s * 0.5, size=(n, runs))
-            a_vals = np.clip(base + shared + indiv_a, 0.0, 1.0)
-            b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 1.0)
-            return a_vals, b_vals
-
-        scenarios.append(
-            PairScenario(
-                label=label,
-                eval_type="continuous",
-                generate_pair=_gen_continuous,
-                true_diff=_estimate_true_pair_diff(_gen_continuous),
-            )
-        )
-
+    # ── Continuous [0, 1] ──────────────────────────────────────────────────
+    # Base distribution shape is Beta(a, b).  Given ICC and Var(base),
+    # per-component Gaussian noise std is derived as:
+    #   ICC = Var(base) / (Var(base) + 2·noise_std²)
+    #   →  noise_std = sqrt(Var(base) · (1/ICC - 1) / 2)
+    # Shared and individual noises both use noise_std (equal split).
+    # total_std ≈ sqrt(Var(base)/ICC)  (pre-clipping approximation).
+    # delta = d · total_std.
+    continuous_shapes: list[tuple[str, float, float]] = [
+        ("cont-uniform", 1.0, 1.0),
+        ("cont-right-skew", 2.0, 8.0),
+        ("cont-left-skew", 8.0, 2.0),
+    ]
     if suite == "expanded":
-        for label, a, b, delta, sigma in [
-            ("continuous-heavy-noise", 2.0, 5.0, 0.03, 0.14),
-            ("continuous-boundary", 0.6, 0.6, 0.02, 0.10),
-        ]:
-            a_, b_, delta_, sigma_ = a, b, delta, sigma
+        continuous_shapes += [
+            ("cont-moderate-skew", 2.0, 5.0),
+            ("cont-boundary", 0.6, 0.6),
+        ]
 
-            def _gen_continuous_ext(
-                rng: np.random.Generator,
-                n: int,
-                runs: int,
-                _a: float = a_,
-                _b: float = b_,
-                _d: float = delta_,
-                _s: float = sigma_,
-            ) -> tuple[np.ndarray, np.ndarray]:
-                base = rng.beta(_a, _b, size=(n, 1))
-                shared = rng.normal(0.0, _s, size=(n, runs))
-                outlier = rng.binomial(1, 0.04, size=(n, runs)) * rng.normal(0.0, 0.25, size=(n, runs))
-                indiv_a = rng.normal(0.0, _s * 0.45, size=(n, runs)) + outlier
-                indiv_b = rng.normal(0.0, _s * 0.45, size=(n, runs)) + outlier
-                a_vals = np.clip(base + shared + indiv_a, 0.0, 1.0)
-                b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 1.0)
-                return a_vals, b_vals
+    for icc in icc_list:
+        for shape_label, a_beta, b_beta in continuous_shapes:
+            var_base = _beta_var(a_beta, b_beta)
+            noise_std = float(np.sqrt(max(var_base * (1.0 / max(icc, 1e-9) - 1.0) / 2.0, 0.0)))
+            total_std = float(np.sqrt(var_base / max(icc, 1e-9)))
+            for d in d_list:
+                delta = d * total_std
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                a_, b_, ns_, delta_ = a_beta, b_beta, noise_std, delta
 
-            scenarios.append(
-                PairScenario(
-                    label=label,
-                    eval_type="continuous",
-                    generate_pair=_gen_continuous_ext,
-                    true_diff=_estimate_true_pair_diff(_gen_continuous_ext),
-                )
-            )
+                def _gen_continuous(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _a: float = a_, _b: float = b_,
+                    _ns: float = ns_, _d: float = delta_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    base = rng.beta(_a, _b, size=(n, 1))
+                    shared = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
+                    a_vals = np.clip(base + shared + indiv_a, 0.0, 1.0)
+                    b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 1.0)
+                    return a_vals, b_vals
 
-    # Likert 1-5 via rounded latent scores.
-    for label, mu, sigma, delta in [
-        ("likert-mid", 3.0, 0.9, 0.35),
-        ("likert-low", 2.2, 0.8, 0.30),
-        ("likert-high", 3.8, 0.8, 0.30),
-    ]:
-        mu_, sigma_, delta_ = mu, sigma, delta
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_continuous)
+                scenarios.append(PairScenario(
+                    label=label, eval_type="continuous",
+                    generate_pair=_gen_continuous, true_diff=true_diff,
+                    icc=icc, cohens_d=d, is_null=is_null,
+                ))
 
-        def _gen_likert(
-            rng: np.random.Generator,
-            n: int,
-            runs: int,
-            _m: float = mu_,
-            _s: float = sigma_,
-            _d: float = delta_,
-        ) -> tuple[np.ndarray, np.ndarray]:
-            base = rng.normal(_m, _s, size=(n, 1))
-            shared = rng.normal(0.0, 0.35, size=(n, runs))
-            indiv_a = rng.normal(0.0, 0.25, size=(n, runs))
-            indiv_b = rng.normal(0.0, 0.25, size=(n, runs))
-            a_vals = np.rint(np.clip(base + shared + indiv_a, 1.0, 5.0))
-            b_vals = np.rint(np.clip(base + _d + shared + indiv_b, 1.0, 5.0))
-            return a_vals, b_vals
-
-        scenarios.append(
-            PairScenario(
-                label=label,
-                eval_type="likert",
-                generate_pair=_gen_likert,
-                true_diff=_estimate_true_pair_diff(_gen_likert),
-            )
-        )
-
+    # ── Likert 1–5 ─────────────────────────────────────────────────────────
+    # Latent-normal model rounded to {1,...,5}.
+    # ICC = base_std² / total_var  with total_var = _LIKERT_TOTAL_STD².
+    # base_std = sqrt(ICC) · _LIKERT_TOTAL_STD
+    # noise_std = sqrt((1-ICC)/2) · _LIKERT_TOTAL_STD  (shared + indiv equal)
+    # delta_latent = d · _LIKERT_TOTAL_STD  (on the latent scale before rounding)
+    likert_shapes: list[tuple[str, float]] = [
+        ("likert-mid", 3.0),
+        ("likert-low", 2.2),
+        ("likert-high", 3.8),
+    ]
     if suite == "expanded":
-        for label, mu, sigma, delta in [
-            ("likert-polarized", 3.0, 1.4, 0.22),
-            ("likert-near-floor", 1.8, 0.7, 0.20),
-        ]:
-            mu_, sigma_, delta_ = mu, sigma, delta
+        likert_shapes += [
+            ("likert-polarized", 3.0),
+            ("likert-floor", 1.8),
+        ]
 
-            def _gen_likert_ext(
-                rng: np.random.Generator,
-                n: int,
-                runs: int,
-                _m: float = mu_,
-                _s: float = sigma_,
-                _d: float = delta_,
-            ) -> tuple[np.ndarray, np.ndarray]:
-                base = rng.normal(_m, _s, size=(n, 1))
-                shared = rng.normal(0.0, 0.45, size=(n, runs))
-                indiv_a = rng.normal(0.0, 0.30, size=(n, runs))
-                indiv_b = rng.normal(0.0, 0.30, size=(n, runs))
-                a_vals = np.rint(np.clip(base + shared + indiv_a, 1.0, 5.0))
-                b_vals = np.rint(np.clip(base + _d + shared + indiv_b, 1.0, 5.0))
-                return a_vals, b_vals
+    for icc in icc_list:
+        base_std_l = float(np.sqrt(icc)) * _LIKERT_TOTAL_STD
+        noise_std_l = float(np.sqrt(max((1.0 - icc) / 2.0, 0.0))) * _LIKERT_TOTAL_STD
+        for shape_label, mu_lat in likert_shapes:
+            for d in d_list:
+                delta = d * _LIKERT_TOTAL_STD
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                m_, bs_, ns_, delta_ = mu_lat, base_std_l, noise_std_l, delta
 
-            scenarios.append(
-                PairScenario(
-                    label=label,
-                    eval_type="likert",
-                    generate_pair=_gen_likert_ext,
-                    true_diff=_estimate_true_pair_diff(_gen_likert_ext),
-                )
-            )
+                def _gen_likert(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _m: float = m_, _bs: float = bs_,
+                    _ns: float = ns_, _d: float = delta_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    base = rng.normal(_m, _bs, size=(n, 1))
+                    shared = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
+                    a_vals = np.rint(np.clip(base + shared + indiv_a, 1.0, 5.0))
+                    b_vals = np.rint(np.clip(base + _d + shared + indiv_b, 1.0, 5.0))
+                    return a_vals, b_vals
 
-    # Grades 0-100 with shared latent ability and bounded noise.
-    for label, mu, sigma, delta in [
-        ("grades-mid", 55.0, 18.0, 4.5),
-        ("grades-low", 35.0, 16.0, 4.0),
-        ("grades-high", 78.0, 14.0, 3.5),
-    ]:
-        mu_, sigma_, delta_ = mu, sigma, delta
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_likert)
+                scenarios.append(PairScenario(
+                    label=label, eval_type="likert",
+                    generate_pair=_gen_likert, true_diff=true_diff,
+                    icc=icc, cohens_d=d, is_null=is_null,
+                ))
 
-        def _gen_grades(
-            rng: np.random.Generator,
-            n: int,
-            runs: int,
-            _m: float = mu_,
-            _s: float = sigma_,
-            _d: float = delta_,
-        ) -> tuple[np.ndarray, np.ndarray]:
-            base = rng.normal(_m, _s, size=(n, 1))
-            shared = rng.normal(0.0, _s * 0.18, size=(n, runs))
-            indiv_a = rng.normal(0.0, _s * 0.12, size=(n, runs))
-            indiv_b = rng.normal(0.0, _s * 0.12, size=(n, runs))
-            a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
-            b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 100.0)
-            return a_vals, b_vals
-
-        scenarios.append(
-            PairScenario(
-                label=label,
-                eval_type="grades",
-                generate_pair=_gen_grades,
-                true_diff=_estimate_true_pair_diff(_gen_grades),
-            )
-        )
-
+    # ── Grades 0–100 ───────────────────────────────────────────────────────
+    # Same latent-normal structure as Likert; total_std = _GRADES_TOTAL_STD.
+    # ICC = base_std² / total_var  with total_var = _GRADES_TOTAL_STD².
+    # delta_grades = d · _GRADES_TOTAL_STD  (on the [0,100] scale).
+    grades_shapes: list[tuple[str, float]] = [
+        ("grades-mid", 55.0),
+        ("grades-low", 35.0),
+        ("grades-high", 78.0),
+    ]
     if suite == "expanded":
-        for label, mu, sigma, delta in [
-            ("grades-heavy-tail", 52.0, 22.0, 3.5),
-            ("grades-ceiling", 86.0, 10.0, 2.8),
-        ]:
-            mu_, sigma_, delta_ = mu, sigma, delta
+        grades_shapes += [
+            ("grades-ceiling", 86.0),
+            ("grades-floor", 20.0),
+        ]
 
-            def _gen_grades_ext(
-                rng: np.random.Generator,
-                n: int,
-                runs: int,
-                _m: float = mu_,
-                _s: float = sigma_,
-                _d: float = delta_,
-            ) -> tuple[np.ndarray, np.ndarray]:
-                base = _m + _s * rng.standard_t(df=4.0, size=(n, 1))
-                shared = rng.normal(0.0, _s * 0.22, size=(n, runs))
-                indiv_a = rng.normal(0.0, _s * 0.12, size=(n, runs))
-                indiv_b = rng.normal(0.0, _s * 0.12, size=(n, runs))
-                a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
-                b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 100.0)
-                return a_vals, b_vals
+    for icc in icc_list:
+        base_std_g = float(np.sqrt(icc)) * _GRADES_TOTAL_STD
+        noise_std_g = float(np.sqrt(max((1.0 - icc) / 2.0, 0.0))) * _GRADES_TOTAL_STD
+        for shape_label, mu_g in grades_shapes:
+            for d in d_list:
+                delta = d * _GRADES_TOTAL_STD
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                m_, bs_, ns_, delta_ = mu_g, base_std_g, noise_std_g, delta
 
-            scenarios.append(
-                PairScenario(
-                    label=label,
-                    eval_type="grades",
-                    generate_pair=_gen_grades_ext,
-                    true_diff=_estimate_true_pair_diff(_gen_grades_ext),
-                )
-            )
+                def _gen_grades(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _m: float = m_, _bs: float = bs_,
+                    _ns: float = ns_, _d: float = delta_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    base = rng.normal(_m, _bs, size=(n, 1))
+                    shared = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
+                    a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
+                    b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 100.0)
+                    return a_vals, b_vals
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_grades)
+                scenarios.append(PairScenario(
+                    label=label, eval_type="grades",
+                    generate_pair=_gen_grades, true_diff=true_diff,
+                    icc=icc, cohens_d=d, is_null=is_null,
+                ))
 
     return scenarios
 
@@ -701,6 +809,7 @@ class SimResult:
     total_width: float  # sum of CI widths across reps
     total_time: float = 0.0     # sum of per-rep CI wall-clock times (seconds)
     total_time_sq: float = 0.0  # sum of squared per-rep times (for SE via Var=E[x²]−E[x]²)
+    is_null: bool = False       # True when the scenario has delta=0 (Type I error measurement)
 
 
 def _stat(values: np.ndarray, statistic: str = "mean") -> float:
@@ -905,6 +1014,272 @@ def _pairwise_ci(
     )
 
 
+# ---------------------------------------------------------------------------
+# Per-cell worker functions
+# Scenarios contain lambda/closure objects that are not picklable, so we store
+# them in a module-level variable that fork-inherited workers can access by
+# index.  Only plain ints/floats/seeds travel through the task queue.
+# ---------------------------------------------------------------------------
+
+_WORKER_SCENARIOS: list = []  # set by run_simulation / run_pairwise_simulation before forking
+
+
+def _run_mean_cell(args: tuple) -> list[SimResult]:
+    """Run all reps for one (scenario, n) cell — mean estimand."""
+    sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, seed = args
+    scenario = _WORKER_SCENARIOS[sc_idx]
+    rng = np.random.default_rng(seed)
+
+    active_methods = METHODS + [T_INTERVAL_METHOD]
+    if scenario.eval_type == "binary":
+        active_methods += [WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
+    elif scenario.eval_type == "continuous":
+        active_methods += CONTINUOUS_EXTRA_METHODS
+
+    covered: dict[str, int] = {m: 0 for m in active_methods}
+    total_w: dict[str, float] = {m: 0.0 for m in active_methods}
+    total_t: dict[str, float] = {m: 0.0 for m in active_methods}
+    total_t_sq: dict[str, float] = {m: 0.0 for m in active_methods}
+
+    for _rep in range(n_reps):
+        values = scenario.generate(rng, n)
+        obs_mean = float(np.mean(values))
+
+        for method in METHODS:
+            _t0 = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    ci_low, ci_high = bootstrap_ci_1d(
+                        values, obs_mean, method=method,
+                        n_bootstrap=n_bootstrap, alpha=alpha, rng=rng,
+                    )
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[method] += _el
+            total_t_sq[method] += _el * _el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[method] += 1
+            total_w[method] += ci_high - ci_low
+
+        _t0 = time.perf_counter()
+        try:
+            ci_low, ci_high = t_interval_ci_1d(values, alpha)
+        except Exception:
+            ci_low = ci_high = obs_mean
+        _el = time.perf_counter() - _t0
+        total_t[T_INTERVAL_METHOD] += _el
+        total_t_sq[T_INTERVAL_METHOD] += _el * _el
+        if ci_low <= scenario.true_mean <= ci_high:
+            covered[T_INTERVAL_METHOD] += 1
+        total_w[T_INTERVAL_METHOD] += ci_high - ci_low
+
+        if scenario.eval_type == "continuous":
+            _continuous_method_fns = {
+                BETA_METHOD: beta_ci_1d,
+                LOGIT_T_METHOD: logit_t_ci_1d,
+                NIG_METHOD: nig_ci_1d,
+                EL_METHOD: el_ci_1d,
+            }
+            for _method, _fn in _continuous_method_fns.items():
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = _fn(values, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[_method] += _el
+                total_t_sq[_method] += _el * _el
+                if ci_low <= scenario.true_mean <= ci_high:
+                    covered[_method] += 1
+                total_w[_method] += ci_high - ci_low
+
+        if scenario.eval_type == "binary":
+            successes = int(np.sum(values))
+
+            _t0 = time.perf_counter()
+            ci_low, ci_high = _wilson_ci(successes, n, alpha)
+            _el = time.perf_counter() - _t0
+            total_t[WILSON_METHOD] += _el
+            total_t_sq[WILSON_METHOD] += _el * _el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[WILSON_METHOD] += 1
+            total_w[WILSON_METHOD] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            ci_low, ci_high = wald_ci_1d(values, alpha)
+            _el = time.perf_counter() - _t0
+            total_t[WALD_METHOD] += _el
+            total_t_sq[WALD_METHOD] += _el * _el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[WALD_METHOD] += 1
+            total_w[WALD_METHOD] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = clopper_pearson_ci_1d(values, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[CP_METHOD] += _el
+            total_t_sq[CP_METHOD] += _el * _el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[CP_METHOD] += 1
+            total_w[CP_METHOD] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_indep_ci(values, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[BAYES_SINGLE_METHOD] += _el
+            total_t_sq[BAYES_SINGLE_METHOD] += _el * _el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[BAYES_SINGLE_METHOD] += 1
+            total_w[BAYES_SINGLE_METHOD] += ci_high - ci_low
+
+    return [
+        SimResult(
+            eval_type=scenario.eval_type,
+            scenario=scenario.label,
+            n=n,
+            method=method,
+            n_reps=n_reps,
+            covered=covered[method],
+            total_width=total_w[method],
+            total_time=total_t[method],
+            total_time_sq=total_t_sq[method],
+        )
+        for method in active_methods
+    ]
+
+
+def _run_pairwise_cell(args: tuple) -> list[SimResult]:
+    """Run all reps for one (scenario, n) cell — pairwise estimand."""
+    sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed = args
+    scenario = _WORKER_SCENARIOS[sc_idx]
+    rng = np.random.default_rng(seed)
+
+    add_newcombe = scenario.eval_type == "binary" and statistic == "mean"
+    add_bayes_binary = scenario.eval_type == "binary" and statistic == "mean"
+    add_pairwise_extras = statistic == "mean" and scenario.eval_type != "binary"
+
+    active_methods = METHODS.copy()
+    if add_pairwise_extras:
+        active_methods.extend(PAIRWISE_EXTRA_METHODS)
+    if add_newcombe:
+        active_methods.append(NEWCOMBE_METHOD)
+    if add_bayes_binary:
+        active_methods.extend([BAYES_PAIR_INDEP_METHOD, BAYES_PAIR_PAIRED_METHOD])
+
+    covered: dict[str, int] = {m: 0 for m in active_methods}
+    total_w: dict[str, float] = {m: 0.0 for m in active_methods}
+    total_t: dict[str, float] = {m: 0.0 for m in active_methods}
+    total_t_sq: dict[str, float] = {m: 0.0 for m in active_methods}
+
+    for _rep in range(n_reps):
+        a, b = scenario.generate_pair(rng, n, runs)
+
+        for method in METHODS:
+            _t0 = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    ci_low, ci_high = _pairwise_ci(
+                        a, b, method=method,
+                        n_bootstrap=n_bootstrap, alpha=alpha, rng=rng, statistic=statistic,
+                    )
+            except Exception:
+                obs = _stat(a.mean(axis=1) - b.mean(axis=1), statistic=statistic)
+                ci_low = ci_high = obs
+            _el = time.perf_counter() - _t0
+            total_t[method] += _el
+            total_t_sq[method] += _el * _el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[method] += 1
+            total_w[method] += ci_high - ci_low
+
+        if add_pairwise_extras:
+            pair_diffs = a.mean(axis=1) - b.mean(axis=1)
+            obs = float(np.mean(pair_diffs))
+            for method in PAIRWISE_EXTRA_METHODS:
+                _t0 = time.perf_counter()
+                try:
+                    if method == T_INTERVAL_METHOD:
+                        ci_low, ci_high = t_interval_ci_1d(pair_diffs, alpha)
+                    elif method == NIG_METHOD:
+                        ci_low, ci_high = nig_ci_1d(pair_diffs, alpha)
+                    else:
+                        ci_low, ci_high = el_ci_1d(pair_diffs, alpha)
+                except Exception:
+                    ci_low = ci_high = obs
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                if ci_low <= scenario.true_diff <= ci_high:
+                    covered[method] += 1
+                total_w[method] += ci_high - ci_low
+
+        if add_newcombe:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _newcombe_paired_score_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                obs = float(np.mean(a[:, 0] - b[:, 0]))
+                ci_low = ci_high = obs
+            _el = time.perf_counter() - _t0
+            total_t[NEWCOMBE_METHOD] += _el
+            total_t_sq[NEWCOMBE_METHOD] += _el * _el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[NEWCOMBE_METHOD] += 1
+            total_w[NEWCOMBE_METHOD] += ci_high - ci_low
+
+        if add_bayes_binary:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_indep_comp_ci(a[:, 0], b[:, 0], alpha, bayes_n, rng)
+            except Exception:
+                obs = float(np.mean(a[:, 0] - b[:, 0]))
+                ci_low = ci_high = obs
+            _el = time.perf_counter() - _t0
+            total_t[BAYES_PAIR_INDEP_METHOD] += _el
+            total_t_sq[BAYES_PAIR_INDEP_METHOD] += _el * _el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[BAYES_PAIR_INDEP_METHOD] += 1
+            total_w[BAYES_PAIR_INDEP_METHOD] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_paired_comp_ci(a[:, 0], b[:, 0], alpha, bayes_n, rng)
+            except Exception:
+                obs = float(np.mean(a[:, 0] - b[:, 0]))
+                ci_low = ci_high = obs
+            _el = time.perf_counter() - _t0
+            total_t[BAYES_PAIR_PAIRED_METHOD] += _el
+            total_t_sq[BAYES_PAIR_PAIRED_METHOD] += _el * _el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[BAYES_PAIR_PAIRED_METHOD] += 1
+            total_w[BAYES_PAIR_PAIRED_METHOD] += ci_high - ci_low
+
+    return [
+        SimResult(
+            eval_type=scenario.eval_type,
+            scenario=scenario.label,
+            n=n,
+            method=method,
+            n_reps=n_reps,
+            covered=covered[method],
+            total_width=total_w[method],
+            total_time=total_t[method],
+            total_time_sq=total_t_sq[method],
+            is_null=scenario.is_null,
+        )
+        for method in active_methods
+    ]
+
+
 def run_simulation(
     scenarios: list[Scenario],
     sample_sizes: list[int],
@@ -914,132 +1289,35 @@ def run_simulation(
     alpha: float,
     progress_mode: str = "bar",
     seed: int = 42,
+    n_workers: int = 1,
 ) -> list[SimResult]:
-    rng = np.random.default_rng(seed)
+    global _WORKER_SCENARIOS
+    _WORKER_SCENARIOS = scenarios  # inherited by forked workers
+
+    ss = np.random.SeedSequence(seed)
+    idx_size_pairs = list(itertools.product(range(len(scenarios)), sample_sizes))
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(idx_size_pairs))]
+    args_list = [
+        (sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, child_seeds[i])
+        for i, (sc_idx, n) in enumerate(idx_size_pairs)
+    ]
+    total_cells = len(args_list)
+    reporter = _ProgressReporter(total_cells, mode=progress_mode, label="mean")
     results: list[SimResult] = []
 
-    total_cells = len(scenarios) * len(sample_sizes)
-    total_steps = total_cells * n_reps
-    step = 0
-    reporter = _ProgressReporter(total_steps, mode=progress_mode, label="mean")
+    if n_workers == 1:
+        for i, args in enumerate(args_list):
+            results.extend(_run_mean_cell(args))
+            sc = scenarios[args[0]]
+            reporter.update(i + 1, detail=f"{sc.eval_type} {sc.label} n={args[1]}")
+    else:
+        ctx = mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_mean_cell, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1, detail=f"cells done: {i + 1}/{total_cells}")
 
-    for scenario in scenarios:
-        for n in sample_sizes:
-            active_methods = METHODS + [T_INTERVAL_METHOD]
-            if scenario.eval_type == "binary":
-                active_methods += [WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
-
-            covered: dict[str, int] = {m: 0 for m in active_methods}
-            total_w: dict[str, float] = {m: 0.0 for m in active_methods}
-            total_t: dict[str, float] = {m: 0.0 for m in active_methods}
-            total_t_sq: dict[str, float] = {m: 0.0 for m in active_methods}
-
-            for _rep in range(n_reps):
-                values = scenario.generate(rng, n)
-                obs_mean = float(np.mean(values))
-
-                step += 1
-                reporter.update(
-                    step,
-                    detail=f"{scenario.eval_type} {scenario.label} n={n}",
-                )
-
-                for method in METHODS:
-                    _t0 = time.perf_counter()
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            ci_low, ci_high = bootstrap_ci_1d(
-                                values,
-                                obs_mean,
-                                method=method,
-                                n_bootstrap=n_bootstrap,
-                                alpha=alpha,
-                                rng=rng,
-                            )
-                    except Exception:
-                        ci_low = ci_high = obs_mean
-                    _el = time.perf_counter() - _t0
-                    total_t[method] += _el
-                    total_t_sq[method] += _el * _el
-
-                    if ci_low <= scenario.true_mean <= ci_high:
-                        covered[method] += 1
-                    total_w[method] += ci_high - ci_low
-
-                _t0 = time.perf_counter()
-                try:
-                    ci_low, ci_high = t_interval_ci_1d(values, alpha)
-                except Exception:
-                    ci_low = ci_high = obs_mean
-                _el = time.perf_counter() - _t0
-                total_t[T_INTERVAL_METHOD] += _el
-                total_t_sq[T_INTERVAL_METHOD] += _el * _el
-                if ci_low <= scenario.true_mean <= ci_high:
-                    covered[T_INTERVAL_METHOD] += 1
-                total_w[T_INTERVAL_METHOD] += ci_high - ci_low
-
-                if scenario.eval_type == "binary":
-                    successes = int(np.sum(values))
-
-                    _t0 = time.perf_counter()
-                    ci_low, ci_high = _wilson_ci(successes, n, alpha)
-                    _el = time.perf_counter() - _t0
-                    total_t[WILSON_METHOD] += _el
-                    total_t_sq[WILSON_METHOD] += _el * _el
-                    if ci_low <= scenario.true_mean <= ci_high:
-                        covered[WILSON_METHOD] += 1
-                    total_w[WILSON_METHOD] += ci_high - ci_low
-
-                    _t0 = time.perf_counter()
-                    ci_low, ci_high = wald_ci_1d(values, alpha)
-                    _el = time.perf_counter() - _t0
-                    total_t[WALD_METHOD] += _el
-                    total_t_sq[WALD_METHOD] += _el * _el
-                    if ci_low <= scenario.true_mean <= ci_high:
-                        covered[WALD_METHOD] += 1
-                    total_w[WALD_METHOD] += ci_high - ci_low
-
-                    _t0 = time.perf_counter()
-                    try:
-                        ci_low, ci_high = clopper_pearson_ci_1d(values, alpha)
-                    except Exception:
-                        ci_low = ci_high = obs_mean
-                    _el = time.perf_counter() - _t0
-                    total_t[CP_METHOD] += _el
-                    total_t_sq[CP_METHOD] += _el * _el
-                    if ci_low <= scenario.true_mean <= ci_high:
-                        covered[CP_METHOD] += 1
-                    total_w[CP_METHOD] += ci_high - ci_low
-
-                    _t0 = time.perf_counter()
-                    try:
-                        ci_low, ci_high = _bayes_indep_ci(values, alpha)
-                    except Exception:
-                        ci_low = ci_high = obs_mean
-                    _el = time.perf_counter() - _t0
-                    total_t[BAYES_SINGLE_METHOD] += _el
-                    total_t_sq[BAYES_SINGLE_METHOD] += _el * _el
-                    if ci_low <= scenario.true_mean <= ci_high:
-                        covered[BAYES_SINGLE_METHOD] += 1
-                    total_w[BAYES_SINGLE_METHOD] += ci_high - ci_low
-
-            for method in active_methods:
-                results.append(
-                    SimResult(
-                        eval_type=scenario.eval_type,
-                        scenario=scenario.label,
-                        n=n,
-                        method=method,
-                        n_reps=n_reps,
-                        covered=covered[method],
-                        total_width=total_w[method],
-                        total_time=total_t[method],
-                        total_time_sq=total_t_sq[method],
-                    )
-                )
-
-    reporter.update(total_steps, detail="done")
+    reporter.update(total_cells, detail="done")
     return results
 
 
@@ -1054,130 +1332,42 @@ def run_pairwise_simulation(
     statistic: str,
     progress_mode: str = "bar",
     seed: int = 42,
+    n_workers: int = 1,
 ) -> list[SimResult]:
-    rng = np.random.default_rng(seed)
+    global _WORKER_SCENARIOS
+    _WORKER_SCENARIOS = scenarios  # inherited by forked workers
+
+    if runs > 1 and statistic == "mean" and any(sc.eval_type == "binary" for sc in scenarios):
+        print(
+            "\nNote: binary pairwise-only methods "
+            "(newcombe_score, bayes_indep_comp, bayes_paired_comp) "
+            "use run index 0 when runs>1."
+        )
+
+    ss = np.random.SeedSequence(seed)
+    idx_size_pairs = list(itertools.product(range(len(scenarios)), sample_sizes))
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(idx_size_pairs))]
+    args_list = [
+        (sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, child_seeds[i])
+        for i, (sc_idx, n) in enumerate(idx_size_pairs)
+    ]
+    total_cells = len(args_list)
+    reporter = _ProgressReporter(total_cells, mode=progress_mode, label="pairwise")
     results: list[SimResult] = []
 
-    total_cells = len(scenarios) * len(sample_sizes)
-    total_steps = total_cells * n_reps
-    step = 0
-    reporter = _ProgressReporter(total_steps, mode=progress_mode, label="pairwise")
-    warned_binary_first_run = False
+    if n_workers == 1:
+        for i, args in enumerate(args_list):
+            results.extend(_run_pairwise_cell(args))
+            sc = scenarios[args[0]]
+            reporter.update(i + 1, detail=f"{sc.eval_type} {sc.label} n={args[1]}")
+    else:
+        ctx = mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_pairwise_cell, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1, detail=f"cells done: {i + 1}/{total_cells}")
 
-    for scenario in scenarios:
-        for n in sample_sizes:
-            covered: dict[str, int] = {m: 0 for m in METHODS}
-            total_w: dict[str, float] = {m: 0.0 for m in METHODS}
-            add_newcombe = scenario.eval_type == "binary" and statistic == "mean"
-            add_bayes_binary = scenario.eval_type == "binary" and statistic == "mean"
-            if add_newcombe:
-                covered[NEWCOMBE_METHOD] = 0
-                total_w[NEWCOMBE_METHOD] = 0.0
-            if add_bayes_binary:
-                covered[BAYES_PAIR_INDEP_METHOD] = 0
-                total_w[BAYES_PAIR_INDEP_METHOD] = 0.0
-                covered[BAYES_PAIR_PAIRED_METHOD] = 0
-                total_w[BAYES_PAIR_PAIRED_METHOD] = 0.0
-
-            if runs > 1 and add_newcombe and not warned_binary_first_run:
-                print(
-                    "\nNote: binary pairwise-only methods "
-                    "(newcombe_score, bayes_indep_comp, bayes_paired_comp) "
-                    "use run index 0 when runs>1."
-                )
-                warned_binary_first_run = True
-
-            for _rep in range(n_reps):
-                a, b = scenario.generate_pair(rng, n, runs)
-
-                step += 1
-                reporter.update(
-                    step,
-                    detail=f"{scenario.eval_type} {scenario.label} n={n}",
-                )
-
-                for method in METHODS:
-                    try:
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            ci_low, ci_high = _pairwise_ci(
-                                a,
-                                b,
-                                method=method,
-                                n_bootstrap=n_bootstrap,
-                                alpha=alpha,
-                                rng=rng,
-                                statistic=statistic,
-                            )
-                    except Exception:
-                        obs = _stat(a.mean(axis=1) - b.mean(axis=1), statistic=statistic)
-                        ci_low = ci_high = obs
-
-                    if ci_low <= scenario.true_diff <= ci_high:
-                        covered[method] += 1
-                    total_w[method] += ci_high - ci_low
-
-                if add_newcombe:
-                    try:
-                        ci_low, ci_high = _newcombe_paired_score_ci(a[:, 0], b[:, 0], alpha)
-                    except Exception:
-                        obs = float(np.mean(a[:, 0] - b[:, 0]))
-                        ci_low = ci_high = obs
-
-                    if ci_low <= scenario.true_diff <= ci_high:
-                        covered[NEWCOMBE_METHOD] += 1
-                    total_w[NEWCOMBE_METHOD] += ci_high - ci_low
-
-                if add_bayes_binary:
-                    try:
-                        ci_low, ci_high = _bayes_indep_comp_ci(
-                            a[:, 0],
-                            b[:, 0],
-                            alpha,
-                            bayes_n,
-                            rng,
-                        )
-                    except Exception:
-                        obs = float(np.mean(a[:, 0] - b[:, 0]))
-                        ci_low = ci_high = obs
-                    if ci_low <= scenario.true_diff <= ci_high:
-                        covered[BAYES_PAIR_INDEP_METHOD] += 1
-                    total_w[BAYES_PAIR_INDEP_METHOD] += ci_high - ci_low
-
-                    try:
-                        ci_low, ci_high = _bayes_paired_comp_ci(
-                            a[:, 0],
-                            b[:, 0],
-                            alpha,
-                            bayes_n,
-                            rng,
-                        )
-                    except Exception:
-                        obs = float(np.mean(a[:, 0] - b[:, 0]))
-                        ci_low = ci_high = obs
-                    if ci_low <= scenario.true_diff <= ci_high:
-                        covered[BAYES_PAIR_PAIRED_METHOD] += 1
-                    total_w[BAYES_PAIR_PAIRED_METHOD] += ci_high - ci_low
-
-            active_methods = METHODS.copy()
-            if add_newcombe:
-                active_methods.append(NEWCOMBE_METHOD)
-            if add_bayes_binary:
-                active_methods.extend([BAYES_PAIR_INDEP_METHOD, BAYES_PAIR_PAIRED_METHOD])
-            for method in active_methods:
-                results.append(
-                    SimResult(
-                        eval_type=scenario.eval_type,
-                        scenario=scenario.label,
-                        n=n,
-                        method=method,
-                        n_reps=n_reps,
-                        covered=covered[method],
-                        total_width=total_w[method],
-                    )
-                )
-
-    reporter.update(total_steps, detail="done")
+    reporter.update(total_cells, detail="done")
     return results
 
 
@@ -1273,6 +1463,8 @@ def print_report(
     per_sc: dict[tuple, tuple[float, float]] = {}  # (et, sc, method, n)
 
     for r in results:
+        if r.is_null:
+            continue  # null scenarios reported separately in Type I error section
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         agg[(r.eval_type, r.method, r.n)].append((cov, width))
@@ -1416,6 +1608,46 @@ def print_report(
                 dev = mean_cov(et, m, n) - target
                 row += "  {:>9}".format("─") if np.isnan(dev) else f"  {dev:>+9.3f}"
             print(row)
+
+    # ----------------------------------------------------------------
+    # Type I error (null scenarios only, delta = 0)
+    # ----------------------------------------------------------------
+    null_results = [r for r in results if r.is_null]
+    if null_results:
+        print(f"\n{'─'*72}")
+        print("  TYPE I ERROR RATE  (null scenarios: delta = 0)")
+        print(f"  Empirical P(CI excludes 0) — target = alpha = {alpha:.2f}")
+        print(f"  Values near {alpha:.2f} indicate correct calibration under the null.")
+        print(f"{'─'*72}")
+
+        null_agg: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
+        for r in null_results:
+            c_prev, t_prev = null_agg[(r.eval_type, r.method, r.n)]
+            null_agg[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
+
+        present_null_methods = {r.method for r in null_results}
+        null_method_labels = [m for m in method_labels if m in present_null_methods]
+
+        for et in EVAL_TYPES:
+            et_null = [(et, m, n) for m in null_method_labels for n in sample_sizes
+                       if null_agg.get((et, m, n), (0, 0))[1] > 0]
+            if not et_null:
+                continue
+            print(f"\n  {et}  (type I error = 1 − null coverage; target ≈ {alpha:.2f})")
+            hdr = f"    {'Method':<20}" + "".join(f"  {nl:>9}" for nl in n_labels)
+            print(hdr)
+            print(f"    {'─'*20}" + "─" * (11 * len(n_labels)))
+            for m in null_method_labels:
+                row = f"    {m:<20}"
+                for n in sample_sizes:
+                    c_tot, t_tot = null_agg.get((et, m, n), (0, 0))
+                    if t_tot <= 0:
+                        row += f"  {'─':>9}"
+                    else:
+                        t1e = 1.0 - c_tot / t_tot
+                        marker = "▼" if t1e > alpha + 0.04 else ("▲" if t1e < alpha - 0.04 else " ")
+                        row += f"  {t1e:>8.3f}{marker}"
+                print(row)
 
     # ----------------------------------------------------------------
     # Overall summary across everything
@@ -1679,6 +1911,10 @@ _METHOD_COLORS: dict[str, str] = {
     "newcombe_score":     "#aec7e8",
     "bayes_indep_comp":   "#ffbb78",
     "bayes_paired_comp":  "#98df8a",
+    "beta":               "#f0027f",
+    "logit_t":            "#a6761d",
+    "nig":                "#888888",
+    "el":                 "#00441b",
 }
 _N_MARKERS = ["o", "s", "^", "D", "v", "p", "h", "*"]
 
@@ -1699,19 +1935,24 @@ def save_cost_plot(
     target = 1.0 - alpha
     present_methods = {r.method for r in results}
     method_labels = [m for m in REPORT_METHODS if m in present_methods]
+    eval_types = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
     sample_sizes = sorted({r.n for r in results})
 
-    nrows = len(EVAL_TYPES)
+    nrows = len(eval_types)
     fig, axes = plt.subplots(
         nrows=nrows, ncols=1,
-        figsize=(11.5, 4.5 * nrows),
+        figsize=(11.0, 4.5 * nrows),
         squeeze=False,
         gridspec_kw={"hspace": 0.45},
     )
 
-    size_marker = {n: _N_MARKERS[i % len(_N_MARKERS)] for i, n in enumerate(sample_sizes)}
+    # Indices of sample sizes to annotate with "n=X" labels (first, middle, last)
+    def _label_indices(ns: list[int]) -> set[int]:
+        if len(ns) <= 2:
+            return set(range(len(ns)))
+        return {0, len(ns) // 2, len(ns) - 1}
 
-    for row_idx, et in enumerate(EVAL_TYPES):
+    for row_idx, et in enumerate(eval_types):
         ax = axes[row_idx][0]
         et_results = [r for r in results if r.eval_type == et]
 
@@ -1720,15 +1961,15 @@ def save_cost_plot(
         ax.axhline(target, color="black", linewidth=1.1, linestyle="--", zorder=1)
 
         legend_method_handles = []
-        legend_n_handles = []
-        n_handles_seen: set[int] = set()
 
         for m in method_labels:
             color = _METHOD_COLORS.get(m, "#333333")
             m_results = [r for r in et_results if r.method == m]
             if not m_results:
                 continue
-            method_plotted = False
+
+            # Collect valid (n, avg_ms, cov, xerr) points, sorted by n
+            points: list[tuple[int, float, float, float]] = []
             for n in sample_sizes:
                 subset = [r for r in m_results if r.n == n]
                 if not subset:
@@ -1737,29 +1978,46 @@ def save_cost_plot(
                 if not np.isfinite(avg_ms) or avg_ms <= 0:
                     continue
                 cov = float(np.mean([r.covered / r.n_reps for r in subset]))
-                marker = size_marker[n]
-                xerr = 1.96 * se_ms
+                points.append((n, avg_ms, cov, 1.96 * se_ms))
 
-                ax.errorbar(
-                    avg_ms, cov,
-                    xerr=xerr,
-                    fmt=marker, color=color,
-                    markersize=7, markeredgewidth=0.8, markeredgecolor="white",
-                    elinewidth=1.0, capsize=3, capthick=1.0,
-                    alpha=0.88, zorder=3,
-                )
-                if not method_plotted:
-                    legend_method_handles.append(
-                        plt.Line2D([0], [0], marker="o", color="w",
-                                   markerfacecolor=color, markersize=8, label=m)
+            if not points:
+                continue
+
+            xs = [p[1] for p in points]
+            ys = [p[2] for p in points]
+
+            # Draw connecting line, then error-bar markers on top
+            ax.plot(xs, ys, color=color, linewidth=1.1, alpha=0.55, zorder=2)
+            ax.errorbar(
+                xs, ys,
+                xerr=[p[3] for p in points],
+                fmt="o", color=color,
+                markersize=6, markeredgewidth=0.7, markeredgecolor="white",
+                elinewidth=0.9, capsize=2.5, capthick=0.9,
+                alpha=0.90, zorder=3,
+            )
+
+            # Sparse n= labels: first, middle, last point only
+            label_idxs = _label_indices(points)
+            for i, (n, x, y, _) in enumerate(points):
+                if i in label_idxs:
+                    ax.annotate(
+                        f"n={n}",
+                        xy=(x, y),
+                        xytext=(0, 4),
+                        textcoords="offset points",
+                        fontsize=6.5,
+                        ha="center",
+                        va="bottom",
+                        color=color,
+                        alpha=0.85,
                     )
-                    method_plotted = True
-                if n not in n_handles_seen:
-                    legend_n_handles.append(
-                        plt.Line2D([0], [0], marker=marker, color="w",
-                                   markerfacecolor="#555555", markersize=8, label=f"n={n}")
-                    )
-                    n_handles_seen.add(n)
+
+            legend_method_handles.append(
+                plt.Line2D([0], [0], marker="o", color=color,
+                           markerfacecolor=color, markersize=7, label=m,
+                           linewidth=1.5)
+            )
 
         ax.set_xscale("log")
         ax.set_xlabel("Mean CI time (ms) — log scale  [error bars: ±1.96 SE]", fontsize=9.5)
@@ -1773,29 +2031,17 @@ def save_cost_plot(
         if not et_results:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
 
-        leg1 = ax.legend(
+        ax.legend(
             handles=legend_method_handles,
             title="Method",
-            loc="upper left",
-            bbox_to_anchor=(1.02, 1.0),
+            loc="center left",
+            bbox_to_anchor=(1.02, 0.5),
             borderaxespad=0.0,
             fontsize=7.5,
             title_fontsize=8,
             framealpha=0.85,
             ncol=1,
         )
-        ax.add_artist(leg1)
-        if legend_n_handles:
-            ax.legend(
-                handles=legend_n_handles,
-                title="Sample size",
-                loc="lower left",
-                bbox_to_anchor=(1.02, 0.0),
-                borderaxespad=0.0,
-                fontsize=7.5,
-                title_fontsize=8,
-                framealpha=0.85,
-            )
 
     fig.suptitle(
         f"Cost × Coverage Trade-off\n"
@@ -2165,7 +2411,11 @@ def _run_benchmark(
     save_results: str,
     out_dir: str,
     plots_dir: str,
+    icc_values: list[float] = (0.10, 0.25, 0.40),
+    cohens_d_values: list[float] = (0.3,),
+    include_null: bool = False,
     label: str | None = None,
+    n_workers: int = 1,
 ) -> None:
     if label:
         print(f"\n{'=' * 72}")
@@ -2178,12 +2428,16 @@ def _run_benchmark(
     if estimand == "pairwise":
         print(f"  Runs per input  : {runs}")
         print(f"  Statistic       : {statistic}")
+        print(f"  ICC values      : {list(icc_values)}")
+        print(f"  Cohen's d       : {list(cohens_d_values)}")
+        print(f"  Include null    : {include_null}")
     print(f"  Reps per cell   : {reps}")
     print(f"  Bootstrap draws : {bootstrap_n}")
     print(f"  Bayes samples   : {bayes_n}")
     print(f"  Alpha / CI level: {alpha} / {(1 - alpha):.0%}")
     print(f"  Sample sizes    : {sizes}")
     print(f"  Seed            : {seed}")
+    print(f"  Workers         : {n_workers}")
     print(f"  Progress mode   : {progress_mode}")
     print(f"  Plots           : {plot_mode}")
     print(f"  Save results    : {save_results}")
@@ -2195,7 +2449,12 @@ def _run_benchmark(
     if estimand == "mean":
         scenarios = build_scenarios(suite=scenario_suite)
     else:
-        scenarios = build_pair_scenarios(suite=scenario_suite)
+        scenarios = build_pair_scenarios(
+            suite=scenario_suite,
+            icc_values=list(icc_values),
+            cohens_d_values=list(cohens_d_values),
+            include_null=include_null,
+        )
 
     n_by_type = {et: sum(1 for s in scenarios if s.eval_type == et) for et in EVAL_TYPES}
     print(
@@ -2223,12 +2482,14 @@ def _run_benchmark(
             alpha=alpha,
             progress_mode=progress_mode,
             seed=seed,
+            n_workers=n_workers,
         )
         estimand_label = "template mean"
     else:
         binary_cells = n_by_type["binary"] * len(sizes)
         newcombe_calls = binary_cells * reps if statistic == "mean" else 0
         bayes_pair_calls = 2 * binary_cells * reps if statistic == "mean" else 0
+        pairwise_method_count = len(METHODS) + (len(PAIRWISE_EXTRA_METHODS) if statistic == "mean" else 0)
         extra = (
             f", plus {newcombe_calls:,} Newcombe calls and {bayes_pair_calls:,} Bayesian pairwise calls "
             f"(binary, statistic=mean)"
@@ -2236,7 +2497,7 @@ def _run_benchmark(
             else ""
         )
         print(
-            f"\nRunning {cells} cells × {reps} reps × {len(METHODS)} methods "
+            f"\nRunning {cells} cells × {reps} reps × {pairwise_method_count} methods "
             f"= {bootstrap_calls:,} CI calls{extra} …"
         )
         results = run_pairwise_simulation(
@@ -2250,6 +2511,7 @@ def _run_benchmark(
             statistic=statistic,
             progress_mode=progress_mode,
             seed=seed,
+            n_workers=n_workers,
         )
         estimand_label = f"paired template difference ({statistic}, runs={runs})"
 
@@ -2467,6 +2729,64 @@ def main() -> None:
         default=42,
         help="Global RNG seed (default: 42)",
     )
+    parser.add_argument(
+        "--icc-values",
+        type=float,
+        nargs="+",
+        default=[0.10, 0.25, 0.40],
+        metavar="ICC",
+        help=(
+            "Intraclass correlation values for pairwise scenarios. "
+            "ICC = between-input variance / total variance. "
+            "Each value generates a separate scenario batch. "
+            "(default: 0.10 0.25 0.40)"
+        ),
+    )
+    parser.add_argument(
+        "--cohens-d-values",
+        type=float,
+        nargs="+",
+        default=[0.3],
+        metavar="D",
+        help=(
+            "Standardised effect sizes (Cohen's d = delta/total_std) for "
+            "pairwise scenarios. Null (d=0) is added automatically when "
+            "--include-null is set. (default: 0.3)"
+        ),
+    )
+    parser.add_argument(
+        "--include-null",
+        action="store_true",
+        default=False,
+        help=(
+            "Add delta=0 (null) pairwise scenarios for Type I error measurement. "
+            "Null results are shown in a separate section of the report."
+        ),
+    )
+    parser.add_argument(
+        "--alpha-sweep",
+        type=float,
+        nargs="+",
+        default=None,
+        metavar="A",
+        help=(
+            "Run the full benchmark at each of these alpha levels in sequence. "
+            "Overrides --alpha for the official test and non-interactive runs. "
+            "E.g.: --alpha-sweep 0.05 0.10"
+        ),
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=os.cpu_count() or 1,
+        metavar="N",
+        help=(
+            "Number of parallel worker processes for the simulation. "
+            "Each (scenario, n) cell runs independently in its own process. "
+            f"Default: all logical CPUs ({os.cpu_count()}). "
+            "Use --workers 1 for sequential execution."
+        ),
+    )
     args = parser.parse_args()
     plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
 
@@ -2480,66 +2800,91 @@ def main() -> None:
         if args.official_test_pairwise_only:
             print("Pairwise-only mode enabled: skipping single-sample phase.")
 
-        # This will run sizes starting from 10, since some methods are very unstable 
-        # at n=5 for the pairwise estimand, and we are assuming the eval sample size is 
-        # at least N=10 (making decisions based on statistics over n=5 is not really that meaningful). 
+        # Sizes start from 10: decisions based on n=5 are rarely meaningful
+        # in practice, and some methods are numerically unstable at n=5.
+        official_sizes = [10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+        official_icc   = [0.05, 0.15, 0.30, 0.50]
+        official_d     = [0.2, 0.4]
+        official_alphas = [0.01, 0.05]
+
         if args.official_test:
+            for phase_alpha in official_alphas:
+                _run_benchmark(
+                    estimand="mean",
+                    runs=1,
+                    statistic="mean",
+                    reps=2000,
+                    bootstrap_n=10000,
+                    bayes_n=10000,
+                    alpha=phase_alpha,
+                    sizes=official_sizes,
+                    seed=args.seed,
+                    scenario_suite="expanded",
+                    progress_mode=args.progress,
+                    plot_mode=args.plots,
+                    save_results=args.save_results,
+                    out_dir=args.out_dir,
+                    plots_dir=plots_dir,
+                    n_workers=args.workers,
+                    label=(
+                        f"OFFICIAL TEST · Single-sample mean estimand · "
+                        f"alpha={phase_alpha}"
+                    ),
+                )
+
+        for phase_idx, phase_alpha in enumerate(official_alphas):
             _run_benchmark(
-                estimand="mean",
+                estimand="pairwise",
                 runs=1,
                 statistic="mean",
                 reps=2000,
                 bootstrap_n=10000,
                 bayes_n=10000,
-                alpha=0.05,
-                sizes=[10, 20, 30, 50, 100, 200],
-                seed=args.seed,
+                alpha=phase_alpha,
+                sizes=official_sizes,
+                seed=args.seed + 1 + phase_idx,
                 scenario_suite="expanded",
+                icc_values=official_icc,
+                cohens_d_values=official_d,
+                include_null=True,
                 progress_mode=args.progress,
                 plot_mode=args.plots,
                 save_results=args.save_results,
                 out_dir=args.out_dir,
                 plots_dir=plots_dir,
-                label="OFFICIAL TEST · Phase 1/2 · Single-sample mean estimand",
+                n_workers=args.workers,
+                label=(
+                    f"OFFICIAL TEST · Pairwise estimand · "
+                    f"ICC sweep {official_icc} · d sweep {official_d} · "
+                    f"alpha={phase_alpha}"
+                ),
             )
+        return
 
+    # Non-official: respect --alpha-sweep if provided, otherwise use --alpha
+    alpha_list = args.alpha_sweep if args.alpha_sweep else [args.alpha]
+    for run_alpha in alpha_list:
         _run_benchmark(
-            estimand="pairwise",
-            runs=1,
-            statistic="mean",
-            reps=2000,
-            bootstrap_n=10000,
-            bayes_n=10000,
-            alpha=0.05,
-            sizes=[10, 20, 30, 50, 100, 200],
-            seed=args.seed + 1,
-            scenario_suite="expanded",
+            estimand=args.estimand,
+            runs=args.runs,
+            statistic=args.statistic,
+            reps=args.reps,
+            bootstrap_n=args.bootstrap_n,
+            bayes_n=args.bayes_n,
+            alpha=run_alpha,
+            sizes=args.sizes,
+            seed=args.seed,
+            scenario_suite=args.scenario_suite,
+            icc_values=args.icc_values,
+            cohens_d_values=args.cohens_d_values,
+            include_null=args.include_null,
             progress_mode=args.progress,
             plot_mode=args.plots,
             save_results=args.save_results,
             out_dir=args.out_dir,
             plots_dir=plots_dir,
-            label="OFFICIAL TEST · Phase 2/2 · Pairwise estimand (nested runs)",
+            n_workers=args.workers,
         )
-        return
-
-    _run_benchmark(
-        estimand=args.estimand,
-        runs=args.runs,
-        statistic=args.statistic,
-        reps=args.reps,
-        bootstrap_n=args.bootstrap_n,
-        bayes_n=args.bayes_n,
-        alpha=args.alpha,
-        sizes=args.sizes,
-        seed=args.seed,
-        scenario_suite=args.scenario_suite,
-        progress_mode=args.progress,
-        plot_mode=args.plots,
-        save_results=args.save_results,
-        out_dir=args.out_dir,
-        plots_dir=plots_dir,
-    )
 
 
 if __name__ == "__main__":

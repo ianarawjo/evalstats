@@ -9,10 +9,10 @@
             These recommendations are implemented as the 
             <code>method="auto"</code> defaults in <code>evalstats</code>, 
             which adapt to data type and sample size based on which methods performed best in our simulations.
-            Note that the contents of this section are subject to change as gather more evidence for different situations.
+            Note that the contents of this section are subject to change as we gather more evidence for different situations.
         </p>
 
-        <h3>Methods to Compute Confidence Intervals (By Data Type)</h3>
+        <h3>Recommended Methods to Compute Confidence Intervals (By Data Type)</h3>
         <div class="rec-list">
         <div class="rec-item">
             <div class="rec-icon">
@@ -27,10 +27,11 @@
             </div>
             <div class="rec-body">
             <div class="rec-card-when">Binary (0 / 1)</div>
-            <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Bootstrap (N≥100)</div>
+            <div class="rec-card-method">Wilson score interval / Bayesian paired (N&lt;100) / Bootstrap (N≥100)</div>
             <div class="rec-card-detail">
-            Wilson score interval for point estimate CIs.
-            For pairwise binary comparisons, use Bayesian paired from <a href="https://github.com/sambowyer/bayes_evals" target="_blank"><code>bayes_evals</code></a> only below N=100;
+            Wilson score interval for point estimate CIs is the fastest and tighest method with exact-on-target coverage for binary data. It is the default for binary single-sample CIs in <code>evalstats</code>,
+            as it performed robustly on all our simulations, including on real benchmark data. 
+            For pairwise binary comparisons, we use Bayesian paired from <a href="https://github.com/sambowyer/bayes_evals" target="_blank"><code>bayes_evals</code></a> only below N=100;
             switch to bootstrap at N=100 and above for safety and CI multi-comparisons correction (simultaneous CIs) with the studentized maxT method. (Warning:
             around N≈200+, the paired method in <code>bayes_evals</code> collapses, hence the switch.)
             </div>
@@ -38,7 +39,7 @@
         </div>
         <div class="rec-item">
             <div class="rec-icon">
-            <!-- Numeric: smooth density curve -->
+            <!-- Continuous 0-1: smooth density curve -->
             <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
                 <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
                 <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
@@ -48,19 +49,41 @@
             </svg>
             </div>
             <div class="rec-body">
-            <div class="rec-card-when">Numeric (floats, integers, Likert, grades)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
+            <div class="rec-card-when">Continuous scores in [0, 1] (e.g. accuracy, ROUGE, similarity)</div>
+            <div class="rec-card-method">Normal-Inverse-Gamma (NIG) Bayesian credible interval</div>
             <div class="rec-card-detail">
-            Smooth bootstrap with a Guassian KDE had the highest coverage rate across all CI methods tested
-            at small N sample sizes for numeric data. Smooth bootstrap acts like regular bootstrap, but 
-            <a href="https://towardsdatascience.com/the-math-behind-kernel-density-estimation-5deca75cba38/" target="_blank">adds Gaussian noise to each data point</a>—it treats each data point as a little fuzzy instead of exact.
-            It handled continuous (0–1 floats), discrete (Likert / integer), and bounded or skewed (grades, 0–100) data more gracefully
-            and robustly than other methods we tested, and it is slightly conservative, which is preferred in
-            LLM eval contexts since we can't trust our eval sets are all that representative, either. 
-            At larger N, regular bootstrap is more efficient and more on-target, 
-            and also supports simultaneous CIs for multi-comparisons correction. (Here, Scott's rule is used to set the bandwidth of the Gaussian kernel—this is more conservative than Silverman's rule, 
-            and makes an assumption of normality for the noise, but its conservativeness is preferred according to our principles,
-            and our simulations suggest it performs well in practice.)
+            For scores that are naturally bounded in [0,&thinsp;1], a Normal-Inverse-Gamma (NIG) conjugate prior
+            on (μ,&thinsp;σ²) outperforms all bootstrap methods in our simulations, achieving near-exact though slightly conservative coverage
+            while producing narrower intervals than smooth bootstrap.
+            The default prior is weakly informative: it encodes the knowledge that scores live in [0,&thinsp;1]
+            (prior mean 0.5, worth roughly one pseudo-observation) and is extremely fast compared to resampling-based methods.
+            <code>method="auto"</code> routes here whenever all observed scores satisfy 0&thinsp;≤&thinsp;x&thinsp;≤&thinsp;1
+            and the data is not strictly binary.
+            </div>
+            </div>
+        </div>
+        <div class="rec-item">
+            <div class="rec-icon">
+            <!-- Unbounded numeric: ruler/axis icon -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+                <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+                <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+                <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+            </div>
+            <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Bootstrap-t (N&lt;60) / Student's t-interval (N≥60)</div>
+            <div class="rec-card-detail">
+            For scores that can fall outside [0,&thinsp;1] (e.g. Likert 1–5, grades 0–100, or any arbitrary
+            numeric metric), <code>method="auto"</code> uses the <strong>bootstrap-t</strong>
+            (studentized bootstrap) at small N and the <strong>Student's t-interval</strong> at N&thinsp;≥&thinsp;60.
+            Bootstrap-t achieves second-order accuracy by inverting the studentized pivot rather than raw
+            quantiles, giving substantially better coverage than plain percentile bootstrap at small samples.
+            At N&thinsp;≥&thinsp;60 the CLT-based t-interval achieves great coverage and is instantaneous to compute.
             </div>
             </div>
         </div>
@@ -86,9 +109,15 @@
             </tr>
             <tr>
                 <td>Single-sample CI on mean score</td>
-                <td>Numeric/Interval</td>
-                <td><strong>Smooth bootstrap (Gaussian KDE)</strong></td>
-                <td>Conservative; most reliable at small N</td>
+                <td>Continuous [0,&thinsp;1]</td>
+                <td><strong>Normal-Inverse-Gamma (NIG) Bayesian credible interval</strong></td>
+                <td>Near-exact coverage; analytically fast; no resampling needed</td>
+            </tr>
+            <tr>
+                <td>Single-sample CI on mean score</td>
+                <td>Unbounded numeric (Likert, grades, etc.)</td>
+                <td><strong>Bootstrap-t (N&lt;60) / Student's t-interval (N≥60)</strong></td>
+                <td>Second-order accuracy at small N; t-interval is near-perfect and instant at N≥60</td>
             </tr>
             <tr>
                 <td>Pairwise comparison (A vs B)</td>
@@ -165,7 +194,7 @@
         <h3>Sample Size Guidance</h3>
         <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
         <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
-        <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals begin to become reliable.</p>
+        <p><strong>N ≥ 30:</strong> CIs and point estimates of true performance begin to become more reliable.</p>
     </section>
 
     <section id="simultaneous-cis">
@@ -390,12 +419,12 @@
           Averaged across conditions, paired Bayes looks excellent (0.952), but this hides a critical failure mode:
           around N≈200 and above, the <code>bayes_evals</code> paired method can collapse into dramatically
           overconfident intervals. So the practical recommendation is conditional: use Bayesian paired only
-          at smaller sample sizes, then switch to regular bootstrap around N=100. Among bootstrap methods, Smooth bootstrap
-          remains the most conservative and best-calibrated general option, while BCa under-covers most severely (0.902).
-          Smooth boostrap's performance for binary data is especially impressive given that 
-          it is not designed for that data type and technically "wrong" to run it there, as one
-          cannot add Gaussian noise to binary data without straying outside the data range. But 
-          it still achives reasonable performance at N=30 and above. 
+          at smaller sample sizes, then switch to regular bootstrap around N=100. Among bootstrap methods, smooth bootstrap
+          remains the most conservative and best-calibrated general option for <em>pairwise comparisons</em>,
+          while BCa under-covers most severely (0.902).
+          Note: this simulation covers the earlier method set. For <strong>single-sample marginal CIs</strong>,
+          newer targeted methods (NIG for [0,&thinsp;1] data; bootstrap-t / t-interval for unbounded data)
+          now supersede smooth bootstrap — see the recommendations above.
         </p>
       </div>
 
@@ -427,14 +456,18 @@
           For binary pairwise comparisons, use <strong>Bayesian paired</strong> only when <strong>N &lt; 100</strong>,
           then switch to <strong>Newcombe</strong> at <strong>N &ge; 100</strong> for speed and better accuracy.
           Around N≈200+, the <code>bayes_evals</code> paired method can become dangerously overconfident.
-          <strong>Smooth bootstrap</strong> remains the strongest frequentist alternative across mixed data types.
-          For numeric/interval scores, smooth bootstrap remains the practical winner.
+          For <strong>pairwise comparisons on numeric data</strong>, smooth bootstrap remains the strongest frequentist option
+          in this simulation.
+          For <strong>single-sample marginal CIs on numeric data</strong>, the picture has changed since this simulation:
+          <strong>NIG</strong> is now recommended for continuous [0,&thinsp;1] scores, and
+          <strong>bootstrap-t / t-interval</strong> for unbounded numeric data — both outperform smooth bootstrap
+          in targeted simulations (see <a href="which-method.html#recommendations">Recommendations</a> above).
 
-          Thus, while Bayesian methods can perform well for binary data, 
-          they are not universally superior to frequentist methods (at least in these comparisons), and 
-          their advantages may not extend to non-binary data types common in LLM evals. We 
-          call on statistics experts to extend our simulation code and meta-analyses to further 
-          clarify the conditions under which Bayesian methods outperform frequentist alternatives, 
+          Thus, while Bayesian methods can perform well for binary data,
+          they are not universally superior to frequentist methods (at least in these comparisons), and
+          their advantages may not extend to non-binary data types common in LLM evals. We
+          call on statistics experts to extend our simulation code and meta-analyses to further
+          clarify the conditions under which Bayesian methods outperform frequentist alternatives,
           and to identify any scenarios where they may underperform.
         </p>
       </div>
