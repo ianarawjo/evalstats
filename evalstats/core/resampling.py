@@ -237,6 +237,47 @@ def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, floa
     return clopper_pearson_ci(successes, n, alpha)
 
 
+def jeffreys_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
+    """Jeffreys interval for a binomial proportion.
+
+    Uses the equal-tailed posterior interval under the Jeffreys prior
+    ``Beta(1/2, 1/2)``:
+
+    ``lo = Beta^{-1}(alpha/2; k+1/2, n-k+1/2)``
+    ``hi = Beta^{-1}(1-alpha/2; k+1/2, n-k+1/2)``
+
+    This interval is often better calibrated than Wald near boundaries while
+    remaining less conservative than Clopper-Pearson.
+
+    Parameters
+    ----------
+    successes : int
+        Number of successes (k).
+    n : int
+        Total number of trials.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval in [0, 1]. Returns (0.0, 1.0) when n <= 0.
+    """
+    if n <= 0:
+        return (0.0, 1.0)
+    k = int(successes)
+    lo = float(stats.beta.ppf(alpha / 2.0, k + 0.5, n - k + 0.5))
+    hi = float(stats.beta.ppf(1.0 - alpha / 2.0, k + 0.5, n - k + 0.5))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def jeffreys_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Jeffreys interval for a 1-D binary (0/1) array."""
+    n = len(values)
+    successes = int(np.sum(values))
+    return jeffreys_ci(successes, n, alpha)
+
+
 def t_interval_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     """Student's t confidence interval for the mean of a 1-D array.
 

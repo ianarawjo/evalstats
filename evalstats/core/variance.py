@@ -214,7 +214,8 @@ def robustness_metrics(
         ``'median'``.
     marginal_method : str, optional
         Bootstrap method for marginal CIs: ``'smooth_bootstrap'`` (default),
-        ``'bootstrap'``, ``'bca'``, ``'bayes_bootstrap'``, or ``'wilson'``.
+        ``'bootstrap'``, ``'bca'``, ``'bayes_bootstrap'``, ``'wilson'``,
+        or ``'jeffreys'``.
 
     Returns
     -------
@@ -257,7 +258,7 @@ def robustness_metrics(
 
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
-    _analytical = {"wilson", "nig", "t_interval"}
+    _analytical = {"wilson", "jeffreys", "nig", "t_interval"}
     if n_bootstrap is not None or marginal_method in _analytical:
         if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
@@ -267,6 +268,7 @@ def robustness_metrics(
             smooth_bootstrap_means_1d,
             bca_interval_1d,
             wilson_ci_1d,
+            jeffreys_ci_1d,
             nig_ci_1d,
             t_interval_ci_1d,
             bootstrap_t_ci_1d,
@@ -278,6 +280,8 @@ def robustness_metrics(
             point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
             if marginal_method == "wilson":
                 lo, hi = wilson_ci_1d(row, alpha)
+            elif marginal_method == "jeffreys":
+                lo, hi = jeffreys_ci_1d(row, alpha)
             elif marginal_method == "nig":
                 lo, hi = nig_ci_1d(row, alpha)
             elif marginal_method == "t_interval":

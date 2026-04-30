@@ -23,6 +23,8 @@ from evalstats.core.resampling import (
     is_binary_scores,
     wilson_ci,
     wilson_ci_1d,
+    jeffreys_ci,
+    jeffreys_ci_1d,
     newcombe_paired_ci,
     tango_paired_ci,
 )
@@ -107,6 +109,29 @@ def test_wilson_ci_1d_matches_wilson_ci():
 
     lo1, hi1 = wilson_ci_1d(values, alpha)
     lo2, hi2 = wilson_ci(successes, n, alpha)
+    assert lo1 == lo2
+    assert hi1 == hi2
+
+
+def test_jeffreys_ci_matches_scipy_reference_grid():
+    alpha = 0.05
+    for n in [1, 2, 5, 10, 20, 50]:
+        for k in range(n + 1):
+            lo, hi = jeffreys_ci(k, n, alpha=alpha)
+            expected_lo = float(stats.beta.ppf(alpha / 2.0, k + 0.5, n - k + 0.5))
+            expected_hi = float(stats.beta.ppf(1.0 - alpha / 2.0, k + 0.5, n - k + 0.5))
+            np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
+            np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
+
+
+def test_jeffreys_ci_1d_matches_jeffreys_ci():
+    values = np.array([1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+    successes = int(values.sum())
+    n = len(values)
+    alpha = 0.05
+
+    lo1, hi1 = jeffreys_ci_1d(values, alpha)
+    lo2, hi2 = jeffreys_ci(successes, n, alpha)
     assert lo1 == lo2
     assert hi1 == hi2
 
@@ -396,6 +421,29 @@ def test_robustness_metrics_wilson_reference_template_mean_is_raw_mean():
     )
     idx_a = result.labels.index("A")
     assert result.mean[idx_a] == pytest.approx(float(np.mean(scores[0])))
+
+
+def test_robustness_metrics_jeffreys_binary_ci():
+    rng = np.random.default_rng(12)
+    n_templates = 3
+    m_inputs = 30
+    scores = np.zeros((n_templates, m_inputs))
+    for i in range(n_templates):
+        scores[i] = rng.binomial(1, 0.45 + 0.1 * i, m_inputs)
+
+    result = robustness_metrics(
+        scores, ["A", "B", "C"],
+        n_bootstrap=500,
+        rng=np.random.default_rng(12),
+        alpha=0.05,
+        statistic="mean",
+        marginal_method="jeffreys",
+    )
+    assert result.ci_low is not None
+    assert result.ci_high is not None
+    assert len(result.mean) == 3
+    assert np.all(result.ci_low <= result.mean)
+    assert np.all(result.mean <= result.ci_high)
 
 
 def test_single_template_wilson_ci_short_circuit():

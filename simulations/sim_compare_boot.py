@@ -12,6 +12,7 @@ Methods:
   smooth_bootstrap Smoothed (KDE-perturbed) bootstrap
   bootstrap_t      Studentized (bootstrap-t) bootstrap
     wilson           Wilson score CI for single-sample binary means
+    jeffreys        Jeffreys interval for single-sample binary means
     newcombe_score   Newcombe score CI for paired binary differences
     tango_score      Tango score CI for paired binary differences
     bayes_indep      Beta-conjugate Bayesian interval for binary means
@@ -93,6 +94,7 @@ with warnings.catch_warnings():
         resolve_resampling_method,
         wald_ci_1d,
         clopper_pearson_ci_1d,
+        jeffreys_ci_1d,
         t_interval_ci_1d,
         beta_ci_1d,
         logit_t_ci_1d,
@@ -108,6 +110,7 @@ with warnings.catch_warnings():
 
 METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]
 WILSON_METHOD = "wilson"
+JEFFREYS_METHOD = "jeffreys"
 NEWCOMBE_METHOD = "newcombe_score"
 TANGO_METHOD = "tango_score"
 BAYES_SINGLE_METHOD = "bayes_indep"
@@ -126,6 +129,7 @@ PAIRWISE_EXTRA_METHODS = [T_INTERVAL_METHOD, NIG_METHOD, EL_METHOD]
 REPORT_METHODS = METHODS + [
     T_INTERVAL_METHOD,
     WILSON_METHOD,
+    JEFFREYS_METHOD,
     NEWCOMBE_METHOD,
     TANGO_METHOD,
     WALD_METHOD,
@@ -1036,7 +1040,7 @@ def _run_mean_cell(args: tuple) -> list[SimResult]:
 
     active_methods = METHODS + [T_INTERVAL_METHOD]
     if scenario.eval_type == "binary":
-        active_methods += [WILSON_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
+        active_methods += [WILSON_METHOD, JEFFREYS_METHOD, WALD_METHOD, CP_METHOD, BAYES_SINGLE_METHOD]
     elif scenario.eval_type == "continuous":
         active_methods += CONTINUOUS_EXTRA_METHODS
 
@@ -1110,6 +1114,18 @@ def _run_mean_cell(args: tuple) -> list[SimResult]:
             if ci_low <= scenario.true_mean <= ci_high:
                 covered[WILSON_METHOD] += 1
             total_w[WILSON_METHOD] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = jeffreys_ci_1d(values, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[JEFFREYS_METHOD] += _el
+            total_t_sq[JEFFREYS_METHOD] += _el * _el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[JEFFREYS_METHOD] += 1
+            total_w[JEFFREYS_METHOD] += ci_high - ci_low
 
             _t0 = time.perf_counter()
             ci_low, ci_high = wald_ci_1d(values, alpha)
@@ -1470,6 +1486,7 @@ def print_report(
     estimand_label: str,
 ) -> None:
     target = 1.0 - alpha
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
     n_labels = [f"n={n}" for n in sample_sizes]
     present_methods = {r.method for r in results}
     method_labels = [m for m in REPORT_METHODS if m in present_methods]
@@ -1516,7 +1533,7 @@ def print_report(
     # ----------------------------------------------------------------
     # Per-eval-type tables
     # ----------------------------------------------------------------
-    for et in EVAL_TYPES:
+    for et in eval_types_present:
         print(f"\n{'─'*72}")
         print(f"  {et.upper()}")
         print(f"{'─'*72}")
@@ -1618,7 +1635,7 @@ def print_report(
     print(f"  Computed across all scenarios within each eval type.")
     print(f"{'─'*72}")
 
-    for et in EVAL_TYPES:
+    for et in eval_types_present:
         print(f"\n  {et}")
         hdr = f"    {'Method':<20}" + "".join(f"  {nl:>9}" for nl in n_labels)
         print(hdr)
@@ -1649,7 +1666,7 @@ def print_report(
         present_null_methods = {r.method for r in null_results}
         null_method_labels = [m for m in method_labels if m in present_null_methods]
 
-        for et in EVAL_TYPES:
+        for et in eval_types_present:
             et_null = [(et, m, n) for m in null_method_labels for n in sample_sizes
                        if null_agg.get((et, m, n), (0, 0))[1] > 0]
             if not et_null:
@@ -1710,7 +1727,7 @@ def print_report(
     print("  ★ = cheapest adequate method (coverage ≥ target−0.04) at that N.")
     print(f"{'─'*72}")
 
-    for et in EVAL_TYPES:
+    for et in eval_types_present:
         et_results = [r for r in results if r.eval_type == et]
         if not et_results:
             continue
@@ -1926,6 +1943,7 @@ _METHOD_COLORS: dict[str, str] = {
     "bootstrap_t":        "#d62728",
     "t_interval":         "#8c564b",
     "wilson":             "#e377c2",
+    "jeffreys":           "#e9cd14",
     "wald":               "#7f7f7f",
     "clopper_pearson":    "#bcbd22",
     "bayes_indep":        "#17becf",
@@ -1956,10 +1974,9 @@ def save_cost_plot(
     target = 1.0 - alpha
     present_methods = {r.method for r in results}
     method_labels = [m for m in REPORT_METHODS if m in present_methods]
-    eval_types = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
     sample_sizes = sorted({r.n for r in results})
 
-    nrows = len(eval_types)
+    nrows = len(EVAL_TYPES)
     fig, axes = plt.subplots(
         nrows=nrows, ncols=1,
         figsize=(11.0, 4.5 * nrows),
@@ -1973,7 +1990,7 @@ def save_cost_plot(
             return set(range(len(ns)))
         return {0, len(ns) // 2, len(ns) - 1}
 
-    for row_idx, et in enumerate(eval_types):
+    for row_idx, et in enumerate(EVAL_TYPES):
         ax = axes[row_idx][0]
         et_results = [r for r in results if r.eval_type == et]
 
@@ -2052,17 +2069,18 @@ def save_cost_plot(
         if not et_results:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
 
-        ax.legend(
-            handles=legend_method_handles,
-            title="Method",
-            loc="center left",
-            bbox_to_anchor=(1.02, 0.5),
-            borderaxespad=0.0,
-            fontsize=7.5,
-            title_fontsize=8,
-            framealpha=0.85,
-            ncol=1,
-        )
+        if legend_method_handles:
+            ax.legend(
+                handles=legend_method_handles,
+                title="Method",
+                loc="center left",
+                bbox_to_anchor=(1.02, 0.5),
+                borderaxespad=0.0,
+                fontsize=7.5,
+                title_fontsize=8,
+                framealpha=0.85,
+                ncol=1,
+            )
 
     fig.suptitle(
         f"Cost × Coverage Trade-off\n"
@@ -2127,23 +2145,28 @@ def save_coverage_vs_n_plot(
         )
     )
 
-    eval_types_present = [et for et in EVAL_TYPES if et in agg["eval_type"].values]
-    if not eval_types_present:
-        print(f"Skipped coverage-vs-n plot (no eval types): {out_path}")
-        return
-
     palette = {m: _METHOD_COLORS.get(m, "#333333") for m in method_labels}
 
     fig, axes = plt.subplots(
-        1, len(eval_types_present),
-        figsize=(5.5 * len(eval_types_present), 5),
+        1, len(EVAL_TYPES),
+        figsize=(5.5 * len(EVAL_TYPES), 5),
         squeeze=False,
     )
 
-    for col_idx, et in enumerate(eval_types_present):
+    for col_idx, et in enumerate(EVAL_TYPES):
         ax = axes[0][col_idx]
         et_agg = agg[agg["eval_type"] == et].copy()
         et_methods = [m for m in method_labels if m in et_agg["method"].values]
+
+        if et_agg.empty:
+            ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2)
+            ax.set_xticks(sample_sizes)
+            ax.set_xticklabels([str(n) for n in sample_sizes])
+            ax.set_xlabel("Sample size (n)")
+            ax.set_ylabel("Empirical coverage" if col_idx == 0 else "")
+            ax.set_title(et.upper())
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+            continue
 
         sns.lineplot(
             data=et_agg,
@@ -2192,7 +2215,8 @@ def save_coverage_vs_n_plot(
         ax.set_xlabel("Sample size (n)")
         ax.set_ylabel("Empirical coverage" if col_idx == 0 else "")
         ax.set_title(et.upper())
-        ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
+        if et_methods:
+            ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
 
     fig.suptitle(
         f"Coverage vs. Sample Size\n"
@@ -2253,23 +2277,27 @@ def save_width_vs_n_plot(
         )
     )
 
-    eval_types_present = [et for et in EVAL_TYPES if et in agg["eval_type"].values]
-    if not eval_types_present:
-        print(f"Skipped width-vs-n plot (no eval types): {out_path}")
-        return
-
     palette = {m: _METHOD_COLORS.get(m, "#333333") for m in method_labels}
 
     fig, axes = plt.subplots(
-        1, len(eval_types_present),
-        figsize=(5.5 * len(eval_types_present), 5),
+        1, len(EVAL_TYPES),
+        figsize=(5.5 * len(EVAL_TYPES), 5),
         squeeze=False,
     )
 
-    for col_idx, et in enumerate(eval_types_present):
+    for col_idx, et in enumerate(EVAL_TYPES):
         ax = axes[0][col_idx]
         et_agg = agg[agg["eval_type"] == et].copy()
         et_methods = [m for m in method_labels if m in et_agg["method"].values]
+
+        if et_agg.empty:
+            ax.set_xticks(sample_sizes)
+            ax.set_xticklabels([str(n) for n in sample_sizes])
+            ax.set_xlabel("Sample size (n)")
+            ax.set_ylabel("Mean CI width" if col_idx == 0 else "")
+            ax.set_title(et.upper())
+            ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+            continue
 
         sns.lineplot(
             data=et_agg,
@@ -2317,7 +2345,8 @@ def save_width_vs_n_plot(
         ax.set_xlabel("Sample size (n)")
         ax.set_ylabel("Mean CI width" if col_idx == 0 else "")
         ax.set_title(et.upper())
-        ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
+        if et_methods:
+            ax.legend(title="Method", fontsize=7.5, title_fontsize=8)
 
     fig.suptitle(
         f"CI Width vs. Sample Size\n"
@@ -2432,6 +2461,7 @@ def _run_benchmark(
     save_results: str,
     out_dir: str,
     plots_dir: str,
+    eval_types: list[str] | None = None,
     icc_values: list[float] = (0.10, 0.25, 0.40),
     cohens_d_values: list[float] = (0.3,),
     include_null: bool = False,
@@ -2446,6 +2476,10 @@ def _run_benchmark(
     print(f"\nBootstrap CI Simulation")
     print(f"  Estimand        : {estimand}")
     print(f"  Scenario suite  : {scenario_suite}")
+    if eval_types:
+        print(f"  Eval types      : {eval_types}")
+    else:
+        print(f"  Eval types      : all ({EVAL_TYPES})")
     if estimand == "pairwise":
         print(f"  Runs per input  : {runs}")
         print(f"  Statistic       : {statistic}")
@@ -2476,6 +2510,14 @@ def _run_benchmark(
             cohens_d_values=list(cohens_d_values),
             include_null=include_null,
         )
+
+    if eval_types:
+        requested_eval_types = set(eval_types)
+        scenarios = [s for s in scenarios if s.eval_type in requested_eval_types]
+        if not scenarios:
+            raise ValueError(
+                f"No scenarios left after filtering eval types {sorted(requested_eval_types)}."
+            )
 
     n_by_type = {et: sum(1 for s in scenarios if s.eval_type == et) for et in EVAL_TYPES}
     print(
@@ -2639,6 +2681,18 @@ def main() -> None:
         choices=SCENARIO_SUITES,
         default="expanded",
         help="Scenario breadth to run (default: expanded)",
+    )
+    parser.add_argument(
+        "--eval-types",
+        nargs="+",
+        choices=EVAL_TYPES,
+        default=None,
+        metavar="TYPE",
+        help=(
+            "Restrict simulation to specific eval types. "
+            f"Choices: {' '.join(EVAL_TYPES)}. "
+            "Default: all types."
+        ),
     )
     parser.add_argument(
         "--official-test",
@@ -2846,6 +2900,7 @@ def main() -> None:
                     save_results=args.save_results,
                     out_dir=args.out_dir,
                     plots_dir=plots_dir,
+                    eval_types=args.eval_types,
                     n_workers=args.workers,
                     label=(
                         f"OFFICIAL TEST · Single-sample mean estimand · "
@@ -2873,6 +2928,7 @@ def main() -> None:
                 save_results=args.save_results,
                 out_dir=args.out_dir,
                 plots_dir=plots_dir,
+                eval_types=args.eval_types,
                 n_workers=args.workers,
                 label=(
                     f"OFFICIAL TEST · Pairwise estimand · "
@@ -2904,6 +2960,7 @@ def main() -> None:
             save_results=args.save_results,
             out_dir=args.out_dir,
             plots_dir=plots_dir,
+            eval_types=args.eval_types,
             n_workers=args.workers,
         )
 
