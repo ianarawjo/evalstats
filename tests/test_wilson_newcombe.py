@@ -1,8 +1,9 @@
-"""Tests for Wilson and Newcombe score intervals for binary eval data.
+"""Tests for Wilson, Newcombe, and Tango score intervals for binary eval data.
 
 Covers:
   - wilson_ci / wilson_ci_1d in resampling.py
   - newcombe_paired_ci in resampling.py
+    - tango_paired_ci in resampling.py
   - _mcnemar_p in paired.py
   - pairwise_differences with method='wilson'
     - robustness_metrics with marginal_method='wilson'
@@ -23,6 +24,7 @@ from evalstats.core.resampling import (
     wilson_ci,
     wilson_ci_1d,
     newcombe_paired_ci,
+    tango_paired_ci,
 )
 from evalstats.core.paired import (
     _mcnemar_p,
@@ -168,6 +170,32 @@ def test_newcombe_paired_ci_raises_for_non_1d_inputs():
         newcombe_paired_ci(a, b, alpha=0.05)
 
 
+def test_tango_paired_ci_matches_closed_form():
+    # Build a deterministic paired table with n10=8, n01=3 out of n=40.
+    a, b = _make_pairs_from_counts(n10=8, n01=3, n11=14, n00=15)
+    alpha = 0.05
+    lo, hi = tango_paired_ci(a, b, alpha)
+
+    n = len(a)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    d_hat = (8 - 3) / n
+    denom = 1.0 + z2 / n
+    radicand = (11 / (n * n)) - ((8 - 3) ** 2) / (n**3) + z2 / (4.0 * n * n)
+    expected_lo = d_hat / denom - (z / denom) * np.sqrt(radicand)
+    expected_hi = d_hat / denom + (z / denom) * np.sqrt(radicand)
+
+    np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
+    np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
+
+
+def test_tango_paired_ci_raises_for_shape_mismatch():
+    a = np.array([1.0, 0.0, 1.0])
+    b = np.array([1.0, 0.0])
+    with pytest.raises(ValueError, match="equal shape"):
+        tango_paired_ci(a, b, alpha=0.05)
+
+
 # ---------------------------------------------------------------------------
 # _mcnemar_p
 # ---------------------------------------------------------------------------
@@ -266,6 +294,29 @@ def test_pairwise_differences_newcombe_seeded_falls_back_to_smooth():
     )
     # Should use smooth bootstrap, not newcombe
     assert "newcombe" not in result.test_method
+    assert "smooth" in result.test_method
+
+
+def test_pairwise_differences_tango_uses_tango():
+    rng = np.random.default_rng(17)
+    scores = np.zeros((2, 40))
+    scores[0] = rng.binomial(1, 0.8, 40)
+    scores[1] = rng.binomial(1, 0.5, 40)
+
+    result = pairwise_differences(scores, 0, 1, "A", "B", method="tango", ci=0.95)
+    assert result.test_method == "tango (mcnemar p-value)"
+    assert result.ci_low <= result.point_diff <= result.ci_high
+    assert 0.0 <= result.p_value <= 1.0
+
+
+def test_pairwise_differences_tango_seeded_falls_back_to_smooth():
+    rng = np.random.default_rng(19)
+    scores = rng.binomial(1, 0.7, size=(2, 20, 5)).astype(float)
+    result = pairwise_differences(
+        scores, 0, 1, "A", "B", method="tango", ci=0.95,
+        rng=np.random.default_rng(19),
+    )
+    assert "tango" not in result.test_method
     assert "smooth" in result.test_method
 
 
@@ -480,6 +531,20 @@ def test_analyze_explicit_fisher_exact_uses_fisher_path():
     assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
+def test_analyze_explicit_tango_uses_tango_path():
+    rng = np.random.default_rng(322)
+    scores = np.zeros((2, 80))
+    scores[0] = rng.binomial(1, 0.68, 80)
+    scores[1] = rng.binomial(1, 0.48, 80)
+
+    result_obj = _make_benchmark(scores, ["low", "high"])
+    bundle = analyze(result_obj, method="tango", rng=np.random.default_rng(322))
+
+    pair = bundle.pairwise.get("low", "high")
+    assert "tango" in pair.test_method
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+
+
 def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     rng = np.random.default_rng(88)
     n_templates = 2
@@ -500,7 +565,7 @@ def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     assert "bayes binary" in pair.test_method
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "tango", "fisher_exact"])
 def test_analyze_explicit_wilson_newcombe_raise_on_non_binary(method: str):
     rng = np.random.default_rng(314)
     scores = rng.uniform(0.0, 1.0, size=(2, 30))

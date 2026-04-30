@@ -29,6 +29,7 @@ from .resampling import (
     bootstrap_means_1d,
     resolve_resampling_method,
     newcombe_paired_ci,
+    tango_paired_ci,
     bayes_paired_diff_ci,
     is_binary_scores,
     _stat,
@@ -487,7 +488,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -510,7 +511,9 @@ def pairwise_differences(
         Statistical method: ``'auto'`` (default), ``'bootstrap'``, ``'bca'``,
         ``'bayes_bootstrap'`` (Bayesian bootstrap), ``'smooth_bootstrap'``
         (smoothed bootstrap via Gaussian KDE), ``'newcombe'`` for paired
-        binary (0/1) data using Newcombe CI + exact McNemar p-value, or
+        binary (0/1) data using Newcombe CI + exact McNemar p-value,
+        ``'tango'`` for paired binary (0/1) data using Tango score CI +
+        exact McNemar p-value, or
         ``'fisher_exact'`` for paired binary (0/1) data using Newcombe CI
         + two-sided Fisher's exact p-value on the 2×2 contingency table, or
         ``'bayes_binary'`` for paired binary (0/1) data using the
@@ -661,6 +664,30 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name="newcombe (mcnemar p-value)",
+            values_a=values_a,
+            values_b=values_b,
+        )
+
+    if method == "tango":
+        # When R >= 3 the cell means are proportions, not binary values.
+        # Fall back to smooth bootstrap for the seeded nested path.
+        if scores.ndim == 3 and scores.shape[2] >= 3:
+            return _seeded_fallback("smooth_bootstrap")
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
+        alpha_val = 1.0 - ci
+        ci_low, ci_high = tango_paired_ci(values_a, values_b, alpha_val)
+        p_value = _mcnemar_p(values_a, values_b)
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_name="tango (mcnemar p-value)",
             values_a=values_a,
             values_b=values_b,
         )
@@ -1005,7 +1032,7 @@ def _max_stat_simultaneous_cis(
         ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'auto'``
         (treated as ``'smooth_bootstrap'``), ``'permutation'``,
         ``'sign_test'``.  Methods that do not use bootstrap resampling
-        for CIs (``'newcombe'``, ``'fisher_exact'``, ``'bayes_binary'``,
+        for CIs (``'newcombe'``, ``'tango'``, ``'fisher_exact'``, ``'bayes_binary'``,
         ``'lmm'``) are not supported; an empty dict is returned for these.
     ci : float
         Desired simultaneous confidence level (e.g. 0.95).
@@ -1246,7 +1273,7 @@ def _bonferroni_simultaneous_cis(
     ``per_input_diffs`` already stored in each :class:`PairedDiffResult`.
     This makes the result independent of the original CI method, so it
     works as a universal fallback for non-bootstrap methods such as
-    ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``.
+    ``'newcombe'``, ``'tango'``, ``'fisher_exact'``, and ``'bayes_binary'``.
 
     Returns
     -------
@@ -1305,7 +1332,7 @@ def _simultaneous_cis_router(
     (:func:`_max_stat_simultaneous_cis`) when the chosen test *method* is
     bootstrap-compatible.  Falls back to Bonferroni t-intervals
     (:func:`_bonferroni_simultaneous_cis`) for analytical methods such as
-    ``'newcombe'``, ``'fisher_exact'``, and ``'bayes_binary'``, and also
+    ``'newcombe'``, ``'tango'``, ``'fisher_exact'``, and ``'bayes_binary'``, and also
     as a safety net if the bootstrap path returns an empty result.
 
     Returns
@@ -1338,7 +1365,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
@@ -1381,7 +1408,7 @@ def all_pairwise(
           the joint distribution of ``max_{(i,j)} |T_ij^b|`` accounts for
           the correlation between comparisons.  Less conservative than
           Bonferroni and widely used in genomics for situations with many correlated tests. 
-        * **Analytical methods** (``'newcombe'``, ``'fisher_exact'``,
+            * **Analytical methods** (``'newcombe'``, ``'tango'``, ``'fisher_exact'``,
           ``'bayes_binary'``): Bonferroni t-intervals at the
           ``1 − (1−α)/k`` level, computed from ``per_input_diffs``.
 
@@ -1522,7 +1549,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",

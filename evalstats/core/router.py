@@ -152,6 +152,9 @@ def analyze(
             ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
             Newcombe score intervals (+ exact McNemar p-values), while
             point-advantage CIs use Wilson score intervals.
+        * ``'tango'`` — Binary-only frequentist mode. Pairwise comparisons
+            use Tango score intervals (+ exact McNemar p-values), while
+            point-advantage CIs use Wilson score intervals.
         * ``'fisher_exact'`` — Binary-only frequentist mode. Pairwise
             comparisons use Newcombe score intervals + Fisher's exact
             p-values, while point-advantage CIs use Wilson score intervals.
@@ -256,7 +259,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "permutation", "fisher_exact", "sign_test"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "fisher_exact", "sign_test"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -816,7 +819,7 @@ def _analyze_single(
         # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         robustness_method = "wilson"
-    elif method in {"wilson", "newcombe", "fisher_exact"}:
+    elif method in {"wilson", "newcombe", "tango", "fisher_exact"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
             raise ValueError(
@@ -826,6 +829,8 @@ def _analyze_single(
             )
         if method == "fisher_exact":
             pairwise_method = "fisher_exact"
+        elif method == "tango":
+            pairwise_method = "tango"
         else:
             # In analyze(), explicit frequentist binary methods route to:
             #   - pairwise Newcombe + exact McNemar p-values

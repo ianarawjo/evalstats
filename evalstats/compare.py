@@ -542,7 +542,7 @@ def compare_prompts(
         Bootstrap variant: ``'auto'`` (default, selects ``'smooth_bootstrap'``),
         ``'bootstrap'`` (percentile), ``'bca'``, ``'bayes_bootstrap'``,
         ``'smooth_bootstrap'``, ``'bayes_binary'``, ``'wilson'``,
-        ``'newcombe'``, ``'fisher_exact'``, or ``'sign_test'``.
+        ``'newcombe'``, ``'tango'``, ``'fisher_exact'``, or ``'sign_test'``.
     statistic : str
         Central-tendency statistic: ``'mean'`` (default) or ``'median'``.
     rng : np.random.Generator, optional
@@ -752,7 +752,8 @@ def compare_models(
             - Multi-template inputs: uses ``"as_runs"`` to preserve
                 cross-model variability in template-level uncertainty.
             - Explicit binary-only methods (``"wilson"``, ``"newcombe"``,
-                ``"fisher_exact"``, ``"bayes_binary"``): keeps ``"as_runs"``
+                ``"tango"``, ``"fisher_exact"``, ``"bayes_binary"``):
+                keeps ``"as_runs"``
                 so binary structure is preserved.
         * ``"mean"``: average across models first.
             Use this when you want a simple pooled template summary.
@@ -830,7 +831,7 @@ def compare_models(
         )
 
     if template_model_collapse == "auto":
-        binary_only_methods = {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+        binary_only_methods = {"wilson", "newcombe", "tango", "fisher_exact", "bayes_binary"}
         resolved_template_model_collapse: Literal["mean", "as_runs"] = (
             "mean"
             if (n_templates == 1 and method not in binary_only_methods)

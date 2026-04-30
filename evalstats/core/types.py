@@ -26,6 +26,7 @@ CommonStatsMethods = Literal[
     "wald",
     "clopper_pearson",
     "newcombe",
+    "tango",
     "permutation",
     "fisher_exact",
     "sign_test",

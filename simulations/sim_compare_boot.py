@@ -13,6 +13,7 @@ Methods:
   bootstrap_t      Studentized (bootstrap-t) bootstrap
     wilson           Wilson score CI for single-sample binary means
     newcombe_score   Newcombe score CI for paired binary differences
+    tango_score      Tango score CI for paired binary differences
     bayes_indep      Beta-conjugate Bayesian interval for binary means
     bayes_indep_comp Independent Beta-posteriors interval for paired binaries
     bayes_paired_comp Paired Bayesian interval using bayes_evals latent model
@@ -97,6 +98,7 @@ with warnings.catch_warnings():
         logit_t_ci_1d,
         nig_ci_1d,
         el_ci_1d,
+        tango_paired_ci,
     )
 
 
@@ -107,6 +109,7 @@ with warnings.catch_warnings():
 METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]
 WILSON_METHOD = "wilson"
 NEWCOMBE_METHOD = "newcombe_score"
+TANGO_METHOD = "tango_score"
 BAYES_SINGLE_METHOD = "bayes_indep"
 BAYES_PAIR_INDEP_METHOD = "bayes_indep_comp"
 BAYES_PAIR_PAIRED_METHOD = "bayes_paired_comp"
@@ -124,6 +127,7 @@ REPORT_METHODS = METHODS + [
     T_INTERVAL_METHOD,
     WILSON_METHOD,
     NEWCOMBE_METHOD,
+    TANGO_METHOD,
     WALD_METHOD,
     CP_METHOD,
     BAYES_SINGLE_METHOD,
@@ -1163,6 +1167,7 @@ def _run_pairwise_cell(args: tuple) -> list[SimResult]:
     rng = np.random.default_rng(seed)
 
     add_newcombe = scenario.eval_type == "binary" and statistic == "mean"
+    add_tango = scenario.eval_type == "binary" and statistic == "mean"
     add_bayes_binary = scenario.eval_type == "binary" and statistic == "mean"
     add_pairwise_extras = statistic == "mean" and scenario.eval_type != "binary"
 
@@ -1171,6 +1176,8 @@ def _run_pairwise_cell(args: tuple) -> list[SimResult]:
         active_methods.extend(PAIRWISE_EXTRA_METHODS)
     if add_newcombe:
         active_methods.append(NEWCOMBE_METHOD)
+    if add_tango:
+        active_methods.append(TANGO_METHOD)
     if add_bayes_binary:
         active_methods.extend([BAYES_PAIR_INDEP_METHOD, BAYES_PAIR_PAIRED_METHOD])
 
@@ -1235,6 +1242,20 @@ def _run_pairwise_cell(args: tuple) -> list[SimResult]:
             if ci_low <= scenario.true_diff <= ci_high:
                 covered[NEWCOMBE_METHOD] += 1
             total_w[NEWCOMBE_METHOD] += ci_high - ci_low
+
+        if add_tango:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = tango_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                obs = float(np.mean(a[:, 0] - b[:, 0]))
+                ci_low = ci_high = obs
+            _el = time.perf_counter() - _t0
+            total_t[TANGO_METHOD] += _el
+            total_t_sq[TANGO_METHOD] += _el * _el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[TANGO_METHOD] += 1
+            total_w[TANGO_METHOD] += ci_high - ci_low
 
         if add_bayes_binary:
             _t0 = time.perf_counter()

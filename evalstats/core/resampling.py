@@ -641,6 +641,86 @@ def newcombe_paired_ci(
     )
 
 
+def tango_paired_ci(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Tango score CI for the paired binary difference p(A=1) - p(B=1).
+
+    Implements the large-sample score interval proposed by Tango (1998) for
+    matched-pairs binary data. Let:
+
+    * ``n10`` be the count of pairs with ``A=1, B=0``
+    * ``n01`` be the count of pairs with ``A=0, B=1``
+    * ``n`` be the total number of pairs
+
+    and ``d_hat = (n10 - n01) / n``. The interval is:
+
+    ``(center +/- radius)`` where::
+
+        center = d_hat / (1 + z^2 / n)
+        radius = z / (1 + z^2 / n) * sqrt(
+            (n10 + n01) / n^2
+            - (n10 - n01)^2 / n^3
+            + z^2 / (4 n^2)
+        )
+
+    This is a score-type interval for the paired risk difference; unlike
+    :func:`newcombe_paired_ci`, it remains non-degenerate even when there are
+    no discordant pairs.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        1-D arrays of equal length. Values are thresholded at 0.5.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+
+    Raises
+    ------
+    ValueError
+        If inputs are not 1-D arrays of equal length.
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+    if values_a.ndim != 1 or values_b.ndim != 1:
+        raise ValueError("tango_paired_ci expects 1-D input arrays.")
+    if values_a.shape != values_b.shape:
+        raise ValueError("tango_paired_ci expects arrays with equal shape.")
+
+    n = int(len(values_a))
+    if n <= 0:
+        return (0.0, 0.0)
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+
+    d_hat = float((n10 - n01) / n)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n
+
+    radicand = (
+        (n10 + n01) / (n * n)
+        - ((n10 - n01) ** 2) / (n**3)
+        + z2 / (4.0 * n * n)
+    )
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+    return (lo, hi)
+
+
 def resolve_resampling_method(
     method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto"],
     sample_size: int,
