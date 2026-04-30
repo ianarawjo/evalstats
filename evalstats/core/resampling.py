@@ -476,6 +476,90 @@ def nig_ci_1d(
     return (mn - t_crit * scale, mn + t_crit * scale)
 
 
+def nig_ci_nested(
+    values: np.ndarray,   # shape (N, R) or (N,) fallback
+    alpha: float,
+    m0: float = 0.5,
+    k0: float = 1.0,
+    a0: float = 2.0,
+    b0: float = 0.0625,
+) -> tuple[float, float]:
+    """
+    Hierarchical Normal-Inverse-Gamma CI for mean with run-level uncertainty.
+
+    Supports:
+      - (N,)    → falls back to standard NIG
+      - (N, R)  → hierarchical correction using run variance
+
+    Model:
+        X_ir ~ Normal(theta_i, sigma_run^2)
+        theta_i ~ Normal(mu, sigma_item^2)
+
+    We approximate the marginal by inflating variance:
+        sigma_eff^2 = sigma_item^2 + sigma_run^2 / R
+
+    Then apply standard NIG on item means with corrected variance.
+    """
+    vals = np.asarray(values, dtype=float)
+
+    # ---- fallback: standard NIG ----
+    if vals.ndim == 1:
+        return nig_ci_1d(vals, alpha, m0, k0, a0, b0)
+
+    if vals.ndim != 2:
+        raise ValueError("values must be (N,) or (N, R)")
+
+    N, R = vals.shape
+
+    if N == 0:
+        scale = float(np.sqrt(b0 * (k0 + 1.0) / (a0 * k0)))
+        lo = float(stats.t.ppf(alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        hi = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        return (lo, hi)
+
+    # ---- per-item means ----
+    item_means = np.nanmean(vals, axis=1)
+    x_bar = float(np.mean(item_means))
+
+    # ---- between-item variance ----
+    s2_item = float(np.var(item_means, ddof=1)) if N > 1 else 0.0
+
+    # ---- within-item (run) variance ----
+    if R > 1:
+        run_vars = np.nanvar(vals, axis=1, ddof=1)
+        s2_run = float(np.nanmean(run_vars))
+    else:
+        s2_run = 0.0
+
+    # ---- effective variance per item mean ----
+    s2_eff = s2_item + s2_run / max(R, 1)
+
+    # ---- reconstruct sum-of-squares for NIG ----
+    # We want something equivalent to:
+    # sum (x_i - x_bar)^2 but inflated by run variance
+    ss = s2_eff * (N - 1)
+
+    # ---- posterior updates (same form as 1D NIG) ----
+    kn = k0 + N
+    mn = (k0 * m0 + N * x_bar) / kn
+    an = a0 + N / 2.0
+
+    bn = (
+        b0
+        + 0.5 * ss
+        + (k0 * N) / (2.0 * kn) * (x_bar - m0) ** 2
+    )
+
+    scale = float(np.sqrt(bn / (an * kn)))
+
+    if scale <= 0.0 or not np.isfinite(scale):
+        return (mn, mn)
+
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * an))
+
+    return (mn - t_crit * scale, mn + t_crit * scale)
+
+
 def el_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     """Empirical-likelihood confidence interval for the mean (Owen 1988/1990).
 
@@ -616,6 +700,175 @@ def wilson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     n = len(values)
     successes = int(np.round(np.sum(values)))
     return wilson_ci(successes, n, alpha)
+
+
+def _wilson_neff(p_hat: float, n_eff: float, alpha: float) -> tuple[float, float]:
+    """Wilson score interval parameterised by an effective sample size.
+
+    Applies the standard Wilson formula with *n_eff* substituted for n.
+    """
+    if n_eff <= 0.0 or not np.isfinite(n_eff):
+        return (0.0, 1.0)
+    z  = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom  = 1.0 + z2 / n_eff
+    center = (p_hat + z2 / (2.0 * n_eff)) / denom
+    radius = (z / denom) * np.sqrt(
+        p_hat * (1.0 - p_hat) / n_eff + z2 / (4.0 * n_eff * n_eff)
+    )
+    return (max(0.0, float(center - radius)), min(1.0, float(center + radius)))
+
+
+def wilson_nested_de(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Wilson score CI for multi-run binary data with design-effect correction.
+
+    Estimates the intraclass correlation (ICC) via a one-way ANOVA decomposition
+    of the per-item cell means, then computes an effective sample size::
+
+        D      = 1 + (R − 1) · ICĈ
+        n_eff  = n · R / D
+
+    where ``D`` is the design effect.  When ICC = 0 (iid runs) ``n_eff = n·R``;
+    when ICC = 1 (all variance is between items) ``n_eff = n``.  The standard
+    Wilson formula is then applied with ``n_eff``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` — binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    if n < 2:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2   = float(np.var(cell_means, ddof=1))
+    MS_B = R * s2                          # between-item mean square
+    MS_W = p_hat * (1.0 - p_hat)          # within-item variance (binomial approx)
+
+    if R > 1 and MS_W > 0.0 and (MS_B + (R - 1) * MS_W) > 0.0:
+        icc = (MS_B - MS_W) / (MS_B + (R - 1) * MS_W)
+        icc = float(np.clip(icc, 0.0, 1.0))
+    else:
+        icc = 0.0
+
+    D     = 1.0 + (R - 1) * icc
+    n_eff = n * R / D
+    return _wilson_neff(p_hat, n_eff, alpha)
+
+
+def wilson_nested_od(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Wilson score CI for multi-run binary data with overdispersion plug-in.
+
+    Uses the sample variance of per-item cell means to estimate the total
+    variance of the grand mean, then derives an effective sample size by
+    expressing it as a scaled binomial variance::
+
+        phi   = s² / (p̂(1 − p̂))          (overdispersion factor)
+        n_eff = n / phi = n · p̂(1 − p̂) / s²
+
+    This preserves the Wilson property that the interval width depends on
+    the parameter *p* rather than solely on p̂.  Reduces to standard Wilson
+    on the full *n·R* observations when the runs within each item are iid.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` — binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n < 2 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2 = float(np.var(cell_means, ddof=1))
+    if s2 <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    n_eff = n * p_var / s2
+    return _wilson_neff(p_hat, n_eff, alpha)
+
+
+def wilson_nested_bb(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Wilson-style CI for multi-run binary data via Beta-Binomial model.
+
+    Fits a Beta-Binomial(R, α, β) marginal model to the item-level success
+    counts using method-of-moments, yielding a concentration parameter κ = α + β.
+    The implied effective sample size is::
+
+        n_eff = n · R · (κ + 1) / (R + κ)
+
+    which interpolates from ``n·R`` (κ → ∞, iid runs) down to ``n``
+    (κ → 0, maximum clustering) as clustering increases.  The standard Wilson
+    formula is then applied with this ``n_eff``.
+
+    Falls back to ``n_eff = n·R`` when no overdispersion is detected
+    (s² ≤ p̂(1 − p̂)/R) and to ``n_eff = n`` for maximum overdispersion
+    (s² ≥ p̂(1 − p̂)).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` — binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n < 2 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2     = float(np.var(cell_means, ddof=1))
+    s2_min = p_var / R            # iid lower bound on Var(cell_mean)
+
+    if s2 <= s2_min:
+        # No detected overdispersion — treat as fully iid
+        n_eff = float(n * R)
+    elif s2 >= p_var:
+        # Maximum overdispersion (kappa → 0) — one effective obs per item
+        n_eff = float(n)
+    else:
+        # Method-of-moments: solve s² = p*(1-p)*(R + κ) / (R*(κ + 1)) for κ
+        kappa = R * (p_var - s2) / (s2 * R - p_var)
+        kappa = max(kappa, 1e-8)
+        n_eff = n * R * (kappa + 1.0) / (R + kappa)
+
+    return _wilson_neff(p_hat, n_eff, alpha)
 
 
 def newcombe_paired_ci(
@@ -759,6 +1012,98 @@ def tango_paired_ci(
 
     lo = max(-1.0, float(center - radius))
     hi = min(1.0, float(center + radius))
+    return (lo, hi)
+
+
+def tango_paired_ci_multirun_discordance(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Multi-run Tango-style CI for paired binary difference (discordance-aware).
+
+    Extends Tango (1998) to repeated runs per item by:
+    - computing per-item discordance rates (A=1,B=0) and (A=0,B=1)
+    - preserving Tango's reliance on discordant pairs for variance
+    - adding cluster-level variance (overdispersion) across items
+    - retaining score-style shrinkage to avoid degeneracy
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Arrays of shape (n_items, n_runs). Values thresholded at 0.5.
+        Runs are assumed to be paired across A and B.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+
+    if values_a.shape != values_b.shape:
+        raise ValueError("Inputs must have equal shape (n_items, n_runs).")
+    if values_a.ndim != 2:
+        raise ValueError("Expected 2-D arrays (n_items, n_runs).")
+
+    n_items, n_runs = values_a.shape
+    if n_items <= 0:
+        return (0.0, 0.0)
+
+    # --- binarize ---
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    # --- per-item discordance rates ---
+    # d10_i: fraction of runs where A=1, B=0
+    # d01_i: fraction of runs where A=0, B=1
+    d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
+    d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
+
+    # per-item paired difference and discordance mass
+    delta_i = d10_i - d01_i
+    u_i = d10_i + d01_i
+
+    # --- point estimates ---
+    d_hat = float(np.mean(delta_i))   # overall paired difference
+    u_hat = float(np.mean(u_i))       # average discordance
+
+    # --- cluster variance (captures between-item heterogeneity) ---
+    if n_items > 1:
+        var_delta = float(np.var(delta_i, ddof=1))
+    else:
+        var_delta = 0.0
+
+    # --- Tango-style z ---
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+
+    # --- shrinkage denominator (same as Tango) ---
+    denom = 1.0 + z2 / n_items
+
+    # --- variance term (Tango + overdispersion) ---
+    # Original Tango (single-run) roughly uses:
+    #   (n10 + n01)/n^2 - (n10 - n01)^2/n^3
+    #
+    # Here:
+    #   u_hat / n_items       -> discordance-driven variance
+    #   var_delta / n_items   -> between-item overdispersion
+    #   z^2 / (4 n^2)         -> Tango continuity/shrinkage term
+    radicand = (
+        (u_hat / n_items)
+        + (var_delta / n_items)
+        + (z2 / (4.0 * n_items * n_items))
+    )
+
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+
     return (lo, hi)
 
 
@@ -1319,6 +1664,218 @@ def bootstrap_diffs_nested(
 
     diffs = _nested_cell_mean_diffs(scores_a, scores_b, run_idx, input_idx)  # (B, M)
     return _reduce_rows(diffs, statistic)                                  # (B,)
+
+
+def bootstrap_means_nested(
+    scores: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> np.ndarray:
+    """Nested bootstrap replicates of the statistic for single-sample multi-run data.
+
+    Outer level resamples M inputs with replacement; inner level resamples R
+    runs within each selected input.  Propagates both input-sampling uncertainty
+    and within-cell run variance.  Reduces to a standard percentile bootstrap
+    when ``R = 1``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)`` — per-input per-run scores.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    rng : np.random.Generator
+    statistic : str
+        ``'mean'`` (default) or ``'median'``.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap,)``.
+    """
+    M, R = scores.shape
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))           # (B, M)
+    run_idx   = rng.integers(0, R, size=(n_bootstrap, M, R))        # (B, M, R)
+
+    selected   = scores[input_idx]                                   # (B, M, R)
+    b_rng = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]       # (B, 1, 1)
+    m_rng = np.arange(M)[np.newaxis, :, np.newaxis]                 # (1, M, 1)
+    resampled  = selected[b_rng, m_rng, run_idx]                    # (B, M, R)
+    cell_means = resampled.mean(axis=2)                              # (B, M)
+    return _reduce_rows(cell_means, statistic)                       # (B,)
+
+
+def bayes_bootstrap_means_nested(
+    scores: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> np.ndarray:
+    """Bayesian nested bootstrap replicates for single-sample multi-run data.
+
+    Outer level assigns Dirichlet(1,...,1_M) weights over M inputs; inner
+    level resamples R runs uniformly within each input.  Dirichlet outer
+    weights give smoother distributions than multinomial resampling at small M.
+    Reduces to a standard Bayesian bootstrap when ``R = 1``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)``.
+    n_bootstrap : int
+    rng : np.random.Generator
+    statistic : str
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap,)``.
+    """
+    M, R = scores.shape
+    run_idx    = rng.integers(0, R, size=(n_bootstrap, M, R))       # (B, M, R)
+    m_rng      = np.arange(M)[np.newaxis, :, np.newaxis]            # (1, M, 1)
+    resampled  = scores[m_rng, run_idx]                             # (B, M, R)
+    cell_means = resampled.mean(axis=2)                             # (B, M)
+
+    exp_mat       = rng.exponential(1.0, size=(n_bootstrap, M))     # (B, M)
+    outer_weights = exp_mat / exp_mat.sum(axis=1, keepdims=True)    # (B, M)
+
+    if statistic == "mean":
+        return (outer_weights * cell_means).sum(axis=1)             # (B,)
+    return _weighted_medians_rows(cell_means, outer_weights)
+
+
+def smooth_bootstrap_means_nested(
+    scores: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> np.ndarray:
+    """Smoothed nested bootstrap replicates for single-sample multi-run data.
+
+    Outer level resamples M inputs with replacement; inner level resamples R
+    runs within each selected input.  Gaussian noise with std = KDE bandwidth
+    is then added to each resampled cell mean.  Falls back to
+    ``bootstrap_means_nested`` if ``std(cell_means) == 0`` or ``M < 2``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)`` — per-input per-run scores.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    rng : np.random.Generator
+    statistic : str
+        ``'mean'`` (default) or ``'median'``.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap,)``.
+    """
+    from scipy.stats import gaussian_kde
+
+    M, R = scores.shape
+    cell_means_obs = scores.mean(axis=1)                            # (M,)
+    std_val = float(np.std(cell_means_obs, ddof=1)) if M > 1 else 0.0
+    if M < 2 or not np.isfinite(std_val) or std_val <= 0.0:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_means_nested",
+            f"M={M}, std(cell_means)={std_val:.6g}",
+        )
+        return bootstrap_means_nested(scores, n_bootstrap, rng, statistic=statistic)
+
+    try:
+        h = float(gaussian_kde(cell_means_obs).factor * std_val)
+    except np.linalg.LinAlgError as exc:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_means_nested",
+            f"KDE failed with {exc.__class__.__name__}: {exc}",
+        )
+        return bootstrap_means_nested(scores, n_bootstrap, rng, statistic=statistic)
+
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))           # (B, M)
+    run_idx   = rng.integers(0, R, size=(n_bootstrap, M, R))        # (B, M, R)
+
+    selected        = scores[input_idx]                              # (B, M, R)
+    b_rng           = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]   # (B, 1, 1)
+    m_rng           = np.arange(M)[np.newaxis, :, np.newaxis]             # (1, M, 1)
+    resampled       = selected[b_rng, m_rng, run_idx]               # (B, M, R)
+    cell_means_boot = resampled.mean(axis=2)                        # (B, M)
+    cell_means_boot += rng.normal(0.0, h, size=(n_bootstrap, M))
+    return _reduce_rows(cell_means_boot, statistic)                  # (B,)
+
+
+def bootstrap_t_ci_nested(
+    scores: np.ndarray,
+    observed_stat: float,
+    n_bootstrap: int,
+    alpha: float,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Bootstrap-t (studentized) CI for single-sample multi-run data using nested resampling.
+
+    Outer level resamples M inputs with replacement; inner level resamples R
+    runs within each selected input.  The studentized pivot is
+
+        t* = (θ̂* − θ̂) / SE*
+
+    where SE* = std(resampled cell means) / sqrt(M) for each replicate and
+    SE_obs uses the original cell means.  The CI is::
+
+        [θ̂ − t*_{1−α/2} · SE_obs,  θ̂ − t*_{α/2} · SE_obs]
+
+    Falls back to percentile interval from ``bootstrap_means_nested`` when
+    SE_obs is zero or no valid pivots are produced.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)`` — per-input per-run scores.
+    observed_stat : float
+        Grand mean of the observed cell means.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    alpha : float
+        Significance level.
+    rng : np.random.Generator
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)``.
+    """
+    M, R = scores.shape
+    cell_means_obs = scores.mean(axis=1)                            # (M,)
+    se_obs = float(np.std(cell_means_obs, ddof=1)) / np.sqrt(M)
+
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))          # (B, M)
+    run_idx   = rng.integers(0, R, size=(n_bootstrap, M, R))       # (B, M, R)
+
+    selected        = scores[input_idx]                             # (B, M, R)
+    b_rng           = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]
+    m_rng           = np.arange(M)[np.newaxis, :, np.newaxis]
+    resampled       = selected[b_rng, m_rng, run_idx]              # (B, M, R)
+    cell_means_boot = resampled.mean(axis=2)                       # (B, M)
+
+    boot_stats = cell_means_boot.mean(axis=1)                      # (B,)
+    boot_ses   = np.std(cell_means_boot, ddof=1, axis=1) / np.sqrt(M)  # (B,)
+
+    if se_obs <= 0.0 or not np.isfinite(se_obs):
+        return _percentile_interval(boot_stats, alpha)
+
+    valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+
+    t_stats = (boot_stats[valid] - observed_stat) / boot_ses[valid]
+    t_lo = float(np.percentile(t_stats, 100.0 * alpha / 2))
+    t_hi = float(np.percentile(t_stats, 100.0 * (1.0 - alpha / 2)))
+    return (
+        float(observed_stat - t_hi * se_obs),
+        float(observed_stat - t_lo * se_obs),
+    )
 
 
 def bayes_binary_ci_1d(
