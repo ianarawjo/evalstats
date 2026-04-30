@@ -1053,6 +1053,10 @@ def tango_paired_ci_multirun_discordance(
     if n_items <= 0:
         return (0.0, 0.0)
 
+    # Exact reduction to the original paired Tango interval for single-run data.
+    if n_runs == 1:
+        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+
     # --- binarize ---
     a_bin = (values_a >= 0.5).astype(int)
     b_bin = (values_b >= 0.5).astype(int)
@@ -1069,13 +1073,17 @@ def tango_paired_ci_multirun_discordance(
 
     # --- point estimates ---
     d_hat = float(np.mean(delta_i))   # overall paired difference
-    u_hat = float(np.mean(u_i))       # average discordance
 
     # --- cluster variance (captures between-item heterogeneity) ---
     if n_items > 1:
         var_delta = float(np.var(delta_i, ddof=1))
     else:
         var_delta = 0.0
+
+    # Per-item within-run variance of paired differences.
+    # For binary paired outcomes this is Var(delta_ir | item i) = u_i - delta_i^2.
+    within_i = np.maximum(u_i - delta_i * delta_i, 0.0)
+    within_bar = float(np.mean(within_i))
 
     # --- Tango-style z ---
     z = float(stats.norm.ppf(1.0 - alpha / 2.0))
@@ -1084,17 +1092,14 @@ def tango_paired_ci_multirun_discordance(
     # --- shrinkage denominator (same as Tango) ---
     denom = 1.0 + z2 / n_items
 
-    # --- variance term (Tango + overdispersion) ---
-    # Original Tango (single-run) roughly uses:
-    #   (n10 + n01)/n^2 - (n10 - n01)^2/n^3
-    #
-    # Here:
-    #   u_hat / n_items       -> discordance-driven variance
-    #   var_delta / n_items   -> between-item overdispersion
-    #   z^2 / (4 n^2)         -> Tango continuity/shrinkage term
+    # --- variance term (Tango + de-noised overdispersion) ---
+    # Observed Var(delta_i) contains both latent between-item heterogeneity and
+    # finite-run noise. Removing within_bar / n_runs prevents double-counting
+    # the same within-item uncertainty in both terms.
+    between_latent = max(var_delta - within_bar / n_runs, 0.0)
     radicand = (
-        (u_hat / n_items)
-        + (var_delta / n_items)
+        (between_latent / n_items)
+        + (within_bar / (n_items * n_runs))
         + (z2 / (4.0 * n_items * n_items))
     )
 
@@ -1104,6 +1109,92 @@ def tango_paired_ci_multirun_discordance(
     lo = max(-1.0, float(center - radius))
     hi = min(1.0, float(center + radius))
 
+    return (lo, hi)
+
+
+def tango_paired_ci_multirun_moments(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Multi-run Tango-style CI using a cluster moments decomposition.
+
+    This variant estimates the paired risk-difference uncertainty via
+    item-level moments of paired run differences:
+
+    - between-item term: ``Var(delta_i) / n_items``
+    - within-item term:  ``E[u_i - delta_i^2] / (n_items * n_runs)``
+
+    where ``delta_i`` is the per-item mean paired difference across runs and
+    ``u_i`` is the per-item discordance mass. It remains score-shrunk using
+    Tango's denominator and reverts exactly to :func:`tango_paired_ci` when
+    ``n_runs == 1``.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Arrays of shape (n_items, n_runs). Values thresholded at 0.5.
+        Runs are assumed to be paired across A and B.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+
+    if values_a.shape != values_b.shape:
+        raise ValueError("Inputs must have equal shape (n_items, n_runs).")
+    if values_a.ndim != 2:
+        raise ValueError("Expected 2-D arrays (n_items, n_runs).")
+
+    n_items, n_runs = values_a.shape
+    if n_items <= 0:
+        return (0.0, 0.0)
+
+    # Exact reduction to the original paired Tango interval for single-run data.
+    if n_runs == 1:
+        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
+    d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
+
+    delta_i = d10_i - d01_i
+    u_i = d10_i + d01_i
+
+    d_hat = float(np.mean(delta_i))
+
+    if n_items > 1:
+        var_delta = float(np.var(delta_i, ddof=1))
+    else:
+        var_delta = 0.0
+
+    within_i = np.maximum(u_i - delta_i * delta_i, 0.0)
+    within_bar = float(np.mean(within_i))
+
+    # Decompose observed item-level variance into latent between-item variance
+    # plus within-item Monte Carlo noise; this avoids adding within variance twice.
+    between_latent = max(var_delta - within_bar / n_runs, 0.0)
+    between = between_latent / n_items
+    within = within_bar / (n_items * n_runs)
+
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n_items
+
+    radicand = between + within + z2 / (4.0 * n_items * n_items)
+
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
     return (lo, hi)
 
 
@@ -1467,7 +1558,8 @@ def bootstrap_t_ci_1d(
     estimator, which is not implemented here.
 
     Falls back to the plain percentile bootstrap when the observed SE is zero
-    (degenerate sample).
+    (degenerate sample), when no stable studentized pivots are available, or
+    when too many bootstrap replicates have numerically tiny ``SE*`` values.
 
     Parameters
     ----------
@@ -1518,6 +1610,13 @@ def bootstrap_t_ci_1d(
 
     # ── Studentized pivots ────────────────────────────────────────────────
     valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+    se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+    tiny_frac = float(np.mean(valid & (boot_ses < se_floor)))
+    if tiny_frac > 0.05:
+        return _percentile_interval(boot_stats, alpha)
+    valid = valid & (boot_ses >= se_floor)
     if not np.any(valid):
         return _percentile_interval(boot_stats, alpha)
     t_stats = (boot_stats[valid] - observed_stat) / boot_ses[valid]
@@ -1827,7 +1926,8 @@ def bootstrap_t_ci_nested(
         [θ̂ − t*_{1−α/2} · SE_obs,  θ̂ − t*_{α/2} · SE_obs]
 
     Falls back to percentile interval from ``bootstrap_means_nested`` when
-    SE_obs is zero or no valid pivots are produced.
+    ``SE_obs`` is zero, no stable pivots are produced, or studentization is
+    numerically unstable due to too many tiny ``SE*`` replicates.
 
     Parameters
     ----------
@@ -1866,6 +1966,13 @@ def bootstrap_t_ci_nested(
         return _percentile_interval(boot_stats, alpha)
 
     valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+    se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+    tiny_frac = float(np.mean(valid & (boot_ses < se_floor)))
+    if tiny_frac > 0.05:
+        return _percentile_interval(boot_stats, alpha)
+    valid = valid & (boot_ses >= se_floor)
     if not np.any(valid):
         return _percentile_interval(boot_stats, alpha)
 
