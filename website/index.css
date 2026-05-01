@@ -632,6 +632,28 @@
     }
     .table-caption strong { color: var(--text-mid); }
 
+    .fig-caption {
+      font-family: var(--font-sans);
+      font-size: 0.78rem;
+      color: var(--text-dim);
+      text-align: center;
+      font-style: italic;
+      margin-top: 0.25rem;
+      margin-bottom: 1rem;
+      line-height: 1.5;
+    }
+    .fig-caption strong { color: var(--text-mid); font-style: normal; }
+
+    .fig-title {
+      font-family: var(--font-sans);
+      font-size: 0.9rem;
+      font-weight: 600;
+      color: var(--text-mid);
+      text-align: center;
+      margin-top: 1.2em;
+      margin-bottom: 0.3em;
+    }
+
     /* ─── SECTION INTRO ───────────────────────────────────── */
     .section-lead {
       font-size: 1.08rem;

@@ -220,12 +220,12 @@ PROGRESS_MODES   = ["bar", "cell", "off"]
 PLOT_MODES       = ["save", "off"]
 RESULTS_MODES    = ["save", "off"]
 
-RUN_NOISE_FRACS_DEFAULT = [0.01, 0.10, 0.30, 0.50, 0.70, 0.90]
+RUN_NOISE_FRACS_DEFAULT = [.01, 0.3, 0.7, 0.95]
 
-OFFICIAL_RUNS_SWEEP = [3, 5, 8, 12]
-OFFICIAL_RUN_NOISE_FRACS = [0.01, 0.05, 0.15, 0.30, 0.50, 0.70, 0.95]
+OFFICIAL_RUNS_SWEEP = [5]
+OFFICIAL_RUN_NOISE_FRACS = [.01, 0.3, 0.7, 0.95]
 OFFICIAL_ICC_VALUES = [0.05, 0.15, 0.30, 0.50]
-OFFICIAL_SIZES = [10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+OFFICIAL_SIZES = [10, 20, 30, 50, 75, 100] # [10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
 
 # ---------------------------------------------------------------------------
@@ -2716,7 +2716,7 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.official_test:
-        args.reps = 2000
+        args.reps = 200
         args.bootstrap_n = 10000
         args.bayes_n = 10000
         args.alpha = 0.05
