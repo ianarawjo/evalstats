@@ -207,7 +207,7 @@ _METHOD_LABELS: dict[str, str] = {
     BAYES_PAIR_PAIRED_METHOD:    "bayes_paired_comp",
 }
 
-SOURCES = ["dove", "openeval"]
+SOURCES = ["dove", "openeval", "inspect"]
 PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
 PROGRESS_MODES = ["bar", "cell", "off"]
@@ -341,8 +341,9 @@ def print_corpus_pair_stats(corpus_pairs: list) -> None:
     print(f"  {'─'*76}")
 
     for cp in corpus_pairs:
-        a = cp.scores_a
-        b = cp.scores_b
+        # For multi-run (R>1), use per-item mean for display statistics
+        a = cp.scores_a if cp.scores_a.ndim == 1 else np.mean(cp.scores_a, axis=1)
+        b = cp.scores_b if cp.scores_b.ndim == 1 else np.mean(cp.scores_b, axis=1)
         n = cp.corpus_size
         p_a = float(np.mean(a))
         p_b = float(np.mean(b))
@@ -473,11 +474,12 @@ class CorpusPair:
     model_a: str
     model_b: str
     benchmark_id: str
-    source: str          # "dove" | "openeval"
-    scores_a: np.ndarray  # shape (N_shared,)
-    scores_b: np.ndarray  # shape (N_shared,)
+    source: str           # "dove" | "openeval" | "inspect"
+    scores_a: np.ndarray  # shape (N,) for R=1 or (N, R) for R>1 runs per item
+    scores_b: np.ndarray  # shape (N,) for R=1 or (N, R) for R>1 runs per item
     true_diff: float      # mean(scores_a − scores_b) — population ground truth
-    corpus_size: int      # N_shared = number of shared items
+    corpus_size: int      # N = number of shared items
+    n_runs: int = 1       # R = number of runs per item (1 for single-run sources)
 
 
 @dataclass
@@ -939,6 +941,158 @@ def build_openeval_corpus_pairs(
 
 
 # ---------------------------------------------------------------------------
+# Inspect AI CSV loading helpers
+# ---------------------------------------------------------------------------
+
+
+def build_inspect_corpus_pairs(
+    csv_path: str,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    *,
+    min_pair_size: int = 50,
+) -> list[CorpusPair]:
+    """Build CorpusPairs from a CSV produced by collect_inspect_benchmarks.py.
+
+    CSV columns: benchmark, model, item_id, run_idx, score
+
+    Groups rows by (benchmark, model) → item_id → run scores.  For each
+    benchmark, forms all model-pair combinations by intersecting shared
+    item_ids.  Scores are stored as:
+      - shape (N,)    when only one run per item (R=1)
+      - shape (N, R)  when multiple runs per item (R>1)
+    """
+    import csv as _csv
+
+    p = Path(csv_path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Inspect data file not found: {csv_path}\n"
+            f"  Run collect_inspect_benchmarks.py first to generate it."
+        )
+
+    # item_maps[(model, benchmark)][item_id][run_idx] = score
+    item_maps: dict[tuple[str, str], dict[str, dict[int, float]]] = defaultdict(
+        lambda: defaultdict(dict)
+    )
+
+    print(f"Loading Inspect AI data from: {csv_path}")
+    n_rows = 0
+    with p.open(newline="") as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            bench   = row.get("benchmark", "").strip()
+            model   = row.get("model", "").strip()
+            item_id = row.get("item_id", "").strip()
+            try:
+                run_idx = int(row.get("run_idx", 0))
+                score   = float(row.get("score", float("nan")))
+            except (ValueError, TypeError):
+                continue
+            if not bench or not model or not item_id or not np.isfinite(score):
+                continue
+            if benchmarks is not None and bench not in benchmarks:
+                continue
+            if models is not None and model not in models:
+                continue
+            item_maps[(model, bench)][item_id][run_idx] = score
+            n_rows += 1
+
+    print(f"  {n_rows:,} rows loaded.")
+
+    if not item_maps:
+        print("  No data found — check --benchmarks / --models filters match the CSV.")
+        return []
+
+    # Determine available benchmarks and models
+    all_benches = sorted({b for _, b in item_maps.keys()})
+    corpus_pairs: list[CorpusPair] = []
+
+    for bench in all_benches:
+        bench_models = sorted(m for m, b in item_maps.keys() if b == bench)
+        if len(bench_models) < 2:
+            print(f"  Skip  {bench}: only {len(bench_models)} model(s) — need ≥ 2 to form a pair")
+            continue
+
+        print(f"\n  Benchmark: {bench}")
+        for model in bench_models:
+            n_items = len(item_maps[(model, bench)])
+            n_runs  = max((max(r.keys()) + 1) for r in item_maps[(model, bench)].values() if r)
+            print(f"    {model}: {n_items:,} items × {n_runs} run(s)")
+
+        for model_a, model_b in combinations(bench_models, 2):
+            map_a = item_maps[(model_a, bench)]
+            map_b = item_maps[(model_b, bench)]
+            shared_ids = sorted(map_a.keys() & map_b.keys())
+            if len(shared_ids) < min_pair_size:
+                print(
+                    f"  Skip  ({model_a} vs {model_b}) on {bench}: "
+                    f"{len(shared_ids)} shared items < {min_pair_size}"
+                )
+                continue
+
+            # Determine R: max run index + 1, must be consistent across both models
+            R_a = max((max(map_a[k].keys()) + 1) for k in shared_ids if map_a[k])
+            R_b = max((max(map_b[k].keys()) + 1) for k in shared_ids if map_b[k])
+            R = min(R_a, R_b)  # use the smaller R if models differ
+
+            if R == 1:
+                # Single-run: 1D arrays, shape (N,)
+                scores_a = np.array([map_a[k].get(0, float("nan")) for k in shared_ids])
+                scores_b = np.array([map_b[k].get(0, float("nan")) for k in shared_ids])
+                # Drop items where either model has no score for run 0
+                valid = np.isfinite(scores_a) & np.isfinite(scores_b)
+                scores_a = scores_a[valid]
+                scores_b = scores_b[valid]
+            else:
+                # Multi-run: 2D arrays, shape (N, R)
+                rows_a = []
+                rows_b = []
+                valid_ids = []
+                for k in shared_ids:
+                    row_a = np.array([map_a[k].get(r, float("nan")) for r in range(R)])
+                    row_b = np.array([map_b[k].get(r, float("nan")) for r in range(R)])
+                    if np.all(np.isfinite(row_a)) and np.all(np.isfinite(row_b)):
+                        rows_a.append(row_a)
+                        rows_b.append(row_b)
+                        valid_ids.append(k)
+                if not rows_a:
+                    print(f"  Skip  ({model_a} vs {model_b}) on {bench}: no complete multi-run items")
+                    continue
+                scores_a = np.stack(rows_a)  # (N, R)
+                scores_b = np.stack(rows_b)  # (N, R)
+
+            N = len(scores_a)
+            if N < min_pair_size:
+                print(
+                    f"  Skip  ({model_a} vs {model_b}) on {bench}: "
+                    f"only {N} complete items after NaN removal < {min_pair_size}"
+                )
+                continue
+
+            # true_diff: mean per-item accuracy difference (mean across runs first)
+            mean_a = scores_a if scores_a.ndim == 1 else np.mean(scores_a, axis=1)
+            mean_b = scores_b if scores_b.ndim == 1 else np.mean(scores_b, axis=1)
+            true_diff = float(np.mean(mean_a - mean_b))
+
+            short_a = model_a.split("/")[-1] if "/" in model_a else model_a
+            short_b = model_b.split("/")[-1] if "/" in model_b else model_b
+            print(
+                f"  Pair  ({short_a} vs {short_b}): "
+                f"N={N}, R={R}, mean_A={float(np.mean(mean_a)):.4f}, "
+                f"mean_B={float(np.mean(mean_b)):.4f}, true_diff={true_diff:+.4f}"
+            )
+            corpus_pairs.append(CorpusPair(
+                model_a=model_a, model_b=model_b, benchmark_id=bench, source="inspect",
+                scores_a=scores_a, scores_b=scores_b,
+                true_diff=true_diff, corpus_size=N, n_runs=R,
+            ))
+
+    print(f"\n  {len(corpus_pairs)} corpus pairs built from Inspect AI data.\n")
+    return corpus_pairs
+
+
+# ---------------------------------------------------------------------------
 # Simulation runner
 # ---------------------------------------------------------------------------
 
@@ -961,10 +1115,13 @@ def _run_pairwise_real_cell(
 
     for _ in range(n_reps):
         idxs = rng.choice(N, size=n, replace=False)
-        # Shape (n, 1): treat as single-run matrices for multirun variants.
-        a = cp.scores_a[idxs].reshape(n, 1)
-        b = cp.scores_b[idxs].reshape(n, 1)
-        diffs = a[:, 0] - b[:, 0]
+        # a/b are (n, R) matrices: R=1 for single-run sources, R>1 for multi-run.
+        _a = cp.scores_a[idxs]
+        _b = cp.scores_b[idxs]
+        a = _a.reshape(n, 1) if _a.ndim == 1 else _a  # (n, R)
+        b = _b.reshape(n, 1) if _b.ndim == 1 else _b  # (n, R)
+        # Per-item mean across runs (R=1: identical to a[:,0]; R>1: averages runs)
+        diffs = np.mean(a, axis=1) - np.mean(b, axis=1)  # (n,)
         obs_diff = float(np.mean(diffs))
 
         # ── tango_flat ──────────────────────────────────────────────
@@ -1686,6 +1843,10 @@ def main() -> None:
                         help="HuggingFace token for private/gated datasets")
     parser.add_argument("--cache-dir", default=None,
                         help="HuggingFace cache directory")
+    parser.add_argument(
+        "--inspect-data", default="simulations/out/inspect_benchmarks.csv",
+        help="Path to CSV from collect_inspect_benchmarks.py (used with --source inspect)",
+    )
 
     args = parser.parse_args()
 
@@ -1694,6 +1855,7 @@ def main() -> None:
     plots_dir = args.plots_dir or str(Path(out_dir) / "plots")
 
     # Resolve defaults
+    model_bench: list[tuple[str, str]] = []
     if args.source == "dove":
         if args.models is None and args.benchmarks is None:
             model_bench = DOVE_DEFAULT_MODEL_BENCH
@@ -1701,7 +1863,7 @@ def main() -> None:
             bms = args.benchmarks or list(dict.fromkeys(b for _, b in DOVE_DEFAULT_MODEL_BENCH))
             mds = args.models     or list(dict.fromkeys(m for m, _ in DOVE_DEFAULT_MODEL_BENCH))
             model_bench = [(m, b) for m in mds for b in bms]
-    else:
+    elif args.source == "openeval":
         # OpenEval: filter the confirmed default pairs by requested benchmarks/models.
         # Never cross-product all models × all benchmarks — coverage is sparse.
         if args.models is None and args.benchmarks is None:
@@ -1722,6 +1884,7 @@ def main() -> None:
                     + str(sorted({m for m, _ in OPENEVAL_DEFAULT_MODEL_BENCH}))
                 )
                 sys.exit(1)
+    # else: inspect — model_bench not used; pairs come directly from the CSV
 
     methods = list(SINGLE_RUN_METHODS)
     if args.multi_run_methods:
@@ -1739,6 +1902,8 @@ def main() -> None:
     print(f"  Multi-run meth: {'on' if args.multi_run_methods else 'off'}")
     print(f"  Methods       : {methods}")
     print(f"  HF token      : {'set' if hf_token else 'not set (cached login)'}")
+    if args.source == "inspect":
+        print(f"  Inspect data  : {args.inspect_data}")
 
     # ── Load corpus pairs ─────────────────────────────────────────────────────
     if args.source == "dove":
@@ -1747,10 +1912,17 @@ def main() -> None:
             dove_repo=DOVE_REPO, hf_token=hf_token, cache_dir=args.cache_dir,
             min_pair_size=args.min_pair_size,
         )
-    else:
+    elif args.source == "openeval":
         corpus_pairs = build_openeval_corpus_pairs(
             model_bench,
             openeval_repo=OPENEVAL_REPO, hf_token=hf_token, cache_dir=args.cache_dir,
+            min_pair_size=args.min_pair_size,
+        )
+    else:  # inspect
+        corpus_pairs = build_inspect_corpus_pairs(
+            args.inspect_data,
+            models=args.models,
+            benchmarks=args.benchmarks,
             min_pair_size=args.min_pair_size,
         )
 
@@ -1760,9 +1932,10 @@ def main() -> None:
 
     print(f"  {len(corpus_pairs)} corpus pairs ready for simulation.\n")
     for cp in corpus_pairs:
+        runs_str = f", R={cp.n_runs}" if cp.n_runs > 1 else ""
         print(
             f"  ({cp.model_a}  vs  {cp.model_b}) [{cp.benchmark_id}]  "
-            f"N={cp.corpus_size}, true_diff={cp.true_diff:+.4f}"
+            f"N={cp.corpus_size}{runs_str}, true_diff={cp.true_diff:+.4f}"
         )
     print_corpus_pair_stats(corpus_pairs)
 
