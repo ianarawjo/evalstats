@@ -139,7 +139,7 @@ REPORT_METHODS = METHODS + [
     BAYES_PAIR_PAIRED_METHOD,
 ] + CONTINUOUS_EXTRA_METHODS
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
-SCENARIO_SUITES = ["standard", "expanded"]
+SCENARIO_SUITES = ["standard", "expanded", "extreme"]
 PROGRESS_MODES = ["bar", "cell", "off"]
 PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
@@ -618,11 +618,12 @@ def build_pair_scenarios(
         ("binary-balanced", 0.5),
         ("binary-high", 0.8),
         ("binary-low", 0.2),
+        ("binary-near-ceil", 0.92),
     ]
     if suite == "expanded":
         binary_shapes += [
             ("binary-rare", 0.05),
-            ("binary-near-ceil", 0.93),
+            ("binary-near-ceil-hi", 0.95),
         ]
 
     for icc in icc_list:
@@ -652,6 +653,71 @@ def build_pair_scenarios(
                     generate_pair=_gen_binary, true_diff=true_diff,
                     icc=icc, cohens_d=d, is_null=is_null,
                 ))
+
+    # Explicit stress-test binary regimes with highly one-sided discordance.
+    # These target small-n behavior where one discordant cell is near zero
+    # (for example p10 << p01), which can be challenging for some CIs.
+    if suite in ("expanded", "extreme"):
+        # Joint probabilities over paired outcomes:
+        #   p11 = P(A=1, B=1), p10 = P(A=1, B=0),
+        #   p01 = P(A=0, B=1), p00 = 1 - p11 - p10 - p01.
+        asym_binary_specs: list[tuple[str, float, float, float]] = [
+            # Matches the empirically challenging geometry seen in real data.
+            ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
+            ("binary-onesided-pos-extreme", 0.384, 0.001, 0.000),
+            # Less extreme but still strongly asymmetric discordance.
+            ("binary-onesided-neg-strong", 0.020, 0.300, 0.050),
+            ("binary-onesided-pos-strong", 0.300, 0.020, 0.050),
+            # Very severe asymmetry with large effect and dense discordance.
+            ("binary-onesided-neg-ultra", 0.000, 0.520, 0.000),
+            ("binary-onesided-pos-ultra", 0.520, 0.000, 0.000),
+            # Sparse-discordance variants (few discordant pairs in small n).
+            ("binary-onesided-neg-sparse", 0.001, 0.090, 0.030),
+            ("binary-onesided-pos-sparse", 0.090, 0.001, 0.030),
+            # Near-boundary marginals with one-sided discordance.
+            ("binary-onesided-neg-near-ceil", 0.000, 0.080, 0.900),
+            ("binary-onesided-pos-near-floor", 0.080, 0.000, 0.020),
+            # Moderate but asymmetric controls (helps map transition region).
+            ("binary-onesided-neg-moderate", 0.050, 0.220, 0.150),
+            ("binary-onesided-pos-moderate", 0.220, 0.050, 0.150),
+        ]
+
+        for shape_label, p10, p01, p11 in asym_binary_specs:
+            p00 = 1.0 - (p11 + p10 + p01)
+            if p00 <= 0.0:
+                raise ValueError(
+                    f"Invalid asymmetric binary scenario {shape_label}: "
+                    f"probabilities sum to >= 1.0"
+                )
+
+            probs = np.array([p11, p10, p01, p00], dtype=float)
+            true_diff = float(p10 - p01)
+            label = (
+                f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|"
+                f"p11={p11:.3f}|p00={p00:.3f}"
+            )
+
+            def _gen_binary_asym(
+                rng: np.random.Generator,
+                n: int,
+                runs: int,
+                _probs: np.ndarray = probs,
+            ) -> tuple[np.ndarray, np.ndarray]:
+                # State coding: 0->11, 1->10, 2->01, 3->00.
+                z = rng.choice(4, size=(n, runs), p=_probs)
+                a = np.isin(z, (0, 1)).astype(float)
+                b = np.isin(z, (0, 2)).astype(float)
+                return a, b
+
+            scenarios.append(PairScenario(
+                label=label,
+                eval_type="binary",
+                generate_pair=_gen_binary_asym,
+                true_diff=true_diff,
+                icc=0.0,
+                cohens_d=0.0,
+                is_null=False,
+            ))
 
     # ── Continuous [0, 1] ──────────────────────────────────────────────────
     # Base distribution shape is Beta(a, b).  Given ICC and Var(base),
@@ -2462,6 +2528,7 @@ def _run_benchmark(
     out_dir: str,
     plots_dir: str,
     eval_types: list[str] | None = None,
+    scenario_label_contains: list[str] | None = None,
     icc_values: list[float] = (0.10, 0.25, 0.40),
     cohens_d_values: list[float] = (0.3,),
     include_null: bool = False,
@@ -2480,6 +2547,8 @@ def _run_benchmark(
         print(f"  Eval types      : {eval_types}")
     else:
         print(f"  Eval types      : all ({EVAL_TYPES})")
+    if scenario_label_contains:
+        print(f"  Scenario filter : contains all {scenario_label_contains}")
     if estimand == "pairwise":
         print(f"  Runs per input  : {runs}")
         print(f"  Statistic       : {statistic}")
@@ -2517,6 +2586,18 @@ def _run_benchmark(
         if not scenarios:
             raise ValueError(
                 f"No scenarios left after filtering eval types {sorted(requested_eval_types)}."
+            )
+
+    if scenario_label_contains:
+        needles = [tok.lower() for tok in scenario_label_contains]
+        scenarios = [
+            s for s in scenarios
+            if all(tok in s.label.lower() for tok in needles)
+        ]
+        if not scenarios:
+            raise ValueError(
+                "No scenarios left after filtering by scenario labels containing "
+                f"{scenario_label_contains}."
             )
 
     n_by_type = {et: sum(1 for s in scenarios if s.eval_type == et) for et in EVAL_TYPES}
@@ -2695,6 +2776,17 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--scenario-label-contains",
+        nargs="+",
+        default=None,
+        metavar="TOKEN",
+        help=(
+            "Keep only scenarios whose label contains all provided substrings "
+            "(case-insensitive). Useful for targeted stress tests, e.g. "
+            "--scenario-label-contains binary onesided extreme"
+        ),
+    )
+    parser.add_argument(
         "--official-test",
         action="store_true",
         help=(
@@ -2808,13 +2900,13 @@ def main() -> None:
         "--icc-values",
         type=float,
         nargs="+",
-        default=[0.10, 0.25, 0.40],
+        default=[0.05, 0.20, 0.40, 0.60, 0.80],
         metavar="ICC",
         help=(
             "Intraclass correlation values for pairwise scenarios. "
             "ICC = between-input variance / total variance. "
             "Each value generates a separate scenario batch. "
-            "(default: 0.10 0.25 0.40)"
+            "(default: 0.05 0.20 0.40 0.60 0.80)"
         ),
     )
     parser.add_argument(
@@ -2878,7 +2970,7 @@ def main() -> None:
         # Sizes start from 10: decisions based on n=5 are rarely meaningful
         # in practice, and some methods are numerically unstable at n=5.
         official_sizes = [10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]
-        official_icc   = [0.05, 0.15, 0.30, 0.50]
+        official_icc   = [0.05, 0.20, 0.40, 0.60, 0.80]
         official_d     = [0.2, 0.4]
         official_alphas = [0.01, 0.05]
 
@@ -2901,6 +2993,7 @@ def main() -> None:
                     out_dir=args.out_dir,
                     plots_dir=plots_dir,
                     eval_types=args.eval_types,
+                    scenario_label_contains=args.scenario_label_contains,
                     n_workers=args.workers,
                     label=(
                         f"OFFICIAL TEST · Single-sample mean estimand · "
@@ -2929,6 +3022,7 @@ def main() -> None:
                 out_dir=args.out_dir,
                 plots_dir=plots_dir,
                 eval_types=args.eval_types,
+                scenario_label_contains=args.scenario_label_contains,
                 n_workers=args.workers,
                 label=(
                     f"OFFICIAL TEST · Pairwise estimand · "
@@ -2961,6 +3055,7 @@ def main() -> None:
             out_dir=args.out_dir,
             plots_dir=plots_dir,
             eval_types=args.eval_types,
+            scenario_label_contains=args.scenario_label_contains,
             n_workers=args.workers,
         )
 

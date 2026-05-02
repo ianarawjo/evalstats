@@ -221,6 +221,7 @@ def robustness_metrics(
     -------
     RobustnessResult
     """
+    scores_3d: Optional[np.ndarray] = scores if scores.ndim == 3 else None
     if scores.ndim == 3:
         scores = np.nanmean(scores, axis=2)  # (N, M) cell means
 
@@ -258,7 +259,7 @@ def robustness_metrics(
 
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
-    _analytical = {"wilson", "jeffreys", "nig", "t_interval"}
+    _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "t_interval"}
     if n_bootstrap is not None or marginal_method in _analytical:
         if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
@@ -268,6 +269,7 @@ def robustness_metrics(
             smooth_bootstrap_means_1d,
             bca_interval_1d,
             wilson_ci_1d,
+            wilson_nested_od,
             jeffreys_ci_1d,
             nig_ci_1d,
             t_interval_ci_1d,
@@ -280,6 +282,14 @@ def robustness_metrics(
             point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
             if marginal_method == "wilson":
                 lo, hi = wilson_ci_1d(row, alpha)
+            elif marginal_method == "wilson_od":
+                # Wilson with overdispersion correction for multi-run binary data.
+                # Needs the original (M, R) per-template slice; falls back to
+                # plain Wilson when 3D data is not available (single-run path).
+                if scores_3d is not None:
+                    lo, hi = wilson_nested_od(scores_3d[i], alpha)
+                else:
+                    lo, hi = wilson_ci_1d(row, alpha)
             elif marginal_method == "jeffreys":
                 lo, hi = jeffreys_ci_1d(row, alpha)
             elif marginal_method == "nig":

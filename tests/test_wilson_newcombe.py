@@ -370,15 +370,14 @@ def test_pairwise_differences_tango_uses_tango():
     assert 0.0 <= result.p_value <= 1.0
 
 
-def test_pairwise_differences_tango_seeded_falls_back_to_smooth():
+def test_pairwise_differences_tango_seeded_uses_cell_means():
     rng = np.random.default_rng(19)
     scores = rng.binomial(1, 0.7, size=(2, 20, 5)).astype(float)
     result = pairwise_differences(
         scores, 0, 1, "A", "B", method="tango", ci=0.95,
         rng=np.random.default_rng(19),
     )
-    assert "tango" not in result.test_method
-    assert "smooth" in result.test_method
+    assert "tango" in result.test_method
 
 
 def test_pairwise_differences_fisher_exact_binary_path():
@@ -519,11 +518,11 @@ def _make_benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
     )
 
 
-def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
-    """For binary data with N < 100, auto should use bayes_binary pairwise."""
+def test_analyze_auto_detects_binary_and_uses_tango():
+    """For binary data, auto should use tango pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 3
-    m_inputs = 50  # < 100 threshold
+    m_inputs = 50
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
@@ -531,19 +530,16 @@ def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
     result_obj = _make_benchmark(scores, ["low", "mid", "high"])
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
-    # Pairwise comparisons should use bayes_binary for N < 100
     pair = bundle.pairwise.get("low", "mid")
-    assert "bayes binary" in pair.test_method
-
-    # Advantage CIs should have n_bootstrap=0 (no resampling for bayes_binary)
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert "tango" in pair.test_method
+    assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
-    """For binary data with N >= 100, auto should use bootstrap pairwise."""
+def test_analyze_auto_detects_binary_large_n_uses_tango():
+    """For binary data with N >= 100, auto should still use tango pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 2
-    m_inputs = 120  # >= 100 threshold
+    m_inputs = 120
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
@@ -551,15 +547,12 @@ def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
     result_obj = _make_benchmark(scores, ["low", "high"])
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
-    # Pairwise comparisons should use bootstrap for N >= 100
     pair = bundle.pairwise.get("low", "high")
-    assert "bootstrap" in pair.test_method
-
-    # Advantage CIs should have n_bootstrap=0 (Wilson, no bootstrap)
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert "tango" in pair.test_method
+    assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_non_binary_still_uses_smooth_bootstrap():
+def test_analyze_non_binary_uses_t_interval():
     rng = np.random.default_rng(77)
     scores = rng.uniform(0, 1, size=(2, 30))
 
@@ -567,7 +560,7 @@ def test_analyze_non_binary_still_uses_smooth_bootstrap():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(77))
 
     pair = bundle.pairwise.get("A", "B")
-    assert "smooth" in pair.test_method
+    assert "t-interval" in pair.test_method.lower()
     assert bundle.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 

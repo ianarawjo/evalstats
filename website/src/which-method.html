@@ -744,7 +744,177 @@
         </p>
       </div>
 
-      <h3>Multi-Run Coverage (Hierarchical Data)</h3>
+      <h2>So Did Tango Score Interval Just Outperform the Bayesian Paired Method?</h2>
+      <p>
+        Based on the synthetic simulation alone, it certainly looks that way. In that study, <strong>Tango</strong> (0.955) 
+        edges out the Bayesian paired method (0.958) in coverage while being nearly 100× faster and without the catastrophic 
+        N≈200+ failure mode. The synthetic distributions, however, are drawn from idealized parametric families. The natural 
+        question is: does this hold on real LLM eval data, where item correlations, difficulty clustering, and lopsided 
+        score distributions are facts of life rather than simulation choices?
+      </p>
+
+      <h3>Pairwise Coverage on Real LLM Eval Data (Binary)</h3>
+      <p>
+        To check, we ran a pairwise coverage simulation on OpenEvals data, 
+        subsampling from pairs of models that share items for the same benchmark, across multiple benchmarks, 
+        and measuring whether each method's CI on the paired difference 
+        contained the true (full-population) difference. The results reveal a discrepancy that the synthetic study masked:
+      </p>
+
+      <img src="media/openeval_pairwise_binary_cov_x_cost.png" alt="Pairwise binary CI coverage vs. computation cost on real LLM eval data (OpenEvals), comparing Tango and Bayesian paired methods across sample sizes" style="width:100%;margin:1.2em 0 0.5em;">
+
+      <div class="fig-label">Table 6 — Pairwise binary method summary, real LLM eval data via OpenEvals (mean across all benchmarks, model pairs, and sample sizes)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Newcombe score interval</td>
+              <td class="center cell-worst">0.816▼</td>
+              <td class="center">0.037±0.000</td>
+              <td class="center">0.2382</td>
+              <td class="center">-0.134</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>BCa</td>
+              <td class="center cell-worst">0.892▼</td>
+              <td class="center">1.649±0.002</td>
+              <td class="center">0.3272</td>
+              <td class="center">-0.058</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Bayes bootstrap</td>
+              <td class="center cell-worst">0.899▼</td>
+              <td class="center">2.368±0.003</td>
+              <td class="center">0.3214</td>
+              <td class="center">-0.051</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Percentile bootstrap</td>
+              <td class="center cell-worst">0.910▼</td>
+              <td class="center">1.338±0.001</td>
+              <td class="center">0.3242</td>
+              <td class="center">-0.040</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Bootstrap-t</td>
+              <td class="center cell-worst">0.918</td>
+              <td class="center">1.892±0.002</td>
+              <td class="center">0.3455</td>
+              <td class="center">-0.032</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>t_interval</td>
+              <td class="center">0.942</td>
+              <td class="center">0.057±0.000</td>
+              <td class="center">0.3593</td>
+              <td class="center">-0.008</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Tango score interval ★</strong></td>
+              <td class="center cell-best">0.946</td>
+              <td class="center cell-best">0.048±0.000</td>
+              <td class="center cell-best">0.3111</td>
+              <td class="center">-0.004</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>Smooth bootstrap (Gaussian KDE)</td>
+              <td class="center cell-best">0.948</td>
+              <td class="center">3.242±0.004</td>
+              <td class="center">0.3727</td>
+              <td class="center">-0.002</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Bayesian paired comparison ★</strong></td>
+              <td class="center cell-best">0.958</td>
+              <td class="center">4.076±0.000</td>
+              <td class="center">0.3439</td>
+              <td class="center">+0.008</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>Bayesian independent comparison</td>
+              <td class="center">0.975</td>
+              <td class="center">0.551±0.000</td>
+              <td class="center">0.3844</td>
+              <td class="center">+0.025</td>
+              <td>Binary paired</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks under-target coverage. ★ marks preferred methods. Results are averaged across all benchmarks, model pairs, and sample sizes. Methods shown for all types (bootstrap, t-interval, etc.) are included for reference; in practice only binary-specific methods are applied to binary data.
+      </p>
+
+      <p>Tango is still good, but it slightly under-covers at small N&lt;50—so we can't entirely reproduce the strong result. Why?</p>
+
+      <h3>Why does Tango under-cover at small N on real data?</h3>
+        <p>
+          When we looked more closely at which model pairs drive the under-coverage, two patterns emerge:
+        </p>
+        <ul>
+          <li><strong>Dominated pairs:</strong> one model scores near 0% on a benchmark while the other scores, say, 80%. The discordant pairs (inputs where the two models disagree) are too lopsided for Tango's score statistic to accumulate enough signal, and the CI ends up slightly too narrow.</li>
+          <li><strong>Jointly sparse pairs:</strong> both models score very low, e.g. both around 2%. Again, discordant pairs are too rare, and the CI ends up slightly too narrow.</li>
+        </ul>
+        <p>
+          These extreme situations are very common in our sample of OpenEval's benchmark, 
+          since we sample a diverse set of models at different parameter scales (e.g., a 1B model versus a 70B one),
+          where the strong model dominates.
+          Our synthetic simulation represented these extreme situations, but in the end, their results are 
+          averaged with more "well-behaved" pairs across a wide range of distributions. 
+        </p>
+        <p>
+          This pattern could also be an artifact of how the real-data simulation is constructed. Because we subsample 
+          from large benchmarks — and large benchmarks contain correlated items and difficulty clusters — a random 
+          draw of N&thinsp;=&thinsp;20 items can easily land in a sparse or lopsided regime that would be unusual 
+          in a carefully curated, representative eval set. In a smaller, purpose-built evaluation that attempts 
+          reasonable coverage of difficulty, the dominance and sparsity problems would largely disappear.
+        </p>
+        <p>
+          Finally, these situations are also extreme cases where CIs don't tell us much
+          —if one model completely dominates in performance (0% vs 80%), 
+          merely eyeballing mean differences may be enough. 
+          Similarly, if both models perform very poorly (2% vs 2%), statistics are similarly not that informative.
+          So if a CI method is "slightly off", it may not be a big deal in practice.
+        </p>
+        <p>
+          That said, <code>evalstats</code> cannot base recommendations on "it's usually fine." 
+          Since the failure mode exists and is observable on real benchmark data at small N, our recommendation changes:
+        </p>
+        <ul>
+          <li><strong>N &lt; 50:</strong> use <strong>Bayesian paired with 10,000 resamples</strong> for binary pairwise CIs. It provides 
+          better small-sample coverage in the real-data regime, including the sparse/dominated cases where Tango 
+          struggles. We sacrifice speed considerably, but it's safer for extreme cases that may very well appear in practice
+          on poorly constructed evaluation sets or "David vs. Goliath" scenarios.</li>
+          <li><strong>N ≥ 50:</strong> switch to <strong>Tango score interval</strong>. At this point Tango reaches 
+          its target coverage, is dramatically faster, produces tighter CIs than Bayesian paired, and sits closer to 
+          the nominal α level rather than over-covering. Critically, it also does not deteriorate at large N the 
+          way the Bayesian paired method does.</li>
+        </ul>
+        <p>
+          This threshold-based switch is what <code>evalstats</code> implements under <code>method="auto"</code> 
+          for binary pairwise comparisons. 
+        </p>
+
+      <h2>Multi-Run Coverage (Hierarchical Data)</h2>
       <p>
         Increasingly, it has become good practice to collect multiple "runs" per input, to account for the inherent stochasticity in LLM outputs. 
         These <em>multi-run</em> scenarios introduce a second level of variance — run stochasticity <i>within</i> each input —
@@ -1041,7 +1211,7 @@
           and produce intervals that are far too narrow.
         </p>
         <p>
-          The important exception is <strong>Tango</strong> on flattened data: as a binary pairwise method it operates on
+          The important exception is <strong>Tango</strong> where <strong>we only take the first run's data (!)</strong>: as a binary pairwise method it operates on
           per-input paired differences and is not sensitive to input-level clustering in the same way as
           point-estimate methods. It achieves 0.963 coverage even without nested resampling, making it
           the recommended binary pairwise method regardless of whether runs are present.
@@ -1067,16 +1237,16 @@
         </p>
       </div>
 
-      <h3>Comparison with Bayesian Methods for Binary Scores</h3>
+      <h2>Comparison with Bayesian Methods for Binary Scores</h2>
       <p>
         To address the ICML 2025 position paper arguing that practitioners should avoid CLT-style / frequentist
         intervals for LLM evals in favor of Bayesian beta-posterior methods (<a href="https://arxiv.org/abs/2503.01747">"Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred Datapoints"</a>), we ensured the simulation included the exact Bayesian
         methods the authors advocate, implemented using their <code>bayes_evals</code> library.
-        Our simulation results put their recommendations seriously into question. For the binary scores 0/1, we find:
+        Our simulation results put their recommendations into question. For the binary scores 0/1, we find:
       </p>
       <ul>
         <li><strong>Wilson score interval</strong> lands on target coverage (0.951 synthetic; 0.955 real data) at much cheaper computational cost, so the paper's preferred Bayesian alternative is not needed here.</li>
-        <li>For the pairwise comparisons, the <strong>Tango</strong> method performs similarly, is blazing fast, and does not collapse catastrophically around N=200, making it the obvious winner compared to the authors' Bayesian paired method.</li>
+        <li>For the pairwise comparisons, the story is nuanced. In the synthetic simulation, <strong>Tango</strong> (0.955) matches Bayesian paired (0.958) in coverage while being nearly 100× faster. But on real LLM eval data — where dominated pairs and jointly-sparse model comparisons are common — Tango under-covers at N&nbsp;&lt;&nbsp;50. Bayesian paired remains better in that regime. At N&nbsp;≥&nbsp;50, Tango reaches target coverage, is dramatically faster, produces tighter intervals, and does not deteriorate at large N.</li>
         <li>In the new multi-run simulation, the adapted <strong>wilson_od</strong> method matches the <strong>beta_binomial</strong> interval at 0.925 coverage, so even in the hierarchical binary case the more explicitly model-based Beta-Binomial approach is not uniquely superior.</li>
       </ul>
       <p>
@@ -1085,10 +1255,9 @@
         paired method begins to fail catastrophically with overconfident CIs that continue to decline as N increases.
         (We ran additional simulations up to N=1000 confirming this pattern.
         The reason why seems to be that the importance sampling procedure becomes unstable at larger N.) 
-        Because of this failure mode, and because equally accurate frequentist alternatives are dramatically faster,
-        Bayesian paired is <strong>not recommended <em>at all</em></strong>, contrary to the paper's claims.
-        Instead, the evidence is very clear for binary evals data at small sample sizes: 
-        practitioners should use the <strong>Tango</strong> and <strong>Wilson</strong> intervals, and their multi-run analogues.
+        Because of this failure mode, Bayesian paired is <strong>not recommended for N&nbsp;≥&nbsp;100</strong> — and it should never be used beyond N&nbsp;≈&nbsp;200.
+        For small samples (N&nbsp;&lt;&nbsp;50), it retains a narrow use-case: real-data simulations show it handles dominated and jointly-sparse pairs better than Tango in that regime.
+        For larger samples, and as the default once N reaches 50, practitioners could switch to the <strong>Tango</strong> and <strong>Wilson</strong> intervals (and their multi-run analogues), which are fast, well-calibrated, and stable.
       </p>
 
       <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>

@@ -230,6 +230,43 @@ def clopper_pearson_ci(successes: int, n: int, alpha: float) -> tuple[float, flo
     return (lo, hi)
 
 
+def tango_paired_ci_flat(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Tango score CI treating multi-run data as a single-run flat baseline.
+
+    When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
+    only the **first run** (column 0) is used.  This is the honest
+    single-run baseline: one (A, B) binary pair per input, exactly as if
+    each input had been run once.  Concatenating all N*R observations as
+    independent pairs would inflate *n* and cause severe under-coverage;
+    this function avoids that by keeping the input as the unit of analysis.
+
+    If 1-D arrays are passed the call is forwarded directly to
+    :func:`tango_paired_ci` unchanged.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Either 1-D arrays of length N, or 2-D arrays of shape (N, R).
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = a[:, 0]
+    if b.ndim == 2:
+        b = b[:, 0]
+    return tango_paired_ci(a, b, alpha)
+
+
 def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     """Clopper-Pearson CI for a 1-D binary (0/1) array."""
     n = len(values)
@@ -1015,31 +1052,21 @@ def tango_paired_ci(
     return (lo, hi)
 
 
-def tango_paired_ci_multirun_discordance(
+def tango_paired_ci_multirun_cluster(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Multi-run Tango-style CI for paired binary difference (discordance-aware).
+    """Cluster-robust Tango CI for paired binary difference.
 
-    Extends Tango (1998) to repeated runs per item by:
-    - computing per-item discordance rates (A=1,B=0) and (A=0,B=1)
-    - preserving Tango's reliance on discordant pairs for variance
-    - adding cluster-level variance (overdispersion) across items
-    - retaining score-style shrinkage to avoid degeneracy
+    Treats each item as the unit of analysis. Uses the variance of
+    per-item paired differences directly, avoiding fragile within/between
+    decomposition.
 
-    Parameters
-    ----------
-    values_a, values_b : np.ndarray
-        Arrays of shape (n_items, n_runs). Values thresholded at 0.5.
-        Runs are assumed to be paired across A and B.
-    alpha : float
-        Significance level (1 - confidence level).
+    This is the most robust multirun extension: runs are treated as
+    internal noise already reflected in delta_i.
 
-    Returns
-    -------
-    (ci_low, ci_high) : tuple[float, float]
-        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    Reduces exactly to tango_paired_ci when n_runs == 1.
     """
     values_a = np.asarray(values_a)
     values_b = np.asarray(values_b)
@@ -1053,7 +1080,6 @@ def tango_paired_ci_multirun_discordance(
     if n_items <= 0:
         return (0.0, 0.0)
 
-    # Exact reduction to the original paired Tango interval for single-run data.
     if n_runs == 1:
         return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
@@ -1062,46 +1088,107 @@ def tango_paired_ci_multirun_discordance(
     b_bin = (values_b >= 0.5).astype(int)
 
     # --- per-item discordance rates ---
-    # d10_i: fraction of runs where A=1, B=0
-    # d01_i: fraction of runs where A=0, B=1
     d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
     d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
 
-    # per-item paired difference and discordance mass
     delta_i = d10_i - d01_i
-    u_i = d10_i + d01_i
 
-    # --- point estimates ---
-    d_hat = float(np.mean(delta_i))   # overall paired difference
+    # --- point estimate ---
+    d_hat = float(np.mean(delta_i))
 
-    # --- cluster variance (captures between-item heterogeneity) ---
+    # --- cluster variance ---
     if n_items > 1:
         var_delta = float(np.var(delta_i, ddof=1))
     else:
         var_delta = 0.0
 
-    # Per-item within-run variance of paired differences.
-    # For binary paired outcomes this is Var(delta_ir | item i) = u_i - delta_i^2.
+    # --- Tango shrinkage ---
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n_items
+
+    # --- variance (cluster-robust) ---
+    radicand = var_delta / n_items + z2 / (4.0 * n_items * n_items)
+
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+
+    return (lo, hi)
+
+
+def tango_paired_ci_multirun_effective(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Correlation-aware multirun Tango CI using effective sample size.
+
+    Adjusts within-item variance using an estimated effective number of runs
+    to account for correlation between runs.
+
+    This preserves efficiency while avoiding variance underestimation.
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+
+    if values_a.shape != values_b.shape:
+        raise ValueError("Inputs must have equal shape (n_items, n_runs).")
+    if values_a.ndim != 2:
+        raise ValueError("Expected 2-D arrays (n_items, n_runs).")
+
+    n_items, n_runs = values_a.shape
+    if n_items <= 0:
+        return (0.0, 0.0)
+
+    if n_runs == 1:
+        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+
+    # --- binarize ---
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    # --- per-item discordance ---
+    d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
+    d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
+
+    delta_i = d10_i - d01_i
+    u_i = d10_i + d01_i
+
+    d_hat = float(np.mean(delta_i))
+
+    if n_items > 1:
+        var_delta = float(np.var(delta_i, ddof=1))
+    else:
+        var_delta = 0.0
+
+    # --- within variance ---
     within_i = np.maximum(u_i - delta_i * delta_i, 0.0)
     within_bar = float(np.mean(within_i))
 
-    # --- Tango-style z ---
+    # --- estimate effective number of runs ---
+    # rho ≈ fraction of variance attributable to shared signal
+    if var_delta > 0:
+        rho = max(0.0, min(1.0, 1.0 - (within_bar / (var_delta * n_runs + 1e-12))))
+    else:
+        rho = 0.0
+
+    R_eff = n_runs / (1.0 + (n_runs - 1.0) * rho)
+
+    # --- adjusted variance decomposition ---
+    between_latent = max(var_delta - within_bar / R_eff, 0.0)
+
+    between = between_latent / n_items
+    within = within_bar / (n_items * R_eff)
+
+    # --- Tango shrinkage ---
     z = float(stats.norm.ppf(1.0 - alpha / 2.0))
     z2 = z * z
-
-    # --- shrinkage denominator (same as Tango) ---
     denom = 1.0 + z2 / n_items
 
-    # --- variance term (Tango + de-noised overdispersion) ---
-    # Observed Var(delta_i) contains both latent between-item heterogeneity and
-    # finite-run noise. Removing within_bar / n_runs prevents double-counting
-    # the same within-item uncertainty in both terms.
-    between_latent = max(var_delta - within_bar / n_runs, 0.0)
-    radicand = (
-        (between_latent / n_items)
-        + (within_bar / (n_items * n_runs))
-        + (z2 / (4.0 * n_items * n_items))
-    )
+    radicand = between + within + z2 / (4.0 * n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom

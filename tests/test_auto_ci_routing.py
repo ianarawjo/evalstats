@@ -1,11 +1,11 @@
-"""Tests for method='auto' marginal-CI routing introduced in the real-sim branch.
+"""Tests for method='auto' marginal-CI routing.
 
 Routing rules under test
 ------------------------
-* Binary (0/1) data           → resolved_ci_method == "wilson"
-* Continuous [0,1], any N     → resolved_ci_method == "nig"
-* Unbounded numeric, N >= 60  → resolved_ci_method == "t_interval"
-* Unbounded numeric, N < 60   → resolved_ci_method == "bootstrap_t"
+* Binary (0/1) data, single-run → resolved_ci_method == "wilson"
+* Binary (0/1) data, multi-run  → resolved_ci_method == "wilson_od"
+* Continuous [0,1], any N       → resolved_ci_method == "nig"
+* Unbounded numeric, any N      → resolved_ci_method == "t_interval"
 
 Each test also verifies that the returned CIs are finite, ordered (lo < hi),
 and bracket the sample mean at a reasonable confidence level.
@@ -83,21 +83,20 @@ class TestAutoRouting:
         bundle = self._analyze(scores)
         assert bundle.resolved_ci_method == "t_interval"
 
-    def test_unbounded_small_n_routes_to_bootstrap_t(self):
+    def test_unbounded_small_n_routes_to_t_interval(self):
         scores = np.random.default_rng(4).normal(5.0, 1.5, size=(2, 30))
         bundle = self._analyze(scores)
-        assert bundle.resolved_ci_method == "bootstrap_t"
+        assert bundle.resolved_ci_method == "t_interval"
 
     def test_boundary_n60_routes_to_t_interval(self):
-        # Exactly N=60 should use t_interval, not bootstrap_t.
         scores = np.random.default_rng(5).normal(3.0, 1.0, size=(2, 60))
         bundle = self._analyze(scores)
         assert bundle.resolved_ci_method == "t_interval"
 
-    def test_boundary_n59_routes_to_bootstrap_t(self):
+    def test_boundary_n59_routes_to_t_interval(self):
         scores = np.random.default_rng(6).normal(3.0, 1.0, size=(2, 59))
         bundle = self._analyze(scores)
-        assert bundle.resolved_ci_method == "bootstrap_t"
+        assert bundle.resolved_ci_method == "t_interval"
 
 
 # ---------------------------------------------------------------------------

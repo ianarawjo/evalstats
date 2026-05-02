@@ -120,7 +120,12 @@ def analyze(
     method : str
         Statistical method for CIs and p-values:
 
-        * ``'auto'`` (default) — smooth bootstrap for N < 200, plain bootstrap for N ≥ 200.
+        * ``'auto'`` (default) — data-adaptive: for binary data, uses the
+          Bayesian paired method for single-run benchmarks with N<40 (Tango
+          undercoverages at small N in real-data simulations), and Tango
+          otherwise (Wilson-OD marginals for multi-run); paired t-interval
+          for pairwise comparisons and t-interval / NIG marginal CIs for
+          numeric data (NIG for bounded [0, 1], t-interval otherwise).
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
         * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).
@@ -259,7 +264,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "fisher_exact", "sign_test"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "fisher_exact", "sign_test", "t_interval"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -767,47 +772,26 @@ def _analyze_single(
     run_scores = result.get_run_scores()   # (N, M, R) or (N, M, 1)
     labels = result.template_labels
 
-    # Auto-detect binary (0/1) evaluation data when method='auto'.
-    # For binary data with N < 100: use the Bayesian paired model (Bowyer 2025)
-    # for pairwise comparisons and Bayesian Beta posterior for advantage CIs.
-    # For binary data with N >= 100: use bootstrap for pairwise comparisons (enables simultaneous_cis)
-    # and Wilson for advantage (computationally lighter, accurate).
-    # Otherwise resolve 'auto' to its concrete bootstrap method so that
-    # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
     robustness_method = method
     if method == "auto":
-        from .resampling import is_binary_scores, is_bounded_01_scores, resolve_resampling_method
+        from .resampling import is_binary_scores, is_bounded_01_scores
+        R = run_scores.shape[2]
         if is_binary_scores(run_scores):
-            M = run_scores.shape[1]
-            R = run_scores.shape[2]
-            # Single-sample marginal CIs always use Wilson for binary data.
-            # Pairwise: Bayesian model for N < 100, bootstrap for N >= 100 (enables simultaneous_cis).
-            robustness_method = "wilson"
-            if R >= 3:
-                # With nested runs, per-input cell means are proportions, not
-                # binary values, so bayes_binary cannot apply.  pairwise_differences
-                # would silently fall back to smooth_bootstrap anyway; set it
-                # explicitly here so the simultaneous-CI router receives a
-                # consistent (bootstrap-compatible) method string and doesn't
-                # fall back to Bonferroni t-intervals instead of max-T bootstrap.
-                pairwise_method = resolve_resampling_method("auto", M)
-            elif M < 100:
+            # Pairwise: Bayesian paired for small single-run samples (N<50, undercoverage
+            # observed in simulations on real LLM eval data); Tango otherwise.
+            # Marginal CIs: Wilson (single-run), Wilson-OD (multi-run, accounts for clustering).
+            N = run_scores.shape[1]
+            if R < 3 and N < 50:
                 pairwise_method = "bayes_binary"
             else:
-                pairwise_method = resolve_resampling_method("bootstrap", M)
+                pairwise_method = "tango"
+            robustness_method = "wilson_od" if R >= 3 else "wilson"
         else:
-            M = run_scores.shape[1]
-            pairwise_method = resolve_resampling_method(method, M)
-            if is_bounded_01_scores(run_scores):
-                # Continuous [0,1] data: NIG credible interval for marginal CIs.
-                robustness_method = "nig"
-            elif M >= 60:
-                # Unbounded numeric, large sample: t-interval is near-perfect and fast.
-                robustness_method = "t_interval"
-            else:
-                # Unbounded numeric, small sample: bootstrap-t for second-order accuracy.
-                robustness_method = "bootstrap_t"
+            # Pairwise: paired t-interval on per-item (cell-mean) differences.
+            # Marginal CIs: NIG for bounded [0,1] data, t-interval for arbitrary numeric.
+            pairwise_method = "t_interval"
+            robustness_method = "nig" if is_bounded_01_scores(run_scores) else "t_interval"
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):

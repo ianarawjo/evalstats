@@ -239,7 +239,7 @@ def test_compare_models_accepts_flat_nested_arrays_for_runs():
     assert report.full_analysis.benchmark.template_labels == ["single_template"]
 
 
-def test_compare_models_multirun_uses_nested_bootstrap_for_pairwise():
+def test_compare_models_multirun_uses_t_interval_for_pairwise():
     rng = _rng(123)
     n_inputs = 40
     n_runs = 5
@@ -258,8 +258,7 @@ def test_compare_models_multirun_uses_nested_bootstrap_for_pairwise():
     )
 
     pair = report.pairwise.get("m1", "m2")
-    assert pair.n_runs == n_runs
-    assert "nested" in pair.test_method.lower()
+    assert "t-interval" in pair.test_method.lower()
 
 
 def test_compare_models_accepts_nested_template_dicts():

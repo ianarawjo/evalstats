@@ -123,7 +123,9 @@ with warnings.catch_warnings():
         smooth_bootstrap_diffs_nested,
         newcombe_paired_ci,
         tango_paired_ci,
-        tango_paired_ci_multirun_discordance,
+        tango_paired_ci_flat,
+        tango_paired_ci_multirun_cluster,
+        tango_paired_ci_multirun_effective,
         tango_paired_ci_multirun_moments,
     )
 
@@ -179,9 +181,14 @@ NEWCOMBE_FLAT_METHOD      = "newcombe_flat"
 BINARY_PAIR_FLAT_METHODS  = [TANGO_FLAT_METHOD, NEWCOMBE_FLAT_METHOD]
 
 # Pairwise binary nested (full N×R matrix)
-TANGO_MULTIRUN_METHOD      = "tango_multirun_disc"
+TANGO_MULTIRUN_CLUSTER_METHOD = "tango_multirun_cluster"
+TANGO_MULTIRUN_EFFECTIVE_METHOD = "tango_multirun_effective"
 TANGO_MULTIRUN_MOMENTS_METHOD = "tango_multirun_mmnt"
-BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_METHOD, TANGO_MULTIRUN_MOMENTS_METHOD]
+BINARY_PAIR_NESTED_METHODS = [
+    TANGO_MULTIRUN_CLUSTER_METHOD,
+    TANGO_MULTIRUN_EFFECTIVE_METHOD,
+    TANGO_MULTIRUN_MOMENTS_METHOD,
+]
 
 # Continuous-only methods on cell means
 BETA_METHOD    = "beta"
@@ -251,6 +258,8 @@ class PairMultiRunScenario:
     """generate_pair(rng, n_inputs, n_runs) -> (A, B) each of shape (n_inputs, n_runs)"""
     true_diff: float
     run_noise_frac: float
+    run_noise_frac_a: float = 0.0
+    run_noise_frac_b: float = 0.0
     icc: float = 0.0
     is_null: bool = False
 
@@ -740,6 +749,10 @@ def build_pair_multirun_scenarios(
     cohens_d_values: list[float] | None = None,
     include_null: bool = False,
     heteroscedastic: bool = False,
+    pairwise_noise_grid: bool = False,
+    pairwise_noise_grid_max: int | None = None,
+    pairwise_noise_grid_seed: int = 42,
+    cross_item_rho: float = 0.7,
 ) -> list[PairMultiRunScenario]:
     """Build pairwise multi-run paired-difference scenarios parameterised by run_noise_frac.
 
@@ -759,6 +772,18 @@ def build_pair_multirun_scenarios(
         ``[0.3]``.
     include_null : bool
         If True, prepend delta=0 scenarios for each (shape, f_run) combination.
+    pairwise_noise_grid : bool
+        If True, use Cartesian product of run-noise fractions across models,
+        i.e., all (f_A, f_B) pairs. If False, only matched pairs (f, f).
+    pairwise_noise_grid_max : int or None
+        Optional cap on number of (f_A, f_B) pairs. If provided and smaller
+        than full grid size, a reproducible random subset is used.
+    pairwise_noise_grid_seed : int
+        RNG seed used when downsampling noise-grid pairs.
+    cross_item_rho : float
+        Gaussian-copula correlation between the item-level latent scores of
+        model A and model B.  1.0 = perfect rank-correlation (old behaviour);
+        0.7 = realistic partial agreement.  Default is 0.7.
     """
     if cohens_d_values is None:
         cohens_d_values = [0.3]
@@ -767,6 +792,16 @@ def build_pair_multirun_scenarios(
     if include_null:
         d_list.append(0.0)
     d_list.extend(d for d in cohens_d_values if d > 0.0)
+
+    if pairwise_noise_grid:
+        noise_pairs = [(float(fa), float(fb)) for fa in run_noise_fracs for fb in run_noise_fracs]
+    else:
+        noise_pairs = [(float(f), float(f)) for f in run_noise_fracs]
+
+    if pairwise_noise_grid_max is not None and pairwise_noise_grid_max > 0 and len(noise_pairs) > pairwise_noise_grid_max:
+        rng_grid = np.random.default_rng(pairwise_noise_grid_seed)
+        keep_idx = np.sort(rng_grid.choice(len(noise_pairs), size=pairwise_noise_grid_max, replace=False))
+        noise_pairs = [noise_pairs[int(i)] for i in keep_idx]
 
     scenarios: list[PairMultiRunScenario] = []
 
@@ -781,22 +816,36 @@ def build_pair_multirun_scenarios(
 
     for shape_label, p0 in binary_shapes:
         total_std = float(np.sqrt(p0 * (1.0 - p0)))
-        for f in run_noise_fracs:
-            conc = float(max(f, 1e-6)) / float(max(1.0 - f, 1e-6))
-            icc = 1.0 / (conc + 1.0)
+        for f_a, f_b in noise_pairs:
+            conc_a = float(max(f_a, 1e-6)) / float(max(1.0 - f_a, 1e-6))
+            conc_b = float(max(f_b, 1e-6)) / float(max(1.0 - f_b, 1e-6))
+            icc_a = 1.0 / (conc_a + 1.0)
+            icc_b = 1.0 / (conc_b + 1.0)
+            icc = 0.5 * (icc_a + icc_b)
             for d in d_list:
                 delta = d * total_std
                 is_null = d == 0.0
                 effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|f={f:.2f}|{effect_tag}"
-                p_, c_, delta_ = p0, conc, delta
+                if pairwise_noise_grid:
+                    label = f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}"
+                else:
+                    label = f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                p_, ca_, cb_, delta_, rho_ = p0, conc_a, conc_b, delta, cross_item_rho
 
                 def _gen_bin_pair(
                     rng: np.random.Generator, n: int, runs: int,
-                    _p: float = p_, _c: float = c_, _d: float = delta_,
+                    _p: float = p_, _ca: float = ca_, _cb: float = cb_, _d: float = delta_,
+                    _rho: float = rho_,
                 ) -> tuple[np.ndarray, np.ndarray]:
-                    p_a = rng.beta(_c * _p, _c * (1.0 - _p), size=(n, 1))
-                    p_b = np.clip(p_a + _d, 0.0, 1.0)
+                    # Gaussian copula: item-level latent ranks are correlated at rho
+                    # rather than perfectly shared, giving a more realistic DGP.
+                    z_shared = rng.normal(size=(n, 1))
+                    z_indep  = rng.normal(size=(n, 1))
+                    q_a = np.clip(norm.cdf(z_shared), 1e-9, 1.0 - 1e-9)
+                    q_b = np.clip(norm.cdf(_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep), 1e-9, 1.0 - 1e-9)
+                    p_a  = stats.beta.ppf(q_a, _ca * _p, _ca * (1.0 - _p))
+                    p_b0 = stats.beta.ppf(q_b, _cb * _p, _cb * (1.0 - _p))
+                    p_b = np.clip(p_b0 + _d, 0.0, 1.0)
                     a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
                     b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
                     return a, b
@@ -805,7 +854,12 @@ def build_pair_multirun_scenarios(
                 scenarios.append(PairMultiRunScenario(
                     label=label, eval_type="binary",
                     generate_pair=_gen_bin_pair,
-                    true_diff=true_diff, run_noise_frac=f, icc=icc, is_null=is_null,
+                    true_diff=true_diff,
+                    run_noise_frac=0.5 * (f_a + f_b),
+                    run_noise_frac_a=f_a,
+                    run_noise_frac_b=f_b,
+                    icc=icc,
+                    is_null=is_null,
                 ))
 
     # ── Continuous [0, 1] ───────────────────────────────────────────────────
@@ -823,43 +877,59 @@ def build_pair_multirun_scenarios(
     for shape_label, a_b, b_b in continuous_shapes:
         var_base   = _beta_var(a_b, b_b)
         total_std  = float(np.sqrt(var_base))
-        for f in run_noise_fracs:
-            sigma_run = float(np.sqrt(var_base * f / max(1.0 - f, 1e-9)))
-            icc = 1.0 / (1.0 + sigma_run ** 2 / max(var_base, 1e-12))
+        for f_a, f_b in noise_pairs:
+            sigma_run_a = float(np.sqrt(var_base * f_a / max(1.0 - f_a, 1e-9)))
+            sigma_run_b = float(np.sqrt(var_base * f_b / max(1.0 - f_b, 1e-9)))
+            icc_a = 1.0 / (1.0 + sigma_run_a ** 2 / max(var_base, 1e-12))
+            icc_b = 1.0 / (1.0 + sigma_run_b ** 2 / max(var_base, 1e-12))
+            icc = 0.5 * (icc_a + icc_b)
             for d in d_list:
                 delta = d * total_std
                 is_null = d == 0.0
                 effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|f={f:.2f}|{effect_tag}"
-                a_, b_, sr_, delta_ = a_b, b_b, sigma_run, delta
+                if pairwise_noise_grid:
+                    label = f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}"
+                else:
+                    label = f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                a_, b_, sra_, srb_, delta_, rho_ = a_b, b_b, sigma_run_a, sigma_run_b, delta, cross_item_rho
 
                 def _gen_cont_pair(
                     rng: np.random.Generator, n: int, runs: int,
                     _a: float = a_, _b: float = b_,
-                    _sr: float = sr_, _d: float = delta_,
+                    _sra: float = sra_, _srb: float = srb_, _d: float = delta_,
                     _hetero: bool = heteroscedastic,
+                    _rho: float = rho_,
                 ) -> tuple[np.ndarray, np.ndarray]:
-                    base = rng.beta(_a, _b, size=(n, 1))
-                    if _sr > 0.0:
+                    z_shared = rng.normal(size=(n, 1))
+                    z_indep  = rng.normal(size=(n, 1))
+                    q_a = np.clip(norm.cdf(z_shared), 1e-9, 1.0 - 1e-9)
+                    q_b = np.clip(norm.cdf(_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep), 1e-9, 1.0 - 1e-9)
+                    base_a = stats.beta.ppf(q_a, _a, _b)
+                    base_b = stats.beta.ppf(q_b, _a, _b)
+                    if _sra > 0.0 or _srb > 0.0:
                         if _hetero:
-                            sigma_i = _sr * 2.0 * np.sqrt(base * (1.0 - base))
-                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
-                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * (_sra * 2.0 * np.sqrt(base_a * (1.0 - base_a)))
+                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * (_srb * 2.0 * np.sqrt(base_b * (1.0 - base_b)))
                         else:
-                            noise_a = rng.normal(0.0, _sr, size=(n, runs))
-                            noise_b = rng.normal(0.0, _sr, size=(n, runs))
+                            noise_a = rng.normal(0.0, _sra, size=(n, runs))
+                            noise_b = rng.normal(0.0, _srb, size=(n, runs))
                     else:
                         noise_a = np.zeros((n, runs))
                         noise_b = np.zeros((n, runs))
-                    a_sc = np.clip(base + noise_a, 0.0, 1.0)
-                    b_sc = np.clip(base + _d + noise_b, 0.0, 1.0)
+                    a_sc = np.clip(base_a + noise_a, 0.0, 1.0)
+                    b_sc = np.clip(base_b + _d + noise_b, 0.0, 1.0)
                     return a_sc, b_sc
 
                 true_diff = 0.0 if is_null else _estimate_true_pair_diff_mc(_gen_cont_pair)
                 scenarios.append(PairMultiRunScenario(
                     label=label, eval_type="continuous",
                     generate_pair=_gen_cont_pair,
-                    true_diff=true_diff, run_noise_frac=f, icc=icc, is_null=is_null,
+                    true_diff=true_diff,
+                    run_noise_frac=0.5 * (f_a + f_b),
+                    run_noise_frac_a=f_a,
+                    run_noise_frac_b=f_b,
+                    icc=icc,
+                    is_null=is_null,
                 ))
 
     # ── Likert 1–5 ──────────────────────────────────────────────────────────
@@ -873,44 +943,63 @@ def build_pair_multirun_scenarios(
         likert_shapes += [("likert-floor", 1.8), ("likert-ceil", 4.2)]
 
     for shape_label, mu_lat in likert_shapes:
-        for f in run_noise_fracs:
-            sigma_input_l = float(np.sqrt(max(1.0 - f, 0.0))) * _LIKERT_TOTAL_STD
-            sigma_run_l   = float(np.sqrt(f)) * _LIKERT_TOTAL_STD
-            icc = (1.0 - f)
+        for f_a, f_b in noise_pairs:
+            f_eff = 0.5 * (f_a + f_b)
+            sigma_input_l = float(np.sqrt(max(1.0 - f_eff, 0.0))) * _LIKERT_TOTAL_STD
+            sigma_run_a   = float(np.sqrt(f_a)) * _LIKERT_TOTAL_STD
+            sigma_run_b   = float(np.sqrt(f_b)) * _LIKERT_TOTAL_STD
+            icc = (1.0 - f_eff)
             for d in d_list:
                 delta = d * _LIKERT_TOTAL_STD
                 is_null = d == 0.0
                 effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|f={f:.2f}|{effect_tag}"
-                m_, si_, sr_, delta_ = mu_lat, sigma_input_l, sigma_run_l, delta
+                if pairwise_noise_grid:
+                    label = f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}"
+                else:
+                    label = f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                m_, si_, sra_, srb_, delta_, rho_ = mu_lat, sigma_input_l, sigma_run_a, sigma_run_b, delta, cross_item_rho
 
                 def _gen_likert_pair(
                     rng: np.random.Generator, n: int, runs: int,
-                    _m: float = m_, _si: float = si_, _sr: float = sr_, _d: float = delta_,
+                    _m: float = m_, _si: float = si_,
+                    _sra: float = sra_, _srb: float = srb_, _d: float = delta_,
                     _hetero: bool = heteroscedastic,
+                    _rho: float = rho_,
                 ) -> tuple[np.ndarray, np.ndarray]:
-                    base = rng.normal(_m, _si, size=(n, 1)) if _si > 0.0 else np.full((n, 1), _m)
-                    if _sr > 0.0:
+                    if _si > 0.0:
+                        z_shared = rng.normal(size=(n, 1))
+                        z_indep  = rng.normal(size=(n, 1))
+                        base_a = _m + _si * z_shared
+                        base_b = _m + _si * (_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep)
+                    else:
+                        base_a = np.full((n, 1), _m)
+                        base_b = np.full((n, 1), _m)
+                    if _sra > 0.0 or _srb > 0.0:
                         if _hetero:
-                            p_i = np.clip((base - 1.0) / 4.0, 0.0, 1.0)
-                            sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
-                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
-                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                            p_i_a = np.clip((base_a - 1.0) / 4.0, 0.0, 1.0)
+                            p_i_b = np.clip((base_b - 1.0) / 4.0, 0.0, 1.0)
+                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * (_sra * 2.0 * np.sqrt(p_i_a * (1.0 - p_i_a)))
+                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * (_srb * 2.0 * np.sqrt(p_i_b * (1.0 - p_i_b)))
                         else:
-                            noise_a = rng.normal(0.0, _sr, size=(n, runs))
-                            noise_b = rng.normal(0.0, _sr, size=(n, runs))
+                            noise_a = rng.normal(0.0, _sra, size=(n, runs))
+                            noise_b = rng.normal(0.0, _srb, size=(n, runs))
                     else:
                         noise_a = np.zeros((n, runs))
                         noise_b = np.zeros((n, runs))
-                    a_sc = np.rint(np.clip(base + noise_a, 1.0, 5.0))
-                    b_sc = np.rint(np.clip(base + _d + noise_b, 1.0, 5.0))
+                    a_sc = np.rint(np.clip(base_a + noise_a, 1.0, 5.0))
+                    b_sc = np.rint(np.clip(base_b + _d + noise_b, 1.0, 5.0))
                     return a_sc, b_sc
 
                 true_diff = 0.0 if is_null else _estimate_true_pair_diff_mc(_gen_likert_pair)
                 scenarios.append(PairMultiRunScenario(
                     label=label, eval_type="likert",
                     generate_pair=_gen_likert_pair,
-                    true_diff=true_diff, run_noise_frac=f, icc=icc, is_null=is_null,
+                    true_diff=true_diff,
+                    run_noise_frac=f_eff,
+                    run_noise_frac_a=f_a,
+                    run_noise_frac_b=f_b,
+                    icc=icc,
+                    is_null=is_null,
                 ))
 
     # ── Grades 0–100 ────────────────────────────────────────────────────────
@@ -924,44 +1013,63 @@ def build_pair_multirun_scenarios(
         grades_shapes += [("grades-ceiling", 86.0), ("grades-floor", 20.0)]
 
     for shape_label, mu_g in grades_shapes:
-        for f in run_noise_fracs:
-            sigma_input_g = float(np.sqrt(max(1.0 - f, 0.0))) * _GRADES_TOTAL_STD
-            sigma_run_g   = float(np.sqrt(f)) * _GRADES_TOTAL_STD
-            icc = (1.0 - f)
+        for f_a, f_b in noise_pairs:
+            f_eff = 0.5 * (f_a + f_b)
+            sigma_input_g = float(np.sqrt(max(1.0 - f_eff, 0.0))) * _GRADES_TOTAL_STD
+            sigma_run_a   = float(np.sqrt(f_a)) * _GRADES_TOTAL_STD
+            sigma_run_b   = float(np.sqrt(f_b)) * _GRADES_TOTAL_STD
+            icc = (1.0 - f_eff)
             for d in d_list:
                 delta = d * _GRADES_TOTAL_STD
                 is_null = d == 0.0
                 effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|f={f:.2f}|{effect_tag}"
-                m_, si_, sr_, delta_ = mu_g, sigma_input_g, sigma_run_g, delta
+                if pairwise_noise_grid:
+                    label = f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}"
+                else:
+                    label = f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                m_, si_, sra_, srb_, delta_, rho_ = mu_g, sigma_input_g, sigma_run_a, sigma_run_b, delta, cross_item_rho
 
                 def _gen_grades_pair(
                     rng: np.random.Generator, n: int, runs: int,
-                    _m: float = m_, _si: float = si_, _sr: float = sr_, _d: float = delta_,
+                    _m: float = m_, _si: float = si_,
+                    _sra: float = sra_, _srb: float = srb_, _d: float = delta_,
                     _hetero: bool = heteroscedastic,
+                    _rho: float = rho_,
                 ) -> tuple[np.ndarray, np.ndarray]:
-                    base = rng.normal(_m, _si, size=(n, 1)) if _si > 0.0 else np.full((n, 1), _m)
-                    if _sr > 0.0:
+                    if _si > 0.0:
+                        z_shared = rng.normal(size=(n, 1))
+                        z_indep  = rng.normal(size=(n, 1))
+                        base_a = _m + _si * z_shared
+                        base_b = _m + _si * (_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep)
+                    else:
+                        base_a = np.full((n, 1), _m)
+                        base_b = np.full((n, 1), _m)
+                    if _sra > 0.0 or _srb > 0.0:
                         if _hetero:
-                            p_i = np.clip(base / 100.0, 0.0, 1.0)
-                            sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
-                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
-                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                            p_i_a = np.clip(base_a / 100.0, 0.0, 1.0)
+                            p_i_b = np.clip(base_b / 100.0, 0.0, 1.0)
+                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * (_sra * 2.0 * np.sqrt(p_i_a * (1.0 - p_i_a)))
+                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * (_srb * 2.0 * np.sqrt(p_i_b * (1.0 - p_i_b)))
                         else:
-                            noise_a = rng.normal(0.0, _sr, size=(n, runs))
-                            noise_b = rng.normal(0.0, _sr, size=(n, runs))
+                            noise_a = rng.normal(0.0, _sra, size=(n, runs))
+                            noise_b = rng.normal(0.0, _srb, size=(n, runs))
                     else:
                         noise_a = np.zeros((n, runs))
                         noise_b = np.zeros((n, runs))
-                    a_sc = np.clip(base + noise_a, 0.0, 100.0)
-                    b_sc = np.clip(base + _d + noise_b, 0.0, 100.0)
+                    a_sc = np.clip(base_a + noise_a, 0.0, 100.0)
+                    b_sc = np.clip(base_b + _d + noise_b, 0.0, 100.0)
                     return a_sc, b_sc
 
                 true_diff = 0.0 if is_null else _estimate_true_pair_diff_mc(_gen_grades_pair)
                 scenarios.append(PairMultiRunScenario(
                     label=label, eval_type="grades",
                     generate_pair=_gen_grades_pair,
-                    true_diff=true_diff, run_noise_frac=f, icc=icc, is_null=is_null,
+                    true_diff=true_diff,
+                    run_noise_frac=f_eff,
+                    run_noise_frac_a=f_a,
+                    run_noise_frac_b=f_b,
+                    icc=icc,
+                    is_null=is_null,
                 ))
 
     return scenarios
@@ -1374,12 +1482,11 @@ def _run_pairwise_multirun_cell(args: tuple) -> list[SimResult]:
         # ── Binary pairwise methods ───────────────────────────────────────
         if scenario.eval_type == "binary":
             a0, b0 = a[:, 0], b[:, 0]   # first run only (flat iid baseline)
-
             t0 = time.perf_counter()
             try:
-                ci_low, ci_high = tango_paired_ci(a0, b0, alpha)
+                ci_low, ci_high = tango_paired_ci_flat(a, b, alpha)
             except Exception:
-                ci_low = ci_high = float(np.mean(a0 - b0))
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
             el = time.perf_counter() - t0
             total_t[TANGO_FLAT_METHOD]    += el
             total_t_sq[TANGO_FLAT_METHOD] += el * el
@@ -1400,7 +1507,8 @@ def _run_pairwise_multirun_cell(args: tuple) -> list[SimResult]:
             total_w[NEWCOMBE_FLAT_METHOD] += ci_high - ci_low
 
             for method, fn in [
-                (TANGO_MULTIRUN_METHOD, tango_paired_ci_multirun_discordance),
+                (TANGO_MULTIRUN_CLUSTER_METHOD, tango_paired_ci_multirun_cluster),
+                (TANGO_MULTIRUN_EFFECTIVE_METHOD, tango_paired_ci_multirun_effective),
                 (TANGO_MULTIRUN_MOMENTS_METHOD, tango_paired_ci_multirun_moments),
             ]:
                 t0 = time.perf_counter()
@@ -1840,6 +1948,8 @@ _METHOD_COLORS: dict[str, str] = {
     "tango_flat":               "#e7298a",
     "newcombe_flat":            "#66a61e",
     "tango_multirun_disc":      "#e6ab02",
+    "tango_multirun_cluster":   "#e6ab02",
+    "tango_multirun_effective": "#a6761d",
     "tango_multirun_mmnt":      "#1b9e77",
 }
 
@@ -2503,6 +2613,9 @@ def _run_benchmark_pairwise(
     label: str | None = None,
     n_workers: int = 1,
     heteroscedastic: bool = False,
+    pairwise_noise_grid: bool = False,
+    pairwise_noise_grid_max: int | None = None,
+    pairwise_noise_grid_seed: int = 42,
 ) -> list[SimResult]:
     if label:
         print(f"\n{'=' * 72}")
@@ -2517,6 +2630,15 @@ def _run_benchmark_pairwise(
         print(f"  Eval types       : all ({EVAL_TYPES})")
     print(f"  Runs per input   : {runs}")
     print(f"  Run noise fracs  : {run_noise_fracs}")
+    if pairwise_noise_grid:
+        grid_count = len(run_noise_fracs) * len(run_noise_fracs)
+        if pairwise_noise_grid_max is not None and pairwise_noise_grid_max > 0:
+            grid_desc = f"sampled {min(grid_count, pairwise_noise_grid_max)} of {grid_count}"
+        else:
+            grid_desc = f"full {grid_count} combinations"
+        print(f"  Pair noise grid  : enabled ({grid_desc})")
+    else:
+        print("  Pair noise grid  : disabled (matched f_A=f_B only)")
     print(f"  Cohen's d values : {cohens_d_values}")
     print(f"  Include null     : {include_null}")
     print(f"  Reps per cell    : {reps}")
@@ -2538,6 +2660,9 @@ def _run_benchmark_pairwise(
         cohens_d_values=cohens_d_values,
         include_null=include_null,
         heteroscedastic=heteroscedastic,
+        pairwise_noise_grid=pairwise_noise_grid,
+        pairwise_noise_grid_max=pairwise_noise_grid_max,
+        pairwise_noise_grid_seed=pairwise_noise_grid_seed,
     )
 
     if eval_types:
@@ -2711,6 +2836,15 @@ def main() -> None:
                         help="Use heteroscedastic run noise (sigma_run_i ∝ 2√(p_i(1−p_i)))"
                              " so mid-range inputs have higher within-run variance than"
                              " floor/ceiling inputs (mimics real LLM eval variability).")
+    parser.add_argument("--pairwise-noise-grid", action="store_true",
+                        help="Pairwise only: use full Cartesian grid of run-noise fractions"
+                            " across models, i.e. all (f_A, f_B) combinations.")
+    parser.add_argument("--pairwise-noise-grid-max", type=int, default=None, metavar="K",
+                        help="Pairwise only: optional max number of (f_A, f_B) combinations"
+                            " to sample uniformly at random from the full grid.")
+    parser.add_argument("--pairwise-noise-grid-seed", type=int, default=42, metavar="N",
+                        help="Pairwise only: seed for random sampling of noise-grid pairs"
+                            " when --pairwise-noise-grid-max is set (default: 42)")
     parser.add_argument("--official-test", action="store_true",
                         help="Run official large benchmark preset (overrides key sweep args)")
     args = parser.parse_args()
@@ -2732,6 +2866,7 @@ def main() -> None:
         args.run_noise_fracs = OFFICIAL_RUN_NOISE_FRACS.copy()
         args.estimand = "both"
         args.heteroscedastic = True
+        args.pairwise_noise_grid = True
 
     if args.bayes_n is None:
         args.bayes_n = args.bootstrap_n
@@ -2793,6 +2928,9 @@ def main() -> None:
                 label=label,
                 n_workers=args.workers,
                 heteroscedastic=args.heteroscedastic,
+                pairwise_noise_grid=args.pairwise_noise_grid,
+                pairwise_noise_grid_max=args.pairwise_noise_grid_max,
+                pairwise_noise_grid_seed=args.pairwise_noise_grid_seed,
             )
             all_results.extend(r_results)
 

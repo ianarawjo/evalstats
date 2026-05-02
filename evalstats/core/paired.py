@@ -30,6 +30,8 @@ from .resampling import (
     resolve_resampling_method,
     newcombe_paired_ci,
     tango_paired_ci,
+    tango_paired_ci_flat,
+    t_interval_ci_1d,
     bayes_paired_diff_ci,
     is_binary_scores,
     _stat,
@@ -488,7 +490,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -669,16 +671,24 @@ def pairwise_differences(
         )
 
     if method == "tango":
-        # When R >= 3 the cell means are proportions, not binary values.
-        # Fall back to smooth bootstrap for the seeded nested path.
-        if scores.ndim == 3 and scores.shape[2] >= 3:
-            return _seeded_fallback("smooth_bootstrap")
-        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
-        values_a = flat[idx_a]
-        values_b = flat[idx_b]
+        multirun = scores.ndim == 3 and scores.shape[2] > 1
+        if multirun:
+            # Multi-run flat baseline: use one paired binary observation per input
+            # by selecting run index 0 via tango_paired_ci_flat.
+            values_a_full = scores[idx_a]
+            values_b_full = scores[idx_b]
+            values_a = values_a_full[:, 0]
+            values_b = values_b_full[:, 0]
+        else:
+            flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+            values_a = flat[idx_a]
+            values_b = flat[idx_b]
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
-        ci_low, ci_high = tango_paired_ci(values_a, values_b, alpha_val)
+        if multirun:
+            ci_low, ci_high = tango_paired_ci_flat(values_a_full, values_b_full, alpha_val)
+        else:
+            ci_low, ci_high = tango_paired_ci(values_a, values_b, alpha_val)
         p_value = _mcnemar_p(values_a, values_b)
         return _build_result(
             diffs=diffs,
@@ -768,6 +778,31 @@ def pairwise_differences(
             test_name=test_name,
             values_a=_va_st,
             values_b=_vb_st,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Paired t-interval path                                              #
+    # ------------------------------------------------------------------ #
+    if method == "t_interval":
+        from scipy.stats import ttest_rel
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
+        alpha_val = 1.0 - ci
+        ci_low, ci_high = t_interval_ci_1d(diffs, alpha_val)
+        t_result = ttest_rel(values_a, values_b)
+        p_value = float(t_result.pvalue) if np.isfinite(t_result.pvalue) else 1.0
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_name="paired t-interval",
+            values_a=values_a,
+            values_b=values_b,
         )
 
     # ------------------------------------------------------------------ #
@@ -1365,7 +1400,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
@@ -1549,7 +1584,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
