@@ -4,15 +4,30 @@
     <section id="recommendations">
         <h2>Recommendations and Defaults</h2>
         <p>
-            Based on research and Monte Carlo simulations, we recommend the following methods for 
-            calculating confidence intervals and p-values in LLM eval contexts. 
-            These recommendations are implemented as the 
+            We have run the most comprehensive simulation study to date on confidence interval methods for LLM eval data, and with few exceptions, 
+            we have validated these results on real eval data as well. Based on this research, we recommend the following methods for 
+            calculating confidence intervals in LLM eval contexts. We also performed a smaller simulation study on p-value methods, and report recommendations as well. 
+            Some highlights from our CI method simulation analysis:
+        </p>
+        <ul>
+            <li><strong>Tango score interval nearly matches Bayesian paired performance at a fraction of the cost.</strong> For pairwise binary comparisons, the Tango score CI achieves coverage on par with the Bayesian paired approach of <code>bayes_evals</code> while being roughly 50–100× faster and — critically — remaining stable at large N where Bayesian paired begins to fail catastrophically (N&nbsp;≥&nbsp;200).</li>
+            <li><strong>Tango multi-run (<code>tango_multirun_mmnt</code>) is the best pairwise binary method in the multi-run setting.</strong> It achieves near-target coverage (0.957) and is the fastest of the three multi-run Tango variants. Notably, this method was invented by GPT-5: it proposed decomposing per-item variance into latent between-item and within-item Monte Carlo noise terms, yielding a closed-form extension of the Tango interval that reduces exactly to the standard single-run Tango when R&nbsp;=&nbsp;1.</li>
+            <li><strong>NIG nested (<code>nig_nested</code>) is the most on-target point-estimate method for binary data in the multi-run setting.</strong> Despite being a Gaussian model with no principled claim on 0/1 data, it achieves the highest coverage (0.966) across both synthetic and real-data simulations — a somewhat surprising result, likely due to its hierarchical variance decomposition producing conservatively wide intervals that compensate for the model mismatch.
+            It performs better than the "more reasonable" Bayesian priors for binomial data in this specific setting.</li>
+        </ul>
+        <p>These recommendations are implemented as the 
             <code>method="auto"</code> defaults in <code>evalstats</code>, 
             which adapt to data type and sample size based on which methods performed best in our simulations.
             Note that the contents of this section are subject to change as we gather more evidence for different situations.
         </p>
 
-        <h3>Recommended Methods to Compute Confidence Intervals (By Data Type)</h3>
+        <h3>Recommended Confidence Intervals Methods (By Data Type and Type of Comparison)</h3>
+        <div class="rec-tab-bar">
+          <button class="rec-tab-btn active" data-panel="single" onclick="switchRecTab('single')">Single-run</button>
+          <button class="rec-tab-btn" data-panel="multi" onclick="switchRecTab('multi')">Multi-run</button>
+        </div>
+
+        <div class="rec-tab-panel active" id="rec-panel-single">
         <div class="rec-grid">
         <div class="rec-column">
           <h4 class="rec-column-title">Point estimates</h4>
@@ -54,7 +69,7 @@
             <div class="rec-card-method">Normal-Inverse-Gamma (NIG) or Logit-transformed t-interval</div>
             <div class="rec-card-detail">
             Both methods perform nearly identically at the top. NIG is slightly conservative in practice and very fast;
-            logit-t is also near-exact and analytic. Use NIG if you'd like to be safe. 
+            logit-t is also near-exact and analytic. Use NIG if you'd like to be safe.
             </div>
           </div>
           </div>
@@ -75,7 +90,7 @@
             <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
             <div class="rec-card-method">Student's t-interval</div>
             <div class="rec-card-detail">
-            For unbounded numeric point estimates, use Student's t-interval. It is now the preferred method
+            For unbounded numeric point estimates, use Student's t-interval. It is the preferred method
             across unbounded numeric settings.
             </div>
           </div>
@@ -98,10 +113,11 @@
           </div>
           <div class="rec-body">
             <div class="rec-card-when">Binary (0 / 1)</div>
-            <div class="rec-card-method">Tango score interval</div>
+            <div class="rec-card-method">Bayesian paired (N&lt;50) / Tango score interval (N≥50)</div>
             <div class="rec-card-detail">
-            Tango is the preferred binary pairwise CI method for its coverage and speed, matching the small-samples
-            performance of Bayesian paired intervals of <a href="https://github.com/sambowyer/bayes_evals"><code>bayes_evals</code></a> without the computational cost.
+            Real eval data shows Tango under-covers at small N in dominated or jointly-sparse pairs.
+            Bayesian paired handles these edge cases better below N=50. At N≥50, Tango is on-target,
+            nearly 100× faster, and produces tighter CIs.
             </div>
           </div>
           </div>
@@ -121,7 +137,7 @@
             <div class="rec-card-when">Continuous scores in [0, 1] (e.g. accuracy, ROUGE, similarity)</div>
             <div class="rec-card-method">Student's t-interval</div>
             <div class="rec-card-detail">
-            Use Student's t-interval for pairwise comparisons on continuous data. It is now the preferred method
+            Use Student's t-interval for pairwise comparisons on continuous data. It is the preferred method
             across numeric/continuous pairwise settings.
             </div>
           </div>
@@ -149,67 +165,145 @@
           </div>
         </div>
         </div>
+        </div><!-- /rec-tab-panel#single -->
 
-        <h3>By Analysis Type (Confidence Intervals)</h3>
-        <div class="table-wrap">
-        <table>
-            <thead>
-            <tr>
-                <th>Task</th>
-                <th>Data Type</th>
-                <th>Recommended Method</th>
-                <th>Notes</th>
-            </tr>
-            </thead>
-            <tbody>
-            <tr>
-                <td>Single-sample CI on mean score</td>
-                <td>Binary</td>
-                <td><strong>Wilson score interval</strong></td>
-                <td>Closed-form, best coverage</td>
-            </tr>
-            <tr>
-                <td>Single-sample CI on mean score</td>
-                <td>Continuous [0,&thinsp;1]</td>
-                <td><strong>Normal-Inverse-Gamma (NIG) / Logit-t</strong></td>
-                <td>NIG: slightly conservative but near-exact on real data; logit-t: exact-on-target in synthetic sim. Both are analytic and fast.</td>
-            </tr>
-            <tr>
-                <td>Single-sample CI on mean score</td>
-                <td>Unbounded numeric (Likert, grades, etc.)</td>
-                <td><strong>Bootstrap-t (N&lt;60) / Student's t-interval (N≥60)</strong></td>
-                <td>Second-order accuracy at small N; t-interval is near-perfect and instant at N≥60</td>
-            </tr>
-            <tr>
-                <td>Pairwise comparison (A vs B)</td>
-                <td>Binary</td>
-              <td><strong>Tango score interval</strong></td>
-              <td>Preferred binary pairwise method. Bayesian paired is dropped; Newcombe is explicitly <em>not</em> recommended (severe under-coverage).</td>
-            </tr>
-            <tr>
-                <td>Pairwise comparison (A vs B)</td>
-                <td>Numeric/Interval</td>
-              <td><strong>Student's t-interval</strong></td>
-              <td>Preferred default for pairwise numeric/continuous data; fast and well-calibrated in simulation. BCa is explicitly <em>not</em> recommended.</td>
-            </tr>
-            <tr>
-                <td>All pairwise comparisons (k templates)</td>
-                <td>Any</td>
-                <td>As above + <strong>multi-comparisons correction</strong></td>
-                <td>We recommend the max-T resampling procedure (<code>simultaneous_ci=True</code> will use max-T if the method is also bootstrap-based).
-                There is a <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w">precedent</a> for this in the ML literature.</td>
-            </tr>
-            <tr>
-                <td>Hierarchical data (multi-run)</td>
-                <td>Any</td>
-                <td><strong>Nested smooth bootstrap (Gaussian KDE)</strong></td>
-                <td>Resample inputs, then runs within inputs; propagates run stochasticity into CIs</td>
-            </tr>
-            </tbody>
-        </table>
+        <div class="rec-tab-panel" id="rec-panel-multi">
+        <div class="rec-grid">
+        <div class="rec-column">
+          <h4 class="rec-column-title">Point estimates</h4>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+              <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+              <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+              <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Binary (0 / 1)</div>
+            <div class="rec-card-method">Normal-Inverse-Gamma (NIG)-nested</div>
+            <div class="rec-card-detail">
+            A nested variant of the Normal-Inverse-Gamma Bayesian method has the 
+            best coverage across synthetic (0.966) and real eval data. Decomposes variance into
+            between-item and within-item run components — no resampling required and very fast (0.14&thinsp;ms).
+            Though it seems theoretically strange, this method performed better than 
+            more "reasonable" Bayesian methods for a binary regime. 
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                fill="currentColor" opacity="0.12"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Continuous scores in [0, 1]</div>
+            <div class="rec-card-method">NIG-nested or Logit-t on per-input means</div>
+            <div class="rec-card-detail">
+            NIG-nested (0.966) is the safest default: it accounts for run variance explicitly.
+            Logit-t on per-input means (0.949) is also on-target and instant if you pre-average runs.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+              <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Student's t-interval on per-input means</div>
+            <div class="rec-card-detail">
+            Average runs per input, then apply the standard t-interval over those means.
+            Near-target coverage and instant to compute.
+            </div>
+          </div>
+          </div>
         </div>
 
-        <h3>By Analysis Type (P-values)</h3>
+        <div class="rec-column">
+          <h4 class="rec-column-title">Pairwise comparisons</h4>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+              <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+              <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+              <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Binary (0 / 1)</div>
+            <div class="rec-card-method">Tango (multi-run variant with moments)</div>
+            <div class="rec-card-detail">
+            <code>tango_multirun_mmnt</code> is the fastest and best-calibrated multi-run binary pairwise method (0.957), 
+            validated in both our synthetic and real-data simulations.
+            As far as we know, this is a novel multi-run extension of the Tango score interval which was proposed by GPT-5.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                fill="currentColor" opacity="0.12"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Continuous scores in [0, 1]</div>
+            <div class="rec-card-method">Student's t-interval on per-input means</div>
+            <div class="rec-card-detail">
+            Average runs per input, then apply the paired t-interval over those means. Near-target (0.947) and instant.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+              <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Student's t-interval on per-input means</div>
+            <div class="rec-card-detail">
+            Average runs per input, then apply the paired t-interval over those means.
+            </div>
+          </div>
+          </div>
+        </div>
+        </div>
+        </div><!-- /rec-tab-panel#multi -->
+
+        <h3>Recommended p-value methods by analysis type</h3>
         <div class="table-wrap">
         <table>
             <thead>
@@ -919,7 +1013,7 @@
           reasonable coverage of difficulty, the dominance and sparsity problems would largely disappear.
         </p>
         <p>
-          Finally, these situations are also extreme cases where CIs don't tell us much
+          Finally, the situations where Tango under-performs are also extreme cases where CIs don't tell us much
           —if one model completely dominates in performance (0% vs 80%), 
           merely eyeballing mean differences may be enough. 
           Similarly, if both models perform very poorly (2% vs 2%), statistics are similarly not that informative.
@@ -1508,3 +1602,13 @@
       
     </section>
 </article>
+<script>
+function switchRecTab(panel) {
+  document.querySelectorAll('.rec-tab-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.panel === panel);
+  });
+  document.querySelectorAll('.rec-tab-panel').forEach(function(p) {
+    p.classList.toggle('active', p.id === 'rec-panel-' + panel);
+  });
+}
+</script>

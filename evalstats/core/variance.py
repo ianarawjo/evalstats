@@ -259,7 +259,7 @@ def robustness_metrics(
 
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
-    _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "t_interval"}
+    _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "nig_nested", "t_interval"}
     if n_bootstrap is not None or marginal_method in _analytical:
         if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
@@ -272,6 +272,7 @@ def robustness_metrics(
             wilson_nested_od,
             jeffreys_ci_1d,
             nig_ci_1d,
+            nig_ci_nested,
             t_interval_ci_1d,
             bootstrap_t_ci_1d,
         )
@@ -294,6 +295,13 @@ def robustness_metrics(
                 lo, hi = jeffreys_ci_1d(row, alpha)
             elif marginal_method == "nig":
                 lo, hi = nig_ci_1d(row, alpha)
+            elif marginal_method == "nig_nested":
+                # Hierarchical NIG: uses per-template (N, R) slice when available,
+                # falls back to standard NIG on the collapsed means otherwise.
+                if scores_3d is not None:
+                    lo, hi = nig_ci_nested(scores_3d[i], alpha)
+                else:
+                    lo, hi = nig_ci_1d(row, alpha)
             elif marginal_method == "t_interval":
                 lo, hi = t_interval_ci_1d(row, alpha)
             elif marginal_method == "bootstrap_t":

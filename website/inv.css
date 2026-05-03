@@ -870,6 +870,36 @@ tr:nth-child(even) td { background: var(--bg-soft); }
   }
 }
 
+/* ─── REC TABS (Single-run / Multi-run) ──────────────── */
+.rec-tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+  font-family: var(--font-sans);
+}
+.rec-tab-btn {
+  padding: 0.45rem 1.1rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+  font-family: var(--font-sans);
+}
+.rec-tab-btn:hover { color: var(--text); }
+.rec-tab-btn.active {
+  color: var(--orange);
+  border-bottom-color: var(--orange);
+  font-weight: 600;
+}
+.rec-tab-panel { display: none; }
+.rec-tab-panel.active { display: block; }
+
 /* ─── INLINE FIGURE LABEL ─────────────────────────────── */
 .fig-label {
   font-family: var(--font-sans);

@@ -27,7 +27,7 @@ from evalstats.core.resampling import (
     jeffreys_ci_1d,
     newcombe_paired_ci,
     tango_paired_ci,
-    tango_paired_ci_multirun_discordance,
+    tango_paired_ci_multirun_cluster,
     tango_paired_ci_multirun_moments,
 )
 from evalstats.core.paired import (
@@ -230,7 +230,7 @@ def test_tango_multirun_reduces_to_single_run_tango():
     alpha = 0.05
 
     expected = tango_paired_ci(a[:, 0], b[:, 0], alpha)
-    got_discordance = tango_paired_ci_multirun_discordance(a, b, alpha)
+    got_discordance = tango_paired_ci_multirun_cluster(a, b, alpha)
     got_moments = tango_paired_ci_multirun_moments(a, b, alpha)
 
     np.testing.assert_allclose(got_discordance, expected, atol=1e-12)
@@ -248,8 +248,8 @@ def test_tango_multirun_ci_narrows_with_more_runs_when_items_are_homogeneous():
     a = rng.binomial(1, 0.65, size=(n_items, n_runs)).astype(float)
     b = rng.binomial(1, 0.55, size=(n_items, n_runs)).astype(float)
 
-    lo1_d, hi1_d = tango_paired_ci_multirun_discordance(a[:, :1], b[:, :1], alpha)
-    lo8_d, hi8_d = tango_paired_ci_multirun_discordance(a, b, alpha)
+    lo1_d, hi1_d = tango_paired_ci_multirun_cluster(a[:, :1], b[:, :1], alpha)
+    lo8_d, hi8_d = tango_paired_ci_multirun_cluster(a, b, alpha)
     assert (hi8_d - lo8_d) < (hi1_d - lo1_d)
 
     lo1_m, hi1_m = tango_paired_ci_multirun_moments(a[:, :1], b[:, :1], alpha)

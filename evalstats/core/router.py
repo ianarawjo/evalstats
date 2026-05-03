@@ -120,12 +120,13 @@ def analyze(
     method : str
         Statistical method for CIs and p-values:
 
-        * ``'auto'`` (default) — data-adaptive: for binary data, uses the
-          Bayesian paired method for single-run benchmarks with N<40 (Tango
-          undercoverages at small N in real-data simulations), and Tango
-          otherwise (Wilson-OD marginals for multi-run); paired t-interval
-          for pairwise comparisons and t-interval / NIG marginal CIs for
-          numeric data (NIG for bounded [0, 1], t-interval otherwise).
+        * ``'auto'`` (default) — data-adaptive: for binary data, uses Bayesian
+          paired for N<50 (Tango under-covers at small N on real eval data),
+          Tango otherwise (multi-run path uses the mmnt moment-decomposition
+          variant); marginal CIs use Wilson (single-run binary), NIG-nested
+          (multi-run binary/continuous [0,1]), or NIG (single-run continuous
+          [0,1]); paired t-interval for all numeric pairwise comparisons, and
+          t-interval for unbounded numeric marginals.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
         * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).
@@ -777,21 +778,26 @@ def _analyze_single(
     if method == "auto":
         from .resampling import is_binary_scores, is_bounded_01_scores
         R = run_scores.shape[2]
+        N = run_scores.shape[1]
         if is_binary_scores(run_scores):
-            # Pairwise: Bayesian paired for small single-run samples (N<50, undercoverage
-            # observed in simulations on real LLM eval data); Tango otherwise.
-            # Marginal CIs: Wilson (single-run), Wilson-OD (multi-run, accounts for clustering).
-            N = run_scores.shape[1]
-            if R < 3 and N < 50:
+            # Pairwise: Bayesian paired for N<50 (real-data simulations show Tango
+            # under-covers in dominated/jointly-sparse pairs at small N, regardless
+            # of run count); Tango otherwise (mmnt variant for multi-run via paired.py).
+            # Marginal CIs: Wilson (single-run), NIG-nested (multi-run).
+            if N < 50:
                 pairwise_method = "bayes_binary"
             else:
                 pairwise_method = "tango"
-            robustness_method = "wilson_od" if R >= 3 else "wilson"
+            robustness_method = "nig_nested" if R >= 3 else "wilson"
         else:
             # Pairwise: paired t-interval on per-item (cell-mean) differences.
-            # Marginal CIs: NIG for bounded [0,1] data, t-interval for arbitrary numeric.
+            # Marginal CIs: NIG-nested for multi-run bounded [0,1], NIG for
+            # single-run bounded [0,1], t-interval for arbitrary numeric.
             pairwise_method = "t_interval"
-            robustness_method = "nig" if is_bounded_01_scores(run_scores) else "t_interval"
+            if is_bounded_01_scores(run_scores):
+                robustness_method = "nig_nested" if R >= 3 else "nig"
+            else:
+                robustness_method = "t_interval"
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):

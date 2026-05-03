@@ -31,6 +31,7 @@ from .resampling import (
     newcombe_paired_ci,
     tango_paired_ci,
     tango_paired_ci_flat,
+    tango_paired_ci_multirun_moments,
     t_interval_ci_1d,
     bayes_paired_diff_ci,
     is_binary_scores,
@@ -673,11 +674,13 @@ def pairwise_differences(
     if method == "tango":
         multirun = scores.ndim == 3 and scores.shape[2] > 1
         if multirun:
-            # Multi-run flat baseline: use one paired binary observation per input
-            # by selecting run index 0 via tango_paired_ci_flat.
-            values_a_full = scores[idx_a]
-            values_b_full = scores[idx_b]
-            values_a = values_a_full[:, 0]
+            # Multi-run: use the moment-decomposition variant (tango_multirun_mmnt),
+            # which accounts for within-item run variance and reduces exactly to the
+            # standard Tango CI when n_runs == 1. Better calibrated than the flat
+            # baseline (tango_paired_ci_flat) in simulation.
+            values_a_full = scores[idx_a]   # (M, R)
+            values_b_full = scores[idx_b]   # (M, R)
+            values_a = values_a_full[:, 0]  # for _paired_stats / mcnemar (single-run view)
             values_b = values_b_full[:, 0]
         else:
             flat = scores.mean(axis=2) if scores.ndim == 3 else scores
@@ -686,7 +689,7 @@ def pairwise_differences(
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         if multirun:
-            ci_low, ci_high = tango_paired_ci_flat(values_a_full, values_b_full, alpha_val)
+            ci_low, ci_high = tango_paired_ci_multirun_moments(values_a_full, values_b_full, alpha_val)
         else:
             ci_low, ci_high = tango_paired_ci(values_a, values_b, alpha_val)
         p_value = _mcnemar_p(values_a, values_b)
