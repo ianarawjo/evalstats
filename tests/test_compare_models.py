@@ -363,3 +363,23 @@ def test_compare_models_rejects_unknown_template_model_collapse():
             template_model_collapse="median",  # type: ignore[arg-type]
             rng=_rng(28),
         )
+
+
+def test_compare_models_tango_two_models_single_run_regression():
+    rng = _rng(20260503)
+    n_inputs = 50
+
+    scores_a = rng.binomial(1, 0.70, n_inputs).astype(float)
+    scores_b = rng.binomial(1, 0.65, n_inputs).astype(float)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        report = es.compare_models(
+            {"Model A": scores_a, "Model B": scores_b},
+            method="tango",
+            rng=_rng(20260504),
+        )
+
+    pair = report.pairwise.get("Model A", "Model B")
+    assert "tango" in pair.test_method.lower()
+    assert not any("only 2 runs detected" in str(w.message) for w in caught)

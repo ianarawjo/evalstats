@@ -831,11 +831,8 @@ def compare_models(
         )
 
     if template_model_collapse == "auto":
-        binary_only_methods = {"wilson", "newcombe", "tango", "fisher_exact", "bayes_binary"}
         resolved_template_model_collapse: Literal["mean", "as_runs"] = (
-            "mean"
-            if (n_templates == 1 and method not in binary_only_methods)
-            else "as_runs"
+            "mean" if n_templates == 1 else "as_runs"
         )
     elif template_model_collapse in {"mean", "as_runs"}:
         resolved_template_model_collapse = template_model_collapse

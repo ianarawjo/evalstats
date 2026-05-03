@@ -887,6 +887,17 @@ def _analyze_multi_model(
     omnibus: bool = False,
     p_value_method: Optional[str] = None,
 ) -> MultiModelBundle:
+    from .resampling import is_binary_scores
+
+    binary_only_methods = {"bayes_binary", "wilson", "newcombe", "tango", "fisher_exact"}
+
+    def _effective_method(sub_result: BenchmarkResult) -> CompareMethod:
+        """Keep explicit binary-only methods only for binary-compatible sub-analyses."""
+        if method in binary_only_methods and not is_binary_scores(sub_result.get_run_scores()):
+            print(f"Warning: sub-result scores are not binary, but method='{method}' was requested. Using 'auto' instead.")
+            return "auto"
+        return method
+
     kwargs = dict(
         reference=reference,
         method=method,
@@ -946,7 +957,7 @@ def _analyze_multi_model(
     template_level = _analyze_single(
         result=template_mean_result,
         shape=template_level_shape,
-        **kwargs,
+        **{**kwargs, "method": _effective_method(template_mean_result)},
     )
 
     flat_result = result.get_flat_result()
