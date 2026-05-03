@@ -94,7 +94,21 @@ with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from evalstats.core.resampling import (
         bootstrap_ci_1d,
+        bca_interval_1d,
         t_interval_ci_1d,
+        wald_ci_1d,
+        clopper_pearson_ci_1d,
+        wilson_ci_1d,
+        bayes_binary_ci_1d,
+        bootstrap_means_1d,
+        bootstrap_means_nested,
+        bayes_bootstrap_means_nested,
+        smooth_bootstrap_means_nested,
+        bootstrap_t_ci_nested,
+        wilson_nested_de,
+        wilson_nested_od,
+        wilson_nested_bb,
+        nig_ci_nested,
         newcombe_paired_ci,
         tango_paired_ci_flat,
         tango_paired_ci_multirun_cluster,
@@ -208,6 +222,109 @@ _METHOD_LABELS: dict[str, str] = {
 }
 
 SOURCES = ["dove", "openeval", "inspect"]
+
+# ---------------------------------------------------------------------------
+# Single-sample (point-estimate / mean) CI method constants
+# ---------------------------------------------------------------------------
+
+BOOTSTRAP_NESTED_METHOD   = "bootstrap_nested"
+BAYES_NESTED_METHOD       = "bayes_bootstrap_nested"
+SMOOTH_NESTED_METHOD      = "smooth_bootstrap_nested"
+BCA_NESTED_METHOD         = "bca_nested"
+BOOTSTRAP_T_NESTED_METHOD = "bootstrap_t_nested"
+T_INTERVAL_FLAT_METHOD    = "t_interval_flat"
+BOOTSTRAP_FLAT_METHOD     = "bootstrap_flat"
+WILSON_FLAT_METHOD        = "wilson_flat"
+WALD_FLAT_METHOD          = "wald_flat"
+CP_FLAT_METHOD            = "clopper_pearson_flat"
+BAYES_INDEP_FLAT_METHOD   = "bayes_indep_flat"
+WILSON_DE_METHOD          = "wilson_de"
+WILSON_OD_METHOD          = "wilson_od"
+BETA_BINOMIAL_METHOD      = "beta_binomial"
+
+SINGLE_SAMPLE_BASE_METHODS = [
+    BOOTSTRAP_METHOD,
+    BCA_METHOD,
+    BAYES_BOOTSTRAP_METHOD,
+    SMOOTH_BOOTSTRAP_METHOD,
+    BOOTSTRAP_T_METHOD,
+    T_INTERVAL_METHOD,
+]
+SINGLE_SAMPLE_NESTED_METHODS = [
+    BOOTSTRAP_NESTED_METHOD,
+    BAYES_NESTED_METHOD,
+    SMOOTH_NESTED_METHOD,
+    BCA_NESTED_METHOD,
+    BOOTSTRAP_T_NESTED_METHOD,
+]
+SINGLE_SAMPLE_FLAT_METHODS = [
+    T_INTERVAL_FLAT_METHOD,
+    BOOTSTRAP_FLAT_METHOD,
+]
+SINGLE_SAMPLE_BINARY_FLAT_METHODS = [
+    WILSON_FLAT_METHOD,
+    WALD_FLAT_METHOD,
+    CP_FLAT_METHOD,
+    BAYES_INDEP_FLAT_METHOD,
+]
+SINGLE_SAMPLE_BINARY_NESTED_METHODS = [
+    WILSON_DE_METHOD,
+    WILSON_OD_METHOD,
+    BETA_BINOMIAL_METHOD,
+]
+SINGLE_SAMPLE_ALL_METHODS = (
+    SINGLE_SAMPLE_BASE_METHODS
+    + SINGLE_SAMPLE_BINARY_FLAT_METHODS
+    + SINGLE_SAMPLE_BINARY_NESTED_METHODS
+    + SINGLE_SAMPLE_NESTED_METHODS
+    + SINGLE_SAMPLE_FLAT_METHODS
+)
+
+_SINGLE_METHOD_LABELS: dict[str, str] = {
+    BOOTSTRAP_METHOD:           "bootstrap",
+    BCA_METHOD:                 "bca",
+    BAYES_BOOTSTRAP_METHOD:     "bayes_bootstrap",
+    SMOOTH_BOOTSTRAP_METHOD:    "smooth_bootstrap",
+    BOOTSTRAP_T_METHOD:         "bootstrap_t",
+    T_INTERVAL_METHOD:          "t_interval",
+    WILSON_FLAT_METHOD:         "wilson",
+    WALD_FLAT_METHOD:           "wald",
+    CP_FLAT_METHOD:             "clopper_pearson",
+    BAYES_INDEP_FLAT_METHOD:    "bayes_indep",
+    WILSON_DE_METHOD:           "wilson_de",
+    WILSON_OD_METHOD:           "wilson_od",
+    BETA_BINOMIAL_METHOD:       "beta_binomial",
+    BOOTSTRAP_NESTED_METHOD:    "bootstrap_nested",
+    BAYES_NESTED_METHOD:        "bayes_bstrap_nested",
+    SMOOTH_NESTED_METHOD:       "smooth_bstrap_nested",
+    BCA_NESTED_METHOD:          "bca_nested",
+    BOOTSTRAP_T_NESTED_METHOD:  "bootstrap_t_nested",
+    T_INTERVAL_FLAT_METHOD:     "t_interval_flat",
+    BOOTSTRAP_FLAT_METHOD:      "bootstrap_flat",
+}
+
+_SINGLE_METHOD_COLORS: dict[str, str] = {
+    BOOTSTRAP_METHOD:           "#1f77b4",
+    BCA_METHOD:                 "#2ca02c",
+    BAYES_BOOTSTRAP_METHOD:     "#ff7f0e",
+    SMOOTH_BOOTSTRAP_METHOD:    "#9467bd",
+    BOOTSTRAP_T_METHOD:         "#d62728",
+    T_INTERVAL_METHOD:          "#8c564b",
+    WILSON_FLAT_METHOD:         "#e7298a",
+    WALD_FLAT_METHOD:           "#66a61e",
+    CP_FLAT_METHOD:             "#e6ab02",
+    BAYES_INDEP_FLAT_METHOD:    "#1b9e77",
+    WILSON_DE_METHOD:           "#a6761d",
+    WILSON_OD_METHOD:           "#666666",
+    BETA_BINOMIAL_METHOD:       "#17becf",
+    BOOTSTRAP_NESTED_METHOD:    "#aec7e8",
+    BAYES_NESTED_METHOD:        "#ffbb78",
+    SMOOTH_NESTED_METHOD:       "#c5b0d5",
+    BCA_NESTED_METHOD:          "#98df8a",
+    BOOTSTRAP_T_NESTED_METHOD:  "#ff9896",
+    T_INTERVAL_FLAT_METHOD:     "#c49c94",
+    BOOTSTRAP_FLAT_METHOD:      "#7f7f7f",
+}
 PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
 PROGRESS_MODES = ["bar", "cell", "off"]
@@ -499,8 +616,38 @@ class PairSimResult:
     total_time_sq: float = 0.0
 
 
+@dataclass
+class CorpusSingle:
+    """Single-model scores on a benchmark — used for point-estimate CI comparison."""
+    model: str
+    benchmark_id: str
+    source: str
+    scores: np.ndarray  # shape (N,) for R=1 or (N, R) for R>1 runs per item
+    true_mean: float    # grand mean over all corpus items — population ground truth
+    corpus_size: int
+    n_runs: int = 1
+
+
+@dataclass
+class SingleSimResult:
+    model: str
+    benchmark_id: str
+    source: str
+    corpus_size: int
+    true_mean: float
+    n: int
+    method: str
+    n_reps: int
+    covered: int
+    total_width: float
+    total_time: float = 0.0
+    total_time_sq: float = 0.0
+
+
 _WORKER_CORPUS_PAIRS: list[CorpusPair] = []
 _WORKER_METHODS: list[str] = []
+_WORKER_CORPORA: list[CorpusSingle] = []
+_WORKER_SINGLE_METHODS: list[str] = []
 
 
 # ---------------------------------------------------------------------------
@@ -1377,6 +1524,338 @@ def run_pairwise_simulation(
 
 
 # ---------------------------------------------------------------------------
+# Single-sample (point-estimate) simulation
+# ---------------------------------------------------------------------------
+
+
+def corpus_singles_from_pairs(corpus_pairs: list[CorpusPair]) -> list[CorpusSingle]:
+    """Extract per-model CorpusSingle from a list of CorpusPair.
+
+    Each unique (model, benchmark) in the pairs is returned once, using the
+    first occurrence's score array and its corpus-level grand mean as true_mean.
+    """
+    seen: set[tuple[str, str]] = set()
+    result: list[CorpusSingle] = []
+    for cp in corpus_pairs:
+        for model, scores in [(cp.model_a, cp.scores_a), (cp.model_b, cp.scores_b)]:
+            key = (model, cp.benchmark_id)
+            if key not in seen:
+                seen.add(key)
+                result.append(CorpusSingle(
+                    model=model,
+                    benchmark_id=cp.benchmark_id,
+                    source=cp.source,
+                    scores=scores,
+                    true_mean=float(np.mean(scores)),
+                    corpus_size=cp.corpus_size,
+                    n_runs=cp.n_runs,
+                ))
+    return result
+
+
+def _run_single_real_cell(
+    args: tuple[int, int, int, int, float, list[int]],
+) -> list[SingleSimResult]:
+    cs_idx, n, n_reps, n_bootstrap, alpha, seed_state = args
+    cs = _WORKER_CORPORA[cs_idx]
+
+    rng = np.random.default_rng(np.random.SeedSequence(seed_state))
+
+    N = cs.corpus_size
+    true_mean = cs.true_mean
+    methods = _WORKER_SINGLE_METHODS or SINGLE_SAMPLE_ALL_METHODS
+    covered:    dict[str, int]   = {m: 0   for m in methods}
+    total_w:    dict[str, float] = {m: 0.0 for m in methods}
+    total_t:    dict[str, float] = {m: 0.0 for m in methods}
+    total_t_sq: dict[str, float] = {m: 0.0 for m in methods}
+
+    _is_binary = bool(np.all(np.isin(cs.scores, [0.0, 1.0])))
+
+    for _ in range(n_reps):
+        idxs = rng.choice(N, size=n, replace=False)
+        _s = cs.scores[idxs]
+        scores = _s.reshape(n, 1) if _s.ndim == 1 else _s  # (n, R)
+        cell_means = scores.mean(axis=1)                    # (n,)
+        flat = scores.ravel()                               # (n*R,)
+        obs_mean = float(np.mean(cell_means))
+
+        # ── Cell-means bootstrap family ──────────────────────────────────────
+        for _method in [
+            BOOTSTRAP_METHOD,
+            BCA_METHOD,
+            BAYES_BOOTSTRAP_METHOD,
+            SMOOTH_BOOTSTRAP_METHOD,
+            BOOTSTRAP_T_METHOD,
+        ]:
+            if _method not in methods:
+                continue
+            _t = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    ci_lo, ci_hi = bootstrap_ci_1d(
+                        cell_means, obs_mean, method=_method,
+                        n_bootstrap=n_bootstrap, alpha=alpha, rng=rng,
+                    )
+            except Exception:
+                ci_lo = ci_hi = obs_mean
+            _el = time.perf_counter() - _t
+            total_t[_method] += _el
+            total_t_sq[_method] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[_method] += 1
+            total_w[_method] += ci_hi - ci_lo
+
+        # ── t-interval on cell means ─────────────────────────────────────────
+        if T_INTERVAL_METHOD in methods:
+            _t = time.perf_counter()
+            try:
+                ci_lo, ci_hi = t_interval_ci_1d(cell_means, alpha)
+            except Exception:
+                ci_lo = ci_hi = obs_mean
+            _el = time.perf_counter() - _t
+            total_t[T_INTERVAL_METHOD] += _el
+            total_t_sq[T_INTERVAL_METHOD] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[T_INTERVAL_METHOD] += 1
+            total_w[T_INTERVAL_METHOD] += ci_hi - ci_lo
+
+        # ── Binary-specific flat methods ─────────────────────────────────────
+        if _is_binary:
+            if WILSON_FLAT_METHOD in methods:
+                _t = time.perf_counter()
+                ci_lo, ci_hi = wilson_ci_1d(cell_means, alpha)
+                _el = time.perf_counter() - _t
+                total_t[WILSON_FLAT_METHOD] += _el
+                total_t_sq[WILSON_FLAT_METHOD] += _el * _el
+                if ci_lo <= true_mean <= ci_hi:
+                    covered[WILSON_FLAT_METHOD] += 1
+                total_w[WILSON_FLAT_METHOD] += ci_hi - ci_lo
+
+            if WALD_FLAT_METHOD in methods:
+                _t = time.perf_counter()
+                ci_lo, ci_hi = wald_ci_1d(cell_means, alpha)
+                _el = time.perf_counter() - _t
+                total_t[WALD_FLAT_METHOD] += _el
+                total_t_sq[WALD_FLAT_METHOD] += _el * _el
+                if ci_lo <= true_mean <= ci_hi:
+                    covered[WALD_FLAT_METHOD] += 1
+                total_w[WALD_FLAT_METHOD] += ci_hi - ci_lo
+
+            if CP_FLAT_METHOD in methods:
+                _t = time.perf_counter()
+                try:
+                    ci_lo, ci_hi = clopper_pearson_ci_1d(cell_means, alpha)
+                except Exception:
+                    ci_lo = ci_hi = obs_mean
+                _el = time.perf_counter() - _t
+                total_t[CP_FLAT_METHOD] += _el
+                total_t_sq[CP_FLAT_METHOD] += _el * _el
+                if ci_lo <= true_mean <= ci_hi:
+                    covered[CP_FLAT_METHOD] += 1
+                total_w[CP_FLAT_METHOD] += ci_hi - ci_lo
+
+            if BAYES_INDEP_FLAT_METHOD in methods:
+                _t = time.perf_counter()
+                try:
+                    ci_lo, ci_hi = bayes_binary_ci_1d(cell_means, alpha)
+                except Exception:
+                    ci_lo = ci_hi = obs_mean
+                _el = time.perf_counter() - _t
+                total_t[BAYES_INDEP_FLAT_METHOD] += _el
+                total_t_sq[BAYES_INDEP_FLAT_METHOD] += _el * _el
+                if ci_lo <= true_mean <= ci_hi:
+                    covered[BAYES_INDEP_FLAT_METHOD] += 1
+                total_w[BAYES_INDEP_FLAT_METHOD] += ci_hi - ci_lo
+
+            # ── Clustered Wilson variants (nested, multi-run) ─────────────
+            for _method, _fn in [
+                (WILSON_DE_METHOD,     wilson_nested_de),
+                (WILSON_OD_METHOD,     wilson_nested_od),
+                (BETA_BINOMIAL_METHOD, wilson_nested_bb),
+            ]:
+                if _method not in methods:
+                    continue
+                _t = time.perf_counter()
+                try:
+                    ci_lo, ci_hi = _fn(scores, alpha)
+                except Exception:
+                    ci_lo = ci_hi = obs_mean
+                _el = time.perf_counter() - _t
+                total_t[_method] += _el
+                total_t_sq[_method] += _el * _el
+                if ci_lo <= true_mean <= ci_hi:
+                    covered[_method] += 1
+                total_w[_method] += ci_hi - ci_lo
+
+        # ── Nested bootstrap (full n×R matrix) ──────────────────────────────
+        for _method, _fn in [
+            (BOOTSTRAP_NESTED_METHOD, bootstrap_means_nested),
+            (BAYES_NESTED_METHOD,     bayes_bootstrap_means_nested),
+            (SMOOTH_NESTED_METHOD,    smooth_bootstrap_means_nested),
+        ]:
+            if _method not in methods:
+                continue
+            _t = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r".*falling back to plain bootstrap.*",
+                        category=UserWarning,
+                    )
+                    _boot = _fn(scores, n_bootstrap, rng)
+                ci_lo = float(np.percentile(_boot, 100 * alpha / 2))
+                ci_hi = float(np.percentile(_boot, 100 * (1 - alpha / 2)))
+            except Exception:
+                ci_lo = ci_hi = obs_mean
+            _el = time.perf_counter() - _t
+            total_t[_method] += _el
+            total_t_sq[_method] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[_method] += 1
+            total_w[_method] += ci_hi - ci_lo
+
+        # ── BCa nested ────────────────────────────────────────────────────
+        if BCA_NESTED_METHOD in methods:
+            _t = time.perf_counter()
+            try:
+                _boot = bootstrap_means_nested(scores, n_bootstrap, rng)
+                ci_lo, ci_hi = bca_interval_1d(cell_means, obs_mean, _boot, alpha)
+            except Exception:
+                ci_lo = ci_hi = obs_mean
+            _el = time.perf_counter() - _t
+            total_t[BCA_NESTED_METHOD] += _el
+            total_t_sq[BCA_NESTED_METHOD] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[BCA_NESTED_METHOD] += 1
+            total_w[BCA_NESTED_METHOD] += ci_hi - ci_lo
+
+        # ── Bootstrap-t nested ────────────────────────────────────────────
+        if BOOTSTRAP_T_NESTED_METHOD in methods:
+            _t = time.perf_counter()
+            try:
+                ci_lo, ci_hi = bootstrap_t_ci_nested(scores, obs_mean, n_bootstrap, alpha, rng)
+            except Exception:
+                ci_lo = ci_hi = obs_mean
+            _el = time.perf_counter() - _t
+            total_t[BOOTSTRAP_T_NESTED_METHOD] += _el
+            total_t_sq[BOOTSTRAP_T_NESTED_METHOD] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[BOOTSTRAP_T_NESTED_METHOD] += 1
+            total_w[BOOTSTRAP_T_NESTED_METHOD] += ci_hi - ci_lo
+
+        # ── Flat methods (all n*R obs treated as iid) ────────────────────────
+        if T_INTERVAL_FLAT_METHOD in methods:
+            _t = time.perf_counter()
+            try:
+                ci_lo, ci_hi = t_interval_ci_1d(flat, alpha)
+            except Exception:
+                ci_lo = ci_hi = float(np.mean(flat))
+            _el = time.perf_counter() - _t
+            total_t[T_INTERVAL_FLAT_METHOD] += _el
+            total_t_sq[T_INTERVAL_FLAT_METHOD] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[T_INTERVAL_FLAT_METHOD] += 1
+            total_w[T_INTERVAL_FLAT_METHOD] += ci_hi - ci_lo
+
+        if BOOTSTRAP_FLAT_METHOD in methods:
+            _t = time.perf_counter()
+            try:
+                _boot = bootstrap_means_1d(flat, n_bootstrap, rng)
+                ci_lo = float(np.percentile(_boot, 100 * alpha / 2))
+                ci_hi = float(np.percentile(_boot, 100 * (1 - alpha / 2)))
+            except Exception:
+                ci_lo = ci_hi = float(np.mean(flat))
+            _el = time.perf_counter() - _t
+            total_t[BOOTSTRAP_FLAT_METHOD] += _el
+            total_t_sq[BOOTSTRAP_FLAT_METHOD] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[BOOTSTRAP_FLAT_METHOD] += 1
+            total_w[BOOTSTRAP_FLAT_METHOD] += ci_hi - ci_lo
+
+    return [
+        SingleSimResult(
+            model=cs.model,
+            benchmark_id=cs.benchmark_id,
+            source=cs.source,
+            corpus_size=N,
+            true_mean=true_mean,
+            n=n,
+            method=method,
+            n_reps=n_reps,
+            covered=covered[method],
+            total_width=total_w[method],
+            total_time=total_t[method],
+            total_time_sq=total_t_sq[method],
+        )
+        for method in methods
+        if method in covered
+    ]
+
+
+def run_single_simulation(
+    corpora: list[CorpusSingle],
+    methods: list[str],
+    sample_sizes: list[int],
+    n_reps: int,
+    n_bootstrap: int,
+    alpha: float,
+    progress_mode: str = "bar",
+    seed: int = 42,
+    n_workers: int = 1,
+) -> list[SingleSimResult]:
+    """For each CorpusSingle × valid sample size, draw n items WOR n_reps times.
+
+    Computes all single-sample CI methods and checks coverage against the
+    corpus-level true_mean.
+    """
+    global _WORKER_CORPORA
+    global _WORKER_SINGLE_METHODS
+    _WORKER_CORPORA = corpora
+    _WORKER_SINGLE_METHODS = list(methods)
+
+    idx_size_pairs: list[tuple[int, int]] = []
+    for cs_idx, cs in enumerate(corpora):
+        valid_sizes = [n for n in sample_sizes if n < cs.corpus_size]
+        if not valid_sizes:
+            print(
+                f"  Warning: all sample sizes >= N={cs.corpus_size} for "
+                f"{cs.model} on {cs.benchmark_id}. Skipping."
+            )
+            continue
+        idx_size_pairs.extend(itertools.product([cs_idx], valid_sizes))
+
+    if not idx_size_pairs:
+        return []
+
+    ss = np.random.SeedSequence(seed)
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(idx_size_pairs))]
+    args_list = [
+        (cs_idx, n, n_reps, n_bootstrap, alpha, child_seeds[i])
+        for i, (cs_idx, n) in enumerate(idx_size_pairs)
+    ]
+
+    reporter = _ProgressReporter(len(args_list), mode=progress_mode, label="single-sim")
+    results: list[SingleSimResult] = []
+
+    if n_workers == 1:
+        for i, args in enumerate(args_list):
+            results.extend(_run_single_real_cell(args))
+            cs = corpora[args[0]]
+            reporter.update(i + 1, detail=f"{cs.benchmark_id}/{cs.model[:16]} n={args[1]}")
+    else:
+        ctx = mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_single_real_cell, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1, detail=f"cells done: {i + 1}/{len(args_list)}")
+
+    reporter.update(len(args_list), detail="done")
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Reporting helpers
 # ---------------------------------------------------------------------------
 
@@ -1795,15 +2274,309 @@ def save_plots(
 
 
 # ---------------------------------------------------------------------------
+# Single-sample reporting / saving / plotting
+# ---------------------------------------------------------------------------
+
+
+def print_single_report(
+    results: list[SingleSimResult],
+    corpora: list[CorpusSingle],
+    methods: list[str],
+    sample_sizes: list[int],
+    alpha: float,
+    n_reps: int,
+) -> None:
+    """Print coverage and CI-width tables for single-sample (point-estimate) simulation."""
+    if not results:
+        print("No single-sample results to report.")
+        return
+
+    target = 1.0 - alpha
+    used_ns = sorted({r.n for r in results})
+
+    print(f"\n{'═'*80}")
+    print(f"  Single-Sample CI Comparison on Real Data  (target {target:.0%}, α={alpha})")
+    print(f"  Corpora: {len(corpora)}  |  Reps/cell: {n_reps}  |  N tested: {used_ns}")
+    print(f"{'═'*80}")
+
+    # ── Per-benchmark, per-model coverage table ───────────────────────────────
+    benchmarks = sorted({r.benchmark_id for r in results})
+    for bench in benchmarks:
+        bench_results = [r for r in results if r.benchmark_id == bench]
+        models_in_bench = sorted({r.model for r in bench_results})
+        print(f"\n  Benchmark: {bench}")
+        for model in models_in_bench:
+            model_results = [r for r in bench_results if r.model == model]
+            true_mean = model_results[0].true_mean if model_results else float("nan")
+            N = model_results[0].corpus_size if model_results else 0
+            print(f"\n  {model}\n  N={N}, true_mean={true_mean:.4f}")
+            ns_here = sorted({r.n for r in model_results})
+            header_cols = "  ".join(f"n={n:>3}" for n in ns_here)
+            print(f"  {'Method':<25}  {header_cols}")
+            print(f"  {_rule(25 + 2 + 8 * len(ns_here))}")
+            for method in methods:
+                m_results = [r for r in model_results if r.method == method]
+                if not m_results:
+                    continue
+                row = f"  {method:<25}"
+                for n in ns_here:
+                    subset = [r for r in m_results if r.n == n]
+                    if not subset:
+                        row += f"  {'─':>7}"
+                        continue
+                    cov = float(np.mean([r.covered / r.n_reps for r in subset]))
+                    row += f"  {cov:.3f}{_cov_marker(cov, target)}"
+                print(row)
+
+    # ── Aggregated coverage table ─────────────────────────────────────────────
+    print(f"\n  Aggregated coverage across all {len(corpora)} corpora")
+    print(f"  {'Method':<25}  " + "  ".join(f"n={n:>3}" for n in used_ns))
+    print(f"  {_rule(25 + 2 + 8 * len(used_ns))}")
+    for method in methods:
+        m_results = [r for r in results if r.method == method]
+        if not m_results:
+            continue
+        row = f"  {method:<25}"
+        for n in used_ns:
+            subset = [r for r in m_results if r.n == n]
+            if not subset:
+                row += f"  {'─':>7}"
+                continue
+            cov = float(np.mean([r.covered / r.n_reps for r in subset]))
+            row += f"  {cov:.3f}{_cov_marker(cov, target)}"
+        print(row)
+
+    # ── Aggregated mean CI width ──────────────────────────────────────────────
+    print(f"\n  Mean CI width (aggregated)")
+    print(f"  {'Method':<25}  " + "  ".join(f"n={n:>3}" for n in used_ns))
+    print(f"  {_rule(25 + 2 + 8 * len(used_ns))}")
+    for method in methods:
+        m_results = [r for r in results if r.method == method]
+        if not m_results:
+            continue
+        row = f"  {method:<25}"
+        for n in used_ns:
+            subset = [r for r in m_results if r.n == n]
+            if not subset:
+                row += f"  {'─':>7}"
+                continue
+            avg_w = float(np.mean([r.total_width / r.n_reps for r in subset]))
+            row += f"  {avg_w:.4f}"
+        print(row)
+
+    # ── Overall summary ───────────────────────────────────────────────────────
+    print(f"\n{'─'*72}")
+    print("  OVERALL SUMMARY  (averaged across all benchmarks, models, and n)")
+    print(f"{'─'*72}")
+
+    all_cov: dict[str, list[float]] = defaultdict(list)
+    all_wid: dict[str, list[float]] = defaultdict(list)
+    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    for r in results:
+        all_cov[r.method].append(r.covered / r.n_reps)
+        all_wid[r.method].append(r.total_width / r.n_reps)
+        c_prev, t_prev = all_counts[r.method]
+        all_counts[r.method] = (c_prev + r.covered, t_prev + r.n_reps)
+
+    print(f"\n  {'Method':<25}  {'Cov':>6}  {'MCSE':>7}  {'Band95':>13}  {'Width':>8}  {'Dev':>8}  {'Time(ms)':>14}")
+    print(f"  {'─'*25}  {'─'*6}  {'─'*7}  {'─'*13}  {'─'*8}  {'─'*8}  {'─'*14}")
+    for method in methods:
+        if not all_cov[method]:
+            continue
+        mc = float(np.mean(all_cov[method]))
+        mw = float(np.mean(all_wid[method]))
+        dev = mc - target
+        mark = _cov_marker(mc, target)
+        c_tot, t_tot = all_counts[method]
+        _, mcse, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        avg_ms, se_ms = _time_stats([r for r in results if r.method == method])  # type: ignore[arg-type]
+        time_str = f"{avg_ms:.3f}±{se_ms:.3f}" if np.isfinite(avg_ms) else "─"
+        print(
+            f"  {method:<25}  {mc:>5.3f}{mark}  {mcse:>7.4f}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {dev:>+8.3f}  {time_str:>14}"
+        )
+    print()
+
+
+def save_single_results_csv(results: list[SingleSimResult], path: str) -> None:
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow([
+            "model", "benchmark_id", "source",
+            "corpus_size", "true_mean", "n", "method",
+            "n_reps", "covered", "coverage",
+            "mean_width", "total_time", "total_time_sq",
+        ])
+        for r in results:
+            w.writerow([
+                r.model, r.benchmark_id, r.source,
+                r.corpus_size, f"{r.true_mean:.6f}", r.n, r.method,
+                r.n_reps, r.covered,
+                f"{r.covered / max(r.n_reps, 1):.6f}",
+                f"{r.total_width / max(r.n_reps, 1):.6f}",
+                f"{r.total_time:.6f}", f"{r.total_time_sq:.6f}",
+            ])
+    print(f"  Single-sample results saved to: {path}")
+
+
+def save_single_plots(
+    results: list[SingleSimResult],
+    methods: list[str],
+    alpha: float,
+    out_dir: str,
+    prefix: str = "single_real",
+) -> None:
+    """Save coverage, width, and coverage×cost plots for the single-sample comparison."""
+    os.makedirs(out_dir, exist_ok=True)
+    if not results:
+        print("No single-sample results — skipping plots.")
+        return
+
+    target = 1.0 - alpha
+    used_ns = sorted({r.n for r in results})
+    benchmarks = sorted({r.benchmark_id for r in results})
+    run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    sns.set_style("whitegrid")
+
+    def _plot_coverage_and_width(
+        res: list[SingleSimResult],
+        title: str,
+        path_stem: str,
+    ) -> None:
+        fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+        ax_cov, ax_wid = axes
+
+        for method in methods:
+            m_res = [r for r in res if r.method == method]
+            if not m_res:
+                continue
+            cov_by_n, wid_by_n = [], []
+            for n in used_ns:
+                subset = [r for r in m_res if r.n == n]
+                if not subset:
+                    cov_by_n.append(float("nan"))
+                    wid_by_n.append(float("nan"))
+                else:
+                    cov_by_n.append(float(np.mean([r.covered / r.n_reps for r in subset])))
+                    wid_by_n.append(float(np.mean([r.total_width / r.n_reps for r in subset])))
+
+            color = _SINGLE_METHOD_COLORS.get(method, "#333333")
+            label = _SINGLE_METHOD_LABELS.get(method, method)
+            ax_cov.plot(used_ns, cov_by_n, marker="o", label=label, color=color)
+            ax_wid.plot(used_ns, wid_by_n, marker="o", label=label, color=color)
+
+        ax_cov.axhline(target, color="black", linestyle="--", linewidth=1.0, label=f"nominal {target:.0%}")
+        ax_cov.axhspan(target - 0.04, target + 0.04, color="black", alpha=0.07)
+        ax_cov.set_xlabel("Sample size n")
+        ax_cov.set_ylabel("Coverage")
+        ax_cov.set_title(f"{title}\nCoverage (target {target:.0%})")
+        ax_cov.set_ylim(max(0.0, target - 0.15), 1.02)
+        _set_sparse_xticks(ax_cov, used_ns)
+        ax_cov.legend(fontsize=8, ncol=1, loc="lower right")
+
+        ax_wid.set_xlabel("Sample size n")
+        ax_wid.set_ylabel("Mean CI width")
+        ax_wid.set_title(f"{title}\nMean CI Width")
+        _set_sparse_xticks(ax_wid, used_ns)
+        ax_wid.legend(fontsize=8, ncol=1)
+
+        fig.tight_layout()
+        fpath = os.path.join(out_dir, f"{path_stem}_{run_ts}.png")
+        fig.savefig(fpath, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Plot saved: {fpath}")
+
+    def _plot_coverage_vs_cost(
+        res: list[SingleSimResult],
+        title: str,
+        path_stem: str,
+    ) -> None:
+        if not res:
+            return
+
+        fig, ax = plt.subplots(1, 1, figsize=(9, 5.2))
+        ax.axhspan(max(0.0, target - 0.04), min(1.0, target + 0.04),
+                   color="#DDDDDD", alpha=0.40, zorder=0)
+        ax.axhline(target, color="black", linewidth=1.1, linestyle="--", zorder=1)
+
+        for method in methods:
+            m_res = [r for r in res if r.method == method]
+            if not m_res:
+                continue
+            points: list[tuple[int, float, float, float]] = []
+            for n in used_ns:
+                subset = [r for r in m_res if r.n == n]
+                if not subset:
+                    continue
+                avg_ms, se_ms = _time_stats(subset)  # type: ignore[arg-type]
+                if not np.isfinite(avg_ms) or avg_ms < 0:
+                    continue
+                avg_ms = max(avg_ms, 1e-4)
+                cov = float(np.mean([r.covered / r.n_reps for r in subset]))
+                points.append((n, avg_ms, cov, 1.96 * se_ms))
+
+            if not points:
+                continue
+
+            color = _SINGLE_METHOD_COLORS.get(method, "#333333")
+            label = _SINGLE_METHOD_LABELS.get(method, method)
+            xs = [p[1] for p in points]
+            ys = [p[2] for p in points]
+            ax.plot(xs, ys, color=color, linewidth=1.1, alpha=0.55, zorder=2)
+            ax.errorbar(
+                xs, ys, xerr=[p[3] for p in points],
+                fmt="o", color=color, label=label, markersize=6,
+                markeredgewidth=0.7, markeredgecolor="white",
+                elinewidth=0.9, capsize=2.5, capthick=0.9, alpha=0.90, zorder=3,
+            )
+            label_idxs = {0, len(points) // 2, len(points) - 1} if len(points) > 2 else set(range(len(points)))
+            for i, (n, x, y, _) in enumerate(points):
+                if i in label_idxs:
+                    ax.annotate(f"n={n}", xy=(x, y), xytext=(0, 4), textcoords="offset points",
+                                fontsize=6.5, ha="center", va="bottom", color=color, alpha=0.85)
+
+        ax.set_xscale("log")
+        ax.set_xlabel("Mean CI time (ms) — log scale  [error bars: ±1.96 SE]")
+        ax.set_ylabel("Coverage rate")
+        ax.set_title(f"{title}\nCoverage × Cost (target {target:.0%})")
+        ax.set_ylim(max(0.0, target - 0.20), min(1.01, target + 0.12))
+        ax.grid(axis="y", linestyle="--", linewidth=0.55, alpha=0.45)
+        ax.grid(axis="x", linestyle=":", linewidth=0.45, alpha=0.35)
+        ax.tick_params(labelsize=8.5)
+        ax.legend(fontsize=8, ncol=1, loc="center left", bbox_to_anchor=(1.02, 0.5), framealpha=0.85)
+
+        fig.tight_layout()
+        fpath = os.path.join(out_dir, f"{path_stem}_{run_ts}.png")
+        fig.savefig(fpath, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        print(f"  Plot saved: {fpath}")
+
+    _plot_coverage_and_width(results, "All benchmarks (aggregated)", f"{prefix}_all")
+    _plot_coverage_vs_cost(results, "All benchmarks (aggregated)", f"{prefix}_all_cov_x_cost")
+
+    for bench in benchmarks:
+        bench_res = [r for r in results if r.benchmark_id == bench]
+        if bench_res:
+            _plot_coverage_and_width(bench_res, f"Benchmark: {bench}", f"{prefix}_{bench}")
+            _plot_coverage_vs_cost(bench_res, f"Benchmark: {bench}", f"{prefix}_{bench}_cov_x_cost")
+
+
+# ---------------------------------------------------------------------------
 # main()
 # ---------------------------------------------------------------------------
 
 
+SIM_MODES = ["pairwise", "single", "both"]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare tango CI methods on real binary benchmark data.",
+        description="Compare CI methods on real binary benchmark data.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
+    parser.add_argument("--mode", choices=SIM_MODES, default="pairwise",
+                        help="Simulation mode: pairwise (paired-diff), single (point-estimate), or both")
     parser.add_argument("--source", choices=SOURCES, default="dove",
                         help="Data source")
     parser.add_argument("--benchmarks", nargs="+", default=None,
@@ -1886,11 +2659,14 @@ def main() -> None:
                 sys.exit(1)
     # else: inspect — model_bench not used; pairs come directly from the CSV
 
-    methods = list(SINGLE_RUN_METHODS)
+    pair_methods = list(SINGLE_RUN_METHODS)
     if args.multi_run_methods:
-        methods.extend(MULTI_RUN_ONLY_METHODS)
+        pair_methods.extend(MULTI_RUN_ONLY_METHODS)
 
-    print(f"\nTango Real-Data Simulation")
+    single_methods = list(SINGLE_SAMPLE_ALL_METHODS)
+
+    print(f"\nReal-Data CI Simulation")
+    print(f"  Mode          : {args.mode}")
     print(f"  Source        : {args.source}")
     print(f"  Reps/cell     : {args.reps}")
     print(f"  Bootstrap n   : {args.bootstrap_n}")
@@ -1900,7 +2676,10 @@ def main() -> None:
     print(f"  Workers       : {max(1, args.workers)}")
     print(f"  Min pair size : {args.min_pair_size}")
     print(f"  Multi-run meth: {'on' if args.multi_run_methods else 'off'}")
-    print(f"  Methods       : {methods}")
+    if args.mode in ("pairwise", "both"):
+        print(f"  Pair methods  : {pair_methods}")
+    if args.mode in ("single", "both"):
+        print(f"  Single methods: {single_methods}")
     print(f"  HF token      : {'set' if hf_token else 'not set (cached login)'}")
     if args.source == "inspect":
         print(f"  Inspect data  : {args.inspect_data}")
@@ -1939,41 +2718,79 @@ def main() -> None:
         )
     print_corpus_pair_stats(corpus_pairs)
 
-    # ── Run simulation ────────────────────────────────────────────────────────
-    t_start = time.time()
-    results = run_pairwise_simulation(
-        corpus_pairs=corpus_pairs,
-        methods=methods,
-        sample_sizes=args.sizes,
-        n_reps=args.reps,
-        n_bootstrap=args.bootstrap_n,
-        alpha=args.alpha,
-        progress_mode=args.progress,
-        seed=args.seed,
-        n_workers=max(1, args.workers),
-    )
-    elapsed = time.time() - t_start
-    print(f"\n  Simulation complete in {elapsed:.1f}s  ({len(results):,} result records)")
-
-    # ── Report ────────────────────────────────────────────────────────────────
-    print_report(results, corpus_pairs, methods, args.sizes, args.alpha, args.reps)
-
-    # ── Save CSV ──────────────────────────────────────────────────────────────
-    if args.save_results == "save":
-        os.makedirs(out_dir, exist_ok=True)
-        csv_path = os.path.join(out_dir, f"tango_real_{args.source}.csv")
-        save_results_csv(results, csv_path)
-
-    # ── Plots ─────────────────────────────────────────────────────────────────
-    if args.plots == "save":
-        os.makedirs(plots_dir, exist_ok=True)
-        save_plots(
-            results,
-            methods=methods,
+    # ── Pairwise simulation ───────────────────────────────────────────────────
+    if args.mode in ("pairwise", "both"):
+        t_start = time.time()
+        print(f"\nRunning pairwise simulation …")
+        pair_results = run_pairwise_simulation(
+            corpus_pairs=corpus_pairs,
+            methods=pair_methods,
+            sample_sizes=args.sizes,
+            n_reps=args.reps,
+            n_bootstrap=args.bootstrap_n,
             alpha=args.alpha,
-            out_dir=plots_dir,
-            prefix=f"tango_real_{args.source}",
+            progress_mode=args.progress,
+            seed=args.seed,
+            n_workers=max(1, args.workers),
         )
+        elapsed = time.time() - t_start
+        print(f"\n  Pairwise simulation complete in {elapsed:.1f}s  ({len(pair_results):,} result records)")
+        print_report(pair_results, corpus_pairs, pair_methods, args.sizes, args.alpha, args.reps)
+
+        if args.save_results == "save":
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(out_dir, f"tango_real_{args.source}.csv")
+            save_results_csv(pair_results, csv_path)
+
+        if args.plots == "save":
+            os.makedirs(plots_dir, exist_ok=True)
+            save_plots(
+                pair_results,
+                methods=pair_methods,
+                alpha=args.alpha,
+                out_dir=plots_dir,
+                prefix=f"tango_real_{args.source}",
+            )
+
+    # ── Single-sample (point-estimate) simulation ─────────────────────────────
+    if args.mode in ("single", "both"):
+        corpora = corpus_singles_from_pairs(corpus_pairs)
+        print(f"\n  {len(corpora)} individual model corpora extracted for single-sample simulation.")
+        for cs in corpora:
+            runs_str = f", R={cs.n_runs}" if cs.n_runs > 1 else ""
+            print(f"  {cs.model} [{cs.benchmark_id}]  N={cs.corpus_size}{runs_str}, true_mean={cs.true_mean:.4f}")
+
+        t_start = time.time()
+        print(f"\nRunning single-sample simulation …")
+        single_results = run_single_simulation(
+            corpora=corpora,
+            methods=single_methods,
+            sample_sizes=args.sizes,
+            n_reps=args.reps,
+            n_bootstrap=args.bootstrap_n,
+            alpha=args.alpha,
+            progress_mode=args.progress,
+            seed=args.seed + 1,
+            n_workers=max(1, args.workers),
+        )
+        elapsed = time.time() - t_start
+        print(f"\n  Single-sample simulation complete in {elapsed:.1f}s  ({len(single_results):,} result records)")
+        print_single_report(single_results, corpora, single_methods, args.sizes, args.alpha, args.reps)
+
+        if args.save_results == "save":
+            os.makedirs(out_dir, exist_ok=True)
+            csv_path = os.path.join(out_dir, f"single_real_{args.source}.csv")
+            save_single_results_csv(single_results, csv_path)
+
+        if args.plots == "save":
+            os.makedirs(plots_dir, exist_ok=True)
+            save_single_plots(
+                single_results,
+                methods=single_methods,
+                alpha=args.alpha,
+                out_dir=plots_dir,
+                prefix=f"single_real_{args.source}",
+            )
 
 
 if __name__ == "__main__":

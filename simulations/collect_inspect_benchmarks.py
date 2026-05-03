@@ -508,6 +508,8 @@ def run_one_eval(
             log_dir=log_dir,
             temperature=temperature,
             working_limit=eval_timeout_seconds if eval_timeout_seconds > 0 else None,
+            reasoning_effort="none",  # don't spend extra tokens on chain-of-thought
+            reasoning_tokens=0, # try to avoid the extra cost of reasoning tokens, as on Qwen models it can be extreme
         )
     except Exception as exc:
         print(f"  ERROR  {benchmark}/{model_id} run={run_idx}: {exc}")

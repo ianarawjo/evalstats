@@ -1237,16 +1237,43 @@
         </p>
       </div>
 
+      <h3>Multi-Run Coverage with Real LLM Evals Data</h3>
+      <p>
+        Since we had run the other cases on real LLM eval data, we wanted to check if the multi-run results held up there as well.
+        Unfortunately, we could not use OpenEvals (or any other public dataset) because they do not have multi-run data. 
+        (Only DOVE does, but they sample only 100 items per benchmark, which is too small for a coverage simulation.)
+        Thus, we had to run benchmarks ourselves on a sample of models. 
+        For this test, we only ran benchmarks that produce binary scores, for two reasons: the Tango under-coverage problem was more pronounced there 
+        and we wanted to see if it held up on real data; and it is harder to find numeric score benchmarks. 
+      </p>
+      <p>
+        We ran the following benchmarks and models using the Inspect AI benchmark harness and the OpenRouter API. This range of 
+        models was chosen as a good sample of model diversity in terms of provider and size:
+      </p>
+      <ul>
+        <li><strong>Benchmarks:</strong> MMLU, ARC, HellaSwag, GSM8K, WinoGrande, TruthfulQA, BoolQ, PIQA, BBQ</li>
+        <li><strong>Models:</strong>
+          <ul>
+            <li>meta-llama/llama-3.1-8b-instruct</li>
+            <li>mistralai/ministral-8b-2512</li>
+            <li>google/gemma-3n-e4b-it</li>
+            <li>ibm-granite/granite-4.1-8b</li>
+            <li>qwen/qwen3.5-35b-a3b</li>
+            <li>openai/gpt-4o-mini</li>
+          </ul>
+        </li>
+      </ul>
+
       <h2>Comparison with Bayesian Methods for Binary Scores</h2>
       <p>
         To address the ICML 2025 position paper arguing that practitioners should avoid CLT-style / frequentist
         intervals for LLM evals in favor of Bayesian beta-posterior methods (<a href="https://arxiv.org/abs/2503.01747">"Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred Datapoints"</a>), we ensured the simulation included the exact Bayesian
         methods the authors advocate, implemented using their <code>bayes_evals</code> library.
-        Our simulation results put their recommendations into question. For the binary scores 0/1, we find:
+        Our simulation results put some of their recommendations into question. For the binary scores 0/1, we find:
       </p>
       <ul>
         <li><strong>Wilson score interval</strong> lands on target coverage (0.951 synthetic; 0.955 real data) at much cheaper computational cost, so the paper's preferred Bayesian alternative is not needed here.</li>
-        <li>For the pairwise comparisons, the story is nuanced. In the synthetic simulation, <strong>Tango</strong> (0.955) matches Bayesian paired (0.958) in coverage while being nearly 100× faster. But on real LLM eval data — where dominated pairs and jointly-sparse model comparisons are common — Tango under-covers at N&nbsp;&lt;&nbsp;50. Bayesian paired remains better in that regime. At N&nbsp;≥&nbsp;50, Tango reaches target coverage, is dramatically faster, produces tighter intervals, and does not deteriorate at large N.</li>
+        <li>For the pairwise comparisons, the story is nuanced. In the synthetic simulation, <strong>Tango</strong> (0.955) matches Bayesian paired (0.958) in coverage while being nearly 100× faster. But on real LLM eval data — where dominated pairs and jointly-sparse model comparisons are common — Tango under-covers at N&nbsp;&lt;&nbsp;50, caused by extreme situations of sparse data regimes. Bayesian paired remains better in these small-sample setups. At N&nbsp;≥&nbsp;50, Tango reaches target coverage, is dramatically faster, produces tighter intervals, and does not deteriorate at large N.</li>
         <li>In the new multi-run simulation, the adapted <strong>wilson_od</strong> method matches the <strong>beta_binomial</strong> interval at 0.925 coverage, so even in the hierarchical binary case the more explicitly model-based Beta-Binomial approach is not uniquely superior.</li>
       </ul>
       <p>
