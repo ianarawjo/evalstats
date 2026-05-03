@@ -64,6 +64,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import io
 import itertools
 import json
 import multiprocessing as mp
@@ -73,6 +74,7 @@ import sys
 import time
 import warnings
 from collections import defaultdict
+from contextlib import redirect_stdout
 from dataclasses import dataclass
 from datetime import datetime
 from itertools import combinations
@@ -108,6 +110,7 @@ with warnings.catch_warnings():
         wilson_nested_de,
         wilson_nested_od,
         wilson_nested_bb,
+        nig_ci_1d,
         nig_ci_nested,
         newcombe_paired_ci,
         tango_paired_ci_flat,
@@ -141,6 +144,7 @@ BAYES_DIFF_NESTED_METHOD     = "bayes_diff_nested"
 SMOOTH_DIFF_NESTED_METHOD    = "smooth_diff_nested"
 BAYES_PAIR_INDEP_METHOD      = "bayes_indep_comp"
 BAYES_PAIR_PAIRED_METHOD     = "bayes_paired_comp"
+LMM_DIFF_METHOD              = "lmm_diff"
 
 ALL_METHODS = [
     TANGO_FLAT_METHOD,
@@ -159,6 +163,7 @@ ALL_METHODS = [
     SMOOTH_DIFF_NESTED_METHOD,
     BAYES_PAIR_INDEP_METHOD,
     BAYES_PAIR_PAIRED_METHOD,
+    # LMM_DIFF_METHOD,
 ]
 
 SINGLE_RUN_METHODS = [
@@ -181,6 +186,7 @@ MULTI_RUN_ONLY_METHODS = [
     BOOTSTRAP_DIFF_NESTED_METHOD,
     BAYES_DIFF_NESTED_METHOD,
     SMOOTH_DIFF_NESTED_METHOD,
+    # LMM_DIFF_METHOD,
 ]
 
 _METHOD_COLORS: dict[str, str] = {
@@ -200,6 +206,7 @@ _METHOD_COLORS: dict[str, str] = {
     SMOOTH_DIFF_NESTED_METHOD:   "#7570b3",
     BAYES_PAIR_INDEP_METHOD:     "#17becf",
     BAYES_PAIR_PAIRED_METHOD:    "#bcbd22",
+    # LMM_DIFF_METHOD:             "#0d1c00",
 }
 
 _METHOD_LABELS: dict[str, str] = {
@@ -219,6 +226,7 @@ _METHOD_LABELS: dict[str, str] = {
     SMOOTH_DIFF_NESTED_METHOD:   "smooth_diff_nested",
     BAYES_PAIR_INDEP_METHOD:     "bayes_indep_comp",
     BAYES_PAIR_PAIRED_METHOD:    "bayes_paired_comp",
+    # LMM_DIFF_METHOD:             "lmm_diff",
 }
 
 SOURCES = ["dove", "openeval", "inspect"]
@@ -232,8 +240,9 @@ BAYES_NESTED_METHOD       = "bayes_bootstrap_nested"
 SMOOTH_NESTED_METHOD      = "smooth_bootstrap_nested"
 BCA_NESTED_METHOD         = "bca_nested"
 BOOTSTRAP_T_NESTED_METHOD = "bootstrap_t_nested"
-T_INTERVAL_FLAT_METHOD    = "t_interval_flat"
-BOOTSTRAP_FLAT_METHOD     = "bootstrap_flat"
+NIG_NESTED_METHOD         = "nig_nested"
+NIG_METHOD                = "nig"
+LMM_MEAN_NESTED_METHOD    = "lmm_nested"
 WILSON_FLAT_METHOD        = "wilson_flat"
 WALD_FLAT_METHOD          = "wald_flat"
 CP_FLAT_METHOD            = "clopper_pearson_flat"
@@ -249,6 +258,7 @@ SINGLE_SAMPLE_BASE_METHODS = [
     SMOOTH_BOOTSTRAP_METHOD,
     BOOTSTRAP_T_METHOD,
     T_INTERVAL_METHOD,
+    NIG_METHOD,
 ]
 SINGLE_SAMPLE_NESTED_METHODS = [
     BOOTSTRAP_NESTED_METHOD,
@@ -256,10 +266,8 @@ SINGLE_SAMPLE_NESTED_METHODS = [
     SMOOTH_NESTED_METHOD,
     BCA_NESTED_METHOD,
     BOOTSTRAP_T_NESTED_METHOD,
-]
-SINGLE_SAMPLE_FLAT_METHODS = [
-    T_INTERVAL_FLAT_METHOD,
-    BOOTSTRAP_FLAT_METHOD,
+    NIG_NESTED_METHOD,
+    # LMM_MEAN_NESTED_METHOD,
 ]
 SINGLE_SAMPLE_BINARY_FLAT_METHODS = [
     WILSON_FLAT_METHOD,
@@ -277,7 +285,6 @@ SINGLE_SAMPLE_ALL_METHODS = (
     + SINGLE_SAMPLE_BINARY_FLAT_METHODS
     + SINGLE_SAMPLE_BINARY_NESTED_METHODS
     + SINGLE_SAMPLE_NESTED_METHODS
-    + SINGLE_SAMPLE_FLAT_METHODS
 )
 
 _SINGLE_METHOD_LABELS: dict[str, str] = {
@@ -299,8 +306,9 @@ _SINGLE_METHOD_LABELS: dict[str, str] = {
     SMOOTH_NESTED_METHOD:       "smooth_bstrap_nested",
     BCA_NESTED_METHOD:          "bca_nested",
     BOOTSTRAP_T_NESTED_METHOD:  "bootstrap_t_nested",
-    T_INTERVAL_FLAT_METHOD:     "t_interval_flat",
-    BOOTSTRAP_FLAT_METHOD:      "bootstrap_flat",
+    NIG_NESTED_METHOD:          "nig_nested",
+    NIG_METHOD:                 "nig",
+    # LMM_MEAN_NESTED_METHOD:     "lmm_nested",
 }
 
 _SINGLE_METHOD_COLORS: dict[str, str] = {
@@ -322,8 +330,9 @@ _SINGLE_METHOD_COLORS: dict[str, str] = {
     SMOOTH_NESTED_METHOD:       "#c5b0d5",
     BCA_NESTED_METHOD:          "#98df8a",
     BOOTSTRAP_T_NESTED_METHOD:  "#ff9896",
-    T_INTERVAL_FLAT_METHOD:     "#c49c94",
-    BOOTSTRAP_FLAT_METHOD:      "#7f7f7f",
+    NIG_NESTED_METHOD:          "#f7b6d2",
+    NIG_METHOD:                 "#888888",
+    # LMM_MEAN_NESTED_METHOD:     "#102100",
 }
 PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
@@ -442,6 +451,55 @@ def _estimate_icc_binary_pairs(scores_a: np.ndarray, scores_b: np.ndarray) -> fl
     return float((ms_between - ms_within) / denom)
 
 
+def _multirun_delta_variance_breakdown(
+    scores_a: np.ndarray,
+    scores_b: np.ndarray,
+) -> dict[str, float] | None:
+    """Decompose paired-difference variance into latent + inter-run noise terms.
+
+    Mirrors the moments decomposition used by tango_paired_ci_multirun_moments.
+    Returns None for non-multirun inputs.
+    """
+    if scores_a.ndim != 2 or scores_b.ndim != 2:
+        return None
+    if scores_a.shape != scores_b.shape:
+        return None
+
+    n_items, n_runs = scores_a.shape
+    if n_items <= 0 or n_runs <= 1:
+        return None
+
+    a_bin = (scores_a >= 0.5).astype(float)
+    b_bin = (scores_b >= 0.5).astype(float)
+
+    d10_i = np.mean((a_bin == 1.0) & (b_bin == 0.0), axis=1)
+    d01_i = np.mean((a_bin == 0.0) & (b_bin == 1.0), axis=1)
+    delta_i = d10_i - d01_i
+    u_i = d10_i + d01_i
+
+    var_delta = float(np.var(delta_i, ddof=1)) if n_items > 1 else 0.0
+    within_i = np.maximum(u_i - delta_i * delta_i, 0.0)
+    within_bar = float(np.mean(within_i))
+    between_latent = max(var_delta - within_bar / n_runs, 0.0)
+
+    run_noise_per_item = within_bar / n_runs
+    total_item_var = between_latent + run_noise_per_item
+    noise_share = (
+        run_noise_per_item / total_item_var if total_item_var > 0.0 else float("nan")
+    )
+
+    return {
+        "n_runs": float(n_runs),
+        "n10_rate": float(np.mean(d10_i)),
+        "n01_rate": float(np.mean(d01_i)),
+        "disc_rate": float(np.mean(u_i)),
+        "var_delta": var_delta,
+        "between_latent": between_latent,
+        "run_noise": run_noise_per_item,
+        "noise_share": noise_share,
+    }
+
+
 def print_corpus_pair_stats(corpus_pairs: list) -> None:
     """Print descriptive statistics for each corpus pair including ICC estimate."""
     if not corpus_pairs:
@@ -458,15 +516,23 @@ def print_corpus_pair_stats(corpus_pairs: list) -> None:
     print(f"  {'─'*76}")
 
     for cp in corpus_pairs:
-        # For multi-run (R>1), use per-item mean for display statistics
+        # For multi-run (R>1), use per-item run means for display statistics.
         a = cp.scores_a if cp.scores_a.ndim == 1 else np.mean(cp.scores_a, axis=1)
         b = cp.scores_b if cp.scores_b.ndim == 1 else np.mean(cp.scores_b, axis=1)
+        multirun = _multirun_delta_variance_breakdown(cp.scores_a, cp.scores_b)
         n = cp.corpus_size
         p_a = float(np.mean(a))
         p_b = float(np.mean(b))
-        n10 = int(np.sum((a == 1) & (b == 0)))
-        n01 = int(np.sum((a == 0) & (b == 1)))
-        disc_pct = 100.0 * (n10 + n01) / n
+
+        if multirun is None:
+            n10 = float(np.sum((a == 1) & (b == 0)))
+            n01 = float(np.sum((a == 0) & (b == 1)))
+            disc_pct = 100.0 * (n10 + n01) / n
+        else:
+            n10 = float(n * multirun["n10_rate"])
+            n01 = float(n * multirun["n01_rate"])
+            disc_pct = 100.0 * multirun["disc_rate"]
+
         icc = _estimate_icc_binary_pairs(a, b)
         icc_str = f"{icc:.3f}" if np.isfinite(icc) else "  n/a"
         pair_label = f"{cp.model_a[:20]} vs {cp.model_b[:20]}"
@@ -477,10 +543,24 @@ def print_corpus_pair_stats(corpus_pairs: list) -> None:
         # Expected discordant pairs at small N (illustrative)
         exp_disc_20 = 20 * (n10 + n01) / n
         exp_disc_40 = 40 * (n10 + n01) / n
+        n10_str = f"{n10:.1f}" if multirun is not None else f"{int(round(n10))}"
+        n01_str = f"{n01:.1f}" if multirun is not None else f"{int(round(n01))}"
+        run_note = " (run-avg)" if multirun is not None else ""
         print(
-            f"    → disc pairs: n10={n10}, n01={n01}; "
+            f"    → disc pairs{run_note}: n10={n10_str}, n01={n01_str}; "
             f"E[disc|n=20]={exp_disc_20:.1f}, E[disc|n=40]={exp_disc_40:.1f}"
         )
+
+        if multirun is not None:
+            noise_share = multirun["noise_share"]
+            noise_pct_str = f"{100.0 * noise_share:4.1f}%" if np.isfinite(noise_share) else "  n/a"
+            print(
+                "    → inter-run variance: "
+                f"var(delta_i)={multirun['var_delta']:.5f}, "
+                f"between={multirun['between_latent']:.5f}, "
+                f"run_noise={multirun['run_noise']:.5f}, "
+                f"noise_share={noise_pct_str}"
+            )
 
     print(f"  {'─'*76}\n")
 
@@ -1098,6 +1178,7 @@ def build_inspect_corpus_pairs(
     benchmarks: list[str] | None = None,
     *,
     min_pair_size: int = 50,
+    single_run: bool = False,
 ) -> list[CorpusPair]:
     """Build CorpusPairs from a CSV produced by collect_inspect_benchmarks.py.
 
@@ -1108,6 +1189,9 @@ def build_inspect_corpus_pairs(
     item_ids.  Scores are stored as:
       - shape (N,)    when only one run per item (R=1)
       - shape (N, R)  when multiple runs per item (R>1)
+
+    When ``single_run=True`` any multi-run data is truncated to run 0 only
+    (extra runs are discarded), so scores are always 1-D shape (N,).
     """
     import csv as _csv
 
@@ -1182,6 +1266,8 @@ def build_inspect_corpus_pairs(
             R_a = max((max(map_a[k].keys()) + 1) for k in shared_ids if map_a[k])
             R_b = max((max(map_b[k].keys()) + 1) for k in shared_ids if map_b[k])
             R = min(R_a, R_b)  # use the smaller R if models differ
+            if single_run and R > 1:
+                R = 1  # discard extra runs; handled by the R==1 branch below
 
             if R == 1:
                 # Single-run: 1D arrays, shape (N,)
@@ -1244,6 +1330,63 @@ def build_inspect_corpus_pairs(
 # ---------------------------------------------------------------------------
 
 
+def _lmm_diff_ci_sm(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Wald CI for mean(A) - mean(B) via LMM: score ~ template + (1|input).
+
+    a, b: (n, R) — n items, R runs each. Works for R=1 (paired design) and R>1.
+    The random intercept absorbs between-item variance; the template coefficient
+    captures the systematic A-vs-B difference.
+    """
+    import pandas as pd
+    import statsmodels.formula.api as smf
+
+    n, R = a.shape
+    item_ids = np.tile(np.arange(n), R)
+    df = pd.DataFrame({
+        "input":    np.concatenate([item_ids, item_ids]),
+        "template": np.array(["A"] * (n * R) + ["B"] * (n * R)),
+        "score":    np.concatenate([a.T.ravel(), b.T.ravel()]),
+    })
+    df["template"] = pd.Categorical(df["template"], categories=["A", "B"])
+    result = smf.mixedlm(
+        "score ~ C(template)", data=df, groups=df["input"]
+    ).fit(reml=True, disp=False)
+
+    # treatment coding: C(template)[T.B] = mean_B - mean_A
+    beta = float(result.fe_params["C(template)[T.B]"])
+    se   = float(result.bse["C(template)[T.B]"])
+    # Small-sample correction: use n-1 df (items as groups, matched to KR
+    # approximation for this balanced random-intercept paired design).
+    t_c  = float(stats.t.ppf(1 - alpha / 2, df=n - 1))
+    # return mean_A - mean_B
+    return (-beta - t_c * se, -beta + t_c * se)
+
+
+def _lmm_mean_ci_sm(scores: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Wald CI for the overall mean via LMM: score ~ 1 + (1|input).
+
+    scores: (n, R) — n items, R runs each. Requires R >= 2 to identify the
+    random-effect variance separately from residual variance.
+    """
+    import pandas as pd
+    import statsmodels.formula.api as smf
+
+    n, R = scores.shape
+    df = pd.DataFrame({
+        "input": np.repeat(np.arange(n), R),
+        "score": scores.ravel(),
+    })
+    result = smf.mixedlm(
+        "score ~ 1", data=df, groups=df["input"]
+    ).fit(reml=True, disp=False)
+
+    mu  = float(result.fe_params["Intercept"])
+    se  = float(result.bse["Intercept"])
+    # Small-sample correction: use n-1 df (items as groups).
+    t_c = float(stats.t.ppf(1 - alpha / 2, df=n - 1))
+    return (mu - t_c * se, mu + t_c * se)
+
+
 def _run_pairwise_real_cell(
     args: tuple[int, int, int, int, float, list[int]],
 ) -> list[PairSimResult]:
@@ -1267,8 +1410,9 @@ def _run_pairwise_real_cell(
         _b = cp.scores_b[idxs]
         a = _a.reshape(n, 1) if _a.ndim == 1 else _a  # (n, R)
         b = _b.reshape(n, 1) if _b.ndim == 1 else _b  # (n, R)
-        # Per-item mean across runs (R=1: identical to a[:,0]; R>1: averages runs)
-        diffs = np.mean(a, axis=1) - np.mean(b, axis=1)  # (n,)
+        # diffs is used only by single-run methods (bootstrap family, t_interval).
+        # Always use run 0 only — multirun methods consume a/b directly.
+        diffs = a[:, 0] - b[:, 0]  # (n,) — run 0 only
         obs_diff = float(np.mean(diffs))
 
         # ── tango_flat ──────────────────────────────────────────────
@@ -1442,6 +1586,22 @@ def _run_pairwise_real_cell(
                 covered[BAYES_PAIR_PAIRED_METHOD] += 1
             total_w[BAYES_PAIR_PAIRED_METHOD] += ci_hi - ci_lo
 
+        # ── lmm_diff: LMM Wald CI via score ~ template + (1|input) ──
+        if LMM_DIFF_METHOD in methods:
+            _t = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    ci_lo, ci_hi = _lmm_diff_ci_sm(a, b, alpha)
+            except Exception:
+                ci_lo = ci_hi = obs_diff
+            _el = time.perf_counter() - _t
+            total_t[LMM_DIFF_METHOD] += _el
+            total_t_sq[LMM_DIFF_METHOD] += _el * _el
+            if ci_lo <= true_diff <= ci_hi:
+                covered[LMM_DIFF_METHOD] += 1
+            total_w[LMM_DIFF_METHOD] += ci_hi - ci_lo
+
     return [
         PairSimResult(
             model_a=cp.model_a,
@@ -1576,7 +1736,6 @@ def _run_single_real_cell(
         _s = cs.scores[idxs]
         scores = _s.reshape(n, 1) if _s.ndim == 1 else _s  # (n, R)
         cell_means = scores.mean(axis=1)                    # (n,)
-        flat = scores.ravel()                               # (n*R,)
         obs_mean = float(np.mean(cell_means))
 
         # ── Cell-means bootstrap family ──────────────────────────────────────
@@ -1745,34 +1904,49 @@ def _run_single_real_cell(
                 covered[BOOTSTRAP_T_NESTED_METHOD] += 1
             total_w[BOOTSTRAP_T_NESTED_METHOD] += ci_hi - ci_lo
 
-        # ── Flat methods (all n*R obs treated as iid) ────────────────────────
-        if T_INTERVAL_FLAT_METHOD in methods:
+        # ── NIG on cell means ────────────────────────────────────────────────
+        if NIG_METHOD in methods:
             _t = time.perf_counter()
             try:
-                ci_lo, ci_hi = t_interval_ci_1d(flat, alpha)
+                ci_lo, ci_hi = nig_ci_1d(cell_means, alpha)
             except Exception:
-                ci_lo = ci_hi = float(np.mean(flat))
+                ci_lo = ci_hi = obs_mean
             _el = time.perf_counter() - _t
-            total_t[T_INTERVAL_FLAT_METHOD] += _el
-            total_t_sq[T_INTERVAL_FLAT_METHOD] += _el * _el
+            total_t[NIG_METHOD] += _el
+            total_t_sq[NIG_METHOD] += _el * _el
             if ci_lo <= true_mean <= ci_hi:
-                covered[T_INTERVAL_FLAT_METHOD] += 1
-            total_w[T_INTERVAL_FLAT_METHOD] += ci_hi - ci_lo
+                covered[NIG_METHOD] += 1
+            total_w[NIG_METHOD] += ci_hi - ci_lo
 
-        if BOOTSTRAP_FLAT_METHOD in methods:
+        # ── NIG nested: Hierarchical Normal-Inverse-Gamma CI ──────────────────
+        if NIG_NESTED_METHOD in methods:
             _t = time.perf_counter()
             try:
-                _boot = bootstrap_means_1d(flat, n_bootstrap, rng)
-                ci_lo = float(np.percentile(_boot, 100 * alpha / 2))
-                ci_hi = float(np.percentile(_boot, 100 * (1 - alpha / 2)))
+                ci_lo, ci_hi = nig_ci_nested(scores, alpha)
             except Exception:
-                ci_lo = ci_hi = float(np.mean(flat))
+                ci_lo = ci_hi = obs_mean
             _el = time.perf_counter() - _t
-            total_t[BOOTSTRAP_FLAT_METHOD] += _el
-            total_t_sq[BOOTSTRAP_FLAT_METHOD] += _el * _el
+            total_t[NIG_NESTED_METHOD] += _el
+            total_t_sq[NIG_NESTED_METHOD] += _el * _el
             if ci_lo <= true_mean <= ci_hi:
-                covered[BOOTSTRAP_FLAT_METHOD] += 1
-            total_w[BOOTSTRAP_FLAT_METHOD] += ci_hi - ci_lo
+                covered[NIG_NESTED_METHOD] += 1
+            total_w[NIG_NESTED_METHOD] += ci_hi - ci_lo
+
+        # ── LMM nested: score ~ 1 + (1|input), Wald CI on intercept ─────────
+        if LMM_MEAN_NESTED_METHOD in methods and scores.shape[1] >= 2:
+            _t = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    ci_lo, ci_hi = _lmm_mean_ci_sm(scores, alpha)
+            except Exception:
+                ci_lo = ci_hi = obs_mean
+            _el = time.perf_counter() - _t
+            total_t[LMM_MEAN_NESTED_METHOD] += _el
+            total_t_sq[LMM_MEAN_NESTED_METHOD] += _el * _el
+            if ci_lo <= true_mean <= ci_hi:
+                covered[LMM_MEAN_NESTED_METHOD] += 1
+            total_w[LMM_MEAN_NESTED_METHOD] += ci_hi - ci_lo
 
     return [
         SingleSimResult(
@@ -1791,6 +1965,7 @@ def _run_single_real_cell(
         )
         for method in methods
         if method in covered
+        and not (method == LMM_MEAN_NESTED_METHOD and cs.n_runs < 2)
     ]
 
 
@@ -2419,6 +2594,50 @@ def save_single_results_csv(results: list[SingleSimResult], path: str) -> None:
     print(f"  Single-sample results saved to: {path}")
 
 
+def save_pairwise_report_log(
+    results: list[PairSimResult],
+    corpus_pairs: list[CorpusPair],
+    methods: list[str],
+    sample_sizes: list[int],
+    alpha: float,
+    n_reps: int,
+    out_dir: str,
+    run_ts: str,
+) -> None:
+    """Capture and save pairwise simulation report to a log file."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+
+    summary_path = out_base / f"tango_real_{run_ts}_report.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_report(results, corpus_pairs, methods, sample_sizes, alpha, n_reps)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"  Pairwise report saved to: {summary_path}")
+
+
+def save_single_report_log(
+    results: list[SingleSimResult],
+    corpora: list[CorpusSingle],
+    methods: list[str],
+    sample_sizes: list[int],
+    alpha: float,
+    n_reps: int,
+    out_dir: str,
+    run_ts: str,
+) -> None:
+    """Capture and save single-sample simulation report to a log file."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+
+    summary_path = out_base / f"single_real_{run_ts}_report.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_single_report(results, corpora, methods, sample_sizes, alpha, n_reps)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"  Single-sample report saved to: {summary_path}")
+
+
 def save_single_plots(
     results: list[SingleSimResult],
     methods: list[str],
@@ -2600,6 +2819,11 @@ def main() -> None:
     parser.add_argument("--progress", choices=PROGRESS_MODES, default="bar",
                         help="Progress display mode")
     parser.add_argument(
+        "--describe-only",
+        action="store_true",
+        help="Print loaded corpus pair descriptions/stats and exit without running simulations",
+    )
+    parser.add_argument(
         "--multi-run-methods",
         action="store_true",
         help="Enable multirun and *_nested methods (default: single-run methods only)",
@@ -2663,7 +2887,14 @@ def main() -> None:
     if args.multi_run_methods:
         pair_methods.extend(MULTI_RUN_ONLY_METHODS)
 
-    single_methods = list(SINGLE_SAMPLE_ALL_METHODS)
+    if args.multi_run_methods:
+        single_methods = list(SINGLE_SAMPLE_ALL_METHODS)
+    else:
+        single_methods = (
+            list(SINGLE_SAMPLE_BASE_METHODS)
+            + list(SINGLE_SAMPLE_BINARY_FLAT_METHODS)
+            + list(SINGLE_SAMPLE_FLAT_METHODS)
+        )
 
     print(f"\nReal-Data CI Simulation")
     print(f"  Mode          : {args.mode}")
@@ -2703,6 +2934,7 @@ def main() -> None:
             models=args.models,
             benchmarks=args.benchmarks,
             min_pair_size=args.min_pair_size,
+            single_run=not args.multi_run_methods,
         )
 
     if not corpus_pairs:
@@ -2717,6 +2949,9 @@ def main() -> None:
             f"N={cp.corpus_size}{runs_str}, true_diff={cp.true_diff:+.4f}"
         )
     print_corpus_pair_stats(corpus_pairs)
+    if args.describe_only:
+        print("Description complete (--describe-only); exiting before simulation.")
+        return
 
     # ── Pairwise simulation ───────────────────────────────────────────────────
     if args.mode in ("pairwise", "both"):
@@ -2738,9 +2973,14 @@ def main() -> None:
         print_report(pair_results, corpus_pairs, pair_methods, args.sizes, args.alpha, args.reps)
 
         if args.save_results == "save":
+            run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
             os.makedirs(out_dir, exist_ok=True)
-            csv_path = os.path.join(out_dir, f"tango_real_{args.source}.csv")
+            csv_path = os.path.join(out_dir, f"tango_real_{args.source}_{run_ts}.csv")
             save_results_csv(pair_results, csv_path)
+            save_pairwise_report_log(
+                pair_results, corpus_pairs, pair_methods, args.sizes, args.alpha, args.reps,
+                out_dir, run_ts,
+            )
 
         if args.plots == "save":
             os.makedirs(plots_dir, exist_ok=True)
@@ -2779,8 +3019,13 @@ def main() -> None:
 
         if args.save_results == "save":
             os.makedirs(out_dir, exist_ok=True)
-            csv_path = os.path.join(out_dir, f"single_real_{args.source}.csv")
+            run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            csv_path = os.path.join(out_dir, f"single_real_{args.source}_{run_ts}.csv")
             save_single_results_csv(single_results, csv_path)
+            save_single_report_log(
+                single_results, corpora, single_methods, args.sizes, args.alpha, args.reps,
+                out_dir, run_ts,
+            )
 
         if args.plots == "save":
             os.makedirs(plots_dir, exist_ok=True)

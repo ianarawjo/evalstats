@@ -25,10 +25,9 @@ CI families under comparison:
               input.  Theoretically optimal for multi-run data; reduces to
               plain bootstrap when R = 1.
 
-  flat        Apply each method to the flattened N×R array treating all
-              observations as iid.  Under-covers when f_run is small (ICC > 0)
-              because the iid assumption ignores input-level clustering; converges
-              to nominal coverage as f_run → 1.
+    flat        Legacy labels for methods run on per-input cell means (N values).
+                            These are intentionally aligned with sim_tango_real single-sample
+                            baselines for apples-to-apples comparisons.
 
 Methods:
   bootstrap               Percentile bootstrap  (cell means)
@@ -42,9 +41,7 @@ Methods:
   smooth_bootstrap_nested Smoothed two-level nested bootstrap  (N×R matrix)
   bca_nested              BCa interval using nested bootstrap replicates  (N×R matrix)
   bootstrap_t_nested      Studentized bootstrap-t using nested resampling  (N×R matrix)
-  t_interval_flat         Student's t  (all N×R obs, iid — baseline)
-  bootstrap_flat          Percentile bootstrap  (all N×R obs, iid — baseline)
-  Binary extra (flat iid): wilson_flat, wald_flat, clopper_pearson_flat, bayes_indep_flat
+  Binary extra (flat):    wilson_flat, wald_flat, clopper_pearson_flat, bayes_indep_flat
   Binary extra (nested):   wilson_de, wilson_od, beta_binomial
   Continuous extra (cell means): beta, logit_t, nig, el
 
@@ -128,6 +125,7 @@ with warnings.catch_warnings():
         tango_paired_ci_multirun_effective,
         tango_paired_ci_multirun_moments,
     )
+    from evalstats.core.bayes_evals import binorm_cdf
 
 
 # ---------------------------------------------------------------------------
@@ -147,12 +145,7 @@ NESTED_METHODS            = [BOOTSTRAP_NESTED_METHOD, BAYES_NESTED_METHOD, SMOOT
 # t-interval on cell means (cluster-robust, always valid)
 T_INTERVAL_METHOD         = "t_interval"
 
-# Flat methods: applied to flattened N×R array (iid assumption — baseline)
-T_INTERVAL_FLAT_METHOD    = "t_interval_flat"
-BOOTSTRAP_FLAT_METHOD     = "bootstrap_flat"
-FLAT_METHODS              = [T_INTERVAL_FLAT_METHOD, BOOTSTRAP_FLAT_METHOD]
-
-# Binary-specific flat methods
+# Binary-specific flat methods (on cell means)
 WILSON_FLAT_METHOD        = "wilson_flat"
 WALD_FLAT_METHOD          = "wald_flat"
 CP_FLAT_METHOD            = "clopper_pearson_flat"
@@ -165,7 +158,8 @@ WILSON_OD_METHOD          = "wilson_od"
 BETA_BINOMIAL_METHOD      = "beta_binomial"
 BINARY_NESTED_METHODS     = [WILSON_DE_METHOD, WILSON_OD_METHOD, BETA_BINOMIAL_METHOD]
 
-# Continuous-specific nested methods (operate on full N×R matrix)
+# Nested method on full N×R matrix (primarily continuous; also useful as
+# an empirical approximation baseline for binary multirun scenarios).
 NIG_NESTED_METHOD         = "nig_nested"
 CONTINUOUS_NESTED_METHODS = [NIG_NESTED_METHOD]
 
@@ -178,7 +172,14 @@ PAIR_DIFF_NESTED_METHODS     = [BOOTSTRAP_DIFF_NESTED_METHOD, BAYES_DIFF_NESTED_
 # Pairwise binary flat methods (first-run-only iid baseline)
 TANGO_FLAT_METHOD         = "tango_flat"
 NEWCOMBE_FLAT_METHOD      = "newcombe_flat"
-BINARY_PAIR_FLAT_METHODS  = [TANGO_FLAT_METHOD, NEWCOMBE_FLAT_METHOD]
+BAYES_PAIR_INDEP_METHOD   = "bayes_indep_comp"
+BAYES_PAIR_PAIRED_METHOD  = "bayes_paired_comp"
+BINARY_PAIR_FLAT_METHODS  = [
+    TANGO_FLAT_METHOD,
+    NEWCOMBE_FLAT_METHOD,
+    BAYES_PAIR_INDEP_METHOD,
+    BAYES_PAIR_PAIRED_METHOD,
+]
 
 # Pairwise binary nested (full N×R matrix)
 TANGO_MULTIRUN_CLUSTER_METHOD = "tango_multirun_cluster"
@@ -202,7 +203,6 @@ REPORT_METHODS = (
     METHODS
     + [T_INTERVAL_METHOD]
     + NESTED_METHODS
-    + FLAT_METHODS
     + BINARY_FLAT_METHODS
     + BINARY_NESTED_METHODS
     + CONTINUOUS_NESTED_METHODS
@@ -227,11 +227,11 @@ PROGRESS_MODES   = ["bar", "cell", "off"]
 PLOT_MODES       = ["save", "off"]
 RESULTS_MODES    = ["save", "off"]
 
-RUN_NOISE_FRACS_DEFAULT = [.01, 0.3, 0.7, 0.95]
+RUN_NOISE_FRACS_DEFAULT = [.01, 0.1, 0.3, 0.5]
 
 OFFICIAL_RUNS_SWEEP = [5]
-OFFICIAL_RUN_NOISE_FRACS = [.01, 0.3, 0.7, 0.95]
-OFFICIAL_ICC_VALUES = [0.05, 0.15, 0.30, 0.50]
+OFFICIAL_RUN_NOISE_FRACS = [.01, 0.1, 0.3, 0.5]
+OFFICIAL_ICC_VALUES = [0.05, 0.30, 0.50]
 OFFICIAL_SIZES = [10, 20, 30, 50, 75, 100] # [10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 
 
@@ -640,6 +640,41 @@ def build_multirun_scenarios(
                 run_noise_frac=f,
             ))
 
+    # Explicit polarized Likert variant from sim_compare_boot expanded suite.
+    if suite == "expanded":
+        for f in run_noise_fracs:
+            sigma_input_l = float(np.sqrt(max(1.0 - f, 0.0))) * 0.50
+            sigma_run_l   = float(np.sqrt(f)) * 0.50
+            si_, sr_ = sigma_input_l, sigma_run_l
+
+            def _gen_likert_polarized(
+                rng: np.random.Generator, n: int, runs: int,
+                _si: float = si_, _sr: float = sr_,
+                _hetero: bool = heteroscedastic,
+            ) -> np.ndarray:
+                sel = rng.random((n, 1)) < 0.5
+                mu_i = np.where(sel, 1.3, 4.7)
+                latent_i = mu_i + rng.normal(0.0, _si, size=(n, 1)) if _si > 0.0 else mu_i.astype(float)
+                if _sr > 0.0:
+                    if _hetero:
+                        p_i = np.clip((latent_i - 1.0) / 4.0, 0.0, 1.0)
+                        sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                        noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                    else:
+                        noise = rng.normal(0.0, _sr, size=(n, runs))
+                else:
+                    noise = np.zeros((n, runs))
+                return np.rint(np.clip(latent_i + noise, 1.0, 5.0))
+
+            true_mean = _estimate_true_mean_mc(_gen_likert_polarized)
+            scenarios.append(MultiRunScenario(
+                label=f"polarized|f={f:.2f}",
+                eval_type="likert",
+                generate=_gen_likert_polarized,
+                true_mean=true_mean,
+                run_noise_frac=f,
+            ))
+
     # ── Grades 0–100 ────────────────────────────────────────────────────────
     # Same structure as Likert but clipped to [0, 100]; s0 is the original sigma.
     _grades_standard: list[tuple[str, float, float]] = [
@@ -688,40 +723,124 @@ def build_multirun_scenarios(
                 run_noise_frac=f,
             ))
 
-    # Grades mixture (always included)
+    # Grades mixture (always included): match sim_compare_boot components
     for f in run_noise_fracs:
-        s0_mix = 22.0  # typical component sigma
-        sigma_input_m = float(np.sqrt(max(1.0 - f, 0.0))) * s0_mix
-        sigma_run_m   = float(np.sqrt(f)) * s0_mix
-        si_, sr_ = sigma_input_m, sigma_run_m
+        rng_tmp = np.random.default_rng(4)
+        flags_tmp = rng_tmp.choice(3, size=200_000, p=[0.20, 0.50, 0.30])
+        base_tmp = np.empty(200_000, dtype=float)
+        for bucket, mu_b, sig_b in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
+            msk = flags_tmp == bucket
+            base_tmp[msk] = rng_tmp.normal(mu_b, sig_b, size=int(np.sum(msk)))
+        var_mix = float(np.var(np.clip(base_tmp, 0.0, 100.0)))
+        sigma_run_m = float(np.sqrt(var_mix * f / max(1.0 - f, 1e-9)))
+        sr_ = sigma_run_m
 
         def _gen_grade_mix(
             rng: np.random.Generator, n: int, runs: int,
-            _si: float = si_, _sr: float = sr_,
+            _sr: float = sr_,
             _hetero: bool = heteroscedastic,
         ) -> np.ndarray:
             flags = rng.choice(3, size=(n, 1), p=[0.20, 0.50, 0.30])
-            mu_i = np.where(flags == 0, 22.0, np.where(flags == 1, 58.0, 88.0))
-            latent_i = mu_i + rng.normal(0.0, _si, size=(n, 1)) if _si > 0.0 else mu_i.astype(float)
+            mu_i = np.where(flags == 0, 22.0, np.where(flags == 1, 58.0, 88.0)).astype(float)
+            sig_i = np.where(flags == 0, 11.0, np.where(flags == 1, 14.0, 8.0)).astype(float)
+            base_i = np.clip(mu_i + rng.normal(0.0, 1.0, size=(n, 1)) * sig_i, 0.0, 100.0)
             if _sr > 0.0:
                 if _hetero:
-                    p_i = np.clip(latent_i / 100.0, 0.0, 1.0)
+                    p_i = np.clip(base_i / 100.0, 0.0, 1.0)
                     sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
                     noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
                 else:
                     noise = rng.normal(0.0, _sr, size=(n, runs))
             else:
                 noise = np.zeros((n, runs))
-            return np.clip(latent_i + noise, 0.0, 100.0)
+            return np.clip(base_i + noise, 0.0, 100.0)
 
         true_mean = _estimate_true_mean_mc(_gen_grade_mix)
         scenarios.append(MultiRunScenario(
-            label=f"mixture-3comp|f={f:.2f}",
+            label=f"mixture-truncnorm(3 components)|f={f:.2f}",
             eval_type="grades",
             generate=_gen_grade_mix,
             true_mean=true_mean,
             run_noise_frac=f,
         ))
+
+    # Heavy-tail t(df=3) grades scenario (always included).
+    for f in run_noise_fracs:
+        rng_tmp = np.random.default_rng(5)
+        base_ht = np.clip(52.0 + 16.0 * rng_tmp.standard_t(df=3.0, size=200_000), 0.0, 100.0)
+        var_ht = float(np.var(base_ht))
+        sigma_run_h = float(np.sqrt(var_ht * f / max(1.0 - f, 1e-9)))
+        sr_ = sigma_run_h
+
+        def _gen_grade_heavy_tail(
+            rng: np.random.Generator, n: int, runs: int,
+            _sr: float = sr_,
+            _hetero: bool = heteroscedastic,
+        ) -> np.ndarray:
+            base_i = np.clip(52.0 + 16.0 * rng.standard_t(df=3.0, size=(n, 1)), 0.0, 100.0)
+            if _sr > 0.0:
+                if _hetero:
+                    p_i = np.clip(base_i / 100.0, 0.0, 1.0)
+                    sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                    noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                else:
+                    noise = rng.normal(0.0, _sr, size=(n, runs))
+            else:
+                noise = np.zeros((n, runs))
+            return np.clip(base_i + noise, 0.0, 100.0)
+
+        true_mean = _estimate_true_mean_mc(_gen_grade_heavy_tail)
+        scenarios.append(MultiRunScenario(
+            label=f"heavy-tail t(df=3)|f={f:.2f}",
+            eval_type="grades",
+            generate=_gen_grade_heavy_tail,
+            true_mean=true_mean,
+            run_noise_frac=f,
+        ))
+
+    # Expanded-suite floor/ceiling spiked grades scenarios from sim_compare_boot.
+    if suite == "expanded":
+        for spike_name, spike_value, body_mu, body_sigma in [
+            ("zero-spiked(π=0.40,N(45,20))", 0.0, 45.0, 20.0),
+            ("hundred-spiked(π=0.40,N(65,18))", 100.0, 65.0, 18.0),
+        ]:
+            rng_tmp = np.random.default_rng(6)
+            spike_mask = rng_tmp.random(200_000) < 0.40
+            body = np.clip(rng_tmp.normal(body_mu, body_sigma, size=200_000), 0.0, 100.0)
+            base_sp = np.where(spike_mask, spike_value, body)
+            var_sp = float(np.var(base_sp))
+
+            for f in run_noise_fracs:
+                sigma_run_sp = float(np.sqrt(var_sp * f / max(1.0 - f, 1e-9)))
+                sv_, bm_, bs_, sr_ = spike_value, body_mu, body_sigma, sigma_run_sp
+
+                def _gen_grade_spiked(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _sv: float = sv_, _bm: float = bm_, _bs: float = bs_, _sr: float = sr_,
+                    _hetero: bool = heteroscedastic,
+                ) -> np.ndarray:
+                    spike_i = rng.random((n, 1)) < 0.40
+                    body_i = np.clip(rng.normal(_bm, _bs, size=(n, 1)), 0.0, 100.0)
+                    base_i = np.where(spike_i, _sv, body_i)
+                    if _sr > 0.0:
+                        if _hetero:
+                            p_i = np.clip(base_i / 100.0, 0.0, 1.0)
+                            sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                            noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                        else:
+                            noise = rng.normal(0.0, _sr, size=(n, runs))
+                    else:
+                        noise = np.zeros((n, runs))
+                    return np.clip(base_i + noise, 0.0, 100.0)
+
+                true_mean = _estimate_true_mean_mc(_gen_grade_spiked)
+                scenarios.append(MultiRunScenario(
+                    label=f"{spike_name}|f={f:.2f}",
+                    eval_type="grades",
+                    generate=_gen_grade_spiked,
+                    true_mean=true_mean,
+                    run_noise_frac=f,
+                ))
 
     return scenarios
 
@@ -860,6 +979,79 @@ def build_pair_multirun_scenarios(
                     run_noise_frac_b=f_b,
                     icc=icc,
                     is_null=is_null,
+                ))
+
+    # Explicit stress-test binary regimes with highly one-sided discordance.
+    # These target small-n behavior where one discordant cell is near zero
+    # (for example p10 << p01), which can be challenging for some CIs.
+    if suite == "expanded":
+        asym_binary_specs: list[tuple[str, float, float, float]] = [
+            ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
+            ("binary-onesided-pos-extreme", 0.384, 0.001, 0.000),
+            ("binary-onesided-neg-strong",  0.020, 0.300, 0.050),
+            ("binary-onesided-pos-strong",  0.300, 0.020, 0.050),
+            ("binary-onesided-neg-ultra",   0.000, 0.520, 0.000),
+            ("binary-onesided-pos-ultra",   0.520, 0.000, 0.000),
+            ("binary-onesided-neg-sparse",  0.001, 0.090, 0.030),
+            ("binary-onesided-pos-sparse",  0.090, 0.001, 0.030),
+            ("binary-onesided-neg-near-ceil", 0.000, 0.080, 0.900),
+            ("binary-onesided-pos-near-floor", 0.080, 0.000, 0.020),
+            ("binary-onesided-neg-moderate", 0.050, 0.220, 0.150),
+            ("binary-onesided-pos-moderate", 0.220, 0.050, 0.150),
+        ]
+
+        for shape_label, p10, p01, p11 in asym_binary_specs:
+            p00 = 1.0 - (p11 + p10 + p01)
+            if p00 <= 0.0:
+                raise ValueError(
+                    f"Invalid asymmetric binary scenario {shape_label}: probabilities sum to >= 1.0"
+                )
+
+            probs = np.array([p11, p10, p01, p00], dtype=float)
+            true_diff = float(p10 - p01)
+
+            # Integrate run-noise sweep by mixing an item-stable state with
+            # a run-specific redraw; f_run controls redraw probability.
+            for f_a, f_b in noise_pairs:
+                f_eff = 0.5 * (f_a + f_b)
+                icc = 1.0 - f_eff
+                if pairwise_noise_grid:
+                    label = (
+                        f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|"
+                        f"p11={p11:.3f}|p00={p00:.3f}|fA={f_a:.2f}|fB={f_b:.2f}"
+                    )
+                else:
+                    label = (
+                        f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|"
+                        f"p11={p11:.3f}|p00={p00:.3f}|f={f_eff:.2f}"
+                    )
+                probs_, f_ = probs, f_eff
+
+                def _gen_bin_pair_asym(
+                    rng: np.random.Generator,
+                    n: int,
+                    runs: int,
+                    _probs: np.ndarray = probs_,
+                    _f: float = f_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    z_item = rng.choice(4, size=(n, 1), p=_probs)
+                    z_run = rng.choice(4, size=(n, runs), p=_probs)
+                    redraw = rng.random((n, runs)) < _f
+                    z = np.where(redraw, z_run, z_item)
+                    a = np.isin(z, (0, 1)).astype(float)
+                    b = np.isin(z, (0, 2)).astype(float)
+                    return a, b
+
+                scenarios.append(PairMultiRunScenario(
+                    label=label,
+                    eval_type="binary",
+                    generate_pair=_gen_bin_pair_asym,
+                    true_diff=true_diff,
+                    run_noise_frac=f_eff,
+                    run_noise_frac_a=f_a,
+                    run_noise_frac_b=f_b,
+                    icc=icc,
+                    is_null=False,
                 ))
 
     # ── Continuous [0, 1] ───────────────────────────────────────────────────
@@ -1120,6 +1312,69 @@ def _bayes_indep_ci(values: np.ndarray, alpha: float) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
+def _bayes_indep_comp_ci(
+    a: np.ndarray,
+    b: np.ndarray,
+    alpha: float,
+    num_samples: int,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Independent Beta-posteriors CI for paired binary difference p(A=1)-p(B=1)."""
+    post_a = rng.beta(float(np.sum(a)) + 1.0, float(len(a) - np.sum(a)) + 1.0, size=num_samples)
+    post_b = rng.beta(float(np.sum(b)) + 1.0, float(len(b) - np.sum(b)) + 1.0, size=num_samples)
+    diff = post_a - post_b
+    return (
+        float(np.percentile(diff, 100.0 * alpha / 2.0)),
+        float(np.percentile(diff, 100.0 * (1.0 - alpha / 2.0))),
+    )
+
+
+def _bayes_paired_comp_ci(
+    a: np.ndarray,
+    b: np.ndarray,
+    alpha: float,
+    num_samples: int,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Paired Bayesian CI for p(A=1)-p(B=1) using the bivariate-normal latent model."""
+    s = float(np.sum(a * b))
+    t = float(np.sum(a * (1.0 - b)))
+    u = float(np.sum((1.0 - a) * b))
+    v = float(np.sum((1.0 - a) * (1.0 - b)))
+
+    theta_as = rng.beta(1.0, 1.0, size=num_samples)
+    theta_bs = rng.beta(1.0, 1.0, size=num_samples)
+    rhos = np.clip(2.0 * rng.beta(4.0, 2.0, size=num_samples) - 1.0, -1 + 1e-20, 1 - 1e-20)
+    diff = theta_as - theta_bs
+
+    mu_a = stats.norm.ppf(theta_as)
+    mu_b = stats.norm.ppf(theta_bs)
+
+    th_v = binorm_cdf(0, 0, mu_a, mu_b, 1, 1, rhos)
+    th_s = theta_as + theta_bs + th_v - 1.0
+    th_t = 1.0 - theta_bs - th_v
+    th_u = 1.0 - theta_as - th_v
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        log_w = s * np.log(th_s) + t * np.log(th_t) + u * np.log(th_u) + v * np.log(th_v)
+
+    log_w -= np.nanmax(log_w)
+    w = np.exp(log_w)
+    w[np.isnan(w)] = 0.0
+    w_sum = float(np.sum(w))
+
+    if w_sum <= 0.0:
+        d_hat = float(np.mean(a) - np.mean(b))
+        return d_hat, d_hat
+
+    w /= w_sum
+    diff_post = diff[rng.choice(num_samples, size=num_samples, replace=True, p=w)]
+    return (
+        float(np.percentile(diff_post, 100.0 * alpha / 2.0)),
+        float(np.percentile(diff_post, 100.0 * (1.0 - alpha / 2.0))),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Per-cell worker
 # ---------------------------------------------------------------------------
@@ -1133,9 +1388,9 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
     scenario = _WORKER_SCENARIOS[sc_idx]
     rng = np.random.default_rng(seed)
 
-    active_methods = METHODS + [T_INTERVAL_METHOD] + NESTED_METHODS + FLAT_METHODS
+    active_methods = METHODS + [T_INTERVAL_METHOD] + NESTED_METHODS
     if scenario.eval_type == "binary":
-        active_methods += BINARY_FLAT_METHODS + BINARY_NESTED_METHODS
+        active_methods += BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + CONTINUOUS_NESTED_METHODS + [NIG_METHOD]
     elif scenario.eval_type == "continuous":
         active_methods += CONTINUOUS_NESTED_METHODS
         active_methods += CONTINUOUS_EXTRA_METHODS
@@ -1155,7 +1410,6 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
     for _rep in range(n_reps):
         scores     = scenario.generate(rng, n, runs)   # (n, runs)
         cell_means = scores.mean(axis=1)               # (n,)
-        flat       = scores.ravel()                    # (n*runs,)
         obs_mean   = float(np.mean(cell_means))
 
         # ── Cell-means bootstrap family ──────────────────────────────────
@@ -1247,38 +1501,11 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
             covered[BOOTSTRAP_T_NESTED_METHOD] += 1
         total_w[BOOTSTRAP_T_NESTED_METHOD] += ci_high - ci_low
 
-        # ── Flat methods (all N×R obs, iid assumption) ───────────────────
-        t0 = time.perf_counter()
-        try:
-            ci_low, ci_high = t_interval_ci_1d(flat, alpha)
-        except Exception:
-            ci_low = ci_high = float(np.mean(flat))
-        el = time.perf_counter() - t0
-        total_t[T_INTERVAL_FLAT_METHOD]    += el
-        total_t_sq[T_INTERVAL_FLAT_METHOD] += el * el
-        if ci_low <= scenario.true_mean <= ci_high:
-            covered[T_INTERVAL_FLAT_METHOD] += 1
-        total_w[T_INTERVAL_FLAT_METHOD] += ci_high - ci_low
-
-        t0 = time.perf_counter()
-        try:
-            boot_flat = bootstrap_means_1d(flat, n_bootstrap, rng)
-            ci_low  = float(np.percentile(boot_flat, 100 * alpha / 2))
-            ci_high = float(np.percentile(boot_flat, 100 * (1 - alpha / 2)))
-        except Exception:
-            ci_low = ci_high = float(np.mean(flat))
-        el = time.perf_counter() - t0
-        total_t[BOOTSTRAP_FLAT_METHOD]    += el
-        total_t_sq[BOOTSTRAP_FLAT_METHOD] += el * el
-        if ci_low <= scenario.true_mean <= ci_high:
-            covered[BOOTSTRAP_FLAT_METHOD] += 1
-        total_w[BOOTSTRAP_FLAT_METHOD] += ci_high - ci_low
-
-        # ── Binary flat (integer-count methods on flattened N×R data) ────
+        # ── Binary flat methods on cell means (legacy names) ──────────────
         if scenario.eval_type == "binary":
-            succ_flat = int(np.sum(flat))
-            n_flat    = len(flat)
-            obs_flat  = float(np.mean(flat))
+            succ_flat = int(np.round(np.sum(cell_means)))
+            n_flat    = len(cell_means)
+            obs_flat  = obs_mean
 
             t0 = time.perf_counter()
             ci_low, ci_high = _wilson_ci(succ_flat, n_flat, alpha)
@@ -1290,7 +1517,7 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
             total_w[WILSON_FLAT_METHOD] += ci_high - ci_low
 
             t0 = time.perf_counter()
-            ci_low, ci_high = wald_ci_1d(flat, alpha)
+            ci_low, ci_high = wald_ci_1d(cell_means, alpha)
             el = time.perf_counter() - t0
             total_t[WALD_FLAT_METHOD]    += el
             total_t_sq[WALD_FLAT_METHOD] += el * el
@@ -1300,7 +1527,7 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
 
             t0 = time.perf_counter()
             try:
-                ci_low, ci_high = clopper_pearson_ci_1d(flat, alpha)
+                ci_low, ci_high = clopper_pearson_ci_1d(cell_means, alpha)
             except Exception:
                 ci_low = ci_high = obs_flat
             el = time.perf_counter() - t0
@@ -1312,7 +1539,7 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
 
             t0 = time.perf_counter()
             try:
-                ci_low, ci_high = _bayes_indep_ci(flat, alpha)
+                ci_low, ci_high = _bayes_indep_ci(cell_means, alpha)
             except Exception:
                 ci_low = ci_high = obs_flat
             el = time.perf_counter() - t0
@@ -1340,8 +1567,8 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
                     covered[method] += 1
                 total_w[method] += ci_high - ci_low
 
-        # ── Continuous extra methods on cell means ────────────────────────
-        if scenario.eval_type == "continuous":
+        # ── NIG nested on full matrix (continuous + binary approximation) ─
+        if scenario.eval_type in {"binary", "continuous"}:
             t0 = time.perf_counter()
             try:
                 ci_low, ci_high = nig_ci_nested(scores, alpha)
@@ -1354,6 +1581,24 @@ def _run_multirun_cell(args: tuple) -> list[SimResult]:
                 covered[NIG_NESTED_METHOD] += 1
             total_w[NIG_NESTED_METHOD] += ci_high - ci_low
 
+        # ── Cell-mean extra methods ───────────────────────────────────────
+        # NIG on cell means is also useful for binary multi-run data
+        # (cell means in [0,1]), while the others are continuous-only.
+        if scenario.eval_type == "binary":
+            t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = nig_ci_1d(cell_means, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            el = time.perf_counter() - t0
+            total_t[NIG_METHOD] += el
+            total_t_sq[NIG_METHOD] += el * el
+            if ci_low <= scenario.true_mean <= ci_high:
+                covered[NIG_METHOD] += 1
+            total_w[NIG_METHOD] += ci_high - ci_low
+
+        # ── Continuous extra methods on cell means ────────────────────────
+        if scenario.eval_type == "continuous":
             for meth, fn in _cont_fns.items():
                 t0 = time.perf_counter()
                 try:
@@ -1505,6 +1750,30 @@ def _run_pairwise_multirun_cell(args: tuple) -> list[SimResult]:
             if ci_low <= scenario.true_diff <= ci_high:
                 covered[NEWCOMBE_FLAT_METHOD] += 1
             total_w[NEWCOMBE_FLAT_METHOD] += ci_high - ci_low
+
+            t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_indep_comp_ci(a0, b0, alpha, n_bootstrap, rng)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a0 - b0))
+            el = time.perf_counter() - t0
+            total_t[BAYES_PAIR_INDEP_METHOD]    += el
+            total_t_sq[BAYES_PAIR_INDEP_METHOD] += el * el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[BAYES_PAIR_INDEP_METHOD] += 1
+            total_w[BAYES_PAIR_INDEP_METHOD] += ci_high - ci_low
+
+            t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_paired_comp_ci(a0, b0, alpha, n_bootstrap, rng)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a0 - b0))
+            el = time.perf_counter() - t0
+            total_t[BAYES_PAIR_PAIRED_METHOD]    += el
+            total_t_sq[BAYES_PAIR_PAIRED_METHOD] += el * el
+            if ci_low <= scenario.true_diff <= ci_high:
+                covered[BAYES_PAIR_PAIRED_METHOD] += 1
+            total_w[BAYES_PAIR_PAIRED_METHOD] += ci_high - ci_low
 
             for method, fn in [
                 (TANGO_MULTIRUN_CLUSTER_METHOD, tango_paired_ci_multirun_cluster),
@@ -1923,31 +2192,30 @@ _METHOD_COLORS: dict[str, str] = {
     "smooth_bootstrap":         "#9467bd",
     "bootstrap_t":              "#d62728",
     "t_interval":               "#8c564b",
-    "bootstrap_nested":         "#17becf",
-    "bayes_bootstrap_nested":   "#bcbd22",
-    "smooth_bootstrap_nested":  "#e377c2",
-    "bca_nested":               "#ff9896",
-    "bootstrap_t_nested":       "#c49c94",
-    "wilson_de":                "#dbdb8d",
-    "wilson_od":                "#9edae5",
-    "beta_binomial":            "#f7b6d2",
-    "t_interval_flat":          "#aec7e8",
-    "bootstrap_flat":           "#ffbb78",
-    "wilson_flat":              "#98df8a",
-    "wald_flat":                "#7f7f7f",
-    "clopper_pearson_flat":     "#c5b0d5",
-    "bayes_indep_flat":         "#f7b6d2",
+    "bootstrap_nested":         "#aec7e8",
+    "bayes_bootstrap_nested":   "#ffbb78",
+    "smooth_bootstrap_nested":  "#c5b0d5",
+    "bca_nested":               "#98df8a",
+    "bootstrap_t_nested":       "#ff9896",
+    "wilson_de":                "#a6761d",
+    "wilson_od":                "#666666",
+    "beta_binomial":            "#17becf",
+    "wilson_flat":              "#e7298a",
+    "wald_flat":                "#66a61e",
+    "clopper_pearson_flat":     "#e6ab02",
+    "bayes_indep_flat":         "#1b9e77",
     "beta":                     "#f0027f",
     "logit_t":                  "#a6761d",
     "nig":                      "#888888",
-    "nig_nested":               "#444444",
+    "nig_nested":               "#f7b6d2",
     "el":                       "#00441b",
     "bootstrap_diff_nested":    "#1b9e77",
     "bayes_diff_nested":        "#d95f02",
     "smooth_diff_nested":       "#7570b3",
     "tango_flat":               "#e7298a",
     "newcombe_flat":            "#66a61e",
-    "tango_multirun_disc":      "#e6ab02",
+    "bayes_indep_comp":         "#17becf",
+    "bayes_paired_comp":        "#bcbd22",
     "tango_multirun_cluster":   "#e6ab02",
     "tango_multirun_effective": "#a6761d",
     "tango_multirun_mmnt":      "#1b9e77",
@@ -2513,7 +2781,7 @@ def _run_benchmark(
     )
 
     cells = len(scenarios) * len(sizes)
-    print(f"\nRunning {cells} cells × {reps} reps × {len(METHODS)+len(NESTED_METHODS)+len(FLAT_METHODS)} core methods …")
+    print(f"\nRunning {cells} cells × {reps} reps × {len(METHODS)+len(NESTED_METHODS)} core methods …")
 
     results = run_multirun_simulation(
         scenarios=scenarios,
@@ -2861,12 +3129,12 @@ def main() -> None:
         args.cohens_d_values = [0.2, 0.4]
         args.include_null = True
         args.progress = "bar"
-        args.workers = 12
+        args.workers = 16
         args.runs_sweep = OFFICIAL_RUNS_SWEEP.copy()
         args.run_noise_fracs = OFFICIAL_RUN_NOISE_FRACS.copy()
-        args.estimand = "both"
+        args.estimand = args.estimand if args.estimand is not None else "both"
         args.heteroscedastic = True
-        args.pairwise_noise_grid = True
+        args.pairwise_noise_grid = False  # This takes too long! 
 
     if args.bayes_n is None:
         args.bayes_n = args.bootstrap_n
