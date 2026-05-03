@@ -742,6 +742,87 @@ def test_newcombe_matches_scipy_wilson_baseline_exhaustive_small_n():
                 np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
 
 
+def _sample_paired_binary_from_cell_probs(
+    n: int,
+    p10: float,
+    p01: float,
+    p11: float,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Draw paired binary outcomes from fixed 2x2 cell probabilities."""
+    p00 = 1.0 - (p10 + p01 + p11)
+    cats = rng.choice(4, size=n, p=np.array([p10, p01, p11, p00], dtype=float))
+    a = np.zeros(n, dtype=float)
+    b = np.zeros(n, dtype=float)
+    a[cats == 0] = 1.0  # n10
+    b[cats == 1] = 1.0  # n01
+    a[cats == 2] = 1.0  # n11
+    b[cats == 2] = 1.0  # n11
+    return a, b
+
+
+def test_tango_paired_ci_empirical_coverage_is_reasonable():
+    """Battle test: Tango CI should show sane finite-sample 95% coverage."""
+    rng = np.random.default_rng(20260503)
+    alpha = 0.05
+    n_rep = 700
+    n_items = 90
+
+    # True paired difference is p10 - p01.
+    p10, p01, p11 = 0.26, 0.14, 0.33
+    true_diff = p10 - p01
+
+    covered = 0
+    widths: list[float] = []
+    for _ in range(n_rep):
+        a, b = _sample_paired_binary_from_cell_probs(n_items, p10, p01, p11, rng)
+        lo, hi = tango_paired_ci(a, b, alpha=alpha)
+        widths.append(hi - lo)
+        covered += int(lo <= true_diff <= hi)
+
+    coverage = covered / n_rep
+    mean_width = float(np.mean(widths))
+
+    # Conservative acceptance region to avoid brittle Monte Carlo failures.
+    assert 0.88 <= coverage <= 0.99, f"unexpected Tango coverage={coverage:.3f}"
+    assert 0.0 < mean_width < 1.0
+
+
+def test_tango_multirun_moments_empirical_coverage_is_reasonable():
+    """Battle test: multirun moments Tango CI should achieve sane coverage."""
+    rng = np.random.default_rng(20260504)
+    alpha = 0.05
+    n_rep = 450
+    n_items = 80
+    n_runs = 6
+
+    p10, p01, p11 = 0.24, 0.10, 0.36
+    true_diff = p10 - p01
+
+    covered = 0
+    widths: list[float] = []
+    for _ in range(n_rep):
+        a, b = _sample_paired_binary_from_cell_probs(
+            n_items * n_runs,
+            p10,
+            p01,
+            p11,
+            rng,
+        )
+        a = a.reshape(n_items, n_runs)
+        b = b.reshape(n_items, n_runs)
+
+        lo, hi = tango_paired_ci_multirun_moments(a, b, alpha=alpha)
+        widths.append(hi - lo)
+        covered += int(lo <= true_diff <= hi)
+
+    coverage = covered / n_rep
+    mean_width = float(np.mean(widths))
+
+    assert 0.88 <= coverage <= 0.995, f"unexpected multirun-moments coverage={coverage:.3f}"
+    assert 0.0 < mean_width < 1.0
+
+
 def test_newcombe_invariant_to_pair_order_and_concordant_mix():
     # CI should depend only on n10, n01, and n (not order or n11/n00 split).
     n10, n01, n11, n00 = 9, 5, 7, 11
