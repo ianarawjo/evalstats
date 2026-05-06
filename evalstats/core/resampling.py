@@ -133,6 +133,563 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def is_bounded_01_scores(scores: np.ndarray) -> bool:
+    """Return True if all finite values in *scores* lie within [0, 1].
+
+    Used to auto-detect continuous [0, 1] evaluation data (e.g. normalised
+    accuracy, ROUGE, similarity scores) so that :func:`analyze` can switch to
+    the NIG credible interval for single-sample marginal CIs.  Call
+    :func:`is_binary_scores` first; if that returns True the data is binary
+    and NIG is not appropriate.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array.
+
+    Returns
+    -------
+    bool
+    """
+    flat = scores.ravel()
+    finite = flat[np.isfinite(flat)]
+    if len(finite) == 0:
+        return False
+    return bool(np.all(finite >= 0.0) and np.all(finite <= 1.0))
+
+
+def wald_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
+    """Wald (normal-approximation) confidence interval for a binomial proportion.
+
+    ``p̂ ± z_{α/2} · sqrt(p̂(1−p̂)/n)``, clamped to [0, 1].
+
+    Known to under-cover near p=0 or p=1 and over-cover near p=0.5; included
+    as the standard baseline that more accurate methods (Wilson, BCa, …) are
+    compared against.
+
+    Parameters
+    ----------
+    successes : int
+        Number of successes.
+    n : int
+        Total number of trials.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [0, 1].
+    """
+    if n <= 0:
+        return (0.0, 0.0)
+    elif not (0 <= successes <= n):
+        raise ValueError("successes must be in [0, n]")
+    p_hat = successes / n
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    radius = z * np.sqrt(p_hat * (1.0 - p_hat) / n)
+    return (max(0.0, float(p_hat - radius)), min(1.0, float(p_hat + radius)))
+
+
+def wald_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Wald CI for a 1-D binary (0/1) array."""
+    n = len(values)
+    successes = int(np.sum(values))
+    return wald_ci(successes, n, alpha)
+
+
+def clopper_pearson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
+    """Clopper-Pearson 'exact' confidence interval for a binomial proportion.
+
+    Uses the Beta-distribution quantile inversion::
+
+        lo = Beta(α/2;  k,   n−k+1)
+        hi = Beta(1−α/2; k+1, n−k)
+
+    Guarantees at least nominal coverage for all p and n (conservative).
+
+    Parameters
+    ----------
+    successes : int
+        Number of successes (k).
+    n : int
+        Total number of trials.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval in [0, 1].
+    """
+    if n <= 0:
+        return (0.0, 1.0)
+    k = int(successes)
+    lo = float(stats.beta.ppf(alpha / 2.0, k, n - k + 1)) if k > 0 else 0.0
+    hi = float(stats.beta.ppf(1.0 - alpha / 2.0, k + 1, n - k)) if k < n else 1.0
+    return (lo, hi)
+
+
+def tango_paired_ci_flat(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Tango score CI treating multi-run data as a single-run flat baseline.
+
+    When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
+    only the **first run** (column 0) is used.  This is the honest
+    single-run baseline: one (A, B) binary pair per input, exactly as if
+    each input had been run once.  Concatenating all N*R observations as
+    independent pairs would inflate *n* and cause severe under-coverage;
+    this function avoids that by keeping the input as the unit of analysis.
+
+    If 1-D arrays are passed the call is forwarded directly to
+    :func:`tango_paired_ci` unchanged.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Either 1-D arrays of length N, or 2-D arrays of shape (N, R).
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = a[:, 0]
+    if b.ndim == 2:
+        b = b[:, 0]
+    return tango_paired_ci(a, b, alpha)
+
+
+def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Clopper-Pearson CI for a 1-D binary (0/1) array."""
+    n = len(values)
+    successes = int(np.sum(values))
+    return clopper_pearson_ci(successes, n, alpha)
+
+
+def jeffreys_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
+    """Jeffreys interval for a binomial proportion.
+
+    Uses the equal-tailed posterior interval under the Jeffreys prior
+    ``Beta(1/2, 1/2)``:
+
+    ``lo = Beta^{-1}(alpha/2; k+1/2, n-k+1/2)``
+    ``hi = Beta^{-1}(1-alpha/2; k+1/2, n-k+1/2)``
+
+    This interval is often better calibrated than Wald near boundaries while
+    remaining less conservative than Clopper-Pearson.
+
+    Parameters
+    ----------
+    successes : int
+        Number of successes (k).
+    n : int
+        Total number of trials.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval in [0, 1]. Returns (0.0, 1.0) when n <= 0.
+    """
+    if n <= 0:
+        return (0.0, 1.0)
+    k = int(successes)
+    lo = float(stats.beta.ppf(alpha / 2.0, k + 0.5, n - k + 0.5))
+    hi = float(stats.beta.ppf(1.0 - alpha / 2.0, k + 0.5, n - k + 0.5))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def jeffreys_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Jeffreys interval for a 1-D binary (0/1) array."""
+    n = len(values)
+    successes = int(np.sum(values))
+    return jeffreys_ci(successes, n, alpha)
+
+
+def t_interval_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Student's t confidence interval for the mean of a 1-D array.
+
+    ``x̄ ± t_{n−1, α/2} · s/√n``
+
+    Valid for approximately normal data; converges to the correct interval
+    by CLT for large n regardless of distribution.  This is the standard
+    frequentist baseline for continuous-score data.
+
+    Returns a degenerate point interval ``(x̄, x̄)`` when n ≤ 1 or s = 0.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed values.
+    alpha : float
+        Significance level (1 − confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    n = len(values)
+    if n <= 1:
+        mean = float(np.mean(values)) if n == 1 else 0.0
+        return (mean, mean)
+    mean = float(np.mean(values))
+    se = float(np.std(values, ddof=1)) / np.sqrt(n)
+    if se <= 0.0 or not np.isfinite(se):
+        return (mean, mean)
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=n - 1))
+    return (mean - t_crit * se, mean + t_crit * se)
+
+
+def beta_ci_1d(
+    values: np.ndarray,
+    alpha: float,
+    n_bootstrap: int = 2000,
+    rng: Optional[np.random.Generator] = None,
+) -> tuple[float, float]:
+    """Parametric-bootstrap Beta CI for the mean of bounded [0, 1] data.
+
+    Fits a Beta(a, b) distribution via **method of moments** (matching the
+    sample mean and variance), then estimates the sampling distribution of the
+    mean by drawing ``n_bootstrap`` synthetic samples of the same size from
+    the fitted distribution and taking equal-tailed percentiles.
+
+    Using method-of-moments rather than MLE ensures the fitted Beta variance
+    always equals the empirical sample variance, preventing coverage collapse
+    for misspecified or zero-inflated distributions at large n.
+
+    Falls back to :func:`t_interval_ci_1d` when the MOM fit is degenerate
+    (e.g. all values equal, or sample variance ≥ x̄(1−x̄)).
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed scores in [0, 1].
+    alpha : float
+        Significance level (1 − confidence level).
+    n_bootstrap : int
+        Number of parametric bootstrap replicates (default 2000).
+    rng : np.random.Generator, optional
+        Random-number generator for reproducibility.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [0, 1].
+    """
+    n = len(values)
+    if n <= 0:
+        return (0.0, 1.0)
+    vals = np.asarray(values, dtype=float)
+    x_bar = float(np.mean(vals))
+    s2 = float(np.var(vals, ddof=1))
+    if s2 <= 0.0 or not np.isfinite(s2) or x_bar <= 0.0 or x_bar >= 1.0:
+        return t_interval_ci_1d(vals, alpha)
+    # Method-of-moments: concentration κ = a+b from mean and variance
+    # σ² = μ(1−μ)/(κ+1)  →  κ = μ(1−μ)/σ² − 1
+    conc = x_bar * (1.0 - x_bar) / s2 - 1.0
+    if conc <= 0.0:
+        return t_interval_ci_1d(vals, alpha)
+    a = x_bar * conc
+    b = (1.0 - x_bar) * conc
+    if rng is None:
+        rng = np.random.default_rng()
+    boot_means = rng.beta(a, b, size=(n_bootstrap, n)).mean(axis=1)
+    lo = float(np.percentile(boot_means, 100.0 * alpha / 2.0))
+    hi = float(np.percentile(boot_means, 100.0 * (1.0 - alpha / 2.0)))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def logit_t_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Logit-transform t-interval (delta method) for [0, 1]-bounded data.
+
+    Applies the delta method to obtain a CI for the arithmetic mean E[X]:
+
+    1. Compute the sample mean x̄ and its standard error SE = s/√n.
+    2. Map to the logit scale: g = log(x̄/(1−x̄)).
+    3. Propagate uncertainty: SE_logit ≈ SE / (x̄(1−x̄)).
+    4. Form a t-interval on the logit scale: g ± t_{n−1} · SE_logit.
+    5. Back-transform via the sigmoid to recover bounds on [0, 1].
+
+    This targets E[X] directly (not E[logit(X)]), and the asymmetric
+    back-transformed interval is better calibrated than a symmetric t-interval
+    for skewed or boundary-hugging distributions.
+
+    Raises ``ValueError`` if any value lies outside [0, 1].
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed scores in [0, 1].
+    alpha : float
+        Significance level (1 − confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [0, 1].
+    """
+    n = len(values)
+    if n <= 1:
+        mean = float(np.mean(values)) if n == 1 else 0.0
+        return (mean, mean)
+    vals = np.asarray(values, dtype=float)
+    if np.any(vals < 0.0) or np.any(vals > 1.0):
+        raise ValueError("logit_t_ci_1d requires all values in [0, 1]")
+    x_bar = float(np.mean(vals))
+    se = float(np.std(vals, ddof=1)) / np.sqrt(n)
+    if se <= 0.0 or not np.isfinite(se) or x_bar <= 0.0 or x_bar >= 1.0:
+        return (x_bar, x_bar)
+    # Delta method: SE of logit(x̄) ≈ SE(x̄) / (x̄(1−x̄))
+    logit_mean = float(np.log(x_bar / (1.0 - x_bar)))
+    se_logit = se / (x_bar * (1.0 - x_bar))
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=n - 1))
+    lo = float(1.0 / (1.0 + np.exp(-(logit_mean - t_crit * se_logit))))
+    hi = float(1.0 / (1.0 + np.exp(-(logit_mean + t_crit * se_logit))))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def nig_ci_1d(
+    values: np.ndarray,
+    alpha: float,
+    m0: float = 0.5,
+    k0: float = 1.0,
+    a0: float = 2.0,
+    b0: float = 0.0625,
+) -> tuple[float, float]:
+    """Normal-Inverse-Gamma Bayesian credible interval for continuous data.
+
+    Places a NIG(m₀, κ₀, α₀, β₀) conjugate prior on (μ, σ²) and returns an
+    equal-tailed (1−α) credible interval for μ.  The marginal posterior is::
+
+        μ | data  ~  t(2αₙ,  mₙ,  √(βₙ / (αₙ κₙ)))
+
+    with posterior hyperparameters updated analytically.
+
+    Default prior encodes weak knowledge that scores live in [0, 1]: centre
+    m₀=0.5, worth κ₀=1 pseudo-observation, prior variance of σ² centred at
+    b₀/(a₀−1)=0.0625 (i.e. σ≈0.25).  With κ₀→0 and α₀→−½ this recovers
+    the frequentist t-interval exactly.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed scores.
+    alpha : float
+        Significance level (1 − confidence level).
+    m0, k0, a0, b0 : float
+        Prior hyperparameters (mean, strength, shape, rate).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    vals = np.asarray(values, dtype=float)
+    n = len(vals)
+    if n == 0:
+        scale = float(np.sqrt(b0 * (k0 + 1.0) / (a0 * k0)))
+        lo = float(stats.t.ppf(alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        hi = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        return (lo, hi)
+    x_bar = float(np.mean(vals))
+    ss = float(np.sum((vals - x_bar) ** 2))
+    # Posterior hyperparameter updates
+    kn = k0 + n
+    mn = (k0 * m0 + n * x_bar) / kn
+    an = a0 + n / 2.0
+    bn = b0 + 0.5 * ss + (k0 * n) / (2.0 * kn) * (x_bar - m0) ** 2
+    scale = float(np.sqrt(bn / (an * kn)))
+    if scale <= 0.0 or not np.isfinite(scale):
+        return (mn, mn)
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * an))
+    return (mn - t_crit * scale, mn + t_crit * scale)
+
+
+def nig_ci_nested(
+    values: np.ndarray,   # shape (N, R) or (N,) fallback
+    alpha: float,
+    m0: float = 0.5,
+    k0: float = 1.0,
+    a0: float = 2.0,
+    b0: float = 0.0625,
+) -> tuple[float, float]:
+    """
+    Hierarchical Normal-Inverse-Gamma CI for mean with run-level uncertainty.
+
+    Supports:
+      - (N,)    → falls back to standard NIG
+      - (N, R)  → hierarchical correction using run variance
+
+    Model:
+        X_ir ~ Normal(theta_i, sigma_run^2)
+        theta_i ~ Normal(mu, sigma_item^2)
+
+    We approximate the marginal by inflating variance:
+        sigma_eff^2 = sigma_item^2 + sigma_run^2 / R
+
+    Then apply standard NIG on item means with corrected variance.
+    """
+    vals = np.asarray(values, dtype=float)
+
+    # ---- fallback: standard NIG ----
+    if vals.ndim == 1:
+        return nig_ci_1d(vals, alpha, m0, k0, a0, b0)
+
+    if vals.ndim != 2:
+        raise ValueError("values must be (N,) or (N, R)")
+
+    N, R = vals.shape
+
+    if N == 0:
+        scale = float(np.sqrt(b0 * (k0 + 1.0) / (a0 * k0)))
+        lo = float(stats.t.ppf(alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        hi = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
+        return (lo, hi)
+
+    # ---- per-item means ----
+    item_means = np.nanmean(vals, axis=1)
+    x_bar = float(np.mean(item_means))
+
+    # ---- between-item variance ----
+    s2_item = float(np.var(item_means, ddof=1)) if N > 1 else 0.0
+
+    # ---- within-item (run) variance ----
+    if R > 1:
+        run_vars = np.nanvar(vals, axis=1, ddof=1)
+        s2_run = float(np.nanmean(run_vars))
+    else:
+        s2_run = 0.0
+
+    # ---- effective variance per item mean ----
+    s2_eff = s2_item + s2_run / max(R, 1)
+
+    # ---- reconstruct sum-of-squares for NIG ----
+    # We want something equivalent to:
+    # sum (x_i - x_bar)^2 but inflated by run variance
+    ss = s2_eff * (N - 1)
+
+    # ---- posterior updates (same form as 1D NIG) ----
+    kn = k0 + N
+    mn = (k0 * m0 + N * x_bar) / kn
+    an = a0 + N / 2.0
+
+    bn = (
+        b0
+        + 0.5 * ss
+        + (k0 * N) / (2.0 * kn) * (x_bar - m0) ** 2
+    )
+
+    scale = float(np.sqrt(bn / (an * kn)))
+
+    if scale <= 0.0 or not np.isfinite(scale):
+        return (mn, mn)
+
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * an))
+
+    return (mn - t_crit * scale, mn + t_crit * scale)
+
+
+def el_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Empirical-likelihood confidence interval for the mean (Owen 1988/1990).
+
+    Constructs the profile empirical-likelihood ratio CI::
+
+        EL-CI = {θ : −2 log R(θ) ≤ χ²(1, 1−α)}
+
+    where R(θ) = max ∏ nᵢpᵢ s.t. Σpᵢ=1, Σpᵢxᵢ=θ.  The Lagrange multiplier
+    λ(θ) is found via root-finding; the CI bounds are located by binary search
+    exploiting the convexity of −2 log R.
+
+    EL is nonparametric and Bartlett-correctable (coverage error O(n⁻²) vs
+    O(n⁻¹) for bootstrap), making it attractive for small samples with skewed
+    or bounded distributions.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed values.
+    alpha : float
+        Significance level (1 − confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    from scipy.optimize import brentq as _brentq
+
+    n = len(values)
+    if n <= 1:
+        mean = float(np.mean(values)) if n == 1 else 0.0
+        return (mean, mean)
+    vals = np.asarray(values, dtype=float)
+    x_bar = float(np.mean(vals))
+    x_min, x_max = float(np.min(vals)), float(np.max(vals))
+    if x_min == x_max:
+        return (x_min, x_max)
+
+    crit = float(stats.chi2.ppf(1.0 - alpha, df=1))
+
+    def neg2logR(theta: float) -> float:
+        if theta <= x_min or theta >= x_max:
+            return np.inf
+        d = vals - theta
+        d_pos, d_neg = d[d > 0], d[d < 0]
+        # Feasible range: all (1 + lambda*d_i) > 0
+        lam_lo = (-1.0 / d_pos.max() + 1e-12) if len(d_pos) else -1e15
+        lam_hi = (-1.0 / d_neg.min() - 1e-12) if len(d_neg) else  1e15
+        if lam_lo >= lam_hi:
+            return np.inf
+        def _constraint(l: float) -> float:
+            with np.errstate(divide="ignore", invalid="ignore"):
+                terms = d / (1.0 + l * d)
+            s = float(np.sum(terms))
+            # constraint is monotonically decreasing: +∞ near lam_lo, −∞ near lam_hi
+            return s if np.isfinite(s) else np.sign((lam_lo + lam_hi) / 2 - l) * 1e15
+
+        try:
+            lam = _brentq(_constraint, lam_lo, lam_hi, xtol=1e-12, rtol=1e-8, maxiter=500)
+        except ValueError:
+            return np.inf
+        log_terms = np.log(1.0 + lam * d)
+        if not np.all(np.isfinite(log_terms)):
+            return np.inf
+        return float(2.0 * np.sum(log_terms))
+
+    def excess(theta: float) -> float:
+        return neg2logR(theta) - crit
+
+    span_l = x_bar - x_min
+    span_r = x_max - x_bar
+    try:
+        lo = _brentq(
+            excess,
+            x_min + 1e-8 * span_l,
+            x_bar - 1e-10 * span_l,
+            xtol=1e-8, maxiter=200,
+        )
+    except (ValueError, Exception):
+        lo = x_min
+    try:
+        hi = _brentq(
+            excess,
+            x_bar + 1e-10 * span_r,
+            x_max - 1e-8 * span_r,
+            xtol=1e-8, maxiter=200,
+        )
+    except (ValueError, Exception):
+        hi = x_max
+
+    return (float(lo), float(hi))
+
+
 def wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     """Wilson score confidence interval for a binomial proportion.
 
@@ -180,6 +737,175 @@ def wilson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     n = len(values)
     successes = int(np.round(np.sum(values)))
     return wilson_ci(successes, n, alpha)
+
+
+def _wilson_neff(p_hat: float, n_eff: float, alpha: float) -> tuple[float, float]:
+    """Wilson score interval parameterised by an effective sample size.
+
+    Applies the standard Wilson formula with *n_eff* substituted for n.
+    """
+    if n_eff <= 0.0 or not np.isfinite(n_eff):
+        return (0.0, 1.0)
+    z  = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom  = 1.0 + z2 / n_eff
+    center = (p_hat + z2 / (2.0 * n_eff)) / denom
+    radius = (z / denom) * np.sqrt(
+        p_hat * (1.0 - p_hat) / n_eff + z2 / (4.0 * n_eff * n_eff)
+    )
+    return (max(0.0, float(center - radius)), min(1.0, float(center + radius)))
+
+
+def wilson_nested_de(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Wilson score CI for multi-run binary data with design-effect correction.
+
+    Estimates the intraclass correlation (ICC) via a one-way ANOVA decomposition
+    of the per-item cell means, then computes an effective sample size::
+
+        D      = 1 + (R − 1) · ICĈ
+        n_eff  = n · R / D
+
+    where ``D`` is the design effect.  When ICC = 0 (iid runs) ``n_eff = n·R``;
+    when ICC = 1 (all variance is between items) ``n_eff = n``.  The standard
+    Wilson formula is then applied with ``n_eff``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` — binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    if n < 2:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2   = float(np.var(cell_means, ddof=1))
+    MS_B = R * s2                          # between-item mean square
+    MS_W = p_hat * (1.0 - p_hat)          # within-item variance (binomial approx)
+
+    if R > 1 and MS_W > 0.0 and (MS_B + (R - 1) * MS_W) > 0.0:
+        icc = (MS_B - MS_W) / (MS_B + (R - 1) * MS_W)
+        icc = float(np.clip(icc, 0.0, 1.0))
+    else:
+        icc = 0.0
+
+    D     = 1.0 + (R - 1) * icc
+    n_eff = n * R / D
+    return _wilson_neff(p_hat, n_eff, alpha)
+
+
+def wilson_nested_od(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Wilson score CI for multi-run binary data with overdispersion plug-in.
+
+    Uses the sample variance of per-item cell means to estimate the total
+    variance of the grand mean, then derives an effective sample size by
+    expressing it as a scaled binomial variance::
+
+        phi   = s² / (p̂(1 − p̂))          (overdispersion factor)
+        n_eff = n / phi = n · p̂(1 − p̂) / s²
+
+    This preserves the Wilson property that the interval width depends on
+    the parameter *p* rather than solely on p̂.  Reduces to standard Wilson
+    on the full *n·R* observations when the runs within each item are iid.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` — binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n < 2 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2 = float(np.var(cell_means, ddof=1))
+    if s2 <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    n_eff = n * p_var / s2
+    return _wilson_neff(p_hat, n_eff, alpha)
+
+
+def wilson_nested_bb(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Wilson-style CI for multi-run binary data via Beta-Binomial model.
+
+    Fits a Beta-Binomial(R, α, β) marginal model to the item-level success
+    counts using method-of-moments, yielding a concentration parameter κ = α + β.
+    The implied effective sample size is::
+
+        n_eff = n · R · (κ + 1) / (R + κ)
+
+    which interpolates from ``n·R`` (κ → ∞, iid runs) down to ``n``
+    (κ → 0, maximum clustering) as clustering increases.  The standard Wilson
+    formula is then applied with this ``n_eff``.
+
+    Falls back to ``n_eff = n·R`` when no overdispersion is detected
+    (s² ≤ p̂(1 − p̂)/R) and to ``n_eff = n`` for maximum overdispersion
+    (s² ≥ p̂(1 − p̂)).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` — binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n < 2 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2     = float(np.var(cell_means, ddof=1))
+    s2_min = p_var / R            # iid lower bound on Var(cell_mean)
+
+    if s2 <= s2_min:
+        # No detected overdispersion — treat as fully iid
+        n_eff = float(n * R)
+    elif s2 >= p_var:
+        # Maximum overdispersion (kappa → 0) — one effective obs per item
+        n_eff = float(n)
+    else:
+        # Method-of-moments: solve s² = p*(1-p)*(R + κ) / (R*(κ + 1)) for κ
+        kappa = R * (p_var - s2) / (s2 * R - p_var)
+        kappa = max(kappa, 1e-8)
+        n_eff = n * R * (kappa + 1.0) / (R + kappa)
+
+    return _wilson_neff(p_hat, n_eff, alpha)
 
 
 def newcombe_paired_ci(
@@ -246,13 +972,326 @@ def newcombe_paired_ci(
     )
 
 
+def tango_paired_ci(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Tango score CI for the paired binary difference p(A=1) - p(B=1).
+
+    Implements the large-sample score interval proposed by Tango (1998) for
+    matched-pairs binary data. Let:
+
+    * ``n10`` be the count of pairs with ``A=1, B=0``
+    * ``n01`` be the count of pairs with ``A=0, B=1``
+    * ``n`` be the total number of pairs
+
+    and ``d_hat = (n10 - n01) / n``. The interval is:
+
+    ``(center +/- radius)`` where::
+
+        center = d_hat / (1 + z^2 / n)
+        radius = z / (1 + z^2 / n) * sqrt(
+            (n10 + n01) / n^2
+            - (n10 - n01)^2 / n^3
+            + z^2 / (4 n^2)
+        )
+
+    This is a score-type interval for the paired risk difference; unlike
+    :func:`newcombe_paired_ci`, it remains non-degenerate even when there are
+    no discordant pairs.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        1-D arrays of equal length. Values are thresholded at 0.5.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+
+    Raises
+    ------
+    ValueError
+        If inputs are not 1-D arrays of equal length.
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+    if values_a.ndim != 1 or values_b.ndim != 1:
+        raise ValueError("tango_paired_ci expects 1-D input arrays.")
+    if values_a.shape != values_b.shape:
+        raise ValueError("tango_paired_ci expects arrays with equal shape.")
+
+    n = int(len(values_a))
+    if n <= 0:
+        return (0.0, 0.0)
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+
+    d_hat = float((n10 - n01) / n)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n
+
+    radicand = (
+        (n10 + n01) / (n * n)
+        - ((n10 - n01) ** 2) / (n**3)
+        + z2 / (4.0 * n * n)
+    )
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+    return (lo, hi)
+
+
+def tango_paired_ci_multirun_cluster(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Cluster-robust Tango CI for paired binary difference.
+
+    Treats each item as the unit of analysis. Uses the variance of
+    per-item paired differences directly, avoiding fragile within/between
+    decomposition.
+
+    This is the most robust multirun extension: runs are treated as
+    internal noise already reflected in delta_i.
+
+    Reduces exactly to tango_paired_ci when n_runs == 1.
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+
+    if values_a.shape != values_b.shape:
+        raise ValueError("Inputs must have equal shape (n_items, n_runs).")
+    if values_a.ndim != 2:
+        raise ValueError("Expected 2-D arrays (n_items, n_runs).")
+
+    n_items, n_runs = values_a.shape
+    if n_items <= 0:
+        return (0.0, 0.0)
+
+    if n_runs == 1:
+        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+
+    # --- binarize ---
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    # --- per-item discordance rates ---
+    d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
+    d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
+
+    delta_i = d10_i - d01_i
+
+    # --- point estimate ---
+    d_hat = float(np.mean(delta_i))
+
+    # --- cluster variance ---
+    if n_items > 1:
+        var_delta = float(np.var(delta_i, ddof=1))
+    else:
+        var_delta = 0.0
+
+    # --- Tango shrinkage ---
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n_items
+
+    # --- variance (cluster-robust) ---
+    radicand = var_delta / n_items + z2 / (4.0 * n_items * n_items)
+
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+
+    return (lo, hi)
+
+
+def tango_paired_ci_multirun_effective(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Correlation-aware multirun Tango CI using effective sample size.
+
+    Adjusts within-item variance using an estimated effective number of runs
+    to account for correlation between runs.
+
+    This preserves efficiency while avoiding variance underestimation.
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+
+    if values_a.shape != values_b.shape:
+        raise ValueError("Inputs must have equal shape (n_items, n_runs).")
+    if values_a.ndim != 2:
+        raise ValueError("Expected 2-D arrays (n_items, n_runs).")
+
+    n_items, n_runs = values_a.shape
+    if n_items <= 0:
+        return (0.0, 0.0)
+
+    if n_runs == 1:
+        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+
+    # --- binarize ---
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    # --- per-item discordance ---
+    d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
+    d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
+
+    delta_i = d10_i - d01_i
+    u_i = d10_i + d01_i
+
+    d_hat = float(np.mean(delta_i))
+
+    if n_items > 1:
+        var_delta = float(np.var(delta_i, ddof=1))
+    else:
+        var_delta = 0.0
+
+    # --- within variance ---
+    within_i = np.maximum(u_i - delta_i * delta_i, 0.0)
+    within_bar = float(np.mean(within_i))
+
+    # --- estimate effective number of runs ---
+    # rho ≈ fraction of variance attributable to shared signal
+    if var_delta > 0:
+        rho = max(0.0, min(1.0, 1.0 - (within_bar / (var_delta * n_runs + 1e-12))))
+    else:
+        rho = 0.0
+
+    R_eff = n_runs / (1.0 + (n_runs - 1.0) * rho)
+
+    # --- adjusted variance decomposition ---
+    between_latent = max(var_delta - within_bar / R_eff, 0.0)
+
+    between = between_latent / n_items
+    within = within_bar / (n_items * R_eff)
+
+    # --- Tango shrinkage ---
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n_items
+
+    radicand = between + within + z2 / (4.0 * n_items * n_items)
+
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+
+    return (lo, hi)
+
+
+def tango_paired_ci_multirun_moments(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Multi-run Tango-style CI using a cluster moments decomposition.
+
+    This variant estimates the paired risk-difference uncertainty via
+    item-level moments of paired run differences:
+
+    - between-item term: ``Var(delta_i) / n_items``
+    - within-item term:  ``E[u_i - delta_i^2] / (n_items * n_runs)``
+
+    where ``delta_i`` is the per-item mean paired difference across runs and
+    ``u_i`` is the per-item discordance mass. It remains score-shrunk using
+    Tango's denominator and reverts exactly to :func:`tango_paired_ci` when
+    ``n_runs == 1``.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Arrays of shape (n_items, n_runs). Values thresholded at 0.5.
+        Runs are assumed to be paired across A and B.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+
+    if values_a.shape != values_b.shape:
+        raise ValueError("Inputs must have equal shape (n_items, n_runs).")
+    if values_a.ndim != 2:
+        raise ValueError("Expected 2-D arrays (n_items, n_runs).")
+
+    n_items, n_runs = values_a.shape
+    if n_items <= 0:
+        return (0.0, 0.0)
+
+    # Exact reduction to the original paired Tango interval for single-run data.
+    if n_runs == 1:
+        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    d10_i = np.mean((a_bin == 1) & (b_bin == 0), axis=1)
+    d01_i = np.mean((a_bin == 0) & (b_bin == 1), axis=1)
+
+    delta_i = d10_i - d01_i
+    u_i = d10_i + d01_i
+
+    d_hat = float(np.mean(delta_i))
+
+    if n_items > 1:
+        var_delta = float(np.var(delta_i, ddof=1))
+    else:
+        var_delta = 0.0
+
+    within_i = np.maximum(u_i - delta_i * delta_i, 0.0)
+    within_bar = float(np.mean(within_i))
+
+    # Decompose observed item-level variance into latent between-item variance
+    # plus within-item Monte Carlo noise; this avoids adding within variance twice.
+    between_latent = max(var_delta - within_bar / n_runs, 0.0)
+    between = between_latent / n_items
+    within = within_bar / (n_items * n_runs)
+
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    denom = 1.0 + z2 / n_items
+
+    radicand = between + within + z2 / (4.0 * n_items * n_items)
+
+    radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
+    center = d_hat / denom
+
+    lo = max(-1.0, float(center - radius))
+    hi = min(1.0, float(center + radius))
+    return (lo, hi)
+
+
 def resolve_resampling_method(
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto"],
     sample_size: int,
     *,
     bca_min_n: int = 15,
     bca_max_n: int = 200,
-) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"]:
+) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]:
     """Resolve ``method='auto'`` to a concrete bootstrap method.
 
     ``method='auto'`` resolves to ``'bootstrap'`` when ``sample_size >= 200``
@@ -581,22 +1620,120 @@ def smooth_bootstrap_resample_cell_means_once(
     return cell_means
 
 
-def bootstrap_ci_1d(
+def bootstrap_t_ci_1d(
     values: np.ndarray,
     observed_stat: float,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"],
     n_bootstrap: int,
     alpha: float,
     rng: np.random.Generator,
     statistic: Literal["mean", "median"] = "mean",
 ) -> tuple[float, float]:
-    """Bootstrap, BCa, Bayesian bootstrap, or smoothed bootstrap CI for a 1-D array.
+    """Bootstrap-t (studentized bootstrap) CI for a 1-D array.
+
+    Inverts the distribution of the studentized pivot
+    ``t* = (θ̂* − θ̂) / SE*`` rather than ``θ̂*`` directly, giving
+    second-order accuracy — the same theoretical order as BCa but via a
+    different route.  The CI is::
+
+        [θ̂ − t*_{1−α/2} · SE,  θ̂ − t*_{α/2} · SE]
+
+    For ``statistic='mean'``, SE = ``std(sample) / sqrt(n)`` (both observed
+    and bootstrap).
+
+    For ``statistic='median'``, this routine falls back to percentile bootstrap and emits a
+    warning.  A proper median bootstrap-t requires a replicate-wise median SE
+    estimator, which is not implemented here.
+
+    Falls back to the plain percentile bootstrap when the observed SE is zero
+    (degenerate sample), when no stable studentized pivots are available, or
+    when too many bootstrap replicates have numerically tiny ``SE*`` values.
+
+    Parameters
+    ----------
+    values : np.ndarray
+        1-D array of observed values.
+    observed_stat : float
+        The statistic computed on the original sample (mean or median).
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    alpha : float
+        Significance level (1 − confidence level).
+    rng : np.random.Generator
+        Random number generator.
+    statistic : str
+        ``'mean'`` (default) or ``'median'``.
+    """
+    if statistic == "median":
+        warnings.warn(
+            "bootstrap_t_ci_1d: bootstrap-t studentization is implemented for "
+            "'mean'; falling back to percentile bootstrap for 'median'.",
+            UserWarning,
+            stacklevel=3,
+        )
+        boot_stats = bootstrap_means_1d(values, n_bootstrap, rng, statistic="median")
+        return _percentile_interval(boot_stats, alpha)
+
+    n = len(values)
+
+    # ── Generate bootstrap samples ────────────────────────────────────────
+    chunk_size = max(1, min(n_bootstrap, 4096, max(1, int(1_000_000 // max(n, 1)))))
+    boot_stats = np.empty(n_bootstrap, dtype=float)
+    boot_ses   = np.empty(n_bootstrap, dtype=float)
+
+    start = 0
+    while start < n_bootstrap:
+        stop = min(start + chunk_size, n_bootstrap)
+        idx = rng.integers(0, n, size=(stop - start, n))
+        samples = values[idx]                                   # (chunk, n)
+        boot_stats[start:stop] = samples.mean(axis=1)
+        boot_ses[start:stop] = np.std(samples, ddof=1, axis=1) / np.sqrt(n)
+        start = stop
+
+    # ── Observed SE ───────────────────────────────────────────────────────
+    se_obs = float(np.std(values, ddof=1)) / np.sqrt(n)
+
+    if se_obs <= 0.0 or not np.isfinite(se_obs):
+        return _percentile_interval(boot_stats, alpha)
+
+    # ── Studentized pivots ────────────────────────────────────────────────
+    valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+    se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+    tiny_frac = float(np.mean(valid & (boot_ses < se_floor)))
+    if tiny_frac > 0.05:
+        return _percentile_interval(boot_stats, alpha)
+    valid = valid & (boot_ses >= se_floor)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+    t_stats = (boot_stats[valid] - observed_stat) / boot_ses[valid]
+
+    t_lo = float(np.percentile(t_stats, 100.0 * alpha / 2))
+    t_hi = float(np.percentile(t_stats, 100.0 * (1.0 - alpha / 2)))
+    return (
+        float(observed_stat - t_hi * se_obs),
+        float(observed_stat - t_lo * se_obs),
+    )
+
+
+def bootstrap_ci_1d(
+    values: np.ndarray,
+    observed_stat: float,
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"],
+    n_bootstrap: int,
+    alpha: float,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> tuple[float, float]:
+    """Bootstrap, BCa, Bayesian bootstrap, smoothed bootstrap, or bootstrap-t CI for a 1-D array.
 
     Parameters
     ----------
     statistic : str
         ``'mean'`` (default) or ``'median'``.
     """
+    if method == "bootstrap_t":
+        return bootstrap_t_ci_1d(values, observed_stat, n_bootstrap, alpha, rng, statistic=statistic)
     if method == "bayes_bootstrap":
         boot_stats = bayes_bootstrap_means_1d(values, n_bootstrap, rng, statistic=statistic)
         return _percentile_interval(boot_stats, alpha)
@@ -713,6 +1850,226 @@ def bootstrap_diffs_nested(
 
     diffs = _nested_cell_mean_diffs(scores_a, scores_b, run_idx, input_idx)  # (B, M)
     return _reduce_rows(diffs, statistic)                                  # (B,)
+
+
+def bootstrap_means_nested(
+    scores: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> np.ndarray:
+    """Nested bootstrap replicates of the statistic for single-sample multi-run data.
+
+    Outer level resamples M inputs with replacement; inner level resamples R
+    runs within each selected input.  Propagates both input-sampling uncertainty
+    and within-cell run variance.  Reduces to a standard percentile bootstrap
+    when ``R = 1``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)`` — per-input per-run scores.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    rng : np.random.Generator
+    statistic : str
+        ``'mean'`` (default) or ``'median'``.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap,)``.
+    """
+    M, R = scores.shape
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))           # (B, M)
+    run_idx   = rng.integers(0, R, size=(n_bootstrap, M, R))        # (B, M, R)
+
+    selected   = scores[input_idx]                                   # (B, M, R)
+    b_rng = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]       # (B, 1, 1)
+    m_rng = np.arange(M)[np.newaxis, :, np.newaxis]                 # (1, M, 1)
+    resampled  = selected[b_rng, m_rng, run_idx]                    # (B, M, R)
+    cell_means = resampled.mean(axis=2)                              # (B, M)
+    return _reduce_rows(cell_means, statistic)                       # (B,)
+
+
+def bayes_bootstrap_means_nested(
+    scores: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> np.ndarray:
+    """Bayesian nested bootstrap replicates for single-sample multi-run data.
+
+    Outer level assigns Dirichlet(1,...,1_M) weights over M inputs; inner
+    level resamples R runs uniformly within each input.  Dirichlet outer
+    weights give smoother distributions than multinomial resampling at small M.
+    Reduces to a standard Bayesian bootstrap when ``R = 1``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)``.
+    n_bootstrap : int
+    rng : np.random.Generator
+    statistic : str
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap,)``.
+    """
+    M, R = scores.shape
+    run_idx    = rng.integers(0, R, size=(n_bootstrap, M, R))       # (B, M, R)
+    m_rng      = np.arange(M)[np.newaxis, :, np.newaxis]            # (1, M, 1)
+    resampled  = scores[m_rng, run_idx]                             # (B, M, R)
+    cell_means = resampled.mean(axis=2)                             # (B, M)
+
+    exp_mat       = rng.exponential(1.0, size=(n_bootstrap, M))     # (B, M)
+    outer_weights = exp_mat / exp_mat.sum(axis=1, keepdims=True)    # (B, M)
+
+    if statistic == "mean":
+        return (outer_weights * cell_means).sum(axis=1)             # (B,)
+    return _weighted_medians_rows(cell_means, outer_weights)
+
+
+def smooth_bootstrap_means_nested(
+    scores: np.ndarray,
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    statistic: Literal["mean", "median"] = "mean",
+) -> np.ndarray:
+    """Smoothed nested bootstrap replicates for single-sample multi-run data.
+
+    Outer level resamples M inputs with replacement; inner level resamples R
+    runs within each selected input.  Gaussian noise with std = KDE bandwidth
+    is then added to each resampled cell mean.  Falls back to
+    ``bootstrap_means_nested`` if ``std(cell_means) == 0`` or ``M < 2``.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)`` — per-input per-run scores.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    rng : np.random.Generator
+    statistic : str
+        ``'mean'`` (default) or ``'median'``.
+
+    Returns
+    -------
+    np.ndarray
+        Shape ``(n_bootstrap,)``.
+    """
+    from scipy.stats import gaussian_kde
+
+    M, R = scores.shape
+    cell_means_obs = scores.mean(axis=1)                            # (M,)
+    std_val = float(np.std(cell_means_obs, ddof=1)) if M > 1 else 0.0
+    if M < 2 or not np.isfinite(std_val) or std_val <= 0.0:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_means_nested",
+            f"M={M}, std(cell_means)={std_val:.6g}",
+        )
+        return bootstrap_means_nested(scores, n_bootstrap, rng, statistic=statistic)
+
+    try:
+        h = float(gaussian_kde(cell_means_obs).factor * std_val)
+    except np.linalg.LinAlgError as exc:
+        _warn_smooth_bootstrap_fallback(
+            "smooth_bootstrap_means_nested",
+            f"KDE failed with {exc.__class__.__name__}: {exc}",
+        )
+        return bootstrap_means_nested(scores, n_bootstrap, rng, statistic=statistic)
+
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))           # (B, M)
+    run_idx   = rng.integers(0, R, size=(n_bootstrap, M, R))        # (B, M, R)
+
+    selected        = scores[input_idx]                              # (B, M, R)
+    b_rng           = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]   # (B, 1, 1)
+    m_rng           = np.arange(M)[np.newaxis, :, np.newaxis]             # (1, M, 1)
+    resampled       = selected[b_rng, m_rng, run_idx]               # (B, M, R)
+    cell_means_boot = resampled.mean(axis=2)                        # (B, M)
+    cell_means_boot += rng.normal(0.0, h, size=(n_bootstrap, M))
+    return _reduce_rows(cell_means_boot, statistic)                  # (B,)
+
+
+def bootstrap_t_ci_nested(
+    scores: np.ndarray,
+    observed_stat: float,
+    n_bootstrap: int,
+    alpha: float,
+    rng: np.random.Generator,
+) -> tuple[float, float]:
+    """Bootstrap-t (studentized) CI for single-sample multi-run data using nested resampling.
+
+    Outer level resamples M inputs with replacement; inner level resamples R
+    runs within each selected input.  The studentized pivot is
+
+        t* = (θ̂* − θ̂) / SE*
+
+    where SE* = std(resampled cell means) / sqrt(M) for each replicate and
+    SE_obs uses the original cell means.  The CI is::
+
+        [θ̂ − t*_{1−α/2} · SE_obs,  θ̂ − t*_{α/2} · SE_obs]
+
+    Falls back to percentile interval from ``bootstrap_means_nested`` when
+    ``SE_obs`` is zero, no stable pivots are produced, or studentization is
+    numerically unstable due to too many tiny ``SE*`` replicates.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(M, R)`` — per-input per-run scores.
+    observed_stat : float
+        Grand mean of the observed cell means.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    alpha : float
+        Significance level.
+    rng : np.random.Generator
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)``.
+    """
+    M, R = scores.shape
+    cell_means_obs = scores.mean(axis=1)                            # (M,)
+    se_obs = float(np.std(cell_means_obs, ddof=1)) / np.sqrt(M)
+
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))          # (B, M)
+    run_idx   = rng.integers(0, R, size=(n_bootstrap, M, R))       # (B, M, R)
+
+    selected        = scores[input_idx]                             # (B, M, R)
+    b_rng           = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]
+    m_rng           = np.arange(M)[np.newaxis, :, np.newaxis]
+    resampled       = selected[b_rng, m_rng, run_idx]              # (B, M, R)
+    cell_means_boot = resampled.mean(axis=2)                       # (B, M)
+
+    boot_stats = cell_means_boot.mean(axis=1)                      # (B,)
+    boot_ses   = np.std(cell_means_boot, ddof=1, axis=1) / np.sqrt(M)  # (B,)
+
+    if se_obs <= 0.0 or not np.isfinite(se_obs):
+        return _percentile_interval(boot_stats, alpha)
+
+    valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+    se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+    tiny_frac = float(np.mean(valid & (boot_ses < se_floor)))
+    if tiny_frac > 0.05:
+        return _percentile_interval(boot_stats, alpha)
+    valid = valid & (boot_ses >= se_floor)
+    if not np.any(valid):
+        return _percentile_interval(boot_stats, alpha)
+
+    t_stats = (boot_stats[valid] - observed_stat) / boot_ses[valid]
+    t_lo = float(np.percentile(t_stats, 100.0 * alpha / 2))
+    t_hi = float(np.percentile(t_stats, 100.0 * (1.0 - alpha / 2)))
+    return (
+        float(observed_stat - t_hi * se_obs),
+        float(observed_stat - t_lo * se_obs),
+    )
 
 
 def bayes_binary_ci_1d(

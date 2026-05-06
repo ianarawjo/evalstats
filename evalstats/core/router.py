@@ -120,7 +120,13 @@ def analyze(
     method : str
         Statistical method for CIs and p-values:
 
-        * ``'auto'`` (default) — smooth bootstrap for N < 200, plain bootstrap for N ≥ 200.
+        * ``'auto'`` (default) — data-adaptive: for binary data, uses Bayesian
+          paired for N<50 (Tango under-covers at small N on real eval data),
+          Tango otherwise (multi-run path uses the mmnt moment-decomposition
+          variant); marginal CIs use Wilson (single-run binary), NIG-nested
+          (multi-run binary/continuous [0,1]), or NIG (single-run continuous
+          [0,1]); paired t-interval for all numeric pairwise comparisons, and
+          t-interval for unbounded numeric marginals.
         * ``'bootstrap'`` — percentile bootstrap.
         * ``'bca'`` — bias-corrected and accelerated bootstrap.
         * ``'bayes_bootstrap'`` — Bayesian bootstrap (Banks 1988).
@@ -151,6 +157,9 @@ def analyze(
         * ``'newcombe'`` — Binary-only frequentist mode. Alias of
             ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
             Newcombe score intervals (+ exact McNemar p-values), while
+            point-advantage CIs use Wilson score intervals.
+        * ``'tango'`` — Binary-only frequentist mode. Pairwise comparisons
+            use Tango score intervals (+ exact McNemar p-values), while
             point-advantage CIs use Wilson score intervals.
         * ``'fisher_exact'`` — Binary-only frequentist mode. Pairwise
             comparisons use Newcombe score intervals + Fisher's exact
@@ -256,7 +265,7 @@ def analyze(
             "Expected 'mean' or 'as_runs'."
         )
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "permutation", "fisher_exact", "sign_test"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "fisher_exact", "sign_test", "t_interval"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -764,38 +773,31 @@ def _analyze_single(
     run_scores = result.get_run_scores()   # (N, M, R) or (N, M, 1)
     labels = result.template_labels
 
-    # Auto-detect binary (0/1) evaluation data when method='auto'.
-    # For binary data with N < 100: use the Bayesian paired model (Bowyer 2025)
-    # for pairwise comparisons and Bayesian Beta posterior for advantage CIs.
-    # For binary data with N >= 100: use bootstrap for pairwise comparisons (enables simultaneous_cis)
-    # and Wilson for advantage (computationally lighter, accurate).
-    # Otherwise resolve 'auto' to its concrete bootstrap method so that
-    # resolved_method on the returned bundle is always a concrete name.
     pairwise_method = method
     robustness_method = method
     if method == "auto":
-        from .resampling import is_binary_scores, resolve_resampling_method
+        from .resampling import is_binary_scores, is_bounded_01_scores
+        R = run_scores.shape[2]
+        N = run_scores.shape[1]
         if is_binary_scores(run_scores):
-            M = run_scores.shape[1]
-            R = run_scores.shape[2]
-            # Single-sample marginal CIs always use Wilson for binary data.
-            # Pairwise: Bayesian model for N < 100, bootstrap for N >= 100 (enables simultaneous_cis).
-            robustness_method = "wilson"
-            if R >= 3:
-                # With nested runs, per-input cell means are proportions, not
-                # binary values, so bayes_binary cannot apply.  pairwise_differences
-                # would silently fall back to smooth_bootstrap anyway; set it
-                # explicitly here so the simultaneous-CI router receives a
-                # consistent (bootstrap-compatible) method string and doesn't
-                # fall back to Bonferroni t-intervals instead of max-T bootstrap.
-                pairwise_method = resolve_resampling_method("auto", M)
-            elif M < 100:
+            # Pairwise: Bayesian paired for N<50 (real-data simulations show Tango
+            # under-covers in dominated/jointly-sparse pairs at small N, regardless
+            # of run count); Tango otherwise (mmnt variant for multi-run via paired.py).
+            # Marginal CIs: Wilson (single-run), NIG-nested (multi-run).
+            if N < 50:
                 pairwise_method = "bayes_binary"
             else:
-                pairwise_method = resolve_resampling_method("bootstrap", M)
+                pairwise_method = "tango"
+            robustness_method = "nig_nested" if R >= 3 else "wilson"
         else:
-            pairwise_method = resolve_resampling_method(method, run_scores.shape[1])
-            robustness_method = pairwise_method
+            # Pairwise: paired t-interval on per-item (cell-mean) differences.
+            # Marginal CIs: NIG-nested for multi-run bounded [0,1], NIG for
+            # single-run bounded [0,1], t-interval for arbitrary numeric.
+            pairwise_method = "t_interval"
+            if is_bounded_01_scores(run_scores):
+                robustness_method = "nig_nested" if R >= 3 else "nig"
+            else:
+                robustness_method = "t_interval"
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
@@ -807,7 +809,7 @@ def _analyze_single(
         # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         robustness_method = "wilson"
-    elif method in {"wilson", "newcombe", "fisher_exact"}:
+    elif method in {"wilson", "newcombe", "tango", "fisher_exact"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
             raise ValueError(
@@ -817,6 +819,8 @@ def _analyze_single(
             )
         if method == "fisher_exact":
             pairwise_method = "fisher_exact"
+        elif method == "tango":
+            pairwise_method = "tango"
         else:
             # In analyze(), explicit frequentist binary methods route to:
             #   - pairwise Newcombe + exact McNemar p-values
@@ -883,6 +887,16 @@ def _analyze_multi_model(
     omnibus: bool = False,
     p_value_method: Optional[str] = None,
 ) -> MultiModelBundle:
+    from .resampling import is_binary_scores
+
+    fallback_binary_methods = {"wilson", "newcombe", "tango", "fisher_exact"}
+
+    def _effective_method(sub_result: BenchmarkResult) -> CompareMethod:
+        """Fallback only for frequentist binary methods on auxiliary non-binary views."""
+        if method in fallback_binary_methods and not is_binary_scores(sub_result.get_run_scores()):
+            return "auto"
+        return method
+
     kwargs = dict(
         reference=reference,
         method=method,
@@ -942,7 +956,7 @@ def _analyze_multi_model(
     template_level = _analyze_single(
         result=template_mean_result,
         shape=template_level_shape,
-        **kwargs,
+        **{**kwargs, "method": _effective_method(template_mean_result)},
     )
 
     flat_result = result.get_flat_result()

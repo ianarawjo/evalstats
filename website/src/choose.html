@@ -213,14 +213,14 @@ print(report.quick_summary())
     type: 'result',
     method: 'Smooth Bootstrap (Gaussian KDE)',
     tags: ['Numeric', 'Single Sample'],
-    description: 'Smooth bootstrap applies kernel density estimation (KDE) before resampling, producing confidence intervals that are better calibrated for bounded and discrete distributions like Likert scales and 0\u2013100 grade scores. It is the recommended default for all non-binary eval scores.',
+    description: 'Smooth bootstrap applies kernel density estimation (KDE) before resampling, producing confidence intervals that are better calibrated for bounded and discrete distributions like Likert scales and 0\u2013100 grade scores. Note: <code>method="auto"</code> no longer routes here for single-sample marginal CIs \u2014 it uses NIG for [0,1] scores and bootstrap-t / t-interval for unbounded numeric scores. Smooth bootstrap remains the default for <em>pairwise</em> numeric comparisons.',
     code:
 `import evalstats as es
 
 # scores: list or array of numeric eval scores (e.g., Likert 1-5, float 0-100)
 report = es.compare_prompts(
     {"my_prompt": scores},
-    # method="smooth_bootstrap" is the default; no need to specify
+    method="smooth_bootstrap",  # specify explicitly; auto now routes to NIG or bootstrap-t
 )
 stats = report.entity_stats["my_prompt"]
 print(f"Mean: {stats.mean:.3f}  95% CI: [{stats.ci_low:.3f}, {stats.ci_high:.3f}]")`,
@@ -427,14 +427,15 @@ report = es.compare_models(
             "chain-of-thought": scores_c37_cot,
         },
     },
-    # smooth_bootstrap + correction="fdr_bh" are defaults
+    # correction="fdr_bh" is the default; pairwise uses smooth bootstrap
+    # marginal CIs use NIG (for [0,1] scores) or bootstrap-t/t-interval (unbounded)
 )
 print(report.quick_summary())
 
-# Per-model smooth bootstrap CIs:
+# Per-model marginal CIs (method selected automatically based on score range):
 for label, stats in report.entity_stats.items():
     print(f"{label}: {stats.mean:.3f}  [{stats.ci_low:.3f}, {stats.ci_high:.3f}]")`,
-    why: `<p>compare_models() with a nested dict treats prompts as a structured axis of variation rather than as noise. It collapses across templates to produce per-model input distributions, then runs smooth bootstrap pairwise tests with Benjamini-Hochberg correction across all model pairs.</p>
+    why: `<p>compare_models() with a nested dict treats prompts as a structured axis of variation rather than as noise. It collapses across templates to produce per-model input distributions, then runs smooth bootstrap pairwise tests with Benjamini-Hochberg correction across all model pairs. Marginal (single-model) CIs use the auto-selected method based on score range: NIG for [0,&thinsp;1] scores, bootstrap-t or t-interval for unbounded numeric data.</p>
 <p>This is the right tool when you want a single answer to &ldquo;which model wins overall?&rdquo; and you tested each model on the same set of prompts. If you also want to understand <em>which prompt works best for each model</em>, inspect the per-template breakdown in the returned bundle.</p>`,
     links: [
       { label: 'Simulation results', href: './index.html#recommendations' },

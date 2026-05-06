@@ -285,87 +285,87 @@ def test_vs_baseline_bayes_binary_raises_for_non_binary():
 # analyze() — auto routing for binary data
 # ---------------------------------------------------------------------------
 
-def test_analyze_auto_binary_small_n_pairwise_uses_bayes_binary():
-    """N=50 < 100 → pairwise should use bayes_binary."""
+def test_analyze_auto_binary_small_n_pairwise_uses_tango():
+    """Binary data → auto should use tango for pairwise comparisons."""
     scores = _binary_scores(2, 50, [0.7, 0.5], seed=30)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(30))
     pair = bundle.pairwise.get("A", "B")
-    assert "bayes binary" in pair.test_method.lower()
+    assert "tango" in pair.test_method.lower()
 
 
 def test_analyze_auto_binary_small_n_advantage_uses_wilson():
-    """N=50 < 100 → advantage CI should use Wilson (n_bootstrap=0)."""
+    """Binary data → advantage CI should use Wilson."""
     scores = _binary_scores(2, 50, [0.7, 0.5], seed=31)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(31))
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_binary_large_n_pairwise_uses_bootstrap():
-    """N=120 >= 100 → pairwise should use bootstrap."""
+def test_analyze_auto_binary_large_n_pairwise_uses_tango():
+    """Binary N=120 → pairwise should still use tango."""
     scores = _binary_scores(2, 120, [0.7, 0.5], seed=32)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(32))
     pair = bundle.pairwise.get("A", "B")
-    assert "bootstrap" in pair.test_method.lower()
+    assert "tango" in pair.test_method.lower()
 
 
 def test_analyze_auto_binary_large_n_advantage_uses_wilson():
-    """N=120 >= 100 → advantage CI should use Wilson (n_bootstrap=0)."""
+    """Binary N=120 → advantage CI should use Wilson."""
     scores = _binary_scores(2, 120, [0.7, 0.5], seed=33)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(33))
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_non_binary_uses_smooth_bootstrap():
-    """Non-binary data → smooth_bootstrap pairwise and n_bootstrap > 0."""
+def test_analyze_auto_non_binary_uses_t_interval():
+    """Non-binary data → paired t-interval pairwise."""
     rng = np.random.default_rng(34)
     scores = rng.uniform(0, 1, size=(2, 40))
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(34))
     pair = bundle.pairwise.get("A", "B")
-    assert "smooth" in pair.test_method.lower()
+    assert "t-interval" in pair.test_method.lower()
     assert bundle.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
-def test_analyze_auto_binary_resolved_method_is_bayes_binary():
-    """resolved_method on the bundle should be 'bayes_binary' for small N."""
+def test_analyze_auto_binary_resolved_method_is_tango():
+    """resolved_method on the bundle should be 'tango' for binary data."""
     scores = _binary_scores(2, 50, [0.7, 0.5], seed=35)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(35))
-    assert bundle.resolved_method == "bayes_binary"
+    assert bundle.resolved_method == "tango"
 
 
-def test_analyze_auto_binary_resolved_method_is_bootstrap_for_large_n():
-    """resolved_method on the bundle should be 'bootstrap' for N >= 100."""
+def test_analyze_auto_binary_resolved_method_is_tango_for_large_n():
+    """resolved_method on the bundle should be 'tango' for binary N >= 100."""
     scores = _binary_scores(2, 100, [0.7, 0.5], seed=36)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(36))
-    assert bundle.resolved_method == "bootstrap"
+    assert bundle.resolved_method == "tango"
 
 
 # ---------------------------------------------------------------------------
 # analyze() — boundary at N=99 vs N=100
 # ---------------------------------------------------------------------------
 
-def test_analyze_auto_boundary_99_uses_bayes_binary():
+def test_analyze_auto_boundary_99_uses_tango():
     scores = _binary_scores(2, 99, [0.6, 0.4], seed=40)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(40))
     pair = bundle.pairwise.get("A", "B")
-    assert "bayes binary" in pair.test_method.lower()
-    assert bundle.resolved_method == "bayes_binary"
+    assert "tango" in pair.test_method.lower()
+    assert bundle.resolved_method == "tango"
 
 
-def test_analyze_auto_boundary_100_uses_bootstrap():
+def test_analyze_auto_boundary_100_uses_tango():
     scores = _binary_scores(2, 100, [0.6, 0.4], seed=41)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(41))
     pair = bundle.pairwise.get("A", "B")
-    assert "bootstrap" in pair.test_method.lower()
-    assert bundle.resolved_method == "bootstrap"
+    assert "tango" in pair.test_method.lower()
+    assert bundle.resolved_method == "tango"
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +418,8 @@ def test_analyze_explicit_bayes_binary_three_way_all_pairs():
 # compare_prompts routing
 # ---------------------------------------------------------------------------
 
-def test_compare_prompts_auto_binary_small_n_pairwise_bayes_binary():
-    """compare_prompts auto with binary N<100 → pairwise uses bayes_binary."""
+def test_compare_prompts_auto_binary_small_n_pairwise_tango():
+    """compare_prompts auto with binary data → pairwise uses tango."""
     rng = np.random.default_rng(60)
     scores = {
         "A": rng.binomial(1, 0.7, 50).astype(float).tolist(),
@@ -427,18 +427,18 @@ def test_compare_prompts_auto_binary_small_n_pairwise_bayes_binary():
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(60))
     pair = report.pairwise.get("A", "B")
-    assert "bayes binary" in pair.test_method.lower()
+    assert "tango" in pair.test_method.lower()
 
 
 def test_compare_prompts_auto_binary_small_n_advantage_is_wilson():
-    """compare_prompts auto with binary N<100 → advantage uses Wilson (n_bootstrap=0)."""
+    """compare_prompts auto with binary data → advantage uses Wilson."""
     rng = np.random.default_rng(61)
     scores = {
         "A": rng.binomial(1, 0.7, 50).astype(float).tolist(),
         "B": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(61))
-    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert report.full_analysis.resolved_ci_method == "wilson"
 
 
 def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
@@ -462,8 +462,8 @@ def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
     )
 
 
-def test_compare_prompts_auto_binary_large_n_pairwise_bootstrap():
-    """compare_prompts auto with binary N>=100 → pairwise uses bootstrap."""
+def test_compare_prompts_auto_binary_large_n_pairwise_tango():
+    """compare_prompts auto with binary N>=100 → pairwise still uses tango."""
     rng = np.random.default_rng(63)
     scores = {
         "A": rng.binomial(1, 0.7, 110).astype(float).tolist(),
@@ -471,18 +471,18 @@ def test_compare_prompts_auto_binary_large_n_pairwise_bootstrap():
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(63))
     pair = report.pairwise.get("A", "B")
-    assert "bootstrap" in pair.test_method.lower()
+    assert "tango" in pair.test_method.lower()
 
 
 def test_compare_prompts_auto_binary_large_n_advantage_is_wilson():
-    """compare_prompts auto with binary N>=100 → advantage uses Wilson (n_bootstrap=0)."""
+    """compare_prompts auto with binary N>=100 → advantage uses Wilson."""
     rng = np.random.default_rng(64)
     scores = {
         "A": rng.binomial(1, 0.7, 110).astype(float).tolist(),
         "B": rng.binomial(1, 0.4, 110).astype(float).tolist(),
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(64))
-    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert report.full_analysis.resolved_ci_method == "wilson"
 
 
 def test_compare_prompts_explicit_bayes_binary_binary_data():
@@ -507,7 +507,7 @@ def test_compare_prompts_explicit_bayes_binary_raises_for_non_binary():
         es.compare_prompts(scores, method="bayes_binary", rng=_rng(66))
 
 
-def test_compare_prompts_auto_non_binary_uses_smooth_bootstrap():
+def test_compare_prompts_auto_non_binary_uses_t_interval():
     rng = np.random.default_rng(67)
     scores = {
         "A": rng.uniform(0, 1, 30).tolist(),
@@ -515,7 +515,7 @@ def test_compare_prompts_auto_non_binary_uses_smooth_bootstrap():
     }
     report = es.compare_prompts(scores, method="auto", n_bootstrap=300, rng=_rng(67))
     pair = report.pairwise.get("A", "B")
-    assert "smooth" in pair.test_method.lower()
+    assert "t-interval" in pair.test_method.lower()
     assert report.full_analysis.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
@@ -523,8 +523,8 @@ def test_compare_prompts_auto_non_binary_uses_smooth_bootstrap():
 # compare_models routing
 # ---------------------------------------------------------------------------
 
-def test_compare_models_auto_binary_small_n_pairwise_bayes_binary():
-    """compare_models auto with binary N<100 → pairwise uses bayes_binary."""
+def test_compare_models_auto_binary_small_n_pairwise_tango():
+    """compare_models auto with binary data → pairwise uses tango."""
     rng = np.random.default_rng(70)
     scores = {
         "model_a": rng.binomial(1, 0.7, 50).astype(float).tolist(),
@@ -532,22 +532,22 @@ def test_compare_models_auto_binary_small_n_pairwise_bayes_binary():
     }
     report = es.compare_models(scores, method="auto", rng=_rng(70))
     pair = report.pairwise.get("model_a", "model_b")
-    assert "bayes binary" in pair.test_method.lower()
+    assert "tango" in pair.test_method.lower()
 
 
 def test_compare_models_auto_binary_small_n_advantage_is_wilson():
-    """compare_models auto with binary N<100 → advantage uses Wilson (n_bootstrap=0)."""
+    """compare_models auto with binary data → advantage uses Wilson."""
     rng = np.random.default_rng(71)
     scores = {
         "model_a": rng.binomial(1, 0.7, 50).astype(float).tolist(),
         "model_b": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
     report = es.compare_models(scores, method="auto", rng=_rng(71))
-    assert report.full_analysis.model_level.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert report.full_analysis.model_level.resolved_ci_method == "wilson"
 
 
-def test_compare_models_auto_binary_large_n_pairwise_bootstrap():
-    """compare_models auto with binary N>=100 → pairwise uses bootstrap."""
+def test_compare_models_auto_binary_large_n_pairwise_tango():
+    """compare_models auto with binary N>=100 → pairwise still uses tango."""
     rng = np.random.default_rng(72)
     scores = {
         "model_a": rng.binomial(1, 0.7, 110).astype(float).tolist(),
@@ -555,7 +555,7 @@ def test_compare_models_auto_binary_large_n_pairwise_bootstrap():
     }
     report = es.compare_models(scores, method="auto", rng=_rng(72))
     pair = report.pairwise.get("model_a", "model_b")
-    assert "bootstrap" in pair.test_method.lower()
+    assert "tango" in pair.test_method.lower()
 
 
 def test_compare_models_auto_binary_entity_stats_match_wilson():

@@ -4,122 +4,307 @@
     <section id="recommendations">
         <h2>Recommendations and Defaults</h2>
         <p>
-            Based on research and Monte Carlo simulations, we recommend the following methods for 
-            calculating confidence intervals and p-values in LLM eval contexts. 
-            These recommendations are implemented as the 
+            We have run the most comprehensive simulation study to date on confidence interval methods for LLM eval data, and with few exceptions, 
+            we have validated these results on real eval data as well. Based on this research, we recommend the following methods for 
+            calculating confidence intervals in LLM eval contexts. We also performed a smaller simulation study on p-value methods, and report recommendations as well. 
+
+            <!-- Some highlights from our CI method simulation analysis:
+        </p>
+        <ul>
+            <li><strong>Tango score interval nearly matches Bayesian paired performance at a fraction of the cost.</strong> For pairwise binary comparisons, the Tango score CI achieves coverage on par with the Bayesian paired approach of <code>bayes_evals</code> while being roughly 50–100× faster and — critically — remaining stable at large N where Bayesian paired begins to fail catastrophically (N&nbsp;≥&nbsp;200).</li>
+            <li><strong>Tango multi-run (<code>tango_multirun_mmnt</code>) is the best pairwise binary method in the multi-run setting.</strong> It achieves near-target coverage (0.957) and is the fastest of the three multi-run Tango variants. Notably, this method was invented by GPT-5: it proposed decomposing per-item variance into latent between-item and within-item Monte Carlo noise terms, yielding a closed-form extension of the Tango interval that reduces exactly to the standard single-run Tango when R&nbsp;=&nbsp;1.</li>
+            <li><strong>NIG nested (<code>nig_nested</code>) is the most on-target point-estimate method for binary data in the multi-run setting.</strong> Despite being a Gaussian model with no principled claim on 0/1 data, it achieves the highest coverage (0.966) across both synthetic and real-data simulations — a somewhat surprising result, likely due to its hierarchical variance decomposition producing conservatively wide intervals that compensate for the model mismatch.
+            It performs better than the "more reasonable" Bayesian priors for binomial data in this specific setting.</li>
+        </ul> -->
+        These recommendations are implemented as the 
             <code>method="auto"</code> defaults in <code>evalstats</code>, 
             which adapt to data type and sample size based on which methods performed best in our simulations.
-            Note that the contents of this section are subject to change as gather more evidence for different situations.
+            Note that the contents of this section are subject to change as we gather more evidence for different situations.
         </p>
 
-        <h3>Methods to Compute Confidence Intervals (By Data Type)</h3>
-        <div class="rec-list">
-        <div class="rec-item">
-            <div class="rec-icon">
+        <h3>Recommended Confidence Intervals Methods (By Data Type and Type of Comparison)</h3>
+        <div class="rec-tab-bar">
+          <button class="rec-tab-btn active" data-panel="single" onclick="switchRecTab('single')">Single-run</button>
+          <button class="rec-tab-btn" data-panel="multi" onclick="switchRecTab('multi')">Multi-run</button>
+        </div>
+
+        <div class="rec-tab-panel active" id="rec-panel-single">
+        <div class="rec-grid">
+        <div class="rec-column">
+          <h4 class="rec-column-title">Point estimates</h4>
+
+          <div class="rec-item">
+          <div class="rec-icon">
             <!-- Binary: two-bar chart -->
             <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
-                <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
-                <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
-                <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
-                <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+              <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+              <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+              <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+              <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
             </svg>
-            </div>
-            <div class="rec-body">
+          </div>
+          <div class="rec-body">
             <div class="rec-card-when">Binary (0 / 1)</div>
-            <div class="rec-card-method">Wilson + Bayesian Paired (N&lt;100) / Bootstrap (N≥100)</div>
+            <div class="rec-card-method">Wilson score interval</div>
             <div class="rec-card-detail">
-            Wilson score interval for point estimate CIs.
-            For pairwise binary comparisons, use Bayesian paired from <a href="https://github.com/sambowyer/bayes_evals" target="_blank"><code>bayes_evals</code></a> only below N=100;
-            switch to bootstrap at N=100 and above for safety and CI multi-comparisons correction (simultaneous CIs) with the studentized maxT method. (Warning:
-            around N≈200+, the paired method in <code>bayes_evals</code> collapses, hence the switch.)
+            Use Wilson for binary point-estimate CIs. It is fast, closed-form, and lands on-target in both synthetic
+            and real eval data simulations.
             </div>
-            </div>
-        </div>
-        <div class="rec-item">
-            <div class="rec-icon">
-            <!-- Numeric: smooth density curve -->
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <!-- Continuous 0-1: smooth density curve -->
             <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-                <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
-                <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
-                      fill="currentColor" opacity="0.12"/>
-                <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
-                      stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+              <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                fill="currentColor" opacity="0.12"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
             </svg>
-            </div>
-            <div class="rec-body">
-            <div class="rec-card-when">Numeric (floats, integers, Likert, grades)</div>
-            <div class="rec-card-method">Smooth Bootstrap (Gaussian KDE) (N&lt;200) / Bootstrap (N≥200)</div>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Continuous scores in [0, 1] (e.g. accuracy, ROUGE, similarity)</div>
+            <div class="rec-card-method">Normal-Inverse-Gamma (NIG) or Logit-transformed t-interval</div>
             <div class="rec-card-detail">
-            Smooth bootstrap with a Guassian KDE had the highest coverage rate across all CI methods tested
-            at small N sample sizes for numeric data. Smooth bootstrap acts like regular bootstrap, but 
-            <a href="https://towardsdatascience.com/the-math-behind-kernel-density-estimation-5deca75cba38/" target="_blank">adds Gaussian noise to each data point</a>—it treats each data point as a little fuzzy instead of exact.
-            It handled continuous (0–1 floats), discrete (Likert / integer), and bounded or skewed (grades, 0–100) data more gracefully
-            and robustly than other methods we tested, and it is slightly conservative, which is preferred in
-            LLM eval contexts since we can't trust our eval sets are all that representative, either. 
-            At larger N, regular bootstrap is more efficient and more on-target, 
-            and also supports simultaneous CIs for multi-comparisons correction. (Here, Scott's rule is used to set the bandwidth of the Gaussian kernel—this is more conservative than Silverman's rule, 
-            and makes an assumption of normality for the noise, but its conservativeness is preferred according to our principles,
-            and our simulations suggest it performs well in practice.)
+            Both methods perform nearly identically at the top. NIG is slightly conservative in practice and very fast;
+            logit-t is also near-exact and analytic. Use NIG if you'd like to be safe.
             </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <!-- Unbounded numeric: ruler/axis icon -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+              <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Student's t-interval</div>
+            <div class="rec-card-detail">
+            For unbounded numeric point estimates, use Student's t-interval. It is the preferred method
+            across unbounded numeric settings.
             </div>
-        </div>
+          </div>
+          </div>
         </div>
 
-        <h3>By Analysis Type (Confidence Intervals)</h3>
-        <div class="table-wrap">
-        <table>
-            <thead>
-            <tr>
-                <th>Task</th>
-                <th>Data Type</th>
-                <th>Recommended Method</th>
-                <th>Notes</th>
-            </tr>
-            </thead>
-            <tbody>
-            <tr>
-                <td>Single-sample CI on mean score</td>
-                <td>Binary</td>
-                <td><strong>Wilson score interval</strong></td>
-                <td>Closed-form, best coverage</td>
-            </tr>
-            <tr>
-                <td>Single-sample CI on mean score</td>
-                <td>Numeric/Interval</td>
-                <td><strong>Smooth bootstrap (Gaussian KDE)</strong></td>
-                <td>Conservative; most reliable at small N</td>
-            </tr>
-            <tr>
-                <td>Pairwise comparison (A vs B)</td>
-                <td>Binary</td>
-                <td><strong>Bayesian Paired (N &lt; 100), Bootstrap (N &ge; 100)</strong></td>
-                <td>Bayesian paired is strong at small N but can fail around N≈200+; switch at N=100 to bootstrap for safety and multi-comparisons correction</td>
-            </tr>
-            <tr>
-                <td>Pairwise comparison (A vs B)</td>
-                <td>Numeric/Interval</td>
-                <td><strong>Smooth bootstrap (Gaussian KDE)</strong></td>
-                <td>Highest pairwise coverage; BCa is explicitly <em>not</em> recommended</td>
-            </tr>
-            <tr>
-                <td>All pairwise comparisons (k templates)</td>
-                <td>Any</td>
-                <td>As above + <strong>multi-comparisons correction</strong></td>
-                <td>We recommend the max-T resampling procedure (<code>simultaneous_ci=True</code> will use max-T if the method is also bootstrap-based).
-                There is a <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w">precedent</a> for this in the ML literature.</td>
-            </tr>
-            <tr>
-                <td>Hierarchical data (multi-run)</td>
-                <td>Any</td>
-                <td><strong>Nested smooth bootstrap (Gaussian KDE)</strong></td>
-                <td>Resample inputs, then runs within inputs; propagates run stochasticity into CIs</td>
-            </tr>
-            </tbody>
-        </table>
+        <div class="rec-column">
+          <h4 class="rec-column-title">Pairwise comparisons</h4>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <!-- Binary: two-bar chart -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+              <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+              <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+              <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Binary (0 / 1)</div>
+            <div class="rec-card-method">Bayesian paired (N&lt;50) / Tango score interval (N≥50)</div>
+            <div class="rec-card-detail">
+            Real eval data shows Tango under-covers at small N in dominated or jointly-sparse pairs.
+            Bayesian paired handles these edge cases better below N=50. At N≥50, Tango is on-target,
+            nearly 100× faster, and produces tighter CIs.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <!-- Continuous 0-1: smooth density curve -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                fill="currentColor" opacity="0.12"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Continuous scores in [0, 1] (e.g. accuracy, ROUGE, similarity)</div>
+            <div class="rec-card-method">Student's t-interval</div>
+            <div class="rec-card-detail">
+            Use Student's t-interval for pairwise comparisons on continuous data. It is the preferred method
+            across numeric/continuous pairwise settings.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <!-- Unbounded numeric: ruler/axis icon -->
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+              <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Student's t-interval</div>
+            <div class="rec-card-detail">
+            Use Student's t-interval for pairwise comparisons on unbounded numeric data.
+            </div>
+          </div>
+          </div>
+        </div>
+        </div>
+        </div><!-- /rec-tab-panel#single -->
+
+        <div class="rec-tab-panel" id="rec-panel-multi">
+        <div class="rec-grid">
+        <div class="rec-column">
+          <h4 class="rec-column-title">Point estimates</h4>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+              <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+              <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+              <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Binary (0 / 1)</div>
+            <div class="rec-card-method">Normal-Inverse-Gamma (NIG)-nested</div>
+            <div class="rec-card-detail">
+            A nested variant of the Normal-Inverse-Gamma Bayesian method has the 
+            best coverage across synthetic (0.966) and real eval data. Decomposes variance into
+            between-item and within-item run components — no resampling required and very fast (0.14&thinsp;ms).
+            Though it seems theoretically strange, this method performed better than 
+            more "reasonable" Bayesian methods for a binary regime. 
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                fill="currentColor" opacity="0.12"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Continuous scores in [0, 1]</div>
+            <div class="rec-card-method">NIG-nested or Logit-t on per-input means</div>
+            <div class="rec-card-detail">
+            NIG-nested (0.966) is the safest default: it accounts for run variance explicitly.
+            Logit-t on per-input means (0.949) is also on-target and instant if you pre-average runs.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+              <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Student's t-interval on per-input means</div>
+            <div class="rec-card-detail">
+            Average runs per input, then apply the standard t-interval over those means.
+            Near-target coverage and instant to compute.
+            </div>
+          </div>
+          </div>
         </div>
 
-        <h3>By Analysis Type (P-values)</h3>
+        <div class="rec-column">
+          <h4 class="rec-column-title">Pairwise comparisons</h4>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="4" y1="44" x2="60" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <rect x="6" y="28" width="20" height="16" rx="2" fill="currentColor" opacity="0.35"/>
+              <rect x="36" y="10" width="20" height="34" rx="2" fill="currentColor" opacity="0.7"/>
+              <text x="16" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">0</text>
+              <text x="46" y="52" text-anchor="middle" font-size="9" fill="currentColor" opacity="0.55" font-family="monospace">1</text>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Binary (0 / 1)</div>
+            <div class="rec-card-method">Tango (multi-run variant with moments)</div>
+            <div class="rec-card-detail">
+            <code>tango_multirun_mmnt</code> is the fastest and best-calibrated multi-run binary pairwise method (0.957), 
+            validated in both our synthetic and real-data simulations.
+            As far as we know, this is a novel multi-run extension of the Tango score interval which was proposed by GPT-5.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="44" x2="62" y2="44" stroke="currentColor" stroke-width="1.5" opacity="0.3"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44 Z"
+                fill="currentColor" opacity="0.12"/>
+              <path d="M2,44 C8,44 14,42 20,28 C24,18 28,6 32,5 C36,4 40,18 44,28 C50,42 56,44 62,44"
+                stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Continuous scores in [0, 1]</div>
+            <div class="rec-card-method">Student's t-interval on per-input means</div>
+            <div class="rec-card-detail">
+            Average runs per input, then apply the paired t-interval over those means. Near-target (0.947) and instant.
+            </div>
+          </div>
+          </div>
+
+          <div class="rec-item">
+          <div class="rec-icon">
+            <svg viewBox="0 0 64 52" width="64" height="52" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <line x1="2" y1="28" x2="62" y2="28" stroke="currentColor" stroke-width="2" opacity="0.5"/>
+              <line x1="10" y1="22" x2="10" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="22" y1="24" x2="22" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="34" y1="22" x2="34" y2="34" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="46" y1="24" x2="46" y2="32" stroke="currentColor" stroke-width="1.5"/>
+              <line x1="58" y1="22" x2="58" y2="34" stroke="currentColor" stroke-width="1.5"/>
+            </svg>
+          </div>
+          <div class="rec-body">
+            <div class="rec-card-when">Unbounded numeric (Likert, grades, arbitrary floats)</div>
+            <div class="rec-card-method">Student's t-interval on per-input means</div>
+            <div class="rec-card-detail">
+            Average runs per input, then apply the paired t-interval over those means.
+            </div>
+          </div>
+          </div>
+        </div>
+        </div>
+        </div><!-- /rec-tab-panel#multi -->
+
+        <h3>Recommended p-value methods by analysis type</h3>
         <div class="table-wrap">
         <table>
             <thead>
@@ -165,10 +350,1185 @@
         <h3>Sample Size Guidance</h3>
         <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
         <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
-        <p><strong>N ≥ 30:</strong> Bootstrapped CIs and score intervals begin to become reliable.</p>
+        <p><strong>N ≥ 30:</strong> CIs and point estimates of true performance begin to become more reliable.</p>
     </section>
+  
+    <!-- ── SECTION: SIMULATION ── -->
+    <section id="simulation">
+      <h2>Simulation Study: Which CI method should I use in X situation?</h2>
+      <p class="section-lead">
+        We ran comprehensive simulation studies over eval-like distributions to compare methods for calculating CIs head-to-head—
+        to the best of our knowledge, the most comprehensive test of CI methods ever conducted for small-sample AI evals data. 
+        We compared almost all known CI methods (and even a few ones invented with the help of AI)
+        to see which ones are best for different data types, sample sizes, and estimands. We also measured the computational cost of each method, 
+        since some of the more complex methods can be very expensive to run at scale. Finally, we validated the results on real eval data by subsampling 
+        from real benchmark outputs, to double-check how well the simulation findings hold up in practice.
+      </p>
+      <h3>How to measure CI "performance"?</h3>
+      <p>
+        A confidence interval (CI) is only useful if it's trustworthy, tight, and fast to compute. We measure CI quality along three dimensions:
+      </p>
+      <ul>
+        <li>
+          <strong>Coverage</strong>: If you ask a method to build a 95% CI, it should actually contain the true value 95% of the time across many repeated experiments. A method with <em>under-coverage</em> (say, 88%) gives intervals that are too narrow and misleadingly confident. A method with <em>over-coverage</em> (say, 99%) is overly conservative—it works, but it may be too cautious. We target nominal coverage of 95% for all simulations.
+        </li>
+        <li>
+          <strong>Width</strong>: Once a method achieves good coverage, narrower intervals are better. Width measures how "confident" the CI is: all else equal, the method that produces the tightest interval while still hitting 95% coverage wins.
+        </li>
+        <li>
+          <strong>Cost</strong>: how long the method takes to run. Simple analytic formulas (like the Wilson interval for binary scores) compute in microseconds. Resampling methods like the bootstrap require thousands of resampled datasets and can take seconds or more, especially as the sample size increases. Cost matters when you're running evaluations over many models, prompts, or benchmarks simultaneously.
+        </li>
+      </ul>
+      <p>
+        In practice, coverage comes first—a cheap, narrow interval that's wrong 20% of the time is useless. Among methods that achieve adequate coverage, we prefer narrower intervals, and among those, faster ones.
+      </p>
+      <h3>Methodology</h3>
+      <p>
+        We rigged realistic distributions, randomly sampled from them, then measured how close each CI
+        method gets to the true value across repeated trials. Two estimands were tested: single-sample CIs
+        (does the interval contain the true mean?) and pairwise difference CIs (does the interval contain
+        the true difference?). Sample sizes: N = 10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100. Bootstrap and Bayesian draws: 10,000. 
+        Monte-Carlo trials: 2,000 per condition. We also validated on real LLM eval data by subsampling from 1)
+        OpenEvals outputs across 15 unique model &times; benchmark pairs, for the single-run case, and 2)
+        outputs of six models across nine benchmarks run 5 times per benchmark, for the multi-run case. Simulations are implemented in 
+        <code>simulations/</code> folder in the project repository.
+      </p>
 
-    <section id="simultaneous-cis">
+      <h3>Distributions Tested</h3>
+      <p>Across our synthetic simulations, we tested the following four data types (our simulations using real data test only the first two, binary and continuous):</p>
+      <ul>
+        <li><strong>Binary scores</strong> ({0, 1}): Bernoulli with p ∈ {0.02, 0.05, 0.1, 0.3, 0.5, 0.7, 0.9, 0.95, 0.98} (9 scenarios)</li>
+        <li><strong>Continuous scores</strong> (0–1 floats): Beta families — uniform Beta(1,1), U-shaped Beta(0.5,0.5), right-skewed Beta(2,8), left-skewed Beta(8,2), moderate-skew Beta(2,5), extreme-right Beta(0.35,6), extreme-left Beta(6,0.35), near-boundaries Beta(0.3,0.3), near-center Beta(6,6), mixture of Beta(0.5,4) and Beta(5.5,1.2); plus a logit-normal (μ=−0.35, σ=1.35), zero-inflated (70% spike at 0, Beta(2,4) body), and one-inflated (70% spike at 1, Beta(4,2) body) (13 scenarios)</li>
+        <li><strong>Likert scores</strong> (integers 1–5): latent-normal model rounded and clipped to 1–5, covering uniform (high variance), skewed-low, skewed-high, bimodal (peaks at extremes), center-peaked, near-floor, near-ceiling, polarized, and flat-middle (9 scenarios)</li>
+        <li><strong>Grades</strong> (0–100 floats): clipped-normal scenarios — symmetric N(50,20), high-scoring N(75,15), low-scoring N(35,20), ceiling-heavy N(88,10), floor-heavy N(12,10), very-high N(92,7), very-low N(8,7), high-variance N(50,34); plus a 3-component truncated-normal mixture, a heavy-tailed t(df=3) distribution, a zero-spiked (40% spike at 0, N(45,20) body), and a hundred-spiked (40% spike at 100, N(65,18) body) (12 scenarios)</li>
+      </ul>
+
+      <h3>Single-Sample Coverage (target: 0.95)</h3>
+      <p>
+        The following image and table presents the results of the Monte Carlo simulation. 
+        The table breaks down the final average coverage rates 
+        at each sample size, with notes on performance.
+        (Coverage rate = fraction of trials where the CI contains the true population mean.
+        Higher is better; under-coverage means the method is over-confident.)
+      </p>
+
+      <img src="media/compare-figure-mean-cov-vs-cost.png" alt="Single-sample CI coverage vs. computation cost for all methods, averaged across eval types and sample sizes" style="width:100%;margin:1.2em 0 0.5em;">
+
+      <div class="fig-label">Table 1 — Single-sample method summary, synthetic data (averaged across all eval types, scenarios, and sample sizes)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Percentile bootstrap</td>
+              <td class="center cell-worst">0.911▼</td>
+              <td class="center">1.346±0.001</td>
+              <td class="center">3.3176</td>
+              <td class="center">-0.039</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>BCa</td>
+              <td class="center cell-worst">0.913▼</td>
+              <td class="center">1.635±0.001</td>
+              <td class="center">3.3392</td>
+              <td class="center">-0.037</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>Bayes bootstrap</td>
+              <td class="center cell-worst">0.908▼</td>
+              <td class="center">2.376±0.001</td>
+              <td class="center">3.2552</td>
+              <td class="center">-0.042</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>Smooth bootstrap (Gaussian KDE)</td>
+              <td class="center">0.929</td>
+              <td class="center">3.273±0.002</td>
+              <td class="center">3.7557</td>
+              <td class="center">-0.021</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>Bootstrap-t</td>
+              <td class="center cell-worst">0.910▼</td>
+              <td class="center">1.981±0.001</td>
+              <td class="center">3.7062</td>
+              <td class="center">-0.040</td>
+              <td>Numeric (continuous/discrete)</td>
+            </tr>
+            <tr>
+              <td>Student's t-interval</td>
+              <td class="center cell-worst">0.918</td>
+              <td class="center">0.042±0.000</td>
+              <td class="center">3.6109</td>
+              <td class="center">-0.032</td>
+              <td>Numeric (continuous/discrete)</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Wilson score interval ★</strong></td>
+              <td class="center cell-best">0.951</td>
+              <td class="center cell-best">0.029±0.000</td>
+              <td class="center">0.2033</td>
+              <td class="center">+0.001</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Wald interval</td>
+              <td class="center cell-worst">0.806▼</td>
+              <td class="center">0.026±0.000</td>
+              <td class="center">0.1716</td>
+              <td class="center">-0.144</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Clopper-Pearson</td>
+              <td class="center">0.977</td>
+              <td class="center">0.049±0.000</td>
+              <td class="center">0.2236</td>
+              <td class="center">+0.027</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Bayesian independent samples</td>
+              <td class="center">0.946</td>
+              <td class="center">0.243±0.000</td>
+              <td class="center">0.2037</td>
+              <td class="center">-0.004</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Beta interval</td>
+              <td class="center">0.934</td>
+              <td class="center">2.442±0.003</td>
+              <td class="center">0.1361</td>
+              <td class="center">-0.016</td>
+              <td>Continuous [0,&thinsp;1] (non-binary)</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Logit-t ★</strong></td>
+              <td class="center cell-best">0.951</td>
+              <td class="center cell-best">0.042±0.000</td>
+              <td class="center">0.1443</td>
+              <td class="center">+0.001</td>
+              <td>Continuous [0,&thinsp;1]</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Normal-Inverse-Gamma (NIG) ★</strong></td>
+              <td class="center cell-best">0.958</td>
+              <td class="center cell-best">0.031±0.000</td>
+              <td class="center">0.1430</td>
+              <td class="center">+0.008</td>
+              <td>Continuous [0,&thinsp;1]</td>
+            </tr>
+            <tr>
+              <td>Empirical likelihood (EL)</td>
+              <td class="center">0.937</td>
+              <td class="center">1.069±0.001</td>
+              <td class="center">0.1327</td>
+              <td class="center">-0.013</td>
+              <td>Numeric (continuous/discrete)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks under-target coverage. ★ marks preferred methods. Methods with a scope note (binary only / continuous [0,&thinsp;1] only) are not applied to other data types; their numbers are therefore not directly comparable to general-purpose methods. Bootstrap-family methods are averaged across all data types. MCSE values are negligible (around ~0.005 or lower), so they are omitted from this display.
+      </p>
+
+      <h3>Single-Sample Coverage on Real LLM Eval Data (target: 0.95)</h3>
+      <p>
+        To complement the synthetic simulation, we also evaluated CI methods on real LLM evaluation data by randomly
+        drawing samples from evaluation score outputs in the OpenEvals dataset, across 15 unique model × benchmark pairs,
+        for variety. Coverage was measured by repeatedly subsampling from each benchmark's full score distribution and checking
+        whether the CI contained the true (full-population) mean. This tests how methods behave on actual eval data shapes,
+        which may differ from the idealized distributions in the synthetic study.
+      </p>
+
+      <img src="media/openeval-compare-figure-mean-cov-vs-cost.png" alt="Single-sample CI coverage vs. computation cost on real LLM eval data (OpenEvals), averaged across benchmarks and sample sizes" style="width:100%;margin:1.2em 0 0.5em;">
+
+      <div class="fig-label">Table 2 — Single-sample method summary, real LLM eval data via OpenEvals (mean across all benchmarks, models, and sample sizes)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Percentile bootstrap</td>
+              <td class="center cell-worst">0.899▼</td>
+              <td class="center">1.359±0.001</td>
+              <td class="center">0.2082</td>
+              <td class="center">-0.051</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>BCa</td>
+              <td class="center cell-worst">0.901▼</td>
+              <td class="center">1.656±0.001</td>
+              <td class="center">0.2184</td>
+              <td class="center">-0.049</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>Bayes bootstrap</td>
+              <td class="center cell-worst">0.903▼</td>
+              <td class="center">2.395±0.002</td>
+              <td class="center">0.2042</td>
+              <td class="center">-0.047</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>Smooth bootstrap (Gaussian KDE)</td>
+              <td class="center cell-worst">0.918</td>
+              <td class="center">3.269±0.003</td>
+              <td class="center">0.2381</td>
+              <td class="center">-0.032</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>Bootstrap-t</td>
+              <td class="center cell-worst">0.884▼</td>
+              <td class="center">1.887±0.001</td>
+              <td class="center">0.2250</td>
+              <td class="center">-0.066</td>
+              <td>Numeric (continuous/discrete)</td>
+            </tr>
+            <tr>
+              <td>Student's t-interval</td>
+              <td class="center cell-worst">0.907▼</td>
+              <td class="center">0.043±0.000</td>
+              <td class="center">0.2293</td>
+              <td class="center">-0.043</td>
+              <td>Numeric (continuous/discrete)</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Wilson score interval ★</strong></td>
+              <td class="center cell-best">0.955</td>
+              <td class="center cell-best">0.029±0.000</td>
+              <td class="center">0.2521</td>
+              <td class="center">+0.005</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Wald interval</td>
+              <td class="center cell-worst">0.879▼</td>
+              <td class="center">0.025±0.000</td>
+              <td class="center">0.2476</td>
+              <td class="center">-0.071</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Clopper-Pearson</td>
+              <td class="center">0.975</td>
+              <td class="center">0.051±0.000</td>
+              <td class="center">0.2793</td>
+              <td class="center">+0.025</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Bayesian independent samples</td>
+              <td class="center">0.953</td>
+              <td class="center">0.246±0.001</td>
+              <td class="center">0.2531</td>
+              <td class="center">+0.003</td>
+              <td>Binary</td>
+            </tr>
+            <tr>
+              <td>Beta interval</td>
+              <td class="center">0.939</td>
+              <td class="center">2.073±0.004</td>
+              <td class="center">0.1334</td>
+              <td class="center">-0.011</td>
+              <td>Continuous [0,&thinsp;1] (non-binary)</td>
+            </tr>
+            <tr>
+              <td>Logit-t</td>
+              <td class="center">0.943</td>
+              <td class="center">0.042±0.000</td>
+              <td class="center">0.1434</td>
+              <td class="center">-0.007</td>
+              <td>Continuous [0,&thinsp;1]</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Normal-Inverse-Gamma (NIG) ★</strong></td>
+              <td class="center cell-best">0.964</td>
+              <td class="center cell-best">0.032±0.000</td>
+              <td class="center">0.1423</td>
+              <td class="center">+0.014</td>
+              <td>Continuous [0,&thinsp;1]</td>
+            </tr>
+            <tr>
+              <td>Empirical likelihood (EL)</td>
+              <td class="center">0.940</td>
+              <td class="center">1.109±0.002</td>
+              <td class="center">0.1307</td>
+              <td class="center">-0.010</td>
+              <td>Numeric (continuous/discrete)</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks under-target coverage. ★ marks preferred methods. Methods with a scope note (binary only / continuous [0,&thinsp;1] only) are not applied to other data types. Results are averaged across 15 model × benchmark pairs and all sample sizes.
+      </p>
+
+      <h3>Pairwise Comparison Coverage (target: 0.95)</h3>
+      <p>
+        For paired comparisons, coverage measures whether the CI on the <em>difference</em> contains
+        the true difference. This is the more practically important statistic for comparing two prompts or models.
+      </p>
+      <p>
+        Pairwise scenarios are parameterised by two factors that are swept jointly: the
+        <strong>intraclass correlation (ICC)</strong>, which captures how much variance is
+        attributable to the input (prompt/example) rather than the model, and the
+        <strong>standardised effect size (Cohen's&thinsp;d)</strong>, which sets the true
+        difference between the two candidates. The official test sweeps
+        ICC ∈ {0.05, 0.15, 0.30, 0.50} and d ∈ {0.0, 0.2, 0.4} (the d&thinsp;=&thinsp;0 condition
+        measures Type&thinsp;I error rate; the non-null conditions measure coverage under a real effect).
+        ICC is implemented differently per data type: a Beta-hierarchical model for binary scores,
+        a Gaussian-noise perturbation of a Beta base for continuous scores, and a latent-normal
+        model for Likert and grades. All pairwise scenarios also use the full
+        <em>expanded</em> scenario suite, so the distributions tested are the same rich set
+        described above.
+      </p>
+
+      <img src="media/compare-figure-pairwise-cov-vs-cost.png" alt="Pairwise CI coverage vs. computation cost for all methods, averaged across eval types, ICC levels, and sample sizes" style="width:100%;margin:1.2em 0 0.5em;">
+
+      <div class="fig-label">Table 3 — Pairwise method summary, synthetic data (averaged across all eval types, scenarios, and sample sizes)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Percentile bootstrap</td>
+              <td class="center">0.922</td>
+              <td class="center">1.458±0.000</td>
+              <td class="center">2.7531</td>
+              <td class="center">-0.028</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>BCa</td>
+              <td class="center cell-worst">0.908▼</td>
+              <td class="center">1.791±0.000</td>
+              <td class="center">2.7734</td>
+              <td class="center">-0.042</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Bayes bootstrap</td>
+              <td class="center cell-worst">0.917</td>
+              <td class="center">3.473±0.001</td>
+              <td class="center">2.7108</td>
+              <td class="center">-0.033</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Smooth bootstrap (Gaussian KDE)</td>
+              <td class="center">0.950</td>
+              <td class="center">3.549±0.001</td>
+              <td class="center">3.1162</td>
+              <td class="center">+0.000</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Bootstrap-t</td>
+              <td class="center">0.930</td>
+              <td class="center">2.026±0.000</td>
+              <td class="center">3.0566</td>
+              <td class="center">-0.020</td>
+              <td>Numeric/continuous paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Student's t-interval ★</strong></td>
+              <td class="center cell-best">0.950</td>
+              <td class="center cell-best">0.055±0.000</td>
+              <td class="center">3.8937</td>
+              <td class="center">+0.000</td>
+              <td>Numeric/continuous paired</td>
+            </tr>
+            <tr>
+              <td>Newcombe score interval</td>
+              <td class="center cell-worst">0.854▼</td>
+              <td class="center">0.051±0.000</td>
+              <td class="center">0.2007</td>
+              <td class="center">-0.096</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Tango score interval ★</strong></td>
+              <td class="center cell-best">0.955</td>
+              <td class="center cell-best">0.042±0.000</td>
+              <td class="center">0.2682</td>
+              <td class="center">+0.005</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>Bayesian independent comparison</td>
+              <td class="center">0.978</td>
+              <td class="center">0.546±0.000</td>
+              <td class="center">0.3313</td>
+              <td class="center">+0.028</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>Bayesian paired comparison</td>
+              <td class="center">0.958</td>
+              <td class="center">4.071±0.000</td>
+              <td class="center">0.3010</td>
+              <td class="center">+0.008</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>NIG (adapted for arbitrary numeric range)</td>
+              <td class="center">0.937</td>
+              <td class="center">0.037±0.000</td>
+              <td class="center">3.4274</td>
+              <td class="center">-0.013</td>
+              <td>Numeric/continuous paired</td>
+            </tr>
+            <tr>
+              <td>Empirical likelihood (EL)</td>
+              <td class="center">0.937</td>
+              <td class="center">1.317±0.000</td>
+              <td class="center">3.6481</td>
+              <td class="center">-0.013</td>
+              <td>Numeric/continuous paired</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks under-target coverage. ★ marks preferred methods. Results are averaged across all eval
+        types, scenarios, and sample sizes. Binary-only methods (Newcombe, Tango, Bayesian paired/independent) are shown for diagnostic reference and are not directly comparable to general-purpose methods.
+      </p>
+
+      <div class="callout callout-finding">
+        <div class="callout-label">Key findings from pairwise simulation</div>
+        <p>
+          For pairwise comparisons on general numeric data, smooth bootstrap (0.950) and the Student's t-interval (0.950)
+          both hit the target exactly. BCa remains the worst performer (0.908▼) and is explicitly not recommended.
+          Among binary-specific methods, <strong>Tango score interval</strong> (0.955) is the new preferred method,
+          replacing Newcombe (0.854▼ — severe under-coverage). The Bayesian paired method looks good in
+          aggregate (0.958), but because it is expensive and has a catastrophic failure mode around N≈200+, it is retained only as a
+          reference benchmark.
+        </p>
+      </div>
+
+      <h2>So Did Tango Score Interval Just Outperform the Bayesian Paired Method?</h2>
+      <p>
+        Based on the synthetic simulation alone, it certainly looks that way. In that study, <strong>Tango</strong> (0.955) 
+        edges out the Bayesian paired method (0.958) in coverage while being nearly 100× faster and without the catastrophic 
+        N≈200+ failure mode. The synthetic distributions, however, are drawn from idealized parametric families. The natural 
+        question is: does this hold on real LLM eval data, where item correlations, difficulty clustering, and lopsided 
+        score distributions are facts of life rather than simulation choices?
+      </p>
+
+      <h3>Pairwise Coverage on Real LLM Eval Data (Binary)</h3>
+      <p>
+        To check, we ran a pairwise coverage simulation on OpenEvals data, 
+        subsampling from pairs of models that share items for the same benchmark, across multiple benchmarks, 
+        and measuring whether each method's CI on the paired difference 
+        contained the true (full-population) difference. The results reveal a discrepancy that the synthetic study masked:
+      </p>
+
+      <img src="media/openeval_pairwise_binary_cov_x_cost.png" alt="Pairwise binary CI coverage vs. computation cost on real LLM eval data (OpenEvals), comparing Tango and Bayesian paired methods across sample sizes" style="width:100%;margin:1.2em 0 0.5em;">
+
+      <div class="fig-label">Table 6 — Pairwise binary method summary, real LLM eval data via OpenEvals (mean across all benchmarks, model pairs, and sample sizes)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>Newcombe score interval</td>
+              <td class="center cell-worst">0.816▼</td>
+              <td class="center">0.037±0.000</td>
+              <td class="center">0.2382</td>
+              <td class="center">-0.134</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>BCa</td>
+              <td class="center cell-worst">0.892▼</td>
+              <td class="center">1.649±0.002</td>
+              <td class="center">0.3272</td>
+              <td class="center">-0.058</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Bayes bootstrap</td>
+              <td class="center cell-worst">0.899▼</td>
+              <td class="center">2.368±0.003</td>
+              <td class="center">0.3214</td>
+              <td class="center">-0.051</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Percentile bootstrap</td>
+              <td class="center cell-worst">0.910▼</td>
+              <td class="center">1.338±0.001</td>
+              <td class="center">0.3242</td>
+              <td class="center">-0.040</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>Bootstrap-t</td>
+              <td class="center cell-worst">0.918</td>
+              <td class="center">1.892±0.002</td>
+              <td class="center">0.3455</td>
+              <td class="center">-0.032</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>t_interval</td>
+              <td class="center">0.942</td>
+              <td class="center">0.057±0.000</td>
+              <td class="center">0.3593</td>
+              <td class="center">-0.008</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Tango score interval ★</strong></td>
+              <td class="center cell-best">0.946</td>
+              <td class="center cell-best">0.048±0.000</td>
+              <td class="center cell-best">0.3111</td>
+              <td class="center">-0.004</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>Smooth bootstrap (Gaussian KDE)</td>
+              <td class="center cell-best">0.948</td>
+              <td class="center">3.242±0.004</td>
+              <td class="center">0.3727</td>
+              <td class="center">-0.002</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>Bayesian paired comparison ★</strong></td>
+              <td class="center cell-best">0.958</td>
+              <td class="center">4.076±0.000</td>
+              <td class="center">0.3439</td>
+              <td class="center">+0.008</td>
+              <td>Binary paired</td>
+            </tr>
+            <tr>
+              <td>Bayesian independent comparison</td>
+              <td class="center">0.975</td>
+              <td class="center">0.551±0.000</td>
+              <td class="center">0.3844</td>
+              <td class="center">+0.025</td>
+              <td>Binary paired</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks under-target coverage. ★ marks preferred methods. Results are averaged across all benchmarks, model pairs, and sample sizes. Methods shown for all types (bootstrap, t-interval, etc.) are included for reference; in practice only binary-specific methods are applied to binary data.
+      </p>
+
+      <p>Tango is still good, but it slightly under-covers at small N&lt;50—so we can't entirely reproduce the strong result. Why?</p>
+
+      <h3>Why does Tango under-cover at small N on real data?</h3>
+        <p>
+          When we looked more closely at which model pairs drive the under-coverage, two patterns emerge:
+        </p>
+        <ul>
+          <li><strong>Dominated pairs:</strong> one model scores near 0% on a benchmark while the other scores, say, 80%. The discordant pairs (inputs where the two models disagree) are too lopsided for Tango's score statistic to accumulate enough signal, and the CI ends up slightly too narrow.</li>
+          <li><strong>Jointly sparse pairs:</strong> both models score very low, e.g. both around 2%. Again, discordant pairs are too rare, and the CI ends up slightly too narrow.</li>
+        </ul>
+        <p>
+          These extreme situations are very common in our sample of OpenEval's benchmark, 
+          since we sample a diverse set of models at different parameter scales (e.g., a 1B model versus a 70B one),
+          where the strong model dominates.
+          Our synthetic simulation represented these extreme situations, but in the end, their results are 
+          averaged with more "well-behaved" pairs across a wide range of distributions. 
+        </p>
+        <p>In fact, we can see how it might be an artifact of the OpenEval sampling by running the same simulation on different LLM evals data—taking a single-run of 
+          the multi-run benchmark data we collected (explained below). When we do that, we see Tango again matches Bayesian paired: 
+        </p>
+        <p class="fig-title">CI Coverage vs. Computation Cost — Pairwise Binary (Real LLM Evals, Single-Run Subsample)</p>
+        <img src="media/inspect-pairwise-binary-cov-x-cost.png" alt="Pairwise binary CI coverage vs. computation cost on real LLM eval data (multi-run benchmark, single-run subsample), comparing Tango and Bayesian paired methods across sample sizes" style="width:100%;margin:0.3em 0 0.2em;">
+        <p class="fig-caption">Figure: Coverage vs. computation cost for <strong>pairwise binary</strong> CI methods on real LLM eval data (single-run subsample of multi-run benchmarks), comparing Tango and Bayesian paired across sample sizes.</p>
+        <p>
+          This pattern could also be an artifact of how the real-data simulation is constructed. Because we subsample 
+          from large benchmarks — and large benchmarks contain correlated items and difficulty clusters — a random 
+          draw of N&thinsp;=&thinsp;20 items can easily land in a sparse or lopsided regime that would be unusual 
+          in a carefully curated, representative eval set. In a smaller, purpose-built evaluation that attempts 
+          reasonable coverage of difficulty, the dominance and sparsity problems would largely disappear.
+        </p>
+        <p>
+          Finally, the situations where Tango under-performs are also extreme cases where CIs don't tell us much
+          —if one model completely dominates in performance (0% vs 80%), 
+          merely eyeballing mean differences may be enough. 
+          Similarly, if both models perform very poorly (2% vs 2%), statistics are similarly not that informative.
+          So if a CI method is "slightly off", it may not be a big deal in practice.
+        </p>
+        <p>
+          That said, <code>evalstats</code> cannot base recommendations on "it's usually fine." 
+          Since the failure mode exists and is observable on real benchmark data at small N, our recommendation changes:
+        </p>
+        <ul>
+          <li><strong>N &lt; 50:</strong> use <strong>Bayesian paired with 10,000 resamples</strong> for binary pairwise CIs. It provides 
+          better small-sample coverage in the real-data regime, including the sparse/dominated cases where Tango 
+          struggles. We sacrifice speed considerably, but it's safer for extreme cases that may very well appear in practice
+          on poorly constructed evaluation sets or "David vs. Goliath" scenarios.</li>
+          <li><strong>N ≥ 50:</strong> switch to <strong>Tango score interval</strong>. At this point Tango reaches 
+          its target coverage, is dramatically faster, produces tighter CIs than Bayesian paired, and sits closer to 
+          the nominal α level rather than over-covering. Critically, it also does not deteriorate at large N the 
+          way the Bayesian paired method does.</li>
+        </ul>
+        <p>
+          This threshold-based switch is what <code>evalstats</code> implements under <code>method="auto"</code> 
+          for binary pairwise comparisons. 
+        </p>
+
+      <h2>Multi-Run Coverage (Hierarchical Data)</h2>
+      <p>
+        Increasingly, it has become good practice to collect multiple "runs" per input, to account for the inherent stochasticity in LLM outputs. 
+        These <em>multi-run</em> scenarios introduce a second level of variance — run stochasticity <i>within</i> each input —
+        that single-run methods ignore or may not even be able to handle. We ran a separate Monte Carlo simulation (200 MC reps; 10% of
+        the single-run study) over the same distribution suite, sweeping both N (number of inputs) and
+        f_run (runs per input), to compare "flat" methods that just use the mean of runs or take only the first run, against nested resampling methods.
+        For a harder challenge that better matches real LLM eval data (where each "item" is really of different difficulty), 
+        run-level noise in these simulations is <em>heteroscedastic</em>: run noise variance differs across inputs.
+      </p>
+      <p>
+        The key finding is that <strong>taking the per-input mean across runs and running standard methods over those means performs reasonably well</strong> — Wilson, Tango, and NIG all achieve near-target coverage this way.
+        Input-level clustering is automatically absorbed when the mean is treated as a single observation, so these methods are not as badly hurt as truly flat approaches that treat every run as an independent data point.
+        However, tighter CI widths can be achieved with methods that explicitly account for within-item run variance: by decomposing total variance into a between-item term and a within-item Monte Carlo noise term (as in <code>tango_multirun_mmnt</code> and the nested resampling variants), the interval can be narrowed without sacrificing coverage.
+        The practical upshot is that running on means is a safe baseline, but if you have enough runs per input the multi-run-aware methods will give you meaningfully narrower intervals at no extra compute cost.
+      </p>
+
+      <p class="fig-title">CI Coverage vs. Computation Cost — Point Estimates</p>
+
+      <img src="media/multirun-compare-figure-mean-cov-vs-cost.png" alt="Multi-run point-estimate CI coverage vs. computation cost for all methods, averaged across eval types, run-noise fractions, and sample sizes" style="width:100%;margin:1.2em 0 0.2em;">
+      <p class="fig-caption">Figure: Coverage vs. computation cost for <strong>point-estimate (mean)</strong> CI methods in the multi-run setting, averaged across eval types, run-noise fractions, and sample sizes.</p>
+
+      <div class="fig-label">Table 4 — Multi-run point-estimate method summary, synthetic data (averaged across all eval types, scenarios, N, and f_run)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types / Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>bootstrap</td>
+              <td class="center">0.915</td>
+              <td class="center">1.805±0.002</td>
+              <td class="center">3.1739</td>
+              <td class="center">-0.035</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>bca</td>
+              <td class="center">0.921</td>
+              <td class="center">2.272±0.002</td>
+              <td class="center">3.1981</td>
+              <td class="center">-0.029</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>bayes_bootstrap</td>
+              <td class="center">0.912</td>
+              <td class="center">3.230±0.004</td>
+              <td class="center">3.1036</td>
+              <td class="center">-0.038</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>smooth_bootstrap</td>
+              <td class="center">0.935</td>
+              <td class="center">4.375±0.005</td>
+              <td class="center">3.6200</td>
+              <td class="center">-0.015</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>bootstrap_t</td>
+              <td class="center">0.924</td>
+              <td class="center">2.552±0.003</td>
+              <td class="center">3.6410</td>
+              <td class="center">-0.026</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>t_interval ★</strong></td>
+              <td class="center">0.924</td>
+              <td class="center cell-best">0.080±0.000</td>
+              <td class="center">3.5029</td>
+              <td class="center">-0.026</td>
+              <td>Numeric only — near-target 0.95 for arbitrary-ranged data; appears here to under-cover due to subpar performance on binary 0/1 data</td>
+            </tr>
+            <tr>
+              <td>bootstrap_nested</td>
+              <td class="center">0.928</td>
+              <td class="center">27.472±0.033</td>
+              <td class="center">3.3464</td>
+              <td class="center">-0.022</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>bayes_bootstrap_nested</td>
+              <td class="center">0.935</td>
+              <td class="center">21.073±0.026</td>
+              <td class="center">3.4204</td>
+              <td class="center">-0.015</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>bca_nested</td>
+              <td class="center">0.936</td>
+              <td class="center">28.137±0.034</td>
+              <td class="center">3.3720</td>
+              <td class="center">-0.014</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td>smooth_bootstrap_nested</td>
+              <td class="center">0.944</td>
+              <td class="center">30.182±0.036</td>
+              <td class="center">3.7742</td>
+              <td class="center">-0.006</td>
+              <td>Any — best general-purpose nested method; near-exact coverage</td>
+            </tr>
+            <tr>
+              <td>bootstrap_t_nested</td>
+              <td class="center">0.928</td>
+              <td class="center">28.214±0.034</td>
+              <td class="center">3.6337</td>
+              <td class="center">-0.022</td>
+              <td>Any</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>wilson_flat ★</strong></td>
+              <td class="center cell-best">0.974</td>
+              <td class="center cell-best">0.066±0.000</td>
+              <td class="center">0.2191</td>
+              <td class="center">+0.024</td>
+              <td>Binary — simple, still performs well; takes mean of runs per item</td>
+            </tr>
+            <tr>
+              <td>wald_flat</td>
+              <td class="center cell-worst">0.828▼</td>
+              <td class="center">0.042±0.000</td>
+              <td class="center">0.1838</td>
+              <td class="center">-0.122</td>
+              <td>Binary only</td>
+            </tr>
+            <tr>
+              <td>clopper_pearson_flat</td>
+              <td class="center">0.989</td>
+              <td class="center">0.083±0.000</td>
+              <td class="center">0.2432</td>
+              <td class="center">+0.039</td>
+              <td>Binary only</td>
+            </tr>
+            <tr>
+              <td>bayes_indep_flat</td>
+              <td class="center">0.920</td>
+              <td class="center">0.454±0.002</td>
+              <td class="center">0.2077</td>
+              <td class="center">-0.030</td>
+              <td>Binary only</td>
+            </tr>
+            <tr>
+              <td>wilson_de</td>
+              <td class="center cell-worst">0.881▼</td>
+              <td class="center">0.069±0.000</td>
+              <td class="center">0.1335</td>
+              <td class="center">-0.069</td>
+              <td>Binary only</td>
+            </tr>
+            <tr>
+              <td>wilson_od</td>
+              <td class="center">0.918</td>
+              <td class="center">0.051±0.000</td>
+              <td class="center">0.1611</td>
+              <td class="center">-0.032</td>
+              <td>Binary only</td>
+            </tr>
+            <tr>
+              <td>beta_binomial</td>
+              <td class="center">0.919</td>
+              <td class="center">0.049±0.000</td>
+              <td class="center">0.1606</td>
+              <td class="center">-0.031</td>
+              <td>Binary only</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>nig_nested ★</strong></td>
+              <td class="center cell-best">0.966</td>
+              <td class="center cell-best">0.144±0.000</td>
+              <td class="center">0.1691</td>
+              <td class="center">+0.016</td>
+              <td>Binary and continuous [0,1] — safer alternative to nig; most on-target method across synthetic and real data simulations</td>
+            </tr>
+            <tr>
+              <td>beta</td>
+              <td class="center">0.932</td>
+              <td class="center">3.377±0.009</td>
+              <td class="center">0.1443</td>
+              <td class="center">-0.018</td>
+              <td>Continuous [0,1]</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>logit_t ★</strong></td>
+              <td class="center cell-best">0.949</td>
+              <td class="center cell-best">0.079±0.000</td>
+              <td class="center">0.1548</td>
+              <td class="center">-0.001</td>
+              <td>Continuous [0,1] only — on-target and instant</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>nig ★</strong></td>
+              <td class="center cell-best">0.957</td>
+              <td class="center cell-best">0.048±0.000</td>
+              <td class="center">0.1606</td>
+              <td class="center">+0.007</td>
+              <td>Binary and continuous [0,1] — for binary, takes mean of runs per item; slightly conservative, very fast</td>
+            </tr>
+            <tr>
+              <td>el</td>
+              <td class="center">0.933</td>
+              <td class="center">1.729±0.003</td>
+              <td class="center">0.1403</td>
+              <td class="center">-0.017</td>
+              <td>Continuous [0,1] only</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks severe under-coverage. ★ marks preferred methods. 200 MC reps per condition.
+        "Flat" methods treat multiple runs as independent observations and ignore run-level variance entirely.
+        Nested methods resample inputs, then runs within inputs.
+      </p>
+
+      <div class="callout callout-info">
+        <div class="callout-label">Why does <code>nig_nested</code> work for binary data?</div>
+        <p>
+          <code>nig_nested</code> is a hierarchical extension of the Normal-Inverse-Gamma (NIG) Bayesian credible
+          interval designed for multi-run data. The standard <code>nig</code> method places a NIG conjugate prior
+          on&nbsp;(μ,&nbsp;σ²) and returns an equal-tailed credible interval derived from the marginal
+          Student-<em>t</em> posterior for&nbsp;μ. The nested variant adapts this to an
+          (N,&nbsp;R) score matrix by explicitly decomposing variance into two levels: a
+          <em>between-item</em> component (variance of per-item means across inputs) and a
+          <em>within-item</em> component (average run-level variance divided by R). It then inflates the
+          sum-of-squares fed into the NIG update as
+          σ²<sub>eff</sub>&nbsp;=&nbsp;σ²<sub>item</sub>&nbsp;+&nbsp;σ²<sub>run</sub>&nbsp;/&nbsp;R,
+          so the posterior uncertainty automatically widens to reflect run noise — without needing any resampling.
+        </p>
+        <p>
+          What makes its binary performance surprising is that NIG is a Gaussian model, so there is no
+          principled reason it should fit 0/1 data well. Yet it achieves 0.966 coverage, crucially remaining
+          above 0.95 for all N, while remaining fast (0.14&thinsp;ms). The likely explanation is that the
+          hierarchical variance decomposition happens to produce a conservatively wide interval for binary
+          data under the default weakly-informative prior, compensating for the model mismatch. This is
+          somewhat accidental good behavior, as theoretically, a binomial model would be a more justified
+          choice. It nevertheless earns the ★ as the
+          most on-target method across both synthetic AND real-data simulations, outperforming or matching
+          the other "more theoretically reasonable" Bayesian methods 
+          (beta-binomial, bayes_bootstrap_nested, and bayes_indep_flat)
+          at lower cost. We can't argue with those results. 
+        </p>
+      </div>
+
+      <h3>Multi-Run CI Method Performance for Pairwise Comparisons</h3>
+      <p class="fig-title">CI Coverage vs. Computation Cost — Pairwise Comparisons</p>
+
+      <img src="media/multirun-compare-figure-pairwise-cov-vs-cost.png" alt="Multi-run pairwise CI coverage vs. computation cost for all methods, averaged across eval types, run-noise fractions, and sample sizes" style="width:100%;margin:0.3em 0 0.2em;">
+      <p class="fig-caption">Figure: Coverage vs. computation cost for <strong>pairwise</strong> CI methods in the multi-run setting, averaged across eval types, run-noise fractions, and sample sizes.</p>
+
+      <div class="fig-label">Table 5 — Multi-run pairwise method summary, synthetic data (averaged across all eval types, scenarios, N, and f_run)</div>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Method</th>
+              <th class="center">Coverage</th>
+              <th class="center">Time (ms)</th>
+              <th class="center">Width</th>
+              <th class="center">Dev</th>
+              <th>Data types / Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td>bootstrap</td>
+              <td class="center">0.927</td>
+              <td class="center">1.932±0.002</td>
+              <td class="center">1.9882</td>
+              <td class="center">-0.023</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>bca</td>
+              <td class="center">0.919</td>
+              <td class="center">2.430±0.002</td>
+              <td class="center">2.0047</td>
+              <td class="center">-0.031</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>bayes_bootstrap</td>
+              <td class="center">0.913</td>
+              <td class="center">3.505±0.003</td>
+              <td class="center">1.9516</td>
+              <td class="center">-0.037</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td>smooth_bootstrap</td>
+              <td class="center">0.954</td>
+              <td class="center">4.686±0.004</td>
+              <td class="center">2.2674</td>
+              <td class="center">+0.004</td>
+              <td>Any paired - under-covers for small N on binary data</td>
+            </tr>
+            <tr>
+              <td>bootstrap_t</td>
+              <td class="center">0.936</td>
+              <td class="center">2.718±0.002</td>
+              <td class="center">2.2593</td>
+              <td class="center">-0.014</td>
+              <td>Any paired</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>t_interval ★</strong></td>
+              <td class="center cell-best">0.947</td>
+              <td class="center cell-best">0.089±0.000</td>
+              <td class="center">2.1927</td>
+              <td class="center">-0.003</td>
+              <td>Numeric paired only — near-target and instant; aggregate under-coverage due to binary subpar performance</td>
+            </tr>
+            <tr>
+              <td>bootstrap_diff_nested</td>
+              <td class="center cell-best">0.955</td>
+              <td class="center">51.815±0.049</td>
+              <td class="center">2.2261</td>
+              <td class="center">+0.005</td>
+              <td>Any paired — near-target but expensive</td>
+            </tr>
+            <tr>
+              <td>bayes_diff_nested</td>
+              <td class="center cell-best">0.956</td>
+              <td class="center">35.782±0.033</td>
+              <td class="center">2.3823</td>
+              <td class="center">+0.006</td>
+              <td>Any paired — near-target; cheaper than bootstrap nested</td>
+            </tr>
+            <tr>
+              <td>smooth_diff_nested</td>
+              <td class="center cell-best">0.972</td>
+              <td class="center">54.841±0.051</td>
+              <td class="center">2.4805</td>
+              <td class="center">+0.022</td>
+              <td>Any paired — safe and conservative even for small N on binary data; most expensive</td>
+            </tr>
+            <tr>
+              <td>tango_flat</td>
+              <td class="center">0.944</td>
+              <td class="center">0.088±0.000</td>
+              <td class="center">0.2775</td>
+              <td class="center">-0.006</td>
+              <td>Binary only — fast flat binary pairwise method</td>
+            </tr>
+            <tr>
+              <td>newcombe_flat</td>
+              <td class="center cell-worst">0.757▼</td>
+              <td class="center">0.050±0.000</td>
+              <td class="center">0.1874</td>
+              <td class="center">-0.193</td>
+              <td>Binary only — severe under-coverage</td>
+            </tr>
+            <tr>
+              <td>bayes_indep_comp</td>
+              <td class="center">0.980</td>
+              <td class="center">0.701±0.001</td>
+              <td class="center">0.3486</td>
+              <td class="center">+0.030</td>
+              <td>Binary only — over-covers; wide CIs</td>
+            </tr>
+            <tr>
+              <td>bayes_paired_comp</td>
+              <td class="center cell-best">0.962</td>
+              <td class="center">5.333±0.003</td>
+              <td class="center">0.3173</td>
+              <td class="center">+0.012</td>
+              <td>Binary only — slightly over-covers</td>
+            </tr>
+            <tr>
+              <td>tango_multirun_cluster</td>
+              <td class="center cell-best">0.957</td>
+              <td class="center cell-best">0.092±0.000</td>
+              <td class="center">0.2174</td>
+              <td class="center">+0.007</td>
+              <td>Binary only, multi-run — near-target and fast</td>
+            </tr>
+            <tr>
+              <td>tango_multirun_effective</td>
+              <td class="center cell-best">0.964</td>
+              <td class="center cell-best">0.074±0.000</td>
+              <td class="center">0.2256</td>
+              <td class="center">+0.014</td>
+              <td>Binary only, multi-run — near-target and fast</td>
+            </tr>
+            <tr>
+              <td class="method-star"><strong>tango_multirun_mmnt ★</strong></td>
+              <td class="center cell-best">0.957</td>
+              <td class="center cell-best">0.068±0.000</td>
+              <td class="center">0.2178</td>
+              <td class="center">+0.007</td>
+              <td>Binary only, multi-run — best and cheapest; performs consistently in real data simulations</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="table-caption">
+        Coverage target is 0.95. ▼ marks under-target coverage. ★ marks preferred methods. 200 MC reps per condition.
+        Nested methods resample inputs then runs within inputs for each resample step, greatly increasing compute cost
+        but properly accounting for run-level variance.
+      </p>
+
+      <div class="callout callout-info">
+        <div class="callout-label">On <code>tango_multirun_mmnt</code>: a GPT-5 invention?</div>
+        <p>
+          <code>tango_multirun_mmnt</code> is the best-performing method—but, to the best of our knowledge, 
+          it is an approach that did not exist in the
+          literature prior to this project. It emerged from a conversation with GPT-5, where we asked it
+          to extend the Tango paired-binary CI to the multi-run setting. GPT-5 proposed decomposing the
+          total variance of the per-item paired difference&nbsp;&mdash; computed as
+          <code>delta_i&nbsp;=&nbsp;d10_i&nbsp;&minus;&nbsp;d01_i</code> (mean discordance rates across runs)
+          &mdash;&nbsp;into a <em>between-item</em> term and a <em>within-item</em> Monte Carlo noise term.
+          Crucially, it identified that naively using the observed item-level variance
+          <code>Var(delta_i)</code> would double-count the within-item run noise, and proposed subtracting
+          <code>E[u_i&nbsp;&minus;&nbsp;delta_i^2]&nbsp;/&nbsp;R</code> (where
+          <code>u_i&nbsp;=&nbsp;d10_i&nbsp;+&nbsp;d01_i</code> is the discordance mass and <code>R</code> is
+          the number of runs) to recover the latent between-item variance. The resulting interval retains
+          Tango's score-shrinkage denominator and reduces exactly to the original Tango CI when
+          <code>R&nbsp;=&nbsp;1</code>. Under simulation it achieves near-target coverage (0.957) while
+          being the fastest of the three multi-run Tango variants, making it the recommended default.
+          It is notable as an example of a novel statistical procedure generated by a language model
+          that holds up under both synthetic and real-data simulation.
+        </p>
+      </div>
+
+      <h3>Multi-Run Coverage with Real LLM Evals Data</h3>
+      <p>
+        Since we had run the other cases on real LLM eval data, we wanted to check if the multi-run results held up there as well.
+        Unfortunately, we could not use OpenEvals (or any other public dataset) because they do not have multi-run data. 
+        (Only DOVE does, but they sample only 100 items per benchmark, which is too small for a coverage simulation.)
+        Thus, we had to run benchmarks ourselves on a sample of models. 
+        For this test, we only ran benchmarks that produce binary scores, for two reasons: the Tango under-coverage problem was more pronounced there 
+        and we wanted to see if it held up on real data; and it is harder to find numeric score benchmarks. 
+      </p>
+      <p>
+        We ran the following benchmarks and models using the Inspect AI benchmark harness and the OpenRouter API. This range of 
+        models was chosen as a good sample of model diversity in terms of provider and size:
+      </p>
+      <ul>
+        <li><strong>Benchmarks:</strong> MMLU, ARC, HellaSwag, GSM8K, WinoGrande, TruthfulQA, BoolQ, PIQA, BBQ</li>
+        <li><strong>Models:</strong> meta-llama/llama-3.1-8b-instruct, mistralai/ministral-8b-2512, google/gemma-3n-e4b-it, ibm-granite/granite-4.1-8b, qwen/qwen3.5-35b-a3b, openai/gpt-4o-mini</li>
+      </ul>
+      <p>
+        As you can see, the above results largely hold up on real data for the binary case. The one difference is that many 
+        methods are brought down a little, which is why we recommend NIG-nested here instead of NIG on means. 
+      </p>
+
+      <p class="fig-title">CI Coverage vs. Computation Cost — Point Estimates (Real LLM Evals)</p>
+      <img src="media/multirun-real-evals-mean-cov-vs-cost.png" alt="Multi-run real-evals point-estimate CI coverage vs. computation cost" style="width:100%;margin:0.3em 0 0.2em;">
+      <p class="fig-caption">Figure: Coverage vs. computation cost for <strong>point-estimate</strong> CI methods in the multi-run setting, measured on real LLM eval data.</p>
+
+      <p class="fig-title">CI Coverage vs. Computation Cost — Pairwise Comparisons (Real LLM Evals)</p>
+      <img src="media/multirun-real-evals-pairwise-cov-vs-cost.png" alt="Multi-run real-evals pairwise CI coverage vs. computation cost" style="width:100%;margin:0.3em 0 0.2em;">
+      <p class="fig-caption">Figure: Coverage vs. computation cost for <strong>pairwise</strong> CI methods in the multi-run setting, measured on real LLM eval data.</p>
+
+      <h2>Comparison with Bayesian Methods for Binary Scores</h2>
+      <p>
+        To address the ICML 2025 position paper arguing that practitioners should avoid CLT-style / frequentist
+        intervals for LLM evals in favor of Bayesian beta-posterior methods (<a href="https://arxiv.org/abs/2503.01747">"Don't Use the CLT in LLM Evals With Fewer Than a Few Hundred Datapoints"</a>), we ensured the simulation included the exact Bayesian
+        methods the authors advocate, implemented using their <code>bayes_evals</code> library.
+        Our simulation results put some of their recommendations into question. For the binary scores 0/1, we find:
+      </p>
+      <ul>
+        <li><strong>Wilson score interval</strong> lands on target coverage (0.951 synthetic; 0.955 real data) at much cheaper computational cost, so the paper's preferred Bayesian alternative is not needed here.</li>
+        <li>For the pairwise comparisons, the story is nuanced. In the synthetic simulation, <strong>Tango</strong> (0.955) matches Bayesian paired (0.958) in coverage while being nearly 100× faster. But on real LLM eval data — where dominated pairs and jointly-sparse model comparisons are common — Tango under-covers at N&nbsp;&lt;&nbsp;50, caused by extreme situations of sparse data regimes. Bayesian paired remains better in these small-sample setups. At N&nbsp;≥&nbsp;50, Tango reaches target coverage, is dramatically faster, produces tighter intervals, and does not deteriorate at large N.</li>
+        <li>In the new multi-run simulation, the <strong>NIG-nested</strong> variant achieves the highest point-estimate coverage overall (0.966), well above the authors' Bayesian independent samples method (0.920). <strong>NIG-nested</strong> is itself a Bayesian method — placing a Normal-Inverse-Gamma prior on (μ, σ²) and returning a marginal Student-<em>t</em> credible interval — but uses a Gaussian likelihood rather than a Binomial/Beta model. The result shows that the authors' specific Beta-posterior model is not uniquely suited to the hierarchical binary case; a different conjugate Gaussian model substantially outperforms it.</li>
+      </ul>
+      <p>
+        In the course of this analysis, we also uncovered a severe problem in the authors' library that makes it unsuitable for practical usage on benchmark data: 
+        around N≈200+, the <code>bayes_evals</code> Bayesian
+        paired method begins to fail catastrophically with overconfident CIs that continue to decline as N increases.
+        (We ran additional simulations up to N=1000 confirming this pattern.
+        The reason why seems to be that the importance sampling procedure becomes unstable at larger N.) 
+        Because of this failure mode, Bayesian paired is <strong>not recommended for N&nbsp;≥&nbsp;100</strong> — and it should never be used beyond N&nbsp;≈&nbsp;200.
+        For small samples (N&nbsp;&lt;&nbsp;50), it retains a narrow use-case: real-data simulations show it handles dominated and jointly-sparse pairs better than Tango in that regime.
+        For larger samples, and as the default once N reaches 50, practitioners could switch to the <strong>Tango</strong> and <strong>Wilson</strong> intervals (and their multi-run analogues), which are fast, well-calibrated, and stable.
+        For multi-run data, which was not considered in the paper, practitioners should use <strong>NIG-nested</strong> for point estimates and <strong>Tango's multi-run variant</strong> for pairwise comparisons.
+      </p>
+
+      <h2>Is BCa bootstrap a good method for estimating CIs?</h2>
+      <p>
+        If you chat with an LLM, it might start to go off about how BCa is the gold standard. Don't listen to it. 
+        BCa is actually one of the <strong>worst</strong> methods in most of our simulations. 
+        We aren't the only skeptics, either. One <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC6797821/">simulation study</a> found:
+      </p>
+      <div class="pull-quote">
+        "Our simulation results revealed an outperformance of the percentile method over both BCa and
+        Student's t with respect to the desired coverage of the CIs. The BCa method tended to produce
+        slightly better-balanced CIs than the other two methods, but overall, it was undermined due to
+        its narrower CIs than the desired level in coverage."
+        <cite>— Simulation study on bootstrap CI methods for factor analysis loadings</cite>
+      </div>
+      <p>
+        This is consistent with our own simulation results on both synthetic and real LLM eval data.
+      </p>
+
+      <section id="simultaneous-cis">
       <h2>Simultaneous Confidence Intervals for Multiple Comparisons</h2>
         <p>
           When comparing multiple prompts or models, it is common to run multiple pairwise comparisons. In these cases, controlling the family-wise error rate (FWER) is essential to avoid spurious findings. The <strong>max-T resampling procedure</strong> is a well-established method in genomics and neuroscience for constructing <strong>simultaneous confidence intervals</strong> (CIs) that jointly cover all comparisons, rather than treating each CI in isolation (basically, it widens the CIs to ensure the alpha level is maintained across all comparisons). It also has very few assumptions, allowing for robust inference even when candidates are correlated. Despite its power and flexibility, max-T is virtually unknown in LLM evaluation and ML contexts.
@@ -186,276 +1546,9 @@
         <p>
           The max-T method is recommended by <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">Rink & Brannath, 2025</a>, a recent ML paper on multiple comparisons correction when comparing many candidate models that may be correlated. For more foundational background, see the <a href="resources.html#methods-used-in-evalstats">Methods Used in evalstats</a> and <a href="resources.html#statistical-pitfalls-in-ml">Statistical Pitfalls in ML</a> sections of the Resources page.
         </p>
-    </section>
-  
-    <!-- ── SECTION: SIMULATION ── -->
-    <section id="simulation">
-      <h2>Simulation Study</h2>
-      <p class="section-lead">
-        We ran simulation studies over eval-like distributions to compare methods for calculating CIs head-to-head, 
-        rather than relying solely on others' results.
-      </p>
-      <p>
-        We rigged realistic distributions, randomly sampled from them, then measured how close each CI
-        method gets to the true value across repeated trials. Two estimands were tested: single-sample CIs
-        (does the interval contain the true mean?) and pairwise difference CIs (does the interval contain
-        the true difference?). Sample sizes: N = 10, 20, 30, 50, 100, 200. Bootstrap and Bayesian draws: 10,000. 
-        Monte-Carlo trials: 2,000 per condition. Simulations are implemented in 
-        <code>simulations/</code> folder in the project repository.
-      </p>
+      </section>
 
-      <h3>Distributions Tested</h3>
-      <ul>
-        <li><strong>Binary scores</strong> ({0, 1}): Bernoulli with p ∈ {0.1, 0.3, 0.5, 0.7, 0.9}</li>
-        <li><strong>Continuous scores</strong> (0–1 floats): Beta families covering uniform, U-shaped, right-skewed, left-skewed, and moderate-skew (e.g., Beta(1,1), Beta(0.5,0.5), Beta(2,8), Beta(8,2), Beta(2,5))</li>
-        <li><strong>Likert scores</strong> (integers 1–5): discrete scenarios including uniform, skewed-low, skewed-high, bimodal, and center-peaked</li>
-        <li><strong>Grades</strong> (0–100 floats): clipped normal scenarios including symmetric, high-scoring, low-scoring, ceiling-heavy, and floor-heavy</li>
-      </ul>
-
-      <h3>Single-Sample Coverage (target: 0.95)</h3>
-      <p>
-        The following video and table presents the results of the Monte Carlo simulation, which took ~14 hours to run. The video shows 
-        how the coverage rate of each method evolves as the number of samples increases from 10 to 200, 
-        averaged across all distributions and data types. The table breaks down the final average coverage rates 
-        at each sample size, with notes on performance.
-        (Coverage rate = fraction of trials where the CI contains the true population mean.
-        Higher is better; under-coverage means the method is over-confident.)
-      </p>
-
-      <video autoplay muted loop playsinline width="100%">
-        <source src="media/single-sample-comparison-MC.mp4" type="video/mp4">
-      </video>
-
-      <div class="fig-label">Table 1 — Single-sample method summary (true simulation outputs)</div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Method</th>
-              <th class="center">Coverage</th>
-              <th class="center">MCSE</th>
-              <th class="center">Width</th>
-              <th class="center">Dev</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Percentile bootstrap</td>
-              <td class="center">0.906▼</td>
-              <td class="center">0.0004</td>
-              <td class="center">2.9396</td>
-              <td class="center">-0.044</td>
-              <td>Moderate under-coverage; narrower than smooth bootstrap</td>
-            </tr>
-            <tr>
-              <td>BCa</td>
-              <td class="center">0.908▼</td>
-              <td class="center">0.0004</td>
-              <td class="center">2.9628</td>
-              <td class="center">-0.042</td>
-              <td>Slightly better than percentile bootstrap, still under target</td>
-            </tr>
-            <tr>
-              <td>Bayes bootstrap</td>
-              <td class="center cell-worst">0.899▼</td>
-              <td class="center">0.0004</td>
-              <td class="center">2.8772</td>
-              <td class="center">-0.051</td>
-              <td>Lowest coverage among bootstrap variants; over-optimistic</td>
-            </tr>
-            <tr>
-              <td>Smooth Bootstrap (Gaussian KDE)</td>
-              <td class="center">0.922</td>
-              <td class="center">0.0004</td>
-              <td class="center">3.3556</td>
-              <td class="center">-0.028</td>
-              <td>Best bootstrap coverage; widest (most conservative) interval</td>
-            </tr>
-            <tr>
-              <td><strong>Wilson score interval</strong></td>
-              <td class="center cell-best">0.950</td>
-              <td class="center">0.0007</td>
-              <td class="center">0.2089</td>
-              <td class="center">-0.000</td>
-              <td class="cell-note"><strong>Binary only; exact-on-target coverage</strong></td>
-            </tr>
-            <tr>
-              <td>Bayesian Independent Samples</td>
-              <td class="center">0.939</td>
-              <td class="center">0.0007</td>
-              <td class="center">0.2095</td>
-              <td class="center">-0.011</td>
-              <td class="cell-note">Binary-only Bayesian baseline; slightly under target</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="table-caption">
-        Coverage target is 0.95. ▼ marks under-target coverage. Bootstrap-family methods are shown alongside
-        binary-only references (Wilson and bayes_indep) for comparison.
-      </p>
-
-      <h3>Pairwise Comparison Coverage (target: 0.95)</h3>
-      <p>
-        For paired comparisons, coverage measures whether the CI on the <em>difference</em> contains
-        the true difference. This is the more practically important statistic for comparing two prompts or models.
-      </p>
-
-      <video autoplay muted loop playsinline width="100%">
-        <source src="media/pairwise-comparison-MC.mp4" type="video/mp4">
-      </video>
-
-      <div class="fig-label">Table 2 — Pairwise method summary (true simulation outputs)</div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Method</th>
-              <th class="center">Coverage</th>
-              <th class="center">MCSE</th>
-              <th class="center">Width</th>
-              <th class="center">Dev</th>
-              <th>Notes</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr>
-              <td>Percentile bootstrap</td>
-              <td class="center">0.917</td>
-              <td class="center">0.0006</td>
-              <td class="center">0.6159</td>
-              <td class="center">-0.033</td>
-              <td>Under target; stable but mildly over-confident</td>
-            </tr>
-            <tr>
-              <td>BCa</td>
-              <td class="center cell-worst">0.902▼</td>
-              <td class="center">0.0006</td>
-              <td class="center">0.6247</td>
-              <td class="center">-0.048</td>
-              <td>Lowest frequentist coverage; clearly under target</td>
-            </tr>
-            <tr>
-              <td>Bayes bootstrap</td>
-              <td class="center">0.912</td>
-              <td class="center">0.0006</td>
-              <td class="center">0.6050</td>
-              <td class="center">-0.038</td>
-              <td>Under target with narrower intervals</td>
-            </tr>
-            <tr>
-              <td>Smooth Bootstrap (Gaussian KDE)</td>
-              <td class="center cell-best">0.951</td>
-              <td class="center">0.0004</td>
-              <td class="center">0.7042</td>
-              <td class="center">+0.001</td>
-              <td>Best bootstrap method; near-exact target with widest CI</td>
-            </tr>
-            <tr>
-              <td>Newcombe score interval</td>
-              <td class="center">0.916</td>
-              <td class="center">0.0011</td>
-              <td class="center">0.2323</td>
-              <td class="center">-0.034</td>
-              <td class="cell-note">Binary-only frequentist score interval; under target overall</td>
-            </tr>
-            <tr>
-              <td>Bayesian Independent Comparison</td>
-              <td class="center">0.969</td>
-              <td class="center">0.0007</td>
-              <td class="center">0.3400</td>
-              <td class="center">+0.019</td>
-              <td class="cell-note">Binary-only independent Bayesian comparison; conservative</td>
-            </tr>
-            <tr>
-              <td>Bayesian Paired Comparison</td>
-              <td class="center cell-best">0.952</td>
-              <td class="center">0.0009</td>
-              <td class="center">0.3213</td>
-              <td class="center">+0.002</td>
-              <td class="cell-note">Binary-only paired Bayesian comparison; near target in aggregate but breaks down around N≈200+ with overconfident CIs</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-      <p class="table-caption">
-        Coverage target is 0.95. ▼ marks under-target coverage. Results are averaged across all eval
-        types, scenarios, and sample sizes; binary-specific methods are included for reference.
-      </p>
-
-      <div class="callout callout-finding">
-        <div class="callout-label">Surprising finding</div>
-        <p>
-          Averaged across conditions, paired Bayes looks excellent (0.952), but this hides a critical failure mode:
-          around N≈200 and above, the <code>bayes_evals</code> paired method can collapse into dramatically
-          overconfident intervals. So the practical recommendation is conditional: use Bayesian paired only
-          at smaller sample sizes, then switch to regular bootstrap around N=100. Among bootstrap methods, Smooth bootstrap
-          remains the most conservative and best-calibrated general option, while BCa under-covers most severely (0.902).
-          Smooth boostrap's performance for binary data is especially impressive given that 
-          it is not designed for that data type and technically "wrong" to run it there, as one
-          cannot add Gaussian noise to binary data without straying outside the data range. But 
-          it still achives reasonable performance at N=30 and above. 
-        </p>
-      </div>
-
-      <h3>Comparison with Bayesian Methods for Binary Scores</h3>
-      <p>
-        To address the "Don't Use the CLT" paper's claims, we ensured the simulation included
-        the Bayesian beta-posterior methods the authors advocate, implemented using their <code>bayes_evals</code> library. 
-        For the binary single-sample case, we find:
-      </p>
-      <ul>
-        <li>Wilson score interval lands exactly on target coverage (0.950).</li>
-        <li>The binary Bayesian single-sample baseline under-covers (0.939).</li>
-      </ul>
-      <p>
-        For pairwise comparisons in this simulation summary, <strong>Bayesian Paired Comparison</strong>
-        (0.952 aggregate) and <strong>Smooth Bootstrap</strong> (0.951) are both near target on average,
-        while <strong>Newcombe score interval</strong> under-covers overall (0.916). But the average masks
-        a severe regime issue: around N≈200+, the <code>bayes_evals</code> Bayesian paired method can fail
-        with overconfident CIs. (We ran additional simulations up to N=1000 confirming this pattern.
-        The reason why seems to be that the importance sampling procedure becomes unstable at larger N.) 
-        That makes the operational rule straightforward: Bayesian paired only below
-        N=100, then Newcombe for binary pairwise comparisons, with smooth bootstrap as the strongest
-        frequentist option across mixed data types.
-      </p>
-      <div class="callout callout-maxim">
-        <div class="callout-label">Conclusion on Bayesian methods</div>
-        <p>
-          For binary single-sample estimates, use <strong>Wilson</strong>.
-          For binary pairwise comparisons, use <strong>Bayesian paired</strong> only when <strong>N &lt; 100</strong>,
-          then switch to <strong>Newcombe</strong> at <strong>N &ge; 100</strong> for speed and better accuracy.
-          Around N≈200+, the <code>bayes_evals</code> paired method can become dangerously overconfident.
-          <strong>Smooth bootstrap</strong> remains the strongest frequentist alternative across mixed data types.
-          For numeric/interval scores, smooth bootstrap remains the practical winner.
-
-          Thus, while Bayesian methods can perform well for binary data, 
-          they are not universally superior to frequentist methods (at least in these comparisons), and 
-          their advantages may not extend to non-binary data types common in LLM evals. We 
-          call on statistics experts to extend our simulation code and meta-analyses to further 
-          clarify the conditions under which Bayesian methods outperform frequentist alternatives, 
-          and to identify any scenarios where they may underperform.
-        </p>
-      </div>
-
-      <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>
-      <p>
-        Common wisdom says yes, but our simulations say otherwise. (GPT-5 seems convinced BCa is the go-to method,
-        for instance, and loves to suggest it.) One <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC6797821/">simulation study</a> found:
-      </p>
-      <div class="pull-quote">
-        "Our simulation results revealed an outperformance of the percentile method over both BCa and
-        Student's t with respect to the desired coverage of the CIs. The BCa method tended to produce
-        slightly better-balanced CIs than the other two methods, but overall, it was undermined due to
-        its narrower CIs than the desired level in coverage."
-        <cite>— Simulation study on bootstrap CI methods for factor analysis loadings</cite>
-      </div>
-      <p>
-        This is consistent with our own simulation results for LLM eval data.
-      </p>
-
-      <h3>Which p-value Method Works Best?</h3>
+      <h2>Which p-value Method Works Best?</h2>
       <p>
         We also ran another Monte Carlo simulation study to compare p-value methods for pairwise
         testing across LLM eval data types and sample sizes, implemented in
@@ -512,3 +1605,13 @@
       
     </section>
 </article>
+<script>
+function switchRecTab(panel) {
+  document.querySelectorAll('.rec-tab-btn').forEach(function(b) {
+    b.classList.toggle('active', b.dataset.panel === panel);
+  });
+  document.querySelectorAll('.rec-tab-panel').forEach(function(p) {
+    p.classList.toggle('active', p.id === 'rec-panel-' + panel);
+  });
+}
+</script>

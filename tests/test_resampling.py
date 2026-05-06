@@ -7,6 +7,7 @@ from evalstats.core.resampling import (
     bootstrap_ci_1d,
     bootstrap_diffs_nested,
     bootstrap_means_1d,
+    bootstrap_t_ci_nested,
     nested_resample_cell_means_once,
     resolve_resampling_method,
     smooth_bootstrap_diffs_nested,
@@ -317,3 +318,121 @@ def test_bayes_and_smooth_bootstrap_ci_similar_to_standard_for_large_n():
     # close to the classic percentile-bootstrap interval.
     np.testing.assert_allclose(bayes_ci, boot_ci, atol=0.06, rtol=0.0)
     np.testing.assert_allclose(smooth_ci, boot_ci, atol=0.08, rtol=0.0)
+
+
+def test_bootstrap_t_median_warns_and_matches_bootstrap_with_same_rng_stream():
+    values = np.array([0.1, 0.2, 0.3, 0.4, 5.0])
+    observed_median = float(np.median(values))
+    alpha = 0.1
+    n_bootstrap = 600
+
+    with pytest.warns(UserWarning, match="falling back to percentile bootstrap for 'median'"):
+        ci_t = bootstrap_ci_1d(
+            values,
+            observed_median,
+            method="bootstrap_t",
+            n_bootstrap=n_bootstrap,
+            alpha=alpha,
+            rng=np.random.default_rng(1234),
+            statistic="median",
+        )
+
+    ci_boot = bootstrap_ci_1d(
+        values,
+        observed_median,
+        method="bootstrap",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(1234),
+        statistic="median",
+    )
+
+    np.testing.assert_allclose(ci_t, ci_boot)
+
+
+def test_bootstrap_t_mean_degenerate_boot_ses_falls_back_to_percentile():
+    # Mostly constant values can yield many bootstrap replicates with SE*=0.
+    values = np.array([0.0, 0.0, 0.0, 0.0, 1.0])
+    observed_mean = float(np.mean(values))
+    alpha = 0.1
+    n_bootstrap = 800
+
+    ci = bootstrap_ci_1d(
+        values,
+        observed_mean,
+        method="bootstrap_t",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(2026),
+        statistic="mean",
+    )
+
+    assert np.isfinite(ci[0])
+    assert np.isfinite(ci[1])
+    assert ci[0] <= ci[1]
+
+
+def test_bootstrap_t_mean_tiny_se_instability_falls_back_to_percentile():
+    # Discrete tied values can create many tiny nonzero SE* values, which can
+    # destabilize studentized pivots if not guarded.
+    values = np.array([1/3, 1/3, 1/3, 1/3, 1/3, 1/3, 1/3, 2/3, 1/3, 1.0], dtype=float)
+    observed_mean = float(np.mean(values))
+    alpha = 0.05
+    n_bootstrap = 800
+
+    ci_t = bootstrap_ci_1d(
+        values,
+        observed_mean,
+        method="bootstrap_t",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(314159),
+        statistic="mean",
+    )
+    ci_boot = bootstrap_ci_1d(
+        values,
+        observed_mean,
+        method="bootstrap",
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(314159),
+        statistic="mean",
+    )
+
+    np.testing.assert_allclose(ci_t, ci_boot)
+
+
+def test_bootstrap_t_nested_tiny_se_instability_falls_back_to_percentile():
+    # Nearly discrete cell means (many ties) can generate tiny SE* in nested
+    # studentization; ensure robust fallback to percentile nested bootstrap.
+    scores = np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        ],
+        dtype=float,
+    )
+    observed_mean = float(np.mean(scores.mean(axis=1)))
+    alpha = 0.05
+    n_bootstrap = 800
+
+    ci_t = bootstrap_t_ci_nested(
+        scores,
+        observed_mean,
+        n_bootstrap=n_bootstrap,
+        alpha=alpha,
+        rng=np.random.default_rng(271828),
+    )
+    assert np.isfinite(ci_t[0])
+    assert np.isfinite(ci_t[1])
+    assert ci_t[0] <= ci_t[1]
+    # Regression guard: nested bootstrap-t should remain numerically stable.
+    assert (ci_t[1] - ci_t[0]) < 2.0

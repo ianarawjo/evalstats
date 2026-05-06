@@ -708,6 +708,12 @@ tr:nth-child(even) td { background: var(--bg-soft); }
   font-weight: 600;
   color: var(--green);
 }
+.method-star strong {
+  color: #9a6a00;
+}
+[data-theme="dark"] .method-star strong {
+  color: #f4d525;
+}
 .cell-worst {
   color: #b91c1c;
 }
@@ -724,6 +730,28 @@ tr:nth-child(even) td { background: var(--bg-soft); }
   line-height: 1.5;
 }
 .table-caption strong { color: var(--text-mid); }
+
+.fig-caption {
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  color: var(--text-dim);
+  text-align: center;
+  font-style: italic;
+  margin-top: 0.25rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+}
+.fig-caption strong { color: var(--text-mid); font-style: normal; }
+
+.fig-title {
+  font-family: var(--font-sans);
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text-mid);
+  text-align: center;
+  margin-top: 1.2em;
+  margin-bottom: 0.3em;
+}
 
 /* ─── SECTION INTRO ───────────────────────────────────── */
 .section-lead {
@@ -773,6 +801,26 @@ tr:nth-child(even) td { background: var(--bg-soft); }
   gap: 1rem;
   margin: 1.5rem 0;
 }
+.rec-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 1.5rem 0;
+}
+.rec-column {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.rec-column-title {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin: 0;
+}
 .rec-item {
   display: flex;
   align-items: flex-start;
@@ -815,6 +863,42 @@ tr:nth-child(even) td { background: var(--bg-soft); }
   line-height: 1.55;
   color: var(--text-mid);
 }
+
+@media (max-width: 900px) {
+  .rec-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ─── REC TABS (Single-run / Multi-run) ──────────────── */
+.rec-tab-bar {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0;
+  font-family: var(--font-sans);
+}
+.rec-tab-btn {
+  padding: 0.45rem 1.1rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-dim);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  margin-bottom: -1px;
+  transition: color 0.15s, border-color 0.15s;
+  font-family: var(--font-sans);
+}
+.rec-tab-btn:hover { color: var(--text); }
+.rec-tab-btn.active {
+  color: var(--orange);
+  border-bottom-color: var(--orange);
+  font-weight: 600;
+}
+.rec-tab-panel { display: none; }
+.rec-tab-panel.active { display: block; }
 
 /* ─── INLINE FIGURE LABEL ─────────────────────────────── */
 .fig-label {

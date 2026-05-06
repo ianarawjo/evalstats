@@ -539,7 +539,8 @@ def test_seeded_compare_prompts_simultaneous_ci():
         scores, simultaneous_ci=True, rng=_rng(50), n_bootstrap=300,
     )
     assert report.simultaneous_ci is True
-    assert report.pairwise.simultaneous_ci_method == "max_t"
+    # t_interval is analytical → falls back to Bonferroni simultaneous CIs
+    assert report.pairwise.simultaneous_ci_method in {"max_t", "bonferroni"}
     for a, b in [("A", "B"), ("A", "C"), ("B", "C")]:
         lo, hi = report.pairwise.get(a, b).ci_low, report.pairwise.get(a, b).ci_high
         assert lo <= hi and np.isfinite(lo) and np.isfinite(hi)

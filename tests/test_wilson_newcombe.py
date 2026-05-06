@@ -1,8 +1,9 @@
-"""Tests for Wilson and Newcombe score intervals for binary eval data.
+"""Tests for Wilson, Newcombe, and Tango score intervals for binary eval data.
 
 Covers:
   - wilson_ci / wilson_ci_1d in resampling.py
   - newcombe_paired_ci in resampling.py
+    - tango_paired_ci in resampling.py
   - _mcnemar_p in paired.py
   - pairwise_differences with method='wilson'
     - robustness_metrics with marginal_method='wilson'
@@ -22,7 +23,12 @@ from evalstats.core.resampling import (
     is_binary_scores,
     wilson_ci,
     wilson_ci_1d,
+    jeffreys_ci,
+    jeffreys_ci_1d,
     newcombe_paired_ci,
+    tango_paired_ci,
+    tango_paired_ci_multirun_cluster,
+    tango_paired_ci_multirun_moments,
 )
 from evalstats.core.paired import (
     _mcnemar_p,
@@ -109,6 +115,29 @@ def test_wilson_ci_1d_matches_wilson_ci():
     assert hi1 == hi2
 
 
+def test_jeffreys_ci_matches_scipy_reference_grid():
+    alpha = 0.05
+    for n in [1, 2, 5, 10, 20, 50]:
+        for k in range(n + 1):
+            lo, hi = jeffreys_ci(k, n, alpha=alpha)
+            expected_lo = float(stats.beta.ppf(alpha / 2.0, k + 0.5, n - k + 0.5))
+            expected_hi = float(stats.beta.ppf(1.0 - alpha / 2.0, k + 0.5, n - k + 0.5))
+            np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
+            np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
+
+
+def test_jeffreys_ci_1d_matches_jeffreys_ci():
+    values = np.array([1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+    successes = int(values.sum())
+    n = len(values)
+    alpha = 0.05
+
+    lo1, hi1 = jeffreys_ci_1d(values, alpha)
+    lo2, hi2 = jeffreys_ci(successes, n, alpha)
+    assert lo1 == lo2
+    assert hi1 == hi2
+
+
 # ---------------------------------------------------------------------------
 # newcombe_paired_ci
 # ---------------------------------------------------------------------------
@@ -166,6 +195,66 @@ def test_newcombe_paired_ci_raises_for_non_1d_inputs():
     b = np.array([[1.0, 0.0], [0.0, 1.0]])
     with pytest.raises(ValueError, match="1-D"):
         newcombe_paired_ci(a, b, alpha=0.05)
+
+
+def test_tango_paired_ci_matches_closed_form():
+    # Build a deterministic paired table with n10=8, n01=3 out of n=40.
+    a, b = _make_pairs_from_counts(n10=8, n01=3, n11=14, n00=15)
+    alpha = 0.05
+    lo, hi = tango_paired_ci(a, b, alpha)
+
+    n = len(a)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    z2 = z * z
+    d_hat = (8 - 3) / n
+    denom = 1.0 + z2 / n
+    radicand = (11 / (n * n)) - ((8 - 3) ** 2) / (n**3) + z2 / (4.0 * n * n)
+    expected_lo = d_hat / denom - (z / denom) * np.sqrt(radicand)
+    expected_hi = d_hat / denom + (z / denom) * np.sqrt(radicand)
+
+    np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
+    np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
+
+
+def test_tango_paired_ci_raises_for_shape_mismatch():
+    a = np.array([1.0, 0.0, 1.0])
+    b = np.array([1.0, 0.0])
+    with pytest.raises(ValueError, match="equal shape"):
+        tango_paired_ci(a, b, alpha=0.05)
+
+
+def test_tango_multirun_reduces_to_single_run_tango():
+    rng = np.random.default_rng(123)
+    a = rng.binomial(1, 0.65, size=(60, 1)).astype(float)
+    b = rng.binomial(1, 0.55, size=(60, 1)).astype(float)
+    alpha = 0.05
+
+    expected = tango_paired_ci(a[:, 0], b[:, 0], alpha)
+    got_discordance = tango_paired_ci_multirun_cluster(a, b, alpha)
+    got_moments = tango_paired_ci_multirun_moments(a, b, alpha)
+
+    np.testing.assert_allclose(got_discordance, expected, atol=1e-12)
+    np.testing.assert_allclose(got_moments, expected, atol=1e-12)
+
+
+def test_tango_multirun_ci_narrows_with_more_runs_when_items_are_homogeneous():
+    rng = np.random.default_rng(321)
+    n_items = 300
+    n_runs = 8
+    alpha = 0.05
+
+    # Homogeneous generating process across items: extra runs should reduce
+    # within-item Monte Carlo noise and narrow the CI.
+    a = rng.binomial(1, 0.65, size=(n_items, n_runs)).astype(float)
+    b = rng.binomial(1, 0.55, size=(n_items, n_runs)).astype(float)
+
+    lo1_d, hi1_d = tango_paired_ci_multirun_cluster(a[:, :1], b[:, :1], alpha)
+    lo8_d, hi8_d = tango_paired_ci_multirun_cluster(a, b, alpha)
+    assert (hi8_d - lo8_d) < (hi1_d - lo1_d)
+
+    lo1_m, hi1_m = tango_paired_ci_multirun_moments(a[:, :1], b[:, :1], alpha)
+    lo8_m, hi8_m = tango_paired_ci_multirun_moments(a, b, alpha)
+    assert (hi8_m - lo8_m) < (hi1_m - lo1_m)
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +358,28 @@ def test_pairwise_differences_newcombe_seeded_falls_back_to_smooth():
     assert "smooth" in result.test_method
 
 
+def test_pairwise_differences_tango_uses_tango():
+    rng = np.random.default_rng(17)
+    scores = np.zeros((2, 40))
+    scores[0] = rng.binomial(1, 0.8, 40)
+    scores[1] = rng.binomial(1, 0.5, 40)
+
+    result = pairwise_differences(scores, 0, 1, "A", "B", method="tango", ci=0.95)
+    assert result.test_method == "tango (mcnemar p-value)"
+    assert result.ci_low <= result.point_diff <= result.ci_high
+    assert 0.0 <= result.p_value <= 1.0
+
+
+def test_pairwise_differences_tango_seeded_uses_cell_means():
+    rng = np.random.default_rng(19)
+    scores = rng.binomial(1, 0.7, size=(2, 20, 5)).astype(float)
+    result = pairwise_differences(
+        scores, 0, 1, "A", "B", method="tango", ci=0.95,
+        rng=np.random.default_rng(19),
+    )
+    assert "tango" in result.test_method
+
+
 def test_pairwise_differences_fisher_exact_binary_path():
     a = np.array([1., 1., 1., 0., 0., 1., 0., 1.])
     b = np.array([0., 1., 0., 0., 0., 1., 0., 0.])
@@ -347,6 +458,29 @@ def test_robustness_metrics_wilson_reference_template_mean_is_raw_mean():
     assert result.mean[idx_a] == pytest.approx(float(np.mean(scores[0])))
 
 
+def test_robustness_metrics_jeffreys_binary_ci():
+    rng = np.random.default_rng(12)
+    n_templates = 3
+    m_inputs = 30
+    scores = np.zeros((n_templates, m_inputs))
+    for i in range(n_templates):
+        scores[i] = rng.binomial(1, 0.45 + 0.1 * i, m_inputs)
+
+    result = robustness_metrics(
+        scores, ["A", "B", "C"],
+        n_bootstrap=500,
+        rng=np.random.default_rng(12),
+        alpha=0.05,
+        statistic="mean",
+        marginal_method="jeffreys",
+    )
+    assert result.ci_low is not None
+    assert result.ci_high is not None
+    assert len(result.mean) == 3
+    assert np.all(result.ci_low <= result.mean)
+    assert np.all(result.mean <= result.ci_high)
+
+
 def test_single_template_wilson_ci_short_circuit():
     rng = np.random.default_rng(2026)
     scores = rng.binomial(1, 0.65, size=(1, 24, 5)).astype(float)
@@ -384,11 +518,11 @@ def _make_benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
     )
 
 
-def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
-    """For binary data with N < 100, auto should use bayes_binary pairwise."""
+def test_analyze_auto_detects_binary_and_uses_tango():
+    """For binary data, auto should use tango pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 3
-    m_inputs = 50  # < 100 threshold
+    m_inputs = 50
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
@@ -396,19 +530,16 @@ def test_analyze_auto_detects_binary_and_uses_bayes_binary_for_small_n():
     result_obj = _make_benchmark(scores, ["low", "mid", "high"])
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
-    # Pairwise comparisons should use bayes_binary for N < 100
     pair = bundle.pairwise.get("low", "mid")
-    assert "bayes binary" in pair.test_method
-
-    # Advantage CIs should have n_bootstrap=0 (no resampling for bayes_binary)
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert "tango" in pair.test_method
+    assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
-    """For binary data with N >= 100, auto should use bootstrap pairwise."""
+def test_analyze_auto_detects_binary_large_n_uses_tango():
+    """For binary data with N >= 100, auto should still use tango pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 2
-    m_inputs = 120  # >= 100 threshold
+    m_inputs = 120
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
@@ -416,15 +547,12 @@ def test_analyze_auto_detects_binary_and_uses_bootstrap_for_large_n():
     result_obj = _make_benchmark(scores, ["low", "high"])
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
-    # Pairwise comparisons should use bootstrap for N >= 100
     pair = bundle.pairwise.get("low", "high")
-    assert "bootstrap" in pair.test_method
-
-    # Advantage CIs should have n_bootstrap=0 (Wilson, no bootstrap)
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert "tango" in pair.test_method
+    assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_non_binary_still_uses_smooth_bootstrap():
+def test_analyze_non_binary_uses_t_interval():
     rng = np.random.default_rng(77)
     scores = rng.uniform(0, 1, size=(2, 30))
 
@@ -432,7 +560,7 @@ def test_analyze_non_binary_still_uses_smooth_bootstrap():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(77))
 
     pair = bundle.pairwise.get("A", "B")
-    assert "smooth" in pair.test_method
+    assert "t-interval" in pair.test_method.lower()
     assert bundle.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
@@ -480,6 +608,20 @@ def test_analyze_explicit_fisher_exact_uses_fisher_path():
     assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
 
 
+def test_analyze_explicit_tango_uses_tango_path():
+    rng = np.random.default_rng(322)
+    scores = np.zeros((2, 80))
+    scores[0] = rng.binomial(1, 0.68, 80)
+    scores[1] = rng.binomial(1, 0.48, 80)
+
+    result_obj = _make_benchmark(scores, ["low", "high"])
+    bundle = analyze(result_obj, method="tango", rng=np.random.default_rng(322))
+
+    pair = bundle.pairwise.get("low", "high")
+    assert "tango" in pair.test_method
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+
+
 def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     rng = np.random.default_rng(88)
     n_templates = 2
@@ -500,7 +642,7 @@ def test_analyze_forced_bayes_binary_warns_for_large_n_pairwise():
     assert "bayes binary" in pair.test_method
 
 
-@pytest.mark.parametrize("method", ["wilson", "newcombe", "fisher_exact"])
+@pytest.mark.parametrize("method", ["wilson", "newcombe", "tango", "fisher_exact"])
 def test_analyze_explicit_wilson_newcombe_raise_on_non_binary(method: str):
     rng = np.random.default_rng(314)
     scores = rng.uniform(0.0, 1.0, size=(2, 30))
@@ -598,6 +740,87 @@ def test_newcombe_matches_scipy_wilson_baseline_exhaustive_small_n():
                 expected_hi = (m / n) * (2.0 * ref.high - 1.0)
                 np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
                 np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
+
+
+def _sample_paired_binary_from_cell_probs(
+    n: int,
+    p10: float,
+    p01: float,
+    p11: float,
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Draw paired binary outcomes from fixed 2x2 cell probabilities."""
+    p00 = 1.0 - (p10 + p01 + p11)
+    cats = rng.choice(4, size=n, p=np.array([p10, p01, p11, p00], dtype=float))
+    a = np.zeros(n, dtype=float)
+    b = np.zeros(n, dtype=float)
+    a[cats == 0] = 1.0  # n10
+    b[cats == 1] = 1.0  # n01
+    a[cats == 2] = 1.0  # n11
+    b[cats == 2] = 1.0  # n11
+    return a, b
+
+
+def test_tango_paired_ci_empirical_coverage_is_reasonable():
+    """Battle test: Tango CI should show sane finite-sample 95% coverage."""
+    rng = np.random.default_rng(20260503)
+    alpha = 0.05
+    n_rep = 700
+    n_items = 90
+
+    # True paired difference is p10 - p01.
+    p10, p01, p11 = 0.26, 0.14, 0.33
+    true_diff = p10 - p01
+
+    covered = 0
+    widths: list[float] = []
+    for _ in range(n_rep):
+        a, b = _sample_paired_binary_from_cell_probs(n_items, p10, p01, p11, rng)
+        lo, hi = tango_paired_ci(a, b, alpha=alpha)
+        widths.append(hi - lo)
+        covered += int(lo <= true_diff <= hi)
+
+    coverage = covered / n_rep
+    mean_width = float(np.mean(widths))
+
+    # Conservative acceptance region to avoid brittle Monte Carlo failures.
+    assert 0.88 <= coverage <= 0.99, f"unexpected Tango coverage={coverage:.3f}"
+    assert 0.0 < mean_width < 1.0
+
+
+def test_tango_multirun_moments_empirical_coverage_is_reasonable():
+    """Battle test: multirun moments Tango CI should achieve sane coverage."""
+    rng = np.random.default_rng(20260504)
+    alpha = 0.05
+    n_rep = 450
+    n_items = 80
+    n_runs = 6
+
+    p10, p01, p11 = 0.24, 0.10, 0.36
+    true_diff = p10 - p01
+
+    covered = 0
+    widths: list[float] = []
+    for _ in range(n_rep):
+        a, b = _sample_paired_binary_from_cell_probs(
+            n_items * n_runs,
+            p10,
+            p01,
+            p11,
+            rng,
+        )
+        a = a.reshape(n_items, n_runs)
+        b = b.reshape(n_items, n_runs)
+
+        lo, hi = tango_paired_ci_multirun_moments(a, b, alpha=alpha)
+        widths.append(hi - lo)
+        covered += int(lo <= true_diff <= hi)
+
+    coverage = covered / n_rep
+    mean_width = float(np.mean(widths))
+
+    assert 0.88 <= coverage <= 0.995, f"unexpected multirun-moments coverage={coverage:.3f}"
+    assert 0.0 < mean_width < 1.0
 
 
 def test_newcombe_invariant_to_pair_order_and_concordant_mix():

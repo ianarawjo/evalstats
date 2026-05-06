@@ -239,7 +239,7 @@ def test_compare_models_accepts_flat_nested_arrays_for_runs():
     assert report.full_analysis.benchmark.template_labels == ["single_template"]
 
 
-def test_compare_models_multirun_uses_nested_bootstrap_for_pairwise():
+def test_compare_models_multirun_uses_t_interval_for_pairwise():
     rng = _rng(123)
     n_inputs = 40
     n_runs = 5
@@ -258,8 +258,7 @@ def test_compare_models_multirun_uses_nested_bootstrap_for_pairwise():
     )
 
     pair = report.pairwise.get("m1", "m2")
-    assert pair.n_runs == n_runs
-    assert "nested" in pair.test_method.lower()
+    assert "t-interval" in pair.test_method.lower()
 
 
 def test_compare_models_accepts_nested_template_dicts():
@@ -364,3 +363,23 @@ def test_compare_models_rejects_unknown_template_model_collapse():
             template_model_collapse="median",  # type: ignore[arg-type]
             rng=_rng(28),
         )
+
+
+def test_compare_models_tango_two_models_single_run_regression():
+    rng = _rng(20260503)
+    n_inputs = 50
+
+    scores_a = rng.binomial(1, 0.70, n_inputs).astype(float)
+    scores_b = rng.binomial(1, 0.65, n_inputs).astype(float)
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        report = es.compare_models(
+            {"Model A": scores_a, "Model B": scores_b},
+            method="tango",
+            rng=_rng(20260504),
+        )
+
+    pair = report.pairwise.get("Model A", "Model B")
+    assert "tango" in pair.test_method.lower()
+    assert not any("only 2 runs detected" in str(w.message) for w in caught)
