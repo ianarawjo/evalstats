@@ -7,15 +7,16 @@
             We have run the most comprehensive simulation study to date on confidence interval methods for LLM eval data, and with few exceptions, 
             we have validated these results on real eval data as well. Based on this research, we recommend the following methods for 
             calculating confidence intervals in LLM eval contexts. We also performed a smaller simulation study on p-value methods, and report recommendations as well. 
-            Some highlights from our CI method simulation analysis:
+
+            <!-- Some highlights from our CI method simulation analysis:
         </p>
         <ul>
             <li><strong>Tango score interval nearly matches Bayesian paired performance at a fraction of the cost.</strong> For pairwise binary comparisons, the Tango score CI achieves coverage on par with the Bayesian paired approach of <code>bayes_evals</code> while being roughly 50–100× faster and — critically — remaining stable at large N where Bayesian paired begins to fail catastrophically (N&nbsp;≥&nbsp;200).</li>
             <li><strong>Tango multi-run (<code>tango_multirun_mmnt</code>) is the best pairwise binary method in the multi-run setting.</strong> It achieves near-target coverage (0.957) and is the fastest of the three multi-run Tango variants. Notably, this method was invented by GPT-5: it proposed decomposing per-item variance into latent between-item and within-item Monte Carlo noise terms, yielding a closed-form extension of the Tango interval that reduces exactly to the standard single-run Tango when R&nbsp;=&nbsp;1.</li>
             <li><strong>NIG nested (<code>nig_nested</code>) is the most on-target point-estimate method for binary data in the multi-run setting.</strong> Despite being a Gaussian model with no principled claim on 0/1 data, it achieves the highest coverage (0.966) across both synthetic and real-data simulations — a somewhat surprising result, likely due to its hierarchical variance decomposition producing conservatively wide intervals that compensate for the model mismatch.
             It performs better than the "more reasonable" Bayesian priors for binomial data in this specific setting.</li>
-        </ul>
-        <p>These recommendations are implemented as the 
+        </ul> -->
+        These recommendations are implemented as the 
             <code>method="auto"</code> defaults in <code>evalstats</code>, 
             which adapt to data type and sample size based on which methods performed best in our simulations.
             Note that the contents of this section are subject to change as we gather more evidence for different situations.
@@ -350,26 +351,6 @@
         <p><strong>N &lt; 15:</strong> Do not report statistics. The CI width will be so large as to be meaningless, and the sample is extremely unlikely to be representative.</p>
         <p><strong>15 ≤ N &lt; 30:</strong> Report statistics with a prominent warning. Results should be treated as exploratory only.</p>
         <p><strong>N ≥ 30:</strong> CIs and point estimates of true performance begin to become more reliable.</p>
-    </section>
-
-    <section id="simultaneous-cis">
-      <h2>Simultaneous Confidence Intervals for Multiple Comparisons</h2>
-        <p>
-          When comparing multiple prompts or models, it is common to run multiple pairwise comparisons. In these cases, controlling the family-wise error rate (FWER) is essential to avoid spurious findings. The <strong>max-T resampling procedure</strong> is a well-established method in genomics and neuroscience for constructing <strong>simultaneous confidence intervals</strong> (CIs) that jointly cover all comparisons, rather than treating each CI in isolation (basically, it widens the CIs to ensure the alpha level is maintained across all comparisons). It also has very few assumptions, allowing for robust inference even when candidates are correlated. Despite its power and flexibility, max-T is virtually unknown in LLM evaluation and ML contexts.
-        </p>
-
-        <div class="callout callout-info">
-        <div class="callout-label">What is max-T?</div>
-        <p>
-          The max-T procedure works by resampling the data (e.g., via bootstrap), computing the test statistic (such as the difference in means) for all pairs in each resample, and then recording the maximum absolute value of the test statistics across all comparisons for each resample. The distribution of these maxima is then used to set CI bounds that guarantee the desired coverage <em>simultaneously</em> for all comparisons, not just marginally. This approach is less conservative than Bonferroni correction, yet provides strong control over false positives.
-        </p>
-        </div>
-        <p>
-          <code>evalstats</code> uses the max-T procedure by default whenever you output multiple pairwise comparisons with bootstrapped CIs. This ensures that the reported intervals account for the increased uncertainty from making many comparisons at once. For consistency, <code>evalstats</code> also applies the max-T correction to p-values when users request them, so that both CIs and p-values are corrected in the same principled way.
-        </p>
-        <p>
-          The max-T method is recommended by <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">Rink & Brannath, 2025</a>, a recent ML paper on multiple comparisons correction when comparing many candidate models that may be correlated. For more foundational background, see the <a href="resources.html#methods-used-in-evalstats">Methods Used in evalstats</a> and <a href="resources.html#statistical-pitfalls-in-ml">Statistical Pitfalls in ML</a> sections of the Resources page.
-        </p>
     </section>
   
     <!-- ── SECTION: SIMULATION ── -->
@@ -1516,7 +1497,7 @@
       <ul>
         <li><strong>Wilson score interval</strong> lands on target coverage (0.951 synthetic; 0.955 real data) at much cheaper computational cost, so the paper's preferred Bayesian alternative is not needed here.</li>
         <li>For the pairwise comparisons, the story is nuanced. In the synthetic simulation, <strong>Tango</strong> (0.955) matches Bayesian paired (0.958) in coverage while being nearly 100× faster. But on real LLM eval data — where dominated pairs and jointly-sparse model comparisons are common — Tango under-covers at N&nbsp;&lt;&nbsp;50, caused by extreme situations of sparse data regimes. Bayesian paired remains better in these small-sample setups. At N&nbsp;≥&nbsp;50, Tango reaches target coverage, is dramatically faster, produces tighter intervals, and does not deteriorate at large N.</li>
-        <li>In the new multi-run simulation, the adapted <strong>wilson_od</strong> method matches the <strong>beta_binomial</strong> interval at 0.925 coverage, so even in the hierarchical binary case the more explicitly model-based Beta-Binomial approach is not uniquely superior.</li>
+        <li>In the new multi-run simulation, the <strong>NIG-nested</strong> variant achieves the highest point-estimate coverage overall (0.966), well above the authors' Bayesian independent samples method (0.920). <strong>NIG-nested</strong> is itself a Bayesian method — placing a Normal-Inverse-Gamma prior on (μ, σ²) and returning a marginal Student-<em>t</em> credible interval — but uses a Gaussian likelihood rather than a Binomial/Beta model. The result shows that the authors' specific Beta-posterior model is not uniquely suited to the hierarchical binary case; a different conjugate Gaussian model substantially outperforms it.</li>
       </ul>
       <p>
         In the course of this analysis, we also uncovered a severe problem in the authors' library that makes it unsuitable for practical usage on benchmark data: 
@@ -1527,12 +1508,14 @@
         Because of this failure mode, Bayesian paired is <strong>not recommended for N&nbsp;≥&nbsp;100</strong> — and it should never be used beyond N&nbsp;≈&nbsp;200.
         For small samples (N&nbsp;&lt;&nbsp;50), it retains a narrow use-case: real-data simulations show it handles dominated and jointly-sparse pairs better than Tango in that regime.
         For larger samples, and as the default once N reaches 50, practitioners could switch to the <strong>Tango</strong> and <strong>Wilson</strong> intervals (and their multi-run analogues), which are fast, well-calibrated, and stable.
+        For multi-run data, which was not considered in the paper, practitioners should use <strong>NIG-nested</strong> for point estimates and <strong>Tango's multi-run variant</strong> for pairwise comparisons.
       </p>
 
-      <h3>Is BCa Actually Better Than the Naive Bootstrap?</h3>
+      <h2>Is BCa bootstrap a good method for estimating CIs?</h2>
       <p>
-        Common wisdom says yes, but our simulations say otherwise. (GPT-5 seems convinced BCa is the go-to method,
-        for instance, and loves to suggest it.) One <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC6797821/">simulation study</a> found:
+        If you chat with an LLM, it might start to go off about how BCa is the gold standard. Don't listen to it. 
+        BCa is actually one of the <strong>worst</strong> methods in most of our simulations. 
+        We aren't the only skeptics, either. One <a href="https://pmc.ncbi.nlm.nih.gov/articles/PMC6797821/">simulation study</a> found:
       </p>
       <div class="pull-quote">
         "Our simulation results revealed an outperformance of the percentile method over both BCa and
@@ -1542,10 +1525,30 @@
         <cite>— Simulation study on bootstrap CI methods for factor analysis loadings</cite>
       </div>
       <p>
-        This is consistent with our own simulation results for LLM eval data.
+        This is consistent with our own simulation results on both synthetic and real LLM eval data.
       </p>
 
-      <h3>Which p-value Method Works Best?</h3>
+      <section id="simultaneous-cis">
+      <h2>Simultaneous Confidence Intervals for Multiple Comparisons</h2>
+        <p>
+          When comparing multiple prompts or models, it is common to run multiple pairwise comparisons. In these cases, controlling the family-wise error rate (FWER) is essential to avoid spurious findings. The <strong>max-T resampling procedure</strong> is a well-established method in genomics and neuroscience for constructing <strong>simultaneous confidence intervals</strong> (CIs) that jointly cover all comparisons, rather than treating each CI in isolation (basically, it widens the CIs to ensure the alpha level is maintained across all comparisons). It also has very few assumptions, allowing for robust inference even when candidates are correlated. Despite its power and flexibility, max-T is virtually unknown in LLM evaluation and ML contexts.
+        </p>
+
+        <div class="callout callout-info">
+        <div class="callout-label">What is max-T?</div>
+        <p>
+          The max-T procedure works by resampling the data (e.g., via bootstrap), computing the test statistic (such as the difference in means) for all pairs in each resample, and then recording the maximum absolute value of the test statistics across all comparisons for each resample. The distribution of these maxima is then used to set CI bounds that guarantee the desired coverage <em>simultaneously</em> for all comparisons, not just marginally. This approach is less conservative than Bonferroni correction, yet provides strong control over false positives.
+        </p>
+        </div>
+        <p>
+          <code>evalstats</code> uses the max-T procedure by default whenever you output multiple pairwise comparisons with bootstrapped CIs. This ensures that the reported intervals account for the increased uncertainty from making many comparisons at once. For consistency, <code>evalstats</code> also applies the max-T correction to p-values when users request them, so that both CIs and p-values are corrected in the same principled way.
+        </p>
+        <p>
+          The max-T method is recommended by <a href="https://link.springer.com/article/10.1007/s10994-024-06632-w" target="_blank">Rink & Brannath, 2025</a>, a recent ML paper on multiple comparisons correction when comparing many candidate models that may be correlated. For more foundational background, see the <a href="resources.html#methods-used-in-evalstats">Methods Used in evalstats</a> and <a href="resources.html#statistical-pitfalls-in-ml">Statistical Pitfalls in ML</a> sections of the Resources page.
+        </p>
+      </section>
+
+      <h2>Which p-value Method Works Best?</h2>
       <p>
         We also ran another Monte Carlo simulation study to compare p-value methods for pairwise
         testing across LLM eval data types and sample sizes, implemented in

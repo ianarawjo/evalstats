@@ -32,7 +32,7 @@ from evalstats.compare import (
 )
 from evalstats.config import set_alpha_ci, get_alpha_ci
 
-__version__ = "0.1.9"
+__version__ = "0.2.0"
 
 __all__ = [
     "BenchmarkResult",

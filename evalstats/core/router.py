@@ -889,12 +889,11 @@ def _analyze_multi_model(
 ) -> MultiModelBundle:
     from .resampling import is_binary_scores
 
-    binary_only_methods = {"bayes_binary", "wilson", "newcombe", "tango", "fisher_exact"}
+    fallback_binary_methods = {"wilson", "newcombe", "tango", "fisher_exact"}
 
     def _effective_method(sub_result: BenchmarkResult) -> CompareMethod:
-        """Keep explicit binary-only methods only for binary-compatible sub-analyses."""
-        if method in binary_only_methods and not is_binary_scores(sub_result.get_run_scores()):
-            print(f"Warning: sub-result scores are not binary, but method='{method}' was requested. Using 'auto' instead.")
+        """Fallback only for frequentist binary methods on auxiliary non-binary views."""
+        if method in fallback_binary_methods and not is_binary_scores(sub_result.get_run_scores()):
             return "auto"
         return method
 
