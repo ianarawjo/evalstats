@@ -1,0 +1,789 @@
+<style>
+/* ── Blog post styles ────────────────────────────────────── */
+.blog-byline {
+  font-family: var(--font-sans);
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  margin-bottom: 2rem;
+  padding-bottom: 1.25rem;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.blog-date {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+.blog-sig {
+  margin-top: 2.5rem;
+  padding-top: 1.5rem;
+  border-top: 1px solid var(--border);
+  font-style: italic;
+  color: var(--text-mid);
+}
+.ps-section {
+  margin-top: 3.5rem;
+  padding-top: 2rem;
+  border-top: 2px dashed var(--border);
+}
+.ps-section > h2 {
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-top: 0;
+}
+.ps-reveal {
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  color: var(--text-faint);
+  font-style: italic;
+  margin: 0.5rem 0 1.75rem;
+}
+/* Chart figures */
+.chart-figure {
+  margin: 1.75rem 0;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem 1rem;
+}
+.chart-figure figcaption {
+  font-family: var(--font-sans);
+  font-size: 0.79rem;
+  color: var(--text-dim);
+  margin-top: 0.75rem;
+  line-height: 1.55;
+}
+.chart-figure figcaption strong {
+  color: var(--text-mid);
+}
+.chart-header {
+  margin-bottom: 0.6rem;
+}
+.chart-benchmark-label {
+  font-family: var(--font-mono);
+  font-size: 0.67rem;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 0.2rem;
+}
+.chart-title-text {
+  font-family: var(--font-sans);
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--text);
+}
+svg.chart-svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+</style>
+
+<div class="blog-byline">
+  <span>Ian Arawjo</span>
+  <span class="blog-date">May 2026</span>
+</div>
+
+<!-- ── Section 1: Opening hook ── -->
+<section id="opening">
+  <p>Look at this chart. What do the error bars convey?</p>
+
+  <figure class="chart-figure" aria-label="Bar chart with unlabeled error bars">
+    <div class="chart-header">
+      <div class="chart-benchmark-label">BiglyBenchmark &middot; 200 test items</div>
+      <div class="chart-title-text">Model Performance</div>
+    </div>
+    <svg id="chart-1" class="chart-svg"></svg>
+  </figure>
+
+  <p>
+    A normal person would say it shows GPT-5.5 clearly outperforms Claude&nbsp;Opus&nbsp;4.7 on
+    the BiglyBenchmark. But that&rsquo;s not accurate. Why?
+  </p>
+
+  <p>
+    Lately, I&rsquo;ve been seeing more error bars on my social media feed from developers.
+    Anthropic seems to have remembered them. DeepMind reports results of their multi-agent math
+    system with Accuracy&nbsp;&plusmn;&nbsp;standard errors. This is certainly a big improvement
+    in the Wild West of AI evaluation, where raw means are reported without any uncertainty
+    estimates. Even among AI research,
+    <a href="https://arxiv.org/abs/2511.04703" target="_blank" rel="noopener">only 16% of 445 benchmark papers conducted any statistical tests</a>,
+    let alone the right ones.
+  </p>
+
+  <p>
+    However, in many cases, these &ldquo;error bars&rdquo; don&rsquo;t have a clear label.
+    ScaleAI reported uncertainty&nbsp;&plusmn; without labels, and the full leaderboard labels
+    them only a &ldquo;range.&rdquo; Anthropic labels BioMysteryBench benchmark results with
+    &ldquo;Error bars computed by bootstrap sampling within problems.&rdquo; But what exactly was
+    computed? A standard error&mdash;or a confidence interval? And if the latter, at what
+    confidence level? Similarly, EpochAI&rsquo;s interactive widget labels error bars as
+    standard errors, but only in two views of the data.
+  </p>
+
+  <p>
+    &ldquo;So what?,&rdquo; you might think. &ldquo;Reporting uncertainty is better than
+    none!&rdquo;
+  </p>
+
+  <p>Sure. But standard errors can mislead in an important way.</p>
+</section>
+
+<!-- ── Section 2: How SEs mislead ── -->
+<section id="standard-errors">
+  <h2>How standard errors as error bars mislead</h2>
+
+  <p>Consider this chart that uses standard errors as error bars:</p>
+
+  <figure class="chart-figure" aria-label="Bar chart with standard error bars">
+    <div class="chart-header">
+      <div class="chart-benchmark-label">BiglyBenchmark &middot; 200 test items</div>
+      <div class="chart-title-text">Model Performance</div>
+    </div>
+    <svg id="chart-2" class="chart-svg"></svg>
+    <figcaption>
+      <strong>Fig. 1.</strong> Model accuracy on BiglyBenchmark with
+      <em>&plusmn;1&nbsp;SE</em> error bars. GPT-5.5&rsquo;s bar does not visually
+      overlap with the others&mdash;suggesting a clear win.
+    </figcaption>
+  </figure>
+
+  <p>
+    You might imagine that GPT-5.5 is the clear winner with certainty, since its error bar
+    doesn&rsquo;t overlap the others. Yet that intuition is not accurate: standard errors do
+    not indicate where the &ldquo;true&rdquo; value might lie&mdash;they instead describe how
+    much the sample mean would vary across repeated experiments. And a standard error bar plotted
+    as &plusmn;1&nbsp;SE only covers about 68% of the probability distribution for a normal
+    distribution.
+  </p>
+
+  <p>
+    That means whenever you see a &ldquo;standard error&rdquo; error bar, you should effectively
+    <em>double the width</em> if you want to visually compare performance in terms of classical
+    notions of statistical significance:
+  </p>
+
+  <figure class="chart-figure" aria-label="Bar chart with 95% confidence interval error bars">
+    <div class="chart-header">
+      <div class="chart-benchmark-label">BiglyBenchmark &middot; 200 test items</div>
+      <div class="chart-title-text">Model Performance</div>
+    </div>
+    <svg id="chart-3" class="chart-svg"></svg>
+    <figcaption>
+      <strong>Fig. 2.</strong> The same data, now with
+      <em>95% confidence intervals</em>. The bars for GPT-5.5 and Claude&nbsp;Opus&nbsp;4.7
+      now overlap&mdash;the gap between them is statistically uncertain. Claude&nbsp;Opus&nbsp;4.7
+      and Gemini&nbsp;Ultra&nbsp;3 overlap substantially.
+    </figcaption>
+  </figure>
+
+  <p>
+    So when AI labs plot &plusmn;1&nbsp;SE without labeling it, they are visually shrinking their
+    uncertainty by about half. This can make the performance gap between two AI models look highly
+    significant and separate, when a proper 95% confidence interval might show a complete overlap.
+  </p>
+</section>
+
+<!-- ── Section 3: Confidence intervals ── -->
+<section id="confidence-intervals">
+  <h2>Confidence intervals</h2>
+
+  <p>
+    Confidence intervals (CIs), by contrast, do provide an interval that is designed to contain
+    the true population parameter with a specified level of probability (typically 95%). And the
+    visual interpretation of CIs doesn&rsquo;t depend on the data following a normal
+    distribution&mdash;unlike SEs&mdash;but rather the calibration of the method used to
+    compute them, which we can verify with simulations on evals-like data.
+  </p>
+
+  <p>
+    Confidence intervals are the recommended method by scientists when reporting point estimates
+    that may be compared. To be clear, standard errors are useful too, but they lead people to be
+    misleadingly overconfident when used as error bars.
+  </p>
+
+  <div class="callout callout-maxim">
+    <div class="callout-label">The path forward</div>
+    <p>
+      Default to 95% confidence intervals for error bars, and always label the bars.
+    </p>
+  </div>
+
+  <p>
+    To bring maturity to AI evaluations, this is the simple ask: when you plot benchmark results,
+    use 95% CIs, and write &ldquo;Error bars: 95% CI&rdquo; in the caption. Bootstrap CIs require
+    no distributional assumptions and work at the small sample sizes typical of developer evals.
+    The <a href="./index.html"><code>evalstats</code> library</a> computes them with one line of
+    code.
+  </p>
+</section>
+
+<!-- ── Conclusion ── -->
+<section id="conclusion">
+  <p>
+    We&rsquo;re at an inflection point in AI evaluation culture. Error bars are appearing. Now
+    we need to make sure they&rsquo;re the right ones, labeled correctly. Standard errors look
+    precise but quietly mislead. Confidence intervals tell the honest story.
+  </p>
+
+  <div class="blog-sig">
+    <p>Best,</p>
+    <p>~Ian Arawjo</p>
+  </div>
+</section>
+
+<!-- ── PS: The chaos section ── -->
+<section id="ps" class="ps-section">
+  <h2>PS: Pssst&hellip; Chaos</h2>
+  <p class="ps-reveal">Still here?</p>
+  <p>That&rsquo;s a nice conclusion, wasn&rsquo;t it?</p>
+  <p>Yet consider the following chart:</p>
+
+  <figure class="chart-figure" aria-label="Leaderboard with 12 models and 95% CI error bars">
+    <div class="chart-header">
+      <div class="chart-benchmark-label">BiglyBenchmark Leaderboard &middot; 200 test items</div>
+      <div class="chart-title-text">All Models &mdash; 95% Confidence Intervals</div>
+    </div>
+    <svg id="chart-4" class="chart-svg"></svg>
+    <figcaption>
+      <strong>Fig. 3.</strong> A full leaderboard with 12 models and 95% CIs. Nearly every
+      adjacent pair of intervals overlaps. With 12 independent intervals each at 95% confidence,
+      the probability that <em>at least one</em> interval is wrong exceeds 46%.
+    </figcaption>
+  </figure>
+
+  <p>
+    These CIs have the same issue as family-wise error rate in p-values: if we have a 5% chance
+    the interval is wrong per model, and we show 12 intervals, we suddenly have a &gt;46%
+    chance at least one interval is wrong. The more CIs we show, the more chances we have of
+    reaching a false positive conclusion (Type&nbsp;I error).
+  </p>
+
+  <p>
+    The solution is <em>simultaneous confidence intervals</em>&mdash;wider intervals that
+    account for the full family of comparisons, keeping your family-wise error rate at 5% across
+    all shown comparisons at once. This is one of the core topics in the
+    <a href="./investigations/best-prompt.html">Best Prompt investigation</a>.
+  </p>
+
+  <p>
+    For now: be aware that a leaderboard full of non-overlapping 95% CIs is more suspicious
+    than it looks. The more bars you plot, the more skeptical you should be of apparent gaps.
+  </p>
+</section>
+
+<!-- ── Gradient plots section ── -->
+<section id="gradient-plots">
+  <h2>Maybe we&rsquo;re displaying uncertainty wrong?</h2>
+
+  <p>
+    Now, confidence intervals are certainly the best estimate we have of uncertainty, and
+    reporting them is critical. I think this is as much as we can ask current developers.
+  </p>
+
+  <p>
+    However, there is known evidence that, though CI-based error bars lead to lower false
+    positives compared to standard errors, the way we visualize these errors can still mislead.
+  </p>
+
+  <p>Should we change our plots, too?</p>
+
+  <p>
+    That is the argument of <em>Error Bars Considered Harmful&hellip;</em>, Correll and Gleicher
+    (2014). They argue that bar charts with error bars suffer from two systematic biases:
+  </p>
+
+  <ul>
+    <li>
+      <strong>Within-the-bar bias:</strong> the glyph of a bar provides a false metaphor of
+      containment, where values within the bar are seen as more likely than values outside it.
+    </li>
+    <li>
+      <strong>Binary interpretation:</strong> values are within the margins of error, or they
+      are not. This makes it difficult for viewers to make nuanced inferences about outcomes,
+      and causes viewers to overestimate effect sizes when comparing bars.
+    </li>
+  </ul>
+
+  <p>
+    They show in a series of experiments that <em>gradient plots</em>&mdash;where the 95% CI
+    region is shown as a solid block of color and opacity decays continuously beyond it&mdash;lead
+    to more accurate inference by humans. 
+  </p>
+
+  <p>
+    The original paper derived the outer decay from a t-distribution. But we cannot 
+    assume normality in AI evals data, and may be in a small-samples regime. 
+    Thus, one adaptation of this plot that makes no assumptions about the 
+    distribution and uncertainty method is to compute 99% and 99.9% CIs as well, using the same method 
+    that the user used before to compute the 95% CI.
+    The 95% CI is fully opaque; outside it, opacity decreases linearly in confidence-level space. Below, a point at the 99% CI
+    boundary gets opacity (100&minus;99)&thinsp;/&thinsp;(100&minus;95)&nbsp;=&nbsp;20%, and a
+    point at the 99.9% boundary gets &asymp;&nbsp;2%:
+  </p>
+
+  <figure class="chart-figure" aria-label="Confidence-set gradient plot: 95% CI solid, opacity decays through 99% and 99.9% bands">
+    <div class="chart-header">
+      <div class="chart-benchmark-label">BiglyBenchmark &middot; 200 test items</div>
+      <div class="chart-title-text">Model Performance (Accuracy)</div>
+    </div>
+    <svg id="chart-5" class="chart-svg"></svg>
+    <figcaption>
+      <strong>Fig. 4.</strong> Confidence-set gradient plot of the same data as Fig. 2.
+      The 95% CI region is fully opaque. Opacity then decays linearly in confidence-level
+      space: 20% at the 99% CI boundary, &asymp;&thinsp;2% at 99.9%, transparent beyond.
+      No error bar caps; no sharp inside/outside boundary.
+    </figcaption>
+  </figure>
+
+  <p>
+    The visual result is a solid, readable bar with soft, fuzzy edges. It communicates two
+    things a capped error bar cannot: that uncertainty is not binary (there is no sharp
+    inside/outside), and that within-the-bar bias is weakened because the bar no longer
+    looks like a filled container. Viewers shown this design make more calibrated judgments
+    about whether two point estimates truly differ.
+  </p>
+
+  <div class="callout callout-maxim">
+    <div class="callout-label">The bottom line</div>
+    <p>
+      If you can do one thing: label your bars and switch to 95% CIs. If you want to go
+      further: switch to gradient plots or violin plots, which reduce systematic
+      misinterpretation of uncertainty by readers.
+    </p>
+  </div>
+</section>
+
+<!-- ── Chart rendering ── -->
+<script>
+(function () {
+  'use strict';
+
+  var DATA = [
+    { label: 'GPT-5.5',         value: 78.5, se: 1.8 },
+    { label: 'Claude Opus 4.7', value: 73.2, se: 2.1 },
+    { label: 'Gemini Ultra 3',  value: 70.5, se: 1.9 },
+    { label: 'Llama 5 70B',     value: 65.1, se: 2.4 },
+  ];
+
+  var LEADERBOARD = [
+    { label: 'GPT-5.5',          value: 78.5, se: 3.4 },
+    { label: 'Claude Opus 4.7',  value: 76.2, se: 3.7 },
+    { label: 'Gemini Ultra 3',   value: 74.8, se: 3.2 },
+    { label: 'GPT-5.4',          value: 73.5, se: 3.6 },
+    { label: 'Llama 5 70B',      value: 72.1, se: 4.0 },
+    { label: 'Claude Haiku 5',   value: 71.3, se: 3.5 },
+    { label: 'Gemini Flash 3',   value: 70.8, se: 3.8 },
+    { label: 'Mistral Large 4',  value: 69.4, se: 4.1 },
+    { label: 'GPT-5.3',          value: 68.7, se: 3.7 },
+    { label: 'Llama 5 13B',      value: 67.9, se: 3.9 },
+    { label: 'Gemini Nano 3',    value: 65.2, se: 4.3 },
+    { label: 'Claude Haiku 4',   value: 63.8, se: 3.6 },
+  ];
+
+  var ns = 'http://www.w3.org/2000/svg';
+
+  function cssVar(name) {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function svgEl(tag, attrs) {
+    var e = document.createElementNS(ns, tag);
+    for (var k in attrs) e.setAttribute(k, String(attrs[k]));
+    return e;
+  }
+
+  function svgText(tag, attrs, content) {
+    var e = svgEl(tag, attrs);
+    e.textContent = content;
+    return e;
+  }
+
+  /* Render one bar chart.
+     opts.errorMult: 1 = SE, 1.96 = ~95% CI
+     opts.errorLabel: string to print at bottom right, or null
+     opts.showOverlap: draw shaded overlap region between items 0 and 1
+     opts.xMin / xMax: axis range
+  */
+  function renderChart(svgEl_ref, data, opts) {
+    opts = opts || {};
+    var errorMult  = opts.errorMult  != null ? opts.errorMult : 1;
+    var errorLabel = opts.errorLabel || null;
+    var showOverlap= opts.showOverlap || false;
+    var xMin       = opts.xMin != null ? opts.xMin : 58;
+    var xMax       = opts.xMax != null ? opts.xMax : 88;
+
+    var container  = svgEl_ref.parentElement;
+    var W          = Math.max(container.offsetWidth - 4, 300);
+    var ML         = 148, MR = 58, MT = 14, MB = 38;
+    var ROW_H      = 46;
+    var BAR_H      = 19;
+    var extraBot   = errorLabel ? 22 : 0;
+    var H          = data.length * ROW_H + MT + MB + extraBot;
+    var IW         = W - ML - MR;
+
+    /* Colors from CSS vars */
+    var bg       = cssVar('--bg')        || '#fff';
+    var bgSoft   = cssVar('--bg-soft')   || '#f7f7f5';
+    var textC    = cssVar('--text')      || '#18181b';
+    var textMid  = cssVar('--text-mid')  || '#3f3f46';
+    var textDim  = cssVar('--text-dim')  || '#71717a';
+    var border   = cssVar('--border')    || '#e4e4e7';
+    var blue     = cssVar('--blue')      || '#1b4fad';
+    var orange   = cssVar('--orange')    || '#c94b0c';
+
+    svgEl_ref.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svgEl_ref.setAttribute('width',   W);
+    svgEl_ref.setAttribute('height',  H);
+    svgEl_ref.innerHTML = '';
+
+    var g = svgEl('g', {});
+    svgEl_ref.appendChild(g);
+
+    /* Background */
+    g.appendChild(svgEl('rect', { width: W, height: H, fill: bg }));
+    g.appendChild(svgEl('rect', {
+      x: ML, y: MT, width: IW, height: H - MT - MB - extraBot,
+      fill: bgSoft, rx: 4
+    }));
+
+    /* X axis scale */
+    function xToP(v) { return ML + (v - xMin) / (xMax - xMin) * IW; }
+
+    /* Gridlines + tick labels */
+    var step = (xMax - xMin) <= 20 ? 2 : 5;
+    var t0 = Math.ceil(xMin / step) * step;
+    for (var tv = t0; tv <= xMax; tv += step) {
+      var tx = xToP(tv);
+      var isMajor = (tv % 10 === 0);
+      g.appendChild(svgEl('line', {
+        x1: tx, y1: MT, x2: tx, y2: H - MB - extraBot,
+        stroke: border, 'stroke-width': 1,
+        'stroke-dasharray': isMajor ? '' : '3,3'
+      }));
+      g.appendChild(svgText('text', {
+        x: tx, y: H - MB - extraBot + 15,
+        'text-anchor': 'middle', fill: textDim,
+        'font-family': "'IBM Plex Sans', sans-serif",
+        'font-size': 11
+      }, tv + '%'));
+    }
+
+    /* X-axis baseline */
+    g.appendChild(svgEl('line', {
+      x1: ML, y1: H - MB - extraBot,
+      x2: ML + IW, y2: H - MB - extraBot,
+      stroke: border, 'stroke-width': 1
+    }));
+
+    /* Overlap shading (between rows 0 and 1) */
+    if (showOverlap && data.length >= 2) {
+      var d0 = data[0], d1 = data[1];
+      var e0 = d0.se * errorMult, e1 = d1.se * errorMult;
+      var oLo = Math.max(d0.value - e0, d1.value - e1);
+      var oHi = Math.min(d0.value + e0, d1.value + e1);
+      if (oHi > oLo) {
+        g.appendChild(svgEl('rect', {
+          x: xToP(oLo), y: MT,
+          width: Math.max(xToP(oHi) - xToP(oLo), 1),
+          height: H - MT - MB - extraBot,
+          fill: orange, opacity: 0.10
+        }));
+        var midOx = (xToP(oLo) + xToP(oHi)) / 2;
+        g.appendChild(svgText('text', {
+          x: midOx, y: MT + 13,
+          'text-anchor': 'middle', fill: orange,
+          'font-family': "'IBM Plex Sans', sans-serif",
+          'font-size': 10, 'font-weight': 600
+        }, '← overlap →'));
+      }
+    }
+
+    /* Bars + error bars */
+    for (var i = 0; i < data.length; i++) {
+      var d    = data[i];
+      var cy   = MT + i * ROW_H + ROW_H / 2;
+      var by   = cy - BAR_H / 2;
+      var bx   = xToP(xMin);
+      var bw   = Math.max(0, xToP(d.value) - bx);
+      var err  = d.se * errorMult;
+      var elx  = xToP(d.value - err);
+      var erx  = xToP(d.value + err);
+      var capH = 8;
+
+      /* Alternating row band */
+      if (i % 2 === 0) {
+        g.appendChild(svgEl('rect', {
+          x: ML, y: by - (ROW_H - BAR_H) / 2,
+          width: IW, height: ROW_H,
+          fill: border, opacity: 0.18
+        }));
+      }
+
+      /* Bar */
+      g.appendChild(svgEl('rect', {
+        x: bx, y: by, width: bw, height: BAR_H,
+        fill: blue, opacity: 0.65, rx: 2
+      }));
+
+      /* Error bar */
+      g.appendChild(svgEl('line', {
+        x1: elx, y1: cy, x2: erx, y2: cy,
+        stroke: textMid, 'stroke-width': 2.5, 'stroke-linecap': 'round'
+      }));
+      [[elx, cy - capH/2, elx, cy + capH/2],
+       [erx, cy - capH/2, erx, cy + capH/2]].forEach(function(coords) {
+        g.appendChild(svgEl('line', {
+          x1: coords[0], y1: coords[1], x2: coords[2], y2: coords[3],
+          stroke: textMid, 'stroke-width': 2.5, 'stroke-linecap': 'round'
+        }));
+      });
+
+      /* Model name label */
+      g.appendChild(svgText('text', {
+        x: ML - 9, y: cy + 4.5,
+        'text-anchor': 'end', fill: textC,
+        'font-family': "'IBM Plex Sans', sans-serif",
+        'font-size': 12, 'font-weight': 500
+      }, d.label));
+
+      /* Value label */
+      g.appendChild(svgText('text', {
+        x: Math.min(erx + 7, W - MR + 2), y: cy + 4.5,
+        fill: textDim,
+        'font-family': "'IBM Plex Sans', sans-serif",
+        'font-size': 11
+      }, d.value.toFixed(1) + '%'));
+    }
+
+    /* Error bar legend */
+    if (errorLabel) {
+      var ly = H - extraBot + 16;
+      g.appendChild(svgText('text', {
+        x: ML + IW, y: ly,
+        'text-anchor': 'end', fill: textDim,
+        'font-family': "'IBM Plex Sans', sans-serif",
+        'font-size': 11, 'font-style': 'italic'
+      }, errorLabel));
+    }
+  }
+
+  /* Confidence-set gradient plot (Correll & Gleicher 2014, distribution-free adaptation).
+     The 95% CI band is fully opaque. Opacity decays linearly in confidence-level space
+     through the 99% band (opacity 0.20) and 99.9% band (opacity ~0.02 → transparent).
+     Stop positions are fixed z-ratio constants; only CIs at three levels are needed,
+     so any CI method (bootstrap, t, Bayesian) can supply them. */
+  function renderGradientChart(svgEl_ref, data, opts) {
+    opts = opts || {};
+    var errorMult  = opts.errorMult  != null ? opts.errorMult : 1.96;
+    var errorLabel = opts.errorLabel || null;
+    var xMin       = opts.xMin != null ? opts.xMin : 58;
+    var xMax       = opts.xMax != null ? opts.xMax : 88;
+
+    var container = svgEl_ref.parentElement;
+    var W         = Math.max(container.offsetWidth - 4, 300);
+    var ML = 148, MR = 58, MT = 14, MB = 38;
+    var ROW_H = 46, BAR_H = 19;
+    var extraBot = errorLabel ? 22 : 0;
+    var H = data.length * ROW_H + MT + MB + extraBot;
+    var IW = W - ML - MR;
+
+    var bg      = cssVar('--bg')       || '#fff';
+    var bgSoft  = cssVar('--bg-soft')  || '#f7f7f5';
+    var textC   = cssVar('--text')     || '#18181b';
+    var textDim = cssVar('--text-dim') || '#71717a';
+    var border  = cssVar('--border')   || '#e4e4e7';
+    var blue    = cssVar('--blue')     || '#1b4fad';
+
+    svgEl_ref.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
+    svgEl_ref.setAttribute('width',   W);
+    svgEl_ref.setAttribute('height',  H);
+    svgEl_ref.innerHTML = '';
+
+    var defs = svgEl('defs', {});
+    svgEl_ref.appendChild(defs);
+
+    /* Clip path that keeps strips inside the chart area */
+    var clipId = 'clip-' + svgEl_ref.id;
+    var clipPath = svgEl('clipPath', { id: clipId });
+    clipPath.appendChild(svgEl('rect', {
+      x: ML, y: MT, width: IW, height: H - MT - MB - extraBot
+    }));
+    defs.appendChild(clipPath);
+
+    var g = svgEl('g', {});
+    svgEl_ref.appendChild(g);
+
+    g.appendChild(svgEl('rect', { width: W, height: H, fill: bg }));
+    g.appendChild(svgEl('rect', {
+      x: ML, y: MT, width: IW, height: H - MT - MB - extraBot,
+      fill: bgSoft, rx: 4
+    }));
+
+    function xToP(v) { return ML + (v - xMin) / (xMax - xMin) * IW; }
+
+    var step = (xMax - xMin) <= 20 ? 2 : 5;
+    var t0 = Math.ceil(xMin / step) * step;
+    for (var tv = t0; tv <= xMax; tv += step) {
+      var tx = xToP(tv);
+      g.appendChild(svgEl('line', {
+        x1: tx, y1: MT, x2: tx, y2: H - MB - extraBot,
+        stroke: border, 'stroke-width': 1,
+        'stroke-dasharray': (tv % 10 === 0) ? '' : '3,3'
+      }));
+      g.appendChild(svgText('text', {
+        x: tx, y: H - MB - extraBot + 15,
+        'text-anchor': 'middle', fill: textDim,
+        'font-family': "'IBM Plex Sans', sans-serif", 'font-size': 11
+      }, tv + '%'));
+    }
+    g.appendChild(svgEl('line', {
+      x1: ML, y1: H - MB - extraBot, x2: ML + IW, y2: H - MB - extraBot,
+      stroke: border, 'stroke-width': 1
+    }));
+
+    /* Fixed z-score ratios for the three CI levels.
+       Stop positions within the gradient rect are constants derived from these ratios:
+         p99_lo  = (z999 - z99)  / (2·z999) ≈ 10.9%
+         p95_lo  = (z999 - z95)  / (2·z999) ≈ 20.2%
+       Opacity mapping (linear in confidence-level space, per Correll & Gleicher):
+         at 95% CI boundary → 1.0  (fully opaque)
+         at 99% CI boundary → (100-99)/(100-95) = 0.20
+         at 99.9% CI boundary → (100-99.9)/(100-95) ≈ 0.02 → treat as 0 */
+    var Z95 = 1.960, Z99 = 2.576, Z999 = 3.291;
+    var CONF_STOPS = [
+      { o: '0%',    a: 0.00 },   /* beyond 99.9% CI */
+      { o: '10.9%', a: 0.20 },   /* at 99% CI lower bound */
+      { o: '20.2%', a: 1.00 },   /* at 95% CI lower bound — fully opaque from here */
+      { o: '50%',   a: 1.00 },   /* at mean */
+      { o: '79.8%', a: 1.00 },   /* at 95% CI upper bound */
+      { o: '89.1%', a: 0.20 },   /* at 99% CI upper bound */
+      { o: '100%',  a: 0.00 },   /* beyond 99.9% CI */
+    ];
+
+    for (var i = 0; i < data.length; i++) {
+      var d    = data[i];
+      var cy   = MT + i * ROW_H + ROW_H / 2;
+      var by   = cy - BAR_H / 2;
+      /* Scale 99% and 99.9% CIs from the same SE, using z-ratio relative to errorMult */
+      var scale = d.se / Z95 * errorMult;   /* = d.se when errorMult = 1.96 */
+      var e999  = scale * Z999;             /* half-width of 99.9% CI */
+      var el999 = xToP(d.value - e999);
+      var er999 = xToP(d.value + e999);
+
+      /* Row band */
+      if (i % 2 === 0) {
+        g.appendChild(svgEl('rect', {
+          x: ML, y: by - (ROW_H - BAR_H) / 2, width: IW, height: ROW_H,
+          fill: border, opacity: 0.18
+        }));
+      }
+
+      /* Confidence-set gradient rect spanning the full 99.9% CI */
+      var gradId = 'gg-' + svgEl_ref.id + '-' + i;
+      var lg = svgEl('linearGradient', { id: gradId, x1: '0', y1: '0', x2: '1', y2: '0' });
+      CONF_STOPS.forEach(function (s) {
+        var stop = svgEl('stop', { offset: s.o });
+        stop.setAttribute('stop-color', blue);
+        stop.setAttribute('stop-opacity', String(s.a));
+        lg.appendChild(stop);
+      });
+      defs.appendChild(lg);
+
+      var stripW = Math.max(0, er999 - el999);
+      if (stripW > 0) {
+        g.appendChild(svgEl('rect', {
+          x: el999, y: by, width: stripW, height: BAR_H,
+          fill: 'url(#' + gradId + ')',
+          'clip-path': 'url(#' + clipId + ')',
+          rx: 2
+        }));
+      }
+
+      /* Model name */
+      g.appendChild(svgText('text', {
+        x: ML - 9, y: cy + 4.5,
+        'text-anchor': 'end', fill: textC,
+        'font-family': "'IBM Plex Sans', sans-serif",
+        'font-size': 12, 'font-weight': 500
+      }, d.label));
+
+      /* Value label — positioned past the 99.9% CI upper bound */
+      g.appendChild(svgText('text', {
+        x: Math.min(er999 + 7, W - MR + 2), y: cy + 4.5,
+        fill: textDim,
+        'font-family': "'IBM Plex Sans', sans-serif", 'font-size': 11
+      }, d.value.toFixed(1) + '%'));
+    }
+
+    if (errorLabel) {
+      g.appendChild(svgText('text', {
+        x: ML + IW, y: H - extraBot + 16,
+        'text-anchor': 'end', fill: textDim,
+        'font-family': "'IBM Plex Sans', sans-serif",
+        'font-size': 11, 'font-style': 'italic'
+      }, errorLabel));
+    }
+  }
+
+  function renderAll() {
+    var s1 = document.getElementById('chart-1');
+    var s2 = document.getElementById('chart-2');
+    var s3 = document.getElementById('chart-3');
+    var s4 = document.getElementById('chart-4');
+    var s5 = document.getElementById('chart-5');
+
+    if (s1) renderChart(s1, DATA, {
+      errorMult: 1, xMin: 59, xMax: 87
+    });
+    if (s2) renderChart(s2, DATA, {
+      errorMult: 1, xMin: 59, xMax: 87,
+      errorLabel: 'Error bars: ±1 SE'
+    });
+    if (s3) renderChart(s3, DATA, {
+      errorMult: 1.96, xMin: 59, xMax: 87,
+      errorLabel: 'Error bars: 95% CI (bootstrap)',
+      showOverlap: true
+    });
+    if (s4) renderChart(s4, LEADERBOARD, {
+      errorMult: 1.96, xMin: 52, xMax: 92,
+      errorLabel: 'Error bars: 95% CI'
+    });
+    if (s5) renderGradientChart(s5, DATA, {
+      errorMult: 1.96, xMin: 57, xMax: 87,
+      errorLabel: 'Gradient: 95% CI around mean'
+    });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', renderAll);
+  } else {
+    renderAll();
+  }
+
+  /* Re-render on dark mode toggle */
+  if (typeof MutationObserver !== 'undefined') {
+    new MutationObserver(renderAll).observe(
+      document.documentElement,
+      { attributes: true, attributeFilter: ['data-theme'] }
+    );
+  }
+
+  /* Re-render on resize */
+  var resizeTimer;
+  window.addEventListener('resize', function () {
+    clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(renderAll, 80);
+  });
+}());
+</script>

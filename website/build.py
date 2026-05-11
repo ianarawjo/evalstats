@@ -459,6 +459,24 @@ PAGE_CONFIGS = [
             "and the evalstats Python library."
         ),
     },
+    {
+        "slug":           "blog-error-bars",
+        "title_tag":      "Confidence Intervals, Not Standard Errors \u2014 Stats for LLM Evals",
+        "title":          "Why AI developers should report confidence intervals in error bars, not standard errors",
+        "type":           "article",
+        "css":            "inv.css",
+        "active_nav":     None,
+        "eyebrow":        "Blog Post",
+        "subtitle":       (
+            "Standard errors as error bars visually shrink your uncertainty by half. "
+            "Here\u2019s why confidence intervals are what you actually want to show."
+        ),
+        "active_sidebar": None,
+        "description": (
+            "Standard errors as error bars can mislead: they visually halve your uncertainty. "
+            "Here\u2019s why AI developers should use 95% confidence intervals instead, and always label the bars."
+        ),
+    },
 ]
 
 
