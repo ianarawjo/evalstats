@@ -210,14 +210,24 @@ def print_analysis_summary(
     top_pairwise: int = None,
     line_width: int = 41,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
-    """Print a concise console summary of analyze() results."""
+    """Print a concise console summary of analyze() results.
+
+    Parameters
+    ----------
+    style : {"gradient", "line"}
+        Interval plot style.  ``"gradient"`` (default) renders multi-band CI
+        plots (90 / 95 / 99 / 99.9 % opacity gradient) when the bundle contains
+        ``multi_ci`` data.  ``"line"`` always uses the classic dot-and-line plot.
+    """
     if isinstance(analysis, MultiModelBundle):
         _print_multi_model_summary(
             analysis,
             top_pairwise=top_pairwise,
             line_width=line_width,
             pairwise_sort=pairwise_sort,
+            style=style,
         )
         return
 
@@ -227,6 +237,7 @@ def print_analysis_summary(
             top_pairwise=top_pairwise,
             line_width=line_width,
             pairwise_sort=pairwise_sort,
+            style=style,
         )
         return
 
@@ -238,6 +249,7 @@ def print_analysis_summary(
                 top_pairwise=top_pairwise,
                 line_width=line_width,
                 pairwise_sort=pairwise_sort,
+                style=style,
             )
         else:
             _print_bundle_summary(
@@ -245,6 +257,7 @@ def print_analysis_summary(
                 top_pairwise=top_pairwise,
                 line_width=line_width,
                 pairwise_sort=pairwise_sort,
+                style=style,
             )
         print()
 
@@ -333,6 +346,7 @@ def print_pairwise_summary(
     alpha: Optional[float] = None,
     correction: str = "",
     line_width: int = 50,
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
     """Print a focused, human-readable summary for a single pairwise comparison.
 
@@ -405,7 +419,7 @@ def print_pairwise_summary(
         abs(pair.point_diff + pair.std_diff),
     )
     axis_low, axis_high = -max_abs, max_abs
-    line = _ascii_interval_line(
+    line = _choose_interval_line(
         mean=pair.point_diff,
         ci_low=pair.ci_low,
         ci_high=pair.ci_high,
@@ -414,10 +428,13 @@ def print_pairwise_summary(
         axis_low=axis_low,
         axis_high=axis_high,
         width=line_width,
+        style=style,
+        multi_ci=pair.multi_ci,
     )
+    ci_legend = _legend_ci_label(style, ci_pct, pair.multi_ci is not None)
     print(
         f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-        f"(· ±1σ spread, ─ {ci_pct}% CI, ● {pair.statistic}, │ zero)"
+        f"(· ±1σ spread, {ci_legend}, ● {pair.statistic}, │ zero)"
     )
     print(f"  {b} (<0) {line} (>0) {a}")
     print()
@@ -459,6 +476,7 @@ def print_compare_summary(
     line_width: int = 41,
     p_value_method: Optional[str] = None,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
     """Print a focused summary for compare_prompts / compare_models results.
 
@@ -501,6 +519,7 @@ def print_compare_summary(
         bundle,
         item_singular=report.entity_name_singular,
         line_width=line_width,
+        style=style,
     )
     print()
     _print_pairwise_section(
@@ -509,6 +528,7 @@ def print_compare_summary(
         line_width=line_width,
         p_value_method=p_value_method,
         pairwise_sort=pairwise_sort,
+        style=style,
     )
     print()
     _print_executive_summary(bundle, item_singular=report.entity_name_singular)
@@ -593,6 +613,7 @@ def _print_multi_model_summary(
     top_pairwise: int = None,
     line_width: int,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
     _print_loud_section("Multi-Model Analysis Summary")
     print(f"Shape: {bundle.shape}")
@@ -616,6 +637,7 @@ def _print_multi_model_summary(
         item_singular="model",
         item_plural="models",
         pairwise_sort=pairwise_sort,
+        style=style,
     )
 
     print()
@@ -627,6 +649,7 @@ def _print_multi_model_summary(
         item_singular="template",
         item_plural="templates",
         pairwise_sort=pairwise_sort,
+        style=style,
     )
     best_idx = int(np.argmax(bundle.template_level.robustness.mean))
     best_template = bundle.template_level.benchmark.template_labels[best_idx]
@@ -650,6 +673,7 @@ def _print_multi_model_summary(
             top_pairwise=top_pairwise,
             line_width=line_width,
             pairwise_sort=pairwise_sort,
+            style=style,
         )
 
     print()
@@ -717,9 +741,10 @@ def _print_multi_model_summary(
     ref_label_str = "grand mean"
     print()
     _print_subsection(f"--- {stat_label} Performance: All {n_show} (marginal CIs) ---")
+    _ci_legend_mm = _legend_ci_label(style, int(round((1 - get_alpha_ci()) * 100)), cross_rob.multi_ci is not None)
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]  "
-        f"(· ±1σ, ─ CI, ● {stat_label.lower()}, │ {ref_label_str})"
+        f"(· ±1σ, {_ci_legend_mm}, ● {stat_label.lower()}, │ {ref_label_str})"
     )
     print(
         f"  {'Model':<{model_col_width}s} "
@@ -745,7 +770,7 @@ def _print_multi_model_summary(
         abs_ci_high = float(cross_ci_highs[rob_idx])
         abs_sigma_low = float(cross_sigma_lows[rob_idx])
         abs_sigma_high = float(cross_sigma_highs[rob_idx])
-        line = _ascii_interval_line(
+        line = _choose_interval_line(
             mean=abs_mean,
             ci_low=abs_ci_low,
             ci_high=abs_ci_high,
@@ -755,6 +780,8 @@ def _print_multi_model_summary(
             axis_high=ma_high,
             width=line_width,
             reference=ref_val,
+            style=style,
+            multi_ci=_rob_multi_ci_at(cross_rob.multi_ci, rob_idx),
         )
         print(
             f"  {model_label:<{model_col_width}s} "
@@ -918,6 +945,7 @@ def _print_pairwise_section(
     sort: bool = True,
     p_value_method: Optional[str] = None,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
     """Print the pairwise comparisons block for an AnalysisBundle.
 
@@ -1041,6 +1069,11 @@ def _print_pairwise_section(
             rank_biserial = -float(result.rank_biserial)
             left_pos = pos_b
             right_pos = pos_a
+            # Flip multi_ci band bounds when direction is swapped.
+            swapped_multi_ci = (
+                {_a: (-hi, -lo) for _a, (lo, hi) in result.multi_ci.items()}
+                if result.multi_ci is not None else None
+            )
         else:
             left_item = a
             right_item = b
@@ -1050,6 +1083,7 @@ def _print_pairwise_section(
             rank_biserial = float(result.rank_biserial)
             left_pos = pos_a
             right_pos = pos_b
+            swapped_multi_ci = result.multi_ci
 
         # binary_confusion is symmetric in n11/n00; n10/n01 swap with direction
         # but for the bar we only need n_split = n10+n01, which is invariant.
@@ -1068,6 +1102,7 @@ def _print_pairwise_section(
                 "wilcoxon_p": result.wilcoxon_p,
                 "agreement_mcc": result.agreement_mcc,
                 "binary_confusion": result.binary_confusion,
+                "multi_ci": swapped_multi_ci,
             }
         )
 
@@ -1126,8 +1161,11 @@ def _print_pairwise_section(
         )
         pair_low = -pair_max_abs
         pair_high = pair_max_abs
+        _any_multi_ci = any(row.get("multi_ci") is not None for row in normalized_rows[:max_pairs])
+        _pair_ci_pct = int(round((1 - get_alpha_ci()) * 100))
+        _pair_ci_legend = _legend_ci_label(style, _pair_ci_pct, _any_multi_ci)
         print(
-            f"  legend: (· ±1σ, ─ CI, ● {pair_stat_label.lower()}, │ zero)    "
+            f"  legend: (· ±1σ, {_pair_ci_legend}, ● {pair_stat_label.lower()}, │ zero)    "
             f"axis: [{pair_low:+.3f}, {pair_high:+.3f}]    "
             "effect: Left - Right"
         )
@@ -1143,7 +1181,7 @@ def _print_pairwise_section(
         print(header)
 
     for row_data in normalized_rows[:max_pairs]:
-        line = _ascii_interval_line(
+        line = _choose_interval_line(
             mean=float(row_data["point_diff"]),
             ci_low=float(row_data["ci_low"]),
             ci_high=float(row_data["ci_high"]),
@@ -1152,6 +1190,8 @@ def _print_pairwise_section(
             axis_low=pair_low,
             axis_high=pair_high,
             width=line_width,
+            style=style,
+            multi_ci=row_data.get("multi_ci"),
         )
         left_label = _truncate_label(str(row_data["left"]), pair_item_col_width)
         right_label = _truncate_label(str(row_data["right"]), pair_item_col_width)
@@ -1261,6 +1301,7 @@ def _print_mean_advantage(
     item_singular: str = "template",
     line_width: int,
     template_col_width: int = 24,
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
     """Print the absolute performance interval-plot table for an AnalysisBundle.
 
@@ -1309,9 +1350,11 @@ def _print_mean_advantage(
         ci_note = "marginal bootstrap CIs"
     _print_subsection(f"--- {stat_label} Performance ({ci_note}) ---")
     ref_label = "grand mean"
+    ci_pct = int(round((1 - get_alpha_ci()) * 100))
+    _ci_legend_ma = _legend_ci_label(style, ci_pct, rob.multi_ci is not None)
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]"
-        f"  (· ±1σ, ─ CI, ● {stat_label.lower()}, │ {ref_label})"
+        f"  (· ±1σ, {_ci_legend_ma}, ● {stat_label.lower()}, │ {ref_label})"
     )
     print(
         f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
@@ -1319,7 +1362,7 @@ def _print_mean_advantage(
     )
     for i, label in enumerate(rob.labels):
         template_label = _truncate_label(label, template_col_width)
-        line = _ascii_interval_line(
+        line = _choose_interval_line(
             mean=abs_means[i],
             ci_low=float(abs_ci_lows[i]),
             ci_high=float(abs_ci_highs[i]),
@@ -1329,6 +1372,8 @@ def _print_mean_advantage(
             axis_high=ma_high,
             width=line_width,
             reference=ref_val,
+            style=style,
+            multi_ci=_rob_multi_ci_at(rob.multi_ci, i),
         )
         print(
             f"  {template_label:<{template_col_width}s} "
@@ -1348,6 +1393,7 @@ def _print_bundle_summary(
     item_plural: str = "templates",
     p_value_method=_UNSET,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
+    style: Literal["line", "gradient"] = "gradient",
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
@@ -1398,6 +1444,7 @@ def _print_bundle_summary(
         item_singular=item_singular,
         line_width=line_width,
         template_col_width=template_col_width,
+        style=style,
     )
     print()
 
@@ -1407,6 +1454,7 @@ def _print_bundle_summary(
         line_width=line_width,
         p_value_method=p_value_method,
         pairwise_sort=pairwise_sort,
+        style=style,
     )
 
     # Seed variance section (only when seeded data is present).
@@ -1874,6 +1922,125 @@ def _print_factorial_interaction_plot(
 # ---------------------------------------------------------------------------
 # ASCII rendering primitives
 # ---------------------------------------------------------------------------
+
+def _gradient_interval_line(
+    *,
+    mean: float,
+    multi_ci: dict[float, tuple[float, float]],
+    spread_low: float,
+    spread_high: float,
+    axis_low: float,
+    axis_high: float,
+    width: int,
+    reference: float = 0.0,
+) -> str:
+    """Render a one-line gradient CI plot using Unicode block characters.
+
+    Opacity mapping (outermost → innermost):
+      beyond 99.9% CI → ' ' (invisible)
+      99% – 99.9% CI  → '░' (10 % opacity)
+      95% – 99% CI    → '▒' (medium)
+      90% – 95% CI    → '▓' (high)
+      inside 90% CI   → '█' (fully opaque)
+
+    The ±1σ spread dots ('·') appear only where they peek beyond all CI bands.
+    Falls back to ``_ascii_interval_line`` when fewer than 2 CI levels are present.
+    """
+    if len(multi_ci) < 2:
+        lo = min(v[0] for v in multi_ci.values()) if multi_ci else mean
+        hi = max(v[1] for v in multi_ci.values()) if multi_ci else mean
+        return _ascii_interval_line(
+            mean=mean, ci_low=lo, ci_high=hi,
+            spread_low=spread_low, spread_high=spread_high,
+            axis_low=axis_low, axis_high=axis_high, width=width, reference=reference,
+        )
+
+    width = max(9, int(width))
+    axis_low = float(axis_low)
+    axis_high = float(axis_high)
+    if axis_high <= axis_low:
+        axis_low -= 1.0
+        axis_high += 1.0
+
+    def to_idx(x: float) -> int:
+        x_clamped = min(max(float(x), axis_low), axis_high)
+        pos = (x_clamped - axis_low) / (axis_high - axis_low)
+        return int(round(pos * (width - 1)))
+
+    chars = [" "] * width
+
+    # ±1σ spread dots drawn first; CI gradient bands will overwrite them.
+    lo_spread = min(to_idx(spread_low), to_idx(spread_high))
+    hi_spread = max(to_idx(spread_low), to_idx(spread_high))
+    for i in range(lo_spread, hi_spread + 1):
+        chars[i] = "·"
+
+    # CI gradient: fill widest CI first so inner bands overwrite outer ones.
+    # Sorted ascending by alpha ⟹ widest CI first (smallest alpha = widest).
+    sorted_alphas = sorted(multi_ci.keys())              # e.g. [0.001, 0.01, 0.05, 0.10]
+    band_chars = ("░", "▒", "▓", "█")                   # paired outermost→innermost
+    for alpha, char in zip(sorted_alphas, band_chars):
+        lo_ci, hi_ci = multi_ci[alpha]
+        lo_idx = min(to_idx(lo_ci), to_idx(hi_ci))
+        hi_idx = max(to_idx(lo_ci), to_idx(hi_ci))
+        for i in range(lo_idx, hi_idx + 1):
+            chars[i] = char
+
+    ref_idx = to_idx(reference)
+    # mean_idx = to_idx(mean)
+    # if chars[ref_idx] not in ("█", "▓", "▒", "░"):
+    chars[ref_idx] = "│"
+    # chars[mean_idx] = "●"
+
+    return "".join(chars)
+
+
+def _choose_interval_line(
+    *,
+    mean: float,
+    ci_low: float,
+    ci_high: float,
+    spread_low: float,
+    spread_high: float,
+    axis_low: float,
+    axis_high: float,
+    width: int,
+    reference: float = 0.0,
+    style: str = "gradient",
+    multi_ci: Optional[dict[float, tuple[float, float]]] = None,
+) -> str:
+    """Dispatch to gradient or line renderer based on style and data availability."""
+    if style == "gradient" and multi_ci is not None and len(multi_ci) >= 2:
+        return _gradient_interval_line(
+            mean=mean, multi_ci=multi_ci,
+            spread_low=spread_low, spread_high=spread_high,
+            axis_low=axis_low, axis_high=axis_high,
+            width=width, reference=reference,
+        )
+    return _ascii_interval_line(
+        mean=mean, ci_low=ci_low, ci_high=ci_high,
+        spread_low=spread_low, spread_high=spread_high,
+        axis_low=axis_low, axis_high=axis_high,
+        width=width, reference=reference,
+    )
+
+
+def _rob_multi_ci_at(
+    rob_multi_ci: Optional[dict[float, tuple[np.ndarray, np.ndarray]]],
+    idx: int,
+) -> Optional[dict[float, tuple[float, float]]]:
+    """Extract a single-template slice from a RobustnessResult.multi_ci dict."""
+    if rob_multi_ci is None:
+        return None
+    return {a: (float(lo[idx]), float(hi[idx])) for a, (lo, hi) in rob_multi_ci.items()}
+
+
+def _legend_ci_label(style: str, ci_pct: int, multi_ci_available: bool) -> str:
+    """Return the CI portion of a legend string for the given style."""
+    if style == "gradient" and multi_ci_available:
+        return "░▒▓█ CI gradient [99.9/99/95/90%]"
+    return f"─ {ci_pct}% CI"
+
 
 def _ascii_interval_line(
     *,

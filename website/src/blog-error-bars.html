@@ -322,17 +322,18 @@ svg.chart-svg {
   </p>
 
   <p>
-    The original paper derived the outer decay from a t-distribution. But we cannot 
-    assume normality in AI evals data, and may be in a small-samples regime. 
-    Thus, one adaptation of this plot that makes no assumptions about the 
-    distribution and uncertainty method is to compute 99% and 99.9% CIs as well, using the same method 
-    that the user used before to compute the 95% CI.
-    The 95% CI is fully opaque; outside it, opacity decreases linearly in confidence-level space. Below, a point at the 99% CI
-    boundary gets opacity (100&minus;99)&thinsp;/&thinsp;(100&minus;95)&nbsp;=&nbsp;20%, and a
-    point at the 99.9% boundary gets &asymp;&nbsp;2%:
+    The original paper derived the outer decay from a t-distribution. A distribution-free
+    adaptation is to compute CIs at 90%, 95%, 99%, and 99.9% using the same method as before
+    (bootstrap, t-interval, Bayesian&mdash;any will do), then map each boundary to an opacity.
+    Here we make the <strong>90% CI the fully opaque band</strong>, with 95% slightly faded,
+    and steeper decay beyond. The reason to anchor on 90% rather than 95% comes from
+    Belia et al. (2005): when two 95% CIs on independent means just touch,
+    p&nbsp;&asymp;&nbsp;.006&mdash;not .05 as many assume. The 90% CI is a closer visual
+    proxy for the p&nbsp;&asymp;&nbsp;.05 boundary, so solid-band overlap gives viewers
+    a better-calibrated intuition for classical significance:
   </p>
 
-  <figure class="chart-figure" aria-label="Confidence-set gradient plot: 95% CI solid, opacity decays through 99% and 99.9% bands">
+  <figure class="chart-figure" aria-label="Confidence-set gradient plot: 90% CI solid, fading through 95%, 99%, 99.9% bands">
     <div class="chart-header">
       <div class="chart-benchmark-label">BiglyBenchmark &middot; 200 test items</div>
       <div class="chart-title-text">Model Performance (Accuracy)</div>
@@ -340,9 +341,10 @@ svg.chart-svg {
     <svg id="chart-5" class="chart-svg"></svg>
     <figcaption>
       <strong>Fig. 4.</strong> Confidence-set gradient plot of the same data as Fig. 2.
-      The 95% CI region is fully opaque. Opacity then decays linearly in confidence-level
-      space: 20% at the 99% CI boundary, &asymp;&thinsp;2% at 99.9%, transparent beyond.
-      No error bar caps; no sharp inside/outside boundary.
+      The 90% CI band is fully opaque; opacity falls to 65% at the 95% CI boundary,
+      10% at 99%, and transparent beyond 99.9%. Anchoring the solid band at 90% rather
+      than 95% gives viewers a more calibrated visual signal: two touching solid bands
+      correspond roughly to p&nbsp;&asymp;&nbsp;.05, not p&nbsp;&asymp;&nbsp;.006.
     </figcaption>
   </figure>
 
@@ -652,22 +654,24 @@ svg.chart-svg {
       stroke: border, 'stroke-width': 1
     }));
 
-    /* Fixed z-score ratios for the three CI levels.
-       Stop positions within the gradient rect are constants derived from these ratios:
+    /* Stop positions are fixed z-ratio constants (gradient rect spans ±z999·SE):
          p99_lo  = (z999 - z99)  / (2·z999) ≈ 10.9%
          p95_lo  = (z999 - z95)  / (2·z999) ≈ 20.2%
-       Opacity mapping (linear in confidence-level space, per Correll & Gleicher):
-         at 95% CI boundary → 1.0  (fully opaque)
-         at 99% CI boundary → (100-99)/(100-95) = 0.20
-         at 99.9% CI boundary → (100-99.9)/(100-95) ≈ 0.02 → treat as 0 */
-    var Z95 = 1.960, Z99 = 2.576, Z999 = 3.291;
+         p90_lo  = (z999 - z90)  / (2·z999) ≈ 25.0%
+       Opacity: 90% CI is fully opaque; decays piecewise through 95%, 99%, 99.9%.
+       Using 90% (not 95%) as the solid band because when two 95% CIs just touch,
+       p ≈ .006 — not .05 as many assume (Cumming & Finch, 2005). The 90% CI is
+       a closer visual proxy for the p ≈ .05 boundary. */
+    var Z90 = 1.645, Z95 = 1.960, Z99 = 2.576, Z999 = 3.291;
     var CONF_STOPS = [
       { o: '0%',    a: 0.00 },   /* beyond 99.9% CI */
-      { o: '10.9%', a: 0.20 },   /* at 99% CI lower bound */
-      { o: '20.2%', a: 1.00 },   /* at 95% CI lower bound — fully opaque from here */
+      { o: '10.9%', a: 0.10 },   /* at 99% CI bound */
+      { o: '20.2%', a: 0.85 },   /* at 95% CI bound — slightly faded */
+      { o: '25.0%', a: 1.00 },   /* at 90% CI bound — fully opaque from here */
       { o: '50%',   a: 1.00 },   /* at mean */
-      { o: '79.8%', a: 1.00 },   /* at 95% CI upper bound */
-      { o: '89.1%', a: 0.20 },   /* at 99% CI upper bound */
+      { o: '75.0%', a: 1.00 },   /* at 90% CI bound */
+      { o: '79.8%', a: 0.85 },   /* at 95% CI bound */
+      { o: '89.1%', a: 0.10 },   /* at 99% CI bound */
       { o: '100%',  a: 0.00 },   /* beyond 99.9% CI */
     ];
 
@@ -744,7 +748,8 @@ svg.chart-svg {
     var s5 = document.getElementById('chart-5');
 
     if (s1) renderChart(s1, DATA, {
-      errorMult: 1, xMin: 59, xMax: 87
+      errorMult: 1, xMin: 59, xMax: 87,
+      errorLabel: 'Error bars: ±1 SE'
     });
     if (s2) renderChart(s2, DATA, {
       errorMult: 1, xMin: 59, xMax: 87,

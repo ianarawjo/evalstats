@@ -728,6 +728,7 @@ def _analyze_single(
             alpha=1.0 - ci,
             statistic="mean",
             marginal_method="smooth_bootstrap",
+            multi_ci=True,
         )
         if isinstance(lmm_result, FactorialLMMInfo):
             return AnalysisBundle(
@@ -836,6 +837,7 @@ def _analyze_single(
         method=pairwise_method, ci=ci, n_bootstrap=n_bootstrap,
         correction=correction, rng=rng, statistic=statistic,
         simultaneous_ci=simultaneous_ci, omnibus=omnibus,
+        multi_ci=True,
     )
     robustness = robustness_metrics(
         run_scores, labels,
@@ -845,6 +847,7 @@ def _analyze_single(
         alpha=1.0 - ci,
         statistic=statistic,
         marginal_method=robustness_method,
+        multi_ci=True,
     )
     rank_dist = bootstrap_ranks(
         run_scores, labels,

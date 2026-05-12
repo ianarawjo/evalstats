@@ -19,6 +19,21 @@ from typing import Optional
 
 import numpy as np
 
+from .resampling import (
+    bootstrap_means_1d,
+    bayes_bootstrap_means_1d,
+    smooth_bootstrap_means_1d,
+    bca_interval_1d,
+    wilson_ci_1d,
+    wilson_nested_od,
+    jeffreys_ci_1d,
+    nig_ci_1d,
+    nig_ci_nested,
+    t_interval_ci_1d,
+    bootstrap_t_ci_1d,
+)
+from ..config import GRADIENT_CI_ALPHAS
+
 
 @dataclass
 class RobustnessResult:
@@ -70,6 +85,7 @@ class RobustnessResult:
     failure_threshold: Optional[float]
     ci_low: Optional[np.ndarray] = None
     ci_high: Optional[np.ndarray] = None
+    multi_ci: Optional[dict[float, tuple[np.ndarray, np.ndarray]]] = None
 
     def summary_table(self):
         """Return a pandas DataFrame summarizing all metrics."""
@@ -179,6 +195,7 @@ def robustness_metrics(
     alpha: float = 0.01,
     statistic: str = "mean",
     marginal_method: str = "smooth_bootstrap",
+    multi_ci: bool = False,
 ) -> RobustnessResult:
     """Compute robustness metrics for each template.
 
@@ -259,72 +276,120 @@ def robustness_metrics(
 
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
+    multi_ci_result: Optional[dict[float, tuple[np.ndarray, np.ndarray]]] = None
     _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "nig_nested", "t_interval"}
     if n_bootstrap is not None or marginal_method in _analytical:
         if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
-        from .resampling import (
-            bootstrap_means_1d,
-            bayes_bootstrap_means_1d,
-            smooth_bootstrap_means_1d,
-            bca_interval_1d,
-            wilson_ci_1d,
-            wilson_nested_od,
-            jeffreys_ci_1d,
-            nig_ci_1d,
-            nig_ci_nested,
-            t_interval_ci_1d,
-            bootstrap_t_ci_1d,
-        )
         ci_lows = []
         ci_highs = []
+        mci_lows: dict[float, list[float]] = {a: [] for a in GRADIENT_CI_ALPHAS}
+        mci_highs: dict[float, list[float]] = {a: [] for a in GRADIENT_CI_ALPHAS}
         for i in range(n_templates):
             row = scores[i]  # (M,) — already collapsed to 2D above
             point_est = float(np.nanmean(row)) if statistic == "mean" else float(np.nanmedian(row))
+            boot = None  # computed lazily; reused for multi_ci when available
             if marginal_method == "wilson":
                 lo, hi = wilson_ci_1d(row, alpha)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        ml, mh = wilson_ci_1d(row, a)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "wilson_od":
                 # Wilson with overdispersion correction for multi-run binary data.
                 # Needs the original (M, R) per-template slice; falls back to
                 # plain Wilson when 3D data is not available (single-run path).
                 if scores_3d is not None:
                     lo, hi = wilson_nested_od(scores_3d[i], alpha)
+                    if multi_ci:
+                        for a in GRADIENT_CI_ALPHAS:
+                            ml, mh = wilson_nested_od(scores_3d[i], a)
+                            mci_lows[a].append(ml); mci_highs[a].append(mh)
                 else:
                     lo, hi = wilson_ci_1d(row, alpha)
+                    if multi_ci:
+                        for a in GRADIENT_CI_ALPHAS:
+                            ml, mh = wilson_ci_1d(row, a)
+                            mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "jeffreys":
                 lo, hi = jeffreys_ci_1d(row, alpha)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        ml, mh = jeffreys_ci_1d(row, a)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "nig":
                 lo, hi = nig_ci_1d(row, alpha)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        ml, mh = nig_ci_1d(row, a)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "nig_nested":
                 # Hierarchical NIG: uses per-template (N, R) slice when available,
                 # falls back to standard NIG on the collapsed means otherwise.
                 if scores_3d is not None:
                     lo, hi = nig_ci_nested(scores_3d[i], alpha)
+                    if multi_ci:
+                        for a in GRADIENT_CI_ALPHAS:
+                            ml, mh = nig_ci_nested(scores_3d[i], a)
+                            mci_lows[a].append(ml); mci_highs[a].append(mh)
                 else:
                     lo, hi = nig_ci_1d(row, alpha)
+                    if multi_ci:
+                        for a in GRADIENT_CI_ALPHAS:
+                            ml, mh = nig_ci_1d(row, a)
+                            mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "t_interval":
                 lo, hi = t_interval_ci_1d(row, alpha)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        ml, mh = t_interval_ci_1d(row, a)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "bootstrap_t":
                 lo, hi = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        ml, mh = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "bayes_bootstrap":
                 boot = bayes_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
                 lo = float(np.percentile(boot, 100 * alpha / 2))
                 hi = float(np.percentile(boot, 100 * (1 - alpha / 2)))
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        mci_lows[a].append(float(np.percentile(boot, 100 * a / 2)))
+                        mci_highs[a].append(float(np.percentile(boot, 100 * (1 - a / 2))))
             elif marginal_method == "smooth_bootstrap":
                 boot = smooth_bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
                 lo = float(np.percentile(boot, 100 * alpha / 2))
                 hi = float(np.percentile(boot, 100 * (1 - alpha / 2)))
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        mci_lows[a].append(float(np.percentile(boot, 100 * a / 2)))
+                        mci_highs[a].append(float(np.percentile(boot, 100 * (1 - a / 2))))
             elif marginal_method == "bca":
                 boot = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
                 lo, hi = bca_interval_1d(row, point_est, boot, alpha, statistic=statistic)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        ml, mh = bca_interval_1d(row, point_est, boot, a, statistic=statistic)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
             else:  # "bootstrap" and any other fallback
                 boot = bootstrap_means_1d(row, n_bootstrap, rng, statistic=statistic)
                 lo = float(np.percentile(boot, 100 * alpha / 2))
                 hi = float(np.percentile(boot, 100 * (1 - alpha / 2)))
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        mci_lows[a].append(float(np.percentile(boot, 100 * a / 2)))
+                        mci_highs[a].append(float(np.percentile(boot, 100 * (1 - a / 2))))
             ci_lows.append(lo)
             ci_highs.append(hi)
         ci_low_arr = np.array(ci_lows)
         ci_high_arr = np.array(ci_highs)
+        if multi_ci:
+            multi_ci_result = {
+                a: (np.array(mci_lows[a]), np.array(mci_highs[a]))
+                for a in GRADIENT_CI_ALPHAS
+            }
 
     return RobustnessResult(
         labels=labels,
@@ -339,6 +404,7 @@ def robustness_metrics(
         failure_threshold=failure_threshold,
         ci_low=ci_low_arr,
         ci_high=ci_high_arr,
+        multi_ci=multi_ci_result,
     )
 
 

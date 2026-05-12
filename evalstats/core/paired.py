@@ -30,7 +30,6 @@ from .resampling import (
     resolve_resampling_method,
     newcombe_paired_ci,
     tango_paired_ci,
-    tango_paired_ci_flat,
     tango_paired_ci_multirun_moments,
     t_interval_ci_1d,
     bayes_paired_diff_ci,
@@ -41,7 +40,7 @@ from .resampling import (
     _weighted_medians_rows,
 )
 from .stats_utils import correct_pvalues
-from ..config import get_alpha_ci
+from ..config import get_alpha_ci, GRADIENT_CI_ALPHAS
 
 
 BAYES_BINARY_LARGE_N_THRESHOLD = 200
@@ -264,6 +263,7 @@ class PairedDiffResult:
     wilcoxon_p: Optional[float] = None  # Wilcoxon signed-rank p-value (two-sided, on per_input_diffs)
     agreement_mcc: Optional[float] = None  # pass/fail pattern correlation (binary data only)
     binary_confusion: Optional[tuple[int, int, int, int]] = None  # (n11, n10, n01, n00)
+    multi_ci: Optional[dict[float, tuple[float, float]]] = None  # {alpha: (lo, hi)} gradient bands
 
     @property
     def rank_biserial(self) -> float:
@@ -496,6 +496,7 @@ def pairwise_differences(
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
+    multi_ci: bool = False,
 ) -> PairedDiffResult:
     """Compute paired differences between two templates.
 
@@ -549,7 +550,7 @@ def pairwise_differences(
         return _pairwise_diffs_seeded(
             scores, idx_a, idx_b, label_a, label_b,
             method=seed_method, ci=ci, n_bootstrap=n_bootstrap,
-            rng=rng, statistic=statistic,
+            rng=rng, statistic=statistic, multi_ci=multi_ci,
         )
 
     def _paired_stats(values_a: np.ndarray, values_b: np.ndarray) -> tuple[np.ndarray, int, float, float]:
@@ -579,6 +580,7 @@ def pairwise_differences(
         test_name: str,
         values_a: Optional[np.ndarray] = None,
         values_b: Optional[np.ndarray] = None,
+        multi_ci_dict: Optional[dict[float, tuple[float, float]]] = None,
     ) -> PairedDiffResult:
         agr_mcc: Optional[float] = None
         bin_conf: Optional[tuple[int, int, int, int]] = None
@@ -604,6 +606,7 @@ def pairwise_differences(
             wilcoxon_p=_wilcoxon_signed_rank_p(diffs),
             agreement_mcc=agr_mcc,
             binary_confusion=bin_conf,
+            multi_ci=multi_ci_dict,
         )
 
     # ------------------------------------------------------------------ #
@@ -632,6 +635,12 @@ def pairwise_differences(
         # Two-sided Bayesian p-value: posterior mass on the wrong side × 2
         p_value = float(2.0 * min(prob_a_greater, 1.0 - prob_a_greater))
         p_value = max(1.0 / (n_bootstrap + 1), p_value)
+        mci: Optional[dict[float, tuple[float, float]]] = None
+        if multi_ci:
+            mci = {}
+            for _a in GRADIENT_CI_ALPHAS:
+                _lo, _hi, _ = bayes_paired_diff_ci(values_a, values_b, _a, num_samples=n_bootstrap, rng=rng)
+                mci[_a] = (_lo, _hi)
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -642,6 +651,7 @@ def pairwise_differences(
             test_name=f"bayes binary (n={n_bootstrap})",
             values_a=values_a,
             values_b=values_b,
+            multi_ci_dict=mci,
         )
 
     # ------------------------------------------------------------------ #
@@ -659,6 +669,7 @@ def pairwise_differences(
         alpha_val = 1.0 - ci
         ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
         p_value = _mcnemar_p(values_a, values_b)
+        mci = {_a: newcombe_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -669,6 +680,7 @@ def pairwise_differences(
             test_name="newcombe (mcnemar p-value)",
             values_a=values_a,
             values_b=values_b,
+            multi_ci_dict=mci,
         )
 
     if method == "tango":
@@ -690,8 +702,13 @@ def pairwise_differences(
         alpha_val = 1.0 - ci
         if multirun:
             ci_low, ci_high = tango_paired_ci_multirun_moments(values_a_full, values_b_full, alpha_val)
+            if multi_ci:
+                mci = {_a: tango_paired_ci_multirun_moments(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
+            else:
+                mci = None
         else:
             ci_low, ci_high = tango_paired_ci(values_a, values_b, alpha_val)
+            mci = {_a: tango_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         p_value = _mcnemar_p(values_a, values_b)
         return _build_result(
             diffs=diffs,
@@ -703,6 +720,7 @@ def pairwise_differences(
             test_name="tango (mcnemar p-value)",
             values_a=values_a,
             values_b=values_b,
+            multi_ci_dict=mci,
         )
 
     if method == "fisher_exact":
@@ -731,6 +749,7 @@ def pairwise_differences(
         alpha_val = 1.0 - ci
         ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
         p_value = _fisher_exact_p(values_a, values_b)
+        mci = {_a: newcombe_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -741,6 +760,7 @@ def pairwise_differences(
             test_name="fisher exact (newcombe ci)",
             values_a=values_a,
             values_b=values_b,
+            multi_ci_dict=mci,
         )
 
     # ------------------------------------------------------------------ #
@@ -761,6 +781,7 @@ def pairwise_differences(
             diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
         )
         ci_low, ci_high = _percentile_ci(boot_stats, alpha)
+        mci = {_a: _percentile_ci(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
 
         if method == "sign_test":
             p_value = _paired_sign_test_p(diffs)
@@ -781,6 +802,7 @@ def pairwise_differences(
             test_name=test_name,
             values_a=_va_st,
             values_b=_vb_st,
+            multi_ci_dict=mci,
         )
 
     # ------------------------------------------------------------------ #
@@ -796,6 +818,7 @@ def pairwise_differences(
         ci_low, ci_high = t_interval_ci_1d(diffs, alpha_val)
         t_result = ttest_rel(values_a, values_b)
         p_value = float(t_result.pvalue) if np.isfinite(t_result.pvalue) else 1.0
+        mci = {_a: t_interval_ci_1d(diffs, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -806,6 +829,7 @@ def pairwise_differences(
             test_name="paired t-interval",
             values_a=values_a,
             values_b=values_b,
+            multi_ci_dict=mci,
         )
 
     # ------------------------------------------------------------------ #
@@ -831,6 +855,8 @@ def pairwise_differences(
 
     resolved_method = resolve_resampling_method(method, m)
 
+    mci: Optional[dict[float, tuple[float, float]]] = None
+
     if resolved_method == "bootstrap":
         centered_diffs = diffs - point_d
         boot_centered_stats = np.empty(n_bootstrap)
@@ -846,6 +872,8 @@ def pairwise_differences(
         ci_low, ci_high = _percentile_ci(boot_stats, alpha)
         p_value = _bootstrap_tail_pvalue(boot_centered_stats, point_d)
         test_name = f"bootstrap (n={n_bootstrap})"
+        if multi_ci:
+            mci = {_a: _percentile_ci(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
 
     elif resolved_method in {"bca", "bayes_bootstrap", "smooth_bootstrap"}:
         samplers = {
@@ -862,8 +890,12 @@ def pairwise_differences(
             ci_low, ci_high = bca_interval_1d(
                 diffs, point_d, boot_stats, alpha, statistic=statistic,
             )
+            if multi_ci:
+                mci = {_a: bca_interval_1d(diffs, point_d, boot_stats, _a, statistic=statistic) for _a in GRADIENT_CI_ALPHAS}
         else:
             ci_low, ci_high = _percentile_ci(boot_stats, alpha)
+            if multi_ci:
+                mci = {_a: _percentile_ci(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
 
         centered_diffs = diffs - point_d
         boot_centered_stats = sampler(
@@ -894,6 +926,7 @@ def pairwise_differences(
         test_name=test_name,
         values_a=_va_std,
         values_b=_vb_std,
+        multi_ci_dict=mci,
     )
 
 
@@ -909,6 +942,7 @@ def _pairwise_diffs_seeded(
     n_bootstrap: int,
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
+    multi_ci: bool = False,
 ) -> PairedDiffResult:
     """Seeded paired comparison using a two-level nested bootstrap.
 
@@ -940,16 +974,26 @@ def _pairwise_diffs_seeded(
         ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
         return ci_low, ci_high
 
+    def _percentile_ci_alpha(boot_stats: np.ndarray, a: float) -> tuple[float, float]:
+        return (
+            float(np.percentile(boot_stats, 100 * a / 2)),
+            float(np.percentile(boot_stats, 100 * (1 - a / 2))),
+        )
+
     def _bootstrap_tail_pvalue(boot_stats: np.ndarray) -> float:
         boot_centered = boot_stats - point_d
         extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
         return float((extreme_count + 1) / (n_bootstrap + 1))
+
+    mci_seeded: Optional[dict[float, tuple[float, float]]] = None
 
     if method == "permutation":
         boot_stats = bootstrap_diffs_nested(
             scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
         )
         ci_low, ci_high = _percentile_ci(boot_stats)
+        if multi_ci:
+            mci_seeded = {_a: _percentile_ci_alpha(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
         p_value = _paired_signflip_pvalue(
             cell_diffs, statistic=statistic, n_samples=n_bootstrap, rng=rng,
         )
@@ -960,6 +1004,8 @@ def _pairwise_diffs_seeded(
             scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
         )
         ci_low, ci_high = _percentile_ci(boot_stats)
+        if multi_ci:
+            mci_seeded = {_a: _percentile_ci_alpha(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
         p_value = _paired_sign_test_p(cell_diffs)
         test_name = f"nested paired sign test + bootstrap ci (n={n_bootstrap}, R={R})"
 
@@ -979,8 +1025,12 @@ def _pairwise_diffs_seeded(
             ci_low, ci_high = bca_interval_1d(
                 cell_diffs, point_d, boot_stats, alpha, statistic=statistic,
             )
+            if multi_ci:
+                mci_seeded = {_a: bca_interval_1d(cell_diffs, point_d, boot_stats, _a, statistic=statistic) for _a in GRADIENT_CI_ALPHAS}
         else:
             ci_low, ci_high = _percentile_ci(boot_stats)
+            if multi_ci:
+                mci_seeded = {_a: _percentile_ci_alpha(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
 
         p_value = _bootstrap_tail_pvalue(boot_stats)
 
@@ -1024,6 +1074,7 @@ def _pairwise_diffs_seeded(
         wilcoxon_p=wilcoxon_p,
         agreement_mcc=agr_mcc,
         binary_confusion=bin_conf,
+        multi_ci=mci_seeded,
     )
 
 
@@ -1411,6 +1462,7 @@ def all_pairwise(
     statistic: Literal["mean", "median"] = "mean",
     simultaneous_ci: bool = True,
     omnibus: bool = False,
+    multi_ci: bool = False,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -1477,7 +1529,7 @@ def all_pairwise(
             result = pairwise_differences(
                 scores, i, j, labels[i], labels[j],
                 method=method, ci=ci, n_bootstrap=n_bootstrap, rng=rng,
-                statistic=statistic,
+                statistic=statistic, multi_ci=multi_ci,
             )
             results[(labels[i], labels[j])] = result
             pairs.append((labels[i], labels[j]))
@@ -1514,6 +1566,7 @@ def all_pairwise(
                 wilcoxon_p=float(adj_wsr) if adj_wsr is not None else None,
                 agreement_mcc=r.agreement_mcc,
                 binary_confusion=r.binary_confusion,
+                multi_ci=r.multi_ci,
             )
 
     # Simultaneous CIs: bootstrap max-T when possible, Bonferroni otherwise.
@@ -1563,6 +1616,7 @@ def all_pairwise(
                     wilcoxon_p=r.wilcoxon_p,
                     agreement_mcc=r.agreement_mcc,
                     binary_confusion=r.binary_confusion,
+                    multi_ci=r.multi_ci,
                 )
 
     # Friedman omnibus + Nemenyi post-hoc (only when explicitly requested).
