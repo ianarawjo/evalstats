@@ -15,7 +15,7 @@ import numpy as np
 from .bundles import AnalysisBundle, MultiModelBundle
 from .paired import PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
-from ..config import get_alpha_ci
+from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci
 
 if TYPE_CHECKING:
     from ..compare import CompareReport
@@ -92,6 +92,8 @@ def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
 def _pairwise_p_value_label(test_method: str) -> str:
     """Return a human-readable p-value method label for pairwise summaries."""
     method = test_method.lower()
+    if "tango" in method:
+        return "McNemar"
     if "newcombe" in method:
         return "McNemar exact"
     if "fisher exact" in method:
@@ -114,7 +116,8 @@ def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
     """
     method = pair.test_method.lower()
     is_exact_path = (
-        "newcombe" in method
+        "tango" in method
+        or "newcombe" in method
         or "mcnemar" in method
         or "fisher exact" in method
         or "sign test" in method
@@ -1979,6 +1982,7 @@ def _gradient_interval_line(
     # Sorted ascending by alpha ⟹ widest CI first (smallest alpha = widest).
     sorted_alphas = sorted(multi_ci.keys())              # e.g. [0.001, 0.01, 0.05, 0.10]
     band_chars = ("░", "▒", "▓", "█")                   # paired outermost→innermost
+    # band_chars = ("·", "┈", "┄", "━")                   # thin→thick outermost→innermost
     for alpha, char in zip(sorted_alphas, band_chars):
         lo_ci, hi_ci = multi_ci[alpha]
         lo_idx = min(to_idx(lo_ci), to_idx(hi_ci))
@@ -1990,8 +1994,23 @@ def _gradient_interval_line(
     # mean_idx = to_idx(mean)
     # if chars[ref_idx] not in ("█", "▓", "▒", "░"):
     chars[ref_idx] = "│"
-    # chars[mean_idx] = "●"
 
+    # The reference line can obscure the tail of a CI band when the tail 
+    # exactly ends on it. This might cause the user to miss the fact that the 
+    # CI band crosses the reference line. To mitigate this, we add a hint character 
+    # to the side to visually suggest the presence of a "crossing"—this way, users can 
+    # distinguish between bands that cross, and bands that get close to the | 
+    # but do not cross it. 
+    outer_lo, outer_hi = multi_ci[sorted_alphas[0]]
+    if float(outer_lo) < float(reference) < float(outer_hi):
+        hint_char = band_chars[0]
+        if ref_idx > 0 and chars[ref_idx - 1] in {" ", "·"}:
+            chars[ref_idx - 1] = hint_char
+        if ref_idx + 1 < width and chars[ref_idx + 1] in {" ", "·"}:
+            chars[ref_idx + 1] = hint_char
+
+    # chars[mean_idx] = "●"
+    
     return "".join(chars)
 
 
@@ -2038,7 +2057,11 @@ def _rob_multi_ci_at(
 def _legend_ci_label(style: str, ci_pct: int, multi_ci_available: bool) -> str:
     """Return the CI portion of a legend string for the given style."""
     if style == "gradient" and multi_ci_available:
-        return "░▒▓█ CI gradient [99.9/99/95/90%]"
+        bands = "/".join(
+            f"{100 * (1.0 - alpha):g}%"
+            for alpha in sorted(GRADIENT_CI_ALPHAS)
+        )
+        return f"░▒▓█ CI gradient [{bands}]"
     return f"─ {ci_pct}% CI"
 
 

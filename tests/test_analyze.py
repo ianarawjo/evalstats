@@ -5,6 +5,7 @@ import evalstats as es
 from evalstats.core.summary import (
     _assign_significance_groups,
     _critical_difference_groups,
+    _gradient_interval_line,
     _print_critical_difference_groups,
     _single_clear_winner_label,
     print_pairwise_summary,
@@ -312,6 +313,28 @@ def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):
     assert len(plot_lines) == 1
     assert "(<0)" in plot_lines[0]
     assert "(>0)" in plot_lines[0]
+
+
+def test_gradient_interval_line_preserves_zero_crossing_hint():
+    line = _gradient_interval_line(
+        mean=0.0,
+        multi_ci={
+            0.001: (-0.004, 0.004),
+            0.01: (-0.003, 0.003),
+            0.05: (-0.002, 0.002),
+            0.10: (-0.001, 0.001),
+        },
+        spread_low=-0.002,
+        spread_high=0.002,
+        axis_low=-0.2,
+        axis_high=0.2,
+        width=11,
+        reference=0.0,
+    )
+
+    ref_idx = line.index("│")
+    assert line[ref_idx - 1] == "░"
+    assert line[ref_idx + 1] == "░"
 
 
 def test_critical_difference_groups_has_two_separate_rank_bands():

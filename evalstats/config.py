@@ -8,7 +8,7 @@ _alpha: float = 0.05
 
 # Alpha levels used to build the gradient CI bands in terminal plots.
 # Ordered narrowest→widest: 90%, 95%, 99%, 99.9% CI.
-GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.33, 0.20, 0.05, 0.01)
+GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 
 def set_alpha_ci(alpha: float) -> None:
     """Set the default significance level used across all CI analyses.
