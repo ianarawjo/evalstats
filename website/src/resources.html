@@ -1179,6 +1179,103 @@
           </div>
         </div>
 
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://journals.ametsoc.org/view/journals/clim/18/17/jcli3499.1.xml" target="_blank">
+              A Cautionary Note on the Use of Error Bars
+            </a>
+          </div>
+          <div class="paper-entry-meta">Lanzante, J.R. &mdash; Journal of Climate, 18(17), pp.&thinsp;3699&ndash;3703, 2005</div>
+          <p class="paper-entry-summary">
+            Examines how error bars are used and misused in published scientific figures. From a climate
+            science context, the paper catalogues the multiple quantities that error bars can represent
+            &mdash; standard deviation, standard error, and various confidence interval widths &mdash;
+            and documents how authors routinely fail to specify which is shown, making comparisons across
+            figures unreliable. Also discusses how readers systematically misread overlap between bars as
+            a significance test. A compact, discipline-agnostic reminder that an error bar without a
+            clear label and definition is worse than no error bar: it creates a false sense of
+            rigor while obscuring the actual uncertainty. Directly relevant to LLM eval practice, where
+            score displays rarely specify what the bars represent.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">error bar misuse</span>
+            <span class="paper-tag">CI communication</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://doi.org/10.3758/BF03210790" target="_blank">
+              On the Communication of Information by Displays of Standard Errors and Confidence Intervals
+            </a>
+          </div>
+          <div class="paper-entry-meta">Estes, W.K. &mdash; Psychonomic Bulletin &amp; Review, 4, pp.&thinsp;330&ndash;341, 1997</div>
+          <p class="paper-entry-summary">
+            Surveys practices for presenting reliability information in psychological research and
+            examines problems of interpretation and communication associated with standard error and
+            confidence interval displays, from both statistical and psychological perspectives.
+            Proposes four general principles of effective communication and illustrates them across
+            common research designs, with particular attention to problems arising in repeated measures
+            settings &mdash; where SE bars are especially likely to mislead. A foundational precursor
+            to the Belia et al. empirical follow-up below.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">error bar misuse</span>
+            <span class="paper-tag">CI communication</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://psycnet.apa.org/fulltext/2005-16136-002.html" target="_blank">
+              Researchers Misunderstand Confidence Intervals and Standard Error Bars
+            </a>
+          </div>
+          <div class="paper-entry-meta">Belia, S., Fidler, F., Williams, J. &amp; Cumming, G. &mdash; Psychological Methods, 10(4), pp.&thinsp;389&ndash;396, 2005</div>
+          <p class="paper-entry-summary">
+            An empirical study showing that researchers with published papers in neuroscience, behavioral
+            neuroscience, and medicine systematically misread what confidence intervals and standard error
+            bars imply about significance. Participants were asked to judge whether two means differed
+            significantly based on the overlap of their error bars &mdash; a question with a known
+            correct answer. Most gave answers inconsistent with the actual statistical relationship,
+            including many who were confident in their (incorrect) responses. The paper quantifies the
+            pervasiveness of the error and provides corrected guidelines for judging significance from
+            bar overlap. Essential context for understanding why showing error bars on LLM eval charts
+            is insufficient: readers will misinterpret them unless explicitly guided.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">CI misinterpretation</span>
+            <span class="paper-tag tag-pitfall">error bar misuse</span>
+            <span class="paper-tag">CI communication</span>
+          </div>
+        </div>
+
+        <div class="paper-entry">
+          <div class="paper-entry-title">
+            <a href="https://ieeexplore.ieee.org/document/6875915" target="_blank">
+              Error Bars Considered Harmful: Exploring Alternate Encodings for Mean and Error
+            </a>
+          </div>
+          <div class="paper-entry-meta">Correll, M. &amp; Gleicher, M. &mdash; IEEE Transactions on Visualization and Computer Graphics, 20(12), pp.&thinsp;2142&ndash;2151, 2014</div>
+          <p class="paper-entry-summary">
+            Investigates the perceptual distortions introduced by the standard bar-chart-with-error-bars
+            encoding, using crowdsourced experiments (240 participants). Identifies &ldquo;within-the-bar
+            bias&rdquo; &mdash; viewers perceive values inside the bar as more probable than those
+            outside, which is statistically incoherent &mdash; as well as a tendency to interpret the
+            bar edge as a hard boundary rather than a point on a continuous distribution. Tests gradient
+            plots (transparency encodes uncertainty) and violin plots (width encodes uncertainty) as
+            alternatives, finding that both produce judgments more consistent with actual statistical
+            expectations, even without formal statistical training. Directly relevant to how LLM eval
+            scores are displayed: even if the CI arithmetic is correct, the chart encoding can systematically
+            bias how readers reason about uncertainty.
+          </p>
+          <div class="paper-entry-tags">
+            <span class="paper-tag tag-pitfall">error bar misuse</span>
+            <span class="paper-tag">CI communication</span>
+            <span class="paper-tag">visualization</span>
+          </div>
+        </div>
+
       </div>
     </section>
 

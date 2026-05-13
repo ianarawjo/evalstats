@@ -4,10 +4,11 @@
 # which can be set by the user via set_alpha_ci() and is used by default in 
 # all CI analyses across the library (but can be overridden on a per-analysis basis 
 # by passing an explicit alpha).
-# We prefer a default alpha of 0.01 for CIs and p-values, which is more conservative than the traditional 0.05, 
-# as a Type I error risk of 5% is too high for the noisy, high-stakes, repeated-testing context of LLM evals.
-_alpha: float = 0.01
+_alpha: float = 0.05
 
+# Alpha levels used to build the gradient CI bands in terminal plots.
+# Ordered narrowest→widest: 90%, 95%, 99%, 99.9% CI.
+GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
 
 def set_alpha_ci(alpha: float) -> None:
     """Set the default significance level used across all CI analyses.

@@ -365,7 +365,7 @@ def test_pairwise_differences_tango_uses_tango():
     scores[1] = rng.binomial(1, 0.5, 40)
 
     result = pairwise_differences(scores, 0, 1, "A", "B", method="tango", ci=0.95)
-    assert result.test_method == "tango (mcnemar p-value)"
+    assert result.test_method == "tango"
     assert result.ci_low <= result.point_diff <= result.ci_high
     assert 0.0 <= result.p_value <= 1.0
 
