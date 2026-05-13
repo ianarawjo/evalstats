@@ -92,6 +92,7 @@ def analyze(
     omnibus: bool = False,
     p_values: bool = False,
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
+    ci_style: Literal["gradient", "line"] = "gradient",
 ) -> AnalysisResult:
     """Run all standard analyses for a benchmark result.
 
@@ -232,6 +233,10 @@ def analyze(
           combined with bootstrap CIs (statistically inconsistent, but
           permitted when explicitly requested).
         * ``'nemenyi'`` — Nemenyi post-hoc p-value.
+    ci_style : {"gradient", "line"}
+        Controls whether analysis pipelines compute multi-band CI payloads
+        (``multi_ci``) used by gradient terminal plots. ``"gradient"``
+        (default) enables these bands; ``"line"`` disables them.
 
     Returns
     -------
@@ -264,6 +269,12 @@ def analyze(
             f"Unknown template_model_collapse '{template_model_collapse}'. "
             "Expected 'mean' or 'as_runs'."
         )
+    if ci_style not in {"gradient", "line"}:
+        raise ValueError(
+            f"Unknown ci_style '{ci_style}'. Expected 'gradient' or 'line'."
+        )
+
+    include_multi_ci = ci_style == "gradient"
 
     if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "fisher_exact", "sign_test", "t_interval"} and result.n_inputs < 15:
         warnings.warn(
@@ -291,6 +302,7 @@ def analyze(
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
         p_value_method=resolved_p_value_method,
+        include_multi_ci=include_multi_ci,
     )
 
     # ------------------------------------------------------------------
@@ -688,6 +700,7 @@ def _analyze_single(
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     p_value_method: Optional[str] = None,
+    include_multi_ci: bool = True,
 ) -> AnalysisBundle:
     # ------------------------------------------------------------------
     # LMM path — fit score ~ template + (1|input)
@@ -728,7 +741,7 @@ def _analyze_single(
             alpha=1.0 - ci,
             statistic="mean",
             marginal_method="smooth_bootstrap",
-            multi_ci=True,
+            multi_ci=include_multi_ci,
         )
         if isinstance(lmm_result, FactorialLMMInfo):
             return AnalysisBundle(
@@ -837,7 +850,7 @@ def _analyze_single(
         method=pairwise_method, ci=ci, n_bootstrap=n_bootstrap,
         correction=correction, rng=rng, statistic=statistic,
         simultaneous_ci=simultaneous_ci, omnibus=omnibus,
-        multi_ci=True,
+        multi_ci=include_multi_ci,
     )
     robustness = robustness_metrics(
         run_scores, labels,
@@ -847,7 +860,7 @@ def _analyze_single(
         alpha=1.0 - ci,
         statistic=statistic,
         marginal_method=robustness_method,
-        multi_ci=True,
+        multi_ci=include_multi_ci,
     )
     rank_dist = bootstrap_ranks(
         run_scores, labels,
@@ -889,6 +902,7 @@ def _analyze_multi_model(
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     p_value_method: Optional[str] = None,
+    include_multi_ci: bool = True,
 ) -> MultiModelBundle:
     from .resampling import is_binary_scores
 
@@ -914,6 +928,7 @@ def _analyze_multi_model(
         simultaneous_ci=simultaneous_ci,
         omnibus=omnibus,
         p_value_method=p_value_method,
+        include_multi_ci=include_multi_ci,
     )
 
     per_model: Dict[str, AnalysisBundle] = {}

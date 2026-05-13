@@ -170,6 +170,17 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     analyze.add_argument(
+        "--ci-style",
+        choices=["gradient", "line"],
+        default="gradient",
+        metavar="STYLE",
+        help=(
+            "Terminal CI plot style for printed summaries: 'gradient' (default) "
+            "or 'line'. Choosing 'line' also skips computing multi-band "
+            "gradient CI data (multi_ci)."
+        ),
+    )
+    analyze.add_argument(
         "--method",
         choices=[
             "auto",
@@ -432,6 +443,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
             omnibus=getattr(args, "omnibus", False),
             p_values=getattr(args, "p_values", False),
             pairwise_test=getattr(args, "pairwise_test", "auto"),
+            ci_style=getattr(args, "ci_style", "gradient"),
         )
     except (ValueError, NotImplementedError) as exc:
         _die(str(exc))
@@ -443,7 +455,11 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
             from evalstats.core.summary import print_brief_summary
             print_brief_summary(analysis)
         else:
-            print_analysis_summary(analysis, top_pairwise=args.top_pairwise)
+            print_analysis_summary(
+                analysis,
+                top_pairwise=args.top_pairwise,
+                style=getattr(args, "ci_style", "gradient"),
+            )
     summary_text = summary_buffer.getvalue()
     print(summary_text, end="")
 

@@ -117,6 +117,7 @@ def test_cmd_analyze_smoke_runs_for_param_grid(
         sheet="0",
         evaluator_mode=evaluator_mode,
         ci=ci,
+        ci_style="gradient",
         method=method,
         backend="statsmodels",
         n_bootstrap=30,
@@ -176,8 +177,8 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
         analysis_call.update({"benchmark": benchmark, **kwargs})
         return {"ok": True}
 
-    def fake_print_summary(analysis, top_pairwise):
-        summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise})
+    def fake_print_summary(analysis, top_pairwise, style):
+        summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise, "style": style})
 
     monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
     monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", fake_print_summary)
@@ -188,6 +189,7 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.95,
+        ci_style="line",
         n_bootstrap=100,
         correction="holm",
         reference="grand_mean",
@@ -213,7 +215,8 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     assert analysis_call["template_model_collapse"] == "as_runs"
     assert analysis_call["simultaneous_ci"] is True
     assert analysis_call["omnibus"] is False
-    assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 7}
+    assert analysis_call["ci_style"] == "line"
+    assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 7, "style": "line"}
 
 
 def test_cmd_analyze_sets_global_alpha_from_ci(tmp_path, monkeypatch):
@@ -229,6 +232,7 @@ def test_cmd_analyze_sets_global_alpha_from_ci(tmp_path, monkeypatch):
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.95,
+        ci_style="gradient",
         n_bootstrap=100,
         correction="holm",
         reference="grand_mean",
@@ -260,6 +264,7 @@ def test_build_parser_accepts_all_option_permutations():
     sheets = ["0", "Results"]
     evaluator_modes = ["aggregate", "per_evaluator"]
     cis = ["0.90", "0.99"]
+    ci_styles = ["gradient", "line"]
     n_bootstraps = ["100", "2500"]
     corrections = ["holm", "bonferroni", "fdr_bh", "none"]
     references = ["grand_mean", "Prompt A"]
@@ -272,6 +277,7 @@ def test_build_parser_accepts_all_option_permutations():
         sheet,
         evaluator_mode,
         ci,
+        ci_style,
         n_bootstrap,
         correction,
         reference,
@@ -282,6 +288,7 @@ def test_build_parser_accepts_all_option_permutations():
         sheets,
         evaluator_modes,
         cis,
+        ci_styles,
         n_bootstraps,
         corrections,
         references,
@@ -299,6 +306,8 @@ def test_build_parser_accepts_all_option_permutations():
             evaluator_mode,
             "--ci",
             ci,
+            "--ci-style",
+            ci_style,
             "--n-bootstrap",
             n_bootstrap,
             "--correction",
@@ -319,6 +328,7 @@ def test_build_parser_accepts_all_option_permutations():
         assert args.sheet == sheet
         assert args.evaluator_mode == evaluator_mode
         assert args.ci == float(ci)
+        assert args.ci_style == ci_style
         assert args.n_bootstrap == int(n_bootstrap)
         assert args.correction == correction
         assert args.reference == reference
@@ -328,7 +338,7 @@ def test_build_parser_accepts_all_option_permutations():
         assert args.top_pairwise == int(top_pairwise)
         combos_checked += 1
 
-    assert combos_checked == 1536
+    assert combos_checked == 3072
 
 
 @pytest.mark.parametrize(
@@ -377,8 +387,8 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         analysis_call.update({"benchmark": benchmark, **kwargs})
         return {"ok": True}
 
-    def fake_print_summary(analysis, top_pairwise):
-        summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise})
+    def fake_print_summary(analysis, top_pairwise, style):
+        summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise, "style": style})
 
     monkeypatch.setattr("evalstats.io.from_dataframe", fake_from_dataframe)
     monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
@@ -390,6 +400,7 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.9,
+        ci_style="line",
         method="permutation",
         backend="statsmodels",
         n_bootstrap=1234,
@@ -418,6 +429,7 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         "method": "permutation",
         "backend": "statsmodels",
         "ci": 0.9,
+        "ci_style": "line",
         "n_bootstrap": 1234,
         "correction": "fdr_bh",
         "spread_percentiles": (5.0, 95.0),
@@ -429,7 +441,7 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         "p_values": False,
         "pairwise_test": "auto",
     }
-    assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 11}
+    assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 11, "style": "line"}
     assert "Running analysis ..." in out
 
 
@@ -443,6 +455,7 @@ def test_cmd_analyze_rejects_reference_not_in_templates(tmp_path):
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.95,
+        ci_style="gradient",
         n_bootstrap=100,
         correction="holm",
         reference="missing prompt",
@@ -475,6 +488,7 @@ def test_cmd_analyze_allows_per_evaluator_for_multimodel(tmp_path, monkeypatch):
         sheet="0",
         evaluator_mode="per_evaluator",
         ci=0.95,
+        ci_style="gradient",
         n_bootstrap=100,
         correction="holm",
         reference="grand_mean",
@@ -522,6 +536,7 @@ def test_cmd_analyze_writes_requested_outputs(tmp_path, monkeypatch):
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.95,
+        ci_style="gradient",
         n_bootstrap=100,
         correction="holm",
         reference="grand_mean",
@@ -582,6 +597,7 @@ def test_cmd_analyze_maps_file_read_errors_in_stderr(
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.95,
+        ci_style="gradient",
         n_bootstrap=100,
         correction="holm",
         reference="grand_mean",
@@ -612,6 +628,7 @@ def test_cmd_analyze_maps_analysis_value_error(tmp_path, monkeypatch):
         sheet="0",
         evaluator_mode="aggregate",
         ci=0.95,
+        ci_style="gradient",
         n_bootstrap=100,
         correction="holm",
         reference="grand_mean",
@@ -657,3 +674,70 @@ def test_parse_sheet_converts_numeric_strings_and_preserves_names():
     assert cli._parse_sheet("12") == 12
     assert cli._parse_sheet("Results") == "Results"
     assert cli._parse_sheet("01_summary") == "01_summary"
+
+
+@pytest.mark.parametrize(
+    "ci_style,expected_present,expected_absent,expect_gradient_glyphs",
+    [
+        ("gradient", "CI gradient [", "─ 95% CI", True),
+        ("line", "─ 95% CI", "CI gradient [", False),
+    ],
+)
+def test_cmd_analyze_prints_ci_plot_style_in_summary_output(
+    tmp_path,
+    capsys,
+    ci_style,
+    expected_present,
+    expected_absent,
+    expect_gradient_glyphs,
+):
+    csv_path = tmp_path / "style_long_binary.csv"
+    _make_binary_long_df(n_inputs=18).to_csv(csv_path, index=False)
+
+    args = argparse.Namespace(
+        file=csv_path,
+        format="long",
+        sheet="0",
+        evaluator_mode="aggregate",
+        ci=0.95,
+        ci_style=ci_style,
+        method="bootstrap",
+        backend="statsmodels",
+        n_bootstrap=120,
+        correction="fdr_bh",
+        spread_percentiles=(10.0, 90.0),
+        reference="Prompt A",
+        failure_threshold=0.5,
+        statistic="mean",
+        template_model_collapse="as_runs",
+        simultaneous_ci=False,
+        omnibus=False,
+        p_values=False,
+        pairwise_test="auto",
+        top_pairwise=3,
+        brief=False,
+        out=None,
+    )
+
+    cli._cmd_analyze(args)
+    out = capsys.readouterr().out
+
+    assert "legend:" in out
+    assert expected_present in out
+    assert expected_absent not in out
+
+    # Verify gradient shade glyphs appear (or do not appear) on the interval
+    # rows in the mean-performance section specifically.
+    lines = out.splitlines()
+    mean_start = next(i for i, line in enumerate(lines) if line.startswith("--- Mean Performance"))
+    mean_end = next(
+        i
+        for i, line in enumerate(lines[mean_start + 1 :], start=mean_start + 1)
+        if line.startswith("--- ")
+    )
+    mean_section = lines[mean_start:mean_end]
+    mean_rows = [line for line in mean_section if line.strip().startswith("Prompt ")]
+
+    assert mean_rows, "Expected prompt interval rows in mean-performance section"
+    has_gradient_chars = any(any(ch in row for ch in "░▒▓█") for row in mean_rows)
+    assert has_gradient_chars is expect_gradient_glyphs
