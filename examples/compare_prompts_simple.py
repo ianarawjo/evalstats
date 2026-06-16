@@ -30,7 +30,7 @@ report = estats.compare_prompts(
 )
 
 print("Quick summary:")
-print(" ", report.quick_summary())
+report.brief()
 print()
 
 print("Detailed summary:")

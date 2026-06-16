@@ -42,7 +42,7 @@ report = estats.compare_models(
 )
 
 print("Quick summary:")
-print(" ", report.quick_summary())
+report.brief()
 print()
 
 print("Detailed summary:")

@@ -92,13 +92,115 @@ class ComparisonResult:
         print_analysis_summary(self._analysis, top_pairwise=top_pairwise, style=style,
                                p_value_method=pvm)
 
-    def print(self, **kwargs) -> None:
-        """Alias for :meth:`summary`."""
-        self.summary(**kwargs)
-
     def brief(self) -> None:
         """Print a compact one-line-per-entity summary."""
         print_brief_summary(self._analysis)
+
+    def print_ci_table(self, sort_by: str = "mean", as_percent: bool = True) -> None:
+        """Print a compact table of entity means and confidence intervals.
+
+        Parameters
+        ----------
+        sort_by : str
+            Row ordering: ``"mean"`` (default, descending), ``"label"``
+            (alphabetical), or ``"input_order"`` (preserves label order).
+        as_percent : bool
+            When ``True`` (default), display values as percentages (0–100).
+        """
+        bundle = self._primary_bundle()
+        if bundle is None:
+            print("No analysis available.")
+            return
+
+        ci_pct = int((1 - self._alpha) * 100)
+        entity_name = self.entity_name_singular.capitalize()
+        labels = list(bundle.benchmark.template_labels)
+        rob = bundle.robustness
+        unbeaten_set = set(self.unbeaten or [])
+
+        rows = []
+        for i, lbl in enumerate(labels):
+            mean = float(rob.mean[i])
+            ci_lo = float(rob.ci_low[i]) if rob.ci_low is not None else None
+            ci_hi = float(rob.ci_high[i]) if rob.ci_high is not None else None
+            rows.append((str(lbl), mean, ci_lo, ci_hi))
+
+        if sort_by == "mean":
+            rows.sort(key=lambda r: r[1], reverse=True)
+        elif sort_by == "label":
+            rows.sort(key=lambda r: r[0])
+
+        scale = 100.0 if as_percent else 1.0
+        pct = "%" if as_percent else ""
+        col_w = max((len(r[0]) for r in rows), default=8)
+        col_w = max(col_w, len(entity_name))
+
+        header = f"  {entity_name:<{col_w}}  {'Mean':>7}  {ci_pct}% CI                  Status"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for lbl, mean, lo, hi in rows:
+            if lo is not None and hi is not None:
+                ci_str = f"[{lo*scale:.1f}{pct}, {hi*scale:.1f}{pct}]"
+            else:
+                ci_str = "—"
+            status = "✓" if lbl in unbeaten_set else "—"
+            print(f"  {lbl:<{col_w}}  {mean*scale:>6.1f}{pct}  {ci_str:<22}  {status}")
+
+    def print_pair(self, entity_a: str, entity_b: str) -> None:
+        """Print the pairwise comparison summary for a specific pair.
+
+        Parameters
+        ----------
+        entity_a, entity_b : str
+            Labels of the two entities to compare.  The pair must be present
+            in the pairwise matrix (order does not matter).
+        """
+        pw = self.pairwise
+        if pw is None:
+            print("No pairwise analysis available.")
+            return
+        pair = pw.get(entity_a, entity_b)
+        if pair is None:
+            print(f"No pairwise comparison found for ({entity_a!r}, {entity_b!r}).")
+            return
+        pair.summary()
+
+    def plot(self, method: str = "bar", **kwargs):
+        """Visualize comparison results.
+
+        Parameters
+        ----------
+        method : str
+            Plot type:
+
+            * ``"bar"`` (default) — accuracy bar chart via
+              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`.
+            * ``"forest"`` — horizontal CI forest plot via
+              :func:`~evalstats.vis.forest.plot_ci_forest`.
+            * ``"cd"`` — critical difference diagram via
+              :func:`~evalstats.vis.critical_difference.plot_critical_difference`.
+
+        **kwargs
+            Forwarded to the underlying plot function.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        if method == "bar":
+            from evalstats.vis.scoreboard import plot_accuracy_bar
+            return plot_accuracy_bar(self, **kwargs)
+        elif method == "forest":
+            from evalstats.vis.forest import plot_ci_forest
+            return plot_ci_forest(self, **kwargs)
+        elif method == "cd":
+            from evalstats.vis.critical_difference import plot_critical_difference
+            return plot_critical_difference(self, **kwargs)
+        else:
+            raise ValueError(
+                f"Unknown plot method: {method!r}. "
+                "Expected 'bar', 'forest', or 'cd'."
+            )
 
     def report(self, format: str = "markdown") -> str:
         """[Deferred] Export formatted report.
@@ -173,10 +275,6 @@ class ComparisonResult:
         if isinstance(f, str) and f in ("model", "prompt", "entity"):
             return f
         return "entity"
-
-    @property
-    def entity_name_plural(self) -> str:
-        return self.entity_name_singular + "s"
 
     @property
     def pairwise(self):
