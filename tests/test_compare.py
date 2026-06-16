@@ -287,3 +287,123 @@ def test_none_alpha_uses_global():
     set_alpha_ci(0.03)
     result = es.compare(_binary_dict(20), factors="model", rng=_rng())
     assert result.alpha == pytest.approx(0.03)
+
+
+# ---------------------------------------------------------------------------
+# compare() — custom factor column names (non-"model" / non-"prompt")
+# ---------------------------------------------------------------------------
+
+def _chunker_scores(n: int = 40, seed: int = 0) -> dict:
+    """Flat scores dict keyed by chunker strategy level."""
+    rng = np.random.default_rng(seed)
+    return {
+        "fixed":    rng.binomial(1, 0.50, n).astype(float).tolist(),
+        "sliding":  rng.binomial(1, 0.62, n).astype(float).tolist(),
+        "semantic": rng.binomial(1, 0.74, n).astype(float).tolist(),
+    }
+
+
+def _retriever_scores(n: int = 40, seed: int = 0) -> dict:
+    """Flat scores dict keyed by retriever strategy level."""
+    rng = np.random.default_rng(seed)
+    return {
+        "bm25":  rng.binomial(1, 0.52, n).astype(float).tolist(),
+        "dense": rng.binomial(1, 0.64, n).astype(float).tolist(),
+        "hybrid":rng.binomial(1, 0.72, n).astype(float).tolist(),
+    }
+
+
+def _chunker_retriever_scores(n: int = 30, seed: int = 0) -> dict:
+    """Nested scores dict: outer=chunker, inner=retriever."""
+    rng = np.random.default_rng(seed)
+    chunkers  = ["fixed", "sliding", "semantic"]
+    retrievers = ["bm25", "dense", "hybrid"]
+    effects_c = {"fixed": 0.00, "sliding": 0.05, "semantic": 0.10}
+    effects_r = {"bm25": 0.00, "dense": 0.07, "hybrid": 0.12}
+    return {
+        c: {
+            r: rng.binomial(1, min(0.55 + effects_c[c] + effects_r[r], 0.95), n)
+                   .astype(float).tolist()
+            for r in retrievers
+        }
+        for c in chunkers
+    }
+
+
+class TestCompareCustomFactors:
+    """compare() with user-defined factor column names (not 'model' or 'prompt')."""
+
+    def test_single_factor_chunker_labels(self):
+        result = es.compare(_chunker_scores(), factors="chunker", rng=_rng())
+        assert isinstance(result, ComparisonResult)
+        assert set(result.labels) == {"fixed", "sliding", "semantic"}
+
+    def test_single_factor_retriever_labels(self):
+        result = es.compare(_retriever_scores(), factors="retriever", rng=_rng())
+        assert isinstance(result, ComparisonResult)
+        assert set(result.labels) == {"bm25", "dense", "hybrid"}
+
+    def test_single_factor_pairwise_count(self):
+        result = es.compare(_chunker_scores(), factors="chunker", rng=_rng())
+        # C(3, 2) = 3 pairwise comparisons
+        assert len(result.pairwise.results) == 3
+
+    def test_single_factor_to_dict(self):
+        result = es.compare(_retriever_scores(), factors="retriever", rng=_rng())
+        d = result.to_dict()
+        assert set(d["entities"].keys()) == {"bm25", "dense", "hybrid"}
+        assert len(d["pairwise"]) == 3
+
+    def test_single_factor_entity_stats_has_ci(self):
+        result = es.compare(_chunker_scores(n=50), factors="chunker", rng=_rng())
+        for lbl in result.labels:
+            stats = result.entity_stats[lbl]
+            assert 0.0 <= stats.ci_low <= stats.mean <= stats.ci_high <= 1.0
+
+    def test_single_factor_summary_runs(self, capsys):
+        result = es.compare(_chunker_scores(), factors="chunker", rng=_rng())
+        result.summary()
+        out = capsys.readouterr().out
+        assert "fixed" in out
+        assert "sliding" in out
+        assert "semantic" in out
+
+    def test_single_factor_user_factors_preserved(self):
+        # The original factor name should be preserved in the result metadata.
+        result = es.compare(_chunker_scores(), factors="chunker", rng=_rng())
+        assert result._factors == "chunker"
+
+    def test_factorial_two_custom_factors_returns_result(self):
+        result = es.compare(
+            _chunker_retriever_scores(), factors=["chunker", "retriever"], rng=_rng()
+        )
+        assert isinstance(result, ComparisonResult)
+        assert result.full_analysis is not None
+
+    def test_factorial_two_custom_factors_label_count(self):
+        result = es.compare(
+            _chunker_retriever_scores(), factors=["chunker", "retriever"], rng=_rng()
+        )
+        # 3 chunkers × 3 retrievers = 9 treatment cells
+        assert len(result.labels) == 9
+
+    def test_factorial_two_custom_factors_labels_contain_levels(self):
+        result = es.compare(
+            _chunker_retriever_scores(), factors=["chunker", "retriever"], rng=_rng()
+        )
+        label_text = " ".join(result.labels)
+        for level in ["fixed", "sliding", "semantic", "bm25", "dense", "hybrid"]:
+            assert level in label_text
+
+    def test_factorial_summary_runs(self, capsys):
+        result = es.compare(
+            _chunker_retriever_scores(), factors=["chunker", "retriever"], rng=_rng()
+        )
+        result.summary()
+        assert len(capsys.readouterr().out) > 0
+
+    def test_factorial_user_factors_preserved(self):
+        result = es.compare(
+            _chunker_retriever_scores(), factors=["chunker", "retriever"], rng=_rng()
+        )
+        assert result._factors == ["chunker", "retriever"]

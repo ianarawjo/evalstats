@@ -48,6 +48,7 @@ class ComparisonResult:
         alpha: float,
         filtered_df: pd.DataFrame,
         _mmb_view: Literal["model_level", "template_level", "cross_model"] = "model_level",
+        min_meaningful_diff: Optional[float] = None,
     ):
         self._analysis = analysis
         self._factors = factors
@@ -56,6 +57,7 @@ class ComparisonResult:
         self._alpha = alpha
         self._df = filtered_df
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
+        self._min_meaningful_diff = min_meaningful_diff
 
     # ── print methods ────────────────────────────────────────────────────────
 
@@ -67,6 +69,7 @@ class ComparisonResult:
         top_pairwise: Optional[int] = None,
         style: Literal["gradient", "line"] = "gradient",
         p_value_method=_UNSET,
+        pairwise_sort: Literal["grouped", "significance"] = "grouped",
     ) -> None:
         """Print the full terminal summary with gradient CI plots.
 
@@ -86,15 +89,28 @@ class ComparisonResult:
             uses the method stored in the bundle (from ``p_values=`` /
             ``pairwise_test=`` kwargs).  Pass ``None`` to explicitly suppress,
             or a string like ``"wsr"`` / ``"boot"`` to force a column.
+        pairwise_sort : {"grouped", "significance"}
+            Pairwise row ordering. ``"grouped"`` (default) keeps related pairs
+            together; ``"significance"`` sorts by p-value then effect size.
         """
         # Map our sentinel to the summary module's _UNSET so it reads from bundle.
         pvm = _SUMMARY_UNSET if p_value_method is ComparisonResult._UNSET else p_value_method
-        print_analysis_summary(self._analysis, top_pairwise=top_pairwise, style=style,
-                               p_value_method=pvm)
+        item_singular, item_plural = _factor_item_labels(self._factors)
+        print_analysis_summary(
+            self._analysis,
+            top_pairwise=top_pairwise,
+            style=style,
+            p_value_method=pvm,
+            pairwise_sort=pairwise_sort,
+            min_meaningful_diff=self._min_meaningful_diff,
+            item_singular=item_singular,
+            item_plural=item_plural,
+        )
 
     def brief(self) -> None:
         """Print a compact one-line-per-entity summary."""
-        print_brief_summary(self._analysis)
+        item_singular, item_plural = _factor_item_labels(self._factors)
+        print_brief_summary(self._analysis, item_singular=item_singular, item_plural=item_plural)
 
     def print_ci_table(self, sort_by: str = "mean", as_percent: bool = True) -> None:
         """Print a compact table of entity means and confidence intervals.
@@ -533,6 +549,46 @@ class ComparisonResult:
 # Internal: bridge EvalResults → existing analysis engine
 # ─────────────────────────────────────────────────────────────────────────────
 
+_STANDARD_FACTOR_NAMES = {"model", "prompt", "template"}
+_FACTOR_STD_SLOTS = ["model", "prompt"]  # canonical names for the first two custom factors
+
+
+def _factor_item_labels(factors) -> tuple[str, str]:
+    """Derive (item_singular, item_plural) from a factors argument."""
+    if factors is None:
+        return "template", "templates"
+    if isinstance(factors, str):
+        singular = factors
+    else:
+        singular = "|".join(factors)
+    if "|" in singular:
+        plural = singular + " combinations"
+    elif singular.endswith("s"):
+        plural = singular
+    else:
+        plural = singular + "s"
+    return singular, plural
+
+
+def _custom_factor_col_map(
+    factors_list: list[str], df: pd.DataFrame
+) -> dict[str, str]:
+    """Return a col_map that remaps non-standard factor columns to standard slots.
+
+    Non-standard factor columns (not "model", "prompt", or "template") that
+    exist in *df* are mapped to "model" then "prompt" in order.  This allows
+    load_from() to include them in the uniqueness key so the duplicate check
+    passes.
+    """
+    col_map: dict[str, str] = {}
+    slot_idx = 0
+    for f in factors_list:
+        if f not in _STANDARD_FACTOR_NAMES and f in df.columns and slot_idx < len(_FACTOR_STD_SLOTS):
+            col_map[f] = _FACTOR_STD_SLOTS[slot_idx]
+            slot_idx += 1
+    return col_map
+
+
 def _apply_kwarg_filters(
     df: pd.DataFrame,
     kwargs: dict[str, Any],
@@ -693,20 +749,51 @@ def compare(
         warnings.warn("secondary= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
     if alignment is not None:
         warnings.warn("alignment= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
-    if min_meaningful_diff is not None:
-        warnings.warn("min_meaningful_diff= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
 
     # ── resolve alpha (explicit > global default) ─────────────────────────────
     if alpha is None:
         alpha = get_alpha_ci()
 
+    # Preserve the original factor names as provided by the caller; internal
+    # dispatch may remap them to standard column names ("model", "prompt") so
+    # that load_from() can detect uniqueness constraints correctly.
+    _user_factors = factors
+
     # ── coerce non-EvalResults input types ────────────────────────────────────
     if isinstance(evaldata, list):
-        # list[dict] in long format — delegate directly to load_from
-        evaldata = load_from(evaldata)
+        # list[dict] in long format — detect custom factor columns and remap
+        # them to standard names so load_from() includes them in the uniqueness
+        # key (otherwise the duplicate check rejects multi-factor long tables).
+        _f_list = [factors] if isinstance(factors, str) else list(factors)
+        _tmp_df = pd.DataFrame(evaldata) if evaldata else pd.DataFrame()
+        _cmap = _custom_factor_col_map(_f_list, _tmp_df)
+        if _cmap:
+            evaldata = load_from(evaldata, col_map=_cmap)
+            _f_list = [_cmap.get(f, f) for f in _f_list]
+            factors = _f_list[0] if len(_f_list) == 1 else _f_list
+        else:
+            evaldata = load_from(evaldata)
     elif isinstance(evaldata, dict):
-        # dict-of-arrays (flat or nested) — convert via scores-dict helper
+        # dict-of-arrays (flat or nested) — convert via scores-dict helper,
+        # then ensure factor column names resolve to standard slot names.
+        # _scores_dict_to_df normalizes nested-dict keys to "model"/"prompt"
+        # regardless of factors; flat-dict custom names stay as-is and need
+        # renaming so load_from() includes them in the uniqueness key.
+        _f_list = [factors] if isinstance(factors, str) else list(factors)
         df_from_dict = _scores_dict_to_df(evaldata, factors=factors)
+        _f_actual: list[str] = []
+        for _i, _f in enumerate(_f_list):
+            _std = _FACTOR_STD_SLOTS[_i] if _i < len(_FACTOR_STD_SLOTS) else _f
+            if _f in df_from_dict.columns and _f not in _STANDARD_FACTOR_NAMES:
+                # Flat-dict custom column — rename to standard slot in place
+                df_from_dict = df_from_dict.rename(columns={_f: _std})
+                _f_actual.append(_std)
+            elif _std in df_from_dict.columns:
+                # Nested-dict already produced the standard slot name
+                _f_actual.append(_std)
+            else:
+                _f_actual.append(_f)
+        factors = _f_actual[0] if len(_f_actual) == 1 else _f_actual
         evaldata = load_from(df_from_dict)
     elif not isinstance(evaldata, EvalResults):
         raise TypeError(
@@ -815,12 +902,13 @@ def compare(
         # and _mmb_view is irrelevant.
         return ComparisonResult(
             analysis,
-            factors=factors,
+            factors=_user_factors,
             metric=metric_col,
             baseline=baseline,
             alpha=alpha,
             filtered_df=df,
             _mmb_view="model_level",
+            min_meaningful_diff=min_meaningful_diff,
         )
 
     # ── path B: prompt/template comparison ───────────────────────────────────
@@ -856,12 +944,13 @@ def compare(
 
         return ComparisonResult(
             analysis,
-            factors=factors,
+            factors=_user_factors,
             metric=metric_col,
             baseline=baseline,
             alpha=alpha,
             filtered_df=df,
             _mmb_view="template_level",
+            min_meaningful_diff=min_meaningful_diff,
         )
 
     # ── path C: arbitrary single factor column ────────────────────────────────
@@ -881,11 +970,12 @@ def compare(
 
         return ComparisonResult(
             analysis,
-            factors=factors,
+            factors=_user_factors,
             metric=metric_col,
             baseline=baseline,
             alpha=alpha,
             filtered_df=df,
+            min_meaningful_diff=min_meaningful_diff,
         )
 
     # ── path D: factorial (multiple factors → LMM) ────────────────────────────
@@ -929,11 +1019,12 @@ def compare(
 
         return ComparisonResult(
             analysis,
-            factors=factors,
+            factors=_user_factors,
             metric=metric_col,
             baseline=baseline,
             alpha=alpha,
             filtered_df=df,
+            min_meaningful_diff=min_meaningful_diff,
         )
 
     raise EvalLoadError(

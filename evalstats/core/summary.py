@@ -213,6 +213,9 @@ def print_analysis_summary(
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
     p_value_method=_UNSET,
+    min_meaningful_diff: Optional[float] = None,
+    item_singular: str = "template",
+    item_plural: str = "templates",
 ) -> None:
     """Print a concise console summary of analyze() results.
 
@@ -233,6 +236,7 @@ def print_analysis_summary(
             line_width=line_width,
             pairwise_sort=pairwise_sort,
             style=style,
+            min_meaningful_diff=min_meaningful_diff,
         )
         return
 
@@ -244,6 +248,9 @@ def print_analysis_summary(
             pairwise_sort=pairwise_sort,
             style=style,
             p_value_method=p_value_method,
+            min_meaningful_diff=min_meaningful_diff,
+            item_singular=item_singular,
+            item_plural=item_plural,
         )
         return
 
@@ -256,6 +263,7 @@ def print_analysis_summary(
                 line_width=line_width,
                 pairwise_sort=pairwise_sort,
                 style=style,
+                min_meaningful_diff=min_meaningful_diff,
             )
         else:
             _print_bundle_summary(
@@ -265,6 +273,9 @@ def print_analysis_summary(
                 pairwise_sort=pairwise_sort,
                 style=style,
                 p_value_method=p_value_method,
+                min_meaningful_diff=min_meaningful_diff,
+                item_singular=item_singular,
+                item_plural=item_plural,
             )
         print()
 
@@ -276,6 +287,9 @@ def print_brief_summary(
         Mapping[str, AnalysisBundle],
         Mapping[str, MultiModelBundle],
     ],
+    *,
+    item_singular: str = "template",
+    item_plural: str = "templates",
 ) -> None:
     """Print a compact leaderboard-only summary of analyze() results.
 
@@ -289,7 +303,7 @@ def print_brief_summary(
         return
 
     if isinstance(analysis, AnalysisBundle):
-        _print_brief_bundle(analysis)
+        _print_brief_bundle(analysis, item_singular=item_singular, item_plural=item_plural)
         return
 
     # Per-evaluator dict.
@@ -298,7 +312,7 @@ def print_brief_summary(
         if isinstance(bundle, MultiModelBundle):
             _print_brief_multi_model(bundle)
         else:
-            _print_brief_bundle(bundle)
+            _print_brief_bundle(bundle, item_singular=item_singular, item_plural=item_plural)
         print()
 
 
@@ -556,6 +570,7 @@ def _print_multi_model_summary(
     line_width: int,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
+    min_meaningful_diff: Optional[float] = None,
 ) -> None:
     _print_loud_section("Multi-Model Analysis Summary")
     print(f"Shape: {bundle.shape}")
@@ -580,6 +595,7 @@ def _print_multi_model_summary(
         item_plural="models",
         pairwise_sort=pairwise_sort,
         style=style,
+        min_meaningful_diff=min_meaningful_diff,
     )
 
     print()
@@ -592,6 +608,7 @@ def _print_multi_model_summary(
         item_plural="templates",
         pairwise_sort=pairwise_sort,
         style=style,
+        min_meaningful_diff=min_meaningful_diff,
     )
     best_idx = int(np.argmax(bundle.template_level.robustness.mean))
     best_template = bundle.template_level.benchmark.template_labels[best_idx]
@@ -616,6 +633,7 @@ def _print_multi_model_summary(
             line_width=line_width,
             pairwise_sort=pairwise_sort,
             style=style,
+            guidance=False,
         )
 
     print()
@@ -1336,6 +1354,8 @@ def _print_bundle_summary(
     p_value_method=_UNSET,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
+    guidance: bool = True,
+    min_meaningful_diff: Optional[float] = None,
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
@@ -1353,7 +1373,9 @@ def _print_bundle_summary(
     print()
 
     _print_subsection("--- Robustness ---")
-    print(bundle.robustness.summary_table().to_string())
+    _rob_df = bundle.robustness.summary_table()
+    _rob_df.index.name = item_singular
+    print(_rob_df.to_string())
     print()
 
     _print_subsection(f"--- Rank Probabilities ({_rank_method_label(bundle)}) ---")
@@ -1421,6 +1443,13 @@ def _print_bundle_summary(
     # Executive summary leaderboard (always last — immediately visible in terminal).
     print()
     _print_executive_summary(bundle, item_singular=item_singular)
+
+    if guidance:
+        _print_next_steps_guidance(
+            bundle,
+            item_plural=item_plural,
+            min_meaningful_diff=min_meaningful_diff,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -2540,4 +2569,178 @@ def _print_executive_summary(
         print(row)
 
     print(sep)
+    print()
+
+
+def _print_next_steps_guidance(
+    bundle: "AnalysisBundle",
+    *,
+    item_plural: str = "templates",
+    alpha: Optional[float] = None,
+    min_meaningful_diff: Optional[float] = None,
+) -> None:
+    """Print 'What to do next' guidance block below the executive summary."""
+    if alpha is None:
+        alpha = get_alpha_ci()
+
+    N = bundle.benchmark.n_inputs
+    n_runs = bundle.benchmark.n_runs
+    pair_results = list(bundle.pairwise.results.values())
+    if not pair_results or N < 2:
+        return
+
+    use_ci_for_sig = bundle.pairwise.simultaneous_ci_method is not None
+
+    def _is_sig(r) -> bool:
+        if use_ci_for_sig:
+            return float(r.ci_low) > 0 or float(r.ci_high) < 0
+        return float(r.p_value) < alpha
+
+    any_sig = any(_is_sig(r) for r in pair_results)
+
+    ci_halves = [(float(r.ci_high) - float(r.ci_low)) / 2.0 for r in pair_results]
+    gaps = [abs(float(r.point_diff)) for r in pair_results]
+    max_ci_half = max(ci_halves)
+    max_gap = max(gaps)
+
+    # Entity-level grouping — mirrors the executive summary leaderboard
+    labels = list(bundle.rank_dist.labels)
+    means = bundle.robustness.mean
+    sort_idx = list(np.argsort(-means))
+    labels_sorted = [labels[i] for i in sort_idx]
+    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+
+    groups: dict[str, list[str]] = {}
+    for lbl in labels_sorted:
+        g = label_to_group.get(lbl, "?")
+        groups.setdefault(g, []).append(lbl)
+    group_ids = sorted(groups.keys(), key=lambda g: int(g[1:]) if g[1:].isdigit() else 999)
+    top_group = groups.get("#1", [])
+    n_entities = len(labels_sorted)
+
+    # Run-fraction lever (seed variance)
+    sv = bundle.seed_variance
+    run_fraction = None
+    if sv is not None and n_runs > 1:
+        seed_var_mean = float(np.mean(sv.seed_var))
+        total_var_mean = float(np.mean(sv.total_var))
+        if total_var_mean > 1e-12:
+            run_fraction = seed_var_mean / total_var_mean
+
+    n_str = f"N={N:,}" + (f" × {n_runs} runs" if n_runs > 1 else "")
+
+    def _entity_list(names: list[str], limit: int = 3) -> str:
+        """Format a list of entity names for inline prose."""
+        quoted = [f"'{_truncate_label(n, 20)}'" for n in names]
+        if len(quoted) == 1:
+            return quoted[0]
+        if len(quoted) == 2:
+            return f"{quoted[0]} and {quoted[1]}"
+        if len(quoted) <= limit:
+            return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
+        return f"{len(names)} {item_plural}"
+
+    _print_subsection("--- What to do next ---")
+
+    if any_sig:
+        # Case C: entities are at least partially ranked — some differences are clear
+        lower_entities = [lbl for g in group_ids if g != "#1" for lbl in groups[g]]
+
+        if len(top_group) == 1:
+            print(f"  {_entity_list(top_group)} appears to be the clear leader ({n_str}).")
+        else:
+            print(f"  {_entity_list(top_group)} are statistically tied at the top ({n_str}).")
+
+        if lower_entities:
+            verb = "is" if len(lower_entities) == 1 else "are"
+            print(f"  {_entity_list(lower_entities)} {verb} clearly ranked below.")
+
+        # If the top group is tied, suggest a lever to separate them
+        if len(top_group) > 1:
+            top_set = set(top_group)
+            top_ci_halves = [
+                (float(r.ci_high) - float(r.ci_low)) / 2.0
+                for r in pair_results
+                if r.template_a in top_set and r.template_b in top_set
+            ]
+            top_gaps = [
+                abs(float(r.point_diff))
+                for r in pair_results
+                if r.template_a in top_set and r.template_b in top_set
+            ]
+            if top_ci_halves:
+                focus_ci_half = max(top_ci_halves)
+                focus_gap = max(top_gaps) if top_gaps else focus_ci_half
+                if min_meaningful_diff is not None:
+                    target_half = min_meaningful_diff / 2.0
+                else:
+                    target_half = max(focus_gap * 0.6, focus_ci_half * 0.4)
+                n_needed = int(np.ceil(N * (focus_ci_half / max(target_half, 1e-12)) ** 2))
+                print()
+                print(f"  If you need to pick between the top {len(top_group)}, more inputs could help.")
+                if n_needed > N:
+                    if min_meaningful_diff is not None:
+                        print(f"    How many more? Rough estimate: ~{n_needed:,} inputs to detect a gap of {min_meaningful_diff:g}.")
+                    else:
+                        print(f"    How many more? Rough estimate: ~{n_needed:,} inputs (from {N:,} now).")
+
+        print()
+        print(f"  All results reflect the specific inputs tested here — different inputs")
+        print(f"  may shift the rankings.")
+
+    elif max_gap < max_ci_half * 0.5:
+        # Case A: gaps small relative to uncertainty — likely null or underpowered
+        print(f"  No clear differences detected — all {n_entities} {item_plural} are currently tied ({n_str}).")
+        print()
+        print(f"  The gaps are small relative to the noise. These {item_plural} may perform")
+        print(f"  similarly, though differences may just be too small to see at this scale.")
+        print()
+        if min_meaningful_diff is not None:
+            target_half = min_meaningful_diff / 2.0
+            n_needed = int(np.ceil(N * (max_ci_half / max(target_half, 1e-12)) ** 2))
+            if n_needed > N:
+                print(f"  Your biggest lever: more inputs.")
+                print(f"  To have a reasonable shot at detecting a gap of {min_meaningful_diff:g},")
+                print(f"  try roughly {n_needed:,} inputs (from {N:,} now).")
+            else:
+                print(f"  At {N:,} inputs, you'd likely detect a gap of {min_meaningful_diff:g} if it existed.")
+                print(f"  More data probably won't change the picture much.")
+        else:
+            n_needed_rough = N * 4
+            print(f"  Your biggest lever: more inputs. At {N:,}, gaps smaller than ~{2*max_ci_half:.3f}")
+            print(f"  are generally invisible to this test.")
+            print(f"  Rough guide: ~{n_needed_rough:,} inputs could resolve gaps as small as ±{max_ci_half/2:.3f}.")
+        if run_fraction is not None and run_fraction > 0.3:
+            print()
+            print(f"  Run-to-run variability accounts for ~{100*run_fraction:.0f}% of total variance.")
+            print(f"  Adding more runs per input could also help narrow the CI.")
+
+    else:
+        # Case B: gaps look real but the test can't confirm them yet
+        print(f"  No clear differences detected yet ({n_str}).")
+        print()
+        print(f"  The largest observed gap ({max_gap:.3f}) is close to the margin of uncertainty")
+        print(f"  (±{max_ci_half:.3f}). This could be a real difference the data isn't quite")
+        print(f"  large enough to confirm — or it could be noise.")
+        print()
+        print(f"  Your biggest lever: more inputs.")
+        if min_meaningful_diff is not None:
+            target_half = min_meaningful_diff / 2.0
+            n_needed = int(np.ceil(N * (max_ci_half / max(target_half, 1e-12)) ** 2))
+            if n_needed > N:
+                print(f"  To reliably detect a gap of {min_meaningful_diff:g},")
+                print(f"  try roughly {n_needed:,} inputs (from {N:,} now).")
+            else:
+                print(f"  Your current N may already be enough to detect a gap of {min_meaningful_diff:g}.")
+                print(f"  The observed pattern could be real — more inputs might confirm it.")
+        else:
+            target_half = max(max_gap * 0.6, max_ci_half * 0.5)
+            n_needed = int(np.ceil(N * (max_ci_half / max(target_half, 1e-12)) ** 2))
+            n_needed = max(n_needed, int(N * 1.5))
+            print(f"  Try roughly {n_needed:,} inputs (from {N:,} now) to see if the gaps hold.")
+        if run_fraction is not None and run_fraction > 0.3:
+            print()
+            print(f"  Run-to-run variability accounts for ~{100*run_fraction:.0f}% of total variance.")
+            print(f"  More runs per input could be a cheaper lever than adding more inputs.")
+
     print()
