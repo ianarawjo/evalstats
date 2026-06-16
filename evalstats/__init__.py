@@ -1,5 +1,6 @@
 """evalstats: Statistical analysis and visualization for prompt benchmarking."""
 
+# ── Existing API (unchanged) ─────────────────────────────────────────────────
 from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
 from evalstats.core.paired import pairwise_differences, all_pairwise, vs_baseline, friedman_nemenyi, FriedmanResult
 from evalstats.core.ranking import bootstrap_ranks
@@ -32,9 +33,23 @@ from evalstats.compare import (
 )
 from evalstats.config import set_alpha_ci, get_alpha_ci
 
+# ── New spec API (additive) ──────────────────────────────────────────────────
+# These must come AFTER evalstats.compare imports because importing the
+# evalstats.compare submodule sets evalstats.compare = <module>, which would
+# shadow a function named "compare" if imported first.
+from evalstats.loader import load_from, EvalResults, EvalLoadError
+from evalstats.api import compare, ComparisonResult
+
 __version__ = "0.2.0"
 
 __all__ = [
+    # New spec API
+    "load_from",
+    "EvalResults",
+    "EvalLoadError",
+    "compare",
+    "ComparisonResult",
+    # Existing API
     "BenchmarkResult",
     "MultiModelBenchmark",
     "pairwise_differences",
