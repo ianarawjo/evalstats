@@ -17,8 +17,6 @@ from .paired import PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
 from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci
 
-if TYPE_CHECKING:
-    from ..compare import CompareReport
 
 # Sentinel used as a default so callers can distinguish "not passed" from
 # "explicitly None (suppress p-values)".
@@ -214,6 +212,7 @@ def print_analysis_summary(
     line_width: int = 41,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
+    p_value_method=_UNSET,
 ) -> None:
     """Print a concise console summary of analyze() results.
 
@@ -223,6 +222,9 @@ def print_analysis_summary(
         Interval plot style.  ``"gradient"`` (default) renders multi-band CI
         plots (90 / 95 / 99 / 99.9 % opacity gradient) when the bundle contains
         ``multi_ci`` data.  ``"line"`` always uses the classic dot-and-line plot.
+    p_value_method : str or None, optional
+        Override the p-value method for display.  When ``_UNSET`` (default),
+        reads from the bundle's stored ``p_value_method``.
     """
     if isinstance(analysis, MultiModelBundle):
         _print_multi_model_summary(
@@ -241,6 +243,7 @@ def print_analysis_summary(
             line_width=line_width,
             pairwise_sort=pairwise_sort,
             style=style,
+            p_value_method=p_value_method,
         )
         return
 
@@ -261,6 +264,7 @@ def print_analysis_summary(
                 line_width=line_width,
                 pairwise_sort=pairwise_sort,
                 style=style,
+                p_value_method=p_value_method,
             )
         print()
 
@@ -470,71 +474,6 @@ def print_pairwise_summary(
         # print(f"  [{bar}]  \u2588 both pass ({pct_pass})  \u2591 both fail ({pct_fail})  \u2592 disagree ({pct_split})")
 
     print()
-
-
-def print_compare_summary(
-    report: "CompareReport",
-    *,
-    top_pairwise: int = None,
-    line_width: int = 41,
-    p_value_method: Optional[str] = None,
-    pairwise_sort: Literal["grouped", "significance"] = "grouped",
-    style: Literal["line", "gradient"] = "gradient",
-) -> None:
-    """Print a focused summary for compare_prompts / compare_models results.
-
-    Shows only the pairwise comparisons and the executive leaderboard —
-    scoped to the entity level (prompts or models) that was compared.
-    For the full internal analysis use ``report.full_summary()`` instead.
-
-    Parameters
-    ----------
-    p_value_method : str or None
-        Which p-value to show in pairwise comparisons.  ``'auto'`` (default)
-        picks the method commensurate with the CI (bootstrap p for bootstrap
-        paths, Wilcoxon for others).  Options: ``'boot'``, ``'wsr'``,
-        ``'nem'``, or ``None`` to suppress p-values.
-    pairwise_sort : {"grouped", "significance"}
-        Row order for the pairwise table. ``"grouped"`` groups by the left
-        item (stable, scan-friendly), while ``"significance"`` orders by
-        p-value then absolute effect size.
-    """
-    n = len(report.labels)
-    # Get the AnalysisBundle appropriate to the entity-level comparison.
-    if isinstance(report.full_analysis, MultiModelBundle):
-        bundle = report.full_analysis.model_level
-    else:
-        bundle = report.full_analysis  # type: ignore[assignment]
-
-    n_inputs = bundle.benchmark.n_inputs
-    ci_pct = int(round((1 - report.alpha) * 100))
-
-    _print_loud_section(f"{report.entity_name_plural.capitalize()} Comparison")
-    print(
-        f"{n} {report.entity_name_plural} | "
-        f"{n_inputs} inputs | "
-        f"method={report.method} | "
-        f"{ci_pct}% confidence intervals (CI)"
-    )
-    print()
-
-    _print_mean_advantage(
-        bundle,
-        item_singular=report.entity_name_singular,
-        line_width=line_width,
-        style=style,
-    )
-    print()
-    _print_pairwise_section(
-        bundle,
-        top_pairwise=top_pairwise,
-        line_width=line_width,
-        p_value_method=p_value_method,
-        pairwise_sort=pairwise_sort,
-        style=style,
-    )
-    print()
-    _print_executive_summary(bundle, item_singular=report.entity_name_singular)
 
 
 # ---------------------------------------------------------------------------

@@ -17,9 +17,10 @@ import pandas as pd
 
 from evalstats.loader import EvalResults, EvalLoadError, load_from, _scores_dict_to_df, _is_nested_scores_dict
 from evalstats.io import from_dataframe
+from evalstats.config import get_alpha_ci
 from evalstats.core.router import analyze, analyze_factorial
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
-from evalstats.core.summary import print_analysis_summary, print_brief_summary
+from evalstats.core.summary import print_analysis_summary, print_brief_summary, _UNSET as _SUMMARY_UNSET
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -58,11 +59,14 @@ class ComparisonResult:
 
     # ── print methods ────────────────────────────────────────────────────────
 
+    _UNSET = object()  # sentinel distinguishing "not passed" from None
+
     def summary(
         self,
         *,
         top_pairwise: Optional[int] = None,
         style: Literal["gradient", "line"] = "gradient",
+        p_value_method=_UNSET,
     ) -> None:
         """Print the full terminal summary with gradient CI plots.
 
@@ -77,8 +81,16 @@ class ComparisonResult:
         style : {"gradient", "line"}
             CI plot style. ``"gradient"`` (default) renders multi-band opacity
             plots; ``"line"`` uses the classic dot-and-line style.
+        p_value_method : str or None, optional
+            Override the p-value display method.  When not passed (default),
+            uses the method stored in the bundle (from ``p_values=`` /
+            ``pairwise_test=`` kwargs).  Pass ``None`` to explicitly suppress,
+            or a string like ``"wsr"`` / ``"boot"`` to force a column.
         """
-        print_analysis_summary(self._analysis, top_pairwise=top_pairwise, style=style)
+        # Map our sentinel to the summary module's _UNSET so it reads from bundle.
+        pvm = _SUMMARY_UNSET if p_value_method is ComparisonResult._UNSET else p_value_method
+        print_analysis_summary(self._analysis, top_pairwise=top_pairwise, style=style,
+                               p_value_method=pvm)
 
     def print(self, **kwargs) -> None:
         """Alias for :meth:`summary`."""
@@ -98,6 +110,109 @@ class ComparisonResult:
             "report() export is not yet implemented. "
             "Use summary() for terminal output or to_dict()/to_frame() for data."
         )
+
+    # ── duck-type compatibility properties ───────────────────────────────────
+    # These allow ComparisonResult to be passed directly to vis functions
+    # (plot_ci_forest, plot_accuracy_bar, plot_critical_difference) that
+    # previously accepted CompareReport objects.
+
+    @property
+    def labels(self) -> list:
+        """Entity labels (for vis function compatibility)."""
+        bundle = self._primary_bundle()
+        return list(bundle.benchmark.template_labels) if bundle else []
+
+    @property
+    def entity_stats(self) -> dict:
+        """Per-entity stats dict (for vis function compatibility)."""
+        from types import SimpleNamespace
+        bundle = self._primary_bundle()
+        if bundle is None:
+            return {}
+        rob = bundle.robustness
+        return {
+            str(lbl): SimpleNamespace(
+                mean=float(rob.mean[i]),
+                ci_low=float(rob.ci_low[i]) if rob.ci_low is not None else 0.0,
+                ci_high=float(rob.ci_high[i]) if rob.ci_high is not None else 1.0,
+                median=float(rob.median[i]),
+                std=float(rob.std[i]),
+            )
+            for i, lbl in enumerate(bundle.benchmark.template_labels)
+        }
+
+    @property
+    def unbeaten(self) -> Optional[list]:
+        """Entities not significantly beaten at the stored alpha level.
+
+        Returns ``None`` when no pairwise differences are significant (the
+        concept of "unbeaten" does not apply when there is no winner).
+        """
+        bundle = self._primary_bundle()
+        if bundle is None:
+            return None
+        labels = list(bundle.benchmark.template_labels)
+        beaten: set = set()
+        any_sig = False
+        for (a, b), pair in bundle.pairwise.results.items():
+            if pair.p_value is not None and pair.p_value < self._alpha:
+                any_sig = True
+                if pair.point_diff > 0:
+                    beaten.add(str(b))
+                else:
+                    beaten.add(str(a))
+        if not any_sig:
+            return None
+        result_unbeaten = [str(lbl) for lbl in labels if str(lbl) not in beaten]
+        return result_unbeaten if result_unbeaten else None
+
+    @property
+    def entity_name_singular(self) -> str:
+        """Entity type name (for vis function compatibility)."""
+        f = self._factors
+        if isinstance(f, str) and f in ("model", "prompt", "entity"):
+            return f
+        return "entity"
+
+    @property
+    def entity_name_plural(self) -> str:
+        return self.entity_name_singular + "s"
+
+    @property
+    def pairwise(self):
+        """Pairwise matrix from the primary bundle."""
+        bundle = self._primary_bundle()
+        return bundle.pairwise if bundle else None
+
+    @property
+    def rank_dist(self):
+        """Rank distribution from the primary bundle."""
+        bundle = self._primary_bundle()
+        return bundle.rank_dist if bundle else None
+
+    @property
+    def alpha(self) -> float:
+        """Significance level used for this comparison (e.g. 0.05 → 95% CIs)."""
+        return self._alpha
+
+    @property
+    def p_value_method(self) -> Optional[str]:
+        """Stored p-value method from the underlying bundle (or None if not requested)."""
+        bundle = self._primary_bundle()
+        return bundle.p_value_method if bundle is not None else None
+
+    @property
+    def simultaneous_ci(self) -> bool:
+        """Whether simultaneous (family-wise) CIs were used for pairwise comparisons."""
+        bundle = self._primary_bundle()
+        if bundle is None:
+            return False
+        return bool(bundle.pairwise.simultaneous_ci)
+
+    @property
+    def full_analysis(self):
+        """Underlying AnalysisBundle (for vis function compatibility)."""
+        return self._primary_bundle()
 
     # ── data access ──────────────────────────────────────────────────────────
 
@@ -416,7 +531,7 @@ def compare(
     secondary=None,      # deferred
     alignment=None,      # deferred
     min_meaningful_diff=None,  # deferred
-    alpha: float = 0.05,
+    alpha: Optional[float] = None,
     **kwargs: Any,
 ) -> ComparisonResult:
     """Compare entities along one or more factor axes.
@@ -442,8 +557,10 @@ def compare(
     block : str, list[str], or "auto"
         Blocking variable(s) — typically ``"item"`` or ``"input"``.
         ``"auto"`` (default) uses the item column detected by ``load_from``.
-    alpha : float
-        Significance level / CI width: ``alpha=0.05`` → 95 % CIs (default).
+    alpha : float, optional
+        Significance level / CI width: ``alpha=0.05`` → 95 % CIs.
+        When ``None`` (default), uses the global value set by
+        :func:`~evalstats.config.set_alpha_ci` (default 0.05).
     **kwargs
         Two uses:
 
@@ -480,6 +597,10 @@ def compare(
         warnings.warn("alignment= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
     if min_meaningful_diff is not None:
         warnings.warn("min_meaningful_diff= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
+
+    # ── resolve alpha (explicit > global default) ─────────────────────────────
+    if alpha is None:
+        alpha = get_alpha_ci()
 
     # ── coerce non-EvalResults input types ────────────────────────────────────
     if isinstance(evaldata, list):

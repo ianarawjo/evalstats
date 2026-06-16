@@ -91,23 +91,22 @@ def plot_accuracy_bar(
     matplotlib.figure.Figure
     """
     # ---- normalise input --------------------------------------------------
-    from evalstats.compare import CompareReport
+    entity_name = "entity"
 
-    entity_name = "prompt"
-
-    if isinstance(scores, CompareReport):
-        entity_name = scores.entity_name_singular
-        labels = scores.labels
-        means_raw = {l: scores.entity_stats[l].mean for l in labels}
-    elif isinstance(scores, dict):
+    if isinstance(scores, dict):
         labels = list(scores.keys())
         means_raw = {}
         for label, val in scores.items():
             arr = np.asarray(val, dtype=np.float64)
             means_raw[label] = float(np.nanmean(arr)) if arr.ndim > 0 else float(arr)
+    elif hasattr(scores, "labels") and hasattr(scores, "entity_stats"):
+        # ComparisonResult or any duck-type equivalent (previously CompareReport)
+        entity_name = getattr(scores, "entity_name_singular", "entity")
+        labels = scores.labels
+        means_raw = {l: scores.entity_stats[l].mean for l in labels}
     else:
         raise TypeError(
-            "scores must be a dict or a CompareReport. "
+            "scores must be a dict or a ComparisonResult. "
             f"Got {type(scores).__name__!r}."
         )
 
