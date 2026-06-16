@@ -2000,10 +2000,6 @@ def _gradient_interval_line(
         if ref_idx + 1 < width and chars[ref_idx + 1] in {" ", "·"}:
             chars[ref_idx + 1] = hint_char
 
-    # Place mean marker; │ takes priority when mean == reference.
-    # if mean_idx != ref_idx:
-    #     chars[mean_idx] = "●"
-
     return "".join(chars)
 
 

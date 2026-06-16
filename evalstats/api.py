@@ -978,6 +978,48 @@ def compare(
             min_meaningful_diff=min_meaningful_diff,
         )
 
+    # ── path D-pre: canonical 2-factor ["model","prompt"] → multi-model path ──
+    # When the user passes exactly the standard factor names (not custom names
+    # that were remapped), prefer the richer MultiModelBundle path over factorial
+    # LMM — it's simpler, faster, and shows the cross-model ranking output the
+    # user usually wants.  An explicit LMM backend opt-in bypasses this.
+    _user_factors_list = [_user_factors] if isinstance(_user_factors, str) else list(_user_factors)
+    _is_canonical_2factor = (
+        is_factorial
+        and len(_user_factors_list) == 2
+        and all(f in _STANDARD_FACTOR_NAMES for f in _user_factors_list)
+        and model_col and model_col in df.columns
+        and prompt_col and prompt_col in df.columns
+        and engine_kwargs.get("backend") not in {"lmm", "factorial_lmm"}
+    )
+    if _is_canonical_2factor:
+        df_multi = df[
+            [model_col, prompt_col, item_col, metric_col]
+            + ([run_col] if run_col and run_col in df.columns else [])
+        ].copy()
+        rename_multi = {
+            model_col: "model",
+            prompt_col: "template",
+            item_col: "input",
+            metric_col: "score",
+        }
+        if run_col and run_col in df.columns:
+            rename_multi[run_col] = "run"
+        df_multi = df_multi.rename(columns={k: v for k, v in rename_multi.items() if k != v})
+        bench = from_dataframe(df_multi, format="long", strict_complete_design=False)
+        reference = baseline if baseline else "grand_mean"
+        analysis = analyze(bench, ci=ci_level, reference=reference, **engine_kwargs)
+        return ComparisonResult(
+            analysis,
+            factors=_user_factors,
+            metric=metric_col,
+            baseline=baseline,
+            alpha=alpha,
+            filtered_df=df,
+            _mmb_view="model_level",
+            min_meaningful_diff=min_meaningful_diff,
+        )
+
     # ── path D: factorial (multiple factors → LMM) ────────────────────────────
     if is_factorial:
         # Validate all factor columns exist
