@@ -1121,7 +1121,10 @@ def _print_pairwise_section(
         )
         pair_low = -pair_max_abs
         pair_high = pair_max_abs
-        _any_multi_ci = any(row.get("multi_ci") is not None for row in normalized_rows[:max_pairs])
+        # gradient mode always produces a gradient (synthesized when multi_ci is absent)
+        _any_multi_ci = (style == "gradient") or any(
+            row.get("multi_ci") is not None for row in normalized_rows[:max_pairs]
+        )
         _pair_ci_pct = int(round((1 - get_alpha_ci()) * 100))
         _pair_ci_legend = _legend_ci_label(style, _pair_ci_pct, _any_multi_ci)
         print(
@@ -1438,7 +1441,7 @@ def _print_bundle_summary(
     # Factorial LMM diagnostics (factor tests + marginal means).
     if bundle.factorial_lmm_info is not None:
         print()
-        _print_factorial_lmm_summary(bundle)
+        _print_factorial_lmm_summary(bundle, item_singular=item_singular, style=style)
 
     # Executive summary leaderboard (always last — immediately visible in terminal).
     print()
@@ -1627,11 +1630,25 @@ def _print_lmm_summary(bundle: AnalysisBundle) -> None:
     )
 
 
-def _print_factorial_lmm_summary(bundle: AnalysisBundle) -> None:
+def _print_factorial_lmm_summary(
+    bundle: AnalysisBundle,
+    *,
+    item_singular: str = "template",
+    style: Literal["line", "gradient"] = "gradient",
+) -> None:
     """Print factorial LMM diagnostics: variance components, factor tests, marginal means."""
     info = bundle.factorial_lmm_info
     if info is None:
         return
+
+    # Build a display-name map from internal slot names ("model", "prompt") to
+    # the user's original factor names when item_singular is a pipe-joined label.
+    _std_slots = ["model", "prompt"]
+    if "|" in item_singular:
+        _parts = item_singular.split("|")
+        _factor_display = {_std_slots[i]: _parts[i] for i in range(min(len(_parts), len(_std_slots)))}
+    else:
+        _factor_display = {}
 
     _print_subsection("--- Factorial LMM Diagnostics ---")
     print(f"  Formula : {info.formula}")
@@ -1681,9 +1698,11 @@ def _print_factorial_lmm_summary(bundle: AnalysisBundle) -> None:
     mm = info.marginal_means
     if mm:
         line_width = 41
+        ci_pct = int(round((1 - get_alpha_ci()) * 100))
         for factor_name, mm_df in mm.items():
+            display_name = _factor_display.get(factor_name, factor_name)
             print()
-            _print_subsection(f"--- Marginal Means: {factor_name} ---")
+            _print_subsection(f"--- Marginal Means: {display_name} ---")
             if len(mm_df) == 0:
                 print("  (no marginal means available)")
                 continue
@@ -1712,24 +1731,29 @@ def _print_factorial_lmm_summary(bundle: AnalysisBundle) -> None:
             axis_high = axis_max
             level_w = min(28, max(len("Level"), max(len(str(v)) for v in mm_sorted["level"]) + 2))
 
+            _ci_legend_mm = _legend_ci_label(style, ci_pct, style == "gradient")
             print(
                 f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-                "(─ CI, ● mean, │ factor mean)"
+                f"(· ±SE, {_ci_legend_mm}, ● mean, │ factor mean)"
             )
             print(
                 f"  {'Level':<{level_w}s} {'Interval Plot':<{line_width}s} "
                 f"{'Mean':>8s} {'SE':>8s} {'CI Low':>9s} {'CI High':>9s} {'Δ vs avg':>10s}"
             )
             for i, row in mm_sorted.iterrows():
-                interval_line = _ascii_interval_line(
+                _se = float(row["se"])
+                _synth_mc = _synth_multi_ci_from_se(float(centered_mean[i]), _se)
+                interval_line = _choose_interval_line(
                     mean=float(centered_mean[i]),
                     ci_low=float(centered_low[i]),
                     ci_high=float(centered_high[i]),
-                    spread_low=float(centered_mean[i]),
-                    spread_high=float(centered_mean[i]),
+                    spread_low=float(centered_mean[i]) - _se,
+                    spread_high=float(centered_mean[i]) + _se,
                     axis_low=axis_low,
                     axis_high=axis_high,
                     width=line_width,
+                    style=style,
+                    multi_ci=_synth_mc,
                 )
                 print(
                     f"  {_truncate_label(str(row['level']), level_w):<{level_w}s} "
@@ -1959,16 +1983,15 @@ def _gradient_interval_line(
             chars[i] = char
 
     ref_idx = to_idx(reference)
-    # mean_idx = to_idx(mean)
-    # if chars[ref_idx] not in ("█", "▓", "▒", "░"):
+    mean_idx = to_idx(mean)
     chars[ref_idx] = "│"
 
-    # The reference line can obscure the tail of a CI band when the tail 
-    # exactly ends on it. This might cause the user to miss the fact that the 
-    # CI band crosses the reference line. To mitigate this, we add a hint character 
-    # to the side to visually suggest the presence of a "crossing"—this way, users can 
-    # distinguish between bands that cross, and bands that get close to the | 
-    # but do not cross it. 
+    # The reference line can obscure the tail of a CI band when the tail
+    # exactly ends on it. This might cause the user to miss the fact that the
+    # CI band crosses the reference line. To mitigate this, we add a hint character
+    # to the side to visually suggest the presence of a "crossing"—this way, users can
+    # distinguish between bands that cross, and bands that get close to the |
+    # but do not cross it.
     outer_lo, outer_hi = multi_ci[sorted_alphas[0]]
     if float(outer_lo) < float(reference) < float(outer_hi):
         hint_char = band_chars[0]
@@ -1977,9 +2000,31 @@ def _gradient_interval_line(
         if ref_idx + 1 < width and chars[ref_idx + 1] in {" ", "·"}:
             chars[ref_idx + 1] = hint_char
 
-    # chars[mean_idx] = "●"
-    
+    # Place mean marker; │ takes priority when mean == reference.
+    # if mean_idx != ref_idx:
+    #     chars[mean_idx] = "●"
+
     return "".join(chars)
+
+
+def _synth_multi_ci_from_se(
+    mean: float, se: float
+) -> Optional[dict[float, tuple[float, float]]]:
+    """Synthesize a multi_ci gradient from a mean and standard error.
+
+    Uses normal z-scaling, appropriate for Wald-type CIs (LMM, t-interval)
+    where CI = mean ± z * se exactly.
+    """
+    if se <= 1e-12:
+        return None
+    import scipy.stats
+    return {
+        a: (
+            mean - float(scipy.stats.norm.ppf(1.0 - a / 2.0)) * se,
+            mean + float(scipy.stats.norm.ppf(1.0 - a / 2.0)) * se,
+        )
+        for a in GRADIENT_CI_ALPHAS
+    }
 
 
 def _choose_interval_line(
@@ -1997,9 +2042,18 @@ def _choose_interval_line(
     multi_ci: Optional[dict[float, tuple[float, float]]] = None,
 ) -> str:
     """Dispatch to gradient or line renderer based on style and data availability."""
-    if style == "gradient" and multi_ci is not None and len(multi_ci) >= 2:
+    effective_multi_ci = multi_ci
+    if style == "gradient" and effective_multi_ci is None:
+        # Synthesize gradient from the primary CI via normal z-scaling.
+        # Appropriate for Wald-type CIs (LMM); a reasonable approximation elsewhere.
+        half = (ci_high - ci_low) / 2.0
+        if half > 1e-12:
+            import scipy.stats
+            z_stored = float(scipy.stats.norm.ppf(1.0 - get_alpha_ci() / 2.0))
+            effective_multi_ci = _synth_multi_ci_from_se(mean, half / z_stored)
+    if style == "gradient" and effective_multi_ci is not None and len(effective_multi_ci) >= 2:
         return _gradient_interval_line(
-            mean=mean, multi_ci=multi_ci,
+            mean=mean, multi_ci=effective_multi_ci,
             spread_low=spread_low, spread_high=spread_high,
             axis_low=axis_low, axis_high=axis_high,
             width=width, reference=reference,
