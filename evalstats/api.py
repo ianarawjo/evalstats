@@ -847,41 +847,54 @@ def _run_alignment_mc(
     final_pair_ci_low  = final_diffs - z * se_total_pair
     final_pair_ci_high = final_diffs + z * se_total_pair
 
-    # Rubin MI pooled p-values for H0: diff = 0.
-    # Use a finite-df t reference when possible; fall back to normal when
-    # between-imputation variance is (near) zero.
+    # Rubin MI pooled p-values for H0: diff = 0
+    # Two-sided test by default.
     tiny = np.finfo(float).eps
+    eps_r = 1e-10
     pooled_pair_pvals = np.empty(n_pairs, dtype=float)
     for k in range(n_pairs):
-        se_k = float(se_total_pair[k])
-        q_k = float(final_diffs[k])
-        if not np.isfinite(se_k) or se_k <= tiny:
+
+        q_k = float(final_diffs[k])  # pooled MI estimate (theta_bar)
+
+        w_k = float(max(W_bar_pair[k], 0.0))  # within-imputation variance
+        b_k = float(max(B_pair[k], 0.0))      # between-imputation variance
+
+        # Rubin total variance
+        T_k = w_k + (1.0 + 1.0 / n_mc) * b_k
+
+        if not np.isfinite(T_k) or T_k <= tiny:
             pooled_pair_pvals[k] = 1.0 if abs(q_k) <= tiny else 0.0
             continue
 
-        w_k = float(max(W_bar_pair[k], 0.0))
-        b_k = float(max(B_pair[k], 0.0))
+        se_k = np.sqrt(T_k)
+
+        # test statistic
         t_stat = abs(q_k / se_k)
 
-        if w_k <= tiny and b_k <= tiny:
-            p_k = 2.0 * _scipy_norm.sf(t_stat)
-        elif w_k <= tiny and b_k > tiny:
-            # When within-imputation variance is effectively zero, use the
-            # large-sample normal reference as a stable fallback.
+        # relative increase in variance (Rubin R)
+        if w_k <= tiny:
+            r_k = np.inf if b_k > 0 else 0.0
+        else:
+            r_k = ((1.0 + 1.0 / n_mc) * b_k) / w_k
+
+        # Degrees of freedom (Rubin)
+        if np.isfinite(r_k) and r_k > eps_r:
+            nu_k = (n_mc - 1.0) * (1.0 + 1.0 / r_k) ** 2
+        else:
+            nu_k = np.inf
+
+        # p-value computation
+        if not np.isfinite(nu_k) or nu_k > 1e6:
+            # Normal approximation fallback
             p_k = 2.0 * _scipy_norm.sf(t_stat)
         else:
-            r_k = ((1.0 + 1.0 / n_mc) * b_k) / max(w_k, tiny)
-            if r_k <= tiny:
-                p_k = 2.0 * _scipy_norm.sf(t_stat)
-            else:
-                nu_k = (n_mc - 1.0) * (1.0 + 1.0 / r_k) ** 2
-                if np.isfinite(nu_k) and nu_k > 0:
-                    p_k = 2.0 * _scipy_t.sf(t_stat, df=nu_k)
-                else:
-                    p_k = 2.0 * _scipy_norm.sf(t_stat)
+            p_k = 2.0 * _scipy_t.sf(t_stat, df=nu_k)
 
+        # clamp for numerical safety
         pooled_pair_pvals[k] = float(min(max(p_k, 0.0), 1.0))
 
+
+    # Optional multiple-comparisons correction
     if correction != "none" and n_pairs > 1:
         pooled_pair_pvals = correct_pvalues(pooled_pair_pvals, correction)
 
