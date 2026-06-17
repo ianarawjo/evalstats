@@ -931,7 +931,7 @@ class TestPPISampleSizeChecks:
 
     def test_warns_when_n_all_below_100(self):
         """compare(alignment=...) should warn about potential under-coverage when N < 100."""
-        # n_items=30 → n_all=60 (50≤60<100), n_labeled=30 to pass all hard/soft checks.
+        # n_items=30 → n_all=60 (30 items × 2 models), between 50 and 100.
         evaldata = _make_small_evaldata(n_items=30, n_labeled=30)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
