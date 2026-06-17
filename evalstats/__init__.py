@@ -33,12 +33,15 @@ from evalstats.config import set_alpha_ci, get_alpha_ci
 # "compare" name if it were imported before the submodule.
 from evalstats.loader import load_from, EvalResults, EvalLoadError
 from evalstats.api import compare, compare_models, compare_prompts, ComparisonResult
+from evalstats.alignment import validate_alignment, AlignmentResult
 
 __version__ = "0.2.0"
 
 __all__ = [
     # High-level spec API
     "load_from",
+    "validate_alignment",
+    "AlignmentResult",
     "EvalResults",
     "EvalLoadError",
     "compare",

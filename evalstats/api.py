@@ -14,12 +14,15 @@ from typing import Any, Dict, List, Literal, Optional, Union
 
 import numpy as np
 import pandas as pd
+from scipy.stats import norm as _scipy_norm
+from scipy.stats import t as _scipy_t
 
 from evalstats.loader import EvalResults, EvalLoadError, load_from, _scores_dict_to_df, _is_nested_scores_dict
 from evalstats.io import from_dataframe
 from evalstats.config import get_alpha_ci
-from evalstats.core.router import analyze, analyze_factorial
+from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
+from evalstats.core.stats_utils import correct_pvalues
 from evalstats.core.summary import print_analysis_summary, print_brief_summary, _UNSET as _SUMMARY_UNSET
 
 
@@ -58,6 +61,7 @@ class ComparisonResult:
         self._df = filtered_df
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
         self._min_meaningful_diff = min_meaningful_diff
+        self._variance_components: Optional[dict] = None  # set by MC alignment loop
 
     # ── print methods ────────────────────────────────────────────────────────
 
@@ -391,13 +395,16 @@ class ComparisonResult:
                 pw_entry["p_value"] = float(pair_result.p_value)
             pw_list.append(pw_entry)
 
-        return {
+        result: dict[str, Any] = {
             "factors": self._factors,
             "metric": self._metric,
             "alpha": self._alpha,
             "entities": entities,
             "pairwise": pw_list,
         }
+        if self._variance_components is not None:
+            result["variance_components"] = self._variance_components
+        return result
 
     def to_frame(self) -> dict[str, pd.DataFrame]:
         """Return analysis results as a dict of DataFrames.
@@ -671,6 +678,310 @@ def _bridge_to_io(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# MC alignment loop
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_alignment_mc(
+    cr: "ComparisonResult",
+    *,
+    df: pd.DataFrame,
+    metric_col: str,
+    factor_col: str,
+    item_col: str,
+    run_col: Optional[str],
+    block_col: Optional[str],
+    alignment_result,
+    n_mc: int,
+    alpha: float,
+    ci_level: float,
+    engine_kwargs: dict,
+) -> None:
+    """Run the MC imputation loop and override CIs in ``cr._analysis`` in-place.
+
+    For each of ``n_mc`` draws:
+      1. Sample calibration parameters from the Bayesian posterior.
+      2. Impute latent human labels for all items.
+      3. Run a lightweight pairwise + robustness analysis on the imputed data.
+
+    Aggregates using Rubin's (1987) multiple-imputation combining rules:
+
+      Q̄  = mean of point estimates across M draws
+      W̄  = mean of within-imputation variances (back-computed from CI widths
+            as SE ≈ (ci_high − ci_low) / (2 z_{α/2}); assumes symmetric CIs)
+      B   = between-imputation variance of point estimates (ddof=1)
+      T   = W̄ + (1 + 1/M) B        (total variance)
+      CI  = Q̄ ± z_{α/2} √T
+
+    Under perfect judge alignment B → 0, T → W̄, and CIs converge to the
+    base bootstrap CIs.  Under misalignment B grows and CIs widen
+    proportionally to the measurement uncertainty.
+
+    The SE back-computation is an approximation for non-symmetric bootstrap
+    CIs; this is noted in ``cr._variance_components``.
+    """
+    if n_mc < 2:
+        raise ValueError(
+            f"alignment MC requires n_mc >= 2 for Rubin variance pooling; got n_mc={n_mc}."
+        )
+
+    bundle = cr._primary_bundle()
+    if bundle is None:
+        warnings.warn(
+            "MC alignment is not yet supported for multi-bundle (multi-model) results. "
+            "alignment= will be ignored.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return
+
+    resolved_method = bundle.resolved_method or "auto"
+    resolved_ci_method = bundle.resolved_ci_method or "auto"
+
+    labels = list(bundle.benchmark.template_labels)
+    n_entities = len(labels)
+
+    llm_scores = df[metric_col].to_numpy(dtype=float)
+
+    # MC storage
+    entity_means   = np.empty((n_mc, n_entities))
+    entity_ci_low  = np.empty((n_mc, n_entities))
+    entity_ci_high = np.empty((n_mc, n_entities))
+
+    pair_keys = list(bundle.pairwise.results.keys())
+    n_pairs = len(pair_keys)
+    pair_diffs    = np.empty((n_mc, n_pairs))
+    pair_ci_low   = np.empty((n_mc, n_pairs))
+    pair_ci_high  = np.empty((n_mc, n_pairs))
+
+    n_bootstrap = min(engine_kwargs.get("n_bootstrap", 10_000), 2_000)
+    correction   = engine_kwargs.get("correction", "fdr_bh")
+    statistic    = engine_kwargs.get("statistic", "mean")
+    reference    = engine_kwargs.get("reference", "grand_mean")
+    sim_ci       = engine_kwargs.get("simultaneous_ci", True)
+
+    rng_kw = engine_kwargs.get("rng")
+    if isinstance(rng_kw, np.random.Generator):
+        rng = rng_kw
+    elif isinstance(rng_kw, np.random.RandomState):
+        rng = np.random.default_rng(int(rng_kw.randint(0, 2**32 - 1)))
+    elif rng_kw is None:
+        rng = np.random.default_rng()
+    else:
+        rng = np.random.default_rng(rng_kw)
+
+    for m in range(n_mc):
+        imputed = alignment_result._sample_imputed_scores(llm_scores, rng)
+
+        df_mc = df.copy()
+        df_mc[metric_col] = imputed
+        df_io = _bridge_to_io(
+            df_mc,
+            factor_col=factor_col,
+            item_col=item_col,
+            metric_col=metric_col,
+            run_col=run_col,
+            block_col=block_col,
+        )
+        bench_mc = from_dataframe(df_io, format="long", strict_complete_design=False)
+
+        rob_mc, pw_mc = _analyze_single_lightweight(
+            bench_mc,
+            pairwise_method=resolved_method,
+            robustness_method=resolved_ci_method,
+            reference=reference,
+            ci=ci_level,
+            n_bootstrap=n_bootstrap,
+            correction=correction,
+            statistic=statistic,
+            simultaneous_ci=sim_ci,
+            rng=rng,
+        )
+
+        mc_labels = list(bench_mc.template_labels)
+        mc_label_idx = {lbl: i for i, lbl in enumerate(mc_labels)}
+
+        missing_labels = [lbl for lbl in labels if lbl not in mc_label_idx]
+        if missing_labels:
+            raise ValueError(
+                "MC alignment encountered label mismatch between baseline and imputed draw. "
+                f"Missing labels: {missing_labels}"
+            )
+
+        for i, lbl in enumerate(labels):
+            j = mc_label_idx[lbl]
+            entity_means[m, i]   = rob_mc.mean[j]
+            entity_ci_low[m, i]  = rob_mc.ci_low[j] if rob_mc.ci_low is not None else np.nan
+            entity_ci_high[m, i] = rob_mc.ci_high[j] if rob_mc.ci_high is not None else np.nan
+
+        for k, (a, b) in enumerate(pair_keys):
+            pr = pw_mc.get(a, b)
+            if pr is None:
+                raise ValueError(
+                    "MC alignment encountered missing pairwise comparison in imputed draw: "
+                    f"({a!r}, {b!r})"
+                )
+            pair_diffs[m, k]   = pr.point_diff
+            pair_ci_low[m, k]  = pr.ci_low
+            pair_ci_high[m, k] = pr.ci_high
+
+    # Aggregate via Rubin's (1987) combining rules
+    z = _scipy_norm.ppf(1.0 - alpha / 2)  # e.g. 1.96 for alpha=0.05
+
+    # --- Entity means ---
+    final_means = np.mean(entity_means, axis=0)
+    se_within   = (entity_ci_high - entity_ci_low) / (2.0 * z)
+    W_bar       = np.mean(se_within ** 2, axis=0)
+    B_entity    = np.var(entity_means, axis=0, ddof=1)
+    T_entity    = W_bar + (1.0 + 1.0 / n_mc) * B_entity
+    se_total    = np.sqrt(np.maximum(T_entity, 0.0))
+    final_ci_low  = final_means - z * se_total
+    final_ci_high = final_means + z * se_total
+
+    # --- Pairwise diffs ---
+    final_diffs     = np.mean(pair_diffs, axis=0)
+    se_pair_within  = (pair_ci_high - pair_ci_low) / (2.0 * z)
+    W_bar_pair      = np.mean(se_pair_within ** 2, axis=0)
+    B_pair          = np.var(pair_diffs, axis=0, ddof=1)
+    T_pair          = W_bar_pair + (1.0 + 1.0 / n_mc) * B_pair
+    se_total_pair   = np.sqrt(np.maximum(T_pair, 0.0))
+    final_pair_ci_low  = final_diffs - z * se_total_pair
+    final_pair_ci_high = final_diffs + z * se_total_pair
+
+    # Rubin MI pooled p-values for H0: diff = 0.
+    # Use a finite-df t reference when possible; fall back to normal when
+    # between-imputation variance is (near) zero.
+    tiny = np.finfo(float).eps
+    pooled_pair_pvals = np.empty(n_pairs, dtype=float)
+    for k in range(n_pairs):
+        se_k = float(se_total_pair[k])
+        q_k = float(final_diffs[k])
+        if not np.isfinite(se_k) or se_k <= tiny:
+            pooled_pair_pvals[k] = 1.0 if abs(q_k) <= tiny else 0.0
+            continue
+
+        w_k = float(max(W_bar_pair[k], 0.0))
+        b_k = float(max(B_pair[k], 0.0))
+        t_stat = abs(q_k / se_k)
+
+        if w_k <= tiny and b_k <= tiny:
+            p_k = 2.0 * _scipy_norm.sf(t_stat)
+        elif w_k <= tiny and b_k > tiny:
+            # When within-imputation variance is effectively zero, use the
+            # large-sample normal reference as a stable fallback.
+            p_k = 2.0 * _scipy_norm.sf(t_stat)
+        else:
+            r_k = ((1.0 + 1.0 / n_mc) * b_k) / max(w_k, tiny)
+            if r_k <= tiny:
+                p_k = 2.0 * _scipy_norm.sf(t_stat)
+            else:
+                nu_k = (n_mc - 1.0) * (1.0 + 1.0 / r_k) ** 2
+                if np.isfinite(nu_k) and nu_k > 0:
+                    p_k = 2.0 * _scipy_t.sf(t_stat, df=nu_k)
+                else:
+                    p_k = 2.0 * _scipy_norm.sf(t_stat)
+
+        pooled_pair_pvals[k] = float(min(max(p_k, 0.0), 1.0))
+
+    if correction != "none" and n_pairs > 1:
+        pooled_pair_pvals = correct_pvalues(pooled_pair_pvals, correction)
+
+    # Override _analysis in-place
+    bundle.robustness.mean      = final_means
+    bundle.robustness.ci_low    = final_ci_low
+    bundle.robustness.ci_high   = final_ci_high
+    bundle.robustness.multi_ci  = None  # gradient bands no longer valid after MC override
+
+    for k, key in enumerate(pair_keys):
+        pr = bundle.pairwise.results[key]
+        pr.point_diff = float(final_diffs[k])
+        pr.ci_low     = float(final_pair_ci_low[k])
+        pr.ci_high    = float(final_pair_ci_high[k])
+        pr.p_value    = float(pooled_pair_pvals[k])
+        pr.multi_ci   = None
+
+    # Variance decomposition
+    avg_halfwidth = np.mean((entity_ci_high - entity_ci_low) / 2.0, axis=0)
+
+    cr._variance_components = {
+        "entities": {
+            lbl: {
+                "alignment_var":          float(B_entity[i]),
+                "sampling_var_approx":    float(W_bar[i]),
+                "total_var_approx":       float(T_entity[i]),
+                "sampling_halfwidth_approx": float(avg_halfwidth[i]),
+            }
+            for i, lbl in enumerate(labels)
+        },
+        "n_mc": n_mc,
+        "note": (
+            "Rubin's (1987) combining rules. "
+            "alignment_var (B) = between-imputation variance (measurement uncertainty). "
+            "sampling_var_approx (W̄) = mean within-imputation variance, back-computed "
+            "from CI widths assuming symmetric CIs (approximate for non-parametric methods). "
+            "total_var_approx (T) = W̄ + (1 + 1/M)·B."
+        ),
+    }
+
+
+def _run_alignment_mc_if_needed(
+    cr: "ComparisonResult",
+    *,
+    alignment,
+    metric_col: str,
+    n_mc: int,
+    alpha: float,
+    ci_level: float,
+    engine_kwargs: dict,
+    df: pd.DataFrame,
+    factor_col: str,
+    item_col: str,
+    run_col: Optional[str],
+) -> None:
+    """Validate alignment= and dispatch to _run_alignment_mc when appropriate."""
+    if alignment is None:
+        return
+    if not isinstance(alignment, dict):
+        warnings.warn(
+            "alignment= must be a dict mapping metric column names to AlignmentResult objects. "
+            "Example: alignment={'score': my_alignment_result}. alignment= will be ignored.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return
+    ar = alignment.get(metric_col)
+    if ar is None:
+        warnings.warn(
+            f"alignment= dict has no entry for metric column '{metric_col}'. "
+            f"Keys present: {list(alignment.keys())}. alignment= will be ignored.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return
+    if not isinstance(cr._analysis, AnalysisBundle):
+        warnings.warn(
+            "MC alignment propagation is not yet supported for multi-model or factorial "
+            "analyses. alignment= will be ignored for this comparison.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return
+    _run_alignment_mc(
+        cr,
+        df=df,
+        metric_col=metric_col,
+        factor_col=factor_col,
+        item_col=item_col,
+        run_col=run_col,
+        block_col=None,
+        alignment_result=ar,
+        n_mc=n_mc,
+        alpha=alpha,
+        ci_level=ci_level,
+        engine_kwargs=engine_kwargs,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # compare()
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -683,7 +994,8 @@ def compare(
     block: Union[str, list[str], Literal["auto"]] = "auto",
     slices=None,         # deferred
     secondary=None,      # deferred
-    alignment=None,      # deferred
+    alignment=None,
+    n_mc: int = 200,
     min_meaningful_diff=None,  # deferred
     alpha: Optional[float] = None,
     **kwargs: Any,
@@ -747,9 +1059,6 @@ def compare(
         warnings.warn("slices= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
     if secondary is not None:
         warnings.warn("secondary= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
-    if alignment is not None:
-        warnings.warn("alignment= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
-
     # ── resolve alpha (explicit > global default) ─────────────────────────────
     if alpha is None:
         alpha = get_alpha_ci()
@@ -900,7 +1209,7 @@ def compare(
         # model→"model" axis means model_level compares models (what the user requested).
         # When bench is a BenchmarkResult (no prompts), the analysis is an AnalysisBundle
         # and _mmb_view is irrelevant.
-        return ComparisonResult(
+        cr = ComparisonResult(
             analysis,
             factors=_user_factors,
             metric=metric_col,
@@ -910,6 +1219,12 @@ def compare(
             _mmb_view="model_level",
             min_meaningful_diff=min_meaningful_diff,
         )
+        _run_alignment_mc_if_needed(
+            cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
+            alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
+            df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
+        )
+        return cr
 
     # ── path B: prompt/template comparison ───────────────────────────────────
     if is_prompt_comparison:
@@ -942,7 +1257,7 @@ def compare(
         reference = baseline if baseline else "grand_mean"
         analysis = analyze(bench, ci=ci_level, reference=reference, **engine_kwargs)
 
-        return ComparisonResult(
+        cr = ComparisonResult(
             analysis,
             factors=_user_factors,
             metric=metric_col,
@@ -952,6 +1267,12 @@ def compare(
             _mmb_view="template_level",
             min_meaningful_diff=min_meaningful_diff,
         )
+        _run_alignment_mc_if_needed(
+            cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
+            alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
+            df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
+        )
+        return cr
 
     # ── path C: arbitrary single factor column ────────────────────────────────
     if is_canonical_col or (not is_factorial and factors_list[0] in df.columns):
@@ -968,7 +1289,7 @@ def compare(
         reference = baseline if baseline else "grand_mean"
         analysis = analyze(bench, ci=ci_level, reference=reference, **engine_kwargs)
 
-        return ComparisonResult(
+        cr = ComparisonResult(
             analysis,
             factors=_user_factors,
             metric=metric_col,
@@ -977,6 +1298,12 @@ def compare(
             filtered_df=df,
             min_meaningful_diff=min_meaningful_diff,
         )
+        _run_alignment_mc_if_needed(
+            cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
+            alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
+            df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
+        )
+        return cr
 
     # ── path D-pre: canonical 2-factor ["model","prompt"] → multi-model path ──
     # When the user passes exactly the standard factor names (not custom names
