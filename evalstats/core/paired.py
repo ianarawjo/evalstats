@@ -1078,6 +1078,65 @@ def _pairwise_diffs_seeded(
     )
 
 
+def _apply_max_t_cis(
+    boot_stats: np.ndarray,
+    point_ests: np.ndarray,
+    pairs: list,
+    ci: float,
+) -> tuple[dict, dict]:
+    """Apply the studentized max-T critical value to a pre-built bootstrap matrix.
+
+    This is the shared computation used by both the standard resampling path
+    and the pre-computed bootstrap path (e.g. PPI) in
+    :func:`_max_stat_simultaneous_cis`.
+
+    Parameters
+    ----------
+    boot_stats : np.ndarray, shape (B, k)
+        Bootstrap distribution of pairwise diffs, one column per pair.
+    point_ests : np.ndarray, shape (k,)
+        Observed pairwise point estimates.
+    pairs : list[tuple[str, str]]
+        Pair labels in the same order as columns of *boot_stats*.
+    ci : float
+        Simultaneous confidence level (e.g. 0.95).
+
+    Returns
+    -------
+    tuple[dict, dict]
+        ``(sim_cis, max_t_pvalues)``.
+    """
+    se = np.std(boot_stats, axis=0, ddof=1)  # (k,)
+    valid = se > 1e-12
+
+    if not np.any(valid):
+        return {}, {}
+
+    se_safe = np.where(valid, se, 1.0)
+    T = (boot_stats - point_ests[np.newaxis, :]) / se_safe[np.newaxis, :]  # (B, k)
+    M_b = np.max(np.abs(T[:, valid]), axis=1)  # (B,)
+    c = float(np.quantile(M_b, ci))
+    B_total = len(M_b)
+
+    sim_cis: dict = {}
+    max_t_pvalues: dict = {}
+    for p_idx, pair in enumerate(pairs):
+        if valid[p_idx]:
+            half = c * se[p_idx]
+            sim_cis[pair] = (
+                float(point_ests[p_idx] - half),
+                float(point_ests[p_idx] + half),
+            )
+            t_obs = abs(float(point_ests[p_idx])) / float(se[p_idx])
+            extreme = int(np.sum(M_b >= t_obs))
+            max_t_pvalues[pair] = float((extreme + 1) / (B_total + 1))
+        else:
+            sim_cis[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
+            max_t_pvalues[pair] = 1.0
+
+    return sim_cis, max_t_pvalues
+
+
 def _max_stat_simultaneous_cis(
     scores: np.ndarray,
     pairs: list[tuple[str, str]],
@@ -1087,7 +1146,10 @@ def _max_stat_simultaneous_cis(
     n_bootstrap: int,
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
-) -> dict[tuple[str, str], tuple[float, float]]:
+    *,
+    precomputed_boot_stats: Optional[np.ndarray] = None,
+    precomputed_point_ests: Optional[np.ndarray] = None,
+) -> tuple[dict, dict]:
     """Compute simultaneous CIs via the studentized bootstrap max-T method.
 
     Uses shared resamples across all pairs so that the joint distribution of
@@ -1111,11 +1173,13 @@ def _max_stat_simultaneous_cis(
     scores : np.ndarray
         Shape ``(N, M)`` or ``(N, M, R)``.  When ``R >= 3`` the seeded
         nested bootstrap is used; otherwise scores are collapsed to 2-D.
+        Ignored when *precomputed_boot_stats* is supplied.
     pairs : list[tuple[str, str]]
         All pairs for which simultaneous CIs should be computed, in the
         canonical (label_a, label_b) storage order.
     labels : list[str]
         Template labels — used to map names to row indices in *scores*.
+        Ignored when *precomputed_boot_stats* is supplied.
     method : str
         Bootstrap variant.  Supported: ``'bootstrap'``, ``'bca'``,
         ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'auto'``
@@ -1123,20 +1187,55 @@ def _max_stat_simultaneous_cis(
         ``'sign_test'``.  Methods that do not use bootstrap resampling
         for CIs (``'newcombe'``, ``'tango'``, ``'fisher_exact'``, ``'bayes_binary'``,
         ``'lmm'``) are not supported; an empty dict is returned for these.
+        Ignored when *precomputed_boot_stats* is supplied.
     ci : float
         Desired simultaneous confidence level (e.g. 0.95).
     n_bootstrap : int
-        Number of bootstrap replicates.
+        Number of bootstrap replicates.  Ignored when *precomputed_boot_stats*
+        is supplied.
     rng : np.random.Generator
+        Ignored when *precomputed_boot_stats* is supplied.
     statistic : str
-        ``'mean'`` or ``'median'``.
+        ``'mean'`` or ``'median'``.  Ignored when *precomputed_boot_stats*
+        is supplied.
+    precomputed_boot_stats : np.ndarray, shape (B, k), optional
+        Pre-computed bootstrap distribution of pairwise diffs, one column
+        per pair in *pairs* order.  When provided the resampling block is
+        skipped entirely and the max-T statistic is derived directly from
+        this matrix.  Requires *precomputed_point_ests*.
+    precomputed_point_ests : np.ndarray, shape (k,), optional
+        Observed pairwise point estimates corresponding to each column of
+        *precomputed_boot_stats*.  Required when *precomputed_boot_stats*
+        is supplied.
 
     Returns
     -------
-    dict[tuple[str, str], tuple[float, float]]
-        Maps each pair to its ``(ci_low, ci_high)`` simultaneous CI.
-        Returns an empty dict for unsupported methods.
+    tuple[dict[tuple[str, str], tuple[float, float]], dict[tuple[str, str], float]]
+        ``(sim_cis, max_t_pvalues)`` where *sim_cis* maps each pair to its
+        ``(ci_low, ci_high)`` simultaneous CI.  Returns ``({}, {})`` for
+        unsupported methods or degenerate inputs.
     """
+    if len(pairs) == 0:
+        return {}, {}
+
+    # ── Pre-computed bootstrap path (e.g. PPI correction) ────────────────────
+    # When the caller already has a joint bootstrap distribution (one draw per
+    # row, one pair per column), skip all resampling and run the shared max-T
+    # computation directly.
+    if precomputed_boot_stats is not None:
+        if precomputed_point_ests is None:
+            raise ValueError(
+                "precomputed_point_ests must be provided together with "
+                "precomputed_boot_stats"
+            )
+        return _apply_max_t_cis(
+            np.asarray(precomputed_boot_stats, dtype=float),
+            np.asarray(precomputed_point_ests, dtype=float),
+            pairs,
+            ci,
+        )
+
+    # ── Standard path: resample from raw scores ───────────────────────────────
     _BOOTSTRAP_COMPATIBLE = {
         "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
         "permutation", "sign_test", "auto",
@@ -1145,7 +1244,7 @@ def _max_stat_simultaneous_cis(
     if method == "auto":
         method = "smooth_bootstrap"
 
-    if method not in _BOOTSTRAP_COMPATIBLE or len(pairs) == 0:
+    if method not in _BOOTSTRAP_COMPATIBLE:
         return {}, {}
 
     k = len(pairs)
@@ -1311,43 +1410,7 @@ def _max_stat_simultaneous_cis(
             # _batch_resample already computes the per-pair statistic: (B, k)
             boot_stats = _batch_resample(diffs_mat, input_idx, statistic)  # (B, k)
 
-    # ------------------------------------------------------------------
-    # Studentized max-T critical value and simultaneous CIs
-    # ------------------------------------------------------------------
-    se = np.std(boot_stats, axis=0, ddof=1)  # (k,)
-    valid = se > 1e-12
-
-    if not np.any(valid):
-        # All SEs degenerate; simultaneous CI cannot be computed.
-        return {}, {}
-
-    se_safe = np.where(valid, se, 1.0)
-    T = (boot_stats - point_ests[np.newaxis, :]) / se_safe[np.newaxis, :]  # (B, k)
-
-    # Max over valid pairs only; quantile gives the (1−α) simultaneous critical value.
-    M_b = np.max(np.abs(T[:, valid]), axis=1)  # (B,)
-    c = float(np.quantile(M_b, ci))
-    B_total = len(M_b)
-
-    sim_cis: dict[tuple[str, str], tuple[float, float]] = {}
-    max_t_pvalues: dict[tuple[str, str], float] = {}
-    for p_idx, pair in enumerate(pairs):
-        if valid[p_idx]:
-            half = c * se[p_idx]
-            sim_cis[pair] = (
-                float(point_ests[p_idx] - half),
-                float(point_ests[p_idx] + half),
-            )
-            # Max-T p-value: proportion of max-T bootstrap statistics >= observed |t|.
-            t_obs = abs(float(point_ests[p_idx])) / float(se[p_idx])
-            extreme = int(np.sum(M_b >= t_obs))
-            max_t_pvalues[pair] = float((extreme + 1) / (B_total + 1))
-        else:
-            # SE is zero (constant differences); CI degenerates to a point.
-            sim_cis[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
-            max_t_pvalues[pair] = 1.0
-
-    return sim_cis, max_t_pvalues
+    return _apply_max_t_cis(boot_stats, point_ests, pairs, ci)
 
 
 def _bonferroni_simultaneous_cis(

@@ -34,6 +34,7 @@ from evalstats.config import set_alpha_ci, get_alpha_ci
 from evalstats.loader import load_from, EvalResults, EvalLoadError
 from evalstats.api import compare, compare_models, compare_prompts, ComparisonResult
 from evalstats.alignment import validate_alignment, AlignmentResult
+from evalstats import ppi
 
 __version__ = "0.2.0"
 
@@ -42,6 +43,7 @@ __all__ = [
     "load_from",
     "validate_alignment",
     "AlignmentResult",
+    "ppi",
     "EvalResults",
     "EvalLoadError",
     "compare",

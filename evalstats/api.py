@@ -19,10 +19,11 @@ from scipy.stats import t as _scipy_t
 
 from evalstats.loader import EvalResults, EvalLoadError, load_from, _scores_dict_to_df, _is_nested_scores_dict
 from evalstats.io import from_dataframe
-from evalstats.config import get_alpha_ci
+from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS
 from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
 from evalstats.core.stats_utils import correct_pvalues
+from evalstats.core.paired import _max_stat_simultaneous_cis
 from evalstats.core.summary import print_analysis_summary, print_brief_summary, _UNSET as _SUMMARY_UNSET
 
 
@@ -678,265 +679,276 @@ def _bridge_to_io(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MC alignment loop
+# PPI alignment correction
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _run_alignment_mc(
+def _run_alignment_ppi(
     cr: "ComparisonResult",
     *,
     df: pd.DataFrame,
     metric_col: str,
     factor_col: str,
-    item_col: str,
-    run_col: Optional[str],
-    block_col: Optional[str],
     alignment_result,
-    n_mc: int,
     alpha: float,
-    ci_level: float,
-    engine_kwargs: dict,
+    n_boot: int,
+    correction: str,
+    rng,
 ) -> None:
-    """Run the MC imputation loop and override CIs in ``cr._analysis`` in-place.
+    """Override CIs in ``cr._analysis`` in-place using Prediction-Powered Inference (PPI).
 
-    For each of ``n_mc`` draws:
-      1. Sample calibration parameters from the Bayesian posterior.
-      2. Impute latent human labels for all items.
-      3. Run a lightweight pairwise + robustness analysis on the imputed data.
+    Uses the small human-annotated subset stored in ``alignment_result`` to
+    debias the LLM-only estimates via PPI:
 
-    Aggregates using Rubin's (1987) multiple-imputation combining rules:
+        θ̂_PPI(e) = mean(Ŷ_all[entity==e])
+                  + mean(Y_lab[entity==e])
+                  − mean(Ŷ_lab[entity==e])
 
-      Q̄  = mean of point estimates across M draws
-      W̄  = mean of within-imputation variances (back-computed from CI widths
-            as SE ≈ (ci_high − ci_low) / (2 z_{α/2}); assumes symmetric CIs)
-      B   = between-imputation variance of point estimates (ddof=1)
-      T   = W̄ + (1 + 1/M) B        (total variance)
-      CI  = Q̄ ± z_{α/2} √T
+    where Ŷ_all are LLM scores over all items, Y_lab are human labels on the
+    labeled subset, and Ŷ_lab are the matching LLM scores for those items.
 
-    Under perfect judge alignment B → 0, T → W̄, and CIs converge to the
-    base bootstrap CIs.  Under misalignment B grows and CIs widen
-    proportionally to the measurement uncertainty.
-
-    The SE back-computation is an approximation for non-symmetric bootstrap
-    CIs; this is noted in ``cr._variance_components``.
+    A percentile bootstrap CI is computed by independently resampling the
+    full set (size N) and the labeled set (size n_lab) on each draw.
+    Pairwise diff CIs and p-values are derived from the same bootstrap samples.
     """
-    if n_mc < 2:
-        raise ValueError(
-            f"alignment MC requires n_mc >= 2 for Rubin variance pooling; got n_mc={n_mc}."
-        )
-
     bundle = cr._primary_bundle()
     if bundle is None:
         warnings.warn(
-            "MC alignment is not yet supported for multi-bundle (multi-model) results. "
-            "alignment= will be ignored.",
+            "PPI alignment correction is not yet supported for multi-bundle "
+            "(multi-model) results. alignment= will be ignored.",
             UserWarning,
             stacklevel=4,
         )
         return
 
-    resolved_method = bundle.resolved_method or "auto"
-    resolved_ci_method = bundle.resolved_ci_method or "auto"
+    rng = np.random.default_rng(rng)
 
     labels = list(bundle.benchmark.template_labels)
     n_entities = len(labels)
+    entity_idx = {e: i for i, e in enumerate(labels)}
 
-    llm_scores = df[metric_col].to_numpy(dtype=float)
+    # ── Extract labeled and unlabeled arrays ──────────────────────────────────
+    human_col = alignment_result.human_col
+    labeled_mask = df[human_col].notna()
 
-    # MC storage
-    entity_means   = np.empty((n_mc, n_entities))
-    entity_ci_low  = np.empty((n_mc, n_entities))
-    entity_ci_high = np.empty((n_mc, n_entities))
+    Y_hat_unlab = df[metric_col].to_numpy(dtype=float)
+    X_unlab     = df[factor_col].to_numpy()
 
+    Y_lab     = df.loc[labeled_mask, human_col].to_numpy(dtype=float)
+    Y_hat_lab = df.loc[labeled_mask, metric_col].to_numpy(dtype=float)
+    X_lab     = df.loc[labeled_mask, factor_col].to_numpy()
+
+    n_all = len(Y_hat_unlab)
+    n_lab = len(Y_lab)
+
+    # ── Minimum sample-size requirements ─────────────────────────────────────
+    if n_lab < 15:
+        raise ValueError(
+            f"PPI alignment requires at least 15 human-labeled items; "
+            f"got n_lab={n_lab}. Expand the alignment set and re-run "
+            "validate_alignment()."
+        )
+    if n_all < 50:
+        raise ValueError(
+            f"PPI alignment requires at least 50 items in the full dataset; "
+            f"got N={n_all}. PPI is only beneficial at scale."
+        )
+    if n_lab < 30:
+        warnings.warn(
+            f"PPI alignment: only {n_lab} human-labeled items (recommend ≥ 30). "
+            "Confidence intervals may under-cover at this sample size.",
+            UserWarning,
+            stacklevel=4,
+        )
+    if n_all < 100:
+        warnings.warn(
+            f"PPI alignment: only {n_all} total items (recommend ≥ 100). "
+            "Confidence intervals may under-cover at this sample size.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    # Warn if any entity is absent from the labeled set
+    lab_entities = set(X_lab)
+    missing = [e for e in labels if e not in lab_entities]
+    if missing:
+        warnings.warn(
+            f"PPI alignment: the following entities have no human-labeled items and "
+            f"will use the uncorrected LLM-only estimate: {missing}. "
+            "Consider expanding the alignment set to cover all entities.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    # ── PPI entity mean for one set of indices ────────────────────────────────
+    def _ppi_means(y_hat_all, x_all, y_lab, y_hat_lab, x_lab):
+        means = np.empty(n_entities)
+        for i, e in enumerate(labels):
+            mask_all = (x_all == e)
+            mask_lab = (x_lab == e)
+            mu_all = float(y_hat_all[mask_all].mean()) if mask_all.any() else np.nan
+            if mask_lab.any():
+                rectifier = float(y_lab[mask_lab].mean() - y_hat_lab[mask_lab].mean())
+            else:
+                rectifier = 0.0  # no labeled data: no correction
+            means[i] = mu_all + rectifier
+        return means
+
+    # ── Point estimates ───────────────────────────────────────────────────────
+    final_means = _ppi_means(Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab)
+
+    # ── Bootstrap ─────────────────────────────────────────────────────────────
+    boot_means = np.empty((n_boot, n_entities))
+    for b in range(n_boot):
+        idx_all = rng.integers(0, n_all, n_all)
+        idx_lab = rng.integers(0, n_lab, n_lab)
+        boot_means[b] = _ppi_means(
+            Y_hat_unlab[idx_all], X_unlab[idx_all],
+            Y_lab[idx_lab], Y_hat_lab[idx_lab], X_lab[idx_lab],
+        )
+
+    final_ci_low  = np.percentile(boot_means, 100.0 * alpha / 2,       axis=0)
+    final_ci_high = np.percentile(boot_means, 100.0 * (1 - alpha / 2), axis=0)
+    final_multi_ci = {
+        a: (
+            np.percentile(boot_means, 100.0 * a / 2, axis=0),
+            np.percentile(boot_means, 100.0 * (1 - a / 2), axis=0),
+        )
+        for a in GRADIENT_CI_ALPHAS
+    }
+
+    # ── Pairwise diffs ────────────────────────────────────────────────────────
     pair_keys = list(bundle.pairwise.results.keys())
-    n_pairs = len(pair_keys)
-    pair_diffs    = np.empty((n_mc, n_pairs))
-    pair_ci_low   = np.empty((n_mc, n_pairs))
-    pair_ci_high  = np.empty((n_mc, n_pairs))
+    n_pairs   = len(pair_keys)
 
-    n_bootstrap = min(engine_kwargs.get("n_bootstrap", 10_000), 2_000)
-    correction   = engine_kwargs.get("correction", "fdr_bh")
-    statistic    = engine_kwargs.get("statistic", "mean")
-    reference    = engine_kwargs.get("reference", "grand_mean")
-    sim_ci       = engine_kwargs.get("simultaneous_ci", True)
+    # Joint bootstrap diff matrix: shape (n_boot, n_pairs). Kept in memory once
+    # so it can be reused for marginal CIs, gradient bands, and max-T.
+    boot_diffs_matrix = np.empty((n_boot, n_pairs), dtype=float)
+    final_diffs       = np.empty(n_pairs, dtype=float)
+    pair_pvals        = np.empty(n_pairs, dtype=float)
 
-    rng_kw = engine_kwargs.get("rng")
-    if isinstance(rng_kw, np.random.Generator):
-        rng = rng_kw
-    elif isinstance(rng_kw, np.random.RandomState):
-        rng = np.random.default_rng(int(rng_kw.randint(0, 2**32 - 1)))
-    elif rng_kw is None:
-        rng = np.random.default_rng()
-    else:
-        rng = np.random.default_rng(rng_kw)
-
-    for m in range(n_mc):
-        imputed = alignment_result._sample_imputed_scores(llm_scores, rng)
-
-        df_mc = df.copy()
-        df_mc[metric_col] = imputed
-        df_io = _bridge_to_io(
-            df_mc,
-            factor_col=factor_col,
-            item_col=item_col,
-            metric_col=metric_col,
-            run_col=run_col,
-            block_col=block_col,
-        )
-        bench_mc = from_dataframe(df_io, format="long", strict_complete_design=False)
-
-        rob_mc, pw_mc = _analyze_single_lightweight(
-            bench_mc,
-            pairwise_method=resolved_method,
-            robustness_method=resolved_ci_method,
-            reference=reference,
-            ci=ci_level,
-            n_bootstrap=n_bootstrap,
-            correction=correction,
-            statistic=statistic,
-            simultaneous_ci=sim_ci,
-            rng=rng,
-        )
-
-        mc_labels = list(bench_mc.template_labels)
-        mc_label_idx = {lbl: i for i, lbl in enumerate(mc_labels)}
-
-        missing_labels = [lbl for lbl in labels if lbl not in mc_label_idx]
-        if missing_labels:
-            raise ValueError(
-                "MC alignment encountered label mismatch between baseline and imputed draw. "
-                f"Missing labels: {missing_labels}"
+    for k, (a, b) in enumerate(pair_keys):
+        ia, ib = entity_idx[a], entity_idx[b]
+        final_diffs[k]          = float(final_means[ia] - final_means[ib])
+        boot_diffs_matrix[:, k] = boot_means[:, ia] - boot_means[:, ib]
+        pair_pvals[k] = float(
+            2.0 * min(
+                np.mean(boot_diffs_matrix[:, k] <= 0.0),
+                np.mean(boot_diffs_matrix[:, k] >= 0.0),
             )
+        )
 
-        for i, lbl in enumerate(labels):
-            j = mc_label_idx[lbl]
-            entity_means[m, i]   = rob_mc.mean[j]
-            entity_ci_low[m, i]  = rob_mc.ci_low[j] if rob_mc.ci_low is not None else np.nan
-            entity_ci_high[m, i] = rob_mc.ci_high[j] if rob_mc.ci_high is not None else np.nan
+    # Marginal percentile CIs at the primary alpha level.
+    final_pair_ci_lo = np.percentile(boot_diffs_matrix, 100.0 * alpha / 2,       axis=0)
+    final_pair_ci_hi = np.percentile(boot_diffs_matrix, 100.0 * (1 - alpha / 2), axis=0)
 
-        for k, (a, b) in enumerate(pair_keys):
-            pr = pw_mc.get(a, b)
-            if pr is None:
-                raise ValueError(
-                    "MC alignment encountered missing pairwise comparison in imputed draw: "
-                    f"({a!r}, {b!r})"
-                )
-            pair_diffs[m, k]   = pr.point_diff
-            pair_ci_low[m, k]  = pr.ci_low
-            pair_ci_high[m, k] = pr.ci_high
+    # Gradient bands at secondary alpha levels (for visual display).
+    final_pair_multi_ci = {
+        a: {
+            key: (
+                float(np.percentile(boot_diffs_matrix[:, k], 100.0 * a / 2)),
+                float(np.percentile(boot_diffs_matrix[:, k], 100.0 * (1 - a / 2))),
+            )
+            for k, key in enumerate(pair_keys)
+        }
+        for a in GRADIENT_CI_ALPHAS
+    }
 
-    # Aggregate via Rubin's (1987) combining rules
-    z = _scipy_norm.ppf(1.0 - alpha / 2)  # e.g. 1.96 for alpha=0.05
-
-    # --- Entity means ---
-    final_means = np.mean(entity_means, axis=0)
-    se_within   = (entity_ci_high - entity_ci_low) / (2.0 * z)
-    W_bar       = np.mean(se_within ** 2, axis=0)
-    B_entity    = np.var(entity_means, axis=0, ddof=1)
-    T_entity    = W_bar + (1.0 + 1.0 / n_mc) * B_entity
-    se_total    = np.sqrt(np.maximum(T_entity, 0.0))
-    final_ci_low  = final_means - z * se_total
-    final_ci_high = final_means + z * se_total
-
-    # --- Pairwise diffs ---
-    final_diffs     = np.mean(pair_diffs, axis=0)
-    se_pair_within  = (pair_ci_high - pair_ci_low) / (2.0 * z)
-    W_bar_pair      = np.mean(se_pair_within ** 2, axis=0)
-    B_pair          = np.var(pair_diffs, axis=0, ddof=1)
-    T_pair          = W_bar_pair + (1.0 + 1.0 / n_mc) * B_pair
-    se_total_pair   = np.sqrt(np.maximum(T_pair, 0.0))
-    final_pair_ci_low  = final_diffs - z * se_total_pair
-    final_pair_ci_high = final_diffs + z * se_total_pair
-
-    # Rubin MI pooled p-values for H0: diff = 0
-    # Two-sided test by default.
-    tiny = np.finfo(float).eps
-    eps_r = 1e-10
-    pooled_pair_pvals = np.empty(n_pairs, dtype=float)
-    for k in range(n_pairs):
-
-        q_k = float(final_diffs[k])  # pooled MI estimate (theta_bar)
-
-        w_k = float(max(W_bar_pair[k], 0.0))  # within-imputation variance
-        b_k = float(max(B_pair[k], 0.0))      # between-imputation variance
-
-        # Rubin total variance
-        T_k = w_k + (1.0 + 1.0 / n_mc) * b_k
-
-        if not np.isfinite(T_k) or T_k <= tiny:
-            pooled_pair_pvals[k] = 1.0 if abs(q_k) <= tiny else 0.0
-            continue
-
-        se_k = np.sqrt(T_k)
-
-        # test statistic
-        t_stat = abs(q_k / se_k)
-
-        # relative increase in variance (Rubin R)
-        if w_k <= tiny:
-            r_k = np.inf if b_k > 0 else 0.0
-        else:
-            r_k = ((1.0 + 1.0 / n_mc) * b_k) / w_k
-
-        # Degrees of freedom (Rubin)
-        if np.isfinite(r_k) and r_k > eps_r:
-            nu_k = (n_mc - 1.0) * (1.0 + 1.0 / r_k) ** 2
-        else:
-            nu_k = np.inf
-
-        # p-value computation
-        if not np.isfinite(nu_k) or nu_k > 1e6:
-            # Normal approximation fallback
-            p_k = 2.0 * _scipy_norm.sf(t_stat)
-        else:
-            p_k = 2.0 * _scipy_t.sf(t_stat, df=nu_k)
-
-        # clamp for numerical safety
-        pooled_pair_pvals[k] = float(min(max(p_k, 0.0), 1.0))
-
-
-    # Optional multiple-comparisons correction
+    # Multiple-comparison correction on marginal p-values.
     if correction != "none" and n_pairs > 1:
-        pooled_pair_pvals = correct_pvalues(pooled_pair_pvals, correction)
+        pair_pvals = correct_pvalues(pair_pvals, correction)
 
-    # Override _analysis in-place
-    bundle.robustness.mean      = final_means
-    bundle.robustness.ci_low    = final_ci_low
-    bundle.robustness.ci_high   = final_ci_high
-    bundle.robustness.multi_ci  = None  # gradient bands no longer valid after MC override
+    # ── Simultaneous CIs (max-T) ──────────────────────────────────────────────
+    # Reuse the joint bootstrap distribution for Romano–Wolf max-T, matching the
+    # same studentized approach used by all_pairwise() for bootstrap methods.
+    # Only applied when the original analysis requested simultaneous CIs.
+    sim_cis: dict = {}
+    max_t_pvalues: dict = {}
+    if bundle.pairwise.simultaneous_ci and n_pairs > 1:
+        sim_cis, max_t_pvalues = _max_stat_simultaneous_cis(
+            scores=None,           # unused: pre-computed path
+            pairs=pair_keys,
+            labels=labels,
+            method="bootstrap",    # unused: pre-computed path
+            ci=1.0 - alpha,
+            n_bootstrap=n_boot,    # unused: pre-computed path
+            rng=None,              # unused: pre-computed path
+            statistic="mean",      # unused: pre-computed path
+            precomputed_boot_stats=boot_diffs_matrix,
+            precomputed_point_ests=final_diffs,
+        )
 
+    # ── Warn about CI method override ────────────────────────────────────────
+    # Only fire when the original method is not plain percentile bootstrap —
+    # that is the only case where the user's chosen method= is being replaced.
+    original_ci_method = bundle.resolved_ci_method or "auto"
+    if original_ci_method not in {"bootstrap", "auto"}:
+        warnings.warn(
+            f"PPI alignment requires using percentile bootstrap for confidence interval calculation, "
+            f"and has overridden the '{original_ci_method}' method. Gradient CI bands are recomputed from the same method.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    # ── Override _analysis in-place ───────────────────────────────────────────
+    bundle.robustness.mean     = final_means
+    bundle.robustness.ci_low   = final_ci_low
+    bundle.robustness.ci_high  = final_ci_high
+    bundle.robustness.multi_ci = final_multi_ci
+
+    use_sim_cis = bool(sim_cis)
     for k, key in enumerate(pair_keys):
         pr = bundle.pairwise.results[key]
         pr.point_diff = float(final_diffs[k])
-        pr.ci_low     = float(final_pair_ci_low[k])
-        pr.ci_high    = float(final_pair_ci_high[k])
-        pr.p_value    = float(pooled_pair_pvals[k])
-        pr.multi_ci   = None
+        pr.p_value    = float(max_t_pvalues.get(key, pair_pvals[k]))
+        if use_sim_cis and key in sim_cis:
+            pr.ci_low  = float(sim_cis[key][0])
+            pr.ci_high = float(sim_cis[key][1])
+        else:
+            pr.ci_low  = float(final_pair_ci_lo[k])
+            pr.ci_high = float(final_pair_ci_hi[k])
+        pr.multi_ci   = {a: final_pair_multi_ci[a][key] for a in GRADIENT_CI_ALPHAS}
+        pr.test_method = "PPI bootstrap"
 
-    # Variance decomposition
-    avg_halfwidth = np.mean((entity_ci_high - entity_ci_low) / 2.0, axis=0)
+    # Update bundle method metadata so summary() headers reflect the PPI method.
+    bundle.resolved_ci_method = "bootstrap"
+    bundle.pairwise.simultaneous_ci_method = "max_t" if use_sim_cis else None
+
+    # ── Diagnostics ───────────────────────────────────────────────────────────
+    n_lab_per_entity = {
+        e: int((X_lab == e).sum()) for e in labels
+    }
+    rectifiers = {
+        e: float(
+            Y_lab[X_lab == e].mean() - Y_hat_lab[X_lab == e].mean()
+        ) if (X_lab == e).any() else 0.0
+        for e in labels
+    }
 
     cr._variance_components = {
+        "method": "ppi",
+        "n_all": n_all,
+        "n_lab": n_lab,
+        "n_boot": n_boot,
         "entities": {
             lbl: {
-                "alignment_var":          float(B_entity[i]),
-                "sampling_var_approx":    float(W_bar[i]),
-                "total_var_approx":       float(T_entity[i]),
-                "sampling_halfwidth_approx": float(avg_halfwidth[i]),
+                "n_labeled":  n_lab_per_entity[lbl],
+                "llm_mean":   float(Y_hat_unlab[X_unlab == lbl].mean())
+                              if (X_unlab == lbl).any() else None,
+                "rectifier":  rectifiers[lbl],
+                "ppi_mean":   float(final_means[i]),
             }
             for i, lbl in enumerate(labels)
         },
-        "n_mc": n_mc,
         "note": (
-            "Rubin's (1987) combining rules. "
-            "alignment_var (B) = between-imputation variance (measurement uncertainty). "
-            "sampling_var_approx (W̄) = mean within-imputation variance, back-computed "
-            "from CI widths assuming symmetric CIs (approximate for non-parametric methods). "
-            "total_var_approx (T) = W̄ + (1 + 1/M)·B."
+            "Prediction-Powered Inference (PPI). "
+            "rectifier = mean(human_lab) − mean(llm_lab) per entity. "
+            "CI from percentile bootstrap with independent resampling of the "
+            "full LLM set (N) and the labeled human set (n_lab)."
         ),
     }
 
 
-def _run_alignment_mc_if_needed(
+def _run_judge_alignment_if_needed(
     cr: "ComparisonResult",
     *,
     alignment,
@@ -950,7 +962,7 @@ def _run_alignment_mc_if_needed(
     item_col: str,
     run_col: Optional[str],
 ) -> None:
-    """Validate alignment= and dispatch to _run_alignment_mc when appropriate."""
+    """Validate alignment= and dispatch to _run_alignment_ppi when appropriate."""
     if alignment is None:
         return
     if not isinstance(alignment, dict):
@@ -972,25 +984,22 @@ def _run_alignment_mc_if_needed(
         return
     if not isinstance(cr._analysis, AnalysisBundle):
         warnings.warn(
-            "MC alignment propagation is not yet supported for multi-model or factorial "
+            "PPI alignment correction is not yet supported for multi-model or factorial "
             "analyses. alignment= will be ignored for this comparison.",
             UserWarning,
             stacklevel=4,
         )
         return
-    _run_alignment_mc(
+    _run_alignment_ppi(
         cr,
         df=df,
         metric_col=metric_col,
         factor_col=factor_col,
-        item_col=item_col,
-        run_col=run_col,
-        block_col=None,
         alignment_result=ar,
-        n_mc=n_mc,
         alpha=alpha,
-        ci_level=ci_level,
-        engine_kwargs=engine_kwargs,
+        n_boot=max(n_mc, 1000),
+        correction=engine_kwargs.get("correction", "fdr_bh"),
+        rng=engine_kwargs.get("rng"),
     )
 
 
@@ -1232,7 +1241,7 @@ def compare(
             _mmb_view="model_level",
             min_meaningful_diff=min_meaningful_diff,
         )
-        _run_alignment_mc_if_needed(
+        _run_judge_alignment_if_needed(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
             alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
@@ -1280,7 +1289,7 @@ def compare(
             _mmb_view="template_level",
             min_meaningful_diff=min_meaningful_diff,
         )
-        _run_alignment_mc_if_needed(
+        _run_judge_alignment_if_needed(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
             alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
@@ -1311,7 +1320,7 @@ def compare(
             filtered_df=df,
             min_meaningful_diff=min_meaningful_diff,
         )
-        _run_alignment_mc_if_needed(
+        _run_judge_alignment_if_needed(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
             alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,

@@ -1,4 +1,4 @@
-"""Tests for validate_alignment() and compare(alignment=...) MC propagation."""
+"""Tests for validate_alignment() and compare(alignment=...) PPI propagation."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import pandas as pd
 import pytest
 
 import evalstats as es
+from evalstats.config import GRADIENT_CI_ALPHAS
 from evalstats.alignment import AlignmentResult, validate_alignment, _fit_calibration
 from evalstats.api import ComparisonResult
 
@@ -350,12 +351,12 @@ class TestSampleImputedScores:
 # compare(alignment=...) — CI widening behaviour
 # ---------------------------------------------------------------------------
 
-class TestCompareAlignmentMC:
+class TestCompareAlignmentPPI:
 
     # n_mc=30 throughout for test speed; enough to verify direction of effects
 
     def test_cis_widen_under_misalignment_binary(self):
-        """With 30% judge error rate, MC-corrected CIs should be wider than base CIs."""
+        """With 30% judge error rate, PPI-corrected CIs should be wider than base CIs."""
         evaldata, metric = _make_binary_evaldata(
             n_items=80, n_labeled=40, agreement_rate=0.65, seed=3
         )
@@ -373,13 +374,12 @@ class TestCompareAlignmentMC:
             width_mc   = float(bundle_mc.robustness.ci_high[i]   - bundle_mc.robustness.ci_low[i])
             width_base = float(bundle_base.robustness.ci_high[i] - bundle_base.robustness.ci_low[i])
             assert width_mc > width_base, (
-                f"Entity {i}: MC CI width {width_mc:.4f} should exceed base {width_base:.4f}"
+                f"Entity {i}: PPI CI width {width_mc:.4f} should exceed base {width_base:.4f}"
             )
 
-    def test_alignment_var_lower_under_perfect_vs_poor_alignment(self):
-        """Between-imputation variance (alignment_var) should be much smaller when judge
-        is near-perfect vs. highly noisy. This is the correct proxy for 'good alignment
-        contributes little measurement uncertainty'."""
+    def test_rectifier_near_zero_under_perfect_alignment(self):
+        """PPI rectifier (human_mean - llm_mean per entity) should be 0 when the judge
+        is perfect, and nonzero when the judge disagrees with humans."""
         def _make_scenario(agreement_rate, seed):
             rng = _rng(seed)
             n = 80
@@ -404,21 +404,23 @@ class TestCompareAlignmentMC:
                 result = es.compare(evaldata, factors="model", metric="llm_score",
                                     alignment={"llm_score": ar}, n_mc=50)
             vc = result.to_dict()["variance_components"]["entities"]
-            return max(v["alignment_var"] for v in vc.values())
+            return max(abs(v["rectifier"]) for v in vc.values())
 
-        perfect_var = _make_scenario(agreement_rate=1.00, seed=44)
-        noisy_var   = _make_scenario(agreement_rate=0.55, seed=44)
-        assert perfect_var < noisy_var, (
-            f"Perfect alignment_var ({perfect_var:.6f}) should be < "
-            f"noisy alignment_var ({noisy_var:.6f})"
+        perfect_rect = _make_scenario(agreement_rate=1.00, seed=44)
+        noisy_rect   = _make_scenario(agreement_rate=0.55, seed=44)
+        assert perfect_rect == 0.0, (
+            f"Perfect alignment rectifier should be exactly 0, got {perfect_rect:.6f}"
+        )
+        assert noisy_rect > 0.0, (
+            f"Poor alignment rectifier should be nonzero, got {noisy_rect:.6f}"
         )
 
     def test_rubin_cis_converge_under_perfect_alignment(self):
-        """Rubin's rules: with a perfect judge (B → 0), MC CIs should be close to base.
+        """Rubin's rules: with a perfect judge (B → 0), PPI CIs should be close to base.
 
         Unlike the former conservative percentile aggregation, Rubin's rules
-        have T → W̄ when B = 0, so the MC CI width converges to the base width.
-        We allow 30% slack to absorb MC noise (finite n_mc=50, n_bootstrap=2000
+        have T → W̄ when B = 0, so the PPI CI width converges to the base width.
+        We allow 30% slack to absorb PPI noise (finite n_mc=50, n_bootstrap=2000
         inner cap, residual Beta posterior uncertainty).
         """
         rng = _rng(55)
@@ -448,7 +450,7 @@ class TestCompareAlignmentMC:
             width_mc   = float(bundle_mc.robustness.ci_high[i]   - bundle_mc.robustness.ci_low[i])
             width_base = float(bundle_base.robustness.ci_high[i] - bundle_base.robustness.ci_low[i])
             assert width_mc < width_base * 1.30, (
-                f"Entity {i}: Rubin MC width {width_mc:.4f} exceeds 1.3× base "
+                f"Entity {i}: Rubin PPI width {width_mc:.4f} exceeds 1.3× base "
                 f"{width_base:.4f} even under perfect alignment"
             )
 
@@ -462,15 +464,17 @@ class TestCompareAlignmentMC:
         d = result.to_dict()
         assert "variance_components" in d
         vc = d["variance_components"]
-        assert vc["n_mc"] == 20
+        assert vc["method"] == "ppi"
+        assert "n_lab" in vc
+        assert "n_boot" in vc
+        assert vc["n_boot"] >= 1000             # PPI floors at 1000 boot draws
         assert "entities" in vc
         for entry in vc["entities"].values():
-            assert "alignment_var" in entry           # B: between-imputation var
-            assert "sampling_var_approx" in entry     # W̄: mean within-imputation var
-            assert "total_var_approx" in entry        # T = W̄ + (1+1/M)*B
-            assert "sampling_halfwidth_approx" in entry
-            assert entry["alignment_var"] >= 0.0
-            assert entry["total_var_approx"] >= entry["alignment_var"]
+            assert "n_labeled" in entry         # labeled items available per entity
+            assert "llm_mean" in entry          # uncorrected LLM estimate
+            assert "rectifier" in entry         # bias-correction term
+            assert "ppi_mean" in entry          # PPI-corrected estimate
+            assert entry["n_labeled"] >= 0
 
     def test_to_dict_no_variance_components_without_alignment(self):
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
@@ -600,14 +604,14 @@ class TestCompareAlignmentMC:
 
 
 # ---------------------------------------------------------------------------
-# MC alignment p-value computation (Rubin pooled)
+# PPI alignment p-value computation (Rubin pooled)
 # ---------------------------------------------------------------------------
 
-class TestMCPooledPValues:
+class TestPPIPooledPValues:
     """Tests for MI-pooled pairwise p-values with Rubin combining rules."""
 
     def test_pairwise_pvalues_present_after_mc(self):
-        """Pairwise p_value field should be set (not None) after MC pooling."""
+        """Pairwise p_value field should be set (not None) after PPI pooling."""
         evaldata, metric = _make_binary_evaldata(n_items=80, n_labeled=40, seed=61)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -636,7 +640,13 @@ class TestMCPooledPValues:
                 f"p_value {pair.p_value} out of [0,1] range for pair ({a}, {b})"
 
     def test_ci_excludes_zero_implies_p_significant(self):
-        """If CI excludes 0 (diff > 0 or diff < 0), p-value should be < 0.05."""
+        """If CI excludes 0 (diff > 0 or diff < 0), p-value should be ≤ 0.05.
+
+        PPI uses a percentile bootstrap, so the p-value and CI are derived
+        from the same bootstrap distribution.  The relationship is p ≤ α when
+        the CI excludes 0 (not strict inequality: p can equal α exactly when
+        the boundary draw lands exactly at 0).
+        """
         evaldata, metric = _make_binary_evaldata(
             n_items=100, n_labeled=50, p_a=0.85, p_b=0.50, seed=63
         )
@@ -644,37 +654,40 @@ class TestMCPooledPValues:
             warnings.simplefilter("ignore")
             ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
             result = es.compare(evaldata, factors="model", metric=metric, alpha=0.05,
-                                alignment={metric: ar}, n_mc=30)
+                                alignment={metric: ar}, n_mc=30,
+                                rng=np.random.default_rng(99))
 
         bundle = result._primary_bundle()
         for (a, b), pair in bundle.pairwise.results.items():
             ci_excludes_zero = (pair.ci_low > 0) or (pair.ci_high < 0)
             if ci_excludes_zero:
-                assert pair.p_value < 0.05, (
-                    f"Pair ({a}, {b}): CI excludes 0 but p={pair.p_value:.4f} >= 0.05"
+                assert pair.p_value <= 0.05, (
+                    f"Pair ({a}, {b}): CI excludes 0 but p={pair.p_value:.4f} > 0.05"
                 )
 
-    def test_n_mc_less_than_2_raises(self):
-        """compare(alignment=..., n_mc=1) should raise ValueError."""
+    def test_n_mc_small_succeeds(self):
+        """compare(alignment=..., n_mc=1) should succeed with PPI (floors to 1000 boot draws)."""
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+            result = es.compare(evaldata, factors="model", metric=metric,
+                                alignment={metric: ar}, n_mc=1)
+        vc = result.to_dict()["variance_components"]
+        assert vc["method"] == "ppi"
+        assert vc["n_boot"] == 1000   # floored
 
-        with pytest.raises(ValueError, match="n_mc >= 2"):
-            es.compare(evaldata, factors="model", metric=metric,
-                       alignment={metric: ar}, n_mc=1)
-
-    def test_n_mc_zero_raises(self):
-        """compare(alignment=..., n_mc=0) should raise ValueError."""
+    def test_n_mc_zero_succeeds(self):
+        """compare(alignment=..., n_mc=0) should succeed with PPI (floors to 1000 boot draws)."""
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
-
-        with pytest.raises(ValueError, match="n_mc >= 2"):
-            es.compare(evaldata, factors="model", metric=metric,
-                       alignment={metric: ar}, n_mc=0)
+            result = es.compare(evaldata, factors="model", metric=metric,
+                                alignment={metric: ar}, n_mc=0)
+        vc = result.to_dict()["variance_components"]
+        assert vc["method"] == "ppi"
+        assert vc["n_boot"] == 1000   # floored
 
     def test_pairwise_pvalues_consistent_across_directions(self):
         """p_value(A, B) should equal p_value(B, A) (since test is two-sided)."""
@@ -796,7 +809,7 @@ class TestMCPooledPValues:
             )
 
     def test_pvalues_populated_with_likert_alignment(self):
-        """MC pooled p-values should work with Likert-scale data."""
+        """PPI pooled p-values should work with Likert-scale data."""
         evaldata, metric = _make_likert_evaldata(n_items=80, n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -810,7 +823,7 @@ class TestMCPooledPValues:
             assert 0.0 <= pair.p_value <= 1.0
 
     def test_pvalues_populated_with_continuous_alignment(self):
-        """MC pooled p-values should work with continuous [0,1] data."""
+        """PPI pooled p-values should work with continuous [0,1] data."""
         evaldata, metric = _make_continuous_evaldata(n_items=80, n_labeled=40)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -823,8 +836,8 @@ class TestMCPooledPValues:
             assert pair.p_value is not None
             assert 0.0 <= pair.p_value <= 1.0
 
-    def test_multi_ci_cleared_after_mc(self):
-        """Gradient CI bands (multi_ci) should be None on the overridden bundle."""
+    def test_multi_ci_populated_after_mc(self):
+        """Gradient CI bands (multi_ci) should be populated from the PPI bootstrap."""
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
@@ -832,17 +845,145 @@ class TestMCPooledPValues:
             result = es.compare(evaldata, factors="model", metric=metric,
                                 alignment={metric: ar}, n_mc=20)
         bundle = result._primary_bundle()
-        assert bundle.robustness.multi_ci is None
+        assert bundle.robustness.multi_ci is not None
+        assert set(bundle.robustness.multi_ci) == set(GRADIENT_CI_ALPHAS)
+        for lo, hi in bundle.robustness.multi_ci.values():
+            assert lo.shape == hi.shape
         for pr in bundle.pairwise.results.values():
-            assert pr.multi_ci is None
+            assert pr.multi_ci is not None
+            assert set(pr.multi_ci) == set(GRADIENT_CI_ALPHAS)
+            for lo, hi in pr.multi_ci.values():
+                assert np.isscalar(lo)
+                assert np.isscalar(hi)
 
-    def test_n_mc_parameter_controls_components_count(self):
-        """n_mc is stored in variance_components so we can verify it was respected."""
+    def test_n_mc_parameter_controls_n_boot(self):
+        """n_boot = max(n_mc, 1000) is stored in variance_components."""
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
-            for n_mc in [10, 25]:
+            for n_mc, expected_n_boot in [(10, 1000), (25, 1000), (2000, 2000)]:
                 result = es.compare(evaldata, factors="model", metric=metric,
                                     alignment={metric: ar}, n_mc=n_mc)
-                assert result.to_dict()["variance_components"]["n_mc"] == n_mc
+                assert result.to_dict()["variance_components"]["n_boot"] == expected_n_boot
+
+
+# ---------------------------------------------------------------------------
+# PPI sample-size checks and CI method override warnings
+# ---------------------------------------------------------------------------
+
+def _make_small_evaldata(n_items: int, n_labeled: int, seed: int = 99):
+    """Helper: binary evaldata with specified total items and labeled count."""
+    rng = np.random.default_rng(seed)
+    df = pd.DataFrame({
+        "model":     ["A"] * n_items + ["B"] * n_items,
+        "item":      list(range(n_items)) * 2,
+        "llm_score": np.concatenate([
+            rng.binomial(1, 0.70, n_items),
+            rng.binomial(1, 0.45, n_items),
+        ]).astype(float),
+    })
+    human = np.full(len(df), np.nan)
+    for idx in rng.choice(len(df), size=n_labeled, replace=False):
+        human[idx] = df.loc[idx, "llm_score"]
+    df["human_score"] = human
+    return es.load_from(df, col_map={"model": "model", "item": "item"})
+
+
+class TestPPISampleSizeChecks:
+    """PPI alignment enforces minimum sample-size requirements."""
+
+    def test_raises_when_n_lab_below_15(self):
+        """compare(alignment=...) should raise ValueError when n_labeled < 15."""
+        evaldata = _make_small_evaldata(n_items=40, n_labeled=10)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric="llm_score",
+                                    human_groundtruth="human_score")
+        with pytest.raises(ValueError, match="15 human-labeled items"):
+            es.compare(evaldata, factors="model", metric="llm_score",
+                       alignment={"llm_score": ar})
+
+    def test_raises_when_n_all_below_50(self):
+        """compare(alignment=...) should raise ValueError when N < 50."""
+        # 20 items × 2 models = 40 total rows; n_labeled=15 to pass that check
+        evaldata = _make_small_evaldata(n_items=20, n_labeled=15)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric="llm_score",
+                                    human_groundtruth="human_score")
+        with pytest.raises(ValueError, match="50 items"):
+            es.compare(evaldata, factors="model", metric="llm_score",
+                       alignment={"llm_score": ar})
+
+    def test_warns_when_n_lab_below_30(self):
+        """compare(alignment=...) should warn about potential under-coverage when n_labeled < 30."""
+        # n_labeled=20 satisfies the ≥15 hard requirement but not the ≥30 soft one.
+        # n_items=60 so n_all=120, above the 100 threshold.
+        evaldata = _make_small_evaldata(n_items=60, n_labeled=20)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric="llm_score",
+                                    human_groundtruth="human_score")
+        with pytest.warns(UserWarning, match="recommend ≥ 30"):
+            es.compare(evaldata, factors="model", metric="llm_score",
+                       alignment={"llm_score": ar})
+
+    def test_warns_when_n_all_below_100(self):
+        """compare(alignment=...) should warn about potential under-coverage when N < 100."""
+        # n_items=30 → n_all=60 (50≤60<100), n_labeled=30 to pass all hard/soft checks.
+        evaldata = _make_small_evaldata(n_items=30, n_labeled=30)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric="llm_score",
+                                    human_groundtruth="human_score")
+        with pytest.warns(UserWarning, match="recommend ≥ 100"):
+            es.compare(evaldata, factors="model", metric="llm_score",
+                       alignment={"llm_score": ar})
+
+    def test_no_size_warnings_above_thresholds(self):
+        """No size warnings when n_labeled ≥ 30 and N ≥ 100."""
+        evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            es.compare(evaldata, factors="model", metric=metric, alignment={metric: ar})
+        size_warns = [
+            w for w in caught
+            if "recommend ≥" in str(w.message)
+        ]
+        assert len(size_warns) == 0
+
+
+class TestPPICIMethodWarning:
+    """PPI warns when it overrides a non-bootstrap CI method or simultaneous CI."""
+
+    def test_warns_when_overriding_non_bootstrap_method(self):
+        """PPI should warn when the original CI method is not plain bootstrap."""
+        evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+        with pytest.warns(UserWarning, match="percentile bootstrap"):
+            es.compare(evaldata, factors="model", metric=metric,
+                       alignment={metric: ar},
+                       method="bca")  # BCA would be overridden by PPI
+
+    def test_no_ci_override_warning_with_plain_bootstrap(self):
+        """No CI override warning when user already uses percentile bootstrap."""
+        evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            es.compare(evaldata, factors="model", metric=metric,
+                       alignment={metric: ar},
+                       method="bootstrap")
+        ci_warns = [
+            w for w in caught
+            if "percentile bootstrap" in str(w.message)
+        ]
+        assert len(ci_warns) == 0
