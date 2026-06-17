@@ -299,12 +299,20 @@ class _SigmoidCalibration:
         self.C = C
 
     def fit(self, x, y):
-        self.model_ = LogisticRegression(C=self.C, penalty="l2",
-                                         solver="lbfgs", max_iter=1000)
-        self.model_.fit(np.asarray(x).reshape(-1, 1), y)
+        y = np.asarray(y)
+        if len(np.unique(y)) < 2:
+            # Single class in training data — fall back to constant predictor
+            self._const = float(y.mean())
+            self.model_ = None
+        else:
+            self._const = None
+            self.model_ = LogisticRegression(C=self.C, solver="lbfgs", max_iter=1000)
+            self.model_.fit(np.asarray(x).reshape(-1, 1), y)
         return self
 
     def predict(self, x):
+        if self.model_ is None:
+            return np.full(len(np.asarray(x)), self._const)
         return self.model_.predict_proba(np.asarray(x).reshape(-1, 1))[:, 1]
 
 
@@ -420,13 +428,14 @@ def _ci_ppi_linear(
     human_a_lab: np.ndarray, llm_a_lab: np.ndarray,
     human_b_lab: np.ndarray, llm_b_lab: np.ndarray,
     alpha: float, n_boot: int, rng: np.random.Generator,
+    ridge_alpha: float = 0.1,
 ) -> dict:
-    """Calibrated PPIBoot with vectorised OLS (linear) calibration — PPI++ style.
+    """Calibrated PPIBoot with vectorised ridge-OLS calibration — PPI++ style.
 
-    Fits β = Cov(Ŷ_lab, Y_lab) / Var(Ŷ_lab) per bootstrap draw, so the
-    debiasing coefficient is learned rather than fixed at 1.  Reduces to
-    standard PPI when β = 1.  Fully vectorised: no Python loop, same cost
-    as standard PPI.
+    Fits β = Cov(Ŷ_lab, Y_lab) / (Var(Ŷ_lab) + ridge_alpha) per bootstrap draw.
+    ridge_alpha > 0 prevents β from blowing up in bootstrap resamples that
+    happen to have near-zero spread in Ŷ_lab (common with few labels and
+    continuous scores).  ridge_alpha=0 recovers vanilla OLS.
 
     Point estimate:
         μ_k = mean(Y_k_lab) + β * (mean(Ŷ_k_all) − mean(Ŷ_k_lab))
@@ -436,8 +445,8 @@ def _ci_ppi_linear(
 
     def _point(y, x_all, x_lab):
         xc = x_lab - x_lab.mean()
-        denom = float(np.dot(xc, xc))
-        b = float(np.dot(xc, y - y.mean())) / denom if denom > 1e-12 else 1.0
+        denom = float(np.dot(xc, xc)) + ridge_alpha
+        b = float(np.dot(xc, y - y.mean())) / denom
         return y.mean() + b * (x_all.mean() - x_lab.mean())
 
     mu_a = _point(human_a_lab, llm_a_all, llm_a_lab)
@@ -454,9 +463,8 @@ def _ci_ppi_linear(
         xm_b = xl_b.mean(axis=1, keepdims=True)
         ym_b = y_b.mean(axis=1, keepdims=True)
         xc   = xl_b - xm_b
-        denom = (xc ** 2).sum(axis=1)
-        safe_denom = np.where(denom > 1e-12, denom, 1.0)
-        b = np.where(denom > 1e-12, (xc * (y_b - ym_b)).sum(axis=1) / safe_denom, 1.0)
+        denom = (xc ** 2).sum(axis=1) + ridge_alpha
+        b = (xc * (y_b - ym_b)).sum(axis=1) / denom
         return ym_b.squeeze() + b * (xa_b.mean(axis=1) - xm_b.squeeze())
 
     boot_a    = _boot(human_a_lab, llm_a_all, llm_a_lab)
@@ -472,17 +480,33 @@ def _ci_ppi_linear(
     )
 
 
+def _pick_calibrator(eval_type: str):
+    """Choose calibrator by eval_type.
+
+    binary:              sigmoid (logistic + L2) — 2-param, won't memorise few labels
+    continuous / likert: ridge — smooth, regularised, scale-invariant
+    """
+    if eval_type == "binary":
+        return _SigmoidCalibration
+    return _RidgeCalibration
+
+
 def _ci_calibrated_ppi(
     llm_a_all: np.ndarray, llm_b_all: np.ndarray,
     human_a_lab: np.ndarray, llm_a_lab: np.ndarray,
     human_b_lab: np.ndarray, llm_b_lab: np.ndarray,
     alpha: float, n_boot_cal_ppi: int, rng: np.random.Generator,
-    calibrator_factory=_IsotonicCalibration,
+    eval_type: str = "continuous",
 ) -> dict:
     """Calibrated PPIBoot: fit g once, then vectorised bootstrap on precomputed arrays.
 
     Matches the approach of Boyeau et al. (2024, arXiv:2411.12665): the calibration
     model is fitted once on the labeled data, not refitted per bootstrap draw.
+
+    Calibrator is chosen per eval_type to avoid overfitting with few labels:
+      binary     → sigmoid (logistic + L2)
+      continuous → ridge regression
+      likert     → ridge regression
 
     Point estimate:
         mu_k = mean(g(Yhat_k_all)) + mean(Y_k_lab - g(Yhat_k_lab))
@@ -490,6 +514,7 @@ def _ci_calibrated_ppi(
     Bootstrap: g is fixed; resample g(Yhat_k_all) and residuals independently.
     Fully vectorised — same cost as standard PPI.
     """
+    calibrator_factory = _pick_calibrator(eval_type)
     n_all = len(llm_a_all)
     n_lab = len(human_a_lab)
 
@@ -731,6 +756,7 @@ def run_cell(
                     llm_a, llm_b,
                     human_a_lab, llm_a_lab, human_b_lab, llm_b_lab,
                     alpha, n_boot_cal_ppi, rng,
+                    eval_type=eval_type,
                 )
             elif m == "mc_rubin":
                 method_cis[m] = _ci_mc_rubin(
