@@ -124,6 +124,12 @@ class TestResult:
             return "P(X > Y)"
         elif test == "wilcoxon":
             return "median of paired differences (X − Y)"
+        elif test == "anova":
+            return (
+                "between-condition variance after removing subject means"
+                if ex.get("repeated")
+                else "between-group variance"
+            )
         return "estimand"
 
     def _stat_line(self) -> str:
@@ -139,6 +145,12 @@ class TestResult:
             return f"U = {self.statistic:.1f},  p {p_str}"
         elif test == "wilcoxon":
             return f"W = {self.statistic:.1f},  p {p_str}"
+        elif test == "anova":
+            df1 = ex.get("df1")
+            df2 = ex.get("df2")
+            if df1 is not None and df2 is not None:
+                return f"F({df1:.1f}, {df2:.1f}) = {self.statistic:.3f},  p {p_str}"
+            return f"F = {self.statistic:.3f},  p {p_str}"
         else:
             return f"stat = {self.statistic:.4f},  p {p_str}"
 
@@ -187,6 +199,33 @@ class TestResult:
                 direction = ("X tends higher" if md > 0 else
                              "Y tends higher" if md < 0 else "no consistent shift")
                 print(f"  Effect:   Median difference (X − Y) = {md:.4f}  ({direction})")
+
+        elif test == "anova":
+            if ex.get("repeated"):
+                print(
+                    f"  Design:   Repeated-measures one-way ANOVA "
+                    f"(subjects = {ex['n_subjects']}, conditions = {ex['k_groups']})"
+                )
+            else:
+                print(
+                    f"  Design:   One-way ANOVA "
+                    f"(groups = {ex['k_groups']}, total n = {ex['n_total_obs']})"
+                )
+                sizes = ex.get("group_sizes")
+                if sizes is not None:
+                    print(f"  Group n:  {', '.join(str(int(n)) for n in sizes)}")
+
+            means = ex.get("group_means")
+            if means is not None:
+                mean_str = ", ".join(f"{m:.3f}" for m in means)
+                print(f"  Means:    {mean_str}")
+
+            eta_sq = ex.get("eta_sq")
+            if eta_sq is not None:
+                mag = ("trivial" if eta_sq < 0.01 else
+                       "small" if eta_sq < 0.06 else
+                       "medium" if eta_sq < 0.14 else "large")
+                print(f"  Effect:   η² = {eta_sq:.3f}  ({mag})")
 
         print()
 
@@ -370,6 +409,20 @@ def _ppi_two_sample(
     )
 
 
+def _p_x_gt_y_strict(x: np.ndarray, y: np.ndarray) -> float:
+    """Compute P(X > Y) exactly, counting ties as 0.
+
+    Uses sorting + binary search for O((n_x + n_y) log n_y) time and
+    O(n_y) extra memory, avoiding O(n_x * n_y) pairwise matrices.
+    """
+    if len(x) == 0 or len(y) == 0:
+        return 0.0
+
+    y_sorted = np.sort(y)
+    n_lt = np.searchsorted(y_sorted, x, side="left")
+    return float(n_lt.sum() / (len(x) * len(y)))
+
+
 def _ppi_paired_arrays(
     a: np.ndarray,
     b: np.ndarray,
@@ -401,6 +454,178 @@ def _ppi_paired_arrays(
 
     return correct(
         statistic,
+        Y_lab=Y_lab,
+        Y_hat_lab=Y_hat_lab,
+        Y_hat_unlab=Y_hat_unlab,
+        X_lab=None,
+        X_unlab=None,
+        alpha=alpha,
+        n_boot=n_boot,
+        rng=rng,
+        compute_pvalue=True,
+    )
+
+
+def _sanitize_multigroup_ppi_labels(
+    groups: list[np.ndarray],
+    groups_lab,
+    *,
+    repeated: bool,
+) -> list[np.ndarray]:
+    """Validate sparse labels for multi-group ANOVA wrappers.
+
+    For repeated-measures ANOVA, an effective labeled unit is a subject with
+    non-NaN labels in all conditions. For independent one-way ANOVA, effective
+    labels are counted across all groups.
+    """
+    if groups_lab is None:
+        raise ValueError("groups_lab must be provided for PPI correction.")
+    if len(groups_lab) != len(groups):
+        raise ValueError(
+            f"groups_lab must have one label array per group "
+            f"(got {len(groups_lab)} for {len(groups)} groups)."
+        )
+
+    labs = []
+    for i, (g, g_lab) in enumerate(zip(groups, groups_lab), start=1):
+        lab_arr = _coerce(g_lab)
+        if len(lab_arr) != len(g):
+            raise ValueError(
+                f"groups_lab[{i - 1}] must match group {i} length "
+                f"({len(lab_arr)} vs {len(g)})."
+            )
+        labs.append(lab_arr)
+
+    if repeated:
+        overlap = np.ones(len(groups[0]), dtype=bool)
+        for lab_arr in labs:
+            overlap &= ~np.isnan(lab_arr)
+        n_effective = int(overlap.sum())
+        min_msg = (
+            "At least 15 subjects with labels in all conditions are required "
+            f"for repeated-measures PPI ANOVA (found {n_effective})."
+        )
+        warn_msg = (
+            "Only {n} subjects have labels in all conditions. "
+            "PPI bootstrap can undercover below 30 labels; consider labeling more subjects."
+        )
+    else:
+        n_effective = int(sum(np.sum(~np.isnan(lab_arr)) for lab_arr in labs))
+        min_msg = (
+            "At least 15 human labels are required for PPI one-way ANOVA "
+            f"(found {n_effective} across all groups)."
+        )
+        warn_msg = (
+            "Only {n} human labels were supplied across all groups. "
+            "PPI bootstrap can undercover below 30 labels; consider labeling more items."
+        )
+
+    if n_effective < 15:
+        raise ValueError(min_msg)
+    if n_effective < 30:
+        warnings.warn(warn_msg.format(n=n_effective), UserWarning, stacklevel=3)
+
+    return labs
+
+
+def _anova_between_variance_from_groups(groups: list[np.ndarray]) -> float:
+    """Weighted between-group variance; zero iff all group means are equal."""
+    nonempty = [g for g in groups if len(g) > 0]
+    if len(nonempty) < 2:
+        return 0.0
+
+    ns = np.array([len(g) for g in nonempty], dtype=float)
+    means = np.array([float(np.mean(g)) for g in nonempty], dtype=float)
+    grand = float(np.sum(ns * means) / np.sum(ns))
+    return float(np.sum(ns * (means - grand) ** 2) / np.sum(ns))
+
+
+def _anova_between_variance_from_labeled(Y: np.ndarray, X: np.ndarray, n_groups: int) -> float:
+    """Between-group variance from flattened arrays with integer group IDs."""
+    groups = [Y[X == gid] for gid in range(n_groups)]
+    return _anova_between_variance_from_groups(groups)
+
+
+def _repeated_condition_variance(matrix: np.ndarray) -> float:
+    """Condition variance after removing subject means (row-centering)."""
+    if matrix.size == 0:
+        return 0.0
+    centered = matrix - matrix.mean(axis=1, keepdims=True)
+    cond_means = centered.mean(axis=0)
+    return float(np.mean((cond_means - cond_means.mean()) ** 2))
+
+
+def _ppi_anova_independent(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+):
+    """PPI correction for independent-groups one-way ANOVA effect estimand."""
+    from evalstats.ppi import correct
+
+    k = len(groups)
+    masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
+
+    Y_hat_unlab = np.concatenate(groups)
+    X_unlab = np.concatenate([
+        np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups)
+    ])
+
+    Y_lab = np.concatenate([
+        lab_arr[mask] for lab_arr, mask in zip(groups_lab, masks)
+    ])
+    Y_hat_lab = np.concatenate([
+        g[mask] for g, mask in zip(groups, masks)
+    ])
+    X_lab = np.concatenate([
+        np.full(int(mask.sum()), gid, dtype=int) for gid, mask in enumerate(masks)
+    ])
+
+    if len(Y_lab) == 0:
+        raise ValueError("No labeled items found in groups_lab.")
+
+    def _estimand(Y, X):
+        return _anova_between_variance_from_labeled(Y, X, n_groups=k)
+
+    return correct(
+        _estimand,
+        Y_lab=Y_lab,
+        Y_hat_lab=Y_hat_lab,
+        Y_hat_unlab=Y_hat_unlab,
+        X_lab=X_lab,
+        X_unlab=X_unlab,
+        alpha=alpha,
+        n_boot=n_boot,
+        rng=rng,
+        compute_pvalue=True,
+    )
+
+
+def _ppi_anova_repeated(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+):
+    """PPI correction for repeated-measures one-way ANOVA effect estimand."""
+    from evalstats.ppi import correct
+
+    labels_mat = np.column_stack(groups_lab)
+    overlap = np.all(~np.isnan(labels_mat), axis=1)
+    if overlap.sum() == 0:
+        raise ValueError(
+            "No subjects have labels in all conditions in groups_lab."
+        )
+
+    Y_hat_unlab = np.column_stack(groups)
+    Y_hat_lab = Y_hat_unlab[overlap]
+    Y_lab = labels_mat[overlap]
+
+    return correct(
+        _repeated_condition_variance,
         Y_lab=Y_lab,
         Y_hat_lab=Y_hat_lab,
         Y_hat_unlab=Y_hat_unlab,
@@ -591,8 +816,8 @@ def mannwhitney(
     maps to θ = 0.  The reported ``corrected_estimate`` is P(X > Y) itself
     (shifted back) for interpretability.
 
-    Note: the O(n²) pairwise comparison ``mean(x_i > y_j)`` is recomputed on
-    every bootstrap draw.  This is fast at typical PPI scales (N ≲ 2000).
+    Note: ``P(X > Y)`` is computed with sorting + binary search, i.e.
+    O((n_x + n_y) log n_y), which scales to large groups.
 
     Parameters
     ----------
@@ -648,9 +873,7 @@ def mannwhitney(
 
         # Shift by 0.5: null is P(X>Y)=0.5, so estimand θ=P(X>Y)-0.5 has null θ=0
         def _auc_shifted(xa, ya):
-            if len(xa) == 0 or len(ya) == 0:
-                return 0.0
-            return float(np.mean(xa[:, None] > ya[None, :])) - 0.5
+            return _p_x_gt_y_strict(xa, ya) - 0.5
 
         ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng)
 
@@ -778,6 +1001,180 @@ def wilcoxon(
     result = TestResult(
         test_name="Wilcoxon signed-rank test",
         statistic=w_stat,
+        p_value=p_val,
+        corrected_estimate=corrected_estimate,
+        corrected_ci=corrected_ci,
+        corrected_p_value=corrected_p,
+        rectifier=rectifier,
+        n_labeled=n_labeled,
+        n_total=n_total,
+        alpha=alpha,
+        extra=extra,
+    )
+    if print_result:
+        result.summary()
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# anova_oneway
+# ─────────────────────────────────────────────────────────────────────────────
+
+def anova_oneway(
+    *groups,
+    groups_lab=None,
+    repeated: bool = False,
+    alpha: float = 0.05,
+    n_boot: int = 2000,
+    rng=None,
+    print_result: bool = True,
+) -> TestResult:
+    """One-way ANOVA (independent or repeated-measures) with optional PPI.
+
+    Uncorrected:
+      - ``repeated=False``: ``scipy.stats.f_oneway(*groups)``
+      - ``repeated=True``: repeated-measures one-way ANOVA via
+        ``statsmodels.stats.anova.AnovaRM``
+
+    PPI estimand:
+      - Independent one-way: weighted between-group variance.
+      - Repeated one-way: between-condition variance after removing each
+        subject's mean (row-centering).
+
+    Parameters
+    ----------
+    *groups : array-like
+        Two or more score arrays, one per group/condition.
+    groups_lab : sequence[array-like], optional
+        Sparse human labels aligned with each group. Must have one array per
+        group, same lengths, with NaN for unlabeled items.
+    repeated : bool
+        If True, run repeated-measures one-way ANOVA with pairing by index.
+    print_result : bool
+        Print a summary table to stdout (default True).  Pass ``False`` to
+        suppress output when calling from automated pipelines.
+
+    Examples
+    --------
+    >>> result = es.tests.anova_oneway(g1, g2, g3)                             # prints
+    >>> result = es.tests.anova_oneway(g1, g2, g3, print_result=False)         # silent
+    >>> result = es.tests.anova_oneway(g1, g2, groups_lab=[lab1, lab2, lab3])  # PPI
+    """
+    if len(groups) < 2:
+        raise ValueError("anova_oneway requires at least two groups.")
+
+    groups = [_coerce(g) for g in groups]
+    k = len(groups)
+
+    if repeated:
+        n_subjects = len(groups[0])
+        for i, g in enumerate(groups[1:], start=2):
+            if len(g) != n_subjects:
+                raise ValueError(
+                    "repeated=True requires equal-length arrays across all "
+                    f"conditions; condition 1 has {n_subjects}, condition {i} has {len(g)}."
+                )
+
+        try:
+            from statsmodels.stats.anova import AnovaRM
+        except Exception as e:
+            raise ImportError(
+                "Repeated-measures ANOVA requires statsmodels. "
+                "Install statsmodels to use anova_oneway(..., repeated=True)."
+            ) from e
+
+        stacked = np.column_stack(groups)
+        df_long = pd.DataFrame(
+            {
+                "subject": np.repeat(np.arange(n_subjects), k),
+                "condition": np.tile(np.arange(k), n_subjects),
+                "score": stacked.reshape(-1),
+            }
+        )
+        rm = AnovaRM(df_long, depvar="score", subject="subject", within=["condition"]).fit()
+        row = rm.anova_table.iloc[0]
+
+        f_stat = float(row["F Value"])
+        p_val = float(row["Pr > F"])
+        df1 = float(row["Num DF"])
+        df2 = float(row["Den DF"])
+        eta_sq = float((f_stat * df1) / (f_stat * df1 + df2)) if (f_stat * df1 + df2) > 0 else 0.0
+
+        extra = {
+            "_test": "anova",
+            "repeated": True,
+            "k_groups": k,
+            "n_subjects": n_subjects,
+            "n_total_obs": n_subjects * k,
+            "group_means": [float(np.mean(g)) for g in groups],
+            "df1": df1,
+            "df2": df2,
+            "eta_sq": eta_sq,
+            "n_boot": n_boot,
+        }
+        test_name = "Repeated-measures one-way ANOVA"
+    else:
+        res = _scipy_stats.f_oneway(*groups)
+        f_stat, p_val = float(res.statistic), float(res.pvalue)
+
+        group_sizes = [len(g) for g in groups]
+        n_obs = int(sum(group_sizes))
+        df1 = float(k - 1)
+        df2 = float(n_obs - k)
+
+        all_scores = np.concatenate(groups)
+        grand_mean = np.mean(all_scores)
+        ss_between = sum(
+            len(g) * (np.mean(g) - grand_mean) ** 2
+            for g in groups
+        )
+        ss_total = np.sum((all_scores - grand_mean) ** 2)
+
+        eta_sq = float(ss_between / ss_total) if ss_total > 0 else 0.0
+
+        extra = {
+            "_test": "anova",
+            "repeated": False,
+            "k_groups": k,
+            "n_total_obs": n_obs,
+            "group_sizes": group_sizes,
+            "group_means": [float(np.mean(g)) for g in groups],
+            "df1": df1,
+            "df2": df2,
+            "eta_sq": eta_sq,
+            "n_boot": n_boot,
+        }
+        test_name = "One-way ANOVA"
+
+    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    n_labeled = n_total = None
+
+    if groups_lab is not None:
+        groups_lab = _sanitize_multigroup_ppi_labels(
+            groups,
+            groups_lab,
+            repeated=repeated,
+        )
+
+        llm_all = np.concatenate(groups)
+        human_sparse = np.concatenate(groups_lab)
+        ar = _run_alignment_report(llm_all, human_sparse)
+
+        if repeated:
+            ppi = _ppi_anova_repeated(groups, groups_lab, alpha, n_boot, rng)
+        else:
+            ppi = _ppi_anova_independent(groups, groups_lab, alpha, n_boot, rng)
+
+        corrected_estimate = ppi.estimate
+        corrected_ci = (ppi.ci_low, ppi.ci_high)
+        corrected_p = ppi.p_value
+        rectifier = ppi.rectifier
+        n_labeled = ar.n_labeled
+        n_total = ar.n_total
+
+    result = TestResult(
+        test_name=test_name,
+        statistic=f_stat,
         p_value=p_val,
         corrected_estimate=corrected_estimate,
         corrected_ci=corrected_ci,

@@ -182,8 +182,9 @@ def correct(
     Raises
     ------
     ValueError
-        If array lengths are inconsistent, or if exactly one of *X_lab* /
-        *X_unlab* is supplied.
+        If inputs are malformed (invalid ``alpha``/``n_boot``, inconsistent
+        lengths, empty arrays, non-finite values), or if exactly one of
+        *X_lab* / *X_unlab* is supplied.
 
     Examples
     --------
@@ -207,10 +208,49 @@ def correct(
     """
     rng = np.random.default_rng(rng)
 
+    # Validate scalar control parameters early for clearer errors.
+    try:
+        alpha = float(alpha)
+    except (TypeError, ValueError) as e:
+        raise ValueError(f"alpha must be a finite float in (0, 1); got {alpha!r}.") from e
+    if not np.isfinite(alpha) or not (0.0 < alpha < 1.0):
+        raise ValueError(f"alpha must be in (0, 1); got {alpha!r}.")
+
+    if isinstance(n_boot, bool) or not isinstance(n_boot, (int, np.integer)):
+        raise ValueError(f"n_boot must be a positive integer; got {n_boot!r}.")
+    if int(n_boot) <= 0:
+        raise ValueError(f"n_boot must be a positive integer; got {n_boot!r}.")
+    n_boot = int(n_boot)
+
     # ── Coerce inputs ─────────────────────────────────────────────────────────
     Y_lab       = np.asarray(Y_lab,       dtype=float)
     Y_hat_lab   = np.asarray(Y_hat_lab,   dtype=float)
     Y_hat_unlab = np.asarray(Y_hat_unlab, dtype=float)
+
+    if Y_lab.ndim == 0 or Y_hat_lab.ndim == 0 or Y_hat_unlab.ndim == 0:
+        raise ValueError(
+            "Y_lab, Y_hat_lab, and Y_hat_unlab must be at least 1-D arrays."
+        )
+    if Y_lab.ndim != Y_hat_lab.ndim:
+        raise ValueError(
+            f"Y_lab and Y_hat_lab must have the same ndim "
+            f"(got {Y_lab.ndim} vs {Y_hat_lab.ndim})."
+        )
+    if Y_hat_unlab.ndim != Y_hat_lab.ndim:
+        raise ValueError(
+            f"Y_hat_unlab and Y_hat_lab must have the same ndim "
+            f"(got {Y_hat_unlab.ndim} vs {Y_hat_lab.ndim})."
+        )
+    if Y_lab.shape[1:] != Y_hat_lab.shape[1:]:
+        raise ValueError(
+            f"Y_lab and Y_hat_lab must have matching trailing shape "
+            f"(got {Y_lab.shape[1:]} vs {Y_hat_lab.shape[1:]})."
+        )
+    if Y_hat_unlab.shape[1:] != Y_hat_lab.shape[1:]:
+        raise ValueError(
+            f"Y_hat_unlab and Y_hat_lab must have matching trailing shape "
+            f"(got {Y_hat_unlab.shape[1:]} vs {Y_hat_lab.shape[1:]})."
+        )
 
     if X_lab is not None:
         X_lab = np.asarray(X_lab)
@@ -238,6 +278,18 @@ def correct(
             f"X_unlab must have the same length as Y_hat_unlab "
             f"(got {len(X_unlab)} vs {len(Y_hat_unlab)})"
         )
+
+    if len(Y_lab) == 0:
+        raise ValueError("Y_lab and Y_hat_lab must be non-empty.")
+    if len(Y_hat_unlab) == 0:
+        raise ValueError("Y_hat_unlab must be non-empty.")
+
+    if not np.all(np.isfinite(Y_lab)):
+        raise ValueError("Y_lab contains non-finite values (NaN/inf).")
+    if not np.all(np.isfinite(Y_hat_lab)):
+        raise ValueError("Y_hat_lab contains non-finite values (NaN/inf).")
+    if not np.all(np.isfinite(Y_hat_unlab)):
+        raise ValueError("Y_hat_unlab contains non-finite values (NaN/inf).")
 
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
@@ -273,6 +325,7 @@ def correct(
     if compute_pvalue:
         # Proportion of bootstrap draws on each side of 0; two-sided.
         p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
+        p_value = min(max(p_value, 0.0), 1.0)
 
     return PPIResult(
         estimate=float(estimate),

@@ -38,7 +38,7 @@ import numpy as np
 import pytest
 from scipy import stats as scipy_stats
 
-from evalstats.tests import TestResult, ttest, mannwhitney, wilcoxon
+from evalstats.tests import TestResult, ttest, mannwhitney, wilcoxon, anova_oneway
 
 
 # ─── Data generators ─────────────────────────────────────────────────────────
@@ -1062,3 +1062,567 @@ class TestBootstrapPValueStability:
         with pytest.warns(UserWarning, match="undercover below 30 labels"):
             r = call_fn(a, b, al, bl, n_boot=120, rng=271)
         assert r.corrected_estimate is not None
+
+
+# ─── anova_oneway ─────────────────────────────────────────────────────────────
+
+_ANOVA_SEEDS = [110, 220, 330, 440, 550]
+
+
+def _multigroup(rng, k=3, n=200, mus=None, sigma=1.0, biases=None, n_lab=50, llm_noise=0.10):
+    """Independent k-group data. LLM = truth + bias + iid noise."""
+    if mus is None:
+        mus = [3.0] * k
+    if biases is None:
+        biases = [0.0] * k
+    truths = [rng.normal(mu, sigma, n) for mu in mus]
+    groups = [truths[i] + biases[i] + rng.normal(0, llm_noise, n) for i in range(k)]
+    groups_lab = [np.full(n, np.nan) for _ in range(k)]
+    for i in range(k):
+        idx = rng.choice(n, n_lab, replace=False)
+        groups_lab[i][idx] = truths[i][idx]
+    return groups, groups_lab
+
+
+def _multigroup_repeated(rng, k=3, n=200, mus=None, sigma=1.0, biases=None, n_lab=50, llm_noise=0.10):
+    """Repeated-measures k-condition data. Same subjects labeled in all conditions."""
+    if mus is None:
+        mus = [3.0] * k
+    if biases is None:
+        biases = [0.0] * k
+    subject_fx = rng.normal(0, 0.5, n)
+    truths = [mus[i] + subject_fx + rng.normal(0, sigma, n) for i in range(k)]
+    groups = [truths[i] + biases[i] + rng.normal(0, llm_noise, n) for i in range(k)]
+    idx = rng.choice(n, n_lab, replace=False)
+    groups_lab = [np.full(n, np.nan) for _ in range(k)]
+    for i in range(k):
+        groups_lab[i][idx] = truths[i][idx]
+    return groups, groups_lab
+
+
+class TestAnovaOnewayBaseline:
+    """No-label tests: statistics match scipy/statsmodels; PPI fields all None."""
+
+    def test_independent_matches_scipy(self):
+        rng = np.random.default_rng(500)
+        groups, _ = _multigroup(rng, k=3, n=120)
+        r = anova_oneway(*groups)
+        ref = scipy_stats.f_oneway(*groups)
+        assert r.statistic == pytest.approx(ref.statistic)
+        assert r.p_value == pytest.approx(ref.pvalue)
+
+    def test_repeated_matches_statsmodels(self):
+        import pandas as pd
+        pytest.importorskip("statsmodels")
+        from statsmodels.stats.anova import AnovaRM
+        rng = np.random.default_rng(501)
+        groups, _ = _multigroup_repeated(rng, k=3, n=80)
+        r = anova_oneway(*groups, repeated=True)
+        n_subjects, k = len(groups[0]), len(groups)
+        stacked = np.column_stack(groups)
+        df_long = pd.DataFrame({
+            "subject": np.repeat(np.arange(n_subjects), k),
+            "condition": np.tile(np.arange(k), n_subjects),
+            "score": stacked.reshape(-1),
+        })
+        rm = AnovaRM(df_long, depvar="score", subject="subject", within=["condition"]).fit()
+        row = rm.anova_table.iloc[0]
+        assert r.statistic == pytest.approx(float(row["F Value"]), rel=1e-5)
+        assert r.p_value == pytest.approx(float(row["Pr > F"]), rel=1e-5)
+
+    def test_independent_invariant_to_group_permutation(self):
+        rng = np.random.default_rng(5011)
+        groups, _ = _multigroup(rng, k=4, n=100)
+        r1 = anova_oneway(*groups)
+        r2 = anova_oneway(*groups[::-1])
+        assert r1.statistic == pytest.approx(r2.statistic)
+        assert r1.p_value == pytest.approx(r2.p_value)
+
+    def test_independent_invariant_to_shift_and_positive_scale(self):
+        rng = np.random.default_rng(5012)
+        groups, _ = _multigroup(rng, k=3, n=120)
+        r = anova_oneway(*groups)
+        groups_affine = [2.75 * g + 11.0 for g in groups]
+        r_affine = anova_oneway(*groups_affine)
+        assert r.statistic == pytest.approx(r_affine.statistic)
+        assert r.p_value == pytest.approx(r_affine.p_value)
+
+    def test_independent_unbalanced_matches_scipy(self):
+        rng = np.random.default_rng(5013)
+        g1 = rng.normal(0.0, 1.0, 60)
+        g2 = rng.normal(0.3, 1.0, 140)
+        g3 = rng.normal(-0.2, 1.0, 350)
+        r = anova_oneway(g1, g2, g3)
+        ref = scipy_stats.f_oneway(g1, g2, g3)
+        assert r.statistic == pytest.approx(ref.statistic)
+        assert r.p_value == pytest.approx(ref.pvalue)
+
+    def test_ppi_fields_none_without_labels_independent(self):
+        rng = np.random.default_rng(502)
+        groups, _ = _multigroup(rng, k=3, n=80)
+        r = anova_oneway(*groups)
+        assert isinstance(r, TestResult)
+        assert r.corrected_estimate is None
+        assert r.corrected_ci is None
+        assert r.corrected_p_value is None
+        assert r.rectifier is None
+        assert r.n_labeled is None
+        assert r.n_total is None
+
+    def test_ppi_fields_none_without_labels_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(503)
+        groups, _ = _multigroup_repeated(rng, k=3, n=80)
+        r = anova_oneway(*groups, repeated=True)
+        assert r.corrected_estimate is None
+        assert r.corrected_ci is None
+        assert r.corrected_p_value is None
+        assert r.rectifier is None
+        assert r.n_labeled is None
+        assert r.n_total is None
+
+    def test_test_name_contains_anova(self):
+        rng = np.random.default_rng(504)
+        groups, _ = _multigroup(rng, k=3, n=60)
+        assert "anova" in anova_oneway(*groups).test_name.lower()
+
+    def test_requires_at_least_two_groups(self):
+        rng = np.random.default_rng(505)
+        g = rng.normal(0, 1, 50)
+        with pytest.raises(ValueError, match="at least two groups"):
+            anova_oneway(g)
+
+    def test_repeated_raises_for_unequal_lengths(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(506)
+        g1 = rng.normal(0, 1, 80)
+        g2 = rng.normal(0, 1, 90)
+        with pytest.raises(ValueError, match="equal-length"):
+            anova_oneway(g1, g2, repeated=True)
+
+    def test_extra_dict_keys_independent(self):
+        rng = np.random.default_rng(507)
+        groups, _ = _multigroup(rng, k=4, n=80)
+        r = anova_oneway(*groups)
+        for key in ("_test", "k_groups", "n_total_obs", "group_sizes", "group_means", "df1", "df2", "eta_sq"):
+            assert key in r.extra, f"Missing extra key: {key!r}"
+        assert r.extra["k_groups"] == 4
+        assert r.extra["df1"] == pytest.approx(3.0)   # k-1
+        assert 0.0 <= r.extra["eta_sq"] <= 1.0
+
+    def test_extra_dict_keys_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(508)
+        groups, _ = _multigroup_repeated(rng, k=3, n=60)
+        r = anova_oneway(*groups, repeated=True)
+        for key in ("_test", "k_groups", "n_subjects", "n_total_obs", "group_means", "df1", "df2", "eta_sq"):
+            assert key in r.extra, f"Missing extra key: {key!r}"
+        assert r.extra["repeated"] is True
+        assert r.extra["k_groups"] == 3
+        assert r.extra["n_subjects"] == 60
+        assert 0.0 <= r.extra["eta_sq"] <= 1.0
+
+
+class TestAnovaOnewayPPIFieldStructure:
+    """PPI-corrected anova_oneway: field structure, ordering, and metadata."""
+
+    def test_fields_populated_independent(self):
+        rng = np.random.default_rng(510)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=200, rng=510)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        assert r.corrected_p_value is not None
+        assert r.rectifier is not None
+        assert r.n_labeled is not None
+        assert r.n_total is not None
+
+    def test_fields_populated_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(511)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=200, rng=511)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        assert r.corrected_p_value is not None
+        assert r.n_labeled is not None
+        assert r.n_total is not None
+
+    def test_ci_is_ordered_independent(self):
+        rng = np.random.default_rng(512)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=200, rng=512)
+        lo, hi = r.corrected_ci
+        assert lo <= hi
+
+    def test_corrected_p_value_in_0_1(self):
+        rng = np.random.default_rng(513)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=300, rng=513)
+        assert 0.0 <= r.corrected_p_value <= 1.0
+
+    def test_n_labeled_and_n_total_match_input_independent(self):
+        """3 groups × 200 items × 50 labeled each → n_labeled=150, n_total=600."""
+        rng = np.random.default_rng(514)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=200, rng=514)
+        assert r.n_labeled == 150
+        assert r.n_total == 600
+
+    def test_n_labeled_and_n_total_match_input_repeated(self):
+        """3 conditions × 200 subjects × 50 labeled subjects → n_labeled=150, n_total=600."""
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(5141)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=200, rng=5141)
+        assert r.n_labeled == 150
+        assert r.n_total == 600
+
+    def test_reproducibility_with_rng_seed(self):
+        rng = np.random.default_rng(515)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        kw = dict(groups_lab=groups_lab, n_boot=500, rng=42)
+        r1 = anova_oneway(*groups, **kw)
+        r2 = anova_oneway(*groups, **kw)
+        assert r1.corrected_estimate == r2.corrected_estimate
+        assert r1.corrected_ci == r2.corrected_ci
+
+    def test_alpha_propagated(self):
+        rng = np.random.default_rng(516)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = anova_oneway(*groups, groups_lab=groups_lab, alpha=0.10, n_boot=200, rng=516)
+        assert r.alpha == 0.10
+
+    def test_corrected_estimate_equals_llm_plus_rectifier_independent(self):
+        rng = np.random.default_rng(517)
+        groups, groups_lab = _multigroup(
+            rng,
+            k=3,
+            n=220,
+            mus=[3.0, 3.0, 3.0],
+            biases=[1.5, 0.0, 0.0],
+            n_lab=60,
+        )
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=200, rng=517)
+
+        ns = np.array([len(g) for g in groups], dtype=float)
+        means = np.array([float(np.mean(g)) for g in groups], dtype=float)
+        grand = float(np.sum(ns * means) / np.sum(ns))
+        llm_between = float(np.sum(ns * (means - grand) ** 2) / np.sum(ns))
+
+        assert r.corrected_estimate == pytest.approx(llm_between + r.rectifier, abs=1e-10)
+
+    def test_corrected_estimate_equals_llm_plus_rectifier_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(518)
+        groups, groups_lab = _multigroup_repeated(
+            rng,
+            k=3,
+            n=220,
+            mus=[3.0, 3.0, 3.0],
+            biases=[1.5, 0.0, 0.0],
+            n_lab=60,
+        )
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=200, rng=518)
+
+        llm_mat = np.column_stack(groups)
+        centered = llm_mat - llm_mat.mean(axis=1, keepdims=True)
+        cond_means = centered.mean(axis=0)
+        llm_between = float(np.mean((cond_means - cond_means.mean()) ** 2))
+
+        assert r.corrected_estimate == pytest.approx(llm_between + r.rectifier, abs=1e-10)
+
+    def test_corrected_p_value_agrees_with_corrected_ci_independent(self):
+        alpha = 0.05
+        rng = np.random.default_rng(519)
+        groups, groups_lab = _multigroup(
+            rng,
+            k=3,
+            n=230,
+            mus=[3.0, 4.1, 3.4],
+            sigma=0.9,
+            biases=[0.8, 0.0, 0.0],
+            n_lab=70,
+        )
+        r = anova_oneway(*groups, groups_lab=groups_lab, alpha=alpha, n_boot=400, rng=519)
+        lo, hi = r.corrected_ci
+        ci_rejects = (hi < 0.0) or (lo > 0.0)
+        p_rejects = r.corrected_p_value < alpha
+        assert p_rejects == ci_rejects
+
+    def test_corrected_p_value_agrees_with_corrected_ci_repeated(self):
+        pytest.importorskip("statsmodels")
+        alpha = 0.05
+        rng = np.random.default_rng(520)
+        groups, groups_lab = _multigroup_repeated(
+            rng,
+            k=3,
+            n=230,
+            mus=[3.0, 4.1, 3.4],
+            sigma=0.9,
+            biases=[0.8, 0.0, 0.0],
+            n_lab=70,
+        )
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, alpha=alpha, n_boot=400, rng=520)
+        lo, hi = r.corrected_ci
+        ci_rejects = (hi < 0.0) or (lo > 0.0)
+        p_rejects = r.corrected_p_value < alpha
+        assert p_rejects == ci_rejects
+
+    def test_fully_labeled_corrected_estimate_matches_human_estimand_independent(self):
+        rng = np.random.default_rng(521)
+        groups, groups_lab = _multigroup(
+            rng,
+            k=3,
+            n=180,
+            mus=[3.1, 3.8, 2.9],
+            sigma=0.8,
+            biases=[0.9, -0.3, 0.5],
+            n_lab=180,
+        )
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=250, rng=521)
+
+        ns = np.array([len(g) for g in groups_lab], dtype=float)
+        means = np.array([float(np.mean(g)) for g in groups_lab], dtype=float)
+        grand = float(np.sum(ns * means) / np.sum(ns))
+        human_between = float(np.sum(ns * (means - grand) ** 2) / np.sum(ns))
+
+        assert r.corrected_estimate == pytest.approx(human_between, abs=1e-10)
+
+    def test_fully_labeled_corrected_estimate_matches_human_estimand_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(522)
+        groups, groups_lab = _multigroup_repeated(
+            rng,
+            k=3,
+            n=180,
+            mus=[3.1, 3.8, 2.9],
+            sigma=0.8,
+            biases=[0.9, -0.3, 0.5],
+            n_lab=180,
+        )
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=250, rng=522)
+
+        human_mat = np.column_stack(groups_lab)
+        centered = human_mat - human_mat.mean(axis=1, keepdims=True)
+        cond_means = centered.mean(axis=0)
+        human_between = float(np.mean((cond_means - cond_means.mean()) ** 2))
+
+        assert r.corrected_estimate == pytest.approx(human_between, abs=1e-10)
+
+    def test_raises_when_fewer_than_15_labels_independent(self):
+        rng = np.random.default_rng(523)
+        groups, groups_lab = _multigroup(rng, k=3, n=120, n_lab=4)
+        with pytest.raises(ValueError, match="At least 15 human labels"):
+            anova_oneway(*groups, groups_lab=groups_lab, n_boot=120, rng=523)
+
+    def test_warns_when_15_to_29_labels_independent(self):
+        rng = np.random.default_rng(524)
+        groups, groups_lab = _multigroup(rng, k=3, n=120, n_lab=6)
+        with pytest.warns(UserWarning, match="undercover below 30 labels"):
+            r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=120, rng=524)
+        assert r.corrected_estimate is not None
+
+    def test_raises_when_fewer_than_15_overlapping_subjects_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(525)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=120, n_lab=10)
+        with pytest.raises(ValueError, match="At least 15 subjects"):
+            anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=120, rng=525)
+
+    def test_warns_when_15_to_29_overlapping_subjects_repeated(self):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(526)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=120, n_lab=20)
+        with pytest.warns(UserWarning, match="undercover below 30 labels"):
+            r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=120, rng=526)
+        assert r.corrected_estimate is not None
+
+
+class TestAnovaOnewayFalsePositive:
+    """LLM inflates one group but true groups are equal → corrected CI covers 0."""
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_CI_contains_zero_independent(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=300, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=80
+        )
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        assert r.p_value < 0.001, f"seed={seed}: uncorrected should detect false positive"
+        lo, hi = r.corrected_ci
+        assert lo <= 0 <= hi, (
+            f"seed={seed}: corrected CI ({lo:.4f}, {hi:.4f}) should contain 0 "
+            f"(no true between-group variance)"
+        )
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_estimate_closer_to_zero(self, seed):
+        """Quantitative: corrected variance estimate must be closer to 0 than raw LLM estimate."""
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=300, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=80
+        )
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        # Raw LLM between-group variance
+        ns = np.array([len(g) for g in groups], dtype=float)
+        means = np.array([float(np.mean(g)) for g in groups], dtype=float)
+        grand = float(np.sum(ns * means) / np.sum(ns))
+        llm_est = float(np.sum(ns * (means - grand) ** 2) / np.sum(ns))
+        assert abs(r.corrected_estimate) < abs(llm_est), (
+            f"seed={seed}: corrected={r.corrected_estimate:.4f} should be closer to 0 "
+            f"than llm_est={llm_est:.4f}"
+        )
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_CI_contains_zero_repeated(self, seed):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=250, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=70
+        )
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        assert r.p_value < 0.001, f"seed={seed}: uncorrected should detect false positive"
+        lo, hi = r.corrected_ci
+        assert lo <= 0 <= hi, (
+            f"seed={seed}: repeated corrected CI ({lo:.4f}, {hi:.4f}) should contain 0"
+        )
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_estimate_closer_to_zero_repeated(self, seed):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=250, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=70
+        )
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+
+        llm_mat = np.column_stack(groups)
+        centered = llm_mat - llm_mat.mean(axis=1, keepdims=True)
+        cond_means = centered.mean(axis=0)
+        llm_est = float(np.mean((cond_means - cond_means.mean()) ** 2))
+
+        assert abs(r.corrected_estimate) < abs(llm_est), (
+            f"seed={seed}: repeated corrected={r.corrected_estimate:.4f} should be closer to 0 "
+            f"than llm_est={llm_est:.4f}"
+        )
+
+
+class TestAnovaOnewayTrueEffect:
+    """Large true between-group effect survives PPI correction."""
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_large_true_effect_CI_excludes_zero_independent(self, seed):
+        """True group means differ by ~2σ across conditions; corrected CI should exclude 0."""
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=200, mus=[3.0, 5.0, 4.0], sigma=0.8, biases=[0.0, 0.0, 0.0], n_lab=50
+        )
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=300, rng=seed + 30000)
+        lo, hi = r.corrected_ci
+        assert lo > 0, (
+            f"seed={seed}: corrected CI ({lo:.3f}, {hi:.3f}) should be entirely "
+            f"above 0 for a large true between-group effect"
+        )
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_large_true_effect_CI_excludes_zero_repeated(self, seed):
+        pytest.importorskip("statsmodels")
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=200, mus=[3.0, 5.0, 4.0], sigma=0.8, biases=[0.0, 0.0, 0.0], n_lab=50
+        )
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=300, rng=seed + 30000)
+        lo, hi = r.corrected_ci
+        assert lo > 0, (
+            f"seed={seed}: repeated corrected CI ({lo:.3f}, {hi:.3f}) should be entirely "
+            f"above 0 for a large true between-group effect"
+        )
+
+
+class TestAnovaOnewayCIWidthLabelBudget:
+    """More human labels → narrower corrected CI for both ANOVA variants.
+
+    We hold the synthetic LLM data fixed and increase n_lab, measuring the
+    corrected CI width averaged over multiple label-mask draws at each budget.
+    CI width is the right property to test here: more labels always reduces
+    rectifier variance and therefore narrows the bootstrap CI.
+
+    Note: the corrected *p-value* is NOT tested here.  For the ANOVA estimand
+    (between-group variance, bounded ≥ 0), the p-value can dip at intermediate
+    label counts as CI narrowing and estimate convergence interact non-linearly.
+    CI width has no such non-monotone behaviour — it is the property the
+    bootstrap directly controls.
+    """
+
+    def test_ci_width_narrows_with_n_lab_independent(self):
+        """Independent one-way ANOVA: endpoint CI width drops materially with more labels."""
+        seed = 610
+        rng = np.random.default_rng(seed)
+        k, n = 3, 320
+        truths = [rng.normal(3.0, 1.0, n) for _ in range(k)]
+        groups = [truths[i] + [1.3, 0.0, 0.0][i] + rng.normal(0.0, 0.10, n) for i in range(k)]
+
+        n_labs = [15, 30, 60, 100, 160]
+        widths = []
+
+        for n_lab in n_labs:
+            rep_w = []
+            for rep in range(6):
+                label_rng = np.random.default_rng(seed * 1000 + n_lab * 10 + rep)
+                groups_lab = []
+                for i in range(k):
+                    lab = np.full(n, np.nan)
+                    idx = label_rng.choice(n, n_lab, replace=False)
+                    lab[idx] = truths[i][idx]
+                    groups_lab.append(lab)
+                r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=2_000,
+                                 rng=seed + 1000 + n_lab * 10 + rep)
+                lo, hi = r.corrected_ci
+                rep_w.append(hi - lo)
+            widths.append(float(np.mean(rep_w)))
+
+        # Endpoints: largest label budget must give materially narrower CI.
+        assert widths[-1] < widths[0], (
+            f"Expected CI to narrow from n_lab=15 to 160; got widths={widths}"
+        )
+        # Local trend: allow small upward jitter but no large reversals.
+        for i in range(len(widths) - 1):
+            assert widths[i + 1] <= widths[i] + 0.03, (
+                f"Large upward flip between n_lab={n_labs[i]} and {n_labs[i+1]}: widths={widths}"
+            )
+
+    def test_ci_width_narrows_with_n_lab_repeated(self):
+        """Repeated-measures one-way ANOVA: same endpoint CI width check."""
+        pytest.importorskip("statsmodels")
+        seed = 710
+        rng = np.random.default_rng(seed)
+        k, n = 3, 260
+        subject_fx = rng.normal(0.0, 0.5, n)
+        truths = [3.0 + subject_fx + rng.normal(0.0, 0.9, n) for _ in range(k)]
+        groups = [truths[i] + [1.1, 0.0, 0.0][i] + rng.normal(0.0, 0.10, n) for i in range(k)]
+
+        n_labs = [15, 30, 50, 80, 120]
+        widths = []
+
+        for n_lab in n_labs:
+            rep_w = []
+            for rep in range(6):
+                label_rng = np.random.default_rng(seed * 1000 + n_lab * 10 + rep)
+                idx = label_rng.choice(n, n_lab, replace=False)
+                groups_lab = [np.full(n, np.nan) for _ in range(k)]
+                for i in range(k):
+                    groups_lab[i][idx] = truths[i][idx]
+                r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab,
+                                 n_boot=2_000, rng=seed + 2000 + n_lab * 10 + rep)
+                lo, hi = r.corrected_ci
+                rep_w.append(hi - lo)
+            widths.append(float(np.mean(rep_w)))
+
+        assert widths[-1] < widths[0], (
+            f"Expected CI to narrow from n_lab=15 to 120; got widths={widths}"
+        )
+        for i in range(len(widths) - 1):
+            assert widths[i + 1] <= widths[i] + 0.03, (
+                f"Large upward flip between n_lab={n_labs[i]} and {n_labs[i+1]}: widths={widths}"
+            )
