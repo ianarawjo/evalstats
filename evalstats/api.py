@@ -727,15 +727,10 @@ def _run_alignment_ppi(
     entity_idx = {e: i for i, e in enumerate(labels)}
 
     # ── Extract labeled and unlabeled arrays ──────────────────────────────────
-    human_col = alignment_result.human_col
-    labeled_mask = df[human_col].notna()
-
-    Y_hat_unlab = df[metric_col].to_numpy(dtype=float)
-    X_unlab     = df[factor_col].to_numpy()
-
-    Y_lab     = df.loc[labeled_mask, human_col].to_numpy(dtype=float)
-    Y_hat_lab = df.loc[labeled_mask, metric_col].to_numpy(dtype=float)
-    X_lab     = df.loc[labeled_mask, factor_col].to_numpy()
+    from evalstats.ppi import resolve_arrays
+    Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab = resolve_arrays(
+        df, metric_col=metric_col, group_col=factor_col, alignment_result=alignment_result
+    )
 
     n_all = len(Y_hat_unlab)
     n_lab = len(Y_lab)

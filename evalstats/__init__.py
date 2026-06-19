@@ -35,6 +35,7 @@ from evalstats.loader import load_from, EvalResults, EvalLoadError
 from evalstats.api import compare, compare_models, compare_prompts, ComparisonResult
 from evalstats.alignment import validate_alignment, AlignmentResult
 from evalstats import ppi
+from evalstats import tests
 
 __version__ = "0.2.0"
 
@@ -44,6 +45,7 @@ __all__ = [
     "validate_alignment",
     "AlignmentResult",
     "ppi",
+    "tests",
     "EvalResults",
     "EvalLoadError",
     "compare",

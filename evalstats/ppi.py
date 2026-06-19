@@ -75,6 +75,41 @@ def _call(func: Callable, Y: np.ndarray, X: Optional[np.ndarray]) -> float:
     return float(func(Y, X))
 
 
+def resolve_arrays(
+    df,
+    *,
+    metric_col: str,
+    group_col: str,
+    alignment_result,
+):
+    """Extract PPI arrays from a DataFrame and an AlignmentResult.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+    metric_col : str
+        Column of LLM scores (present for all rows).
+    group_col : str
+        Column of group labels (factor / condition).
+    alignment_result : AlignmentResult
+        From :func:`~evalstats.alignment.validate_alignment`.
+        Its ``human_col`` attribute identifies the sparse human-label column.
+
+    Returns
+    -------
+    tuple
+        ``(Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab)`` as numpy arrays.
+    """
+    human_col = alignment_result.human_col
+    labeled_mask = df[human_col].notna()
+    Y_hat_unlab = df[metric_col].to_numpy(dtype=float)
+    X_unlab     = df[group_col].to_numpy()
+    Y_lab       = df.loc[labeled_mask, human_col].to_numpy(dtype=float)
+    Y_hat_lab   = df.loc[labeled_mask, metric_col].to_numpy(dtype=float)
+    X_lab       = df.loc[labeled_mask, group_col].to_numpy()
+    return Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def correct(
