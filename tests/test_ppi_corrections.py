@@ -941,6 +941,74 @@ class TestPPIExtraRigor:
         human_diff = float(truth_a.mean() - truth_b.mean())
         assert r.corrected_estimate == pytest.approx(human_diff, abs=0.10)
 
+
+class TestBootstrapPValueStability:
+    """Increasing bootstrap draws should not make corrected p-values materially smaller."""
+
+    @staticmethod
+    def _assert_not_meaningfully_smaller(p_1000, p_5000, p_10000, max_drop=0.05):
+        """Allow small Monte Carlo jitter but reject materially smaller p-values."""
+        assert p_5000 >= p_1000 - max_drop, (
+            f"n_boot=5000 produced much smaller p ({p_5000:.4f}) than n_boot=1000 ({p_1000:.4f})"
+        )
+        assert p_10000 >= p_5000 - max_drop, (
+            f"n_boot=10000 produced much smaller p ({p_10000:.4f}) than n_boot=5000 ({p_5000:.4f})"
+        )
+        assert p_10000 >= p_1000 - max_drop, (
+            f"n_boot=10000 produced much smaller p ({p_10000:.4f}) than n_boot=1000 ({p_1000:.4f})"
+        )
+
+    def test_ttest_p_value_stable_as_n_boot_increases(self):
+        rng = np.random.default_rng(261)
+        a, b, al, bl = _two_sample(
+            rng,
+            n=300,
+            mu_a=3.0,
+            mu_b=3.0,
+            bias_a=1.8,
+            bias_b=0.0,
+            n_lab=90,
+        )
+        p_1000 = ttest(a, b, a_lab=al, b_lab=bl, n_boot=1000, rng=1261).corrected_p_value
+        p_5000 = ttest(a, b, a_lab=al, b_lab=bl, n_boot=5000, rng=1261).corrected_p_value
+        p_10000 = ttest(a, b, a_lab=al, b_lab=bl, n_boot=10000, rng=1261).corrected_p_value
+
+        self._assert_not_meaningfully_smaller(p_1000, p_5000, p_10000)
+
+    def test_mannwhitney_p_value_stable_as_n_boot_increases(self):
+        rng = np.random.default_rng(262)
+        a, b, al, bl = _two_sample(
+            rng,
+            n=280,
+            mu_a=3.0,
+            mu_b=3.0,
+            bias_a=1.6,
+            bias_b=0.0,
+            n_lab=85,
+        )
+        p_1000 = mannwhitney(a, b, x_lab=al, y_lab=bl, n_boot=1000, rng=1262).corrected_p_value
+        p_5000 = mannwhitney(a, b, x_lab=al, y_lab=bl, n_boot=5000, rng=1262).corrected_p_value
+        p_10000 = mannwhitney(a, b, x_lab=al, y_lab=bl, n_boot=10000, rng=1262).corrected_p_value
+
+        self._assert_not_meaningfully_smaller(p_1000, p_5000, p_10000)
+
+    def test_wilcoxon_p_value_stable_as_n_boot_increases(self):
+        rng = np.random.default_rng(263)
+        a, b, al, bl = _paired(
+            rng,
+            n=260,
+            mu_a=3.0,
+            mu_b=3.0,
+            bias_a=1.6,
+            bias_b=0.0,
+            n_lab=80,
+        )
+        p_1000 = wilcoxon(a, b, x_lab=al, y_lab=bl, n_boot=1000, rng=1263).corrected_p_value
+        p_5000 = wilcoxon(a, b, x_lab=al, y_lab=bl, n_boot=5000, rng=1263).corrected_p_value
+        p_10000 = wilcoxon(a, b, x_lab=al, y_lab=bl, n_boot=10000, rng=1263).corrected_p_value
+
+        self._assert_not_meaningfully_smaller(p_1000, p_5000, p_10000)
+
     def test_ttest_ci_narrows_across_multiple_label_levels(self):
         """CI width should shrink across increasing label budgets (allow tiny jitter)."""
         rng_data = np.random.default_rng(260)

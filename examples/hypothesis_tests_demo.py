@@ -15,6 +15,8 @@ import numpy as np
 from evalstats.tests import ttest, mannwhitney, wilcoxon
 
 
+# Data generation uses a shared rng; bootstrap seeds are fixed integers so
+# changing n_boot never affects the synthetic data draws.
 rng = np.random.default_rng(2025)
 
 
@@ -68,7 +70,7 @@ llm_b = truth_b + rng.normal(0, 0.15, n)
 human_a = _sparse_labels(truth_a, rng, n_labeled=30)
 human_b = _sparse_labels(truth_b, rng, n_labeled=30)
 
-ttest(llm_a, llm_b, a_lab=human_a, b_lab=human_b, n_boot=1000, rng=rng)
+ttest(llm_a, llm_b, a_lab=human_a, b_lab=human_b, n_boot=10_000, rng=1)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -79,7 +81,7 @@ ttest(llm_a, llm_b, a_lab=human_a, b_lab=human_b, n_boot=1000, rng=rng)
 # Ground truth: NO difference — both prompts score identically.
 # LLM judge: inflates Prompt A scores by +0.5 (differential bias).
 # Without correction the bias makes it look significant; PPI removes it.
-# Human labels: 30 items per group are spot-checked.
+# Human labels: 60 of 200 items per group are spot-checked.
 # ─────────────────────────────────────────────────────────────────────────────
 
 _section("Scenario 2 — Mann-Whitney U test (false positive corrected by PPI)")
@@ -87,7 +89,7 @@ _section("Scenario 2 — Mann-Whitney U test (false positive corrected by PPI)")
 def _likert(mu, sigma, n, rng):
     return np.clip(np.round(rng.normal(mu, sigma, n)), 1, 5)
 
-n = 150
+n = 200
 truth_x = _likert(3.3, 1.1, n, rng)
 truth_y = _likert(3.3, 1.1, n, rng)   # identical distribution — no true effect
 
@@ -95,10 +97,10 @@ truth_y = _likert(3.3, 1.1, n, rng)   # identical distribution — no true effec
 llm_x = np.clip(truth_x + 0.5 + rng.normal(0, 0.15, n), 1, 5)
 llm_y = np.clip(truth_y        + rng.normal(0, 0.15, n), 1, 5)
 
-human_x = _sparse_labels(truth_x, rng, n_labeled=30)
-human_y = _sparse_labels(truth_y, rng, n_labeled=30)
+human_x = _sparse_labels(truth_x, rng, n_labeled=60)
+human_y = _sparse_labels(truth_y, rng, n_labeled=60)
 
-mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y, n_boot=1000, rng=rng)
+mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y, n_boot=10_000, rng=2)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -125,4 +127,4 @@ human_cot, human_standard = _sparse_labels_paired(truth_cot, truth_standard, rng
 
 wilcoxon(llm_cot, llm_standard,
          x_lab=human_cot, y_lab=human_standard,
-         n_boot=1000, rng=rng)
+         n_boot=10_000, rng=3)

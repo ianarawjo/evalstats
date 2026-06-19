@@ -91,10 +91,13 @@ class TestResult:
     extra: dict = field(default_factory=dict)
 
     @staticmethod
-    def _fmt_p(p: float) -> str:
+    def _fmt_p(p: float, n_boot: int = None) -> str:
+        """Return a string of the form '= X' or '< X' for use after 'p'."""
+        if p == 0.0 and n_boot is not None:
+            return f"< {1 / n_boot:.4f}"
         if p < 0.0001:
-            return f"{p:.2e}"
-        return f"{p:.4f}"
+            return f"= {p:.2e}"
+        return f"= {p:.4f}"
 
     @staticmethod
     def _bold(text: str) -> str:
@@ -102,6 +105,26 @@ class TestResult:
         if sys.stdout.isatty():
             return f"\033[1m{text}\033[0m"
         return text
+
+    @staticmethod
+    def _dim(text: str) -> str:
+        import sys
+        if sys.stdout.isatty():
+            return f"\033[2m{text}\033[0m"
+        return text
+
+    def _ppi_estimand(self) -> str:
+        """Plain-language description of the corrected estimand for each test."""
+        ex = self.extra
+        test = ex.get("_test", "")
+        if test == "ttest":
+            return ("mean of paired differences (A − B)"
+                    if ex.get("paired") else "mean difference (A − B)")
+        elif test == "mannwhitney":
+            return "P(X > Y)"
+        elif test == "wilcoxon":
+            return "median of paired differences (X − Y)"
+        return "estimand"
 
     def _stat_line(self) -> str:
         """Format the primary statistic + p-value for the test (uncorrected)."""
@@ -111,13 +134,13 @@ class TestResult:
         if test == "ttest":
             df = ex.get("df")
             df_str = f"({df:.1f})" if df is not None else ""
-            return f"t{df_str} = {self.statistic:.3f},  p = {p_str}"
+            return f"t{df_str} = {self.statistic:.3f},  p {p_str}"
         elif test == "mannwhitney":
-            return f"U = {self.statistic:.1f},  p = {p_str}"
+            return f"U = {self.statistic:.1f},  p {p_str}"
         elif test == "wilcoxon":
-            return f"W = {self.statistic:.1f},  p = {p_str}"
+            return f"W = {self.statistic:.1f},  p {p_str}"
         else:
-            return f"stat = {self.statistic:.4f},  p = {p_str}"
+            return f"stat = {self.statistic:.4f},  p {p_str}"
 
     def summary(self) -> None:
         """Print a human-readable result suitable for use in a report."""
@@ -171,15 +194,21 @@ class TestResult:
             # ── Uncorrected (first) ──────────────────────────────────
             print(f"  Uncorrected:  {self._stat_line()}  (α = {self.alpha})")
             if self.rectifier is not None and abs(self.rectifier) > 1e-9:
-                direction = "under-estimates" if self.rectifier > 0 else "over-estimates"
-                lab_str = (f"{self.n_labeled} of {self.n_total}"
-                           if self.n_labeled is not None else "?")
-                print(f"  Bias (δ = {self.rectifier:+.4f}): LLM {direction} human labels  ({lab_str} items human-labeled)")
+                print(f"  Estimated prediction bias:  δ = {self.rectifier:+.4f}")
             # ── PPI-corrected (last, with leading blank line) ────────
             if self.corrected_estimate is not None:
                 lo, hi = self.corrected_ci
-                cp_str = self._fmt_p(self.corrected_p_value)
-                print(f"\n  {B(f'PPI-corrected:  estimate = {self.corrected_estimate:.4f},  {ci_pct}% CI [{lo:.4f}, {hi:.4f}],  p = {cp_str}  (α = {self.alpha})')}")
+                n_boot = ex.get("n_boot")
+                cp_str = self._fmt_p(self.corrected_p_value, n_boot=n_boot)
+                boot_str = f",  bootstrap samples = {n_boot:,}" if n_boot is not None else ""
+                print(f"\n  {B(f'PPI-corrected:  estimate = {self.corrected_estimate:.4f},  {ci_pct}% CI [{lo:.4f}, {hi:.4f}],  p {cp_str}  (α = {self.alpha}{boot_str})')}")
+                lab_str = (f"{self.n_labeled} of {self.n_total}"
+                           if self.n_labeled is not None else "?")
+                note = (f"Correction applied using Prediction-Powered Inference on "
+                        f"{self._ppi_estimand()}; bias estimated from {lab_str} human "
+                        f"labels and removed via PPI bootstrap procedure (Angelopoulos et al., 2023; "
+                        f"Zrnic, 2024).")
+                print(f"  {self._dim(note)}")
         else:
             # ── No PPI: single prominent result line ─────────────────
             print(f"  {B(self._stat_line())}  (α = {self.alpha})")
@@ -462,6 +491,7 @@ def ttest(
             "n_a": len(a),
             "df": df if np.isfinite(df) else None,
             "cohens_d": cohens_d,
+            "n_boot": n_boot,
         }
     else:
         n_a, n_b = len(a), len(b)
@@ -480,6 +510,7 @@ def ttest(
             "std_b": std_b,
             "cohens_d": cohens_d,
             "df": df if np.isfinite(df) else None,
+            "n_boot": n_boot,
         }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
@@ -495,14 +526,19 @@ def ttest(
             label_names=("a_lab", "b_lab"),
         )
 
-        ar = _run_alignment_report(
-            np.concatenate([a, b]),
-            np.concatenate([a_lab, b_lab]),
-        )
-
         if paired:
+            # Align on item-level differences: counts overlapping pairs, not individual labels
+            _pair_mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+            ar = _run_alignment_report(
+                a - b,
+                np.where(_pair_mask, a_lab - b_lab, np.nan),
+            )
             ppi = _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng)
         else:
+            ar = _run_alignment_report(
+                np.concatenate([a, b]),
+                np.concatenate([a_lab, b_lab]),
+            )
             def _indep(ya, yb):
                 return float(ya.mean() - yb.mean())
             ppi = _ppi_two_sample(a, b, a_lab, b_lab, _indep, alpha, n_boot, rng)
@@ -589,6 +625,7 @@ def mannwhitney(
         "n_y": n_y,
         "p_x_gt_y": p_x_gt_y,
         "estimand": "P(X > Y)",
+        "n_boot": n_boot,
     }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
@@ -706,6 +743,7 @@ def wilcoxon(
         "_test": "wilcoxon",
         "n_pairs": len(x),
         "median_diff": median_diff,
+        "n_boot": n_boot,
     }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
@@ -721,9 +759,11 @@ def wilcoxon(
             label_names=("x_lab", "y_lab"),
         )
 
+        # Align on item-level differences: counts overlapping pairs, not individual labels
+        _pair_mask = ~np.isnan(x_lab) & ~np.isnan(y_lab)
         ar = _run_alignment_report(
-            np.concatenate([x, y]),
-            np.concatenate([x_lab, y_lab]),
+            x - y,
+            np.where(_pair_mask, x_lab - y_lab, np.nan),
         )
 
         ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng)
