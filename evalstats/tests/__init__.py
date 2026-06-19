@@ -68,7 +68,8 @@ class TestResult:
         Re-computed test statistic from PPI-corrected inputs (omnibus tests).
     rectifier : float or None
         Bias correction term δ = human_estimate − llm_estimate on the
-        labeled subset.  Positive means the LLM over-estimated.
+        labeled subset.  Positive means the LLM under-estimated (human > LLM);
+        negative means the LLM over-estimated (LLM > human).
     n_labeled : int or None
     n_total : int or None
     alpha : float
@@ -89,40 +90,101 @@ class TestResult:
     alpha: float = 0.05
     extra: dict = field(default_factory=dict)
 
+    @staticmethod
+    def _fmt_p(p: float) -> str:
+        if p < 0.0001:
+            return f"{p:.2e}"
+        return f"{p:.4f}"
+
+    @staticmethod
+    def _bold(text: str) -> str:
+        import sys
+        if sys.stdout.isatty():
+            return f"\033[1m{text}\033[0m"
+        return text
+
+    def _stat_line(self) -> str:
+        """Format the primary statistic + p-value for the test (uncorrected)."""
+        ex = self.extra
+        p_str = self._fmt_p(self.p_value)
+        test = ex.get("_test", "")
+        if test == "ttest":
+            df = ex.get("df")
+            df_str = f"({df:.1f})" if df is not None else ""
+            return f"t{df_str} = {self.statistic:.3f},  p = {p_str}"
+        elif test == "mannwhitney":
+            return f"U = {self.statistic:.1f},  p = {p_str}"
+        elif test == "wilcoxon":
+            return f"W = {self.statistic:.1f},  p = {p_str}"
+        else:
+            return f"stat = {self.statistic:.4f},  p = {p_str}"
+
     def summary(self) -> None:
-        """Print uncorrected and PPI-corrected results side by side."""
+        """Print a human-readable result suitable for use in a report."""
+        ex = self.extra
         ci_pct = int(round((1 - self.alpha) * 100))
-        w = 30
+        bar = "═" * 60
+        B = self._bold
+
         print(f"\n{self.test_name}")
-        print("─" * 58)
-        print(f"  {'Uncorrected':<{w}}  {'PPI-corrected'}")
-        print(f"  {'─'*w}  {'─'*20}")
-        print(f"  {'Statistic':<{w}}: {self.statistic:.4f}", end="")
-        if self.corrected_statistic is not None:
-            print(f"  →  {self.corrected_statistic:.4f}")
-        else:
-            print()
-        print(f"  {'p-value':<{w}}: {self.p_value:.4f}", end="")
-        if self.corrected_p_value is not None:
-            print(f"  →  {self.corrected_p_value:.4f}")
-        else:
-            print()
-        if self.corrected_estimate is not None:
-            print(f"  {'Corrected estimate':<{w}}:        {self.corrected_estimate:.4f}")
-        if self.corrected_ci is not None:
-            lo, hi = self.corrected_ci
-            print(f"  {f'{ci_pct}% CI':<{w}}:        [{lo:.4f}, {hi:.4f}]")
-        if self.rectifier is not None:
-            print(f"  {'Rectifier (δ)':<{w}}:        {self.rectifier:+.4f}")
-        if self.n_labeled is not None:
-            print(f"  {'Alignment set':<{w}}:        {self.n_labeled} / {self.n_total} items labeled")
-        for k, v in self.extra.items():
-            if isinstance(v, dict):
-                print(f"  {k}:")
-                for kk, vv in v.items():
-                    print(f"    {kk:<{w-4}}: {vv}")
+        print(bar)
+
+        # ── Sample info and effect size ──────────────────────────────
+        test = ex.get("_test", "")
+        if test == "ttest":
+            if ex.get("paired"):
+                print(f"  Pairs:    n = {ex['n_a']}")
             else:
-                print(f"  {k:<{w}}: {v}")
+                print(f"  Samples:  A (n = {ex['n_a']}),  B (n = {ex['n_b']})")
+                print(f"  Means:    A = {ex['mean_a']:.3f} (SD {ex['std_a']:.3f}),  "
+                      f"B = {ex['mean_b']:.3f} (SD {ex['std_b']:.3f})")
+            d = ex.get("cohens_d")
+            if d is not None:
+                mag = ("trivial" if abs(d) < 0.2 else
+                       "small"   if abs(d) < 0.5 else
+                       "medium"  if abs(d) < 0.8 else "large")
+                print(f"  Effect:   Cohen's d = {d:.3f}  ({mag})")
+
+        elif test == "mannwhitney":
+            print(f"  Samples:  X (n = {ex['n_x']}),  Y (n = {ex['n_y']})")
+            p_xgy = ex.get("p_x_gt_y")
+            if p_xgy is not None:
+                if abs(p_xgy - 0.5) < 0.02:
+                    trend = "groups score similarly"
+                elif p_xgy > 0.5:
+                    trend = "X tends to score higher"
+                else:
+                    trend = "Y tends to score higher"
+                print(f"  Effect:   P(X > Y) = {p_xgy:.3f}  ({trend})")
+
+        elif test == "wilcoxon":
+            print(f"  Pairs:    n = {ex['n_pairs']}")
+            md = ex.get("median_diff")
+            if md is not None:
+                direction = ("X tends higher" if md > 0 else
+                             "Y tends higher" if md < 0 else "no consistent shift")
+                print(f"  Effect:   Median difference (X − Y) = {md:.4f}  ({direction})")
+
+        print()
+
+        if self.corrected_p_value is not None:
+            # ── Uncorrected (first) ──────────────────────────────────
+            print(f"  Uncorrected:  {self._stat_line()}  (α = {self.alpha})")
+            if self.rectifier is not None and abs(self.rectifier) > 1e-9:
+                direction = "under-estimates" if self.rectifier > 0 else "over-estimates"
+                lab_str = (f"{self.n_labeled} of {self.n_total}"
+                           if self.n_labeled is not None else "?")
+                print(f"  Bias (δ = {self.rectifier:+.4f}): LLM {direction} human labels  ({lab_str} items human-labeled)")
+            # ── PPI-corrected (last, with leading blank line) ────────
+            if self.corrected_estimate is not None:
+                lo, hi = self.corrected_ci
+                cp_str = self._fmt_p(self.corrected_p_value)
+                print(f"\n  {B(f'PPI-corrected:  estimate = {self.corrected_estimate:.4f},  {ci_pct}% CI [{lo:.4f}, {hi:.4f}],  p = {cp_str}  (α = {self.alpha})')}")
+        else:
+            # ── No PPI: single prominent result line ─────────────────
+            print(f"  {B(self._stat_line())}  (α = {self.alpha})")
+
+        print(bar)
         print()
 
     def __repr__(self) -> str:
@@ -336,6 +398,7 @@ def ttest(
     alpha: float = 0.05,
     n_boot: int = 2000,
     rng=None,
+    print_result: bool = True,
 ) -> TestResult:
     """Independent-samples or paired t-test with optional PPI correction.
 
@@ -362,14 +425,15 @@ def ttest(
     paired : bool
         Use the paired t-test (default False).  When ``True``, ``a[i]`` and
         ``b[i]`` are treated as matched observations (same subject / item).
+    print_result : bool
+        Print a summary table to stdout (default True).  Pass ``False`` to
+        suppress output when calling from automated pipelines.
 
     Examples
     --------
-    >>> # Uncorrected
-    >>> result = es.tests.ttest(llm_a, llm_b)
-    >>> # PPI-corrected
+    >>> result = es.tests.ttest(llm_a, llm_b)                          # prints
+    >>> result = es.tests.ttest(llm_a, llm_b, print_result=False)      # silent
     >>> result = es.tests.ttest(llm_a, llm_b, a_lab=human_a, b_lab=human_b)
-    >>> result.summary()
     """
     a = _coerce(a)
     b = _coerce(b)
@@ -379,11 +443,44 @@ def ttest(
             raise ValueError(
                 f"paired=True requires equal-length arrays; got {len(a)} vs {len(b)}."
             )
-        t_stat, p_val = _scipy_stats.ttest_rel(a, b)
+        _res = _scipy_stats.ttest_rel(a, b)
         test_name = "Paired t-test"
     else:
-        t_stat, p_val = _scipy_stats.ttest_ind(a, b)
+        _res = _scipy_stats.ttest_ind(a, b)
         test_name = "Independent-samples t-test"
+
+    t_stat, p_val = float(_res.statistic), float(_res.pvalue)
+    df = float(getattr(_res, "df", np.nan))
+
+    # Effect size and descriptive stats
+    if paired:
+        diffs = a - b
+        cohens_d = float(np.mean(diffs) / np.std(diffs, ddof=1)) if np.std(diffs, ddof=1) > 0 else 0.0
+        extra = {
+            "_test": "ttest",
+            "paired": True,
+            "n_a": len(a),
+            "df": df if np.isfinite(df) else None,
+            "cohens_d": cohens_d,
+        }
+    else:
+        n_a, n_b = len(a), len(b)
+        mean_a, mean_b = float(np.mean(a)), float(np.mean(b))
+        std_a, std_b = float(np.std(a, ddof=1)), float(np.std(b, ddof=1))
+        pooled_std = np.sqrt(((n_a - 1) * std_a**2 + (n_b - 1) * std_b**2) / (n_a + n_b - 2))
+        cohens_d = float((mean_a - mean_b) / pooled_std) if pooled_std > 0 else 0.0
+        extra = {
+            "_test": "ttest",
+            "paired": False,
+            "n_a": n_a,
+            "n_b": n_b,
+            "mean_a": mean_a,
+            "mean_b": mean_b,
+            "std_a": std_a,
+            "std_b": std_b,
+            "cohens_d": cohens_d,
+            "df": df if np.isfinite(df) else None,
+        }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
     n_labeled = n_total = None
@@ -417,10 +514,10 @@ def ttest(
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
-    return TestResult(
+    result = TestResult(
         test_name=test_name,
-        statistic=float(t_stat),
-        p_value=float(p_val),
+        statistic=t_stat,
+        p_value=p_val,
         corrected_estimate=corrected_estimate,
         corrected_ci=corrected_ci,
         corrected_p_value=corrected_p,
@@ -428,7 +525,11 @@ def ttest(
         n_labeled=n_labeled,
         n_total=n_total,
         alpha=alpha,
+        extra=extra,
     )
+    if print_result:
+        result.summary()
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -444,6 +545,7 @@ def mannwhitney(
     alpha: float = 0.05,
     n_boot: int = 2000,
     rng=None,
+    print_result: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
 
@@ -463,17 +565,31 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
+    print_result : bool
+        Print a summary table to stdout (default True).  Pass ``False`` to
+        suppress output when calling from automated pipelines.
 
     Examples
     --------
+    >>> result = es.tests.mannwhitney(llm_x, llm_y)                    # prints
+    >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
-    >>> result.summary()
     """
     x = _coerce(x)
     y = _coerce(y)
 
     res = _scipy_stats.mannwhitneyu(x, y, alternative="two-sided")
     u_stat, p_val = float(res.statistic), float(res.pvalue)
+
+    n_x, n_y = len(x), len(y)
+    p_x_gt_y = u_stat / (n_x * n_y)  # common language effect size
+    extra = {
+        "_test": "mannwhitney",
+        "n_x": n_x,
+        "n_y": n_y,
+        "p_x_gt_y": p_x_gt_y,
+        "estimand": "P(X > Y)",
+    }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
     n_labeled = n_total = None
@@ -508,7 +624,7 @@ def mannwhitney(
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
-    return TestResult(
+    result = TestResult(
         test_name="Mann-Whitney U test",
         statistic=u_stat,
         p_value=p_val,
@@ -519,8 +635,11 @@ def mannwhitney(
         n_labeled=n_labeled,
         n_total=n_total,
         alpha=alpha,
-        extra={"estimand": "P(X > Y)"},
+        extra=extra,
     )
+    if print_result:
+        result.summary()
+    return result
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,6 +655,7 @@ def wilcoxon(
     alpha: float = 0.05,
     n_boot: int = 2000,
     rng=None,
+    print_result: bool = True,
 ) -> TestResult:
     """Wilcoxon signed-rank test with optional PPI correction.
 
@@ -556,11 +676,15 @@ def wilcoxon(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
+    print_result : bool
+        Print a summary table to stdout (default True).  Pass ``False`` to
+        suppress output when calling from automated pipelines.
 
     Examples
     --------
+    >>> result = es.tests.wilcoxon(llm_x, llm_y)                      # prints
+    >>> result = es.tests.wilcoxon(llm_x, llm_y, print_result=False)  # silent
     >>> result = es.tests.wilcoxon(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
-    >>> result.summary()
     """
     x = _coerce(x)
     y = _coerce(y)
@@ -575,6 +699,14 @@ def wilcoxon(
         warnings.simplefilter("ignore")
         res = _scipy_stats.wilcoxon(x, y, alternative="two-sided")
     w_stat, p_val = float(res.statistic), float(res.pvalue)
+
+    diffs = x - y
+    median_diff = float(np.median(diffs[diffs != 0])) if np.any(diffs != 0) else 0.0
+    extra = {
+        "_test": "wilcoxon",
+        "n_pairs": len(x),
+        "median_diff": median_diff,
+    }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
     n_labeled = n_total = None
@@ -603,7 +735,7 @@ def wilcoxon(
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
-    return TestResult(
+    result = TestResult(
         test_name="Wilcoxon signed-rank test",
         statistic=w_stat,
         p_value=p_val,
@@ -614,5 +746,8 @@ def wilcoxon(
         n_labeled=n_labeled,
         n_total=n_total,
         alpha=alpha,
-        extra={"estimand": "Hodges-Lehmann (median of paired diffs)"},
+        extra=extra,
     )
+    if print_result:
+        result.summary()
+    return result
