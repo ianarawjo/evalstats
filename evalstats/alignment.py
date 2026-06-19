@@ -234,7 +234,7 @@ def _fit_continuous(llm: np.ndarray, human: np.ndarray, score_type: str) -> dict
     # Uninformative Normal-Inverse-Gamma prior
     V0_inv = np.eye(2) * 1e-6
     mu0 = np.zeros(2)
-    a0, b0 = 1.0, 1.0
+    a0, b0 = 1.0, 1e-6
 
     XtX = X.T @ X
     Xty = X.T @ y

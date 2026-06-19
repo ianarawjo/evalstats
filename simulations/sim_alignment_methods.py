@@ -1265,7 +1265,7 @@ def _run_official_test(n_workers: int, args: object) -> None:
     ts      = datetime.now().strftime("%Y%m%d_%H%M%S")
     run_tag = f"sim_alignment_OFFICIAL_reps{OFFICIAL_REPS}_{ts}"
 
-    OFFICIAL_METHODS = [m for m in METHODS if m != "mc_rubin"] 
+    OFFICIAL_METHODS = METHODS # [m for m in METHODS if m != "mc_rubin"] 
     
     n_valid_cells = sum(
         1 for _ in OFFICIAL_SCENARIOS for _ in OFFICIAL_EVAL_TYPES
