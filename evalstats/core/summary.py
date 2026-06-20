@@ -17,8 +17,6 @@ from .paired import PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
 from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci
 
-if TYPE_CHECKING:
-    from ..compare import CompareReport
 
 # Sentinel used as a default so callers can distinguish "not passed" from
 # "explicitly None (suppress p-values)".
@@ -214,6 +212,10 @@ def print_analysis_summary(
     line_width: int = 41,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
+    p_value_method=_UNSET,
+    min_meaningful_diff: Optional[float] = None,
+    item_singular: str = "template",
+    item_plural: str = "templates",
 ) -> None:
     """Print a concise console summary of analyze() results.
 
@@ -223,6 +225,9 @@ def print_analysis_summary(
         Interval plot style.  ``"gradient"`` (default) renders multi-band CI
         plots (90 / 95 / 99 / 99.9 % opacity gradient) when the bundle contains
         ``multi_ci`` data.  ``"line"`` always uses the classic dot-and-line plot.
+    p_value_method : str or None, optional
+        Override the p-value method for display.  When ``_UNSET`` (default),
+        reads from the bundle's stored ``p_value_method``.
     """
     if isinstance(analysis, MultiModelBundle):
         _print_multi_model_summary(
@@ -231,6 +236,7 @@ def print_analysis_summary(
             line_width=line_width,
             pairwise_sort=pairwise_sort,
             style=style,
+            min_meaningful_diff=min_meaningful_diff,
         )
         return
 
@@ -241,6 +247,10 @@ def print_analysis_summary(
             line_width=line_width,
             pairwise_sort=pairwise_sort,
             style=style,
+            p_value_method=p_value_method,
+            min_meaningful_diff=min_meaningful_diff,
+            item_singular=item_singular,
+            item_plural=item_plural,
         )
         return
 
@@ -253,6 +263,7 @@ def print_analysis_summary(
                 line_width=line_width,
                 pairwise_sort=pairwise_sort,
                 style=style,
+                min_meaningful_diff=min_meaningful_diff,
             )
         else:
             _print_bundle_summary(
@@ -261,6 +272,10 @@ def print_analysis_summary(
                 line_width=line_width,
                 pairwise_sort=pairwise_sort,
                 style=style,
+                p_value_method=p_value_method,
+                min_meaningful_diff=min_meaningful_diff,
+                item_singular=item_singular,
+                item_plural=item_plural,
             )
         print()
 
@@ -272,6 +287,9 @@ def print_brief_summary(
         Mapping[str, AnalysisBundle],
         Mapping[str, MultiModelBundle],
     ],
+    *,
+    item_singular: str = "template",
+    item_plural: str = "templates",
 ) -> None:
     """Print a compact leaderboard-only summary of analyze() results.
 
@@ -285,7 +303,7 @@ def print_brief_summary(
         return
 
     if isinstance(analysis, AnalysisBundle):
-        _print_brief_bundle(analysis)
+        _print_brief_bundle(analysis, item_singular=item_singular, item_plural=item_plural)
         return
 
     # Per-evaluator dict.
@@ -294,7 +312,7 @@ def print_brief_summary(
         if isinstance(bundle, MultiModelBundle):
             _print_brief_multi_model(bundle)
         else:
-            _print_brief_bundle(bundle)
+            _print_brief_bundle(bundle, item_singular=item_singular, item_plural=item_plural)
         print()
 
 
@@ -472,71 +490,6 @@ def print_pairwise_summary(
     print()
 
 
-def print_compare_summary(
-    report: "CompareReport",
-    *,
-    top_pairwise: int = None,
-    line_width: int = 41,
-    p_value_method: Optional[str] = None,
-    pairwise_sort: Literal["grouped", "significance"] = "grouped",
-    style: Literal["line", "gradient"] = "gradient",
-) -> None:
-    """Print a focused summary for compare_prompts / compare_models results.
-
-    Shows only the pairwise comparisons and the executive leaderboard —
-    scoped to the entity level (prompts or models) that was compared.
-    For the full internal analysis use ``report.full_summary()`` instead.
-
-    Parameters
-    ----------
-    p_value_method : str or None
-        Which p-value to show in pairwise comparisons.  ``'auto'`` (default)
-        picks the method commensurate with the CI (bootstrap p for bootstrap
-        paths, Wilcoxon for others).  Options: ``'boot'``, ``'wsr'``,
-        ``'nem'``, or ``None`` to suppress p-values.
-    pairwise_sort : {"grouped", "significance"}
-        Row order for the pairwise table. ``"grouped"`` groups by the left
-        item (stable, scan-friendly), while ``"significance"`` orders by
-        p-value then absolute effect size.
-    """
-    n = len(report.labels)
-    # Get the AnalysisBundle appropriate to the entity-level comparison.
-    if isinstance(report.full_analysis, MultiModelBundle):
-        bundle = report.full_analysis.model_level
-    else:
-        bundle = report.full_analysis  # type: ignore[assignment]
-
-    n_inputs = bundle.benchmark.n_inputs
-    ci_pct = int(round((1 - report.alpha) * 100))
-
-    _print_loud_section(f"{report.entity_name_plural.capitalize()} Comparison")
-    print(
-        f"{n} {report.entity_name_plural} | "
-        f"{n_inputs} inputs | "
-        f"method={report.method} | "
-        f"{ci_pct}% confidence intervals (CI)"
-    )
-    print()
-
-    _print_mean_advantage(
-        bundle,
-        item_singular=report.entity_name_singular,
-        line_width=line_width,
-        style=style,
-    )
-    print()
-    _print_pairwise_section(
-        bundle,
-        top_pairwise=top_pairwise,
-        line_width=line_width,
-        p_value_method=p_value_method,
-        pairwise_sort=pairwise_sort,
-        style=style,
-    )
-    print()
-    _print_executive_summary(bundle, item_singular=report.entity_name_singular)
-
-
 # ---------------------------------------------------------------------------
 # Section headers
 # ---------------------------------------------------------------------------
@@ -617,6 +570,7 @@ def _print_multi_model_summary(
     line_width: int,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
+    min_meaningful_diff: Optional[float] = None,
 ) -> None:
     _print_loud_section("Multi-Model Analysis Summary")
     print(f"Shape: {bundle.shape}")
@@ -641,6 +595,7 @@ def _print_multi_model_summary(
         item_plural="models",
         pairwise_sort=pairwise_sort,
         style=style,
+        min_meaningful_diff=min_meaningful_diff,
     )
 
     print()
@@ -653,6 +608,7 @@ def _print_multi_model_summary(
         item_plural="templates",
         pairwise_sort=pairwise_sort,
         style=style,
+        min_meaningful_diff=min_meaningful_diff,
     )
     best_idx = int(np.argmax(bundle.template_level.robustness.mean))
     best_template = bundle.template_level.benchmark.template_labels[best_idx]
@@ -677,6 +633,7 @@ def _print_multi_model_summary(
             line_width=line_width,
             pairwise_sort=pairwise_sort,
             style=style,
+            guidance=False,
         )
 
     print()
@@ -1164,7 +1121,10 @@ def _print_pairwise_section(
         )
         pair_low = -pair_max_abs
         pair_high = pair_max_abs
-        _any_multi_ci = any(row.get("multi_ci") is not None for row in normalized_rows[:max_pairs])
+        # gradient mode always produces a gradient (synthesized when multi_ci is absent)
+        _any_multi_ci = (style == "gradient") or any(
+            row.get("multi_ci") is not None for row in normalized_rows[:max_pairs]
+        )
         _pair_ci_pct = int(round((1 - get_alpha_ci()) * 100))
         _pair_ci_legend = _legend_ci_label(style, _pair_ci_pct, _any_multi_ci)
         print(
@@ -1397,6 +1357,8 @@ def _print_bundle_summary(
     p_value_method=_UNSET,
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
+    guidance: bool = True,
+    min_meaningful_diff: Optional[float] = None,
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
@@ -1414,7 +1376,9 @@ def _print_bundle_summary(
     print()
 
     _print_subsection("--- Robustness ---")
-    print(bundle.robustness.summary_table().to_string())
+    _rob_df = bundle.robustness.summary_table()
+    _rob_df.index.name = item_singular
+    print(_rob_df.to_string())
     print()
 
     _print_subsection(f"--- Rank Probabilities ({_rank_method_label(bundle)}) ---")
@@ -1477,11 +1441,18 @@ def _print_bundle_summary(
     # Factorial LMM diagnostics (factor tests + marginal means).
     if bundle.factorial_lmm_info is not None:
         print()
-        _print_factorial_lmm_summary(bundle)
+        _print_factorial_lmm_summary(bundle, item_singular=item_singular, style=style)
 
     # Executive summary leaderboard (always last — immediately visible in terminal).
     print()
     _print_executive_summary(bundle, item_singular=item_singular)
+
+    if guidance:
+        _print_next_steps_guidance(
+            bundle,
+            item_plural=item_plural,
+            min_meaningful_diff=min_meaningful_diff,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1659,11 +1630,25 @@ def _print_lmm_summary(bundle: AnalysisBundle) -> None:
     )
 
 
-def _print_factorial_lmm_summary(bundle: AnalysisBundle) -> None:
+def _print_factorial_lmm_summary(
+    bundle: AnalysisBundle,
+    *,
+    item_singular: str = "template",
+    style: Literal["line", "gradient"] = "gradient",
+) -> None:
     """Print factorial LMM diagnostics: variance components, factor tests, marginal means."""
     info = bundle.factorial_lmm_info
     if info is None:
         return
+
+    # Build a display-name map from internal slot names ("model", "prompt") to
+    # the user's original factor names when item_singular is a pipe-joined label.
+    _std_slots = ["model", "prompt"]
+    if "|" in item_singular:
+        _parts = item_singular.split("|")
+        _factor_display = {_std_slots[i]: _parts[i] for i in range(min(len(_parts), len(_std_slots)))}
+    else:
+        _factor_display = {}
 
     _print_subsection("--- Factorial LMM Diagnostics ---")
     print(f"  Formula : {info.formula}")
@@ -1713,9 +1698,11 @@ def _print_factorial_lmm_summary(bundle: AnalysisBundle) -> None:
     mm = info.marginal_means
     if mm:
         line_width = 41
+        ci_pct = int(round((1 - get_alpha_ci()) * 100))
         for factor_name, mm_df in mm.items():
+            display_name = _factor_display.get(factor_name, factor_name)
             print()
-            _print_subsection(f"--- Marginal Means: {factor_name} ---")
+            _print_subsection(f"--- Marginal Means: {display_name} ---")
             if len(mm_df) == 0:
                 print("  (no marginal means available)")
                 continue
@@ -1744,24 +1731,29 @@ def _print_factorial_lmm_summary(bundle: AnalysisBundle) -> None:
             axis_high = axis_max
             level_w = min(28, max(len("Level"), max(len(str(v)) for v in mm_sorted["level"]) + 2))
 
+            _ci_legend_mm = _legend_ci_label(style, ci_pct, style == "gradient")
             print(
                 f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-                "(─ CI, ● mean, │ factor mean)"
+                f"(· ±SE, {_ci_legend_mm}, ● mean, │ factor mean)"
             )
             print(
                 f"  {'Level':<{level_w}s} {'Interval Plot':<{line_width}s} "
                 f"{'Mean':>8s} {'SE':>8s} {'CI Low':>9s} {'CI High':>9s} {'Δ vs avg':>10s}"
             )
             for i, row in mm_sorted.iterrows():
-                interval_line = _ascii_interval_line(
+                _se = float(row["se"])
+                _synth_mc = _synth_multi_ci_from_se(float(centered_mean[i]), _se)
+                interval_line = _choose_interval_line(
                     mean=float(centered_mean[i]),
                     ci_low=float(centered_low[i]),
                     ci_high=float(centered_high[i]),
-                    spread_low=float(centered_mean[i]),
-                    spread_high=float(centered_mean[i]),
+                    spread_low=float(centered_mean[i]) - _se,
+                    spread_high=float(centered_mean[i]) + _se,
                     axis_low=axis_low,
                     axis_high=axis_high,
                     width=line_width,
+                    style=style,
+                    multi_ci=_synth_mc,
                 )
                 print(
                     f"  {_truncate_label(str(row['level']), level_w):<{level_w}s} "
@@ -1991,16 +1983,15 @@ def _gradient_interval_line(
             chars[i] = char
 
     ref_idx = to_idx(reference)
-    # mean_idx = to_idx(mean)
-    # if chars[ref_idx] not in ("█", "▓", "▒", "░"):
+    mean_idx = to_idx(mean)
     chars[ref_idx] = "│"
 
-    # The reference line can obscure the tail of a CI band when the tail 
-    # exactly ends on it. This might cause the user to miss the fact that the 
-    # CI band crosses the reference line. To mitigate this, we add a hint character 
-    # to the side to visually suggest the presence of a "crossing"—this way, users can 
-    # distinguish between bands that cross, and bands that get close to the | 
-    # but do not cross it. 
+    # The reference line can obscure the tail of a CI band when the tail
+    # exactly ends on it. This might cause the user to miss the fact that the
+    # CI band crosses the reference line. To mitigate this, we add a hint character
+    # to the side to visually suggest the presence of a "crossing"—this way, users can
+    # distinguish between bands that cross, and bands that get close to the |
+    # but do not cross it.
     outer_lo, outer_hi = multi_ci[sorted_alphas[0]]
     if float(outer_lo) < float(reference) < float(outer_hi):
         hint_char = band_chars[0]
@@ -2009,9 +2000,27 @@ def _gradient_interval_line(
         if ref_idx + 1 < width and chars[ref_idx + 1] in {" ", "·"}:
             chars[ref_idx + 1] = hint_char
 
-    # chars[mean_idx] = "●"
-    
     return "".join(chars)
+
+
+def _synth_multi_ci_from_se(
+    mean: float, se: float
+) -> Optional[dict[float, tuple[float, float]]]:
+    """Synthesize a multi_ci gradient from a mean and standard error.
+
+    Uses normal z-scaling, appropriate for Wald-type CIs (LMM, t-interval)
+    where CI = mean ± z * se exactly.
+    """
+    if se <= 1e-12:
+        return None
+    import scipy.stats
+    return {
+        a: (
+            mean - float(scipy.stats.norm.ppf(1.0 - a / 2.0)) * se,
+            mean + float(scipy.stats.norm.ppf(1.0 - a / 2.0)) * se,
+        )
+        for a in GRADIENT_CI_ALPHAS
+    }
 
 
 def _choose_interval_line(
@@ -2029,9 +2038,18 @@ def _choose_interval_line(
     multi_ci: Optional[dict[float, tuple[float, float]]] = None,
 ) -> str:
     """Dispatch to gradient or line renderer based on style and data availability."""
-    if style == "gradient" and multi_ci is not None and len(multi_ci) >= 2:
+    effective_multi_ci = multi_ci
+    if style == "gradient" and effective_multi_ci is None:
+        # Synthesize gradient from the primary CI via normal z-scaling.
+        # Appropriate for Wald-type CIs (LMM); a reasonable approximation elsewhere.
+        half = (ci_high - ci_low) / 2.0
+        if half > 1e-12:
+            import scipy.stats
+            z_stored = float(scipy.stats.norm.ppf(1.0 - get_alpha_ci() / 2.0))
+            effective_multi_ci = _synth_multi_ci_from_se(mean, half / z_stored)
+    if style == "gradient" and effective_multi_ci is not None and len(effective_multi_ci) >= 2:
         return _gradient_interval_line(
-            mean=mean, multi_ci=multi_ci,
+            mean=mean, multi_ci=effective_multi_ci,
             spread_low=spread_low, spread_high=spread_high,
             axis_low=axis_low, axis_high=axis_high,
             width=width, reference=reference,
@@ -2601,4 +2619,178 @@ def _print_executive_summary(
         print(row)
 
     print(sep)
+    print()
+
+
+def _print_next_steps_guidance(
+    bundle: "AnalysisBundle",
+    *,
+    item_plural: str = "templates",
+    alpha: Optional[float] = None,
+    min_meaningful_diff: Optional[float] = None,
+) -> None:
+    """Print 'What to do next' guidance block below the executive summary."""
+    if alpha is None:
+        alpha = get_alpha_ci()
+
+    N = bundle.benchmark.n_inputs
+    n_runs = bundle.benchmark.n_runs
+    pair_results = list(bundle.pairwise.results.values())
+    if not pair_results or N < 2:
+        return
+
+    use_ci_for_sig = bundle.pairwise.simultaneous_ci_method is not None
+
+    def _is_sig(r) -> bool:
+        if use_ci_for_sig:
+            return float(r.ci_low) > 0 or float(r.ci_high) < 0
+        return float(r.p_value) < alpha
+
+    any_sig = any(_is_sig(r) for r in pair_results)
+
+    ci_halves = [(float(r.ci_high) - float(r.ci_low)) / 2.0 for r in pair_results]
+    gaps = [abs(float(r.point_diff)) for r in pair_results]
+    max_ci_half = max(ci_halves)
+    max_gap = max(gaps)
+
+    # Entity-level grouping — mirrors the executive summary leaderboard
+    labels = list(bundle.rank_dist.labels)
+    means = bundle.robustness.mean
+    sort_idx = list(np.argsort(-means))
+    labels_sorted = [labels[i] for i in sort_idx]
+    label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+
+    groups: dict[str, list[str]] = {}
+    for lbl in labels_sorted:
+        g = label_to_group.get(lbl, "?")
+        groups.setdefault(g, []).append(lbl)
+    group_ids = sorted(groups.keys(), key=lambda g: int(g[1:]) if g[1:].isdigit() else 999)
+    top_group = groups.get("#1", [])
+    n_entities = len(labels_sorted)
+
+    # Run-fraction lever (seed variance)
+    sv = bundle.seed_variance
+    run_fraction = None
+    if sv is not None and n_runs > 1:
+        seed_var_mean = float(np.mean(sv.seed_var))
+        total_var_mean = float(np.mean(sv.total_var))
+        if total_var_mean > 1e-12:
+            run_fraction = seed_var_mean / total_var_mean
+
+    n_str = f"N={N:,}" + (f" × {n_runs} runs" if n_runs > 1 else "")
+
+    def _entity_list(names: list[str], limit: int = 3) -> str:
+        """Format a list of entity names for inline prose."""
+        quoted = [f"'{_truncate_label(n, 20)}'" for n in names]
+        if len(quoted) == 1:
+            return quoted[0]
+        if len(quoted) == 2:
+            return f"{quoted[0]} and {quoted[1]}"
+        if len(quoted) <= limit:
+            return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
+        return f"{len(names)} {item_plural}"
+
+    _print_subsection("--- What to do next ---")
+
+    if any_sig:
+        # Case C: entities are at least partially ranked — some differences are clear
+        lower_entities = [lbl for g in group_ids if g != "#1" for lbl in groups[g]]
+
+        if len(top_group) == 1:
+            print(f"  {_entity_list(top_group)} appears to be the clear leader ({n_str}).")
+        else:
+            print(f"  {_entity_list(top_group)} are statistically tied at the top ({n_str}).")
+
+        if lower_entities:
+            verb = "is" if len(lower_entities) == 1 else "are"
+            print(f"  {_entity_list(lower_entities)} {verb} clearly ranked below.")
+
+        # If the top group is tied, suggest a lever to separate them
+        if len(top_group) > 1:
+            top_set = set(top_group)
+            top_ci_halves = [
+                (float(r.ci_high) - float(r.ci_low)) / 2.0
+                for r in pair_results
+                if r.template_a in top_set and r.template_b in top_set
+            ]
+            top_gaps = [
+                abs(float(r.point_diff))
+                for r in pair_results
+                if r.template_a in top_set and r.template_b in top_set
+            ]
+            if top_ci_halves:
+                focus_ci_half = max(top_ci_halves)
+                focus_gap = max(top_gaps) if top_gaps else focus_ci_half
+                if min_meaningful_diff is not None:
+                    target_half = min_meaningful_diff / 2.0
+                else:
+                    target_half = max(focus_gap * 0.6, focus_ci_half * 0.4)
+                n_needed = int(np.ceil(N * (focus_ci_half / max(target_half, 1e-12)) ** 2))
+                print()
+                print(f"  If you need to pick between the top {len(top_group)}, more inputs could help.")
+                if n_needed > N:
+                    if min_meaningful_diff is not None:
+                        print(f"    How many more? Rough estimate: ~{n_needed:,} inputs to detect a gap of {min_meaningful_diff:g}.")
+                    else:
+                        print(f"    How many more? Rough estimate: ~{n_needed:,} inputs (from {N:,} now).")
+
+        print()
+        print(f"  All results reflect the specific inputs tested here — different inputs")
+        print(f"  may shift the rankings.")
+
+    elif max_gap < max_ci_half * 0.5:
+        # Case A: gaps small relative to uncertainty — likely null or underpowered
+        print(f"  No clear differences detected — all {n_entities} {item_plural} are currently tied ({n_str}).")
+        print()
+        print(f"  The gaps are small relative to the noise. These {item_plural} may perform")
+        print(f"  similarly, though differences may just be too small to see at this scale.")
+        print()
+        if min_meaningful_diff is not None:
+            target_half = min_meaningful_diff / 2.0
+            n_needed = int(np.ceil(N * (max_ci_half / max(target_half, 1e-12)) ** 2))
+            if n_needed > N:
+                print(f"  Your biggest lever: more inputs.")
+                print(f"  To have a reasonable shot at detecting a gap of {min_meaningful_diff:g},")
+                print(f"  try roughly {n_needed:,} inputs (from {N:,} now).")
+            else:
+                print(f"  At {N:,} inputs, you'd likely detect a gap of {min_meaningful_diff:g} if it existed.")
+                print(f"  More data probably won't change the picture much.")
+        else:
+            n_needed_rough = N * 4
+            print(f"  Your biggest lever: more inputs. At {N:,}, gaps smaller than ~{2*max_ci_half:.3f}")
+            print(f"  are generally invisible to this test.")
+            print(f"  Rough guide: ~{n_needed_rough:,} inputs could resolve gaps as small as ±{max_ci_half/2:.3f}.")
+        if run_fraction is not None and run_fraction > 0.3:
+            print()
+            print(f"  Run-to-run variability accounts for ~{100*run_fraction:.0f}% of total variance.")
+            print(f"  Adding more runs per input could also help narrow the CI.")
+
+    else:
+        # Case B: gaps look real but the test can't confirm them yet
+        print(f"  No clear differences detected yet ({n_str}).")
+        print()
+        print(f"  The largest observed gap ({max_gap:.3f}) is close to the margin of uncertainty")
+        print(f"  (±{max_ci_half:.3f}). This could be a real difference the data isn't quite")
+        print(f"  large enough to confirm — or it could be noise.")
+        print()
+        print(f"  Your biggest lever: more inputs.")
+        if min_meaningful_diff is not None:
+            target_half = min_meaningful_diff / 2.0
+            n_needed = int(np.ceil(N * (max_ci_half / max(target_half, 1e-12)) ** 2))
+            if n_needed > N:
+                print(f"  To reliably detect a gap of {min_meaningful_diff:g},")
+                print(f"  try roughly {n_needed:,} inputs (from {N:,} now).")
+            else:
+                print(f"  Your current N may already be enough to detect a gap of {min_meaningful_diff:g}.")
+                print(f"  The observed pattern could be real — more inputs might confirm it.")
+        else:
+            target_half = max(max_gap * 0.6, max_ci_half * 0.5)
+            n_needed = int(np.ceil(N * (max_ci_half / max(target_half, 1e-12)) ** 2))
+            n_needed = max(n_needed, int(N * 1.5))
+            print(f"  Try roughly {n_needed:,} inputs (from {N:,} now) to see if the gaps hold.")
+        if run_fraction is not None and run_fraction > 0.3:
+            print()
+            print(f"  Run-to-run variability accounts for ~{100*run_fraction:.0f}% of total variance.")
+            print(f"  More runs per input could be a cheaper lever than adding more inputs.")
+
     print()

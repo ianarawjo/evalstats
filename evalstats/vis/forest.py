@@ -19,8 +19,6 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
 
-from evalstats.compare import CompareReport
-
 
 # ---------------------------------------------------------------------------
 # Color palette
@@ -40,8 +38,8 @@ _PALETTE = {
 
 
 def plot_ci_forest(
-    report: CompareReport,
-    compare_to: Optional[CompareReport] = None,
+    report,
+    compare_to=None,
     report_label: Optional[str] = None,
     compare_label: Optional[str] = None,
     reference_line: Optional[float] = 0.5,
@@ -114,7 +112,7 @@ def plot_ci_forest(
 
     scale = 100.0 if as_percent else 1.0
 
-    def _ci(rep: CompareReport, label: str) -> tuple[float, float, float]:
+    def _ci(rep, label: str) -> tuple[float, float, float]:
         s = rep.entity_stats[label]
         return s.mean * scale, s.ci_low * scale, s.ci_high * scale
 

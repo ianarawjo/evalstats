@@ -1,5 +1,6 @@
 """evalstats: Statistical analysis and visualization for prompt benchmarking."""
 
+# ── Core types and analysis engine ───────────────────────────────────────────
 from evalstats.core.types import BenchmarkResult, MultiModelBenchmark
 from evalstats.core.paired import pairwise_differences, all_pairwise, vs_baseline, friedman_nemenyi, FriedmanResult
 from evalstats.core.ranking import bootstrap_ranks
@@ -24,17 +25,34 @@ from evalstats.vis.scoreboard import plot_accuracy_bar
 from evalstats.io import from_dataframe, DataLoadReport
 from evalstats.core.resampling import bayes_binary_ci_1d, bayes_paired_diff_ci
 from evalstats.core import bayes_evals
-from evalstats.compare import (
-    compare_prompts,
-    compare_models,
-    CompareReport,
-    EntityStats,
-)
 from evalstats.config import set_alpha_ci, get_alpha_ci
+
+# ── High-level spec API ───────────────────────────────────────────────────────
+# Must come after all other imports: importing evalstats.api triggers
+# evalstats.compare submodule registration, which would shadow a bare
+# "compare" name if it were imported before the submodule.
+from evalstats.loader import load_from, EvalResults, EvalLoadError
+from evalstats.api import compare, compare_models, compare_prompts, ComparisonResult
+from evalstats.alignment import validate_alignment, AlignmentResult
+from evalstats import ppi
+from evalstats import tests
 
 __version__ = "0.2.0"
 
 __all__ = [
+    # High-level spec API
+    "load_from",
+    "validate_alignment",
+    "AlignmentResult",
+    "ppi",
+    "tests",
+    "EvalResults",
+    "EvalLoadError",
+    "compare",
+    "compare_models",
+    "compare_prompts",
+    "ComparisonResult",
+    # Core types
     "BenchmarkResult",
     "MultiModelBenchmark",
     "pairwise_differences",
@@ -62,10 +80,6 @@ __all__ = [
     "bayes_binary_ci_1d",
     "bayes_paired_diff_ci",
     "bayes_evals",
-    "compare_prompts",
-    "compare_models",
-    "CompareReport",
-    "EntityStats",
     "analyze_factorial",
     "set_alpha_ci",
     "get_alpha_ci",

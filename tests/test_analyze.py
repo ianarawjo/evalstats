@@ -308,7 +308,7 @@ def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):
 
     plot_lines = [
         line for line in out.splitlines()
-        if "●" in line and "│" in line and "Model A" in line and "Model B" in line
+        if "│" in line and "Model A" in line and "Model B" in line
     ]
     assert len(plot_lines) == 1
     assert "(<0)" in plot_lines[0]

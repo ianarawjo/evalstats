@@ -96,4 +96,4 @@ bundle = es.analyze_factorial(
 # Print results with the standard EvalStats summary renderer
 # ---------------------------------------------------------------------------
 
-ps.print_analysis_summary(bundle, top_pairwise=10)
+es.print_analysis_summary(bundle, top_pairwise=10)

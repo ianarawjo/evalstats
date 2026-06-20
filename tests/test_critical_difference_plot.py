@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 
 from evalstats.core.paired import FriedmanResult, PairedDiffResult, PairwiseMatrix
-from evalstats.compare import CompareReport, EntityStats
 from evalstats.vis.critical_difference import plot_critical_difference
 
 
@@ -143,16 +142,17 @@ def test_plot_critical_difference_accepts_compare_report_and_infers_ranks(monkey
     monkeypatch.setitem(__import__("sys").modules, "scikit_posthocs", fake_module)
 
     pairwise = _make_pairwise_for_overlap_bands()
-    report = CompareReport(
+    report = SimpleNamespace(
         labels=["A", "B", "C"],
         entity_stats={
-            "A": EntityStats(mean=0.70, median=0.70, std=0.05, ci_low=0.65, ci_high=0.75),
-            "B": EntityStats(mean=0.60, median=0.60, std=0.05, ci_low=0.55, ci_high=0.65),
-            "C": EntityStats(mean=0.50, median=0.50, std=0.05, ci_low=0.45, ci_high=0.55),
+            "A": SimpleNamespace(mean=0.70, median=0.70, std=0.05, ci_low=0.65, ci_high=0.75),
+            "B": SimpleNamespace(mean=0.60, median=0.60, std=0.05, ci_low=0.55, ci_high=0.65),
+            "C": SimpleNamespace(mean=0.50, median=0.50, std=0.05, ci_low=0.45, ci_high=0.55),
         },
         unbeaten=["A"],
         pairwise=pairwise,
         full_analysis=None,
+        rank_dist=None,
     )
 
     fig = plot_critical_difference(report)
@@ -207,16 +207,17 @@ def test_plot_critical_difference_report_prefers_expected_ranks(monkeypatch):
     )
     fake_bundle = SimpleNamespace(rank_dist=fake_rank_dist)
 
-    report = CompareReport(
+    report = SimpleNamespace(
         labels=["A", "B", "C"],
         entity_stats={
-            "A": EntityStats(mean=0.70, median=0.70, std=0.05, ci_low=0.65, ci_high=0.75),
-            "B": EntityStats(mean=0.60, median=0.60, std=0.05, ci_low=0.55, ci_high=0.65),
-            "C": EntityStats(mean=0.50, median=0.50, std=0.05, ci_low=0.45, ci_high=0.55),
+            "A": SimpleNamespace(mean=0.70, median=0.70, std=0.05, ci_low=0.65, ci_high=0.75),
+            "B": SimpleNamespace(mean=0.60, median=0.60, std=0.05, ci_low=0.55, ci_high=0.65),
+            "C": SimpleNamespace(mean=0.50, median=0.50, std=0.05, ci_low=0.45, ci_high=0.55),
         },
         unbeaten=["A"],
         pairwise=pairwise,
         full_analysis=fake_bundle,
+        rank_dist=None,
     )
 
     fig = plot_critical_difference(report)

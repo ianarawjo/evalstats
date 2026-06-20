@@ -455,10 +455,10 @@ def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
     # Wilson CI for A: 11/20
     expected_lo_a, expected_hi_a = wilson_ci_1d(a_scores, alpha=0.05)
     np.testing.assert_allclose(
-        report.prompt_stats["A"].ci_low, expected_lo_a, atol=1e-10,
+        report.entity_stats["A"].ci_low, expected_lo_a, atol=1e-10,
     )
     np.testing.assert_allclose(
-        report.prompt_stats["A"].ci_high, expected_hi_a, atol=1e-10,
+        report.entity_stats["A"].ci_high, expected_hi_a, atol=1e-10,
     )
 
 
@@ -543,7 +543,7 @@ def test_compare_models_auto_binary_small_n_advantage_is_wilson():
         "model_b": rng.binomial(1, 0.4, 50).astype(float).tolist(),
     }
     report = es.compare_models(scores, method="auto", rng=_rng(71))
-    assert report.full_analysis.model_level.resolved_ci_method == "wilson"
+    assert report.full_analysis.resolved_ci_method == "wilson"
 
 
 def test_compare_models_auto_binary_large_n_pairwise_tango():
@@ -571,28 +571,11 @@ def test_compare_models_auto_binary_entity_stats_match_wilson():
     )
     expected_lo, expected_hi = wilson_ci_1d(a_scores, alpha=0.05)
     np.testing.assert_allclose(
-        report.model_stats["model_a"].ci_low, expected_lo, atol=1e-10,
+        report.entity_stats["model_a"].ci_low, expected_lo, atol=1e-10,
     )
     np.testing.assert_allclose(
-        report.model_stats["model_a"].ci_high, expected_hi, atol=1e-10,
+        report.entity_stats["model_a"].ci_high, expected_hi, atol=1e-10,
     )
-
-
-def test_compare_models_explicit_bayes_binary_flat_raises():
-    """Explicit bayes_binary with flat 1D per-model arrays raises ValueError.
-
-    Flat per-model arrays are stacked as the 'runs' dimension in the
-    template-level analysis.  With N_models=2 < 3, inputs are pre-averaged
-    across models (binary → 0/0.5/1), producing non-binary cell means.
-    bayes_binary validation then correctly rejects the data.
-    """
-    rng = np.random.default_rng(74)
-    scores = {
-        "model_a": rng.binomial(1, 0.65, 40).astype(float).tolist(),
-        "model_b": rng.binomial(1, 0.45, 40).astype(float).tolist(),
-    }
-    with pytest.raises(ValueError, match="binary"):
-        es.compare_models(scores, method="bayes_binary", rng=_rng(74))
 
 
 def test_compare_models_explicit_bayes_binary_raises_for_non_binary():

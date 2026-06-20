@@ -22,7 +22,6 @@ import matplotlib.pyplot as plt
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
-    from evalstats.compare import CompareReport
     from evalstats.core.bundles import AnalysisBundle
 
 from evalstats.core.paired import FriedmanResult, PairwiseMatrix

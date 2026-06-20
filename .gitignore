@@ -19,4 +19,6 @@ simulations/plots/*
 simulations/out
 scripts/*
 TODO.md
+DESIGN.md
+evalstats_api_spec_v4.md
 *.jsonl
