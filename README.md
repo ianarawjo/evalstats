@@ -152,6 +152,123 @@ fig = estats.plot_point_estimates(result)
 fig.savefig("mean_performance.png", dpi=150, bbox_inches="tight")
 ```
 
+## PPI-Corrected Inference (Means, CIs, and Tests)
+
+`evalstats` supports PPI-corrected inference for means, confidence intervals, and common statistical tests.
+
+PPI (Prediction-Powered Inference) lets you use lots of cheap LLM
+judgments plus a smaller set of human labels to correct measurement error from the LLM
+judge. This gives you corrected estimates and uncertainty that better reflect what you
+would have gotten from a fully human-labeled study (Angelopoulos et al., 2023).
+
+Most PPI correction methods use PPIBoot (bootstrap variant of PPI; Zrnic, 2024).
+Implemented corrections have been battle-tested via simulations (see `simulations/sim_type_i_calibration.py`).
+
+### Example: Comparing models with corrected LLM judge evals via `compare(..., alignment=...)`
+
+```python
+import evalstats as es
+
+# Dataframe columns include:
+#  model   item    llm_score  human_score (NaN for unlabeled rows)
+evaldata = es.load_from(df)
+
+# Compute alignment between LLM and human judges
+alignment = es.validate_alignment(
+    evaldata,
+    llm_metric="llm_score",
+    human_groundtruth="human_score",
+)
+
+# Compare models, using PPI to correct for bias/misalignment with human graders
+result = es.compare(
+    evaldata,
+    factors="model",
+    metric="llm_score",
+    alignment={"llm_score": alignment},
+)
+
+result.summary()
+```
+
+### Example: T-test PPI-correction via `evalstats.tests.ttest`
+
+Use this for a t-test of mean differences between two groups (or two paired
+conditions when `paired=True`).
+
+```python
+import evalstats as es
+
+res = es.tests.ttest(
+    a=llm_a,
+    b=llm_b,
+    a_lab=human_a,  # same length as llm_a, NaN where unlabeled
+    b_lab=human_b,  # same length as llm_b, NaN where unlabeled
+    paired=False,
+    print_result=False,
+)
+
+print(res.p_value, res.corrected_p_value, res.corrected_ci)
+```
+
+### Example: Mann-Whitney U test PPI-correction via `evalstats.tests.mannwhitney`
+
+Use this for a Mann-Whitney U test, a nonparametric two-group comparison based
+on relative ranks rather than assuming normally distributed scores.
+
+```python
+import evalstats as es
+
+res = es.tests.mannwhitney(
+    x=llm_x,
+    y=llm_y,
+    x_lab=human_x,
+    y_lab=human_y,
+    print_result=False,
+)
+
+print(res.p_value, res.corrected_p_value, res.corrected_ci)
+```
+
+### Example: Wilcoxon signed-ranks test PPI-correction via `evalstats.tests.wilcoxon` (paired)
+
+Use this for a Wilcoxon signed-rank test, a nonparametric paired test for
+matched observations (before/after, A/B on the same items, etc.).
+
+```python
+import evalstats as es
+
+res = es.tests.wilcoxon(
+    x=llm_before,
+    y=llm_after,
+    x_lab=human_before,
+    y_lab=human_after,
+    print_result=False,
+)
+
+print(res.p_value, res.corrected_p_value, res.corrected_ci)
+```
+
+### Example: One-way ANOVA PPI-correction via `evalstats.tests.anova_oneway`
+
+Use this for one-way ANOVA when comparing more than two groups, with
+`repeated=True` for repeated-measures (same subjects across conditions).
+
+```python
+import evalstats as es
+
+res = es.tests.anova_oneway(
+    llm_g1,
+    llm_g2,
+    llm_g3,
+    groups_lab=[human_g1, human_g2, human_g3],
+    repeated=False,
+    print_result=False,
+)
+
+print(res.p_value, res.corrected_p_value, res.corrected_ci)
+```
+
 ## Motivation
 
 Most eval tools in the LLM evaluation space don't help users perform _any_ statistical tests, let alone showcase variances in performance between prompts or models. They instead present bar charts of average performance. Developers then glance at the bar chart and decide that "prompt/model A is better than B." But was it really?
