@@ -733,11 +733,21 @@ def _ppi_anova_repeated_p_value(
     Corrections are applied to condition means after removing each subject's
     mean (matching the repeated-measures F-test).
 
-    The inflation factor accounts for rectifier uncertainty.  σ_llm_res² is
-    estimated from double-centered (LLM − human) residuals on labeled subjects;
-    E[estimate] = σ_η²(k−1)/k, so it is scaled by k/(k−1) to recover σ_η² before
-    use in the inflation formula:
-    inflation = [σ_ε² + σ_η² × (n_subjects/n_lab − 1)] / ms_residual
+        The inflation factor accounts for rectifier uncertainty.
+
+        To remain calibrated when LLM noise differs across conditions (heteroskedastic)
+        or has cross-condition covariance, we estimate the effective noise variance in
+        condition-contrast space from the labeled residual covariance:
+
+            Σ̂_η = Cov(LLM − human) across conditions on labeled subjects,
+            P = I − (1/k)11ᵀ,
+            σ̂²_eff = tr(P Σ̂_η P) / (k−1).
+
+        This is the exact variance scale that enters repeated-measures condition MS.
+        The inflation then uses:
+
+            inflation = [σ̂²_true + σ̂²_eff × (n_subjects/n_lab − 1)] / ms_residual,
+            where σ̂²_true = max(ms_residual − σ̂²_eff, 0).
     """
     n_subjects = len(groups[0])
     labels_mat = np.column_stack(groups_lab)
@@ -773,20 +783,19 @@ def _ppi_anova_repeated_p_value(
     df_residual = (n_subjects - 1) * (k - 1)
     ms_residual = max(ss_residual / df_residual, 1e-12)
 
-    # Estimate LLM noise variance from labeled residuals (double-centered).
-    # noise_centered[i,j] = (llm_ij - human_ij) - per-subject-mean, which has
-    # row-sums = 0 by construction.  After removing column means, the expected
-    # SS = σ_η² × (n_lab−1)(k−1), giving E[sigma_llm_res_sq] = σ_η²(k−1)/k.
-    # The inflation formula needs the raw per-observation σ_η², so we scale by k/(k−1).
-    noise_centered = centered_llm_lab - centered_human_lab  # (n_lab, k) residuals
-    noise_centered_dm = noise_centered - noise_centered.mean(axis=0, keepdims=True)
-    n_noise_obs = n_lab * k
-    if n_noise_obs > k:
-        sigma_llm_res_sq = float(np.sum(noise_centered_dm ** 2) / (n_noise_obs - k))
+    # Estimate effective LLM noise variance in contrast space from labeled
+    # condition-residual covariance. This handles heteroskedastic and correlated
+    # condition noise more robustly than a homoskedastic scalar proxy.
+    noise_lab = llm_lab - human_lab  # (n_lab, k)
+    if n_lab > 1:
+        cov_eta = np.cov(noise_lab, rowvar=False, ddof=1)
+        cov_eta = np.atleast_2d(cov_eta)
+        P = np.eye(k) - np.ones((k, k), dtype=float) / float(k)
+        sigma_llm_sq = float(np.trace(P @ cov_eta @ P) / float(k - 1))
+        sigma_llm_sq = max(sigma_llm_sq, 0.0)
     else:
-        sigma_llm_res_sq = 0.0
-    # Scale from σ_η²(k−1)/k → σ_η² (correct for within-subject centering)
-    sigma_llm_sq = sigma_llm_res_sq * k / (k - 1) if k > 1 else 0.0
+        sigma_llm_sq = 0.0
+
     sigma_res_true_sq = max(ms_residual - sigma_llm_sq, 0.0)
 
     # inflation = [σ_res_true² + σ_η² × (n_subjects/n_lab − 1)] / ms_residual
@@ -800,7 +809,12 @@ def _ppi_anova_repeated_p_value(
     f_corr = (ss_condition_corr / (k - 1)) / (ms_residual * inflation)
     if f_corr <= 0.0:
         return 1.0
-    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual))
+
+    # Finite labeled overlap adds estimation uncertainty to the rectifier.
+    # Use a conservative effective denominator df capped by labeled contrasts.
+    # This improves Type I calibration in sparse-label repeated settings.
+    df_residual_eff = min(df_residual, max((n_lab - 1) * (k - 1), 1))
+    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual_eff))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
