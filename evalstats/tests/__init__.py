@@ -423,6 +423,24 @@ def _p_x_gt_y_strict(x: np.ndarray, y: np.ndarray) -> float:
     return float(n_lt.sum() / (len(x) * len(y)))
 
 
+def _p_x_gt_y_midrank(x: np.ndarray, y: np.ndarray) -> float:
+    """Compute P(X > Y) + 0.5·P(X = Y) — the mid-rank (Wilcoxon-Mann-Whitney) convention.
+
+    Equals 0.5 under H₀ (equal distributions) for ANY distribution, including
+    discrete/ordinal (Likert, integer-valued).  This is equivalent to scipy's
+    U-statistic divided by n_x·n_y, ensuring the PPI estimand θ = P_mid(X>Y) − 0.5
+    is centered at 0 under H₀ regardless of tie frequency.
+    """
+    if len(x) == 0 or len(y) == 0:
+        return 0.5
+
+    y_sorted = np.sort(y)
+    n_lt = np.searchsorted(y_sorted, x, side="left")   # count Y_j < X_i (strict)
+    n_le = np.searchsorted(y_sorted, x, side="right")  # count Y_j ≤ X_i
+    # mid-rank: count X_i > Y_j as 1, X_i == Y_j as 0.5
+    return float((n_lt.sum() + 0.5 * (n_le - n_lt).sum()) / (len(x) * len(y)))
+
+
 def _ppi_paired_arrays(
     a: np.ndarray,
     b: np.ndarray,
@@ -432,6 +450,7 @@ def _ppi_paired_arrays(
     alpha: float,
     n_boot: int,
     rng,
+    rectifier_func=None,
 ):
     """PPI correction for a paired estimand ``statistic(a_i − b_i)``.
 
@@ -463,6 +482,7 @@ def _ppi_paired_arrays(
         n_boot=n_boot,
         rng=rng,
         compute_pvalue=True,
+        rectifier_func=rectifier_func,
     )
 
 
@@ -599,7 +619,7 @@ def _ppi_anova_independent(
         alpha=alpha,
         n_boot=n_boot,
         rng=rng,
-        compute_pvalue=True,
+        compute_pvalue=False,
     )
 
 
@@ -634,8 +654,153 @@ def _ppi_anova_repeated(
         alpha=alpha,
         n_boot=n_boot,
         rng=rng,
-        compute_pvalue=True,
+        compute_pvalue=False,
     )
+
+
+def _ppi_anova_independent_p_value(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    k: int,
+) -> Optional[float]:
+    """Corrected p-value for independent ANOVA via per-group PPI mean corrections.
+
+    The standard PPI bootstrap p-value is anti-conservative for the between-group
+    variance estimand because it's bounded below by zero.  Instead, we apply PPI
+    corrections at the level of group means (which ARE a valid, symmetric PPI
+    estimand), compute a corrected F-statistic, and use the F-distribution.
+
+    Var[μ̂ᵢ_PPI] = σ²/nᵢ + σ_llm² × (1/n_lab_i − 1/nᵢ)
+    where σ² is the true within-group variance and σ_llm² is LLM noise variance.
+    Both are estimated from the labeled residuals (llm − human within each group).
+    The inflation factor Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM] scales the F denominator so
+    the test is calibrated regardless of how noisy the LLM judge is.
+    """
+    masks = [~np.isnan(g_lab) for g_lab in groups_lab]
+    n_lab_arr = np.array([int(m.sum()) for m in masks], dtype=float)
+
+    if np.any(n_lab_arr == 0):
+        return None
+
+    ns = np.array([len(g) for g in groups], dtype=float)
+    N = int(ns.sum())
+
+    # PPI-corrected group means: μ̂ᵢ_PPI = mean(llm_all_i) + (mean(human_lab_i) - mean(llm_lab_i))
+    corr_means = np.array([
+        g.mean() + (g_lab[mask].mean() - g[mask].mean())
+        for g, g_lab, mask in zip(groups, groups_lab, masks)
+    ])
+    grand = (ns * corr_means).sum() / N
+    ss_between = float(np.sum(ns * (corr_means - grand) ** 2))
+
+    # Within-group MS from full LLM data  (≈ σ² + σ_llm²)
+    ss_within = float(sum(np.sum((g - g.mean()) ** 2) for g in groups))
+    ms_within = ss_within / (N - k)
+
+    # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human)
+    sigma_llm_sq_per_group = np.zeros(k)
+    for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
+        if mask.sum() > 1:
+            sigma_llm_sq_per_group[i] = float(np.var(g[mask] - g_lab[mask], ddof=1))
+
+    # n_i-weighted average noise (matches how ms_within pools group residuals)
+    sigma_llm_sq_weighted = float(np.dot(ns, sigma_llm_sq_per_group) / N)
+    sigma_sq = max(ms_within - sigma_llm_sq_weighted, 0.0)
+
+    # Per-group inflation: Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM]
+    # = (σ² + σ_llm_i² × (nᵢ/n_lab_i − 1)) / ms_within
+    # Weights: (N−nᵢ)/(N(k−1)) derived from E[SS_between_corr] = Σᵢ nᵢ(N−nᵢ)/N · Var[μ̂ᵢ]
+    # For balanced groups these equal nᵢ/N (same as old formula).
+    inflation_per_group = (sigma_sq + sigma_llm_sq_per_group * (ns / n_lab_arr - 1.0)) / ms_within
+    w = (N - ns) / (N * (k - 1))
+    inflation = float(np.dot(w, inflation_per_group))
+    inflation = max(inflation, 1e-6)
+
+    f_corr = (ss_between / (k - 1)) / (ms_within * inflation)
+    if f_corr <= 0.0:
+        return 1.0
+    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=N - k))
+
+
+def _ppi_anova_repeated_p_value(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    k: int,
+) -> Optional[float]:
+    """Corrected p-value for repeated-measures ANOVA via per-condition PPI corrections.
+
+    Mirror of _ppi_anova_independent_p_value for the within-subjects design.
+    Corrections are applied to condition means after removing each subject's
+    mean (matching the repeated-measures F-test).
+
+    The inflation factor accounts for rectifier uncertainty.  σ_llm_res² is
+    estimated from double-centered (LLM − human) residuals on labeled subjects;
+    E[estimate] = σ_η²(k−1)/k, so it is scaled by k/(k−1) to recover σ_η² before
+    use in the inflation formula:
+    inflation = [σ_ε² + σ_η² × (n_subjects/n_lab − 1)] / ms_residual
+    """
+    n_subjects = len(groups[0])
+    labels_mat = np.column_stack(groups_lab)
+    overlap = np.all(~np.isnan(labels_mat), axis=1)
+    n_lab = int(overlap.sum())
+
+    if n_lab == 0:
+        return None
+
+    llm_mat = np.column_stack(groups)  # (n_subjects, k)
+
+    # Center by subject mean to isolate condition effects
+    centered_llm_all = llm_mat - llm_mat.mean(axis=1, keepdims=True)
+    cond_means_llm = centered_llm_all.mean(axis=0)  # (k,)
+
+    # Per-condition PPI corrections estimated from labeled subjects
+    llm_lab = llm_mat[overlap]
+    human_lab = labels_mat[overlap]
+    centered_llm_lab = llm_lab - llm_lab.mean(axis=1, keepdims=True)
+    centered_human_lab = human_lab - human_lab.mean(axis=1, keepdims=True)
+    delta = centered_human_lab.mean(axis=0) - centered_llm_lab.mean(axis=0)
+
+    cond_means_ppi = cond_means_llm + delta
+    grand_ppi = cond_means_ppi.mean()
+    ss_condition_corr = float(n_subjects * np.sum((cond_means_ppi - grand_ppi) ** 2))
+
+    # MS_residual (subject × condition interaction) from full LLM data
+    grand_llm = llm_mat.mean()
+    ss_total = float(np.sum((llm_mat - grand_llm) ** 2))
+    ss_subjects = float(k * np.sum((llm_mat.mean(axis=1) - grand_llm) ** 2))
+    ss_condition_llm = float(n_subjects * np.sum((cond_means_llm - cond_means_llm.mean()) ** 2))
+    ss_residual = ss_total - ss_subjects - ss_condition_llm
+    df_residual = (n_subjects - 1) * (k - 1)
+    ms_residual = max(ss_residual / df_residual, 1e-12)
+
+    # Estimate LLM noise variance from labeled residuals (double-centered).
+    # noise_centered[i,j] = (llm_ij - human_ij) - per-subject-mean, which has
+    # row-sums = 0 by construction.  After removing column means, the expected
+    # SS = σ_η² × (n_lab−1)(k−1), giving E[sigma_llm_res_sq] = σ_η²(k−1)/k.
+    # The inflation formula needs the raw per-observation σ_η², so we scale by k/(k−1).
+    noise_centered = centered_llm_lab - centered_human_lab  # (n_lab, k) residuals
+    noise_centered_dm = noise_centered - noise_centered.mean(axis=0, keepdims=True)
+    n_noise_obs = n_lab * k
+    if n_noise_obs > k:
+        sigma_llm_res_sq = float(np.sum(noise_centered_dm ** 2) / (n_noise_obs - k))
+    else:
+        sigma_llm_res_sq = 0.0
+    # Scale from σ_η²(k−1)/k → σ_η² (correct for within-subject centering)
+    sigma_llm_sq = sigma_llm_res_sq * k / (k - 1) if k > 1 else 0.0
+    sigma_res_true_sq = max(ms_residual - sigma_llm_sq, 0.0)
+
+    # inflation = [σ_res_true² + σ_η² × (n_subjects/n_lab − 1)] / ms_residual
+    # Under H₀: E[ms_cond_ppi] = σ_ε² + σ_η²(n/n_lab−1) = ms_residual × inflation
+    if ms_residual > 0:
+        inflation = (sigma_res_true_sq + sigma_llm_sq * (n_subjects / n_lab - 1.0)) / ms_residual
+    else:
+        inflation = 1.0
+    inflation = max(inflation, 1e-6)
+
+    f_corr = (ss_condition_corr / (k - 1)) / (ms_residual * inflation)
+    if f_corr <= 0.0:
+        return 1.0
+    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -812,12 +977,14 @@ def mannwhitney(
 
     Uncorrected: ``scipy.stats.mannwhitneyu`` (two-sided).
 
-    PPI estimand: ``P(X > Y) − 0.5``, shifted so the null H₀: P(X > Y) = 0.5
-    maps to θ = 0.  The reported ``corrected_estimate`` is P(X > Y) itself
-    (shifted back) for interpretability.
+    PPI estimand: ``P_mid(X > Y) − 0.5``, where ``P_mid(X > Y) = P(X > Y) + 0.5·P(X = Y)``
+    is the mid-rank (Wilcoxon-Mann-Whitney) convention.  This equals 0.5 under H₀ for
+    any distribution — including discrete/ordinal (Likert, integer-valued) — so the PPI
+    null θ = 0 is always correct regardless of tie frequency.  The reported
+    ``corrected_estimate`` is ``P_mid(X > Y)`` (shifted back) for interpretability, and
+    is consistent with scipy's U-statistic / (n_x·n_y).
 
-    Note: ``P(X > Y)`` is computed with sorting + binary search, i.e.
-    O((n_x + n_y) log n_y), which scales to large groups.
+    Note: computed with sorting + binary search, O((n_x + n_y) log n_y).
 
     Parameters
     ----------
@@ -871,9 +1038,10 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        # Shift by 0.5: null is P(X>Y)=0.5, so estimand θ=P(X>Y)-0.5 has null θ=0
+        # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
+        # any distribution (including discrete/Likert). Estimand θ = P_mid - 0.5 → 0.
         def _auc_shifted(xa, ya):
-            return _p_x_gt_y_strict(xa, ya) - 0.5
+            return _p_x_gt_y_midrank(xa, ya) - 0.5
 
         ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng)
 
@@ -921,7 +1089,11 @@ def wilcoxon(
 
     Uncorrected: ``scipy.stats.wilcoxon(x, y)`` (two-sided, paired by position).
 
-    PPI estimand: Hodges-Lehmann location estimator — ``median(x_i − y_i)``.
+    PPI estimand: ``median(x_i − y_i)`` for the main term (LLM diffs),
+    with ``mean(x_lab_i − x_hat_i) − mean(y_lab_i − y_hat_i)`` as the
+    rectifier.  Using the mean for the rectifier gives a well-calibrated
+    bootstrap (the bootstrap of a mean is exact); using the median would
+    overestimate the rectifier SE by ~2×, causing conservative Type I errors.
     H₀ is location shift = 0, so the bootstrap p-value
     ``2 * min(P(θ̂* ≤ 0), P(θ̂* ≥ 0))`` is correctly centered at the null.
 
@@ -989,7 +1161,13 @@ def wilcoxon(
             np.where(_pair_mask, x_lab - y_lab, np.nan),
         )
 
-        ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng)
+        # Use np.mean for the rectifier (instead of np.median) to get a
+        # better-calibrated bootstrap: the bootstrap of mean(D_lab) is exact,
+        # while the bootstrap of median(Y_lab) − median(Y_hat_lab) overestimates
+        # the variance by ~2× for typical n_lab, causing conservative Type I errors.
+        # Both estimands converge to 0 under H₀; the hybrid is asymptotically valid.
+        ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng,
+                                 rectifier_func=np.mean)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)
@@ -1162,12 +1340,13 @@ def anova_oneway(
 
         if repeated:
             ppi = _ppi_anova_repeated(groups, groups_lab, alpha, n_boot, rng)
+            corrected_p = _ppi_anova_repeated_p_value(groups, groups_lab, k)
         else:
             ppi = _ppi_anova_independent(groups, groups_lab, alpha, n_boot, rng)
+            corrected_p = _ppi_anova_independent_p_value(groups, groups_lab, k)
 
         corrected_estimate = ppi.estimate
         corrected_ci = (ppi.ci_low, ppi.ci_high)
-        corrected_p = ppi.p_value
         rectifier = ppi.rectifier
         n_labeled = ar.n_labeled
         n_total = ar.n_total

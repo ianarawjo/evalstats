@@ -124,6 +124,7 @@ def correct(
     n_boot: int = 1000,
     rng=None,
     compute_pvalue: bool = True,
+    rectifier_func: Optional[Callable] = None,
 ) -> PPIResult:
     """Correct any scalar estimator for LLM judge measurement error using PPI.
 
@@ -174,6 +175,12 @@ def correct(
         Seed or Generator for reproducibility.
     compute_pvalue : bool
         Compute a two-sided p-value for H₀: θ = 0 (default True).
+    rectifier_func : callable, optional
+        Alternative estimator used for the rectifier terms ``f(Y_lab)`` and
+        ``f(Ŷ_lab)`` only.  When *None* (default), *estimator_func* is used
+        for all three terms.  Providing a different function (e.g. ``np.mean``
+        when *estimator_func* is ``np.median``) can improve bootstrap
+        calibration for non-smooth estimands like the median.
 
     Returns
     -------
@@ -294,10 +301,12 @@ def correct(
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
+    _rect_fn = rectifier_func if rectifier_func is not None else estimator_func
+
     # ── Point estimate ────────────────────────────────────────────────────────
     f_unlab   = _call(estimator_func, Y_hat_unlab, X_unlab)
-    f_lab     = _call(estimator_func, Y_lab,       X_lab)
-    f_hat_lab = _call(estimator_func, Y_hat_lab,   X_lab)
+    f_lab     = _call(_rect_fn,       Y_lab,       X_lab)
+    f_hat_lab = _call(_rect_fn,       Y_hat_lab,   X_lab)
 
     estimate  = f_unlab + (f_lab - f_hat_lab)
     rectifier = f_lab - f_hat_lab
@@ -312,8 +321,8 @@ def correct(
         Xl_b = X_lab[idx_lab]   if X_lab   is not None else None
 
         b_unlab   = _call(estimator_func, Y_hat_unlab[idx_all], Xa_b)
-        b_lab     = _call(estimator_func, Y_lab[idx_lab],       Xl_b)
-        b_hat_lab = _call(estimator_func, Y_hat_lab[idx_lab],   Xl_b)
+        b_lab     = _call(_rect_fn,       Y_lab[idx_lab],       Xl_b)
+        b_hat_lab = _call(_rect_fn,       Y_hat_lab[idx_lab],   Xl_b)
 
         boots[b] = b_unlab + (b_lab - b_hat_lab)
 

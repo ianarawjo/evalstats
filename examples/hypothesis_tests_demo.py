@@ -175,7 +175,7 @@ anova_oneway(llm_a, llm_b, llm_c,
 # LLM judge: inflates few-shot scores by +0.7 (differential bias).
 #   Without correction the bias makes few-shot look significantly better.
 #   PPI uses human annotations to remove the false positive.
-# Human labels: 35 of 120 questions annotated under all three strategies
+# Human labels: 40 of 120 questions annotated under all three strategies
 #   (same questions labeled, as required for within-subjects analysis).
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -191,10 +191,10 @@ truth_cot      = 3.4 + subject_fx + rng.normal(0, 0.8, n)
 # LLM inflates few-shot scores only (differential bias → false positive)
 llm_zeroshot = truth_zeroshot + rng.normal(0, 0.12, n)
 llm_fewshot  = truth_fewshot  + 0.7 + rng.normal(0, 0.12, n)
-llm_cot      = truth_cot      + 0.4 + rng.normal(0, 0.2, n)
+llm_cot      = truth_cot      + rng.normal(0, 0.12, n)
 
 # Same 40 questions annotated under all three strategies (within-subjects requirement)
-idx_labeled = rng.choice(n, 35, replace=False)
+idx_labeled = rng.choice(n, 40, replace=False)
 human_zeroshot = np.full(n, np.nan); human_zeroshot[idx_labeled] = truth_zeroshot[idx_labeled]
 human_fewshot  = np.full(n, np.nan); human_fewshot[idx_labeled]  = truth_fewshot[idx_labeled]
 human_cot      = np.full(n, np.nan); human_cot[idx_labeled]      = truth_cot[idx_labeled]

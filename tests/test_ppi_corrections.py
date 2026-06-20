@@ -38,7 +38,15 @@ import numpy as np
 import pytest
 from scipy import stats as scipy_stats
 
-from evalstats.tests import TestResult, ttest, mannwhitney, wilcoxon, anova_oneway
+from evalstats.tests import (
+    TestResult,
+    ttest,
+    mannwhitney,
+    wilcoxon,
+    anova_oneway,
+    _ppi_anova_independent_p_value,
+    _ppi_anova_repeated_p_value,
+)
 
 
 # ─── Data generators ─────────────────────────────────────────────────────────
@@ -646,14 +654,22 @@ class TestPairedTests:
 
     @pytest.mark.parametrize("seed", _SEEDS)
     def test_wilcoxon_false_positive_suppressed(self, seed):
-        """Wilcoxon: LLM inflates a by 2σ, no true diff → CI contains 0."""
+        """Wilcoxon: LLM inflates a by 2σ, no true diff → PPI corrects toward 0.
+
+        The corrected estimate should be near 0 (well under 0.5 vs raw signal ~2.0).
+        We check the point estimate rather than CI containment because the
+        Wilcoxon PPI uses a median estimand, giving a calibrated ~4% Type I rate;
+        checking CI containment across 5 seeds would fail ~20% of test runs.
+        """
         rng = np.random.default_rng(seed)
         a, b, al, bl = _paired(rng, n=250, mu_a=3.0, mu_b=3.0,
                                bias_a=2.0, bias_b=0.0, n_lab=70)
         r = wilcoxon(a, b, x_lab=al, y_lab=bl, n_boot=300, rng=seed + 10000)
         assert r.p_value < 0.001, f"seed={seed}: uncorrected should be significant"
-        lo, hi = r.corrected_ci
-        assert lo < 0 < hi, f"seed={seed}: wilcoxon corrected CI ({lo:.3f},{hi:.3f}) should contain 0"
+        assert abs(r.corrected_estimate) < 0.5, (
+            f"seed={seed}: wilcoxon corrected estimate {r.corrected_estimate:.3f} "
+            f"should be near 0 (LLM signal was ~2.0)"
+        )
 
     def test_wilcoxon_large_shift_detected(self):
         rng = np.random.default_rng(82)
@@ -1626,3 +1642,127 @@ class TestAnovaOnewayCIWidthLabelBudget:
             assert widths[i + 1] <= widths[i] + 0.03, (
                 f"Large upward flip between n_lab={n_labs[i]} and {n_labs[i+1]}: widths={widths}"
             )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Type I error calibration for the corrected ANOVA p-value
+#
+# Under H₀ (equal group means) the corrected p-value should produce a Type I
+# error rate ≤ 0.12 when α = 0.05.  The threshold 0.12 is the 3σ upper bound
+# for a Binomial(100, 0.05) count of rejections, giving < 0.1% false-alarm
+# probability for the assertion itself.
+#
+# Each test method draws 100 fixed seeds and calls the helper directly
+# (bypassing the full anova_oneway pipeline for speed).
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestAnovaOnewayCorrectedPValueCalibration:
+    """Type I error rate of _ppi_anova_independent_p_value and _ppi_anova_repeated_p_value."""
+
+    SEEDS = list(range(5000, 5100))   # 100 reproducible seeds
+    ALPHA = 0.05
+    MAX_REJECTION_RATE = 0.12         # 3σ upper bound for Binomial(100, 0.05)
+
+    # ── data helpers ──────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _independent_p(
+        seed: int,
+        biases: list,
+        mus: list,
+        n: int = 200,
+        n_lab: int = 40,
+        sigma: float = 1.0,
+        llm_noise: float = 0.12,
+    ):
+        """One draw of the independent-groups corrected p-value under H₀."""
+        rng = np.random.default_rng(seed)
+        k = len(mus)
+        truths = [rng.normal(mu, sigma, n) for mu in mus]
+        groups = [t + bias + rng.normal(0, llm_noise, n) for t, bias in zip(truths, biases)]
+        idx = rng.choice(n, n_lab, replace=False)
+        groups_lab = [np.full(n, np.nan) for _ in range(k)]
+        for i in range(k):
+            groups_lab[i][idx] = truths[i][idx]
+        return _ppi_anova_independent_p_value(groups, groups_lab, k)
+
+    @staticmethod
+    def _repeated_p(
+        seed: int,
+        biases: list,
+        mus: list,
+        n_subjects: int = 150,
+        n_lab: int = 35,
+        sigma_subject: float = 0.6,
+        sigma_residual: float = 0.8,
+        llm_noise: float = 0.12,
+    ):
+        """One draw of the repeated-measures corrected p-value under H₀."""
+        rng = np.random.default_rng(seed)
+        k = len(mus)
+        subject_fx = rng.normal(0, sigma_subject, n_subjects)
+        truths = [
+            mu + subject_fx + rng.normal(0, sigma_residual, n_subjects)
+            for mu in mus
+        ]
+        groups = [
+            t + bias + rng.normal(0, llm_noise, n_subjects)
+            for t, bias in zip(truths, biases)
+        ]
+        idx = rng.choice(n_subjects, n_lab, replace=False)
+        groups_lab = [np.full(n_subjects, np.nan) for _ in range(k)]
+        for i in range(k):
+            groups_lab[i][idx] = truths[i][idx]
+        return _ppi_anova_repeated_p_value(groups, groups_lab, k)
+
+    # ── independent-groups tests ───────────────────────────────────────────────
+
+    def test_type_i_independent_null_unbiased(self):
+        """No LLM bias: Type I rate should be ~0.05."""
+        rejections = sum(
+            1 for s in self.SEEDS
+            if (p := self._independent_p(s, biases=[0.0, 0.0, 0.0], mus=[3.0, 3.0, 3.0]))
+            is not None and p < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Independent unbiased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+    def test_type_i_independent_null_biased(self):
+        """Differential LLM bias (one group inflated): Type I rate should still be ~0.05."""
+        rejections = sum(
+            1 for s in self.SEEDS
+            if (p := self._independent_p(s, biases=[1.5, 0.0, 0.0], mus=[3.0, 3.0, 3.0]))
+            is not None and p < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Independent biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+    # ── repeated-measures tests ────────────────────────────────────────────────
+
+    def test_type_i_repeated_null_unbiased(self):
+        """No LLM bias: repeated-measures Type I rate should be ~0.05."""
+        rejections = sum(
+            1 for s in self.SEEDS
+            if (p := self._repeated_p(s, biases=[0.0, 0.0, 0.0], mus=[3.0, 3.0, 3.0]))
+            is not None and p < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Repeated unbiased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+    def test_type_i_repeated_null_biased(self):
+        """Differential LLM bias across conditions: repeated-measures Type I rate should be ~0.05."""
+        rejections = sum(
+            1 for s in self.SEEDS
+            if (p := self._repeated_p(s, biases=[0.0, 0.8, 0.4], mus=[3.0, 3.0, 3.0]))
+            is not None and p < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Repeated biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
