@@ -62,10 +62,10 @@ _section("Scenario 1 — Independent t-test (continuous scores, two conditions)"
 
 n = 150
 truth_a = rng.normal(3.4, 0.9, n)
-truth_b = rng.normal(3.8, 0.9, n)
+truth_b = rng.normal(3.5, 0.9, n)
 
 # LLM scores: unbiased but noisy
-llm_a = truth_a + rng.normal(0, 0.15, n)
+llm_a = truth_a - 0.3 + rng.normal(0, 0.15, n)
 llm_b = truth_b + rng.normal(0, 0.15, n)
 
 # Human spot-checks on 30 items per group

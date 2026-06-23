@@ -73,7 +73,7 @@ with warnings.catch_warnings():
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ALPHA = 0.05
-TEST_NAMES = ["ttest", "mw", "wilcoxon", "anova_ind", "anova_rep"]
+TEST_NAMES = ["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep"]
 _SIGMA_TRUTH = 1.0   # within-group truth SD (normal / likert / skewed)
 _SIGMA_SUB   = 0.7   # between-subject SD for paired/repeated designs
 _SIGMA_COND  = 0.6   # within-subject residual SD (paired/repeated)
@@ -388,9 +388,9 @@ def _run_one(args: tuple) -> tuple[int, dict[str, bool | None], dict[str, bool |
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
 
-        # ttest: estimand = E[A] − E[B]
+        # ttest (Student's, equal_var=True): estimand = E[A] − E[B]
         try:
-            p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2).pvalue)
+            p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2, equal_var=True).pvalue)
             uncorrected_results["ttest"] = p_uncorrected < ALPHA
             r = _ppi_two_sample(
                 llm_a2, llm_b2, lab_a2, lab_b2,
@@ -401,6 +401,20 @@ def _run_one(args: tuple) -> tuple[int, dict[str, bool | None], dict[str, bool |
         except Exception:
             corrected_results["ttest"] = None
             uncorrected_results["ttest"] = None
+
+        # ttest_welch (Welch's, equal_var=False): same PPI estimand, Welch df for uncorrected
+        try:
+            p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2, equal_var=False).pvalue)
+            uncorrected_results["ttest_welch"] = p_uncorrected < ALPHA
+            r = _ppi_two_sample(
+                llm_a2, llm_b2, lab_a2, lab_b2,
+                lambda ya, yb: float(ya.mean() - yb.mean()),
+                ALPHA, n_boot, _rng_seed(),
+            )
+            corrected_results["ttest_welch"] = r.p_value < ALPHA
+        except Exception:
+            corrected_results["ttest_welch"] = None
+            uncorrected_results["ttest_welch"] = None
 
         # mannwhitney: mid-rank estimand = P_mid(X>Y) - 0.5; 0 under H₀ for any dist.
         try:
@@ -595,7 +609,7 @@ def _print_table(
     print(f"  Holm flag (‡): exact binomial miscalibration survives family-wise correction")
     print(dbar)
 
-    col_names = ["ttest", "mw", "wilcoxon", "anova_i", "anova_r"]
+    col_names = ["ttest", "ttest_w", "mw", "wilcoxon", "anova_i", "anova_r"]
     header_lbl = f"{'Scenario':<32}" + "".join(f"{c:^9}" for c in col_names)
     print()
     print(header_lbl)
@@ -756,7 +770,7 @@ def _plot_results(
     im = ax.imshow(mat, aspect="auto", cmap="RdYlGn_r", norm=norm)
 
     ax.set_xticks(np.arange(len(TEST_NAMES)))
-    ax.set_xticklabels(["ttest", "mw", "wilcoxon", "anova_ind", "anova_rep"], rotation=0)
+    ax.set_xticklabels(["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep"], rotation=0)
     ax.set_yticks(np.arange(n_scenarios))
     ax.set_yticklabels([sc.name for sc in SCENARIOS], fontsize=8)
     ax.set_xlabel("Test")
@@ -813,7 +827,7 @@ def _plot_results(
         scatter_max = 0.2
     ax2.set_ylim(0.0, max(0.2, float(scatter_max) * 1.05))
     ax2.set_xticks(np.arange(len(TEST_NAMES)))
-    ax2.set_xticklabels(["ttest", "mw", "wilcoxon", "anova_ind", "anova_rep"])
+    ax2.set_xticklabels(["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep"])
     ax2.set_ylabel("Observed rejection rate")
     ax2.set_xlabel("Test")
     ax2.set_title("Type I calibration scatter (all scenario x test table cells)")

@@ -32,6 +32,7 @@ Scenarios:
 
 from __future__ import annotations
 
+import math
 import warnings
 
 import numpy as np
@@ -44,6 +45,7 @@ from evalstats.tests import (
     mannwhitney,
     wilcoxon,
     anova_oneway,
+    _hedges_g_star,
     _ppi_anova_independent_p_value,
     _ppi_anova_repeated_p_value,
 )
@@ -172,13 +174,68 @@ _SEEDS = [101, 202, 303, 404, 505]
 
 class TestNoLabelBaseline:
 
+    def test_hedges_g_star_helper_matches_exact_formula(self):
+        rng = np.random.default_rng(77)
+        a = rng.normal(0.4, 1.5, 33)
+        b = rng.normal(-0.2, 0.8, 21)
+
+        n1, n2 = len(a), len(b)
+        m1, m2 = float(np.mean(a)), float(np.mean(b))
+        s1, s2 = float(np.std(a, ddof=1)), float(np.std(b, ddof=1))
+
+        got = _hedges_g_star(m1, m2, s1, s2, n1, n2)
+
+        d_star = (m1 - m2) / np.sqrt((s1**2 + s2**2) / 2.0)
+        nu = (
+            (n1 - 1) * (n2 - 1) * (s1**2 + s2**2) ** 2
+            / ((n2 - 1) * s1**4 + (n1 - 1) * s2**4)
+        )
+        j = math.exp(
+            math.lgamma(nu / 2.0)
+            - 0.5 * math.log(nu / 2.0)
+            - math.lgamma((nu - 1.0) / 2.0)
+        )
+
+        assert got == pytest.approx(d_star * j, rel=1e-12, abs=1e-12)
+
+    def test_ttest_welch_effect_size_matches_hedges_g_star_s_exact(self):
+        rng = np.random.default_rng(42)
+        a = rng.normal(0.8, 1.7, 40)
+        b = rng.normal(-0.1, 0.9, 27)
+
+        r = ttest(a, b, equal_var=False, print_result=False)
+
+        n1, n2 = len(a), len(b)
+        m1, m2 = float(np.mean(a)), float(np.mean(b))
+        s1, s2 = float(np.std(a, ddof=1)), float(np.std(b, ddof=1))
+        d_star = (m1 - m2) / np.sqrt((s1**2 + s2**2) / 2.0)
+
+        nu = (
+            (n1 - 1) * (n2 - 1) * (s1**2 + s2**2) ** 2
+            / ((n2 - 1) * s1**4 + (n1 - 1) * s2**4)
+        )
+        j = math.exp(
+            math.lgamma(nu / 2.0)
+            - 0.5 * math.log(nu / 2.0)
+            - math.lgamma((nu - 1.0) / 2.0)
+        )
+
+        assert r.extra["effect_size_name"] == "Hedges’ g_s*"
+        assert r.extra["effect_size"] == pytest.approx(d_star * j, rel=1e-12, abs=1e-12)
+
     def test_ttest_independent_matches_scipy(self):
         rng = np.random.default_rng(0)
         a, b, *_ = _two_sample(rng, n=100)
+        # Default is Welch's (equal_var=False)
         r = ttest(a, b)
-        ref = scipy_stats.ttest_ind(a, b)
+        ref = scipy_stats.ttest_ind(a, b, equal_var=False)
         assert r.statistic == pytest.approx(ref.statistic)
         assert r.p_value == pytest.approx(ref.pvalue)
+        # Student's still available via equal_var=True
+        r_student = ttest(a, b, equal_var=True)
+        ref_student = scipy_stats.ttest_ind(a, b, equal_var=True)
+        assert r_student.statistic == pytest.approx(ref_student.statistic)
+        assert r_student.p_value == pytest.approx(ref_student.pvalue)
 
     def test_ttest_paired_matches_scipy(self):
         rng = np.random.default_rng(1)

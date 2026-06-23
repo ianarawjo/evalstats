@@ -39,6 +39,7 @@ from typing import Callable, Optional
 import numpy as np
 import pandas as pd
 from scipy import stats as _scipy_stats
+from scipy.special import gammaln
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -173,12 +174,13 @@ class TestResult:
                 print(f"  Samples:  A (n = {ex['n_a']}),  B (n = {ex['n_b']})")
                 print(f"  Means:    A = {ex['mean_a']:.3f} (SD {ex['std_a']:.3f}),  "
                       f"B = {ex['mean_b']:.3f} (SD {ex['std_b']:.3f})")
-            d = ex.get("cohens_d")
+            d = ex.get("effect_size")
+            d_name = ex.get("effect_size_name", "Effect size")
             if d is not None:
                 mag = ("trivial" if abs(d) < 0.2 else
                        "small"   if abs(d) < 0.5 else
                        "medium"  if abs(d) < 0.8 else "large")
-                print(f"  Effect:   Cohen's d = {d:.3f}  ({mag})")
+                print(f"  Effect:   {d_name} = {d:.3f}  ({mag})")
 
         elif test == "mannwhitney":
             print(f"  Samples:  X (n = {ex['n_x']}),  Y (n = {ex['n_y']})")
@@ -269,6 +271,46 @@ def _coerce(arr) -> np.ndarray:
     return np.where(
         pd.isna(arr), np.nan, np.asarray(arr, dtype=float)
     )
+
+
+def _hedges_bias_correction(df: float) -> float:
+    """Small-sample bias correction J(df) for standardized mean differences.
+
+    Uses the exact gamma-ratio form when df > 1 and a common finite-sample
+    approximation as a fallback for very small positive df.
+    """
+    if not np.isfinite(df) or df <= 0.0:
+        return 1.0
+    if df > 1.0:
+        log_j = gammaln(df / 2.0) - 0.5 * np.log(df / 2.0) - gammaln((df - 1.0) / 2.0)
+        return float(np.exp(log_j))
+    if df > 0.25:
+        return float(1.0 - 3.0 / (4.0 * df - 1.0))
+    return 1.0
+
+
+def _hedges_g_star(
+    mean1: float,
+    mean2: float,
+    sd1: float,
+    sd2: float,
+    n1: int,
+    n2: int,
+) -> float:
+    """Compute Hedges g*_s for unequal-variance two-sample comparisons.
+
+    Uses d_av with exact small-sample bias correction J(nu).
+    """
+    sd_av = float(np.sqrt((sd1**2 + sd2**2) / 2.0))
+    if sd_av <= 0.0:
+        return 0.0
+
+    d_star = float((mean1 - mean2) / sd_av)
+
+    nu_num = (n1 - 1) * (n2 - 1) * (sd1**2 + sd2**2) ** 2
+    nu_den = (n2 - 1) * sd1**4 + (n1 - 1) * sd2**4
+    nu = float(nu_num / nu_den) if nu_den > 0 else np.nan
+    return float(_hedges_bias_correction(nu) * d_star)
 
 
 def _run_alignment_report(llm_all: np.ndarray, human_sparse: np.ndarray):
@@ -828,6 +870,7 @@ def ttest(
     a_lab=None,
     b_lab=None,
     paired: bool = False,
+    equal_var: bool = False,
     alpha: float = 0.05,
     n_boot: int = 2000,
     rng=None,
@@ -835,7 +878,7 @@ def ttest(
 ) -> TestResult:
     """Independent-samples or paired t-test with optional PPI correction.
 
-    Uncorrected: ``scipy.stats.ttest_ind`` or ``scipy.stats.ttest_rel``.
+    Uncorrected: ``scipy.stats.ttest_ind`` (with ``equal_var``) or ``scipy.stats.ttest_rel``.
 
     PPI estimand:
       - Independent: ``mean(a) − mean(b)``.
@@ -858,6 +901,11 @@ def ttest(
     paired : bool
         Use the paired t-test (default False).  When ``True``, ``a[i]`` and
         ``b[i]`` are treated as matched observations (same subject / item).
+    equal_var : bool
+        Assume equal variances (Student's t-test) when ``True``; use the
+        Welch–Satterthwaite approximation (Welch's t-test) when ``False``
+        (default).  Welch's is recommended for most HCI comparisons because
+        group variances are rarely equal.  Ignored when ``paired=True``.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -879,8 +927,8 @@ def ttest(
         _res = _scipy_stats.ttest_rel(a, b)
         test_name = "Paired t-test"
     else:
-        _res = _scipy_stats.ttest_ind(a, b)
-        test_name = "Independent-samples t-test"
+        _res = _scipy_stats.ttest_ind(a, b, equal_var=equal_var)
+        test_name = "Independent-samples t-test" if equal_var else "Welch's t-test"
 
     t_stat, p_val = float(_res.statistic), float(_res.pvalue)
     df = float(getattr(_res, "df", np.nan))
@@ -888,31 +936,45 @@ def ttest(
     # Effect size and descriptive stats
     if paired:
         diffs = a - b
-        cohens_d = float(np.mean(diffs) / np.std(diffs, ddof=1)) if np.std(diffs, ddof=1) > 0 else 0.0
+        sd_diffs = float(np.std(diffs, ddof=1))
+        # Cohen’s d_z: mean difference / SD of differences (standard for paired designs)
+        effect_size_val = float(np.mean(diffs) / sd_diffs) if sd_diffs > 0 else 0.0
         extra = {
             "_test": "ttest",
             "paired": True,
             "n_a": len(a),
             "df": df if np.isfinite(df) else None,
-            "cohens_d": cohens_d,
+            "effect_size": effect_size_val,
+            "effect_size_name": "Cohen’s d_z",
             "n_boot": n_boot,
         }
     else:
         n_a, n_b = len(a), len(b)
         mean_a, mean_b = float(np.mean(a)), float(np.mean(b))
         std_a, std_b = float(np.std(a, ddof=1)), float(np.std(b, ddof=1))
-        pooled_std = np.sqrt(((n_a - 1) * std_a**2 + (n_b - 1) * std_b**2) / (n_a + n_b - 2))
-        cohens_d = float((mean_a - mean_b) / pooled_std) if pooled_std > 0 else 0.0
+        if equal_var:
+            # Student’s: Cohen’s d using pooled SD weighted by df
+            denom_std = np.sqrt(((n_a - 1) * std_a**2 + (n_b - 1) * std_b**2) / (n_a + n_b - 2))
+            effect_size_val = float((mean_a - mean_b) / denom_std) if denom_std > 0 else 0.0
+            effect_size_name = "Cohen’s d"
+        else:
+            # Welch’s: Use Hedges’ g*_s instead (recommended by Delacre et al. 2021, backed up by simulation studies).
+            effect_size_val = _hedges_g_star(
+                mean_a, mean_b, std_a, std_b, n_a, n_b
+            )
+            effect_size_name = "Hedges’ g_s*"
         extra = {
             "_test": "ttest",
             "paired": False,
+            "equal_var": equal_var,
             "n_a": n_a,
             "n_b": n_b,
             "mean_a": mean_a,
             "mean_b": mean_b,
             "std_a": std_a,
             "std_b": std_b,
-            "cohens_d": cohens_d,
+            "effect_size": effect_size_val,
+            "effect_size_name": effect_size_name,
             "df": df if np.isfinite(df) else None,
             "n_boot": n_boot,
         }
