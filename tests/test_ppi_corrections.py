@@ -46,11 +46,14 @@ from evalstats.tests import (
     wilcoxon,
     anova_oneway,
     friedman,
+    kruskalwallis,
     _hedges_g_star,
     _ppi_anova_independent_p_value,
     _ppi_anova_repeated_p_value,
     _ppi_friedman_p_value,
     _friedman_rank_variance,
+    _ppi_kruskal_wallis_pairwise,
+    _kw_mean_sq_deviation_from_labeled,
 )
 
 
@@ -2171,4 +2174,337 @@ class TestFriedmanCorrectedPValueCalibration:
         rate = rejections / len(self.SEEDS)
         assert rate <= self.MAX_REJECTION_RATE, (
             f"Friedman biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# kruskalwallis — the rank-based analog of independent-groups one-way ANOVA.
+#
+# Reuses _multigroup() since the data shape (k independent groups, labels
+# scattered independently per group) is identical to the independent-groups
+# ANOVA case. Unlike Friedman, Kruskal-Wallis's PPI estimand is built from
+# pairwise stochastic-dominance probabilities (see _kw_pairwise_thetas),
+# corrected via a Wald test with bootstrap covariance rather than a
+# closed-form null variance.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestKruskalBaseline:
+    """No-label tests: statistics match scipy; PPI fields all None."""
+
+    def test_matches_scipy(self):
+        rng = np.random.default_rng(940)
+        groups, _ = _multigroup(rng, k=4, n=120)
+        r = kruskalwallis(*groups)
+        ref = scipy_stats.kruskal(*groups)
+        assert r.statistic == pytest.approx(ref.statistic)
+        assert r.p_value == pytest.approx(ref.pvalue)
+
+    def test_ppi_fields_none_without_labels(self):
+        rng = np.random.default_rng(941)
+        groups, _ = _multigroup(rng, k=3, n=80)
+        r = kruskalwallis(*groups)
+        assert isinstance(r, TestResult)
+        assert r.corrected_estimate is None
+        assert r.corrected_ci is None
+        assert r.corrected_p_value is None
+        assert r.rectifier is None
+        assert r.n_labeled is None
+        assert r.n_total is None
+        assert "corrected_effect_size" not in r.extra
+        assert "pairwise_effects" not in r.extra
+
+    def test_test_name_contains_kruskal(self):
+        rng = np.random.default_rng(942)
+        groups, _ = _multigroup(rng, k=3, n=60)
+        assert "kruskal" in kruskalwallis(*groups).test_name.lower()
+
+    def test_requires_at_least_three_groups(self):
+        rng = np.random.default_rng(943)
+        g1 = rng.normal(0, 1, 50)
+        g2 = rng.normal(0, 1, 50)
+        with pytest.raises(ValueError, match="at least three groups"):
+            kruskalwallis(g1, g2)
+
+    def test_allows_unequal_group_sizes(self):
+        """Unlike friedman, kruskalwallis groups are independent — no length constraint."""
+        rng = np.random.default_rng(944)
+        g1 = rng.normal(0, 1, 60)
+        g2 = rng.normal(0, 1, 90)
+        g3 = rng.normal(0, 1, 120)
+        r = kruskalwallis(g1, g2, g3)
+        ref = scipy_stats.kruskal(g1, g2, g3)
+        assert r.statistic == pytest.approx(ref.statistic)
+
+    def test_extra_dict_keys(self):
+        rng = np.random.default_rng(945)
+        groups, _ = _multigroup(rng, k=4, n=80)
+        r = kruskalwallis(*groups)
+        for key in ("_test", "k_groups", "n_total_obs", "group_sizes", "group_medians",
+                    "df", "effect_size", "effect_size_name"):
+            assert key in r.extra, f"Missing extra key: {key!r}"
+        assert r.extra["k_groups"] == 4
+        assert r.extra["df"] == pytest.approx(3.0)  # k-1
+        assert 0.0 <= r.extra["effect_size"] <= 1.0  # bounded [0, 1] by construction
+
+    def test_invariant_to_group_permutation(self):
+        rng = np.random.default_rng(946)
+        groups, _ = _multigroup(rng, k=4, n=100, mus=[3.0, 4.0, 3.5, 5.0])
+        r1 = kruskalwallis(*groups)
+        r2 = kruskalwallis(*groups[::-1])
+        assert r1.statistic == pytest.approx(r2.statistic)
+        assert r1.p_value == pytest.approx(r2.p_value)
+        assert r1.extra["effect_size"] == pytest.approx(r2.extra["effect_size"])
+
+
+class TestKruskalPPIFieldStructure:
+    """PPI-corrected kruskalwallis: field structure, ordering, and metadata."""
+
+    def test_fields_populated(self):
+        rng = np.random.default_rng(950)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=200, rng=950)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        assert r.corrected_p_value is not None
+        assert r.rectifier is not None
+        assert r.n_labeled is not None
+        assert r.n_total is not None
+        assert "corrected_effect_size" in r.extra
+        assert "pairwise_effects" in r.extra
+        assert len(r.extra["pairwise_effects"]) == 3  # C(3,2) pairs
+
+    def test_ci_is_ordered(self):
+        rng = np.random.default_rng(951)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=200, rng=951)
+        lo, hi = r.corrected_ci
+        assert lo <= hi
+        for info in r.extra["pairwise_effects"].values():
+            plo, phi = info["ci"]
+            assert plo <= phi
+            assert 0.0 <= info["theta"] <= 1.0
+
+    def test_corrected_p_value_in_0_1(self):
+        rng = np.random.default_rng(952)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=300, rng=952)
+        assert 0.0 <= r.corrected_p_value <= 1.0
+
+    def test_wald_stat_is_nonnegative(self):
+        """Quadratic form with a pseudo-inverse of a PSD covariance must be >= 0."""
+        rng = np.random.default_rng(953)
+        groups, groups_lab = _multigroup(rng, k=4, n=150, n_lab=40)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=200, rng=953)
+        assert r.extra["wald_stat"] >= 0.0
+
+    def test_n_labeled_and_n_total_match_input(self):
+        """3 groups x 200 items x 50 labeled each -> n_labeled=150, n_total=600."""
+        rng = np.random.default_rng(954)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=200, rng=954)
+        assert r.n_labeled == 150
+        assert r.n_total == 600
+
+    def test_reproducibility_with_rng_seed(self):
+        rng = np.random.default_rng(955)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        kw = dict(groups_lab=groups_lab, n_boot=300, rng=42)
+        r1 = kruskalwallis(*groups, **kw)
+        r2 = kruskalwallis(*groups, **kw)
+        assert r1.corrected_estimate == r2.corrected_estimate
+        assert r1.corrected_ci == r2.corrected_ci
+        assert r1.corrected_p_value == r2.corrected_p_value
+
+    def test_alpha_propagated(self):
+        rng = np.random.default_rng(956)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, alpha=0.10, n_boot=200, rng=956)
+        assert r.alpha == 0.10
+
+    def test_corrected_estimate_equals_llm_plus_rectifier(self):
+        rng = np.random.default_rng(957)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=220, mus=[3.0, 3.0, 3.0], biases=[1.5, 0.0, 0.0], n_lab=60,
+        )
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=300, rng=957)
+
+        Y = np.concatenate(groups)
+        X = np.concatenate([np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups)])
+        llm_est = _kw_mean_sq_deviation_from_labeled(Y, X, k=3)
+        assert r.corrected_estimate == pytest.approx(llm_est + r.rectifier, abs=1e-10)
+
+    def test_fully_labeled_corrected_estimate_matches_human_estimand(self):
+        rng = np.random.default_rng(958)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=180, mus=[3.1, 3.8, 2.9], sigma=0.8,
+            biases=[0.9, -0.3, 0.5], n_lab=180,
+        )
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=300, rng=958)
+
+        Y = np.concatenate(groups_lab)
+        X = np.concatenate([np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups_lab)])
+        human_est = _kw_mean_sq_deviation_from_labeled(Y, X, k=3)
+        assert r.corrected_estimate == pytest.approx(human_est, abs=1e-10)
+
+    def test_corrected_effect_size_equals_corrected_estimate(self):
+        """By construction the headline effect size IS the corrected estimand."""
+        rng = np.random.default_rng(959)
+        groups, groups_lab = _multigroup(rng, k=3, n=200, n_lab=50)
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=200, rng=959)
+        assert r.extra["corrected_effect_size"] == r.corrected_estimate
+
+    def test_raises_when_fewer_than_15_labels(self):
+        rng = np.random.default_rng(960)
+        groups, groups_lab = _multigroup(rng, k=3, n=120, n_lab=4)
+        with pytest.raises(ValueError, match="At least 15 human labels"):
+            kruskalwallis(*groups, groups_lab=groups_lab, n_boot=120, rng=960)
+
+    def test_warns_when_15_to_29_labels(self):
+        rng = np.random.default_rng(961)
+        groups, groups_lab = _multigroup(rng, k=3, n=120, n_lab=6)
+        with pytest.warns(UserWarning, match="undercover below 30 labels"):
+            r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=120, rng=961)
+        assert r.corrected_estimate is not None
+
+
+class TestKruskalFalsePositive:
+    """LLM inflates one group but true groups are equal -> corrected CI covers 0."""
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_CI_contains_zero(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=300, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=80,
+        )
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        assert r.p_value < 0.001, f"seed={seed}: uncorrected should detect false positive"
+        lo, hi = r.corrected_ci
+        assert lo <= 0 <= hi, (
+            f"seed={seed}: corrected CI ({lo:.4f}, {hi:.4f}) should contain 0 "
+            f"(no true between-group dominance)"
+        )
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_estimate_closer_to_zero(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=300, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=80,
+        )
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        Y = np.concatenate(groups)
+        X = np.concatenate([np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups)])
+        llm_est = _kw_mean_sq_deviation_from_labeled(Y, X, k=3)
+        assert abs(r.corrected_estimate) < abs(llm_est), (
+            f"seed={seed}: corrected={r.corrected_estimate:.4f} should be closer to 0 "
+            f"than llm_est={llm_est:.4f}"
+        )
+
+
+class TestKruskalTrueEffect:
+    """Large true between-group effect survives PPI correction."""
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_large_true_effect_CI_excludes_zero(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup(
+            rng, k=3, n=200, mus=[3.0, 5.0, 4.0], sigma=0.8, biases=[0.0, 0.0, 0.0], n_lab=50,
+        )
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=300, rng=seed + 30000)
+        lo, hi = r.corrected_ci
+        assert lo > 0, (
+            f"seed={seed}: corrected CI ({lo:.3f}, {hi:.3f}) should be entirely "
+            f"above 0 for a large true between-group effect"
+        )
+
+
+class TestKruskalCIWidthLabelBudget:
+    """More human labels -> narrower corrected CI (mirrors the ANOVA/Friedman budget test)."""
+
+    def test_ci_width_narrows_with_n_lab(self):
+        seed = 970
+        rng = np.random.default_rng(seed)
+        k, n = 3, 260
+        truths = [rng.normal(3.0, 1.0, n) for _ in range(k)]
+        groups = [truths[i] + [1.1, 0.0, 0.0][i] + rng.normal(0.0, 0.10, n) for i in range(k)]
+
+        n_labs = [15, 30, 50, 80, 120]
+        widths = []
+
+        for n_lab in n_labs:
+            rep_w = []
+            for rep in range(6):
+                label_rng = np.random.default_rng(seed * 1000 + n_lab * 10 + rep)
+                groups_lab = [np.full(n, np.nan) for _ in range(k)]
+                for i in range(k):
+                    idx = label_rng.choice(n, n_lab, replace=False)
+                    groups_lab[i][idx] = truths[i][idx]
+                r = kruskalwallis(*groups, groups_lab=groups_lab,
+                                   n_boot=1_000, rng=seed + 2000 + n_lab * 10 + rep)
+                lo, hi = r.corrected_ci
+                rep_w.append(hi - lo)
+            widths.append(float(np.mean(rep_w)))
+
+        assert widths[-1] < widths[0], (
+            f"Expected CI to narrow from n_lab=15 to 120; got widths={widths}"
+        )
+        for i in range(len(widths) - 1):
+            assert widths[i + 1] <= widths[i] + 0.03, (
+                f"Large upward flip between n_lab={n_labs[i]} and {n_labs[i+1]}: widths={widths}"
+            )
+
+
+class TestKruskalCorrectedPValueCalibration:
+    """Type I error rate of the Wald-test p-value from _ppi_kruskal_wallis_pairwise.
+
+    Lighter-weight than the simulation script's sweep (fewer seeds, smaller
+    n_boot) — this is a fast in-suite sanity check, not the authoritative
+    calibration validation (that's simulations/sim_type_i_calibration.py).
+    """
+
+    SEEDS = list(range(7000, 7060))   # 60 reproducible seeds
+    ALPHA = 0.05
+    MAX_REJECTION_RATE = 0.15         # loose bound given fewer seeds/smaller n_boot
+
+    @staticmethod
+    def _kw_p(
+        seed: int,
+        biases: list,
+        mus: list,
+        n: int = 150,
+        n_lab: int = 40,
+        sigma: float = 1.0,
+        llm_noise: float = 0.12,
+        n_boot: int = 150,
+    ):
+        rng = np.random.default_rng(seed)
+        k = len(mus)
+        truths = [rng.normal(mu, sigma, n) for mu in mus]
+        groups = [t + bias + rng.normal(0, llm_noise, n) for t, bias in zip(truths, biases)]
+        groups_lab = [np.full(n, np.nan) for _ in range(k)]
+        for i in range(k):
+            idx = rng.choice(n, n_lab, replace=False)
+            groups_lab[i][idx] = truths[i][idx]
+        pw = _ppi_kruskal_wallis_pairwise(
+            groups, groups_lab, alpha=0.05, n_boot=n_boot, rng=seed
+        )
+        return pw["wald_p"]
+
+    def test_type_i_null_unbiased(self):
+        rejections = sum(
+            1 for s in self.SEEDS
+            if self._kw_p(s, biases=[0.0, 0.0, 0.0], mus=[3.0, 3.0, 3.0]) < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Kruskal-Wallis unbiased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+    def test_type_i_null_biased(self):
+        rejections = sum(
+            1 for s in self.SEEDS
+            if self._kw_p(s, biases=[0.0, 0.8, 0.4], mus=[3.0, 3.0, 3.0]) < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Kruskal-Wallis biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
         )

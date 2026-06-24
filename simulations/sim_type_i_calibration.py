@@ -13,6 +13,13 @@ whether the corrected p-value stays near α = 0.05 under H₀:
   friedman    Friedman test, within-subjects rank variance (three conditions) —
               reuses the same repeated-measures data as anova_rep, since
               Friedman is the rank-based analog of repeated-measures ANOVA.
+  kruskal     Kruskal-Wallis test, independent-groups pairwise stochastic
+              dominance (three groups) — reuses the same independent-groups
+              data as anova_ind, since Kruskal-Wallis is the rank-based
+              analog of independent-groups one-way ANOVA. Unlike the other
+              omnibus tests, its corrected p-value is a Wald test over the
+              joint bootstrap covariance of pairwise effects, not a
+              closed-form null-variance approximation.
 
 Factors swept (one at a time from a fixed baseline):
   distribution   normal, binary (0/1), likert (1–5), skewed (log-normal)
@@ -78,18 +85,19 @@ with warnings.catch_warnings():
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
+        _ppi_kruskal_wallis_pairwise,
     )
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ALPHA = 0.05
-TEST_NAMES = ["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep", "friedman"]
+TEST_NAMES = ["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep", "friedman", "kruskal"]
 # Short column headers for the printed table, keyed by canonical test name so
 # a --tests subset (in any order) still renders correctly.
 TEST_SHORT_NAMES = {
     "ttest": "ttest", "ttest_welch": "ttest_w", "mw": "mw", "wilcoxon": "wilcoxon",
-    "anova_ind": "anova_i", "anova_rep": "anova_r", "friedman": "fried",
+    "anova_ind": "anova_i", "anova_rep": "anova_r", "friedman": "fried", "kruskal": "kw",
 }
 _SIGMA_TRUTH = 1.0   # within-group truth SD (normal / likert / skewed)
 _SIGMA_SUB   = 0.7   # between-subject SD for paired/repeated designs
@@ -333,6 +341,12 @@ def _uncorrected_friedman_p_value(groups: list[np.ndarray]) -> float:
         return float(_scipy_stats.friedmanchisquare(*groups).pvalue)
 
 
+def _uncorrected_kruskal_p_value(groups: list[np.ndarray]) -> float:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return float(_scipy_stats.kruskal(*groups).pvalue)
+
+
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 def _run_one(args: tuple) -> tuple[int, dict[str, bool | None], dict[str, bool | None]]:
@@ -528,6 +542,25 @@ def _run_one(args: tuple) -> tuple[int, dict[str, bool | None], dict[str, bool |
             except Exception:
                 corrected_results["friedman"] = None
                 uncorrected_results["friedman"] = None
+
+        # kruskal: rank-based independent-groups analog of anova_ind — reuses
+        # the same (llm_a3, llm_b3, llm_c3) / (lab_a3, lab_b3, lab_c3) data.
+        # Unlike the other omnibus tests, this is a Wald test over the joint
+        # bootstrap covariance of pairwise dominance effects, not a
+        # closed-form approximation, so it needs its own n_boot/rng draw.
+        if "kruskal" in active_tests:
+            try:
+                groups_kw = [llm_a3, llm_b3, llm_c3]
+                groups_kw_lab = [lab_a3, lab_b3, lab_c3]
+                p_uncorrected = _uncorrected_kruskal_p_value(groups_kw)
+                uncorrected_results["kruskal"] = p_uncorrected < ALPHA
+                pw = _ppi_kruskal_wallis_pairwise(
+                    groups_kw, groups_kw_lab, alpha=ALPHA, n_boot=n_boot, rng=_rng_seed(),
+                )
+                corrected_results["kruskal"] = pw["wald_p"] < ALPHA
+            except Exception:
+                corrected_results["kruskal"] = None
+                uncorrected_results["kruskal"] = None
 
     return sc_idx, corrected_results, uncorrected_results
 

@@ -147,6 +147,8 @@ class TestResult:
             )
         elif test == "friedman":
             return "variance of per-condition mean within-subject ranks"
+        elif test == "kruskal":
+            return "pairwise stochastic-dominance effects P_mid(group_a > group_b) across all group pairs"
         return "estimand"
 
     def _stat_line(self) -> str:
@@ -172,6 +174,10 @@ class TestResult:
             df = ex.get("df")
             df_str = f"({df:.0f})" if df is not None else ""
             return f"χ²{df_str} = {self.statistic:.3f},  p {p_str}"
+        elif test == "kruskal":
+            df = ex.get("df")
+            df_str = f"({df:.0f})" if df is not None else ""
+            return f"H{df_str} = {self.statistic:.3f},  p {p_str}"
         else:
             return f"stat = {self.statistic:.4f},  p {p_str}"
 
@@ -261,6 +267,24 @@ class TestResult:
             if w is not None:
                 print(f"  Effect:   {w_name} = {w:.3f}  ({self._effect_magnitude(w)})")
 
+        elif test == "kruskal":
+            print(
+                f"  Design:   Kruskal-Wallis test "
+                f"(groups = {ex['k_groups']}, total n = {ex['n_total_obs']})"
+            )
+            sizes = ex.get("group_sizes")
+            if sizes is not None:
+                print(f"  Group n:  {', '.join(str(int(n)) for n in sizes)}")
+            medians = ex.get("group_medians")
+            if medians is not None:
+                median_str = ", ".join(f"{m:.3f}" for m in medians)
+                print(f"  Medians:  {median_str}")
+
+            d = ex.get("effect_size")
+            d_name = ex.get("effect_size_name", "Effect size")
+            if d is not None:
+                print(f"  Effect:   {d_name} = {d:.3f}  ({self._effect_magnitude(d)})")
+
         print()
 
         if self.corrected_p_value is not None:
@@ -279,6 +303,12 @@ class TestResult:
                 d_corr_name = ex.get("corrected_effect_size_name", "Effect size")
                 if d_corr is not None:
                     print(f"  Effect (PPI-corrected):  {d_corr_name} = {d_corr:.3f}  ({self._effect_magnitude(d_corr)})")
+                pairwise = ex.get("pairwise_effects")
+                if pairwise:
+                    print(f"\n  Pairwise PPI-corrected effects (P_mid(a > b), {ci_pct}% CI):")
+                    for (a, b), info in pairwise.items():
+                        plo, phi = info["ci"]
+                        print(f"    group {a} vs group {b}:  θ = {info['theta']:.3f}  [{plo:.3f}, {phi:.3f}]")
                 lab_str = (f"{self.n_labeled} of {self.n_total}"
                            if self.n_labeled is not None else "?")
                 note = (f"Correction applied using Prediction-Powered Inference on "
@@ -534,6 +564,201 @@ def _p_x_gt_y_midrank(x: np.ndarray, y: np.ndarray) -> float:
     n_le = np.searchsorted(y_sorted, x, side="right")  # count Y_j ≤ X_i
     # mid-rank: count X_i > Y_j as 1, X_i == Y_j as 0.5
     return float((n_lt.sum() + 0.5 * (n_le - n_lt).sum()) / (len(x) * len(y)))
+
+
+def _kw_pairwise_thetas(
+    group_arrays: list[np.ndarray],
+    pairs: list[tuple[int, int]],
+) -> np.ndarray:
+    """θ_ab = P_mid(group_a > group_b) for every (a, b) in *pairs*.
+
+    Kruskal-Wallis's classical statistic is built from GLOBAL pooled ranks,
+    which (unlike Friedman's within-subject ranks) do NOT survive subsetting
+    to just the labeled items — a single item's pooled rank depends on every
+    other item in the dataset. Pairwise dominance probabilities avoid this:
+    θ_ab is a U-statistic (an average over pairwise comparisons), exactly
+    the same quantity already used by ``mannwhitney`` for two groups, so it
+    is well-defined identically on the full data or any subsample.
+    """
+    return np.array([
+        _p_x_gt_y_midrank(group_arrays[a], group_arrays[b]) for a, b in pairs
+    ])
+
+
+def _kw_mean_sq_deviation_from_labeled(Y: np.ndarray, X: np.ndarray, k: int) -> float:
+    """4·mean((θ_ab − 0.5)²) over all pairs a<b — bounded in [0, 1], 0 under
+    H₀ (every pair stochastically equal), larger as groups separate.
+
+    This is the scalar omnibus estimand fed to ``correct()`` for the
+    point estimate/CI (mirrors ``_anova_between_variance_from_labeled``).
+    The actual hypothesis test uses the full pairwise vector and its joint
+    bootstrap covariance instead (see ``_ppi_kruskal_wallis_pairwise``) —
+    this scalar is for the headline ``corrected_estimate``/effect size only.
+    """
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    group_arrays = [Y[X == j] for j in range(k)]
+    thetas = _kw_pairwise_thetas(group_arrays, pairs)
+    return float(4.0 * np.mean((thetas - 0.5) ** 2))
+
+
+def _ppi_kruskal_wallis(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+):
+    """PPI correction for the Kruskal-Wallis mean-squared pairwise-dominance
+    estimand. Structurally identical to ``_ppi_anova_independent`` — only the
+    estimator function differs.
+    """
+    from evalstats.ppi import correct
+
+    k = len(groups)
+    masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
+
+    Y_hat_unlab = np.concatenate(groups)
+    X_unlab = np.concatenate([
+        np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups)
+    ])
+    Y_lab = np.concatenate([
+        lab_arr[mask] for lab_arr, mask in zip(groups_lab, masks)
+    ])
+    Y_hat_lab = np.concatenate([
+        g[mask] for g, mask in zip(groups, masks)
+    ])
+    X_lab = np.concatenate([
+        np.full(int(mask.sum()), gid, dtype=int) for gid, mask in enumerate(masks)
+    ])
+
+    if len(Y_lab) == 0:
+        raise ValueError("No labeled items found in groups_lab.")
+
+    def _estimand(Y, X):
+        return _kw_mean_sq_deviation_from_labeled(Y, X, k)
+
+    return correct(
+        _estimand,
+        Y_lab=Y_lab,
+        Y_hat_lab=Y_hat_lab,
+        Y_hat_unlab=Y_hat_unlab,
+        X_lab=X_lab,
+        X_unlab=X_unlab,
+        alpha=alpha,
+        n_boot=n_boot,
+        rng=rng,
+        compute_pvalue=False,
+    )
+
+
+def _ppi_kruskal_wallis_pairwise(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+) -> dict:
+    """Joint PPI bootstrap of every pairwise dominance effect θ_ab, used for
+    the omnibus Wald test (H₀: every θ_ab = 0.5) and for per-pair reporting.
+
+    Why a dedicated bootstrap instead of calling ``correct()`` once per pair:
+    the C(k,2) pairwise estimates are correlated (θ_12 and θ_13 both depend
+    on group 1's data), and that covariance has to come from resampling all
+    pairs from the SAME draw — independent per-pair bootstraps would treat
+    them as uncorrelated and give the wrong covariance for the Wald test.
+    Each draw resamples every group's unlabeled pool and labeled subset
+    independently (groups are independent samples) but computes the full
+    pairwise vector from that one draw, so within-draw correlations between
+    pairs sharing a group come through correctly.
+
+    The Wald test deliberately uses this *unrestricted* (signal-inclusive)
+    bootstrap covariance rather than a null-restricted one — by construction,
+    there's no "should I subtract the LLM-noise term from a null baseline"
+    step the way the ANOVA/Friedman closed-form p-values needed, which is
+    exactly the kind of derivation that produced a Type-I bug for Friedman.
+    The C(k,2) pairwise contrasts have only k−1 independent degrees of
+    freedom (e.g. θ_23 is implied by θ_12 and θ_13 under exchangeability),
+    so the covariance matrix is rank-deficient; a Moore-Penrose pseudo-inverse
+    with df=k−1 handles that. The reference distribution is an F (Hotelling's
+    T²-style finite-sample correction, ν = total labeled observations across
+    groups) rather than a plain chi-square, since chi-square is only the
+    large-sample limit and is mildly anti-conservative whenever the labeled
+    set is small.
+    """
+    rng = np.random.default_rng(rng)
+    k = len(groups)
+    masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
+
+    Y_lab_groups = [lab_arr[m] for lab_arr, m in zip(groups_lab, masks)]
+    Yhat_lab_groups = [g[m] for g, m in zip(groups, masks)]
+
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    n_pairs = len(pairs)
+
+    theta_unlab = _kw_pairwise_thetas(groups, pairs)
+    theta_lab_human = _kw_pairwise_thetas(Y_lab_groups, pairs)
+    theta_lab_llm = _kw_pairwise_thetas(Yhat_lab_groups, pairs)
+    theta_hat = theta_unlab + (theta_lab_human - theta_lab_llm)
+
+    n_per_group = [len(g) for g in groups]
+    n_lab_per_group = [len(y) for y in Y_lab_groups]
+
+    boots = np.empty((n_boot, n_pairs))
+    for bi in range(n_boot):
+        boot_unlab = [
+            groups[j][rng.integers(0, n_per_group[j], n_per_group[j])]
+            for j in range(k)
+        ]
+        # One shared index per group for the labeled resample: the human and
+        # LLM values at a given index are the SAME item's two measurements,
+        # so they must move together across bootstrap draws (highly
+        # correlated in practice) — drawing independent indices for each
+        # would destroy that correlation and grossly inflate the rectifier's
+        # bootstrap variance.
+        lab_idxs = [
+            rng.integers(0, n_lab_per_group[j], n_lab_per_group[j]) if n_lab_per_group[j] > 0
+            else np.arange(n_lab_per_group[j])
+            for j in range(k)
+        ]
+        boot_lab_human = [Y_lab_groups[j][lab_idxs[j]] for j in range(k)]
+        boot_lab_llm = [Yhat_lab_groups[j][lab_idxs[j]] for j in range(k)]
+        b_unlab = _kw_pairwise_thetas(boot_unlab, pairs)
+        b_lab_h = _kw_pairwise_thetas(boot_lab_human, pairs)
+        b_lab_l = _kw_pairwise_thetas(boot_lab_llm, pairs)
+        boots[bi] = b_unlab + (b_lab_h - b_lab_l)
+
+    ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
+    ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
+
+    cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
+    diff = theta_hat - 0.5
+    cov_pinv = np.linalg.pinv(cov, rcond=1e-8)
+    wald_stat = float(diff @ cov_pinv @ diff)
+    df = k - 1
+
+    # Finite-sample (Hotelling's T²-style) correction: a chi-square reference
+    # is only the n→∞ limit of the Wald statistic's distribution, and is
+    # known to be mildly anti-conservative (too many rejections) whenever the
+    # covariance is estimated from a small effective sample — exactly the
+    # regime of a sparse labeled set. ν is the total labeled observations
+    # across groups (the classical Hotelling "n" feeding the covariance
+    # estimate); as ν → ∞ this F-reference converges back to the chi-square
+    # one, so it costs nothing in the well-labeled regime.
+    nu = sum(n_lab_per_group)
+    if nu > df:
+        f_stat = wald_stat * (nu - df + 1) / (nu * df)
+        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    else:
+        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+
+    return {
+        "pairs": pairs,
+        "theta_hat": theta_hat,
+        "ci_lo": ci_lo,
+        "ci_hi": ci_hi,
+        "wald_stat": wald_stat,
+        "wald_p": wald_p,
+    }
 
 
 def _ppi_paired_arrays(
@@ -1818,6 +2043,155 @@ def friedman(
     result = TestResult(
         test_name=test_name,
         statistic=chi2_stat,
+        p_value=p_val,
+        corrected_estimate=corrected_estimate,
+        corrected_ci=corrected_ci,
+        corrected_p_value=corrected_p,
+        rectifier=rectifier,
+        n_labeled=n_labeled,
+        n_total=n_total,
+        alpha=alpha,
+        extra=extra,
+    )
+    if print_result:
+        result.summary()
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# kruskalwallis
+# ─────────────────────────────────────────────────────────────────────────────
+
+def kruskalwallis(
+    *groups,
+    groups_lab=None,
+    alpha: float = 0.05,
+    n_boot: int = 2000,
+    rng=None,
+    print_result: bool = True,
+) -> TestResult:
+    """Kruskal-Wallis test (independent-groups, rank-based one-way) with
+    optional PPI correction.
+
+    Uncorrected: ``scipy.stats.kruskal(*groups)``.
+
+    Kruskal-Wallis ranks ALL observations together in one pooled sample —
+    unlike Friedman's within-subject ranks, this pooled rank does NOT
+    survive subsetting to just the labeled items (a given item's global
+    rank depends on every other item in the dataset). So instead of
+    correcting pooled ranks directly, the PPI estimand here is built from
+    pairwise stochastic-dominance probabilities
+    ``θ_ab = P_mid(group_a > group_b)`` for every pair of groups — the same
+    mid-rank U-statistic ``mannwhitney`` already uses for two groups, which
+    *is* well-defined identically on the full data or any subsample. For
+    k=2 groups Kruskal-Wallis reduces to Mann-Whitney; this pairwise-θ
+    framework is the direct generalization to k>2.
+
+    PPI correction is applied to each pairwise θ_ab via the standard
+    rectifier formula, and the omnibus null H₀: "every θ_ab = 0.5" (no
+    stochastic dominance between any pair of groups) is tested via a Wald
+    test using the joint bootstrap covariance of the corrected θ̂ vector
+    (Moore-Penrose pseudo-inverse, since the C(k,2) pairwise contrasts have
+    only k−1 independent degrees of freedom; chi-square reference with
+    df = k−1). This deliberately avoids the closed-form null-variance
+    derivation that ``anova_oneway``/``friedman``'s p-values need — a Wald
+    test uses the *unrestricted* bootstrap covariance by design, so there's
+    no "subtract the LLM-noise term from a null baseline" step to get wrong.
+
+    The headline ``corrected_estimate``/effect size is a single scalar
+    summary, ``4·mean((θ_ab − 0.5)²)`` over all pairs (bounded [0, 1], 0
+    under H₀) — corrected via the ordinary PPI bootstrap CI, same pattern as
+    ``anova_oneway``/``friedman``. The full per-pair breakdown (corrected
+    θ̂_ab + CI for every group pair) is available in ``extra["pairwise_effects"]``.
+
+    Parameters
+    ----------
+    *groups : array-like
+        Three or more independent-group score arrays. For exactly two
+        groups, use ``mannwhitney`` instead.
+    groups_lab : sequence[array-like], optional
+        Sparse human labels aligned with each group. Must have one array per
+        group, with ``NaN`` for unlabeled items.
+    print_result : bool
+        Print a summary table to stdout (default True). Pass ``False`` to
+        suppress output when calling from automated pipelines.
+
+    Examples
+    --------
+    >>> result = es.tests.kruskalwallis(g1, g2, g3)                              # prints
+    >>> result = es.tests.kruskalwallis(g1, g2, g3, print_result=False)          # silent
+    >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
+    """
+    if len(groups) < 3:
+        raise ValueError(
+            "kruskalwallis requires at least three groups (k >= 3); "
+            "for two groups, use mannwhitney()."
+        )
+
+    groups = [_coerce(g) for g in groups]
+    k = len(groups)
+    n_total_obs = int(sum(len(g) for g in groups))
+
+    res = _scipy_stats.kruskal(*groups)
+    h_stat, p_val = float(res.statistic), float(res.pvalue)
+    df = float(k - 1)
+
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    raw_thetas = _kw_pairwise_thetas(groups, pairs)
+    effect_size_val = float(4.0 * np.mean((raw_thetas - 0.5) ** 2))
+
+    extra = {
+        "_test": "kruskal",
+        "k_groups": k,
+        "n_total_obs": n_total_obs,
+        "group_sizes": [len(g) for g in groups],
+        "group_medians": [float(np.median(g)) for g in groups],
+        "df": df,
+        "effect_size": effect_size_val,
+        "effect_size_name": "Mean (P(a>b)−0.5)²",
+        "n_boot": n_boot,
+    }
+    test_name = "Kruskal-Wallis test"
+
+    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    n_labeled = n_total = None
+
+    if groups_lab is not None:
+        groups_lab = _sanitize_multigroup_ppi_labels(
+            groups,
+            groups_lab,
+            repeated=False,
+            test_label="Kruskal-Wallis",
+        )
+
+        llm_all = np.concatenate(groups)
+        human_sparse = np.concatenate(groups_lab)
+        ar = _run_alignment_report(llm_all, human_sparse)
+
+        ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
+
+        corrected_estimate = ppi.estimate
+        corrected_ci = (ppi.ci_low, ppi.ci_high)
+        corrected_p = pw["wald_p"]
+        rectifier = ppi.rectifier
+        n_labeled = ar.n_labeled
+        n_total = ar.n_total
+
+        extra["corrected_effect_size"] = corrected_estimate
+        extra["corrected_effect_size_name"] = "Mean (P(a>b)−0.5)²"
+        extra["wald_stat"] = pw["wald_stat"]
+        extra["pairwise_effects"] = {
+            pw["pairs"][i]: {
+                "theta": float(pw["theta_hat"][i]),
+                "ci": (float(pw["ci_lo"][i]), float(pw["ci_hi"][i])),
+            }
+            for i in range(len(pw["pairs"]))
+        }
+
+    result = TestResult(
+        test_name=test_name,
+        statistic=h_stat,
         p_value=p_val,
         corrected_estimate=corrected_estimate,
         corrected_ci=corrected_ci,
