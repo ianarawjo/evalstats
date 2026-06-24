@@ -45,9 +45,12 @@ from evalstats.tests import (
     mannwhitney,
     wilcoxon,
     anova_oneway,
+    friedman,
     _hedges_g_star,
     _ppi_anova_independent_p_value,
     _ppi_anova_repeated_p_value,
+    _ppi_friedman_p_value,
+    _friedman_rank_variance,
 )
 
 
@@ -1822,4 +1825,350 @@ class TestAnovaOnewayCorrectedPValueCalibration:
         rate = rejections / len(self.SEEDS)
         assert rate <= self.MAX_REJECTION_RATE, (
             f"Repeated biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# friedman — the rank-based analog of repeated-measures one-way ANOVA.
+#
+# Reuses _multigroup_repeated() since the data shape (k equal-length
+# conditions, same subjects labeled across all conditions) is identical to
+# the repeated-measures ANOVA case.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestFriedmanRankVarianceFormula:
+    """_friedman_rank_variance ties directly to the classical χ²_F statistic.
+
+    χ²_F = 12·n·V/(k+1), where V = _friedman_rank_variance(matrix). Checked
+    against scipy's own (tie-free, since data is continuous) statistic.
+    """
+
+    def test_matches_chi2_relation_no_ties(self):
+        rng = np.random.default_rng(900)
+        k, n = 4, 150
+        groups = [rng.normal(0, 1, n) for _ in range(k)]
+        matrix = np.column_stack(groups)
+        V = _friedman_rank_variance(matrix)
+        chi2_from_V = 12.0 * n * V / (k + 1)
+        ref = scipy_stats.friedmanchisquare(*groups)
+        assert chi2_from_V == pytest.approx(ref.statistic, rel=1e-8)
+
+
+class TestFriedmanBaseline:
+    """No-label tests: statistics match scipy; PPI fields all None."""
+
+    def test_matches_scipy(self):
+        rng = np.random.default_rng(901)
+        groups, _ = _multigroup_repeated(rng, k=4, n=120)
+        r = friedman(*groups)
+        ref = scipy_stats.friedmanchisquare(*groups)
+        assert r.statistic == pytest.approx(ref.statistic)
+        assert r.p_value == pytest.approx(ref.pvalue)
+
+    def test_ppi_fields_none_without_labels(self):
+        rng = np.random.default_rng(902)
+        groups, _ = _multigroup_repeated(rng, k=3, n=80)
+        r = friedman(*groups)
+        assert isinstance(r, TestResult)
+        assert r.corrected_estimate is None
+        assert r.corrected_ci is None
+        assert r.corrected_p_value is None
+        assert r.rectifier is None
+        assert r.n_labeled is None
+        assert r.n_total is None
+        assert "corrected_effect_size" not in r.extra
+
+    def test_test_name_contains_friedman(self):
+        rng = np.random.default_rng(903)
+        groups, _ = _multigroup_repeated(rng, k=3, n=60)
+        assert "friedman" in friedman(*groups).test_name.lower()
+
+    def test_requires_at_least_three_conditions(self):
+        rng = np.random.default_rng(904)
+        g1 = rng.normal(0, 1, 50)
+        g2 = rng.normal(0, 1, 50)
+        with pytest.raises(ValueError, match="at least three conditions"):
+            friedman(g1, g2)
+
+    def test_raises_for_unequal_lengths(self):
+        rng = np.random.default_rng(905)
+        g1 = rng.normal(0, 1, 80)
+        g2 = rng.normal(0, 1, 80)
+        g3 = rng.normal(0, 1, 90)
+        with pytest.raises(ValueError, match="equal-length"):
+            friedman(g1, g2, g3)
+
+    def test_extra_dict_keys(self):
+        rng = np.random.default_rng(906)
+        groups, _ = _multigroup_repeated(rng, k=4, n=80)
+        r = friedman(*groups)
+        for key in ("_test", "k_groups", "n_subjects", "group_means", "df", "effect_size", "effect_size_name"):
+            assert key in r.extra, f"Missing extra key: {key!r}"
+        assert r.extra["k_groups"] == 4
+        assert r.extra["n_subjects"] == 80
+        assert r.extra["df"] == pytest.approx(3.0)  # k-1
+        assert 0.0 <= r.extra["effect_size"] <= 1.0  # Kendall's W is bounded [0, 1]
+
+    def test_invariant_to_condition_permutation(self):
+        rng = np.random.default_rng(907)
+        groups, _ = _multigroup_repeated(rng, k=4, n=100, mus=[3.0, 4.0, 3.5, 5.0])
+        r1 = friedman(*groups)
+        r2 = friedman(*groups[::-1])
+        assert r1.statistic == pytest.approx(r2.statistic)
+        assert r1.p_value == pytest.approx(r2.p_value)
+        assert r1.extra["effect_size"] == pytest.approx(r2.extra["effect_size"])
+
+
+class TestFriedmanPPIFieldStructure:
+    """PPI-corrected friedman: field structure, ordering, and metadata."""
+
+    def test_fields_populated(self):
+        rng = np.random.default_rng(910)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=200, rng=910)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        assert r.corrected_p_value is not None
+        assert r.rectifier is not None
+        assert r.n_labeled is not None
+        assert r.n_total is not None
+        assert "corrected_effect_size" in r.extra
+        assert "corrected_effect_size_name" in r.extra
+
+    def test_ci_is_ordered(self):
+        rng = np.random.default_rng(911)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=200, rng=911)
+        lo, hi = r.corrected_ci
+        assert lo <= hi
+
+    def test_corrected_p_value_in_0_1(self):
+        rng = np.random.default_rng(912)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=300, rng=912)
+        assert 0.0 <= r.corrected_p_value <= 1.0
+
+    def test_n_labeled_and_n_total_match_input(self):
+        """3 conditions × 200 subjects × 50 labeled subjects → n_labeled=150, n_total=600."""
+        rng = np.random.default_rng(913)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=200, rng=913)
+        assert r.n_labeled == 150
+        assert r.n_total == 600
+
+    def test_reproducibility_with_rng_seed(self):
+        rng = np.random.default_rng(914)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        kw = dict(groups_lab=groups_lab, n_boot=500, rng=42)
+        r1 = friedman(*groups, **kw)
+        r2 = friedman(*groups, **kw)
+        assert r1.corrected_estimate == r2.corrected_estimate
+        assert r1.corrected_ci == r2.corrected_ci
+
+    def test_alpha_propagated(self):
+        rng = np.random.default_rng(915)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=200, n_lab=50)
+        r = friedman(*groups, groups_lab=groups_lab, alpha=0.10, n_boot=200, rng=915)
+        assert r.alpha == 0.10
+
+    def test_corrected_estimate_equals_llm_plus_rectifier(self):
+        rng = np.random.default_rng(916)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=220, mus=[3.0, 3.0, 3.0], biases=[1.5, 0.0, 0.0], n_lab=60,
+        )
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=200, rng=916)
+
+        llm_est = _friedman_rank_variance(np.column_stack(groups))
+        assert r.corrected_estimate == pytest.approx(llm_est + r.rectifier, abs=1e-10)
+
+    def test_fully_labeled_corrected_estimate_matches_human_estimand(self):
+        rng = np.random.default_rng(917)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=180, mus=[3.1, 3.8, 2.9], sigma=0.8,
+            biases=[0.9, -0.3, 0.5], n_lab=180,
+        )
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=250, rng=917)
+
+        human_est = _friedman_rank_variance(np.column_stack(groups_lab))
+        assert r.corrected_estimate == pytest.approx(human_est, abs=1e-10)
+
+    def test_corrected_effect_size_matches_kendalls_w_rescaling(self):
+        rng = np.random.default_rng(918)
+        groups, groups_lab = _multigroup_repeated(rng, k=4, n=200, n_lab=60)
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=200, rng=918)
+
+        k = 4
+        expected_w = 12.0 * r.corrected_estimate / (k**2 - 1)
+        assert r.extra["corrected_effect_size"] == pytest.approx(expected_w, abs=1e-10)
+
+    def test_corrected_p_value_agrees_with_corrected_ci(self):
+        alpha = 0.05
+        rng = np.random.default_rng(919)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=230, mus=[3.0, 4.1, 3.4], sigma=0.9,
+            biases=[0.8, 0.0, 0.0], n_lab=70,
+        )
+        r = friedman(*groups, groups_lab=groups_lab, alpha=alpha, n_boot=400, rng=919)
+        lo, hi = r.corrected_ci
+        ci_rejects = (hi < 0.0) or (lo > 0.0)
+        p_rejects = r.corrected_p_value < alpha
+        assert p_rejects == ci_rejects
+
+    def test_raises_when_fewer_than_15_overlapping_subjects(self):
+        rng = np.random.default_rng(920)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=120, n_lab=10)
+        with pytest.raises(ValueError, match="At least 15 subjects"):
+            friedman(*groups, groups_lab=groups_lab, n_boot=120, rng=920)
+
+    def test_warns_when_15_to_29_overlapping_subjects(self):
+        rng = np.random.default_rng(921)
+        groups, groups_lab = _multigroup_repeated(rng, k=3, n=120, n_lab=20)
+        with pytest.warns(UserWarning, match="undercover below 30 labels"):
+            r = friedman(*groups, groups_lab=groups_lab, n_boot=120, rng=921)
+        assert r.corrected_estimate is not None
+
+
+class TestFriedmanFalsePositive:
+    """LLM inflates one condition but true conditions are equal → corrected CI covers 0."""
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_CI_contains_zero(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=250, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=70,
+        )
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        assert r.p_value < 0.001, f"seed={seed}: uncorrected should detect false positive"
+        lo, hi = r.corrected_ci
+        assert lo <= 0 <= hi, (
+            f"seed={seed}: corrected CI ({lo:.4f}, {hi:.4f}) should contain 0 "
+            f"(no true between-condition rank variance)"
+        )
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_differential_bias_corrected_estimate_closer_to_zero(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=250, mus=[3.0, 3.0, 3.0], biases=[2.0, 0.0, 0.0], n_lab=70,
+        )
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=500, rng=seed + 20000)
+        llm_est = _friedman_rank_variance(np.column_stack(groups))
+        assert abs(r.corrected_estimate) < abs(llm_est), (
+            f"seed={seed}: corrected={r.corrected_estimate:.4f} should be closer to 0 "
+            f"than llm_est={llm_est:.4f}"
+        )
+
+
+class TestFriedmanTrueEffect:
+    """Large true between-condition effect survives PPI correction."""
+
+    @pytest.mark.parametrize("seed", _ANOVA_SEEDS)
+    def test_large_true_effect_CI_excludes_zero(self, seed):
+        rng = np.random.default_rng(seed)
+        groups, groups_lab = _multigroup_repeated(
+            rng, k=3, n=200, mus=[3.0, 5.0, 4.0], sigma=0.8, biases=[0.0, 0.0, 0.0], n_lab=50,
+        )
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=300, rng=seed + 30000)
+        lo, hi = r.corrected_ci
+        assert lo > 0, (
+            f"seed={seed}: corrected CI ({lo:.3f}, {hi:.3f}) should be entirely "
+            f"above 0 for a large true between-condition effect"
+        )
+
+
+class TestFriedmanCIWidthLabelBudget:
+    """More human labels → narrower corrected CI (mirrors the ANOVA budget test)."""
+
+    def test_ci_width_narrows_with_n_lab(self):
+        seed = 930
+        rng = np.random.default_rng(seed)
+        k, n = 3, 260
+        subject_fx = rng.normal(0.0, 0.5, n)
+        truths = [3.0 + subject_fx + rng.normal(0.0, 0.9, n) for _ in range(k)]
+        groups = [truths[i] + [1.1, 0.0, 0.0][i] + rng.normal(0.0, 0.10, n) for i in range(k)]
+
+        n_labs = [15, 30, 50, 80, 120]
+        widths = []
+
+        for n_lab in n_labs:
+            rep_w = []
+            for rep in range(6):
+                label_rng = np.random.default_rng(seed * 1000 + n_lab * 10 + rep)
+                idx = label_rng.choice(n, n_lab, replace=False)
+                groups_lab = [np.full(n, np.nan) for _ in range(k)]
+                for i in range(k):
+                    groups_lab[i][idx] = truths[i][idx]
+                r = friedman(*groups, groups_lab=groups_lab,
+                              n_boot=2_000, rng=seed + 2000 + n_lab * 10 + rep)
+                lo, hi = r.corrected_ci
+                rep_w.append(hi - lo)
+            widths.append(float(np.mean(rep_w)))
+
+        assert widths[-1] < widths[0], (
+            f"Expected CI to narrow from n_lab=15 to 120; got widths={widths}"
+        )
+        for i in range(len(widths) - 1):
+            assert widths[i + 1] <= widths[i] + 0.03, (
+                f"Large upward flip between n_lab={n_labs[i]} and {n_labs[i+1]}: widths={widths}"
+            )
+
+
+class TestFriedmanCorrectedPValueCalibration:
+    """Type I error rate of _ppi_friedman_p_value (mirrors the ANOVA calibration test)."""
+
+    SEEDS = list(range(6000, 6100))   # 100 reproducible seeds
+    ALPHA = 0.05
+    MAX_REJECTION_RATE = 0.12          # 3σ upper bound for Binomial(100, 0.05)
+
+    @staticmethod
+    def _friedman_p(
+        seed: int,
+        biases: list,
+        mus: list,
+        n_subjects: int = 150,
+        n_lab: int = 35,
+        sigma_subject: float = 0.6,
+        sigma_residual: float = 0.8,
+        llm_noise: float = 0.12,
+    ):
+        """One draw of the Friedman corrected p-value under H₀."""
+        rng = np.random.default_rng(seed)
+        k = len(mus)
+        subject_fx = rng.normal(0, sigma_subject, n_subjects)
+        truths = [
+            mu + subject_fx + rng.normal(0, sigma_residual, n_subjects)
+            for mu in mus
+        ]
+        groups = [
+            t + bias + rng.normal(0, llm_noise, n_subjects)
+            for t, bias in zip(truths, biases)
+        ]
+        idx = rng.choice(n_subjects, n_lab, replace=False)
+        groups_lab = [np.full(n_subjects, np.nan) for _ in range(k)]
+        for i in range(k):
+            groups_lab[i][idx] = truths[i][idx]
+        return _ppi_friedman_p_value(groups, groups_lab, k)
+
+    def test_type_i_null_unbiased(self):
+        """No LLM bias: Type I rate should be ~0.05."""
+        rejections = sum(
+            1 for s in self.SEEDS
+            if (p := self._friedman_p(s, biases=[0.0, 0.0, 0.0], mus=[3.0, 3.0, 3.0]))
+            is not None and p < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Friedman unbiased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
+        )
+
+    def test_type_i_null_biased(self):
+        """Differential LLM bias across conditions: Type I rate should still be ~0.05."""
+        rejections = sum(
+            1 for s in self.SEEDS
+            if (p := self._friedman_p(s, biases=[0.0, 0.8, 0.4], mus=[3.0, 3.0, 3.0]))
+            is not None and p < self.ALPHA
+        )
+        rate = rejections / len(self.SEEDS)
+        assert rate <= self.MAX_REJECTION_RATE, (
+            f"Friedman biased null: Type I rate {rate:.3f} > {self.MAX_REJECTION_RATE}"
         )

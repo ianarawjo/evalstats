@@ -2,7 +2,7 @@
 """
 sim_type_i_calibration.py — Type I error calibration study for PPI-corrected tests.
 
-Tests five PPI-corrected hypothesis tests across a broad parameter sweep to check
+Tests six PPI-corrected hypothesis tests across a broad parameter sweep to check
 whether the corrected p-value stays near α = 0.05 under H₀:
 
   ttest       independent mean difference (two groups)
@@ -10,6 +10,9 @@ whether the corrected p-value stays near α = 0.05 under H₀:
   wilcoxon    paired median difference (same subjects, two conditions)
   anova_ind   one-way ANOVA, between-subjects (three groups)
   anova_rep   one-way ANOVA, within-subjects / repeated-measures (three conditions)
+  friedman    Friedman test, within-subjects rank variance (three conditions) —
+              reuses the same repeated-measures data as anova_rep, since
+              Friedman is the rank-based analog of repeated-measures ANOVA.
 
 Factors swept (one at a time from a fixed baseline):
   distribution   normal, binary (0/1), likert (1–5), skewed (log-normal)
@@ -35,6 +38,13 @@ Usage:
     python simulations/sim_type_i_calibration.py --reps 1000 --jobs 8      # thorough
     python simulations/sim_type_i_calibration.py --plot                    # save + show figures
     python simulations/sim_type_i_calibration.py --out-csv simulations/out/type_i.csv
+    python simulations/sim_type_i_calibration.py --tests friedman            # isolate one test
+    python simulations/sim_type_i_calibration.py --tests friedman anova_rep  # isolate a subset
+
+--tests runs the exact same scenario sweep ("the official test") but skips the
+PPI computation for any test not listed, so isolating a single test is both a
+display filter and a real speedup (the other tests' bootstrap/statsmodels work
+is never run).
 """
 
 from __future__ import annotations
@@ -67,13 +77,20 @@ with warnings.catch_warnings():
         _p_x_gt_y_midrank,
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
+        _ppi_friedman_p_value,
     )
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ALPHA = 0.05
-TEST_NAMES = ["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep"]
+TEST_NAMES = ["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep", "friedman"]
+# Short column headers for the printed table, keyed by canonical test name so
+# a --tests subset (in any order) still renders correctly.
+TEST_SHORT_NAMES = {
+    "ttest": "ttest", "ttest_welch": "ttest_w", "mw": "mw", "wilcoxon": "wilcoxon",
+    "anova_ind": "anova_i", "anova_rep": "anova_r", "friedman": "fried",
+}
 _SIGMA_TRUTH = 1.0   # within-group truth SD (normal / likert / skewed)
 _SIGMA_SUB   = 0.7   # between-subject SD for paired/repeated designs
 _SIGMA_COND  = 0.6   # within-subject residual SD (paired/repeated)
@@ -310,15 +327,23 @@ def _uncorrected_anova_repeated_p_value(groups: list[np.ndarray]) -> float:
     return float(rm.anova_table.iloc[0]["Pr > F"])
 
 
+def _uncorrected_friedman_p_value(groups: list[np.ndarray]) -> float:
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        return float(_scipy_stats.friedmanchisquare(*groups).pvalue)
+
+
 # ── Worker ────────────────────────────────────────────────────────────────────
 
 def _run_one(args: tuple) -> tuple[int, dict[str, bool | None], dict[str, bool | None]]:
-    """Process one (scenario_idx, seed, n_boot) triplet.
+    """Process one (scenario_idx, seed, n_boot, active_tests) quadruplet.
 
-    Returns (sc_idx, corrected_results, uncorrected_results).
+    Returns (sc_idx, corrected_results, uncorrected_results). Only tests in
+    ``active_tests`` are computed — others are simply absent from the result
+    dicts (not None; None is reserved for "computed but failed/unavailable").
     None means the p-value could not be computed (e.g. zero labeled items).
     """
-    sc_idx, seed, n_boot = args
+    sc_idx, seed, n_boot, active_tests = args
     sc: Scenario = SCENARIOS[sc_idx]
     rng = np.random.default_rng(seed)
 
@@ -389,94 +414,120 @@ def _run_one(args: tuple) -> tuple[int, dict[str, bool | None], dict[str, bool |
         warnings.simplefilter("ignore")
 
         # ttest (Student's, equal_var=True): estimand = E[A] − E[B]
-        try:
-            p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2, equal_var=True).pvalue)
-            uncorrected_results["ttest"] = p_uncorrected < ALPHA
-            r = _ppi_two_sample(
-                llm_a2, llm_b2, lab_a2, lab_b2,
-                lambda ya, yb: float(ya.mean() - yb.mean()),
-                ALPHA, n_boot, _rng_seed(),
-            )
-            corrected_results["ttest"] = r.p_value < ALPHA
-        except Exception:
-            corrected_results["ttest"] = None
-            uncorrected_results["ttest"] = None
+        if "ttest" in active_tests:
+            try:
+                p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2, equal_var=True).pvalue)
+                uncorrected_results["ttest"] = p_uncorrected < ALPHA
+                r = _ppi_two_sample(
+                    llm_a2, llm_b2, lab_a2, lab_b2,
+                    lambda ya, yb: float(ya.mean() - yb.mean()),
+                    ALPHA, n_boot, _rng_seed(),
+                )
+                corrected_results["ttest"] = r.p_value < ALPHA
+            except Exception:
+                corrected_results["ttest"] = None
+                uncorrected_results["ttest"] = None
 
         # ttest_welch (Welch's, equal_var=False): same PPI estimand, Welch df for uncorrected
-        try:
-            p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2, equal_var=False).pvalue)
-            uncorrected_results["ttest_welch"] = p_uncorrected < ALPHA
-            r = _ppi_two_sample(
-                llm_a2, llm_b2, lab_a2, lab_b2,
-                lambda ya, yb: float(ya.mean() - yb.mean()),
-                ALPHA, n_boot, _rng_seed(),
-            )
-            corrected_results["ttest_welch"] = r.p_value < ALPHA
-        except Exception:
-            corrected_results["ttest_welch"] = None
-            uncorrected_results["ttest_welch"] = None
+        if "ttest_welch" in active_tests:
+            try:
+                p_uncorrected = float(_scipy_stats.ttest_ind(llm_a2, llm_b2, equal_var=False).pvalue)
+                uncorrected_results["ttest_welch"] = p_uncorrected < ALPHA
+                r = _ppi_two_sample(
+                    llm_a2, llm_b2, lab_a2, lab_b2,
+                    lambda ya, yb: float(ya.mean() - yb.mean()),
+                    ALPHA, n_boot, _rng_seed(),
+                )
+                corrected_results["ttest_welch"] = r.p_value < ALPHA
+            except Exception:
+                corrected_results["ttest_welch"] = None
+                uncorrected_results["ttest_welch"] = None
 
         # mannwhitney: mid-rank estimand = P_mid(X>Y) - 0.5; 0 under H₀ for any dist.
-        try:
-            p_uncorrected = float(
-                _scipy_stats.mannwhitneyu(llm_a2, llm_b2, alternative="two-sided").pvalue
-            )
-            uncorrected_results["mw"] = p_uncorrected < ALPHA
-            r = _ppi_two_sample(
-                llm_a2, llm_b2, lab_a2, lab_b2,
-                lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5,
-                ALPHA, n_boot, _rng_seed(),
-            )
-            corrected_results["mw"] = r.p_value < ALPHA
-        except Exception:
-            corrected_results["mw"] = None
-            uncorrected_results["mw"] = None
+        if "mw" in active_tests:
+            try:
+                p_uncorrected = float(
+                    _scipy_stats.mannwhitneyu(llm_a2, llm_b2, alternative="two-sided").pvalue
+                )
+                uncorrected_results["mw"] = p_uncorrected < ALPHA
+                r = _ppi_two_sample(
+                    llm_a2, llm_b2, lab_a2, lab_b2,
+                    lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5,
+                    ALPHA, n_boot, _rng_seed(),
+                )
+                corrected_results["mw"] = r.p_value < ALPHA
+            except Exception:
+                corrected_results["mw"] = None
+                uncorrected_results["mw"] = None
 
         # wilcoxon: estimand = median(X − Y), paired
-        try:
-            p_uncorrected = float(_scipy_stats.wilcoxon(llm_x, llm_y, alternative="two-sided").pvalue)
-            uncorrected_results["wilcoxon"] = p_uncorrected < ALPHA
-            r = _ppi_paired_arrays(
-                llm_x, llm_y, lab_x, lab_y,
-                np.median, ALPHA, n_boot, _rng_seed(),
-                rectifier_func=np.mean,
-            )
-            corrected_results["wilcoxon"] = r.p_value < ALPHA
-        except Exception:
-            corrected_results["wilcoxon"] = None
-            uncorrected_results["wilcoxon"] = None
+        if "wilcoxon" in active_tests:
+            try:
+                p_uncorrected = float(_scipy_stats.wilcoxon(llm_x, llm_y, alternative="two-sided").pvalue)
+                uncorrected_results["wilcoxon"] = p_uncorrected < ALPHA
+                r = _ppi_paired_arrays(
+                    llm_x, llm_y, lab_x, lab_y,
+                    np.median, ALPHA, n_boot, _rng_seed(),
+                    rectifier_func=np.mean,
+                )
+                corrected_results["wilcoxon"] = r.p_value < ALPHA
+            except Exception:
+                corrected_results["wilcoxon"] = None
+                uncorrected_results["wilcoxon"] = None
 
         # anova_ind: direct closed-form F-test
-        try:
-            groups_ind = [llm_a3, llm_b3, llm_c3]
-            groups_ind_lab = [lab_a3, lab_b3, lab_c3]
-            p_uncorrected = _uncorrected_anova_independent_p_value(groups_ind)
-            uncorrected_results["anova_ind"] = p_uncorrected < ALPHA
-            p = _ppi_anova_independent_p_value(
-                groups_ind,
-                groups_ind_lab,
-                k=len(groups_ind),
-            )
-            corrected_results["anova_ind"] = (p is not None) and (p < ALPHA)
-        except Exception:
-            corrected_results["anova_ind"] = None
-            uncorrected_results["anova_ind"] = None
+        if "anova_ind" in active_tests:
+            try:
+                groups_ind = [llm_a3, llm_b3, llm_c3]
+                groups_ind_lab = [lab_a3, lab_b3, lab_c3]
+                p_uncorrected = _uncorrected_anova_independent_p_value(groups_ind)
+                uncorrected_results["anova_ind"] = p_uncorrected < ALPHA
+                p = _ppi_anova_independent_p_value(
+                    groups_ind,
+                    groups_ind_lab,
+                    k=len(groups_ind),
+                )
+                corrected_results["anova_ind"] = (p is not None) and (p < ALPHA)
+            except Exception:
+                corrected_results["anova_ind"] = None
+                uncorrected_results["anova_ind"] = None
 
         # anova_rep: direct closed-form F-test
-        try:
-            groups_rep = [llm_A, llm_B, llm_C]
-            groups_rep_lab = [lab_A, lab_B, lab_C]
-            p_uncorrected = _uncorrected_anova_repeated_p_value(groups_rep)
-            uncorrected_results["anova_rep"] = p_uncorrected < ALPHA
-            p = _ppi_anova_repeated_p_value(
-                groups_rep,
-                groups_rep_lab,
-                k=len(groups_rep),
-            )
-            corrected_results["anova_rep"] = (p is not None) and (p < ALPHA)
-        except Exception:
-            corrected_results["anova_rep"] = None
-            uncorrected_results["anova_rep"] = None
+        if "anova_rep" in active_tests:
+            try:
+                groups_rep = [llm_A, llm_B, llm_C]
+                groups_rep_lab = [lab_A, lab_B, lab_C]
+                p_uncorrected = _uncorrected_anova_repeated_p_value(groups_rep)
+                uncorrected_results["anova_rep"] = p_uncorrected < ALPHA
+                p = _ppi_anova_repeated_p_value(
+                    groups_rep,
+                    groups_rep_lab,
+                    k=len(groups_rep),
+                )
+                corrected_results["anova_rep"] = (p is not None) and (p < ALPHA)
+            except Exception:
+                corrected_results["anova_rep"] = None
+                uncorrected_results["anova_rep"] = None
+
+        # friedman: rank-based repeated-measures analog of anova_rep — reuses
+        # the same (llm_A, llm_B, llm_C) / (lab_A, lab_B, lab_C) data, since
+        # the Friedman estimand is just anova_rep's variance estimand applied
+        # to within-subject ranks instead of raw scores.
+        if "friedman" in active_tests:
+            try:
+                groups_fr = [llm_A, llm_B, llm_C]
+                groups_fr_lab = [lab_A, lab_B, lab_C]
+                p_uncorrected = _uncorrected_friedman_p_value(groups_fr)
+                uncorrected_results["friedman"] = p_uncorrected < ALPHA
+                p = _ppi_friedman_p_value(
+                    groups_fr,
+                    groups_fr_lab,
+                    k=len(groups_fr),
+                )
+                corrected_results["friedman"] = (p is not None) and (p < ALPHA)
+            except Exception:
+                corrected_results["friedman"] = None
+                uncorrected_results["friedman"] = None
 
     return sc_idx, corrected_results, uncorrected_results
 
@@ -552,10 +603,10 @@ def _fmt_rate(rate: float | None, flag2: float, flag3: float) -> str:
     return s
 
 
-def _rate_matrix(counts: dict, totals: dict) -> np.ndarray:
-    mat = np.full((len(SCENARIOS), len(TEST_NAMES)), np.nan, dtype=float)
+def _rate_matrix(counts: dict, totals: dict, test_names: list[str] = TEST_NAMES) -> np.ndarray:
+    mat = np.full((len(SCENARIOS), len(test_names)), np.nan, dtype=float)
     for i in range(len(SCENARIOS)):
-        for j, t in enumerate(TEST_NAMES):
+        for j, t in enumerate(test_names):
             n = totals[i][t]
             if n > 0:
                 mat[i, j] = counts[i][t] / n
@@ -569,6 +620,7 @@ def _print_table(
     uncorrected_totals: dict,
     n_reps: int,
     n_boot: int,
+    test_names: list[str] = TEST_NAMES,
 ) -> None:
     sigma = (ALPHA * (1 - ALPHA) / n_reps) ** 0.5
     flag2 = ALPHA + 2 * sigma
@@ -582,14 +634,14 @@ def _print_table(
         return {
             t: counts[sc_idx][t] / totals[sc_idx][t]
             if totals[sc_idx][t] > 0 else None
-            for t in TEST_NAMES
+            for t in test_names
         }
 
     def uncorrected_rates(sc_idx: int) -> dict[str, float | None]:
         return {
             t: uncorrected_counts[sc_idx][t] / uncorrected_totals[sc_idx][t]
             if uncorrected_totals[sc_idx][t] > 0 else None
-            for t in TEST_NAMES
+            for t in test_names
         }
 
     def alpha_outside_ci(sc_idx: int, test_name: str) -> bool:
@@ -609,7 +661,7 @@ def _print_table(
     print(f"  Holm flag (‡): exact binomial miscalibration survives family-wise correction")
     print(dbar)
 
-    col_names = ["ttest", "ttest_w", "mw", "wilcoxon", "anova_i", "anova_r"]
+    col_names = [TEST_SHORT_NAMES[t] for t in test_names]
     header_lbl = f"{'Scenario':<32}" + "".join(f"{c:^9}" for c in col_names)
     print()
     print(header_lbl)
@@ -629,7 +681,7 @@ def _print_table(
 
     pvals: list[tuple[tuple[int, str], float]] = []
     for sc_idx in range(len(SCENARIOS)):
-        for t in TEST_NAMES:
+        for t in test_names:
             n = totals[sc_idx][t]
             if n > 0:
                 pvals.append(((sc_idx, t), _binom_test_two_sided(counts[sc_idx][t], n, ALPHA)))
@@ -643,11 +695,11 @@ def _print_table(
             sc = SCENARIOS[i]
             r = all_rates[i]
             row = f"  {sc.name:<30}"
-            for t in TEST_NAMES:
+            for t in test_names:
                 row += f" {_fmt_rate(r.get(t), flag2, flag3)}"
-            if any(alpha_outside_ci(i, t) for t in TEST_NAMES):
+            if any(alpha_outside_ci(i, t) for t in test_names):
                 row += "  †"
-            if any((i, t) in holm_bad for t in TEST_NAMES):
+            if any((i, t) in holm_bad for t in test_names):
                 row += "‡"
             print(row)
 
@@ -657,33 +709,33 @@ def _print_table(
     print("SUMMARY")
     print()
 
-    n_conditions = len(SCENARIOS) * len(TEST_NAMES)
+    n_conditions = len(SCENARIOS) * len(test_names)
 
     flags2 = sum(
-        1 for r in all_rates for t in TEST_NAMES
+        1 for r in all_rates for t in test_names
         if r.get(t) is not None and r[t] > flag2
     )
     flags3 = sum(
-        1 for r in all_rates for t in TEST_NAMES
+        1 for r in all_rates for t in test_names
         if r.get(t) is not None and r[t] > flag3
     )
     wilson_miscal = sum(
         1
         for sc_idx in range(len(SCENARIOS))
-        for t in TEST_NAMES
+        for t in test_names
         if alpha_outside_ci(sc_idx, t)
     )
     nominal_miscal = sum(1 for _, p in pvals if p < 0.05)
     uncorrected_flags2 = sum(
-        1 for r in all_uncorrected_rates for t in TEST_NAMES
+        1 for r in all_uncorrected_rates for t in test_names
         if r.get(t) is not None and r[t] > flag2
     )
     uncorrected_flags3 = sum(
-        1 for r in all_uncorrected_rates for t in TEST_NAMES
+        1 for r in all_uncorrected_rates for t in test_names
         if r.get(t) is not None and r[t] > flag3
     )
 
-    print(f"  Scenarios: {len(SCENARIOS)}  |  Tests: {len(TEST_NAMES)}  |  Conditions: {n_conditions}")
+    print(f"  Scenarios: {len(SCENARIOS)}  |  Tests: {len(test_names)}  |  Conditions: {n_conditions}")
     print(f"  Inflated at 2σ (rate > {flag2:.3f}):  {flags2}/{n_conditions}")
     print(f"  Inflated at 3σ (rate > {flag3:.3f}):  {flags3}/{n_conditions}")
     print(f"  Wilson miscalibrated (α outside 95% CI): {wilson_miscal}/{n_conditions}")
@@ -695,7 +747,7 @@ def _print_table(
     print(f"  Inflated at 3σ (rate > {flag3:.3f}):  {uncorrected_flags3}/{n_conditions}")
     print()
     print(f"  {'Test':<12}  {'corr max':>9}  {'corr mean':>9}  {'corr med':>9}  {'unc max':>9}  {'unc mean':>9}  {'unc med':>9}")
-    for t in TEST_NAMES:
+    for t in test_names:
         col_rates = [r[t] for r in all_rates if r.get(t) is not None]
         col_uncorrected = [r[t] for r in all_uncorrected_rates if r.get(t) is not None]
         if col_rates or col_uncorrected:
@@ -717,28 +769,29 @@ def _save_csv(
     uncorrected_counts: dict,
     uncorrected_totals: dict,
     path: str,
+    test_names: list[str] = TEST_NAMES,
 ) -> None:
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(
             ["scenario", "tag"]
-            + [f"{t}_corrected" for t in TEST_NAMES]
-            + [f"{t}_uncorrected" for t in TEST_NAMES]
-            + [f"{t}_corrected_n" for t in TEST_NAMES]
-            + [f"{t}_uncorrected_n" for t in TEST_NAMES]
+            + [f"{t}_corrected" for t in test_names]
+            + [f"{t}_uncorrected" for t in test_names]
+            + [f"{t}_corrected_n" for t in test_names]
+            + [f"{t}_uncorrected_n" for t in test_names]
         )
         for sc_idx, sc in enumerate(SCENARIOS):
             row = [sc.name, sc.tag]
-            for t in TEST_NAMES:
+            for t in test_names:
                 tot = totals[sc_idx][t]
                 row.append(f"{counts[sc_idx][t] / tot:.4f}" if tot else "")
-            for t in TEST_NAMES:
+            for t in test_names:
                 tot = uncorrected_totals[sc_idx][t]
                 row.append(f"{uncorrected_counts[sc_idx][t] / tot:.4f}" if tot else "")
-            for t in TEST_NAMES:
+            for t in test_names:
                 row.append(totals[sc_idx][t])
-            for t in TEST_NAMES:
+            for t in test_names:
                 row.append(uncorrected_totals[sc_idx][t])
             writer.writerow(row)
     print(f"Results saved to {path}")
@@ -752,13 +805,14 @@ def _plot_results(
     n_reps: int,
     n_boot: int,
     out_path: str,
+    test_names: list[str] = TEST_NAMES,
 ) -> None:
     import matplotlib.pyplot as plt
     from matplotlib.colors import TwoSlopeNorm
 
     n_scenarios = len(SCENARIOS)
-    mat = _rate_matrix(counts, totals)
-    uncorrected_mat = _rate_matrix(uncorrected_counts, uncorrected_totals)
+    mat = _rate_matrix(counts, totals, test_names)
+    uncorrected_mat = _rate_matrix(uncorrected_counts, uncorrected_totals, test_names)
 
     # Center the color scale at alpha so well-calibrated cells are neutral.
     finite = mat[np.isfinite(mat)]
@@ -769,8 +823,8 @@ def _plot_results(
     fig, ax = plt.subplots(figsize=(12.0, fig_h))
     im = ax.imshow(mat, aspect="auto", cmap="RdYlGn_r", norm=norm)
 
-    ax.set_xticks(np.arange(len(TEST_NAMES)))
-    ax.set_xticklabels(["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep"], rotation=0)
+    ax.set_xticks(np.arange(len(test_names)))
+    ax.set_xticklabels(test_names, rotation=0)
     ax.set_yticks(np.arange(n_scenarios))
     ax.set_yticklabels([sc.name for sc in SCENARIOS], fontsize=8)
     ax.set_xlabel("Test")
@@ -795,10 +849,10 @@ def _plot_results(
     scatter_out_path = str(Path(out_path).with_name(Path(out_path).stem + "_scatter.png"))
     fig2, ax2 = plt.subplots(figsize=(10.0, 5.8))
     rng = np.random.default_rng(0)
-    colors = ["#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd"]
+    colors = [plt.cm.tab10(i) for i in range(len(test_names))]
     unc_label_added = False
 
-    for j, t in enumerate(TEST_NAMES):
+    for j, t in enumerate(test_names):
         vals_unc = uncorrected_mat[:, j]
         keep_unc = np.isfinite(vals_unc)
         y_unc = vals_unc[keep_unc]
@@ -821,13 +875,13 @@ def _plot_results(
         ax2.scatter(x, y, s=20, alpha=0.65, color=colors[j], label=t, zorder=2)
 
     ax2.axhline(ALPHA, color="black", ls="--", lw=1.1, label=f"alpha={ALPHA}")
-    ax2.set_xlim(-0.5, len(TEST_NAMES) - 0.5)
+    ax2.set_xlim(-0.5, len(test_names) - 0.5)
     scatter_max = np.nanmax(np.concatenate([mat.ravel(), uncorrected_mat.ravel()]))
     if not np.isfinite(scatter_max):
         scatter_max = 0.2
     ax2.set_ylim(0.0, max(0.2, float(scatter_max) * 1.05))
-    ax2.set_xticks(np.arange(len(TEST_NAMES)))
-    ax2.set_xticklabels(["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep"])
+    ax2.set_xticks(np.arange(len(test_names)))
+    ax2.set_xticklabels(test_names)
     ax2.set_ylabel("Observed rejection rate")
     ax2.set_xlabel("Test")
     ax2.set_title("Type I calibration scatter (all scenario x test table cells)")
@@ -861,16 +915,23 @@ def main() -> None:
                         help="Path to save results as CSV")
     parser.add_argument("--plot", action="store_true",
                         help="Generate calibration heatmap + scatterplot and save to simulations/out/plots/ with unique filenames")
+    parser.add_argument("--tests", type=str, nargs="+", choices=TEST_NAMES, default=None,
+                        metavar="TEST",
+                        help=f"Restrict to a subset of tests (choices: {', '.join(TEST_NAMES)}). "
+                             "Runs the exact same scenario sweep but skips computation for any "
+                             "test not listed — e.g. --tests friedman to isolate and speed up "
+                             "just the Friedman calibration check. Default: run all.")
     args = parser.parse_args()
 
     N_REPS  = args.reps
     N_BOOT  = args.n_boot
     JOBS    = args.jobs
     OFFSET  = args.seed_offset
+    ACTIVE_TESTS = [t for t in TEST_NAMES if t in set(args.tests)] if args.tests else list(TEST_NAMES)
 
     n_scenarios = len(SCENARIOS)
     work = [
-        (sc_idx, OFFSET + seed, N_BOOT)
+        (sc_idx, OFFSET + seed, N_BOOT, ACTIVE_TESTS)
         for sc_idx in range(n_scenarios)
         for seed in range(1000, 1000 + N_REPS)
     ]
@@ -883,9 +944,11 @@ def main() -> None:
 
     print(
         f"\nType I Calibration: {n_scenarios} scenarios × {N_REPS} reps × "
-        f"{len(TEST_NAMES)} tests = {total_jobs} jobs  "
+        f"{len(ACTIVE_TESTS)} tests = {total_jobs} jobs  "
         f"({JOBS} workers, n_boot={N_BOOT})"
     )
+    if ACTIVE_TESTS != TEST_NAMES:
+        print(f"  Active tests: {', '.join(ACTIVE_TESTS)}")
 
     t0 = time.time()
     done = 0
@@ -913,10 +976,10 @@ def main() -> None:
                 )
 
     print(f"\nFinished in {time.time()-t0:.1f}s")
-    _print_table(counts, totals, uncorrected_counts, uncorrected_totals, N_REPS, N_BOOT)
+    _print_table(counts, totals, uncorrected_counts, uncorrected_totals, N_REPS, N_BOOT, ACTIVE_TESTS)
 
     if args.out_csv:
-        _save_csv(counts, totals, uncorrected_counts, uncorrected_totals, args.out_csv)
+        _save_csv(counts, totals, uncorrected_counts, uncorrected_totals, args.out_csv, ACTIVE_TESTS)
 
     if args.plot:
         stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -931,6 +994,7 @@ def main() -> None:
             N_REPS,
             N_BOOT,
             default_plot_path,
+            ACTIVE_TESTS,
         )
 
 

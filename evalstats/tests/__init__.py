@@ -75,13 +75,13 @@ class TestResult:
     n_total : int or None
     alpha : float
     extra : dict
-        Test-specific supplementary values.  For ``ttest``, when PPI
-        correction is active, includes ``corrected_effect_size`` /
+        Test-specific supplementary values.  For ``ttest`` and ``friedman``,
+        when PPI correction is active, includes ``corrected_effect_size`` /
         ``corrected_effect_size_name`` — the standardized effect size
-        (Cohen's d / d_z / Hedges' g_s*) computed with the PPI-corrected
-        mean difference as the numerator instead of the raw LLM-judged
-        means, so the reported effect size is consistent with
-        ``corrected_estimate``.
+        (Cohen's d / d_z / Hedges' g_s* for ``ttest``; Kendall's W for
+        ``friedman``) computed with the PPI-corrected estimate as the
+        numerator instead of the raw LLM-judged values, so the reported
+        effect size is consistent with ``corrected_estimate``.
     """
 
     test_name: str
@@ -145,6 +145,8 @@ class TestResult:
                 if ex.get("repeated")
                 else "between-group variance"
             )
+        elif test == "friedman":
+            return "variance of per-condition mean within-subject ranks"
         return "estimand"
 
     def _stat_line(self) -> str:
@@ -166,6 +168,10 @@ class TestResult:
             if df1 is not None and df2 is not None:
                 return f"F({df1:.1f}, {df2:.1f}) = {self.statistic:.3f},  p {p_str}"
             return f"F = {self.statistic:.3f},  p {p_str}"
+        elif test == "friedman":
+            df = ex.get("df")
+            df_str = f"({df:.0f})" if df is not None else ""
+            return f"χ²{df_str} = {self.statistic:.3f},  p {p_str}"
         else:
             return f"stat = {self.statistic:.4f},  p {p_str}"
 
@@ -239,6 +245,21 @@ class TestResult:
                        "small" if eta_sq < 0.06 else
                        "medium" if eta_sq < 0.14 else "large")
                 print(f"  Effect:   η² = {eta_sq:.3f}  ({mag})")
+
+        elif test == "friedman":
+            print(
+                f"  Design:   Friedman test "
+                f"(subjects = {ex['n_subjects']}, conditions = {ex['k_groups']})"
+            )
+            means = ex.get("group_means")
+            if means is not None:
+                mean_str = ", ".join(f"{m:.3f}" for m in means)
+                print(f"  Means:    {mean_str}")
+
+            w = ex.get("effect_size")
+            w_name = ex.get("effect_size_name", "Effect size")
+            if w is not None:
+                print(f"  Effect:   {w_name} = {w:.3f}  ({self._effect_magnitude(w)})")
 
         print()
 
@@ -565,12 +586,13 @@ def _sanitize_multigroup_ppi_labels(
     groups_lab,
     *,
     repeated: bool,
+    test_label: str = "one-way ANOVA",
 ) -> list[np.ndarray]:
-    """Validate sparse labels for multi-group ANOVA wrappers.
+    """Validate sparse labels for multi-group ANOVA/Friedman wrappers.
 
-    For repeated-measures ANOVA, an effective labeled unit is a subject with
-    non-NaN labels in all conditions. For independent one-way ANOVA, effective
-    labels are counted across all groups.
+    For repeated-measures designs (ANOVA or Friedman), an effective labeled
+    unit is a subject with non-NaN labels in all conditions. For independent
+    one-way ANOVA, effective labels are counted across all groups.
     """
     if groups_lab is None:
         raise ValueError("groups_lab must be provided for PPI correction.")
@@ -597,7 +619,7 @@ def _sanitize_multigroup_ppi_labels(
         n_effective = int(overlap.sum())
         min_msg = (
             "At least 15 subjects with labels in all conditions are required "
-            f"for repeated-measures PPI ANOVA (found {n_effective})."
+            f"for repeated-measures PPI {test_label} (found {n_effective})."
         )
         warn_msg = (
             "Only {n} subjects have labels in all conditions. "
@@ -606,7 +628,7 @@ def _sanitize_multigroup_ppi_labels(
     else:
         n_effective = int(sum(np.sum(~np.isnan(lab_arr)) for lab_arr in labs))
         min_msg = (
-            "At least 15 human labels are required for PPI one-way ANOVA "
+            f"At least 15 human labels are required for PPI {test_label} "
             f"(found {n_effective} across all groups)."
         )
         warn_msg = (
@@ -647,6 +669,24 @@ def _repeated_condition_variance(matrix: np.ndarray) -> float:
     centered = matrix - matrix.mean(axis=1, keepdims=True)
     cond_means = centered.mean(axis=0)
     return float(np.mean((cond_means - cond_means.mean()) ** 2))
+
+
+def _friedman_rank_variance(matrix: np.ndarray) -> float:
+    """Condition variance of within-subject ranks — the Friedman analog of
+    :func:`_repeated_condition_variance`.
+
+    Each row (subject) is rank-transformed across conditions (average ranks
+    for ties) before taking the variance of the per-condition mean ranks.
+    Row means of a rank-transformed row are always the constant ``(k+1)/2``
+    regardless of ties, so row-centering inside ``_repeated_condition_variance``
+    is a harmless no-op here — this is exactly "repeated-measures ANOVA run on
+    ranks instead of raw scores," the classical Iman–Davenport equivalence
+    that underlies the Friedman test.
+    """
+    if matrix.size == 0:
+        return 0.0
+    ranks = _scipy_stats.rankdata(matrix, axis=1, method="average")
+    return _repeated_condition_variance(ranks)
 
 
 def _ppi_anova_independent(
@@ -720,6 +760,48 @@ def _ppi_anova_repeated(
 
     return correct(
         _repeated_condition_variance,
+        Y_lab=Y_lab,
+        Y_hat_lab=Y_hat_lab,
+        Y_hat_unlab=Y_hat_unlab,
+        X_lab=None,
+        X_unlab=None,
+        alpha=alpha,
+        n_boot=n_boot,
+        rng=rng,
+        compute_pvalue=False,
+    )
+
+
+def _ppi_friedman(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+):
+    """PPI correction for the Friedman (rank-variance) estimand.
+
+    Structurally identical to :func:`_ppi_anova_repeated` — only the
+    estimator function differs (rank variance instead of raw-score
+    variance).  A subject is in the labeled set only when it has human
+    labels in *all* conditions, since ranking needs the whole row; this
+    reuses the same overlap mask as the repeated-measures ANOVA case.
+    """
+    from evalstats.ppi import correct
+
+    labels_mat = np.column_stack(groups_lab)
+    overlap = np.all(~np.isnan(labels_mat), axis=1)
+    if overlap.sum() == 0:
+        raise ValueError(
+            "No subjects have labels in all conditions in groups_lab."
+        )
+
+    Y_hat_unlab = np.column_stack(groups)
+    Y_hat_lab = Y_hat_unlab[overlap]
+    Y_lab = labels_mat[overlap]
+
+    return correct(
+        _friedman_rank_variance,
         Y_lab=Y_lab,
         Y_hat_lab=Y_hat_lab,
         Y_hat_unlab=Y_hat_unlab,
@@ -888,6 +970,112 @@ def _ppi_anova_repeated_p_value(
     # Use a conservative effective denominator df capped by labeled contrasts.
     # This improves Type I calibration in sparse-label repeated settings.
     df_residual_eff = min(df_residual, max((n_lab - 1) * (k - 1), 1))
+    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual_eff))
+
+
+def _ppi_friedman_p_value(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    k: int,
+) -> Optional[float]:
+    """Corrected p-value for the Friedman test via per-condition PPI corrections
+    applied to within-subject ranks.
+
+    NOT a literal mirror of ``_ppi_anova_repeated_p_value``, despite the
+    similar structure. That function estimates its null/residual variance
+    via the ANOVA sum-of-squares decomposition ``SS_residual = SS_total −
+    SS_subjects − SS_condition``, then *subtracts off* the LLM-noise
+    variance to recover the "true" residual variance — valid because, for
+    raw scores, ``SS_residual`` is a genuine estimate of the LLM-observed
+    variance (``Σ_Y = Σ_true + Σ_llm_noise``), so subtracting the LLM-noise
+    component recovers ``Σ_true``.
+
+    Neither step transfers to ranks:
+
+    1. A rank matrix's ``SS_total`` (about the grand mean) is *(almost) a
+       fixed constant per row, independent of any condition effect* — under
+       exchangeability each row is just some permutation of
+       ``{1, ..., k}``, and its sum of squares about ``(k+1)/2`` depends
+       only on the row's tie pattern, never on row order or any true/biased
+       condition effect. So an SS-decomposition residual computed this way
+       is *anti-correlated* with the very effect being tested (more signal
+       leaves less "residual" by construction), which deflates the
+       F-statistic's denominator and inflates Type I error.
+    2. The quantity that *does* transfer is the classical Friedman result:
+       under H₀, within-subject ranks of the human/ground-truth data are an
+       exactly known, exchangeability-derived constant
+       (``(k³−k)/12`` per row, with no ties) — call it ``Σ_H``. This is
+       estimated empirically per-row from the *full* LLM rank matrix
+       (``ms_null`` below; tie-aware, rather than hardcoding the no-tie
+       constant), and because it is already the human-side null baseline
+       (not an LLM-side estimate contaminated by LLM bias), it must NOT have
+       the LLM-noise variance subtracted back out before adding the
+       rectifier's finite-sample noise term — unlike step 1 in the ANOVA
+       case, there's nothing to recover here; ``ms_null`` already *is*
+       ``Σ_H``. (Subtracting it anyway was an earlier bug in this function
+       that inflated Type I error up to ~17% in the heteroskedastic/
+       unbalanced-label corners of ``simulations/sim_type_i_calibration.py``'s
+       sweep; see that script's "friedman" column.)
+
+    Ranking is row-local (each subject's rank vector depends only on that
+    subject's own scores), so ranking commutes with row selection: ranking
+    the full matrix once and then slicing the labeled-subject rows gives the
+    same result as ranking the labeled subset directly.
+    """
+    n_subjects = len(groups[0])
+    labels_mat = np.column_stack(groups_lab)
+    overlap = np.all(~np.isnan(labels_mat), axis=1)
+    n_lab = int(overlap.sum())
+
+    if n_lab == 0:
+        return None
+
+    llm_mat = _scipy_stats.rankdata(np.column_stack(groups), axis=1, method="average")  # (n_subjects, k)
+
+    cond_means_llm = llm_mat.mean(axis=0)  # (k,)
+
+    # Per-condition PPI corrections estimated from labeled subjects' own ranks
+    llm_lab = llm_mat[overlap]
+    human_lab = _scipy_stats.rankdata(labels_mat[overlap], axis=1, method="average")
+    delta = human_lab.mean(axis=0) - llm_lab.mean(axis=0)
+
+    cond_means_ppi = cond_means_llm + delta
+    grand_ppi = cond_means_ppi.mean()
+    ss_condition_corr = float(n_subjects * np.sum((cond_means_ppi - grand_ppi) ** 2))
+
+    # Known (tie-adjusted) null variance scale for within-subject ranks: see
+    # docstring. Estimated empirically (averaged per-row, tie-aware) from the
+    # full LLM rank matrix rather than via SS-decomposition residual.
+    row_ss = np.sum((llm_mat - (k + 1) / 2.0) ** 2, axis=1)
+    ms_null = max(float(np.mean(row_ss)) / (k - 1), 1e-12)
+
+    # Estimate effective LLM noise variance in (rank) contrast space from the
+    # labeled residual covariance, same as the repeated-ANOVA case.
+    noise_lab = llm_lab - human_lab  # (n_lab, k)
+    if n_lab > 1:
+        cov_eta = np.cov(noise_lab, rowvar=False, ddof=1)
+        cov_eta = np.atleast_2d(cov_eta)
+        P = np.eye(k) - np.ones((k, k), dtype=float) / float(k)
+        sigma_llm_sq = float(np.trace(P @ cov_eta @ P) / float(k - 1))
+        sigma_llm_sq = max(sigma_llm_sq, 0.0)
+    else:
+        sigma_llm_sq = 0.0
+
+    # n_subjects × Var(cond_means_ppi) = Σ_H + σ_η² × (n_subjects/n_lab − 1)
+    # (see docstring point 2: Σ_H = ms_null, used directly with no
+    # subtraction of σ_η²).
+    denom = ms_null + sigma_llm_sq * (n_subjects / n_lab - 1.0)
+    denom = max(denom, 1e-6)
+
+    f_corr = (ss_condition_corr / (k - 1)) / denom
+    if f_corr <= 0.0:
+        return 1.0
+
+    # ms_null carries (almost) no estimation uncertainty of its own (it's a
+    # known combinatorial constant, tie-adjusted from the full sample), so
+    # the reference distribution's denominator df is driven entirely by how
+    # well sigma_llm_sq is estimated from the n_lab labeled subjects.
+    df_residual_eff = max((n_lab - 1) * (k - 1), 1)
     return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual_eff))
 
 
@@ -1490,6 +1678,146 @@ def anova_oneway(
     result = TestResult(
         test_name=test_name,
         statistic=f_stat,
+        p_value=p_val,
+        corrected_estimate=corrected_estimate,
+        corrected_ci=corrected_ci,
+        corrected_p_value=corrected_p,
+        rectifier=rectifier,
+        n_labeled=n_labeled,
+        n_total=n_total,
+        alpha=alpha,
+        extra=extra,
+    )
+    if print_result:
+        result.summary()
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# friedman
+# ─────────────────────────────────────────────────────────────────────────────
+
+def friedman(
+    *groups,
+    groups_lab=None,
+    alpha: float = 0.05,
+    n_boot: int = 2000,
+    rng=None,
+    print_result: bool = True,
+) -> TestResult:
+    """Friedman test (repeated-measures, rank-based one-way) with optional PPI.
+
+    Uncorrected: ``scipy.stats.friedmanchisquare(*groups)``.
+
+    Friedman is the rank-based analog of repeated-measures one-way ANOVA —
+    each subject's scores across the *k* conditions are ranked (average
+    ranks for ties), and the test asks whether the mean rank differs across
+    conditions. It applies only to within-subject (repeated) designs; for
+    the independent-groups rank analog, use a Kruskal-Wallis test instead.
+
+    PPI estimand: variance of the per-condition mean within-subject ranks
+    (the Friedman analog of ``anova_oneway(..., repeated=True)``'s
+    between-condition variance after row-centering). Because ranking needs a
+    subject's full row, a subject is included in the labeled set only when
+    it has human labels in *all* conditions — the same requirement as
+    repeated-measures PPI ANOVA.
+
+    The corrected p-value uses the Iman–Davenport F-on-ranks approximation
+    with PPI-rectified condition mean ranks (mirroring how the repeated
+    ANOVA correction works on raw condition means), since the plain
+    ``2 * min(P(θ̂* ≤ 0), P(θ̂* ≥ 0))`` bootstrap trick is invalid for a
+    variance-like estimand that's bounded below by zero.
+
+    Parameters
+    ----------
+    *groups : array-like
+        Three or more score arrays, one per condition, equal length
+        (paired by array position — the same subject contributes one score
+        per condition).
+    groups_lab : sequence[array-like], optional
+        Sparse human labels aligned with each group/condition. Must have one
+        array per group, same lengths, with NaN for unlabeled items.
+    print_result : bool
+        Print a summary table to stdout (default True).  Pass ``False`` to
+        suppress output when calling from automated pipelines.
+
+    Examples
+    --------
+    >>> result = es.tests.friedman(g1, g2, g3)                             # prints
+    >>> result = es.tests.friedman(g1, g2, g3, print_result=False)         # silent
+    >>> result = es.tests.friedman(g1, g2, g3, groups_lab=[l1, l2, l3])    # PPI
+    """
+    if len(groups) < 3:
+        raise ValueError("friedman requires at least three conditions (k >= 3).")
+
+    groups = [_coerce(g) for g in groups]
+    k = len(groups)
+    n_subjects = len(groups[0])
+    for i, g in enumerate(groups[1:], start=2):
+        if len(g) != n_subjects:
+            raise ValueError(
+                "friedman requires equal-length arrays across all "
+                f"conditions; condition 1 has {n_subjects}, condition {i} has {len(g)}."
+            )
+
+    res = _scipy_stats.friedmanchisquare(*groups)
+    chi2_stat, p_val = float(res.statistic), float(res.pvalue)
+    df = float(k - 1)
+
+    # Kendall's W = χ²/(n(k-1)), computed from the same rank-variance
+    # estimand used for the PPI correction so the uncorrected and
+    # PPI-corrected effect sizes are directly comparable (see
+    # _friedman_rank_variance docstring for the derivation
+    # χ² = 12·n·V/(k+1) ⟹ W = 12·V/(k²-1)).
+    rank_var = _friedman_rank_variance(np.column_stack(groups))
+    kendalls_w = float(12.0 * rank_var / (k**2 - 1)) if k > 1 else 0.0
+
+    extra = {
+        "_test": "friedman",
+        "k_groups": k,
+        "n_subjects": n_subjects,
+        "group_means": [float(np.mean(g)) for g in groups],
+        "df": df,
+        "effect_size": kendalls_w,
+        "effect_size_name": "Kendall’s W",
+        "n_boot": n_boot,
+    }
+    test_name = "Friedman test"
+
+    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    n_labeled = n_total = None
+
+    if groups_lab is not None:
+        groups_lab = _sanitize_multigroup_ppi_labels(
+            groups,
+            groups_lab,
+            repeated=True,
+            test_label="Friedman",
+        )
+
+        llm_all = np.concatenate(groups)
+        human_sparse = np.concatenate(groups_lab)
+        ar = _run_alignment_report(llm_all, human_sparse)
+
+        ppi = _ppi_friedman(groups, groups_lab, alpha, n_boot, rng)
+        corrected_p = _ppi_friedman_p_value(groups, groups_lab, k)
+
+        corrected_estimate = ppi.estimate
+        corrected_ci = (ppi.ci_low, ppi.ci_high)
+        rectifier = ppi.rectifier
+        n_labeled = ar.n_labeled
+        n_total = ar.n_total
+
+        # PPI-corrected Kendall's W: same rescaling, with the PPI-corrected
+        # rank-variance estimate as the numerator instead of the raw one.
+        extra["corrected_effect_size"] = (
+            float(12.0 * corrected_estimate / (k**2 - 1)) if k > 1 else 0.0
+        )
+        extra["corrected_effect_size_name"] = "Kendall’s W"
+
+    result = TestResult(
+        test_name=test_name,
+        statistic=chi2_stat,
         p_value=p_val,
         corrected_estimate=corrected_estimate,
         corrected_ci=corrected_ci,
