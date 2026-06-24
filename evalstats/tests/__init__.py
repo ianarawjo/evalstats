@@ -75,7 +75,13 @@ class TestResult:
     n_total : int or None
     alpha : float
     extra : dict
-        Test-specific supplementary values.
+        Test-specific supplementary values.  For ``ttest``, when PPI
+        correction is active, includes ``corrected_effect_size`` /
+        ``corrected_effect_size_name`` — the standardized effect size
+        (Cohen's d / d_z / Hedges' g_s*) computed with the PPI-corrected
+        mean difference as the numerator instead of the raw LLM-judged
+        means, so the reported effect size is consistent with
+        ``corrected_estimate``.
     """
 
     test_name: str
@@ -113,6 +119,14 @@ class TestResult:
         if sys.stdout.isatty():
             return f"\033[2m{text}\033[0m"
         return text
+
+    @staticmethod
+    def _effect_magnitude(d: float) -> str:
+        """Cohen's-d-style magnitude bucket for a standardized effect size."""
+        d = abs(d)
+        return ("trivial" if d < 0.2 else
+                "small"   if d < 0.5 else
+                "medium"  if d < 0.8 else "large")
 
     def _ppi_estimand(self) -> str:
         """Plain-language description of the corrected estimand for each test."""
@@ -177,10 +191,7 @@ class TestResult:
             d = ex.get("effect_size")
             d_name = ex.get("effect_size_name", "Effect size")
             if d is not None:
-                mag = ("trivial" if abs(d) < 0.2 else
-                       "small"   if abs(d) < 0.5 else
-                       "medium"  if abs(d) < 0.8 else "large")
-                print(f"  Effect:   {d_name} = {d:.3f}  ({mag})")
+                print(f"  Effect:   {d_name} = {d:.3f}  ({self._effect_magnitude(d)})")
 
         elif test == "mannwhitney":
             print(f"  Samples:  X (n = {ex['n_x']}),  Y (n = {ex['n_y']})")
@@ -243,6 +254,10 @@ class TestResult:
                 cp_str = self._fmt_p(self.corrected_p_value, n_boot=n_boot)
                 boot_str = f",  bootstrap samples = {n_boot:,}" if n_boot is not None else ""
                 print(f"\n  {B(f'PPI-corrected:  estimate = {self.corrected_estimate:.4f},  {ci_pct}% CI [{lo:.4f}, {hi:.4f}],  p {cp_str}  (α = {self.alpha}{boot_str})')}")
+                d_corr = ex.get("corrected_effect_size")
+                d_corr_name = ex.get("corrected_effect_size_name", "Effect size")
+                if d_corr is not None:
+                    print(f"  Effect (PPI-corrected):  {d_corr_name} = {d_corr:.3f}  ({self._effect_magnitude(d_corr)})")
                 lab_str = (f"{self.n_labeled} of {self.n_total}"
                            if self.n_labeled is not None else "?")
                 note = (f"Correction applied using Prediction-Powered Inference on "
@@ -289,6 +304,32 @@ def _hedges_bias_correction(df: float) -> float:
     return 1.0
 
 
+def _hedges_g_star_from_diff(
+    diff: float,
+    sd1: float,
+    sd2: float,
+    n1: int,
+    n2: int,
+) -> float:
+    """Compute Hedges g*_s for unequal-variance two-sample comparisons from
+    a precomputed mean difference (``mean1 − mean2``).
+
+    Uses d_av with exact small-sample bias correction J(nu).  Factored out
+    of :func:`_hedges_g_star` so the same denominator/bias-correction logic
+    can be reused with a PPI-corrected difference in place of the raw one.
+    """
+    sd_av = float(np.sqrt((sd1**2 + sd2**2) / 2.0))
+    if sd_av <= 0.0:
+        return 0.0
+
+    d_star = float(diff / sd_av)
+
+    nu_num = (n1 - 1) * (n2 - 1) * (sd1**2 + sd2**2) ** 2
+    nu_den = (n2 - 1) * sd1**4 + (n1 - 1) * sd2**4
+    nu = float(nu_num / nu_den) if nu_den > 0 else np.nan
+    return float(_hedges_bias_correction(nu) * d_star)
+
+
 def _hedges_g_star(
     mean1: float,
     mean2: float,
@@ -301,16 +342,7 @@ def _hedges_g_star(
 
     Uses d_av with exact small-sample bias correction J(nu).
     """
-    sd_av = float(np.sqrt((sd1**2 + sd2**2) / 2.0))
-    if sd_av <= 0.0:
-        return 0.0
-
-    d_star = float((mean1 - mean2) / sd_av)
-
-    nu_num = (n1 - 1) * (n2 - 1) * (sd1**2 + sd2**2) ** 2
-    nu_den = (n2 - 1) * sd1**4 + (n1 - 1) * sd2**4
-    nu = float(nu_num / nu_den) if nu_den > 0 else np.nan
-    return float(_hedges_bias_correction(nu) * d_star)
+    return _hedges_g_star_from_diff(mean1 - mean2, sd1, sd2, n1, n2)
 
 
 def _run_alignment_report(llm_all: np.ndarray, human_sparse: np.ndarray):
@@ -890,6 +922,13 @@ def ttest(
     No corrected t-statistic is reported; the bootstrap CI and p-value
     are the primary outputs.
 
+    When human labels are supplied, the reported effect size (printed as
+    "Effect (PPI-corrected)") is also recomputed with the PPI-corrected
+    mean difference as its numerator, rather than the raw, uncorrected
+    LLM-judged means — keeping the effect size consistent with the
+    corrected estimate. The standard deviations in the denominator are
+    left uncorrected, since PPI only targets the mean estimand here.
+
     Parameters
     ----------
     a, b : array-like
@@ -1015,6 +1054,27 @@ def ttest(
         rectifier          = ppi.rectifier
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
+
+        # PPI-corrected effect size: re-use the same denominator (sample SDs
+        # are unaffected by the mean-bias correction) but with the
+        # PPI-corrected mean difference as the numerator, so the reported
+        # effect size matches the corrected estimate rather than the raw,
+        # uncorrected LLM-judged means.
+        if paired:
+            extra["corrected_effect_size"] = (
+                float(corrected_estimate / sd_diffs) if sd_diffs > 0 else 0.0
+            )
+            extra["corrected_effect_size_name"] = "Cohen’s d_z"
+        elif equal_var:
+            extra["corrected_effect_size"] = (
+                float(corrected_estimate / denom_std) if denom_std > 0 else 0.0
+            )
+            extra["corrected_effect_size_name"] = "Cohen’s d"
+        else:
+            extra["corrected_effect_size"] = _hedges_g_star_from_diff(
+                corrected_estimate, std_a, std_b, n_a, n_b
+            )
+            extra["corrected_effect_size_name"] = "Hedges’ g_s*"
 
     result = TestResult(
         test_name=test_name,
