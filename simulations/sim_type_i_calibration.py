@@ -20,6 +20,24 @@ whether the corrected p-value stays near α = 0.05 under H₀:
               omnibus tests, its corrected p-value is a Wald test over the
               joint bootstrap covariance of pairwise effects, not a
               closed-form null-variance approximation.
+  lmm         Linear mixed model, score ~ template + (1|input) (three
+              conditions) — reuses the same repeated-measures data as
+              anova_rep/friedman, since that data is already generated from
+              exactly this model (a per-input random intercept plus
+              residual plus a template fixed effect). Unlike anova_rep/
+              friedman, the correction is a single closed-form rectified-GLS
+              solve with a cluster-robust sandwich covariance (see
+              evalstats.core.mixed_effects._ppi_lmm_fixed_effects) rather
+              than a bootstrap-then-closed-form-p-value combination — LMM
+              fixed effects are an M-estimator, so the "plug-in" recipe used
+              by every other test here isn't a valid correction for them.
+              Type I calibration only: this test is intentionally excluded
+              from the bias/CI-coverage effect-size check (its headline
+              "variance of template means" estimand is a quadratic form in
+              the fixed effects and deliberately has no CI; see
+              es.tests.lmm()'s docstring). Single fixed factor + a single
+              (1|input) random effect only — no run-level random effect, no
+              factorial (two-factor) designs yet.
 
 Factors swept (one at a time from a fixed baseline):
   distribution   normal, binary (0/1), likert (1–5), skewed (log-normal)
@@ -104,6 +122,7 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
+import pandas as pd
 from scipy import stats as _scipy_stats
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
@@ -124,23 +143,46 @@ with warnings.catch_warnings():
         _ppi_anova_independent,
         _ppi_anova_repeated,
         _ppi_friedman,
+        _ppi_lmm_p_value,
         _anova_between_variance_from_groups,
         _repeated_condition_variance,
         _friedman_rank_variance,
         _kw_pairwise_thetas,
     )
+    from evalstats.core.mixed_effects import _fit_lmm_general, _get_fe_vcov_sm
 
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
 ALPHA = 0.05
-TEST_NAMES = ["ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep", "friedman", "kruskal"]
+TEST_NAMES = [
+    "ttest", "ttest_welch", "mw", "wilcoxon", "anova_ind", "anova_rep", "friedman", "kruskal",
+    "lmm", "lmm_factorial", "lmm_runs",
+]
 # Short column headers for the printed table, keyed by canonical test name so
 # a --tests subset (in any order) still renders correctly.
 TEST_SHORT_NAMES = {
     "ttest": "ttest", "ttest_welch": "ttest_w", "mw": "mw", "wilcoxon": "wilcoxon",
     "anova_ind": "anova_i", "anova_rep": "anova_r", "friedman": "fried", "kruskal": "kw",
+    "lmm": "lmm", "lmm_factorial": "lmm_fact", "lmm_runs": "lmm_runs",
 }
+# lmm and its variants are Type-I-only: their headline estimand has no valid
+# CI by design (a quadratic form in the fixed effects — see
+# es.tests.lmm()'s docstring), so they're excluded from the bias/coverage
+# effect-size check (_gold_null_values, effect_results, _print_effect_table)
+# entirely, not just given a 0.0 floor.
+_LMM_VARIANTS = ("lmm", "lmm_factorial", "lmm_runs")
+_EFFECT_CHECK_TESTS = [t for t in TEST_NAMES if t not in _LMM_VARIANTS]
+# Number of independent nested LLM runs per (factor-combo, input) cell for
+# lmm_runs, testing the GLS-sufficiency run-collapsing path in
+# _ppi_lmm_fixed_effects (see evalstats/core/mixed_effects.py).
+_LMM_RUNS_R = 3
+# 2x2 crossed fixed-factor design for lmm_factorial: factor combos in the
+# same order as the 4 groups built for it in _run_one.
+_LMM_FACTORIAL_FACTORS = pd.DataFrame({
+    "f1": ["a", "a", "b", "b"],
+    "f2": ["x", "y", "x", "y"],
+})
 _SIGMA_TRUTH = 1.0   # within-group truth SD (normal / likert / skewed)
 _SIGMA_SUB   = 0.7   # between-subject SD for paired/repeated designs
 _SIGMA_COND  = 0.6   # within-subject residual SD (paired/repeated)
@@ -322,6 +364,18 @@ def _biases(sc: Scenario) -> tuple[float, float, float]:
     raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
 
 
+def _biases_4(sc: Scenario) -> tuple[float, float, float, float]:
+    """Same bias_type semantics as ``_biases`` but for lmm_factorial's 4
+    groups (2x2 crossed factors) instead of 3."""
+    if sc.bias_type == "none":
+        return 0.0, 0.0, 0.0, 0.0
+    if sc.bias_type == "constant":
+        return (sc.bias_const,) * 4
+    if sc.bias_type == "differential":
+        return sc.bias_delta, 0.0, 0.0, 0.0
+    raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
+
+
 def _llm(truth: np.ndarray, bias: float, noise_sd: float, rng: np.random.Generator) -> np.ndarray:
     if noise_sd == 0.0:
         return truth + bias
@@ -393,6 +447,32 @@ def _uncorrected_kruskal_p_value(groups: list[np.ndarray]) -> float:
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
         return float(_scipy_stats.kruskal(*groups).pvalue)
+
+
+def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
+    """Uncorrected (LLM-only) Wald F-test for the fixed effects of
+    ``score ~ <fixed factors> + (1|input)``, fit via statsmodels MixedLM (REML).
+
+    Mirrors ``es.tests.lmm()``'s uncorrected branch directly (rather than
+    calling the public API) to skip its array validation / extra-dict
+    bookkeeping, the same way ``_uncorrected_anova_repeated_p_value`` above
+    re-fits ``AnovaRM`` directly instead of calling ``anova_oneway()``. Uses
+    ``_fit_lmm_general`` (single helper backing single-factor, multi-factor,
+    and nested-run groups alike) so this one function covers the lmm,
+    lmm_factorial, and lmm_runs calibration variants.
+    """
+    k = len(groups)
+    template_labels = [f"T{i}" for i in range(k)]
+    sm_result, _df_full, _X_row, _R = _fit_lmm_general(groups, template_labels, factors)
+
+    beta = sm_result.fe_params.to_numpy()
+    cov = _get_fe_vcov_sm(sm_result)
+    df1 = k - 1
+    df2 = float(sm_result.df_resid)
+    beta_t, cov_t = beta[1:], cov[1:, 1:]
+    wald = float(beta_t @ np.linalg.solve(cov_t, beta_t))
+    f_stat = wald / df1
+    return float(_scipy_stats.f.sf(f_stat, df1, df2)) if f_stat > 0 else 1.0
 
 
 def _gold_null_values(sc: Scenario, n_mc: int = 3000, seed: int = 0) -> dict[str, float]:
@@ -577,6 +657,42 @@ def _run_one(args: tuple) -> tuple[
     llm_C = _llm(truth_C, bias_c, noise3, rng)
     lab_A, lab_B, lab_C = _labels_shared([truth_A, truth_B, truth_C], sc.label_frac, rng)
 
+    # ── 2x2 crossed fixed-factor data (lmm_factorial) ──────────────────────
+    # Own 4-group truth/llm/lab arrays (own random intercept), since the
+    # 2x2 design (f1 x f2) has 4 conditions, not 3 — same monotonic
+    # effect_size convention as truth_A/B/C above (group 0 unshifted, each
+    # subsequent group +es), generalized to 4 groups.
+    bias_w, bias_x, bias_y, bias_z = _biases_4(sc)
+    if sc.dist == "binary":
+        p_sub4 = rng.uniform(0.2, 0.8, n1)
+        truth_W = rng.binomial(1, p_sub4, n1).astype(float)
+        truth_X = rng.binomial(1, p_sub4, n1).astype(float)
+        truth_Y = rng.binomial(1, p_sub4, n1).astype(float)
+        truth_Z = rng.binomial(1, p_sub4, n1).astype(float)
+    else:
+        base_4 = rng.normal(_mu_null(sc.dist), _SIGMA_SUB, n1)
+        truth_W = base_4 + rng.normal(0.0, _SIGMA_COND, n1)
+        truth_X = base_4 + rng.normal(0.0, _SIGMA_COND, n1) + es
+        truth_Y = base_4 + rng.normal(0.0, _SIGMA_COND, n1) + 2 * es
+        truth_Z = base_4 + rng.normal(0.0, _SIGMA_COND, n1) + 3 * es
+    llm_W = _llm(truth_W, bias_w, noise1, rng)
+    llm_X = _llm(truth_X, bias_x, noise2, rng)
+    llm_Y = _llm(truth_Y, bias_y, noise3, rng)
+    llm_Z = _llm(truth_Z, bias_z, noise1, rng)
+    lab_W, lab_X, lab_Y, lab_Z = _labels_shared(
+        [truth_W, truth_X, truth_Y, truth_Z], sc.label_frac, rng
+    )
+
+    # ── Nested run replication (lmm_runs) ───────────────────────────────────
+    # Reuses (truth_A, truth_B, truth_C) / (lab_A, lab_B, lab_C) above — same
+    # per-input random intercept, just R independent LLM-noise draws per
+    # cell instead of one, exercising the GLS-sufficiency run-collapsing
+    # path in _ppi_lmm_fixed_effects. Human labels stay single-valued per
+    # item regardless of R (no run dimension on the labeled side).
+    llm_A_runs = np.column_stack([_llm(truth_A, bias_a, noise1, rng) for _ in range(_LMM_RUNS_R)])
+    llm_B_runs = np.column_stack([_llm(truth_B, bias_b, noise2, rng) for _ in range(_LMM_RUNS_R)])
+    llm_C_runs = np.column_stack([_llm(truth_C, bias_c, noise3, rng) for _ in range(_LMM_RUNS_R)])
+
     corrected_results: dict[str, bool | None] = {}
     uncorrected_results: dict[str, bool | None] = {}
     effect_results: dict[str, tuple[float, float, float, float]] = {}
@@ -738,6 +854,73 @@ def _run_one(args: tuple) -> tuple[
             except Exception:
                 corrected_results["kruskal"] = None
                 uncorrected_results["kruskal"] = None
+
+        # lmm: parametric repeated-measures analog of anova_rep, with an
+        # explicit between-input random-intercept variance component instead
+        # of row-centering — reuses the same (llm_A, llm_B, llm_C) /
+        # (lab_A, lab_B, lab_C) data, since that data is already generated
+        # from exactly this model. Unlike anova_rep/friedman, the correction
+        # is a single closed-form rectified-GLS solve (no bootstrap), so it's
+        # cheap enough to run directly in the main Type I sweep rather than
+        # needing a separate slow pass. No effect_results entry: its headline
+        # estimand has no valid CI by design (see es.tests.lmm()'s docstring),
+        # so it's intentionally excluded from the bias/CI-coverage check.
+        if "lmm" in active_tests:
+            try:
+                groups_lmm = [llm_A, llm_B, llm_C]
+                groups_lmm_lab = [lab_A, lab_B, lab_C]
+                p_uncorrected = _uncorrected_lmm_p_value(groups_lmm)
+                uncorrected_results["lmm"] = p_uncorrected < ALPHA
+                p = _ppi_lmm_p_value(
+                    groups_lmm,
+                    groups_lmm_lab,
+                    k=len(groups_lmm),
+                )
+                corrected_results["lmm"] = (p is not None) and (p < ALPHA)
+            except Exception:
+                corrected_results["lmm"] = None
+                uncorrected_results["lmm"] = None
+
+        # lmm_factorial: generalizes lmm to two crossed fixed factors
+        # (score ~ C(f1) * C(f2) + (1|input)) via es.tests.lmm()'s
+        # ``factors=`` argument — reuses the (llm_W..Z) / (lab_W..Z) 2x2
+        # data above. No effect_results entry, same reason as lmm.
+        if "lmm_factorial" in active_tests:
+            try:
+                groups_lf = [llm_W, llm_X, llm_Y, llm_Z]
+                groups_lf_lab = [lab_W, lab_X, lab_Y, lab_Z]
+                p_uncorrected = _uncorrected_lmm_p_value(groups_lf, factors=_LMM_FACTORIAL_FACTORS)
+                uncorrected_results["lmm_factorial"] = p_uncorrected < ALPHA
+                p = _ppi_lmm_p_value(
+                    groups_lf,
+                    groups_lf_lab,
+                    k=len(groups_lf),
+                    factors=_LMM_FACTORIAL_FACTORS,
+                )
+                corrected_results["lmm_factorial"] = (p is not None) and (p < ALPHA)
+            except Exception:
+                corrected_results["lmm_factorial"] = None
+                uncorrected_results["lmm_factorial"] = None
+
+        # lmm_runs: generalizes lmm to nested run replication (R independent
+        # LLM samples per cell) — reuses (llm_A_runs, llm_B_runs, llm_C_runs)
+        # / (lab_A, lab_B, lab_C) above. No effect_results entry, same
+        # reason as lmm.
+        if "lmm_runs" in active_tests:
+            try:
+                groups_runs = [llm_A_runs, llm_B_runs, llm_C_runs]
+                groups_runs_lab = [lab_A, lab_B, lab_C]
+                p_uncorrected = _uncorrected_lmm_p_value(groups_runs)
+                uncorrected_results["lmm_runs"] = p_uncorrected < ALPHA
+                p = _ppi_lmm_p_value(
+                    groups_runs,
+                    groups_runs_lab,
+                    k=len(groups_runs),
+                )
+                corrected_results["lmm_runs"] = (p is not None) and (p < ALPHA)
+            except Exception:
+                corrected_results["lmm_runs"] = None
+                uncorrected_results["lmm_runs"] = None
 
     return sc_idx, corrected_results, uncorrected_results, effect_results
 
@@ -1828,6 +2011,7 @@ def main() -> None:
     OFFSET  = args.seed_offset
     EFFECT_REPS = args.effect_reps
     ACTIVE_TESTS = [t for t in TEST_NAMES if t in set(args.tests)] if args.tests else list(TEST_NAMES)
+    EFFECT_CHECK_TESTS = [t for t in ACTIVE_TESTS if t in _EFFECT_CHECK_TESTS]
     POWER_MODE = args.effect_size is not None and args.effect_size != 0.0
     EFFECT_SIZE_OVERRIDE = args.effect_size
 
@@ -1933,7 +2117,7 @@ def main() -> None:
                         effect_samples[sc_idx][t].append(triple)
             print(f"Finished effect-size pass in {time.time()-t1:.1f}s")
 
-        _print_effect_table(effect_samples, gold_null, ACTIVE_TESTS)
+        _print_effect_table(effect_samples, gold_null, EFFECT_CHECK_TESTS)
 
     if args.out_csv:
         _save_csv(counts, totals, uncorrected_counts, uncorrected_totals, args.out_csv, ACTIVE_TESTS)
@@ -1968,7 +2152,7 @@ def main() -> None:
                 default_effect_plot_path = os.path.join(_HERE, "out", "plots", effect_fname)
                 _plot_effect_results(
                     effect_samples, gold_null, uncorrected_counts, uncorrected_totals,
-                    default_effect_plot_path, ACTIVE_TESTS,
+                    default_effect_plot_path, EFFECT_CHECK_TESTS,
                 )
 
 

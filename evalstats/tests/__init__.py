@@ -149,6 +149,8 @@ class TestResult:
             return "variance of per-condition mean within-subject ranks"
         elif test == "kruskal":
             return "pairwise stochastic-dominance effects P_mid(group_a > group_b) across all group pairs"
+        elif test == "lmm":
+            return "variance of template fixed-effect means (score ~ template + (1|input))"
         return "estimand"
 
     def _stat_line(self) -> str:
@@ -178,6 +180,12 @@ class TestResult:
             df = ex.get("df")
             df_str = f"({df:.0f})" if df is not None else ""
             return f"H{df_str} = {self.statistic:.3f},  p {p_str}"
+        elif test == "lmm":
+            df1 = ex.get("df1")
+            df2 = ex.get("df2")
+            if df1 is not None and df2 is not None:
+                return f"F({df1:.1f}, {df2:.1f}) = {self.statistic:.3f},  p {p_str}"
+            return f"F = {self.statistic:.3f},  p {p_str}"
         else:
             return f"stat = {self.statistic:.4f},  p {p_str}"
 
@@ -285,6 +293,23 @@ class TestResult:
             if d is not None:
                 print(f"  Effect:   {d_name} = {d:.3f}  ({self._effect_magnitude(d)})")
 
+        elif test == "lmm":
+            print(f"  Design:   {ex['k_groups']} groups, {ex['n_inputs']} inputs")
+            means = ex.get("group_means")
+            if means is not None:
+                mean_str = ", ".join(f"{m:.3f}" for m in means)
+                print(f"  Means:    {mean_str}")
+            icc = ex.get("icc")
+            if icc is not None:
+                print(
+                    f"  Variance: ICC = {icc:.3f}  "
+                    f"(σ_input = {ex['sigma_input']:.3f}, σ_resid = {ex['sigma_resid']:.3f})"
+                )
+            d = ex.get("effect_size")
+            d_name = ex.get("effect_size_name", "Effect size")
+            if d is not None:
+                print(f"  Effect:   {d_name} = {d:.5f}")
+
         print()
 
         if self.corrected_p_value is not None:
@@ -294,14 +319,18 @@ class TestResult:
                 print(f"  Estimated prediction bias:  δ = {self.rectifier:+.4f}")
             # ── PPI-corrected (last, with leading blank line) ────────
             if self.corrected_estimate is not None:
-                lo, hi = self.corrected_ci
                 n_boot = ex.get("n_boot")
                 cp_str = self._fmt_p(self.corrected_p_value, n_boot=n_boot)
+                if self.corrected_ci is not None:
+                    lo, hi = self.corrected_ci
+                    ci_str = f",  {ci_pct}% CI [{lo:.4f}, {hi:.4f}]"
+                else:
+                    ci_str = "  (no CI: quadratic-form estimand, not valid under a symmetric Wald CI)"
                 boot_str = f",  bootstrap samples = {n_boot:,}" if n_boot is not None else ""
-                print(f"\n  {B(f'PPI-corrected:  estimate = {self.corrected_estimate:.4f},  {ci_pct}% CI [{lo:.4f}, {hi:.4f}],  p {cp_str}  (α = {self.alpha}{boot_str})')}")
+                print(f"\n  {B(f'PPI-corrected:  estimate = {self.corrected_estimate:.4f}{ci_str},  p {cp_str}  (α = {self.alpha}{boot_str})')}")
                 d_corr = ex.get("corrected_effect_size")
                 d_corr_name = ex.get("corrected_effect_size_name", "Effect size")
-                if d_corr is not None:
+                if d_corr is not None and self.corrected_ci is not None:
                     print(f"  Effect (PPI-corrected):  {d_corr_name} = {d_corr:.3f}  ({self._effect_magnitude(d_corr)})")
                 pairwise = ex.get("pairwise_effects")
                 if pairwise:
@@ -309,11 +338,23 @@ class TestResult:
                     for (a, b), info in pairwise.items():
                         plo, phi = info["ci"]
                         print(f"    group {a} vs group {b}:  θ = {info['theta']:.3f}  [{plo:.3f}, {phi:.3f}]")
+                fixed_effects = ex.get("fixed_effects")
+                if fixed_effects and any("corrected_estimate" in info for info in fixed_effects.values()):
+                    print(f"\n  PPI-corrected fixed effects ({ci_pct}% CI):")
+                    for name, info in fixed_effects.items():
+                        if "corrected_estimate" not in info:
+                            continue
+                        clo, chi = info["corrected_ci"]
+                        print(f"    {name}:  β = {info['corrected_estimate']:.4f}  [{clo:.4f}, {chi:.4f}]")
                 lab_str = (f"{self.n_labeled} of {self.n_total}"
                            if self.n_labeled is not None else "?")
+                correction_method = (
+                    "a closed-form rectified-GLS solve with cluster-robust sandwich SEs"
+                    if test == "lmm" else "the PPI bootstrap procedure"
+                )
                 note = (f"Correction applied using Prediction-Powered Inference on "
                         f"{self._ppi_estimand()}; bias estimated from {lab_str} human "
-                        f"labels and removed via PPI bootstrap procedure (Angelopoulos et al., 2023; "
+                        f"labels and removed via {correction_method} (Angelopoulos et al., 2023; "
                         f"Zrnic, 2024).")
                 print(f"  {self._dim(note)}")
         else:
@@ -2192,6 +2233,347 @@ def kruskalwallis(
     result = TestResult(
         test_name=test_name,
         statistic=h_stat,
+        p_value=p_val,
+        corrected_estimate=corrected_estimate,
+        corrected_ci=corrected_ci,
+        corrected_p_value=corrected_p,
+        rectifier=rectifier,
+        n_labeled=n_labeled,
+        n_total=n_total,
+        alpha=alpha,
+        extra=extra,
+    )
+    if print_result:
+        result.summary()
+    return result
+
+
+def _sanitize_lmm_ppi_labels(groups: list[np.ndarray], groups_lab) -> list[np.ndarray]:
+    """Validate sparse labels for the PPI-corrected LMM.
+
+    Effective unit: an input with at least one labeled template cell — not
+    all of them, unlike the strict full-row requirement other
+    repeated-measures PPI tests in this module use. The LMM rectifier only
+    needs whichever labeled cells a given input actually has.
+    """
+    if groups_lab is None:
+        raise ValueError("groups_lab must be provided for PPI correction.")
+    if len(groups_lab) != len(groups):
+        raise ValueError(
+            f"groups_lab must have one label array per group "
+            f"(got {len(groups_lab)} for {len(groups)} groups)."
+        )
+
+    labs = []
+    for i, (g, g_lab) in enumerate(zip(groups, groups_lab), start=1):
+        lab_arr = _coerce(g_lab)
+        if len(lab_arr) != len(g):
+            raise ValueError(
+                f"groups_lab[{i - 1}] must match group {i} length "
+                f"({len(lab_arr)} vs {len(g)})."
+            )
+        labs.append(lab_arr)
+
+    labels_mat = np.column_stack(labs)
+    n_lab_inputs = int(np.sum(np.any(~np.isnan(labels_mat), axis=1)))
+
+    if n_lab_inputs < 15:
+        raise ValueError(
+            "At least 15 inputs with a labeled template cell are required "
+            f"for PPI-corrected LMM (found {n_lab_inputs})."
+        )
+    if n_lab_inputs < 30:
+        warnings.warn(
+            f"Only {n_lab_inputs} inputs have a labeled template cell. "
+            "PPI-corrected LMM standard errors can be unstable below 30 "
+            "labeled inputs; consider labeling more.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    return labs
+
+
+def _ppi_lmm_p_value(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    k: int,
+    factors=None,
+) -> Optional[float]:
+    """Closed-form Wald-to-F omnibus p-value for the PPI-corrected LMM template effect.
+
+    H0: every fixed effect (vs. the reference level) is zero. Uses the
+    cluster-robust sandwich covariance from
+    ``evalstats.core.mixed_effects._ppi_lmm_fixed_effects`` with a
+    finite-sample Wald-to-F correction (Hotelling's T²-style, df = n_lab
+    labeled inputs) rather than the asymptotic chi-square reference —
+    mirrors ``_ppi_kruskal_wallis_pairwise``'s correction, the other test in
+    this module whose corrected covariance comes from a sandwich/bootstrap
+    rather than a closed-form null-variance derivation. Standalone (not used
+    by ``lmm()`` itself, which already has the fitted ``PPILMMResult`` in
+    scope) so the calibration simulation can call it directly without the
+    array validation / alignment-report overhead of the public API, mirroring
+    ``_ppi_anova_repeated_p_value`` / ``_ppi_friedman_p_value``. ``factors``
+    is passed straight through to ``_ppi_lmm_fixed_effects`` so this same
+    helper covers the single-factor, multi-factor, and nested-run lmm
+    calibration variants alike.
+    """
+    from evalstats.core.mixed_effects import _ppi_lmm_fixed_effects
+
+    template_labels = [f"T{i}" for i in range(k)]
+    ppi = _ppi_lmm_fixed_effects(groups, groups_lab, template_labels, factors=factors)
+
+    df_q = k - 1
+    if df_q <= 0 or ppi.n_lab <= df_q:
+        return None
+
+    beta_t = ppi.beta_ppi[1:]
+    cov_t = ppi.cov_ppi[1:, 1:]
+    cov_t_pinv = np.linalg.pinv(cov_t, rcond=1e-8)
+    wald = float(beta_t @ cov_t_pinv @ beta_t)
+    nu = ppi.n_lab
+    f_corr = wald * (nu - df_q + 1) / (nu * df_q)
+    if f_corr <= 0.0:
+        return 1.0
+    return float(_scipy_stats.f.sf(f_corr, df_q, nu - df_q + 1))
+
+
+def lmm(
+    *groups,
+    groups_lab=None,
+    factors=None,
+    alpha: float = 0.05,
+    print_result: bool = True,
+) -> TestResult:
+    """Linear mixed model (``score ~ <fixed factors> + (1|input)``) with optional PPI.
+
+    Uncorrected: ``statsmodels`` ``MixedLM`` (REML) — the same model
+    ``lmm_analyze`` fits, here as a direct array-based wrapper. An omnibus
+    Wald F-test on the fixed effects (excluding the intercept) answers
+    "does template/factor identity affect score at all," analogous to
+    ``anova_oneway(repeated=True)`` but accounting for between-input
+    variance via an explicit random intercept rather than row-centering.
+
+    By default each ``groups[t]`` is one "template" (one fixed-factor
+    level). Two extensions, composable with each other:
+
+    - **Multiple crossed fixed factors**: pass ``factors``, a DataFrame with
+      one row per group (same order as ``*groups``) and one column per fixed
+      factor (e.g. columns ``["model", "prompt"]``). Builds
+      ``score ~ C(model) * C(prompt) + (1|input)`` instead of
+      ``score ~ C(template) + (1|input)``, with no other change to the
+      correction — the rectifier, sandwich, and cross-covariance term are
+      all generic in the design matrix already.
+    - **Nested run replication**: pass each ``groups[t]`` as ``(n_inputs, R)``
+      instead of ``(n_inputs,)`` for R repeated LLM samples per
+      (template, input) cell with no shared identity across inputs (e.g.
+      resampling at temperature > 0) — *not* a crossed random effect with
+      its own variance component. ``groups_lab[t]`` stays ``(n_inputs,)``
+      regardless of R: one human label per item, compared against the
+      LLM's run-average for that item. Internally fit on the run-averaged
+      data directly rather than the raw per-run rows, since a cell's R runs
+      generally share a fixed residual component (real item-level
+      heterogeneity) on top of independent per-run LLM noise — see
+      ``evalstats.core.mixed_effects._fit_lmm_general``.
+
+    PPI correction here is structurally different from every other test in
+    this module. LMM fixed effects are estimated by (restricted) maximum
+    likelihood — a nonlinear M-estimator — so the "plug-in" recipe used by
+    ``ttest``/``friedman``/etc. (independently refit on full-LLM,
+    labeled-human, and labeled-LLM data, then add the three results) is not
+    a valid bias correction here, and re-estimating variance components on
+    a small labeled subset is often unstable. Instead the correction solves
+    the *combined* rectified estimating equation in one closed-form GLS
+    step (see ``evalstats.core.mixed_effects._ppi_lmm_fixed_effects`` for
+    the full derivation):
+
+      1. σ²_input/σ²_resid are estimated once from the full LLM-scored fit
+         and held fixed as nuisance parameters — only the fixed effects β
+         are PPI-corrected.
+      2. ``β̂_PPI = β̂_unlab + (n_inputs/n_lab) · M⁻¹ r``, where ``M`` is the
+         full fit's GLS information matrix and ``r`` is the GLS rectifier
+         summed over labeled inputs.
+      3. Standard errors come from a cluster-robust sandwich over labeled
+         *inputs* (the natural unit of exchangeability, mirroring the
+         per-subject overlap requirement other repeated-measures PPI tests
+         use) rather than a bootstrap — refitting variance components on a
+         small labeled subset at every bootstrap draw would be unstable.
+
+    The headline ``corrected_estimate`` is the variance of the
+    PPI-corrected template means (the LMM analog of
+    ``anova_oneway(repeated=True)``/``friedman``'s between-condition
+    variance estimand), tested via a finite-sample Wald-to-F omnibus test
+    (``corrected_p_value``). Because that headline is a quadratic form in
+    β (variance-like, bounded below by zero), ``corrected_ci`` is left
+    ``None`` — a symmetric Wald CI on a quadratic form isn't valid without
+    resampling, which this closed-form approach deliberately avoids. Valid
+    per-contrast Wald CIs (each template vs. the first group, which serves
+    as the reference level) are reported in ``extra["fixed_effects"]``.
+
+    A labeled input needs at least one (not necessarily all) labeled
+    template cell.
+
+    ``extra["fixed_effects"]`` is keyed by the actual fitted parameter name
+    (e.g. ``"C(template)[T.T1]"``, or ``"C(model)[T.b]:C(prompt)[T.v2]"`` for
+    an interaction term with ``factors``) rather than a group index, so it
+    generalizes to any number of fixed factors without change.
+
+    Parameters
+    ----------
+    *groups : array-like
+        Two or more score arrays, one per template/group, paired by array
+        position (the same input contributes one score per group). Each
+        array is ``(n_inputs,)``, or ``(n_inputs, R)`` for R nested runs.
+    groups_lab : sequence[array-like], optional
+        Sparse human labels aligned with each group, always ``(n_inputs,)``
+        regardless of R. NaN for unlabeled items.
+    factors : pd.DataFrame, optional
+        One row per group (same order as ``*groups``), one column per fixed
+        factor. Defaults to a single implicit ``"template"`` factor.
+    print_result : bool
+        Print a summary table to stdout (default True).
+
+    Examples
+    --------
+    >>> result = es.tests.lmm(g1, g2, g3)
+    >>> result = es.tests.lmm(g1, g2, g3, groups_lab=[l1, l2, l3])
+    >>> # Two crossed fixed factors (model x prompt), 4 groups = 2x2 combinations
+    >>> factors = pd.DataFrame({"model": ["a", "a", "b", "b"], "prompt": ["v1", "v2", "v1", "v2"]})
+    >>> result = es.tests.lmm(g_av1, g_av2, g_bv1, g_bv2, groups_lab=[...], factors=factors)
+    >>> # Nested runs: 3 repeated LLM samples per (template, input) cell
+    >>> result = es.tests.lmm(g1_runs, g2_runs, groups_lab=[l1, l2])  # g*_runs shape (n_inputs, 3)
+    """
+    from evalstats.core.mixed_effects import (
+        _extract_variance_components_sm,
+        _fit_lmm_general,
+        _get_fe_vcov_sm,
+        _compute_icc,
+        _ppi_lmm_fixed_effects,
+    )
+
+    if len(groups) < 2:
+        raise ValueError("lmm requires at least two templates/conditions.")
+
+    groups = [_coerce(g) for g in groups]
+    k = len(groups)
+    n_inputs = groups[0].shape[0]
+    for i, g in enumerate(groups[1:], start=2):
+        if g.shape[0] != n_inputs:
+            raise ValueError(
+                "lmm requires equal-length arrays across all conditions "
+                f"(same inputs); condition 1 has {n_inputs}, condition {i} has {g.shape[0]}."
+            )
+    if factors is not None and len(factors) != k:
+        raise ValueError(
+            f"factors must have one row per group (got {len(factors)} rows for {k} groups)."
+        )
+
+    template_labels = [f"T{i}" for i in range(k)]
+    sm_result, df_full, X_row, R = _fit_lmm_general(groups, template_labels, factors)
+
+    beta = sm_result.fe_params.to_numpy()
+    cov = _get_fe_vcov_sm(sm_result)
+    sigma_input, sigma_resid = _extract_variance_components_sm(sm_result)
+    icc = _compute_icc(sigma_input, sigma_resid)
+    param_names = sm_result.fe_params.index.tolist()
+
+    # X_row[i] @ beta == predicted mean for group i (the design row used to
+    # fit it), for any formula/factor combination -- generalizes the old
+    # hand-rolled treatment-coding contrast matrix.
+    mu_unlab = X_row @ beta
+
+    df1 = k - 1
+    df2 = float(sm_result.df_resid)
+    var_means_unlab = float(np.var(mu_unlab))
+    if df1 > 0:
+        beta_t, cov_t = beta[1:], cov[1:, 1:]
+        wald = float(beta_t @ np.linalg.solve(cov_t, beta_t))
+        f_stat = wald / df1
+        p_val = float(_scipy_stats.f.sf(f_stat, df1, df2)) if f_stat > 0 else 1.0
+    else:
+        f_stat, p_val = 0.0, 1.0
+
+    extra = {
+        "_test": "lmm",
+        "k_groups": k,
+        "n_inputs": n_inputs,
+        "group_means": [float(np.mean(g)) for g in groups],
+        "icc": icc,
+        "sigma_input": sigma_input,
+        "sigma_resid": sigma_resid,
+        "df1": df1,
+        "df2": df2,
+        "effect_size": var_means_unlab,
+        "effect_size_name": "Var(template means)",
+        "fixed_effects": {
+            name: {"estimate": float(beta[i]), "se": float(np.sqrt(max(cov[i, i], 0.0)))}
+            for i, name in enumerate(param_names) if i > 0
+        },
+    }
+    factor_desc = "template" if factors is None else " * ".join(factors.columns)
+    run_desc = f", {R} nested runs/cell" if R > 1 else ""
+    test_name = f"Linear mixed model (score ~ {factor_desc} + (1|input){run_desc})"
+
+    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    n_labeled = n_total = None
+
+    if groups_lab is not None:
+        groups_lab = _sanitize_lmm_ppi_labels(groups, groups_lab)
+
+        llm_all = np.concatenate([g if g.ndim == 1 else g.mean(axis=1) for g in groups])
+        human_sparse = np.concatenate(groups_lab)
+        ar = _run_alignment_report(llm_all, human_sparse)
+
+        ppi = _ppi_lmm_fixed_effects(groups, groups_lab, template_labels, factors=factors)
+        n_lab, n_in = ppi.n_lab, ppi.n_inputs
+
+        mu_ppi = X_row @ ppi.beta_ppi
+        corrected_estimate = float(np.var(mu_ppi))
+        rectifier = corrected_estimate - var_means_unlab
+
+        df_q = k - 1
+        if df_q > 0 and n_lab > df_q:
+            beta_t_ppi = ppi.beta_ppi[1:]
+            cov_t_ppi = ppi.cov_ppi[1:, 1:]
+            cov_t_pinv = np.linalg.pinv(cov_t_ppi, rcond=1e-8)
+            wald_corr = float(beta_t_ppi @ cov_t_pinv @ beta_t_ppi)
+            nu = n_lab
+            f_corr = wald_corr * (nu - df_q + 1) / (nu * df_q)
+            corrected_p = float(_scipy_stats.f.sf(f_corr, df_q, nu - df_q + 1)) if f_corr > 0 else 1.0
+            df_resid_eff = nu - df_q + 1
+        else:
+            wald_corr = None
+            corrected_p = None
+            df_resid_eff = max(n_lab - 1, 1)
+
+        t_crit = float(_scipy_stats.t.ppf(1 - alpha / 2, df=df_resid_eff))
+        fixed_effects = {}
+        for i, name in enumerate(ppi.param_names):
+            if i == 0:
+                continue
+            se_i = float(np.sqrt(max(ppi.cov_ppi[i, i], 0.0)))
+            fixed_effects[name] = {
+                "estimate": float(ppi.beta_unlab[i]),
+                "se": float(np.sqrt(max(ppi.cov_unlab[i, i], 0.0))),
+                "corrected_estimate": float(ppi.beta_ppi[i]),
+                "corrected_se": se_i,
+                "corrected_ci": (
+                    float(ppi.beta_ppi[i] - t_crit * se_i),
+                    float(ppi.beta_ppi[i] + t_crit * se_i),
+                ),
+            }
+
+        n_labeled = n_lab
+        n_total = n_in
+
+        extra["fixed_effects"] = fixed_effects
+        extra["wald_stat"] = wald_corr
+        extra["corrected_effect_size"] = corrected_estimate
+        extra["corrected_effect_size_name"] = "Var(template means)"
+
+    result = TestResult(
+        test_name=test_name,
+        statistic=f_stat,
         p_value=p_val,
         corrected_estimate=corrected_estimate,
         corrected_ci=corrected_ci,
