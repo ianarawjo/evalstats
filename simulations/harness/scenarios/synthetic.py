@@ -24,13 +24,15 @@ reserved for future stress-test scenarios (currently identical to
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Callable
 
 import numpy as np
+import pandas as pd
 from scipy import stats
 from scipy.stats import norm
 
-from . import CISource, CIPairSource
+from . import CISource, CIPairSource, MultiArmSource, JudgeBiasSource
 
 SCENARIO_SUITES = ["standard", "expanded", "extreme"]
 RUN_NOISE_FRACS_DEFAULT = [0.01, 0.1, 0.3, 0.5]
@@ -1362,3 +1364,613 @@ def build_pair_multirun_sources(
                 _add(label, "grades", _gen_grades_pair, true_diff, f_a, f_b, icc, is_null)
 
     return sources
+
+
+# ---------------------------------------------------------------------------
+# Multi-arm sources (for cases/pvalues.py's multi-arm multiplicity benchmark)
+# ---------------------------------------------------------------------------
+# Ported from sim_compare_pvalues.py's build_multiarm_scenarios(). One shape
+# per eval type (plus extreme variants); arm 0 carries the alternative shift,
+# arms 1..k-1 stay at the shared baseline -- "arm 0 is the true best" is the
+# convention the multi-arm correction-strategy benchmark checks against.
+
+
+def build_multiarm_sources(*, include_extreme: bool = False) -> list[MultiArmSource]:
+    def _effects(k: int, delta: float) -> np.ndarray:
+        e = np.zeros(k)
+        e[0] = delta
+        return e
+
+    def _gen_binary(rng, n, runs, k, delta, _base_p=0.5):
+        concentration = 10.0
+        a_ = _base_p * concentration
+        b_ = (1.0 - _base_p) * concentration
+        base = rng.beta(a_, b_, size=(n, 1))
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            p = np.clip(base + effects[j], 0.0, 1.0)
+            out[j] = rng.binomial(1, p, size=(n, runs)).astype(float)
+        return out
+
+    def _gen_binary_sparse(rng, n, runs, k, delta):
+        return _gen_binary(rng, n, runs, k, delta, _base_p=0.01)
+
+    def _gen_continuous(rng, n, runs, k, delta):
+        base = rng.beta(2.0, 5.0, size=(n, 1))
+        shared = rng.normal(0.0, 0.10, size=(n, runs))
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            indiv = rng.normal(0.0, 0.06, size=(n, runs))
+            out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 1.0)
+        return out
+
+    def _gen_continuous_heavy_tail(rng, n, runs, k, delta):
+        base = np.clip(rng.normal(0.5, 0.15, size=(n, 1)), 0.0, 1.0)
+        shared = stats.t.rvs(df=2.5, size=(n, runs), random_state=rng) * 0.11
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            indiv = stats.t.rvs(df=2.5, size=(n, runs), random_state=rng) * 0.08
+            spikes = rng.normal(0.0, 0.30, size=(n, runs)) * (rng.random((n, runs)) < 0.03)
+            out[j] = np.clip(base + effects[j] + shared + indiv + spikes, 0.0, 1.0)
+        return out
+
+    def _gen_likert(rng, n, runs, k, delta):
+        base = rng.normal(3.0, 0.95, size=(n, 1))
+        shared = rng.normal(0.0, 0.35, size=(n, runs))
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            indiv = rng.normal(0.0, 0.25, size=(n, runs))
+            out[j] = np.rint(np.clip(base + effects[j] + shared + indiv, 1.0, 5.0))
+        return out
+
+    def _gen_likert_near_ceiling(rng, n, runs, k, delta):
+        base = rng.normal(4.45, 0.55, size=(n, 1))
+        shared = rng.normal(0.0, 0.28, size=(n, runs))
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            indiv = rng.normal(0.0, 0.20, size=(n, runs))
+            out[j] = np.rint(np.clip(base + effects[j] + shared + indiv, 1.0, 5.0))
+        return out
+
+    def _gen_grades(rng, n, runs, k, delta):
+        base = rng.normal(58.0, 18.0, size=(n, 1))
+        shared = rng.normal(0.0, 3.5, size=(n, runs))
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            indiv = rng.normal(0.0, 2.6, size=(n, runs))
+            out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 100.0)
+        return out
+
+    def _gen_grades_heavy_tail(rng, n, runs, k, delta):
+        base = np.clip(56.0 + stats.t.rvs(df=3.0, size=(n, 1), random_state=rng) * 20.0, 0.0, 100.0)
+        shared = stats.t.rvs(df=3.0, size=(n, runs), random_state=rng) * 4.2
+        effects = _effects(k, delta)
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            indiv = stats.t.rvs(df=3.0, size=(n, runs), random_state=rng) * 3.0
+            out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 100.0)
+        return out
+
+    sources = [
+        MultiArmSource(label="binary", eval_type="binary", generate_scores=_gen_binary, alt_delta=0.05),
+        MultiArmSource(label="continuous", eval_type="continuous", generate_scores=_gen_continuous, alt_delta=0.03),
+        MultiArmSource(label="likert", eval_type="likert", generate_scores=_gen_likert, alt_delta=0.24),
+        MultiArmSource(label="grades", eval_type="grades", generate_scores=_gen_grades, alt_delta=3.0),
+    ]
+
+    if include_extreme:
+        sources.extend([
+            MultiArmSource(label="binary-ultra-sparse", eval_type="binary", generate_scores=_gen_binary_sparse, alt_delta=0.02),
+            MultiArmSource(label="continuous-heavy-tail", eval_type="continuous", generate_scores=_gen_continuous_heavy_tail, alt_delta=0.025),
+            MultiArmSource(label="likert-near-ceiling", eval_type="likert", generate_scores=_gen_likert_near_ceiling, alt_delta=0.14),
+            MultiArmSource(label="grades-heavy-tail", eval_type="grades", generate_scores=_gen_grades_heavy_tail, alt_delta=2.8),
+        ])
+
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# Judge-bias sources (for cases/pvalues.py's PPI-correction calibration mode)
+# ---------------------------------------------------------------------------
+# Ported from sim_type_i_calibration.py's Scenario/_build_scenarios/_run_one
+# data-generation helpers. Unlike the CISource/CIPairSource/MultiArmSource
+# families above (which sweep score-DISTRIBUTION shape), this sweeps
+# JUDGE-MEASUREMENT-ERROR parameters: bias, scale-calibration slope, label
+# sparsity/MNAR-ness, and repeated-measures error correlation, against a
+# narrower "dist" axis (normal/likert/skewed -- no binary; current PPI tests
+# such as ttest/MWU aren't designed for it). This is intentionally a
+# separate axis from EVAL_TYPES, not a duplicate of it.
+
+_JB_SIGMA_TRUTH = 1.0
+_JB_SIGMA_SUB = 0.7
+_JB_SIGMA_COND = 0.6
+_JB_MU_CONT = 3.0
+_JB_MU_BIN = 0.5
+_JB_MIN_LAB = 15
+JUDGE_BIAS_LMM_RUNS_R = 3
+JUDGE_BIAS_LMM_FACTORIAL_FACTORS = pd.DataFrame({
+    "f1": ["a", "a", "b", "b"],
+    "f2": ["x", "y", "x", "y"],
+})
+
+
+def _jb_mu_null(dist: str) -> float:
+    return _JB_MU_BIN if dist == "binary" else _JB_MU_CONT
+
+
+def _jb_sample_truth(dist: str, n: int, rng: np.random.Generator) -> np.ndarray:
+    mu = _jb_mu_null(dist)
+    if dist == "normal":
+        return rng.normal(mu, _JB_SIGMA_TRUTH, n)
+    if dist == "binary":
+        return rng.binomial(1, mu, n).astype(float)
+    if dist == "likert":
+        return np.clip(np.round(rng.normal(mu, _JB_SIGMA_TRUTH, n)), 1.0, 5.0)
+    if dist == "skewed":
+        sigma_log = 0.70
+        mu_log = np.log(mu) - sigma_log ** 2 / 2
+        return rng.lognormal(mu_log, sigma_log, n)
+    raise ValueError(f"Unknown dist: {dist!r}")
+
+
+def _jb_biases(sc: JudgeBiasSource) -> tuple[float, float, float]:
+    if sc.bias_type == "none":
+        return 0.0, 0.0, 0.0
+    if sc.bias_type == "constant":
+        return sc.bias_const, sc.bias_const, sc.bias_const
+    if sc.bias_type == "differential":
+        return sc.bias_delta, 0.0, 0.0
+    raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
+
+
+def _jb_biases_4(sc: JudgeBiasSource) -> tuple[float, float, float, float]:
+    if sc.bias_type == "none":
+        return 0.0, 0.0, 0.0, 0.0
+    if sc.bias_type == "constant":
+        return (sc.bias_const,) * 4
+    if sc.bias_type == "differential":
+        return sc.bias_delta, 0.0, 0.0, 0.0
+    raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
+
+
+def _jb_judge_params_3(sc: JudgeBiasSource) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    b1, b2, b3 = _jb_biases(sc)
+    biases = (b1 + sc.bias_extra_a, b2 + sc.bias_extra_b, b3 + sc.bias_extra_c)
+    slopes = (sc.slope_a, sc.slope_b, sc.slope_c)
+    return biases, slopes
+
+
+def _jb_judge_params_4(sc: JudgeBiasSource) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    b1, b2, b3, b4 = _jb_biases_4(sc)
+    biases = (b1 + sc.bias_extra_a, b2 + sc.bias_extra_b, b3 + sc.bias_extra_c, b4 + sc.bias_extra_d)
+    slopes = (sc.slope_a, sc.slope_b, sc.slope_c, sc.slope_d)
+    return biases, slopes
+
+
+def _jb_llm(
+    truth: np.ndarray, bias: float, noise_sd: float, rng: np.random.Generator,
+    slope: float = 1.0, anchor: float = 0.0,
+) -> np.ndarray:
+    pred = anchor + slope * (truth - anchor) + bias
+    if noise_sd == 0.0:
+        return pred
+    return pred + rng.normal(0.0, noise_sd, len(truth))
+
+
+def _jb_llm_repeated(
+    truths: list[np.ndarray], biases: list[float], noise_sds: list[float], slopes: list[float],
+    rng: np.random.Generator, anchor: float, corr: float,
+) -> list[np.ndarray]:
+    if len(truths) == 0:
+        return []
+    n = len(truths[0])
+    if corr <= 0.0:
+        return [_jb_llm(tr, b, s, rng, slope=m, anchor=anchor) for tr, b, s, m in zip(truths, biases, noise_sds, slopes)]
+
+    corr_clamped = min(max(corr, 0.0), 0.999)
+    w_shared = float(np.sqrt(corr_clamped))
+    w_ind = float(np.sqrt(1.0 - corr_clamped))
+    shared = rng.normal(0.0, 1.0, n)
+    out: list[np.ndarray] = []
+    for tr, b, sd, m in zip(truths, biases, noise_sds, slopes):
+        pred = anchor + m * (tr - anchor) + b
+        if sd == 0.0:
+            out.append(pred)
+            continue
+        err = sd * (w_shared * shared + w_ind * rng.normal(0.0, 1.0, n))
+        out.append(pred + err)
+    return out
+
+
+def _jb_label_indices(
+    signal: np.ndarray, n_lab: int, rng: np.random.Generator,
+    mnar: bool, mnar_strength: float, mnar_mode: str,
+) -> np.ndarray:
+    n = len(signal)
+    if (not mnar) or mnar_strength <= 0.0:
+        return rng.choice(n, n_lab, replace=False)
+
+    scale = float(np.std(signal, ddof=0))
+    if scale <= 1e-12:
+        return rng.choice(n, n_lab, replace=False)
+    z = (signal - float(np.mean(signal))) / scale
+    if mnar_mode == "high":
+        score = z
+    elif mnar_mode == "extreme":
+        score = np.abs(z)
+    else:
+        raise ValueError(f"Unknown mnar_mode: {mnar_mode!r}")
+
+    logits = mnar_strength * score
+    logits = logits - float(np.max(logits))
+    weights = np.exp(logits)
+    probs = weights / float(np.sum(weights))
+    return rng.choice(n, n_lab, replace=False, p=probs)
+
+
+def _jb_labels_independent(
+    truth: np.ndarray, frac: float, rng: np.random.Generator,
+    mnar: bool = False, mnar_strength: float = 1.0, mnar_mode: str = "high",
+) -> np.ndarray:
+    n = len(truth)
+    if n < _JB_MIN_LAB:
+        raise ValueError(f"Need n >= {_JB_MIN_LAB} to enforce n_lab >= {_JB_MIN_LAB}; got n={n}")
+    n_lab = min(n, max(_JB_MIN_LAB, int(round(n * frac))))
+    lab = np.full(n, np.nan)
+    idx = _jb_label_indices(truth, n_lab, rng, mnar, mnar_strength, mnar_mode)
+    lab[idx] = truth[idx]
+    return lab
+
+
+def _jb_labels_shared(
+    truths: list[np.ndarray], frac: float, rng: np.random.Generator,
+    mnar: bool = False, mnar_strength: float = 1.0, mnar_mode: str = "high",
+) -> list[np.ndarray]:
+    n = len(truths[0])
+    if n < _JB_MIN_LAB:
+        raise ValueError(f"Need n >= {_JB_MIN_LAB} to enforce n_lab >= {_JB_MIN_LAB}; got n={n}")
+    n_lab = min(n, max(_JB_MIN_LAB, int(round(n * frac))))
+    signal = np.mean(np.column_stack(truths), axis=1)
+    idx = _jb_label_indices(signal, n_lab, rng, mnar, mnar_strength, mnar_mode)
+    labs = []
+    for truth in truths:
+        lab = np.full(n, np.nan)
+        lab[idx] = truth[idx]
+        labs.append(lab)
+    return labs
+
+
+def build_judge_bias_sources() -> list[JudgeBiasSource]:
+    """Curated, factor-at-a-time judge-bias scenario sweep, ported verbatim
+    from sim_type_i_calibration.py's _build_scenarios(). Each scenario varies
+    exactly one factor from a fixed baseline (distribution, sample size,
+    group balance, label fraction, label mechanism, LLM noise, bias type,
+    scale/slope calibration, group-specific calibration, repeated-measures
+    error correlation, heteroskedastic noise), plus a few multi-factor
+    interaction stress tests."""
+    B: dict = dict(
+        dist="normal", n=100, n2=None, n3=None,
+        label_frac=0.20, llm_noise=0.20, llm_noise2=None, llm_noise3=None,
+        bias_type="differential", bias_delta=0.30, bias_const=0.40,
+        bias_extra_a=0.0, bias_extra_b=0.0, bias_extra_c=0.0, bias_extra_d=0.0,
+        slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0,
+        label_mnar=False, mnar_strength=1.0, mnar_mode="high",
+        repeated_corr=0.0,
+    )
+
+    S: list[JudgeBiasSource] = []
+
+    def sc(name, tag, **kw):
+        return JudgeBiasSource(name=name, tag=tag, **{**B, **kw})
+
+    for dist in ["normal", "likert", "skewed"]:
+        S.append(sc(f"dist.{dist}", "distribution", dist=dist))
+
+    for n in [60, 100, 200, 400]:
+        S.append(sc(f"n={n}", "sample_size", n=n))
+
+    S.append(sc("balance.1:1", "balance", n=100, n2=100, n3=100))
+    S.append(sc("balance.2:1", "balance", n=67, n2=133, n3=100))
+    S.append(sc("balance.4:1", "balance", n=40, n2=160, n3=100))
+
+    for lab in [0.05, 0.10, 0.20, 0.40]:
+        S.append(sc(f"lab.{lab:.0%}", "label_frac", label_frac=lab))
+
+    S.append(sc("label.mcar", "label_mechanism", label_mnar=False, mnar_strength=0.0))
+    S.append(sc("label.mnar-mild", "label_mechanism", label_mnar=True, mnar_strength=0.8, mnar_mode="high"))
+    S.append(sc("label.mnar-strong", "label_mechanism", label_mnar=True, mnar_strength=1.6, mnar_mode="high"))
+
+    for noise in [0.0, 0.10, 0.35, 0.70]:
+        S.append(sc(f"noise.{noise}", "llm_noise", llm_noise=noise))
+
+    for bt in ["none", "constant", "differential"]:
+        S.append(sc(f"bias.{bt}", "bias_type", bias_type=bt))
+
+    S.append(sc("scale.none", "scale_bias", bias_type="none", slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0))
+    S.append(sc("scale.compress", "scale_bias", bias_type="none", slope_a=0.80, slope_b=0.80, slope_c=0.80, slope_d=0.80))
+    S.append(sc("scale.expand", "scale_bias", bias_type="none", slope_a=1.20, slope_b=1.20, slope_c=1.20, slope_d=1.20))
+
+    S.append(sc("gcal.none", "group_calibration", bias_type="none"))
+    S.append(sc(
+        "gcal.mild", "group_calibration", bias_type="none",
+        bias_extra_a=0.15, bias_extra_b=-0.05, bias_extra_c=0.05, bias_extra_d=-0.10,
+        slope_a=1.15, slope_b=0.95, slope_c=1.05, slope_d=0.90,
+    ))
+    S.append(sc(
+        "gcal.strong", "group_calibration", bias_type="none",
+        bias_extra_a=0.30, bias_extra_b=-0.10, bias_extra_c=0.10, bias_extra_d=-0.20,
+        slope_a=1.30, slope_b=0.90, slope_c=1.10, slope_d=0.80,
+    ))
+
+    S.append(sc("corr.0.0", "repeated_corr", repeated_corr=0.0, bias_type="none"))
+    S.append(sc("corr.0.3", "repeated_corr", repeated_corr=0.3, bias_type="none"))
+    S.append(sc("corr.0.7", "repeated_corr", repeated_corr=0.7, bias_type="none"))
+
+    S.append(sc("hetero.mild", "heteroskedastic", llm_noise=0.05, llm_noise2=0.50, llm_noise3=0.25))
+    S.append(sc("hetero.extreme", "heteroskedastic", llm_noise=0.02, llm_noise2=0.80, llm_noise3=0.40))
+
+    S.append(sc("stress.small+sparse", "stress", n=30, label_frac=0.07))
+    S.append(sc("stress.large+noisy", "stress", n=300, llm_noise=0.70))
+    S.append(sc("stress.unbal+diff", "stress", n=40, n2=200, label_frac=0.08))
+    S.append(sc("stress.tiny_lab", "stress", n=200, label_frac=0.02))
+
+    S.append(sc(
+        "interact.small+unbal+hetero+diff", "interaction",
+        n=30, n2=120, n3=80, label_frac=0.05, llm_noise=0.05, llm_noise2=0.70, llm_noise3=0.35,
+        bias_type="differential",
+    ))
+    S.append(sc(
+        "interact.small+sparse+noisy+const", "interaction",
+        n=40, label_frac=0.05, llm_noise=0.80, bias_type="constant",
+    ))
+    S.append(sc(
+        "interact.large+sparse+hetero+diff", "interaction",
+        n=250, n2=400, n3=300, label_frac=0.03, llm_noise=0.02, llm_noise2=0.50, llm_noise3=0.90,
+        bias_type="differential",
+    ))
+    S.append(sc(
+        "interact.mid+extreme-hetero+none", "interaction",
+        n=100, n2=150, n3=60, label_frac=0.08, llm_noise=0.01, llm_noise2=0.90, llm_noise3=0.40,
+        bias_type="none",
+    ))
+
+    return S
+
+
+@dataclass
+class JudgeBiasCellData:
+    """Output of generate_judge_bias_cell: every test-structure's truth/LLM/label
+    arrays for one (JudgeBiasSource, rep) draw, in the exact order
+    sim_type_i_calibration.py's _run_one draws them from one continuing rng
+    stream (required for byte-for-byte reproducibility)."""
+
+    llm_a2: np.ndarray
+    llm_b2: np.ndarray
+    lab_a2: np.ndarray
+    lab_b2: np.ndarray
+    llm_x: np.ndarray
+    llm_y: np.ndarray
+    lab_x: np.ndarray
+    lab_y: np.ndarray
+    llm_a3: np.ndarray
+    llm_b3: np.ndarray
+    llm_c3: np.ndarray
+    lab_a3: np.ndarray
+    lab_b3: np.ndarray
+    lab_c3: np.ndarray
+    llm_A: np.ndarray
+    llm_B: np.ndarray
+    llm_C: np.ndarray
+    lab_A: np.ndarray
+    lab_B: np.ndarray
+    lab_C: np.ndarray
+    llm_W: np.ndarray
+    llm_X: np.ndarray
+    llm_Y: np.ndarray
+    llm_Z: np.ndarray
+    lab_W: np.ndarray
+    lab_X: np.ndarray
+    lab_Y: np.ndarray
+    lab_Z: np.ndarray
+    llm_A_runs: np.ndarray
+    llm_B_runs: np.ndarray
+    llm_C_runs: np.ndarray
+
+
+def generate_judge_bias_cell(
+    sc: JudgeBiasSource, rng: np.random.Generator, *, lmm_runs_r: int = JUDGE_BIAS_LMM_RUNS_R,
+) -> JudgeBiasCellData:
+    """Draw one replicate's worth of truth/LLM-judge/human-label arrays for
+    every test structure (two independent groups, paired/repeated, three
+    independent groups, three repeated conditions, a 2x2 crossed-factor
+    design, and nested LLM runs), in the fixed order
+    sim_type_i_calibration.py's _run_one uses, so results are reproducible
+    from a single continuing rng stream regardless of which tests a caller
+    actually computes from the output.
+
+    Effect size: ``sc.effect_size`` injects a real, monotonic mean shift into
+    the truth itself (group/condition 0 unshifted, 1 gets +effect_size, 2 gets
+    +2*effect_size, ...) -- 0.0 (the Type-I sweep default) makes this a no-op;
+    >0 turns the same scenario grid into a power sweep.
+    """
+    n1 = sc.n
+    n2 = sc.n2 if sc.n2 is not None else sc.n
+    n3 = sc.n3 if sc.n3 is not None else sc.n
+    noise1 = sc.llm_noise
+    noise2 = sc.llm_noise2 if sc.llm_noise2 is not None else sc.llm_noise
+    noise3 = sc.llm_noise3 if sc.llm_noise3 is not None else sc.llm_noise
+    anchor = _jb_mu_null(sc.dist)
+    (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _jb_judge_params_3(sc)
+    es = sc.effect_size
+
+    # -- Independent two-group data (ttest, mannwhitney) --
+    truth_a2 = _jb_sample_truth(sc.dist, n1, rng)
+    truth_b2 = _jb_sample_truth(sc.dist, n2, rng) + es
+    llm_a2 = _jb_llm(truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
+    llm_b2 = _jb_llm(truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
+    lab_a2 = _jb_labels_independent(truth_a2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    lab_b2 = _jb_labels_independent(truth_b2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+
+    # -- Paired data (wilcoxon) --
+    base_2 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
+    if sc.dist == "binary":
+        p_sub = rng.uniform(0.2, 0.8, n1)
+        truth_x = rng.binomial(1, p_sub, n1).astype(float)
+        truth_y = rng.binomial(1, p_sub, n1).astype(float)
+    else:
+        truth_x = base_2 + rng.normal(0.0, _JB_SIGMA_COND, n1)
+        truth_y = base_2 + rng.normal(0.0, _JB_SIGMA_COND, n1) + es
+    llm_x, llm_y = _jb_llm_repeated(
+        [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
+        rng, anchor=anchor, corr=sc.repeated_corr,
+    )
+    lab_x, lab_y = _jb_labels_shared([truth_x, truth_y], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+
+    # -- Independent three-group data (anova_ind) --
+    truth_a3 = _jb_sample_truth(sc.dist, n1, rng)
+    truth_b3 = _jb_sample_truth(sc.dist, n2, rng) + es
+    truth_c3 = _jb_sample_truth(sc.dist, n3, rng) + 2 * es
+    llm_a3 = _jb_llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
+    llm_b3 = _jb_llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
+    llm_c3 = _jb_llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor)
+    lab_a3 = _jb_labels_independent(truth_a3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    lab_b3 = _jb_labels_independent(truth_b3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    lab_c3 = _jb_labels_independent(truth_c3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+
+    # -- Repeated-measures three-group data (anova_rep, friedman, lmm) --
+    if sc.dist == "binary":
+        p_sub3 = rng.uniform(0.2, 0.8, n1)
+        truth_A = rng.binomial(1, p_sub3, n1).astype(float)
+        truth_B = rng.binomial(1, p_sub3, n1).astype(float)
+        truth_C = rng.binomial(1, p_sub3, n1).astype(float)
+    else:
+        base_3 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
+        truth_A = base_3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
+        truth_B = base_3 + rng.normal(0.0, _JB_SIGMA_COND, n1) + es
+        truth_C = base_3 + rng.normal(0.0, _JB_SIGMA_COND, n1) + 2 * es
+    llm_A, llm_B, llm_C = _jb_llm_repeated(
+        [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
+        rng, anchor=anchor, corr=sc.repeated_corr,
+    )
+    lab_A, lab_B, lab_C = _jb_labels_shared([truth_A, truth_B, truth_C], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+
+    # -- 2x2 crossed fixed-factor data (lmm_factorial) --
+    (bias_w, bias_x, bias_y, bias_z), (slope_w, slope_x, slope_y, slope_z) = _jb_judge_params_4(sc)
+    if sc.dist == "binary":
+        p_sub4 = rng.uniform(0.2, 0.8, n1)
+        truth_W = rng.binomial(1, p_sub4, n1).astype(float)
+        truth_X = rng.binomial(1, p_sub4, n1).astype(float)
+        truth_Y = rng.binomial(1, p_sub4, n1).astype(float)
+        truth_Z = rng.binomial(1, p_sub4, n1).astype(float)
+    else:
+        base_4 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
+        truth_W = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1)
+        truth_X = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1) + es
+        truth_Y = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1) + 2 * es
+        truth_Z = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1) + 3 * es
+    llm_W, llm_X, llm_Y, llm_Z = _jb_llm_repeated(
+        [truth_W, truth_X, truth_Y, truth_Z], [bias_w, bias_x, bias_y, bias_z],
+        [noise1, noise2, noise3, noise1], [slope_w, slope_x, slope_y, slope_z],
+        rng, anchor=anchor, corr=sc.repeated_corr,
+    )
+    lab_W, lab_X, lab_Y, lab_Z = _jb_labels_shared([truth_W, truth_X, truth_Y, truth_Z], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+
+    # -- Nested run replication (lmm_runs) --
+    a_cols: list[np.ndarray] = []
+    b_cols: list[np.ndarray] = []
+    c_cols: list[np.ndarray] = []
+    for _ in range(lmm_runs_r):
+        rA, rB, rC = _jb_llm_repeated(
+            [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
+            rng, anchor=anchor, corr=sc.repeated_corr,
+        )
+        a_cols.append(rA)
+        b_cols.append(rB)
+        c_cols.append(rC)
+    llm_A_runs = np.column_stack(a_cols)
+    llm_B_runs = np.column_stack(b_cols)
+    llm_C_runs = np.column_stack(c_cols)
+
+    return JudgeBiasCellData(
+        llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2,
+        llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y,
+        llm_a3=llm_a3, llm_b3=llm_b3, llm_c3=llm_c3, lab_a3=lab_a3, lab_b3=lab_b3, lab_c3=lab_c3,
+        llm_A=llm_A, llm_B=llm_B, llm_C=llm_C, lab_A=lab_A, lab_B=lab_B, lab_C=lab_C,
+        llm_W=llm_W, llm_X=llm_X, llm_Y=llm_Y, llm_Z=llm_Z, lab_W=lab_W, lab_X=lab_X, lab_Y=lab_Y, lab_Z=lab_Z,
+        llm_A_runs=llm_A_runs, llm_B_runs=llm_B_runs, llm_C_runs=llm_C_runs,
+    )
+
+
+def estimate_judge_bias_gold_null_values(sc: JudgeBiasSource, *, n_mc: int = 3000, seed: int = 0) -> dict[str, float]:
+    """Monte Carlo expectation of each test's raw estimand on pure-truth (no
+    LLM bias/noise) data at this scenario's exact sample sizes -- the
+    bias/coverage effect-size check's "true null value" (not always exactly
+    0; see sim_type_i_calibration.py's _gold_null_values docstring for why).
+    """
+    from evalstats.tests import _p_x_gt_y_midrank, _anova_between_variance_from_groups, _repeated_condition_variance, _friedman_rank_variance
+
+    rng = np.random.default_rng(seed)
+    n1 = sc.n
+    n2 = sc.n2 if sc.n2 is not None else sc.n
+    n3 = sc.n3 if sc.n3 is not None else sc.n
+
+    diffs2 = np.empty(n_mc)
+    thetas2 = np.empty(n_mc)
+    for i in range(n_mc):
+        a = _jb_sample_truth(sc.dist, n1, rng)
+        b = _jb_sample_truth(sc.dist, n2, rng)
+        diffs2[i] = a.mean() - b.mean()
+        thetas2[i] = _p_x_gt_y_midrank(a, b) - 0.5
+
+    meds = np.empty(n_mc)
+    for i in range(n_mc):
+        base = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
+        if sc.dist == "binary":
+            p_sub = rng.uniform(0.2, 0.8, n1)
+            x = rng.binomial(1, p_sub, n1).astype(float)
+            y = rng.binomial(1, p_sub, n1).astype(float)
+        else:
+            x = base + rng.normal(0.0, _JB_SIGMA_COND, n1)
+            y = base + rng.normal(0.0, _JB_SIGMA_COND, n1)
+        meds[i] = float(np.median(x - y))
+
+    bv = np.empty(n_mc)
+    for i in range(n_mc):
+        a3 = _jb_sample_truth(sc.dist, n1, rng)
+        b3 = _jb_sample_truth(sc.dist, n2, rng)
+        c3 = _jb_sample_truth(sc.dist, n3, rng)
+        bv[i] = _anova_between_variance_from_groups([a3, b3, c3])
+
+    rv = np.empty(n_mc)
+    frv = np.empty(n_mc)
+    for i in range(n_mc):
+        if sc.dist == "binary":
+            p_sub3 = rng.uniform(0.2, 0.8, n1)
+            A = rng.binomial(1, p_sub3, n1).astype(float)
+            B = rng.binomial(1, p_sub3, n1).astype(float)
+            C = rng.binomial(1, p_sub3, n1).astype(float)
+        else:
+            base3 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
+            A = base3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
+            B = base3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
+            C = base3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
+        mat = np.column_stack([A, B, C])
+        rv[i] = _repeated_condition_variance(mat)
+        frv[i] = _friedman_rank_variance(mat)
+
+    return {
+        "ttest": float(diffs2.mean()),
+        "ttest_welch": float(diffs2.mean()),
+        "mw": float(thetas2.mean()),
+        "wilcoxon": float(meds.mean()),
+        "anova_ind": float(bv.mean()),
+        "anova_rep": float(rv.mean()),
+        "friedman": float(frv.mean()),
+        "kruskal": 0.5,
+    }

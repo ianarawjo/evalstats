@@ -65,3 +65,64 @@ class CIPairSource:
     run_noise_frac_b: float = 0.0
     """Set (alongside ``icc``) by ``scenarios.synthetic.build_pair_multirun_sources``,
     used by ``cases/ci_paired.py``'s ``--nested-mode``; 0.0 for ordinary sources."""
+
+
+@dataclass
+class MultiArmSource:
+    """K-arm analogue of CIPairSource (used by cases/pvalues.py's multi-arm mode).
+
+    ``generate_scores(rng, n, runs, k, delta)`` returns an ndarray of shape
+    ``(k, n, runs)`` -- arm 0 carries the alternative-hypothesis shift
+    ``delta``; arms ``1..k-1`` stay at baseline. Built by
+    ``scenarios.synthetic.build_multiarm_sources``.
+    """
+
+    label: str
+    eval_type: str
+    generate_scores: Callable[[np.random.Generator, int, int, int, float], np.ndarray]
+    alt_delta: float
+    source: str = "synthetic"
+
+
+@dataclass(frozen=True)
+class JudgeBiasSource:
+    """One judge-bias/miscalibration scenario for cases/pvalues.py's PPI mode.
+
+    Mirrors ``sim_type_i_calibration.py``'s ``Scenario`` dataclass field for
+    field. Built by ``scenarios.synthetic.build_judge_bias_sources``; consumed
+    via ``scenarios.synthetic.generate_judge_bias_cell(source, rng)``, which
+    draws ground truth, LLM-judge scores (with bias/slope distortion), and
+    sparse (possibly MNAR) human labels for every test structure (two
+    independent groups, paired/repeated, three independent groups, three
+    repeated conditions, a 2x2 crossed-factor design, and nested LLM runs)
+    in one call, in a fixed draw order, so a single ``rng`` stream feeds every
+    active test deterministically -- exactly as the legacy script's
+    ``_run_one`` does.
+    """
+
+    name: str
+    tag: str
+    dist: str = "normal"  # "normal" | "binary" | "likert" | "skewed"
+    n: int = 100
+    n2: int | None = None
+    n3: int | None = None
+    label_frac: float = 0.20
+    llm_noise: float = 0.20
+    llm_noise2: float | None = None
+    llm_noise3: float | None = None
+    bias_type: str = "differential"  # "none" | "constant" | "differential"
+    bias_delta: float = 0.30
+    bias_const: float = 0.40
+    bias_extra_a: float = 0.0
+    bias_extra_b: float = 0.0
+    bias_extra_c: float = 0.0
+    bias_extra_d: float = 0.0
+    slope_a: float = 1.0
+    slope_b: float = 1.0
+    slope_c: float = 1.0
+    slope_d: float = 1.0
+    label_mnar: bool = False
+    mnar_strength: float = 1.0
+    mnar_mode: str = "high"  # "high" | "extreme"
+    repeated_corr: float = 0.0
+    effect_size: float = 0.0
