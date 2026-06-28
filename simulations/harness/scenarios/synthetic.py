@@ -25,7 +25,7 @@ reserved for future stress-test scenarios (currently identical to
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Sequence
 
 import numpy as np
 import pandas as pd
@@ -647,95 +647,383 @@ def group_total_std(eval_type: str, params, icc: float) -> float:
     raise ValueError(f"group_total_std: unsupported eval_type {eval_type!r}")
 
 
+_CUSTOM_SHAPE_VAR_CACHE: dict[str, float] = {}
+_CUSTOM_SHAPE_RANGE: dict[str, tuple[float, float, bool]] = {
+    "continuous": (0.0, 1.0, False), "likert": (1.0, 5.0, True), "grades": (0.0, 100.0, False),
+}
+
+
+def _custom_shape_var(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 0) -> float:
+    """MC-estimated population variance of a "custom" shape's bare sampler
+    (no run-noise added) -- the analogue of _beta_var(a,b)/total_std**2 for
+    shapes with no closed-form variance. Memoized by label (custom_sampler
+    is a pure function of (rng, n) for every shape in the catalog)."""
+    if shape.label not in _CUSTOM_SHAPE_VAR_CACHE:
+        rng = np.random.default_rng(seed)
+        _CUSTOM_SHAPE_VAR_CACHE[shape.label] = float(np.var(shape.custom_sampler(rng, n_mc)))
+    return _CUSTOM_SHAPE_VAR_CACHE[shape.label]
+
+
+def _hetero_noise_scale(base: np.ndarray, lo: float, hi: float) -> np.ndarray:
+    """Per-item heteroscedastic noise-std multiplier: scales toward 0 near
+    the [lo, hi] boundaries (where item-level variance is naturally squeezed)
+    and peaks at 1.0 at the midpoint -- same shape _legacy_build_multirun_sources'/
+    _legacy_build_pair_multirun_sources' per-eval-type "_hetero" branches used."""
+    p = np.clip((base - lo) / (hi - lo), 0.0, 1.0)
+    return 2.0 * np.sqrt(p * (1.0 - p))
+
+
+def _equicorrelated_noise(
+    rng: np.random.Generator, n: int, runs: int, k: int, group_vars: np.ndarray, corr: float,
+) -> np.ndarray:
+    """k correlated mean-zero Gaussian noise streams, shape (k, n, runs):
+    Var(noise_j) = group_vars[j], Corr(noise_a, noise_b) = corr for all
+    a != b. Generalizes the shared/indiv split (equal variance per group) to
+    per-group variances via a shared standard-normal factor scaled by each
+    group's own std."""
+    shared_z = rng.normal(0.0, 1.0, size=(n, runs))
+    out = np.empty((k, n, runs), dtype=float)
+    c = max(corr, 0.0)
+    for j in range(k):
+        std_j = float(np.sqrt(max(group_vars[j], 0.0)))
+        indiv_z = rng.normal(0.0, 1.0, size=(n, runs))
+        out[j] = std_j * (np.sqrt(c) * shared_z + np.sqrt(max(1.0 - c, 0.0)) * indiv_z)
+    return out
+
+
+def _equicorrelated_std_normal(rng: np.random.Generator, n: int, k: int, base_corr: float) -> np.ndarray:
+    """k equicorrelated standard-normal columns, shape (k, n, 1):
+    Var=1, Corr(z_a, z_b) = base_corr for all a != b."""
+    shared_z = rng.normal(0.0, 1.0, size=(n, 1))
+    bc = max(base_corr, 0.0)
+    out = np.empty((k, n, 1), dtype=float)
+    for j in range(k):
+        indiv_z = rng.normal(0.0, 1.0, size=(n, 1))
+        out[j] = np.sqrt(bc) * shared_z + np.sqrt(max(1.0 - bc, 0.0)) * indiv_z
+    return out
+
+
 def sample_group_truth(
-    shape: ShapeSpec, n: int, runs: int, k: int, icc: float, rng: np.random.Generator,
+    shape: ShapeSpec, n: int, runs: int, k: int, icc: float | Sequence[float], rng: np.random.Generator,
     *, corr: float = 0.5, effects: np.ndarray | None = None,
+    heteroscedastic: bool = False, base_corr: float = 1.0,
 ) -> np.ndarray:
     """Truth+within-item-noise model shared by build_single_sample_sources
-    (k=1), build_pair_sources (k=2), build_multiarm_sources (k>=2), and
+    (k=1, optionally multi-run), build_pair_sources (k=2, optionally
+    multi-run/partial-agreement), build_multiarm_sources (k>=2), and
     build_judge_bias_sources' repeated-measures truth (k=2,3,4). Returns an
     ndarray of shape (k, n, runs).
 
     icc: between-item variance / total variance (same meaning everywhere
-    it's used in the harness). corr: correlation between any two of the k
-    groups' within-item noise (0 = fully independent runs; 1 = identical
-    noise draw shared across all groups). k=2 at corr=0.5 reproduces
+    it's used in the harness). May be a single float (shared by all k
+    groups -- the common case) or a length-k sequence of per-group values
+    (asymmetric reliability, e.g. build_pair_sources' run_noise_fracs sweep
+    with different f_a/f_b for the two groups).
+
+    corr: correlation between any two of the k groups' within-item NOISE (0
+    = fully independent runs; 1 = identical noise draw shared across all
+    groups). k=2 at corr=0.5, base_corr=1.0, scalar icc reproduces
     build_pair_sources' original fixed shared/individual noise split
-    exactly (see _legacy_build_pair_sources above). k=1 has no inter-group
-    correlation concept -- the single group gets the FULL within-item noise
-    variance directly (same marginal variance as any one of the k>=2 groups
-    at the same icc), reproducing build_single_sample_sources' simple
-    "param" shapes exactly when icc=1.0 (no separate noise layer at all).
+    exactly (see _legacy_build_pair_sources above).
+
+    base_corr: correlation between any two of the k groups' BASE/item-level
+    values (1.0 = fully shared base -- every group sees the literal same
+    item, the harness default everywhere except build_pair_sources'
+    run_noise_fracs multi-run mode; <1.0 = partial agreement, a Gaussian-
+    copula "different items/judges, correlated quality" model, generalizing
+    _legacy_build_pair_multirun_sources' cross_item_rho to general k). At base_corr
+    == 1.0 and scalar icc, this is a no-op vs. the pre-existing shared-base
+    code path (kept as its own branch below to preserve exact-parity with
+    everything that doesn't pass base_corr/per-group icc).
+
+    k=1 has no inter-group correlation concept -- the single group gets the
+    FULL within-item noise variance directly (same marginal variance as any
+    one of the k>=2 groups at the same icc), reproducing
+    build_single_sample_sources' simple "param" shapes exactly when icc=1.0
+    (no separate noise layer at all); icc<1.0 at k=1, runs>1 is the
+    run_noise_frac multi-run case (f_run = 1 - icc).
 
     shape.kind == "custom" requires k == 1 (these bespoke single-population
-    generators have no pair/multi-arm analogue).
+    generators have no pair/multi-arm analogue), but DOES support icc<1.0,
+    runs>1 (multi-run): the bare custom_sampler draw is treated as the
+    per-item "base", with the same additive-Gaussian within-item noise model
+    as "param" shapes, using an MC-estimated (not closed-form) base variance.
     """
     if effects is None:
         effects = np.zeros(k)
     et = shape.eval_type
+    icc_arr = np.full(k, float(icc)) if np.ndim(icc) == 0 else np.asarray(icc, dtype=float)
+    if icc_arr.shape != (k,):
+        raise ValueError(f"icc must be a scalar or a length-k sequence, got shape {icc_arr.shape} for k={k}")
+    icc_scalar = bool(np.ndim(icc) == 0)
 
     if shape.kind == "custom":
         if k != 1:
             raise ValueError(f"Custom shape {shape.label!r} only supports k=1 (single-sample), got k={k}")
+        base = shape.custom_sampler(rng, n)[:, None]  # (n, 1)
+        lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
+        ic = float(icc_arr[0])
+        if ic >= 1.0 - 1e-12:
+            noise = np.zeros((n, runs))
+        else:
+            noise_var = _custom_shape_var(shape) * (1.0 / max(ic, 1e-9) - 1.0)
+            sigma = float(np.sqrt(max(noise_var, 0.0)))
+            if heteroscedastic:
+                noise = rng.normal(0.0, 1.0, size=(n, runs)) * (sigma * _hetero_noise_scale(base, lo, hi))
+            else:
+                noise = rng.normal(0.0, sigma, size=(n, runs))
+        vals = base + effects[0] + noise
         out = np.empty((1, n, runs), dtype=float)
-        for r in range(runs):
-            out[0, :, r] = shape.custom_sampler(rng, n) + effects[0]
+        out[0] = np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
         return out
 
     if et == "binary":
         base_p = shape.params
-        conc = _binary_conc_from_icc(icc)
-        base = rng.beta(base_p * conc, (1.0 - base_p) * conc, size=(n, 1))
+        if base_corr >= 1.0 - 1e-12 and icc_scalar:
+            conc = _binary_conc_from_icc(float(icc))
+            base = rng.beta(base_p * conc, (1.0 - base_p) * conc, size=(n, 1))
+            out = np.empty((k, n, runs), dtype=float)
+            for j in range(k):
+                p = np.clip(base + effects[j], 0.0, 1.0)
+                out[j] = rng.binomial(1, p, size=(n, runs)).astype(float)
+            return out
+        # Partial-agreement / per-group-icc path: equicorrelated Gaussian
+        # copula on quantiles, mapped through each group's own Beta(p, icc_j).
+        z = _equicorrelated_std_normal(rng, n, k, base_corr)
         out = np.empty((k, n, runs), dtype=float)
         for j in range(k):
-            p = np.clip(base + effects[j], 0.0, 1.0)
-            out[j] = rng.binomial(1, p, size=(n, runs)).astype(float)
+            conc_j = _binary_conc_from_icc(float(icc_arr[j]))
+            q_j = np.clip(norm.cdf(z[j]), 1e-9, 1.0 - 1e-9)
+            p_j = np.clip(stats.beta.ppf(q_j, base_p * conc_j, (1.0 - base_p) * conc_j) + effects[j], 0.0, 1.0)
+            out[j] = rng.binomial(1, p_j, size=(n, runs)).astype(float)
         return out
 
-    noise_var = _group_noise_var(et, shape.params, icc)
     if et == "continuous":
         a_beta, b_beta = shape.params
-        base = rng.beta(a_beta, b_beta, size=(n, 1))
         lo, hi, round_to_int = 0.0, 1.0, False
+        if base_corr >= 1.0 - 1e-12:
+            base = np.broadcast_to(rng.beta(a_beta, b_beta, size=(n, 1)), (k, n, 1)).copy()
+        else:
+            z = _equicorrelated_std_normal(rng, n, k, base_corr)
+            q = np.clip(norm.cdf(z), 1e-9, 1.0 - 1e-9)
+            base = stats.beta.ppf(q, a_beta, b_beta)
     else:
         mu_lat, total_std = shape.params
-        base_std = float(np.sqrt(icc)) * total_std
-        base = rng.normal(mu_lat, base_std, size=(n, 1))
         lo, hi = (1.0, 5.0) if et == "likert" else (0.0, 100.0)
         round_to_int = et == "likert"
+        if base_corr >= 1.0 - 1e-12 and icc_scalar:
+            base_std = float(np.sqrt(float(icc))) * total_std
+            base = np.broadcast_to(rng.normal(mu_lat, base_std, size=(n, 1)), (k, n, 1)).copy()
+        else:
+            z = _equicorrelated_std_normal(rng, n, k, base_corr)
+            base = mu_lat + total_std * np.sqrt(np.clip(icc_arr, 0.0, 1.0))[:, None, None] * z
 
     def _finish(vals: np.ndarray) -> np.ndarray:
         return np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
 
+    group_noise_vars = np.array([_group_noise_var(et, shape.params, ic) for ic in icc_arr])
     out = np.empty((k, n, runs), dtype=float)
     if k == 1:
-        noise = rng.normal(0.0, float(np.sqrt(max(noise_var, 0.0))), size=(n, runs))
-        out[0] = _finish(base + effects[0] + noise)
+        if heteroscedastic and group_noise_vars[0] > 0.0:
+            scale = _hetero_noise_scale(base[0], lo, hi)
+            noise = rng.normal(0.0, 1.0, size=(n, runs)) * (float(np.sqrt(group_noise_vars[0])) * scale)
+        else:
+            noise = rng.normal(0.0, float(np.sqrt(max(group_noise_vars[0], 0.0))), size=(n, runs))
+        out[0] = _finish(base[0] + effects[0] + noise)
         return out
 
-    shared_std = float(np.sqrt(max(corr, 0.0) * noise_var))
-    indiv_std = float(np.sqrt(max(1.0 - corr, 0.0) * noise_var))
-    shared = rng.normal(0.0, shared_std, size=(n, runs))
+    if heteroscedastic:
+        # Heteroscedastic noise can't share the equicorrelated-noise helper's
+        # single homoscedastic std per group; fall back to corr-mixed draws
+        # with a per-item, per-group scale (matches _legacy_build_pair_multirun_sources'
+        # "_hetero" branches, generalized to k groups / per-group icc). One
+        # shared_z draw is reused across all k groups so corr means the same
+        # thing here as in the homoscedastic _equicorrelated_noise path.
+        shared_z = rng.normal(0.0, 1.0, size=(n, runs))
+        c = max(corr, 0.0)
+        for j in range(k):
+            scale_j = _hetero_noise_scale(base[j], lo, hi)
+            indiv_z = rng.normal(0.0, 1.0, size=(n, runs))
+            std_j = float(np.sqrt(group_noise_vars[j])) * scale_j
+            noise_j = std_j * (np.sqrt(c) * shared_z + np.sqrt(max(1.0 - c, 0.0)) * indiv_z)
+            out[j] = _finish(base[j] + effects[j] + noise_j)
+        return out
+
+    noise = _equicorrelated_noise(rng, n, runs, k, group_noise_vars, corr)
     for j in range(k):
-        indiv = rng.normal(0.0, indiv_std, size=(n, runs))
-        out[j] = _finish(base + effects[j] + shared + indiv)
+        out[j] = _finish(base[j] + effects[j] + noise[j])
     return out
 
 
-def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
+def build_single_sample_sources(
+    suite: str = "standard", *, run_noise_fracs: list[float] | None = None, heteroscedastic: bool = False,
+) -> list[CISource]:
     """Canonical synthetic single-sample CISources, drawn from the shared
-    shape catalog above via sample_group_truth(k=1)."""
+    shape catalog above via sample_group_truth(k=1).
+
+    run_noise_fracs : sequence of float, optional
+        If given, switches to multi-run mode (for cases/ci_single.py's
+        ``--nested-mode``): for every shape, builds one CISource per
+        ``f_run`` in this list, with ``generate_runs(rng, n, runs) -> (n,
+        runs)`` set (icc = 1 - f_run fed through sample_group_truth(k=1,
+        runs>1) -- the within-item run-noise variance grows as f_run grows).
+        If ``None`` (the default), every shape gets exactly one flat,
+        single-run CISource (generate_runs=None), matching this function's
+        pre-multi-run behavior exactly.
+    heteroscedastic : bool
+        Only meaningful when run_noise_fracs is given: scales each item's
+        run-noise std down near the eval type's score-range boundaries
+        (where item-level variance is naturally squeezed) instead of using
+        one fixed std for every item -- see sample_group_truth.
+    """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
 
     sources: list[CISource] = []
     for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
         for shape in _tier_shapes(catalog, suite):
-            def _gen(rng: np.random.Generator, n: int, _shape: ShapeSpec = shape) -> np.ndarray:
-                return sample_group_truth(_shape, n, 1, 1, 1.0, rng)[0, :, 0]
+            if run_noise_fracs is None:
+                def _gen(rng: np.random.Generator, n: int, _shape: ShapeSpec = shape) -> np.ndarray:
+                    return sample_group_truth(_shape, n, 1, 1, 1.0, rng)[0, :, 0]
 
-            true_mean = _estimate_true_mean_mc(_gen)
-            sources.append(CISource(label=shape.label, eval_type=eval_type, generate=_gen, true_mean=true_mean))
+                true_mean = _estimate_true_mean_mc(_gen)
+                sources.append(CISource(label=shape.label, eval_type=eval_type, generate=_gen, true_mean=true_mean))
+                continue
+
+            for f in run_noise_fracs:
+                icc_ = 1.0 - f
+
+                def _gen_runs(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _shape: ShapeSpec = shape, _icc: float = icc_,
+                ) -> np.ndarray:
+                    return sample_group_truth(_shape, n, runs, 1, _icc, rng, heteroscedastic=heteroscedastic)[0]
+
+                true_mean = _estimate_true_mean_mc_runs(_gen_runs)
+                sources.append(CISource(
+                    label=f"{shape.label}|f={f:.2f}", eval_type=eval_type,
+                    generate=lambda rng, n, _g=_gen_runs: _g(rng, n, 1)[:, 0],
+                    generate_runs=_gen_runs, true_mean=true_mean, run_noise_frac=f,
+                ))
+
+    return sources
+
+
+# Explicit stress-test binary regimes with highly one-sided discordance --
+# not part of the shape catalog (no icc/shape decomposition; these are
+# literally pre-specified joint discordance probabilities). Shared by
+# build_pair_sources' flat and multi-run (run_noise_fracs) paths.
+_ASYM_BINARY_SPECS: list[tuple[str, float, float, float]] = [
+    ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
+    ("binary-onesided-pos-extreme", 0.384, 0.001, 0.000),
+    ("binary-onesided-neg-strong", 0.020, 0.300, 0.050),
+    ("binary-onesided-pos-strong", 0.300, 0.020, 0.050),
+    ("binary-onesided-neg-ultra", 0.000, 0.520, 0.000),
+    ("binary-onesided-pos-ultra", 0.520, 0.000, 0.000),
+    ("binary-onesided-neg-sparse", 0.001, 0.090, 0.030),
+    ("binary-onesided-pos-sparse", 0.090, 0.001, 0.030),
+    ("binary-onesided-neg-near-ceil", 0.000, 0.080, 0.900),
+    ("binary-onesided-pos-near-floor", 0.080, 0.000, 0.020),
+    ("binary-onesided-neg-moderate", 0.050, 0.220, 0.150),
+    ("binary-onesided-pos-moderate", 0.220, 0.050, 0.150),
+]
+
+
+def _build_pair_sources_multirun(
+    suite: str, d_list: list[float], run_noise_fracs: list[float], *,
+    heteroscedastic: bool, pairwise_noise_grid: bool, pairwise_noise_grid_max: int | None,
+    pairwise_noise_grid_seed: int, cross_item_rho: float,
+) -> list[CIPairSource]:
+    """build_pair_sources' run_noise_fracs branch: the same (eval_type,
+    shape, d) sweep as the flat path, but over (f_a, f_b) run-noise-frac
+    pairs instead of icc_values, routed through sample_group_truth(k=2,
+    base_corr=cross_item_rho, icc=[1-f_a, 1-f_b])."""
+    if pairwise_noise_grid:
+        noise_pairs = [(float(fa), float(fb)) for fa in run_noise_fracs for fb in run_noise_fracs]
+    else:
+        noise_pairs = [(float(f), float(f)) for f in run_noise_fracs]
+    if pairwise_noise_grid_max is not None and pairwise_noise_grid_max > 0 and len(noise_pairs) > pairwise_noise_grid_max:
+        rng_grid = np.random.default_rng(pairwise_noise_grid_seed)
+        keep_idx = np.sort(rng_grid.choice(len(noise_pairs), size=pairwise_noise_grid_max, replace=False))
+        noise_pairs = [noise_pairs[int(i)] for i in keep_idx]
+
+    sources: list[CIPairSource] = []
+    for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
+        param_shapes = [s for s in _tier_shapes(catalog, suite) if s.kind == "param"]
+        for f_a, f_b in noise_pairs:
+            icc_a, icc_b = 1.0 - f_a, 1.0 - f_b
+            icc_eff = 0.5 * (icc_a + icc_b)
+            for shape in param_shapes:
+                total_std = group_total_std(eval_type, shape.params, icc_eff)
+                for d in d_list:
+                    delta = d * total_std
+                    is_null = d == 0.0
+                    effect_tag = "null" if is_null else f"d={d:.2f}"
+                    label = (
+                        f"{shape.label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}" if pairwise_noise_grid
+                        else f"{shape.label}|f={f_a:.2f}|{effect_tag}"
+                    )
+                    shape_, icc_pair_, delta_ = shape, [icc_a, icc_b], delta
+
+                    def _gen_pair_runs(
+                        rng: np.random.Generator, n: int, runs: int,
+                        _shape: ShapeSpec = shape_, _icc: list[float] = icc_pair_, _d: float = delta_,
+                    ) -> tuple[np.ndarray, np.ndarray]:
+                        # corr=0.0: run-noise is independent between A and B
+                        # here (matches _legacy_build_pair_multirun_sources,
+                        # which never correlated noise across groups -- only
+                        # the base/item-level value is rho-correlated, via
+                        # base_corr). The flat (non-multirun) path's corr=0.5
+                        # default is a separate, unrelated axis.
+                        out = sample_group_truth(
+                            _shape, n, runs, 2, _icc, rng, effects=np.array([0.0, _d]),
+                            heteroscedastic=heteroscedastic, base_corr=cross_item_rho, corr=0.0,
+                        )
+                        return out[0], out[1]
+
+                    true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_pair_runs)
+                    sources.append(CIPairSource(
+                        label=label, eval_type=eval_type, generate_pair=_gen_pair_runs, true_diff=true_diff,
+                        icc=icc_eff, cohens_d=d, is_null=is_null,
+                        run_noise_frac=0.5 * (f_a + f_b), run_noise_frac_a=f_a, run_noise_frac_b=f_b,
+                    ))
+
+    # Asym binary stress test, generalized with a redraw-frac run-noise
+    # mechanism: each run independently redraws the joint (A, B) state with
+    # probability f_eff instead of keeping the item's fixed joint state.
+    if suite in ("expanded", "extreme"):
+        for shape_label, p10, p01, p11 in _ASYM_BINARY_SPECS:
+            p00 = 1.0 - (p11 + p10 + p01)
+            if p00 <= 0.0:
+                raise ValueError(f"Invalid asymmetric binary scenario {shape_label}: probabilities sum to >= 1.0")
+            probs = np.array([p11, p10, p01, p00], dtype=float)
+            true_diff = float(p10 - p01)
+
+            for f_a, f_b in noise_pairs:
+                f_eff = 0.5 * (f_a + f_b)
+                label = (
+                    f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|p11={p11:.3f}|p00={p00:.3f}|fA={f_a:.2f}|fB={f_b:.2f}"
+                    if pairwise_noise_grid
+                    else f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|p11={p11:.3f}|p00={p00:.3f}|f={f_eff:.2f}"
+                )
+                probs_, f_ = probs, f_eff
+
+                def _gen_binary_asym_runs(
+                    rng: np.random.Generator, n: int, runs: int, _probs: np.ndarray = probs_, _f: float = f_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    z_item = rng.choice(4, size=(n, 1), p=_probs)
+                    z_run = rng.choice(4, size=(n, runs), p=_probs)
+                    redraw = rng.random((n, runs)) < _f
+                    z = np.where(redraw, z_run, z_item)
+                    a = np.isin(z, (0, 1)).astype(float)
+                    b = np.isin(z, (0, 2)).astype(float)
+                    return a, b
+
+                sources.append(CIPairSource(
+                    label=label, eval_type="binary", generate_pair=_gen_binary_asym_runs, true_diff=true_diff,
+                    icc=1.0 - f_eff, cohens_d=0.0, is_null=False,
+                    run_noise_frac=f_eff, run_noise_frac_a=f_a, run_noise_frac_b=f_b,
+                ))
 
     return sources
 
@@ -745,6 +1033,13 @@ def build_pair_sources(
     icc_values: list[float] | tuple[float, ...] = (0.10, 0.25, 0.40),
     cohens_d_values: list[float] | tuple[float, ...] = (0.3,),
     include_null: bool = False,
+    *,
+    run_noise_fracs: list[float] | None = None,
+    heteroscedastic: bool = False,
+    pairwise_noise_grid: bool = False,
+    pairwise_noise_grid_max: int | None = None,
+    pairwise_noise_grid_seed: int = 42,
+    cross_item_rho: float = 0.7,
 ) -> list[CIPairSource]:
     """Return canonical synthetic paired-difference CIPairSources, parameterised
     by ICC and Cohen's d -- a thin (icc, shape, d) sweep over
@@ -760,21 +1055,53 @@ def build_pair_sources(
         'standard', 'expanded', or 'extreme'.
     icc_values : sequence of float
         ICC values to sweep. Each value generates a separate scenario batch.
+        Ignored when run_noise_fracs is given.
     cohens_d_values : sequence of float
         Non-null standardised effect sizes. A null (d=0) variant is
         automatically prepended when include_null=True.
     include_null : bool
         If True, prepend d=0 scenarios for every (eval_type, shape, icc)
         combination, flagged is_null=True (used to measure Type I error).
+    run_noise_fracs : sequence of float, optional
+        If given, switches to multi-run mode (for cases/ci_paired.py's
+        ``--nested-mode``): icc_values is ignored, and instead every (f_a,
+        f_b) pair from this list (f_a == f_b unless pairwise_noise_grid)
+        sweeps icc_a = 1 - f_a, icc_b = 1 - f_b through
+        sample_group_truth(k=2, base_corr=cross_item_rho). If ``None`` (the
+        default), every scenario is flat/single-run with base_corr=1.0
+        (fully shared base), matching this function's pre-multi-run
+        behavior exactly.
+    heteroscedastic : bool
+        Only meaningful when run_noise_fracs is given -- see sample_group_truth.
+    pairwise_noise_grid : bool
+        Only meaningful when run_noise_fracs is given: sweep the full (f_a,
+        f_b) cross product instead of pairing each f with itself.
+    pairwise_noise_grid_max : int, optional
+        Only meaningful with pairwise_noise_grid: randomly subsample the
+        (f_a, f_b) grid down to this many pairs (deterministic given
+        pairwise_noise_grid_seed) if the full grid would be larger.
+    cross_item_rho : float
+        Only meaningful when run_noise_fracs is given: the base_corr fed to
+        sample_group_truth -- correlation between A's and B's item-level
+        truth (1.0 = identical item; <1.0 = "different items/judges,
+        correlated quality").
     """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
 
-    sources: list[CIPairSource] = []
-    icc_list = list(icc_values)
     d_list = list(cohens_d_values)
     if include_null:
         d_list = [0.0] + [d for d in d_list if d > 0.0]
+
+    if run_noise_fracs is not None:
+        return _build_pair_sources_multirun(
+            suite, d_list, run_noise_fracs, heteroscedastic=heteroscedastic,
+            pairwise_noise_grid=pairwise_noise_grid, pairwise_noise_grid_max=pairwise_noise_grid_max,
+            pairwise_noise_grid_seed=pairwise_noise_grid_seed, cross_item_rho=cross_item_rho,
+        )
+
+    sources: list[CIPairSource] = []
+    icc_list = list(icc_values)
 
     for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
         param_shapes = [s for s in _tier_shapes(catalog, suite) if s.kind == "param"]
@@ -805,22 +1132,7 @@ def build_pair_sources(
     # not part of the shape catalog (no icc/shape decomposition; these are
     # literally pre-specified joint discordance probabilities), kept as-is.
     if suite in ("expanded", "extreme"):
-        asym_binary_specs: list[tuple[str, float, float, float]] = [
-            ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
-            ("binary-onesided-pos-extreme", 0.384, 0.001, 0.000),
-            ("binary-onesided-neg-strong", 0.020, 0.300, 0.050),
-            ("binary-onesided-pos-strong", 0.300, 0.020, 0.050),
-            ("binary-onesided-neg-ultra", 0.000, 0.520, 0.000),
-            ("binary-onesided-pos-ultra", 0.520, 0.000, 0.000),
-            ("binary-onesided-neg-sparse", 0.001, 0.090, 0.030),
-            ("binary-onesided-pos-sparse", 0.090, 0.001, 0.030),
-            ("binary-onesided-neg-near-ceil", 0.000, 0.080, 0.900),
-            ("binary-onesided-pos-near-floor", 0.080, 0.000, 0.020),
-            ("binary-onesided-neg-moderate", 0.050, 0.220, 0.150),
-            ("binary-onesided-pos-moderate", 0.220, 0.050, 0.150),
-        ]
-
-        for shape_label, p10, p01, p11 in asym_binary_specs:
+        for shape_label, p10, p01, p11 in _ASYM_BINARY_SPECS:
             p00 = 1.0 - (p11 + p10 + p01)
             if p00 <= 0.0:
                 raise ValueError(f"Invalid asymmetric binary scenario {shape_label}: probabilities sum to >= 1.0")
@@ -864,12 +1176,17 @@ def _estimate_true_mean_mc_runs(
     return float(np.mean(generate_runs(rng, n_mc, 1)))
 
 
-def build_multirun_sources(
+def _legacy_build_multirun_sources(
     run_noise_fracs: list[float],
     suite: str = "standard",
     heteroscedastic: bool = False,
 ) -> list[CISource]:
-    """Build single-sample multi-run sources parameterised by run_noise_frac.
+    """UNUSED -- kept for reference only. Pre-unification implementation,
+    superseded by build_single_sample_sources' run_noise_fracs param (which
+    sweeps the same icc = 1 - f_run axis through sample_group_truth(k=1)
+    instead of a separate bespoke per-shape generator catalog).
+
+    Build single-sample multi-run sources parameterised by run_noise_frac.
 
     DGPs (matching build_single_sample_sources' shape families):
       binary:     Bernoulli-Beta hierarchical. p_i ~ Beta(conc*p0, conc*(1-p0)),
@@ -1263,7 +1580,12 @@ def build_multirun_sources(
 # have independently swept run-noise fractions (f_A, f_B).
 
 
-def build_pair_multirun_sources(
+def _legacy_build_pair_multirun_sources(
+    # UNUSED -- kept for reference only. Pre-unification implementation,
+    # superseded by build_pair_sources' run_noise_fracs/cross_item_rho/
+    # pairwise_noise_grid params (which route through sample_group_truth's
+    # base_corr/per-group-icc generalization instead of a separate bespoke
+    # per-shape generator catalog).
     run_noise_fracs: list[float],
     suite: str = "standard",
     cohens_d_values: list[float] | None = None,

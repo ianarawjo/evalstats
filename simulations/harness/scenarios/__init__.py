@@ -31,8 +31,9 @@ class CISource:
     benchmark_id: str | None = None
     generate_runs: Callable[[np.random.Generator, int, int], np.ndarray] | None = None
     """Multi-run analogue of ``generate``: ``generate_runs(rng, n, runs) -> (n, runs)``
-    ndarray. Set only by ``scenarios.synthetic.build_multirun_sources`` (used by
-    ``cases/ci_single.py``'s ``--nested-mode``); ``None`` for ordinary flat sources."""
+    ndarray. Set only by ``scenarios.synthetic.build_single_sample_sources``'s
+    ``run_noise_fracs`` param (used by ``cases/ci_single.py``'s
+    ``--nested-mode``); ``None`` for ordinary flat sources."""
     run_noise_frac: float | None = None
     """f_run = sigma^2_run / (sigma^2_input + sigma^2_run); set alongside ``generate_runs``."""
 
@@ -63,8 +64,9 @@ class CIPairSource:
     run_noise_frac: float = 0.0
     run_noise_frac_a: float = 0.0
     run_noise_frac_b: float = 0.0
-    """Set (alongside ``icc``) by ``scenarios.synthetic.build_pair_multirun_sources``,
-    used by ``cases/ci_paired.py``'s ``--nested-mode``; 0.0 for ordinary sources."""
+    """Set (alongside ``icc``) by ``scenarios.synthetic.build_pair_sources``'s
+    ``run_noise_fracs`` param, used by ``cases/ci_paired.py``'s
+    ``--nested-mode``; 0.0 for ordinary sources."""
 
 
 @dataclass

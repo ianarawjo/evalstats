@@ -71,7 +71,6 @@ from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
     build_single_sample_sources,
-    build_multirun_sources,
 )
 from ..scenarios.real_data import SOURCES as REAL_DATA_SOURCES, build_real_data_sources
 from ..methods import (
@@ -137,7 +136,7 @@ class SimResult:
     corpus_size: int | None = None
     corpus_mean: float | None = None
     run_noise_frac: float = 0.0
-    """f_run for --nested-mode rows (scenarios.synthetic.build_multirun_sources); 0.0 otherwise."""
+    """f_run for --nested-mode rows (scenarios.synthetic.build_single_sample_sources' run_noise_fracs); 0.0 otherwise."""
     runs: int = 1
     """Runs per input for --nested-mode rows; 1 (flat) otherwise."""
 
@@ -1112,7 +1111,9 @@ def run(args: argparse.Namespace) -> CaseResult:
             runs_list = args.runs_sweep if args.runs_sweep else [args.runs]
 
             print(f"\nci_single simulation (nested mode) -- runs={runs_list}, run_noise_fracs={run_noise_fracs}")
-            sources = build_multirun_sources(run_noise_fracs, suite=args.scenario_suite, heteroscedastic=args.heteroscedastic)
+            sources = build_single_sample_sources(
+                suite=args.scenario_suite, run_noise_fracs=run_noise_fracs, heteroscedastic=args.heteroscedastic,
+            )
             if args.eval_types:
                 requested = set(args.eval_types)
                 sources = [s for s in sources if s.eval_type in requested]

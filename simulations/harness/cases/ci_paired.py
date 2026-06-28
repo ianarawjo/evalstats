@@ -77,7 +77,6 @@ from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
     build_pair_sources,
-    build_pair_multirun_sources,
 )
 from ..scenarios.real_data import PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
 from ..methods import (
@@ -134,7 +133,7 @@ class SimResult:
     corpus_size: int | None = None
     true_diff: float | None = None
     run_noise_frac: float = 0.0
-    """f_run for --nested-mode rows (scenarios.synthetic.build_pair_multirun_sources); 0.0 otherwise."""
+    """f_run for --nested-mode rows (scenarios.synthetic.build_pair_sources' run_noise_fracs); 0.0 otherwise."""
     runs: int = 1
     """Runs per input for --nested-mode rows; 1 (flat) otherwise."""
 
@@ -1189,9 +1188,9 @@ def run(args: argparse.Namespace) -> CaseResult:
             runs_list = args.runs_sweep if args.runs_sweep else [args.runs]
 
             print(f"\nci_paired simulation (nested mode) -- runs={runs_list}, run_noise_fracs={run_noise_fracs}")
-            sources = build_pair_multirun_sources(
-                run_noise_fracs, suite=args.scenario_suite, cohens_d_values=args.cohens_d_values,
-                include_null=args.include_null, heteroscedastic=args.heteroscedastic,
+            sources = build_pair_sources(
+                suite=args.scenario_suite, cohens_d_values=args.cohens_d_values,
+                include_null=args.include_null, run_noise_fracs=run_noise_fracs, heteroscedastic=args.heteroscedastic,
                 pairwise_noise_grid=args.pairwise_noise_grid, pairwise_noise_grid_max=args.pairwise_noise_grid_max,
                 pairwise_noise_grid_seed=args.pairwise_noise_grid_seed, cross_item_rho=args.cross_item_rho,
             )

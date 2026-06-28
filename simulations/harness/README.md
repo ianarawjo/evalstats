@@ -73,15 +73,34 @@ instead of each case (or each *mode* within a case) defining its own:
   OpenEval / Inspect-AI *pairing* (ported from `sim_tango_real.py`),
   exposed as `CIPairSource` (`generate_pair(rng, n, runs) -> (a, b)`,
   `true_diff`) for `cases/ci_paired.py`.
-- `scenarios/synthetic.py` also has `build_multirun_sources()` and
-  `build_pair_multirun_sources()` (ported from
-  `sim_compare_boot_nested.py`), parameterized by `run_noise_frac` rather
-  than ICC, for `cases/ci_single.py`'s and `cases/ci_paired.py`'s
-  `--nested-mode` -- a separate axis (run-noise sweep, not icc/shape sweep)
-  from the unification above, left untouched. `CISource` gained an optional
-  `generate_runs(rng, n, runs) -> (n, runs)` field for this (`None` for
-  ordinary flat sources); `CIPairSource.generate_pair` was already
-  `runs`-aware so no interface change was needed there.
+- `cases/ci_single.py`'s and `cases/ci_paired.py`'s `--nested-mode`
+  (multi-run, parameterized by `run_noise_frac` rather than ICC -- `f_run =
+  1 - icc`) is now an optional axis on the SAME `build_single_sample_sources`
+  / `build_pair_sources` functions, not a separate generator catalog:
+  - `build_single_sample_sources(suite, run_noise_fracs=None,
+    heteroscedastic=False)`: when `run_noise_fracs` is given, every shape
+    (including "custom" ones, via an MC-estimated base variance) gets one
+    `CISource` per `f_run` with `generate_runs(rng, n, runs) -> (n, runs)`
+    set; `None` (the default) keeps the original single-run-only behavior.
+  - `build_pair_sources(..., run_noise_fracs=None, heteroscedastic=False,
+    pairwise_noise_grid=False, cross_item_rho=0.7)`: when `run_noise_fracs`
+    is given, sweeps `(f_a, f_b)` pairs (independent A/B run-noise, or the
+    full cross product under `pairwise_noise_grid`) through
+    `sample_group_truth`'s `base_corr` (= `cross_item_rho`, a Gaussian-copula
+    "different items/judges, correlated quality" model -- 1.0 = fully
+    shared item, the non-multi-run default) and per-group `icc` (`[1 - f_a,
+    1 - f_b]`); `None` keeps the original icc_values x Cohen's-d sweep with
+    `base_corr=1.0` unchanged. The asym-binary stress-test block gets a
+    matching `redraw_frac` run-noise mechanism in this mode.
+  - `sample_group_truth` itself grew the `base_corr` and per-group-`icc`
+    parameters (plus `heteroscedastic`) to support this -- see its
+    docstring. The pre-unification implementations are kept as
+    `_legacy_build_multirun_sources()` / `_legacy_build_pair_multirun_sources()`
+    (unused, reference-only, same pattern as the `_legacy_build_*` functions
+    above).
+  - `CISource.generate_runs(rng, n, runs) -> (n, runs)` (`None` for ordinary
+    flat sources) is the field this populates; `CIPairSource.generate_pair`
+    was already `runs`-aware so no interface change was needed there.
 
 ## Shared method registry
 
@@ -241,3 +260,22 @@ per-mode legacy-script parity). Verification shifted to:
   `logit_t`'s poor coverage on zero/one-inflated continuous shapes and on
   likert/grades scores generally -- confirmed present identically in
   `_legacy_build_single_sample_sources`, not introduced by the merge).
+- **`--nested-mode`'s run_noise_fracs unification** (`build_single_sample_sources`
+  /`build_pair_sources` absorbing `_legacy_build_multirun_sources`/
+  `_legacy_build_pair_multirun_sources`): algebraically derived (and then
+  numerically confirmed) that `sample_group_truth(k=1, icc=1-f_run, runs>1)`
+  reproduces every "param" shape's run-noise-frac formula exactly (binary's
+  Beta-Bernoulli concentration, continuous's fixed-base/growing-noise model,
+  likert/grades' fixed-total-variance split) -- mean/within-item-variance
+  matched the legacy generator to MC precision across binary, continuous,
+  likert, grades, and every custom shape (zero/one-inflated, mixtures,
+  heavy-tail), homoscedastic and heteroscedastic. For pairs,
+  `sample_group_truth`'s new `base_corr` (Gaussian-copula item-level
+  correlation, generalizing `cross_item_rho` to arbitrary k) and per-group
+  `icc` reproduce `_legacy_build_pair_multirun_sources`' mean/variance/
+  cross-correlation across all four eval types once `corr=0.0` is passed for
+  the noise layer (the legacy pair-multirun model never correlated noise
+  across A/B, only the base) -- the asym-binary stress-test's `redraw_frac`
+  mechanism (item-vs-fresh-draw mixing) matched bit-for-bit (0 mismatches
+  across all 12 specs, exact RNG-stream parity, since that block's generator
+  was copied verbatim into the new `build_pair_sources` path).
