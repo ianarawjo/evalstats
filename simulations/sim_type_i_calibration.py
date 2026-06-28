@@ -44,8 +44,12 @@ Factors swept (one at a time from a fixed baseline):
   sample size    n = 30, 60, 200, 400
   balance        group size ratio 1:1, 2:1, 4:1  (independent tests only)
   label frac     3%, 8%, 20%, 40% of items have human labels
+    label mechanism random MCAR labels vs MNAR labels (truth-dependent propensity)
   LLM noise      additive iid noise σ = 0.0, 0.10, 0.35, 0.70
-  bias type      none / constant (equal for all groups) / differential (one group)
+    bias type      none / constant (equal for all groups) / differential (one group)
+    scale bias     global slope distortion in judge calibration (shared across groups)
+    group calib    group-specific intercept+slope calibration mismatch
+    repeated corr  correlated judge errors within repeated-measures subjects
   heteroskedastic  different LLM noise SD per group
   stress         extreme combinations (small+sparse, large+noisy, etc.)
 
@@ -74,11 +78,12 @@ assumed to be 0. Use --no-effect-check to skip this second check entirely.
 A third, separate mode (--effect-size) checks STATISTICAL POWER instead of
 Type I error: every scenario in the SAME grid normally draws every group/
 condition from an identical true distribution (only the LLM-judge artifacts —
-bias_type, llm_noise — ever differ between groups), so nothing in the default
+bias_type, llm_noise, calibration slope, and repeated-error correlation — ever
+differ between groups), so nothing in the default
 sweep ever tests whether the corrected test can detect a real effect, only
 whether it avoids false positives when there isn't one. --effect-size N
 injects a real, monotonic mean shift of size N into the truth itself (group/
-condition 0 unshifted, 1 gets +N, 2 gets +2N) across the exact same 31-scenario
+condition 0 unshifted, 1 gets +N, 2 gets +2N) across the exact same scenario
 grid, and the printed table becomes "STATISTICAL POWER" — rejection rate is now
 the GOOD outcome (low power is flagged, not high). This automatically disables
 the bias/coverage/width effect-size check (its gold-reference null assumes H0,
@@ -208,6 +213,22 @@ class Scenario:
     bias_type: str = "differential"  # 'none', 'constant', 'differential'
     bias_delta: float = 0.30         # group-A inflation for 'differential'
     bias_const: float = 0.40         # shared inflation for 'constant'
+    # Extra per-group calibration intercepts (added on top of bias_type).
+    bias_extra_a: float = 0.0
+    bias_extra_b: float = 0.0
+    bias_extra_c: float = 0.0
+    bias_extra_d: float = 0.0        # used by 4-group lmm_factorial only
+    # Per-group calibration slopes; 1.0 means no scale distortion.
+    slope_a: float = 1.0
+    slope_b: float = 1.0
+    slope_c: float = 1.0
+    slope_d: float = 1.0             # used by 4-group lmm_factorial only
+    # Label mechanism: default MCAR; optional MNAR by truth-dependent propensity.
+    label_mnar: bool = False
+    mnar_strength: float = 1.0
+    mnar_mode: str = "high"          # 'high' or 'extreme'
+    # Correlation of judge errors within repeated-measures subjects.
+    repeated_corr: float = 0.0
     effect_size: float = 0.0         # TRUE mean shift injected into truth itself (not an LLM
                                       # artifact like bias_*) — 0.0 reproduces the Type I sweep
                                       # exactly; >0 turns the same grid into a power sweep (see
@@ -221,6 +242,10 @@ def _build_scenarios() -> list[Scenario]:
         dist="normal", n=100, n2=None, n3=None,
         label_frac=0.20, llm_noise=0.20, llm_noise2=None, llm_noise3=None,
         bias_type="differential", bias_delta=0.30, bias_const=0.40,
+        bias_extra_a=0.0, bias_extra_b=0.0, bias_extra_c=0.0, bias_extra_d=0.0,
+        slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0,
+        label_mnar=False, mnar_strength=1.0, mnar_mode="high",
+        repeated_corr=0.0,
     )
 
     S: list[Scenario] = []
@@ -245,6 +270,11 @@ def _build_scenarios() -> list[Scenario]:
     for lab in [0.05, 0.10, 0.20, 0.40]:
         S.append(sc(f"lab·{lab:.0%}", "label_frac", label_frac=lab))
 
+    # ── Label mechanism (MCAR vs MNAR) ───────────────────────────────────────
+    S.append(sc("label·mcar", "label_mechanism", label_mnar=False, mnar_strength=0.0))
+    S.append(sc("label·mnar-mild", "label_mechanism", label_mnar=True, mnar_strength=0.8, mnar_mode="high"))
+    S.append(sc("label·mnar-strong", "label_mechanism", label_mnar=True, mnar_strength=1.6, mnar_mode="high"))
+
     # ── LLM noise ────────────────────────────────────────────────────────────
     for noise in [0.0, 0.10, 0.35, 0.70]:
         S.append(sc(f"noise·{noise}", "llm_noise", llm_noise=noise))
@@ -252,6 +282,45 @@ def _build_scenarios() -> list[Scenario]:
     # ── Bias type ─────────────────────────────────────────────────────────────
     for bt in ["none", "constant", "differential"]:
         S.append(sc(f"bias·{bt}", "bias_type", bias_type=bt))
+
+    # ── Scale/slope calibration bias ─────────────────────────────────────────
+    S.append(sc("scale·none", "scale_bias", bias_type="none", slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0))
+    S.append(sc("scale·compress", "scale_bias", bias_type="none", slope_a=0.80, slope_b=0.80, slope_c=0.80, slope_d=0.80))
+    S.append(sc("scale·expand", "scale_bias", bias_type="none", slope_a=1.20, slope_b=1.20, slope_c=1.20, slope_d=1.20))
+
+    # ── Group-specific differential calibration (intercept + slope) ──────────
+    S.append(sc("gcal·none", "group_calibration", bias_type="none"))
+    S.append(sc(
+        "gcal·mild",
+        "group_calibration",
+        bias_type="none",
+        bias_extra_a=0.15,
+        bias_extra_b=-0.05,
+        bias_extra_c=0.05,
+        bias_extra_d=-0.10,
+        slope_a=1.15,
+        slope_b=0.95,
+        slope_c=1.05,
+        slope_d=0.90,
+    ))
+    S.append(sc(
+        "gcal·strong",
+        "group_calibration",
+        bias_type="none",
+        bias_extra_a=0.30,
+        bias_extra_b=-0.10,
+        bias_extra_c=0.10,
+        bias_extra_d=-0.20,
+        slope_a=1.30,
+        slope_b=0.90,
+        slope_c=1.10,
+        slope_d=0.80,
+    ))
+
+    # ── Correlated repeated-measures judge errors ────────────────────────────
+    S.append(sc("corr·0.0", "repeated_corr", repeated_corr=0.0, bias_type="none"))
+    S.append(sc("corr·0.3", "repeated_corr", repeated_corr=0.3, bias_type="none"))
+    S.append(sc("corr·0.7", "repeated_corr", repeated_corr=0.7, bias_type="none"))
 
     # ── Heteroskedastic LLM noise ─────────────────────────────────────────────
     S.append(sc("hetero·mild",    "heteroskedastic",
@@ -328,6 +397,26 @@ def _validate_scenarios(scenarios: list[Scenario]) -> None:
                 f"Scenario {sc.name!r} has group size {smallest_n}, "
                 f"which violates n_lab >= {_MIN_LAB}."
             )
+        if not (0.0 <= sc.repeated_corr < 1.0):
+            raise ValueError(
+                f"Scenario {sc.name!r} has repeated_corr={sc.repeated_corr}; "
+                "must satisfy 0 <= repeated_corr < 1."
+            )
+        if sc.mnar_mode not in {"high", "extreme"}:
+            raise ValueError(
+                f"Scenario {sc.name!r} has mnar_mode={sc.mnar_mode!r}; "
+                "expected 'high' or 'extreme'."
+            )
+        for slope_name, slope in {
+            "slope_a": sc.slope_a,
+            "slope_b": sc.slope_b,
+            "slope_c": sc.slope_c,
+            "slope_d": sc.slope_d,
+        }.items():
+            if slope <= 0.0:
+                raise ValueError(
+                    f"Scenario {sc.name!r} has {slope_name}={slope}; slope must be > 0."
+                )
 
 
 _validate_scenarios(SCENARIOS)
@@ -364,6 +453,14 @@ def _biases(sc: Scenario) -> tuple[float, float, float]:
     raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
 
 
+def _judge_params_3(sc: Scenario) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """Return per-group (bias, slope) for 3-group designs."""
+    b1, b2, b3 = _biases(sc)
+    biases = (b1 + sc.bias_extra_a, b2 + sc.bias_extra_b, b3 + sc.bias_extra_c)
+    slopes = (sc.slope_a, sc.slope_b, sc.slope_c)
+    return biases, slopes
+
+
 def _biases_4(sc: Scenario) -> tuple[float, float, float, float]:
     """Same bias_type semantics as ``_biases`` but for lmm_factorial's 4
     groups (2x2 crossed factors) instead of 3."""
@@ -376,32 +473,135 @@ def _biases_4(sc: Scenario) -> tuple[float, float, float, float]:
     raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
 
 
-def _llm(truth: np.ndarray, bias: float, noise_sd: float, rng: np.random.Generator) -> np.ndarray:
+def _judge_params_4(
+    sc: Scenario,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Return per-group (bias, slope) for 4-group designs."""
+    b1, b2, b3, b4 = _biases_4(sc)
+    biases = (
+        b1 + sc.bias_extra_a,
+        b2 + sc.bias_extra_b,
+        b3 + sc.bias_extra_c,
+        b4 + sc.bias_extra_d,
+    )
+    slopes = (sc.slope_a, sc.slope_b, sc.slope_c, sc.slope_d)
+    return biases, slopes
+
+
+def _llm(
+    truth: np.ndarray,
+    bias: float,
+    noise_sd: float,
+    rng: np.random.Generator,
+    slope: float = 1.0,
+    anchor: float = 0.0,
+) -> np.ndarray:
+    pred = anchor + slope * (truth - anchor) + bias
     if noise_sd == 0.0:
-        return truth + bias
-    return truth + bias + rng.normal(0.0, noise_sd, len(truth))
+        return pred
+    return pred + rng.normal(0.0, noise_sd, len(truth))
 
 
-def _labels_independent(truth: np.ndarray, frac: float, rng: np.random.Generator) -> np.ndarray:
+def _llm_repeated(
+    truths: list[np.ndarray],
+    biases: list[float],
+    noise_sds: list[float],
+    slopes: list[float],
+    rng: np.random.Generator,
+    anchor: float,
+    corr: float,
+) -> list[np.ndarray]:
+    """Generate judge scores with optional within-subject error correlation."""
+    if len(truths) == 0:
+        return []
+    n = len(truths[0])
+    if corr <= 0.0:
+        return [
+            _llm(tr, b, s, rng, slope=m, anchor=anchor)
+            for tr, b, s, m in zip(truths, biases, noise_sds, slopes)
+        ]
+
+    corr_clamped = min(max(corr, 0.0), 0.999)
+    w_shared = math.sqrt(corr_clamped)
+    w_ind = math.sqrt(1.0 - corr_clamped)
+    shared = rng.normal(0.0, 1.0, n)
+    out: list[np.ndarray] = []
+    for tr, b, sd, m in zip(truths, biases, noise_sds, slopes):
+        pred = anchor + m * (tr - anchor) + b
+        if sd == 0.0:
+            out.append(pred)
+            continue
+        err = sd * (w_shared * shared + w_ind * rng.normal(0.0, 1.0, n))
+        out.append(pred + err)
+    return out
+
+
+def _label_indices(
+    signal: np.ndarray,
+    n_lab: int,
+    rng: np.random.Generator,
+    mnar: bool,
+    mnar_strength: float,
+    mnar_mode: str,
+) -> np.ndarray:
+    n = len(signal)
+    if (not mnar) or mnar_strength <= 0.0:
+        return rng.choice(n, n_lab, replace=False)
+
+    scale = float(np.std(signal, ddof=0))
+    if scale <= 1e-12:
+        return rng.choice(n, n_lab, replace=False)
+    z = (signal - float(np.mean(signal))) / scale
+    if mnar_mode == "high":
+        score = z
+    elif mnar_mode == "extreme":
+        score = np.abs(z)
+    else:
+        raise ValueError(f"Unknown mnar_mode: {mnar_mode!r}")
+
+    logits = mnar_strength * score
+    logits = logits - float(np.max(logits))
+    weights = np.exp(logits)
+    probs = weights / float(np.sum(weights))
+    return rng.choice(n, n_lab, replace=False, p=probs)
+
+
+def _labels_independent(
+    truth: np.ndarray,
+    frac: float,
+    rng: np.random.Generator,
+    mnar: bool = False,
+    mnar_strength: float = 1.0,
+    mnar_mode: str = "high",
+) -> np.ndarray:
     """Independent random label positions (for ttest/mw/anova_ind groups)."""
     n = len(truth)
     if n < _MIN_LAB:
         raise ValueError(f"Need n >= {_MIN_LAB} to enforce n_lab >= {_MIN_LAB}; got n={n}")
     n_lab = min(n, max(_MIN_LAB, int(round(n * frac))))
     lab = np.full(n, np.nan)
-    idx = rng.choice(n, n_lab, replace=False)
+    idx = _label_indices(truth, n_lab, rng, mnar, mnar_strength, mnar_mode)
     lab[idx] = truth[idx]
     return lab
 
 
-def _labels_shared(truths: list[np.ndarray], frac: float,
-                   rng: np.random.Generator) -> list[np.ndarray]:
+def _labels_shared(
+    truths: list[np.ndarray],
+    frac: float,
+    rng: np.random.Generator,
+    mnar: bool = False,
+    mnar_strength: float = 1.0,
+    mnar_mode: str = "high",
+) -> list[np.ndarray]:
     """Same subject positions labeled across all conditions (paired/repeated)."""
     n = len(truths[0])
     if n < _MIN_LAB:
         raise ValueError(f"Need n >= {_MIN_LAB} to enforce n_lab >= {_MIN_LAB}; got n={n}")
     n_lab = min(n, max(_MIN_LAB, int(round(n * frac))))
-    idx = rng.choice(n, n_lab, replace=False)
+    # Use a shared selection score so all repeated conditions keep identical
+    # labeled indices while still allowing MNAR propensity.
+    signal = np.mean(np.column_stack(truths), axis=1)
+    idx = _label_indices(signal, n_lab, rng, mnar, mnar_strength, mnar_mode)
     labs = []
     for truth in truths:
         lab = np.full(n, np.nan)
@@ -597,7 +797,8 @@ def _run_one(args: tuple) -> tuple[
     noise1 = sc.llm_noise
     noise2 = sc.llm_noise2 if sc.llm_noise2 is not None else sc.llm_noise
     noise3 = sc.llm_noise3 if sc.llm_noise3 is not None else sc.llm_noise
-    bias_a, bias_b, bias_c = _biases(sc)
+    anchor = _mu_null(sc.dist)
+    (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _judge_params_3(sc)
 
     # effect_size injects a REAL mean shift into the truth itself (monotonic:
     # group/condition 0 unshifted, 1 gets +effect_size, 2 gets +2*effect_size)
@@ -611,10 +812,16 @@ def _run_one(args: tuple) -> tuple[
     # ── Independent two-group data (ttest, mannwhitney) ────────────────────
     truth_a2 = _sample_truth(sc.dist, n1, rng)
     truth_b2 = _sample_truth(sc.dist, n2, rng) + es
-    llm_a2 = _llm(truth_a2, bias_a, noise1, rng)
-    llm_b2 = _llm(truth_b2, bias_b, noise2, rng)
-    lab_a2 = _labels_independent(truth_a2, sc.label_frac, rng)
-    lab_b2 = _labels_independent(truth_b2, sc.label_frac, rng)
+    llm_a2 = _llm(truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
+    llm_b2 = _llm(truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
+    lab_a2 = _labels_independent(
+        truth_a2, sc.label_frac, rng,
+        mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+    )
+    lab_b2 = _labels_independent(
+        truth_b2, sc.label_frac, rng,
+        mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+    )
 
     # ── Paired data (wilcoxon) ─────────────────────────────────────────────
     # n_subjects with shared within-subject baseline; H₀: no condition effect
@@ -626,20 +833,43 @@ def _run_one(args: tuple) -> tuple[
     else:
         truth_x = base_2 + rng.normal(0.0, _SIGMA_COND, n1)
         truth_y = base_2 + rng.normal(0.0, _SIGMA_COND, n1) + es
-    llm_x = _llm(truth_x, bias_a, noise1, rng)
-    llm_y = _llm(truth_y, bias_b, noise2, rng)
-    lab_x, lab_y = _labels_shared([truth_x, truth_y], sc.label_frac, rng)
+    llm_x, llm_y = _llm_repeated(
+        [truth_x, truth_y],
+        [bias_a, bias_b],
+        [noise1, noise2],
+        [slope_a, slope_b],
+        rng,
+        anchor=anchor,
+        corr=sc.repeated_corr,
+    )
+    lab_x, lab_y = _labels_shared(
+        [truth_x, truth_y],
+        sc.label_frac,
+        rng,
+        mnar=sc.label_mnar,
+        mnar_strength=sc.mnar_strength,
+        mnar_mode=sc.mnar_mode,
+    )
 
     # ── Independent three-group data (anova_ind) ───────────────────────────
     truth_a3 = _sample_truth(sc.dist, n1, rng)
     truth_b3 = _sample_truth(sc.dist, n2, rng) + es
     truth_c3 = _sample_truth(sc.dist, n3, rng) + 2 * es
-    llm_a3 = _llm(truth_a3, bias_a, noise1, rng)
-    llm_b3 = _llm(truth_b3, bias_b, noise2, rng)
-    llm_c3 = _llm(truth_c3, bias_c, noise3, rng)
-    lab_a3 = _labels_independent(truth_a3, sc.label_frac, rng)
-    lab_b3 = _labels_independent(truth_b3, sc.label_frac, rng)
-    lab_c3 = _labels_independent(truth_c3, sc.label_frac, rng)
+    llm_a3 = _llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
+    llm_b3 = _llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
+    llm_c3 = _llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor)
+    lab_a3 = _labels_independent(
+        truth_a3, sc.label_frac, rng,
+        mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+    )
+    lab_b3 = _labels_independent(
+        truth_b3, sc.label_frac, rng,
+        mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+    )
+    lab_c3 = _labels_independent(
+        truth_c3, sc.label_frac, rng,
+        mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+    )
 
     # ── Repeated-measures three-group data (anova_rep) ─────────────────────
     if sc.dist == "binary":
@@ -652,17 +882,30 @@ def _run_one(args: tuple) -> tuple[
         truth_A = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
         truth_B = base_3 + rng.normal(0.0, _SIGMA_COND, n1) + es
         truth_C = base_3 + rng.normal(0.0, _SIGMA_COND, n1) + 2 * es
-    llm_A = _llm(truth_A, bias_a, noise1, rng)
-    llm_B = _llm(truth_B, bias_b, noise2, rng)
-    llm_C = _llm(truth_C, bias_c, noise3, rng)
-    lab_A, lab_B, lab_C = _labels_shared([truth_A, truth_B, truth_C], sc.label_frac, rng)
+    llm_A, llm_B, llm_C = _llm_repeated(
+        [truth_A, truth_B, truth_C],
+        [bias_a, bias_b, bias_c],
+        [noise1, noise2, noise3],
+        [slope_a, slope_b, slope_c],
+        rng,
+        anchor=anchor,
+        corr=sc.repeated_corr,
+    )
+    lab_A, lab_B, lab_C = _labels_shared(
+        [truth_A, truth_B, truth_C],
+        sc.label_frac,
+        rng,
+        mnar=sc.label_mnar,
+        mnar_strength=sc.mnar_strength,
+        mnar_mode=sc.mnar_mode,
+    )
 
     # ── 2x2 crossed fixed-factor data (lmm_factorial) ──────────────────────
     # Own 4-group truth/llm/lab arrays (own random intercept), since the
     # 2x2 design (f1 x f2) has 4 conditions, not 3 — same monotonic
     # effect_size convention as truth_A/B/C above (group 0 unshifted, each
     # subsequent group +es), generalized to 4 groups.
-    bias_w, bias_x, bias_y, bias_z = _biases_4(sc)
+    (bias_w, bias_x, bias_y, bias_z), (slope_w, slope_x, slope_y, slope_z) = _judge_params_4(sc)
     if sc.dist == "binary":
         p_sub4 = rng.uniform(0.2, 0.8, n1)
         truth_W = rng.binomial(1, p_sub4, n1).astype(float)
@@ -675,12 +918,22 @@ def _run_one(args: tuple) -> tuple[
         truth_X = base_4 + rng.normal(0.0, _SIGMA_COND, n1) + es
         truth_Y = base_4 + rng.normal(0.0, _SIGMA_COND, n1) + 2 * es
         truth_Z = base_4 + rng.normal(0.0, _SIGMA_COND, n1) + 3 * es
-    llm_W = _llm(truth_W, bias_w, noise1, rng)
-    llm_X = _llm(truth_X, bias_x, noise2, rng)
-    llm_Y = _llm(truth_Y, bias_y, noise3, rng)
-    llm_Z = _llm(truth_Z, bias_z, noise1, rng)
+    llm_W, llm_X, llm_Y, llm_Z = _llm_repeated(
+        [truth_W, truth_X, truth_Y, truth_Z],
+        [bias_w, bias_x, bias_y, bias_z],
+        [noise1, noise2, noise3, noise1],
+        [slope_w, slope_x, slope_y, slope_z],
+        rng,
+        anchor=anchor,
+        corr=sc.repeated_corr,
+    )
     lab_W, lab_X, lab_Y, lab_Z = _labels_shared(
-        [truth_W, truth_X, truth_Y, truth_Z], sc.label_frac, rng
+        [truth_W, truth_X, truth_Y, truth_Z],
+        sc.label_frac,
+        rng,
+        mnar=sc.label_mnar,
+        mnar_strength=sc.mnar_strength,
+        mnar_mode=sc.mnar_mode,
     )
 
     # ── Nested run replication (lmm_runs) ───────────────────────────────────
@@ -689,9 +942,25 @@ def _run_one(args: tuple) -> tuple[
     # cell instead of one, exercising the GLS-sufficiency run-collapsing
     # path in _ppi_lmm_fixed_effects. Human labels stay single-valued per
     # item regardless of R (no run dimension on the labeled side).
-    llm_A_runs = np.column_stack([_llm(truth_A, bias_a, noise1, rng) for _ in range(_LMM_RUNS_R)])
-    llm_B_runs = np.column_stack([_llm(truth_B, bias_b, noise2, rng) for _ in range(_LMM_RUNS_R)])
-    llm_C_runs = np.column_stack([_llm(truth_C, bias_c, noise3, rng) for _ in range(_LMM_RUNS_R)])
+    a_cols: list[np.ndarray] = []
+    b_cols: list[np.ndarray] = []
+    c_cols: list[np.ndarray] = []
+    for _ in range(_LMM_RUNS_R):
+        rA, rB, rC = _llm_repeated(
+            [truth_A, truth_B, truth_C],
+            [bias_a, bias_b, bias_c],
+            [noise1, noise2, noise3],
+            [slope_a, slope_b, slope_c],
+            rng,
+            anchor=anchor,
+            corr=sc.repeated_corr,
+        )
+        a_cols.append(rA)
+        b_cols.append(rB)
+        c_cols.append(rC)
+    llm_A_runs = np.column_stack(a_cols)
+    llm_B_runs = np.column_stack(b_cols)
+    llm_C_runs = np.column_stack(c_cols)
 
     corrected_results: dict[str, bool | None] = {}
     uncorrected_results: dict[str, bool | None] = {}
@@ -950,10 +1219,11 @@ def _run_one_effect_anova(args: tuple) -> tuple[int, dict[str, tuple[float, floa
     n1 = sc.n
     n2 = sc.n2 if sc.n2 is not None else sc.n
     n3 = sc.n3 if sc.n3 is not None else sc.n
+    anchor = _mu_null(sc.dist)
     noise1 = sc.llm_noise
     noise2 = sc.llm_noise2 if sc.llm_noise2 is not None else sc.llm_noise
     noise3 = sc.llm_noise3 if sc.llm_noise3 is not None else sc.llm_noise
-    bias_a, bias_b, bias_c = _biases(sc)
+    (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _judge_params_3(sc)
 
     effect_results: dict[str, tuple[float, float, float, float]] = {}
 
@@ -968,12 +1238,21 @@ def _run_one_effect_anova(args: tuple) -> tuple[int, dict[str, tuple[float, floa
                 truth_a3 = _sample_truth(sc.dist, n1, rng)
                 truth_b3 = _sample_truth(sc.dist, n2, rng)
                 truth_c3 = _sample_truth(sc.dist, n3, rng)
-                llm_a3 = _llm(truth_a3, bias_a, noise1, rng)
-                llm_b3 = _llm(truth_b3, bias_b, noise2, rng)
-                llm_c3 = _llm(truth_c3, bias_c, noise3, rng)
-                lab_a3 = _labels_independent(truth_a3, sc.label_frac, rng)
-                lab_b3 = _labels_independent(truth_b3, sc.label_frac, rng)
-                lab_c3 = _labels_independent(truth_c3, sc.label_frac, rng)
+                llm_a3 = _llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
+                llm_b3 = _llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
+                llm_c3 = _llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor)
+                lab_a3 = _labels_independent(
+                    truth_a3, sc.label_frac, rng,
+                    mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+                )
+                lab_b3 = _labels_independent(
+                    truth_b3, sc.label_frac, rng,
+                    mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+                )
+                lab_c3 = _labels_independent(
+                    truth_c3, sc.label_frac, rng,
+                    mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
+                )
                 ppi = _ppi_anova_independent(
                     [llm_a3, llm_b3, llm_c3], [lab_a3, lab_b3, lab_c3],
                     ALPHA, n_boot, _rng_seed(),
@@ -994,10 +1273,23 @@ def _run_one_effect_anova(args: tuple) -> tuple[int, dict[str, tuple[float, floa
                     truth_A = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
                     truth_B = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
                     truth_C = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
-                llm_A = _llm(truth_A, bias_a, noise1, rng)
-                llm_B = _llm(truth_B, bias_b, noise2, rng)
-                llm_C = _llm(truth_C, bias_c, noise3, rng)
-                lab_A, lab_B, lab_C = _labels_shared([truth_A, truth_B, truth_C], sc.label_frac, rng)
+                llm_A, llm_B, llm_C = _llm_repeated(
+                    [truth_A, truth_B, truth_C],
+                    [bias_a, bias_b, bias_c],
+                    [noise1, noise2, noise3],
+                    [slope_a, slope_b, slope_c],
+                    rng,
+                    anchor=anchor,
+                    corr=sc.repeated_corr,
+                )
+                lab_A, lab_B, lab_C = _labels_shared(
+                    [truth_A, truth_B, truth_C],
+                    sc.label_frac,
+                    rng,
+                    mnar=sc.label_mnar,
+                    mnar_strength=sc.mnar_strength,
+                    mnar_mode=sc.mnar_mode,
+                )
 
                 if "anova_rep" in active_tests:
                     try:
