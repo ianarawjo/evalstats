@@ -1,25 +1,31 @@
-"""Canonical synthetic single-sample scenario library.
+"""Synthetic data for the eval-statistics simulation harness.
 
-Ported from ``simulations/sim_compare_boot.py``'s ``build_scenarios()``
-(non-pairwise branch) — see that module's history for provenance. This is
-the canonical synthetic distribution suite used by ``cases/ci_single.py``
-and intended to be the *one* place future cases (``ci_paired``, ``ci_nested``,
-``pvalues``) pull single-sample-equivalent generators from, so the paper can
-describe these distributions once.
+This file generates fake (but realistic-looking) LLM evaluation scores so we
+can run Monte Carlo simulations against them: draw many synthetic datasets,
+run a statistical method on each one, and check whether the method behaves
+the way it's supposed to (e.g. a 95% confidence interval should contain the
+true value about 95% of the time).
 
-Eval types
-----------
-binary      Bernoulli 0/1 (pass/fail judgements)
-continuous  Continuous floats in [0, 1] via Beta / logit-normal / inflated mixtures
-likert      Integer scores 1-5 (Likert-scale rubrics), latent-normal model
-grades      Scores 0-100 (test-like), truncated normal / mixture / heavy-tail
+Everything here is built around one idea: a single function,
+``sample_group_truth``, that generates scores for one or more groups (one
+group for a single benchmark run, two for an A/B comparison, three or more
+for a multi-model comparison) from a shared catalog of score-distribution
+"shapes". Every other function in this file is a thin wrapper around that
+one generator, so a given knob (how reliable scores are, how big an effect
+size is, how many groups there are) means the same thing no matter which
+part of the harness is using it.
 
-Suites
-------
-``standard`` is a compact suite covering the main shape families per eval
-type. ``expanded`` adds boundary/extreme/mixture variants. ``extreme`` is
-reserved for future stress-test scenarios (currently identical to
-``expanded`` — see [[Known exceptions]] in the harness README).
+Eval types (the four kinds of scores this harness models):
+  binary      pass/fail judgments, 0 or 1
+  continuous  a score between 0 and 1 (e.g. a probability or normalized score)
+  likert      a whole-number rating from 1 to 5 (a Likert-scale rubric)
+  grades      a score from 0 to 100 (like a test grade)
+
+Suites (how many shapes to test against):
+  standard  a compact set covering the main shape families for each eval type
+  expanded  adds edge cases: scores piled up near 0/1, mixtures, extreme skew
+  extreme   reserved for future, even harder stress tests; currently the
+            same as "expanded"
 """
 
 from __future__ import annotations
@@ -37,18 +43,26 @@ from . import CISource, CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPE
 SCENARIO_SUITES = ["standard", "expanded", "extreme"]
 RUN_NOISE_FRACS_DEFAULT = [0.01, 0.1, 0.3, 0.5]
 
-# Latent-scale total standard deviations for Likert / Grades, shared by
-# build_pair_sources, build_multiarm_sources, and build_judge_bias_sources'
-# truth model -- fixes the total marginal std for each score type so a
-# given (icc, cohens_d) means the same thing everywhere it's used.
-_LIKERT_TOTAL_STD = 1.2  # latent scale, maps to {1,...,5} after rounding
-_GRADES_TOTAL_STD = 20.0  # [0, 100] scale
+# Fixed total spread (standard deviation) for the Likert and Grades scales,
+# measured on their underlying continuous "latent" scale (see sample_group_truth
+# below for what that means). Every function that builds Likert/Grades
+# scenarios uses these same two numbers, so an effect size like "0.3 standard
+# deviations" always corresponds to the same real point gap, no matter which
+# simulation is running.
+_LIKERT_TOTAL_STD = 1.2  # latent scale, rounded to the nearest whole number in {1,...,5}
+_GRADES_TOTAL_STD = 20.0  # 0-100 scale
 
 
 def _true_mean_clipped_normal(
     mu: float, sigma: float, lo: float = 0.0, hi: float = 100.0
 ) -> float:
-    """Population mean of Normal(mu, sigma) clipped to [lo, hi] via large sample."""
+    """Average value of a Normal(mu, sigma) distribution after clamping it to [lo, hi].
+
+    Clamping shifts the mean away from `mu` (values that would have fallen
+    outside the range pile up at the boundary instead), so we estimate the
+    post-clamp mean by drawing a large sample rather than computing it in
+    closed form.
+    """
     rng = np.random.default_rng(0)
     return float(np.clip(rng.normal(mu, sigma, size=2_000_000), lo, hi).mean())
 
@@ -59,28 +73,34 @@ def _estimate_true_mean_mc(
     seed: int = 0,
     n_mc: int = 500_000,
 ) -> float:
-    """Estimate population mean via large Monte Carlo draw for complex generators.
+    """Estimate a generator's true average by drawing a very large sample from it.
 
-    Uses n_mc=500,000 samples. For all scenarios used here the resulting MC
-    standard error is < 0.001 (well below the CI widths under study), so
-    estimand error is negligible relative to method-comparison noise.
+    Some shapes (mixtures, inflated distributions, etc.) don't have a
+    closed-form formula for their mean, so we just draw 500,000 values and
+    average them. At that sample size the estimate is accurate to well
+    under 0.001, far smaller than anything we're trying to measure.
     """
     rng = np.random.default_rng(seed)
     return float(np.mean(generate(rng, n_mc)))
 
 
 def _binary_conc_from_icc(icc: float) -> float:
-    """Beta concentration for Bernoulli input probabilities giving target ICC.
+    """Convert a target reliability (ICC) into a Beta-distribution concentration.
 
-    For a Bernoulli-Beta hierarchical model where per-input success probabilities
-    are drawn from Beta(conc*p0, conc*(1-p0)), the intraclass correlation of
-    observed scores is ICC = 1/(conc + 1). Inverted: conc = 1/ICC - 1.
+    Binary (pass/fail) scores are generated by giving each input its own
+    pass probability, drawn from a Beta distribution centered on the
+    overall pass rate. A tighter (higher-concentration) Beta means most
+    inputs end up with similar pass probabilities, i.e. less of the
+    observed variation in scores is "real" item-to-item variation, so the
+    intraclass correlation (ICC) -- the fraction of variance that's between
+    items rather than just noise -- is lower. Concretely, ICC = 1/(conc+1),
+    so we invert that to get conc = 1/ICC - 1.
     """
     return max(1.0 / max(icc, 1e-9) - 1.0, 0.1)
 
 
 def _beta_var(a: float, b: float) -> float:
-    """Variance of Beta(a, b)."""
+    """Variance of a Beta(a, b) distribution (closed-form formula)."""
     return a * b / ((a + b) ** 2 * (a + b + 1))
 
 
@@ -90,10 +110,11 @@ def _estimate_true_pair_diff(
     seed: int = 0,
     n_mc: int = 300_000,
 ) -> float:
-    """Estimate E[cell_mean(A) - cell_mean(B)] via a large synthetic sample.
+    """Estimate the true average gap between group A and group B for a pair generator.
 
-    Uses n_mc=300,000 items (single run). The resulting MC standard error on
-    the true diff is negligible relative to the CI widths under study.
+    Draws a large sample (300,000 items) from both groups and averages the
+    per-item difference. Used as the "ground truth" that a confidence
+    interval is later checked against.
     """
     rng = np.random.default_rng(seed)
     a, b = generate_pair(rng, n_mc, 1)
@@ -101,51 +122,57 @@ def _estimate_true_pair_diff(
 
 
 # ---------------------------------------------------------------------------
-# Unified per-eval-type shape catalog + truth/noise generator
+# The shape catalog and the truth/noise generator shared by every scenario
 # ---------------------------------------------------------------------------
-# ONE shape catalog (binary/continuous/likert/grades) and ONE generator
-# function (sample_group_truth) shared by build_single_sample_sources (k=1),
-# build_pair_sources (k=2), build_multiarm_sources (k>=2), and
-# build_judge_bias_sources' truth model (picks one representative shape) --
-# so a given (icc, cohens_d) means the same thing everywhere, and the paper
-# can describe one truth-generating process per eval type instead of one
-# per simulation mode. Merges and supersedes both this file's previous,
-# independently-evolved build_single_sample_sources catalog (richer shape
-# variety: mixtures, inflated, heavy-tailed, bimodal) and build_pair_sources
-# catalog (icc-parameterized, but narrower shape variety) -- the merged
-# catalog keeps every shape family from both (see _legacy_* functions above
-# for the pre-merge originals).
+# This is the heart of the file: one catalog of score-distribution shapes
+# per eval type (binary/continuous/likert/grades), and one function,
+# sample_group_truth, that turns a shape into actual sampled scores for one
+# or more groups. Every "build_*_sources" function below is a thin wrapper
+# that picks shapes from this catalog and feeds them through
+# sample_group_truth -- so a single-run scenario, a two-group comparison,
+# and a five-model comparison are all generated by the exact same machinery,
+# and knobs like "reliability" (ICC) or "effect size" mean the same thing
+# regardless of which kind of scenario is using them.
 #
-# "param" shapes are smooth parametric families that support ANY k via the
-# icc/corr noise-layering below. "custom" shapes (mixtures, inflated, heavy-
-# tailed, bimodal) are bespoke one-off generators that only make sense as a
-# single population characteristic -- usable only at k=1, matching their
-# scope before this unification (sim_compare_boot.py never had pair/multi-
-# arm analogues for them either).
+# Each shape is one of two kinds:
+#   "param"   a smooth, well-known family (Beta, Normal, etc.) described by
+#             a few numeric parameters. Works for any number of groups.
+#   "custom"  a bespoke one-off sampler for a specific tricky shape: a
+#             mixture of two populations, scores piled up at a boundary
+#             (e.g. many zeros), heavy tails, etc. These exist to stress-test
+#             statistical methods against realistic "ugly" distributions
+#             that a clean parametric family wouldn't capture.
 
 
 @dataclass(frozen=True)
 class ShapeSpec:
+    """One entry in the shape catalog: a recipe for generating one eval type's scores."""
+
     label: str
     eval_type: str
     kind: str  # "param" | "custom"
     params: tuple | float | None = None
-    """binary: base_p (float); continuous: (a, b); likert/grades: (mu, total_std)."""
+    """The shape's numeric parameters, meaning depends on eval_type:
+    binary -> base pass rate (a float); continuous -> Beta distribution's
+    (a, b); likert/grades -> (mean, total spread) on the latent scale."""
     custom_sampler: Callable[[np.random.Generator, int], np.ndarray] | None = None
-    """For kind="custom": draws n FINAL (already clipped/rounded) values
-    directly for one population/item draw. Any k and any base_corr are
-    supported via sample_group_truth (base_corr<1.0 partial agreement uses
-    an empirical-quantile copula -- see _custom_shape_inverse_cdf -- since
-    these bespoke samplers have no closed-form .ppf())."""
+    """For kind="custom" only: a function that draws n finished scores
+    (already clamped to range and rounded if needed) directly. Works for
+    any number of groups, including partial agreement between groups
+    (see _custom_shape_inverse_cdf for how that's done without a
+    closed-form formula for this shape)."""
     suite_tier: str = "standard"  # "standard" | "expanded"
 
 
 def _tier_shapes(catalog: list[ShapeSpec], suite: str) -> list[ShapeSpec]:
+    """Filter a shape catalog down to the shapes included in a given suite."""
     if suite in ("expanded", "extreme"):
         return catalog
     return [s for s in catalog if s.suite_tier == "standard"]
 
 
+# Binary shapes: params is just the overall pass rate. Covers the full
+# range from rare successes (p=0.02) to near-universal ones (p=0.98).
 BINARY_SHAPES: list[ShapeSpec] = [
     ShapeSpec("p=0.10", "binary", "param", 0.10),
     ShapeSpec("p=0.20", "binary", "param", 0.20),
@@ -161,6 +188,12 @@ BINARY_SHAPES: list[ShapeSpec] = [
     ShapeSpec("p=0.98", "binary", "param", 0.98, suite_tier="expanded"),
 ]
 
+# Continuous shapes: "param" entries are Beta(a, b) distributions on [0, 1]
+# (a == b gives a symmetric shape; a < b skews right/low, a > b skews
+# left/high; a, b < 1 piles values up near the 0/1 boundaries). "custom"
+# entries are scores that don't follow a clean Beta shape at all -- e.g.
+# "zero-inflated" models a judge that gives a flat 0 (a refusal, say) 70% of
+# the time and a normal Beta-distributed score the rest of the time.
 CONTINUOUS_SHAPES: list[ShapeSpec] = [
     ShapeSpec("cont-uniform", "continuous", "param", (1.0, 1.0)),
     ShapeSpec("cont-u-shaped", "continuous", "param", (0.5, 0.5)),
@@ -172,23 +205,33 @@ CONTINUOUS_SHAPES: list[ShapeSpec] = [
     ShapeSpec("cont-extreme-left", "continuous", "param", (6.0, 0.35), suite_tier="expanded"),
     ShapeSpec("cont-near-boundaries", "continuous", "param", (0.3, 0.3), suite_tier="expanded"),
     ShapeSpec("cont-near-center", "continuous", "param", (6.0, 6.0), suite_tier="expanded"),
-    ShapeSpec("cont-logit-normal", "continuous", "custom", custom_sampler=lambda rng, n: 1.0 / (1.0 + np.exp(-rng.normal(-0.35, 1.35, size=n)))),
+    ShapeSpec(
+        "cont-logit-normal", "continuous", "custom",
+        # A bell-curve score squeezed into [0, 1] -- a smooth alternative to Beta.
+        custom_sampler=lambda rng, n: 1.0 / (1.0 + np.exp(-rng.normal(-0.35, 1.35, size=n))),
+    ),
     ShapeSpec(
         "cont-zero-inflated", "continuous", "custom",
+        # 70% flat zeros (e.g. refusals/failures), 30% an ordinary Beta score.
         custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.70, 0.0, rng.beta(2.0, 4.0, n)),
     ),
     ShapeSpec(
         "cont-one-inflated", "continuous", "custom",
+        # 70% flat ones (perfect scores), 30% an ordinary Beta score.
         custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.70, 1.0, rng.beta(4.0, 2.0, n)),
     ),
     ShapeSpec(
         "cont-mixture", "continuous", "custom", suite_tier="expanded",
+        # Two different Beta populations blended together (55%/45%) instead
+        # of one -- e.g. an eval where two distinct strategies get used.
         custom_sampler=lambda rng, n: np.where(
             rng.binomial(1, 0.55, size=n).astype(bool), rng.beta(0.5, 4.0, n), rng.beta(5.5, 1.2, n),
         ),
     ),
 ]
 
+# Likert shapes: params is (mean, total spread) on the underlying continuous
+# scale, before it gets rounded to a whole number in {1, ..., 5}.
 LIKERT_SHAPES: list[ShapeSpec] = [
     ShapeSpec("likert-mid", "likert", "param", (3.0, 1.2)),
     ShapeSpec("likert-low", "likert", "param", (2.2, 1.2)),
@@ -203,14 +246,23 @@ LIKERT_SHAPES: list[ShapeSpec] = [
     ShapeSpec("likert-flat-middle", "likert", "param", (3.0, 1.4), suite_tier="expanded"),
     ShapeSpec(
         "likert-bimodal", "likert", "custom",
-        custom_sampler=lambda rng, n: np.clip(np.rint(np.where(rng.random(n) < 0.5, rng.normal(1.5, 0.65, n), rng.normal(4.5, 0.65, n))), 1.0, 5.0),
+        # Half the raters cluster low (~1.5), half cluster high (~4.5) --
+        # a "love it or hate it" pattern instead of one shared opinion.
+        custom_sampler=lambda rng, n: np.clip(
+            np.rint(np.where(rng.random(n) < 0.5, rng.normal(1.5, 0.65, n), rng.normal(4.5, 0.65, n))), 1.0, 5.0,
+        ),
     ),
     ShapeSpec(
         "likert-bimodal-extreme", "likert", "custom", suite_tier="expanded",
-        custom_sampler=lambda rng, n: np.clip(np.rint(np.where(rng.random(n) < 0.5, rng.normal(1.3, 0.50, n), rng.normal(4.7, 0.50, n))), 1.0, 5.0),
+        # Same love-it-or-hate-it split as above, but pushed closer to the
+        # 1/5 endpoints with less spread around each cluster.
+        custom_sampler=lambda rng, n: np.clip(
+            np.rint(np.where(rng.random(n) < 0.5, rng.normal(1.3, 0.50, n), rng.normal(4.7, 0.50, n))), 1.0, 5.0,
+        ),
     ),
 ]
 
+# Grades shapes: params is (mean, spread) on the 0-100 scale.
 GRADES_SHAPES: list[ShapeSpec] = [
     ShapeSpec("grades-mid", "grades", "param", (55.0, 20.0)),
     ShapeSpec("grades-low", "grades", "param", (35.0, 20.0)),
@@ -225,15 +277,24 @@ GRADES_SHAPES: list[ShapeSpec] = [
     ShapeSpec("grades-high-variance", "grades", "param", (50.0, 34.0), suite_tier="expanded"),
     ShapeSpec(
         "grades-mixture", "grades", "custom",
+        # Three separate clusters of students (low/mid/high performers, see
+        # _grade_mixture_sampler) instead of one smooth grade distribution.
         custom_sampler=lambda rng, n: np.clip(_grade_mixture_sampler(rng, n), 0.0, 100.0),
     ),
-    ShapeSpec("grades-heavy-tail", "grades", "custom", custom_sampler=lambda rng, n: np.clip(52.0 + 16.0 * rng.standard_t(df=3.0, size=n), 0.0, 100.0)),
+    ShapeSpec(
+        "grades-heavy-tail", "grades", "custom",
+        # A Normal-like shape, but with much fatter tails (occasional very
+        # high or very low outlier scores), via a Student-t distribution.
+        custom_sampler=lambda rng, n: np.clip(52.0 + 16.0 * rng.standard_t(df=3.0, size=n), 0.0, 100.0),
+    ),
     ShapeSpec(
         "grades-zero-spiked", "grades", "custom", suite_tier="expanded",
+        # 40% flat zeros (e.g. no-shows/zero credit), 60% an ordinary spread of grades.
         custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.40, 0.0, np.clip(rng.normal(45.0, 20.0, n), 0.0, 100.0)),
     ),
     ShapeSpec(
         "grades-hundred-spiked", "grades", "custom", suite_tier="expanded",
+        # 40% perfect scores, 60% an ordinary spread of grades.
         custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.40, 100.0, np.clip(rng.normal(65.0, 18.0, n), 0.0, 100.0)),
     ),
 ]
@@ -244,6 +305,9 @@ SHAPES_BY_EVAL_TYPE: dict[str, list[ShapeSpec]] = {
 
 
 def _grade_mixture_sampler(rng: np.random.Generator, n: int) -> np.ndarray:
+    """Draws scores for three separate clusters of students: 20% low scorers
+    (mean 22), 50% mid scorers (mean 58), 30% high scorers (mean 88) -- a
+    single grade distribution that's secretly three different populations."""
     flags = rng.choice(3, size=n, p=[0.20, 0.50, 0.30])
     vals = np.empty(n, dtype=float)
     for bucket, mu, sigma in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
@@ -253,9 +317,12 @@ def _grade_mixture_sampler(rng: np.random.Generator, n: int) -> np.ndarray:
 
 
 def _group_noise_var(eval_type: str, params, icc: float) -> float:
-    """Total per-group noise variance (Var(shared)+Var(indiv) at corr=0.5)
-    implied by icc, for one "param" shape. Binary has no separate Gaussian
-    noise layer (its within-item variability is the Bernoulli draw itself)."""
+    """How much extra item-to-item "wobble" (variance) to add on top of a
+    "param" shape's base values so the resulting scores have the target
+    reliability (icc). Lower icc means more of the spread in observed scores
+    is just noise rather than a real difference between items, so this
+    returns a bigger number as icc shrinks. Binary scores don't get this
+    extra noise layer -- their own pass/fail randomness already is the noise."""
     if eval_type == "continuous":
         a_beta, b_beta = params
         var_base = _beta_var(a_beta, b_beta)
@@ -267,12 +334,13 @@ def _group_noise_var(eval_type: str, params, icc: float) -> float:
 
 
 def group_total_std(shape: ShapeSpec, icc: float) -> float:
-    """Total marginal std of one shape's truth+noise model at a given icc --
-    so cohens_d * group_total_std(...) is the same effect-size convention
-    build_pair_sources/build_multiarm_sources/PPI all share. Custom shapes
-    use the same "fixed base variance, noise grows as icc shrinks"
-    convention as continuous param shapes, with an MC-estimated base
-    variance (_custom_shape_var) standing in for the closed-form one."""
+    """The overall spread (standard deviation) of one shape's generated
+    scores at a given reliability (icc) -- this is the "one unit" that
+    Cohen's d effect sizes are measured in everywhere in this harness, so
+    "d=0.3" always means "0.3 of this shape's actual spread," not some
+    fixed number. Custom shapes use a Monte-Carlo-estimated spread
+    (_custom_shape_var) in place of a textbook formula, since they don't
+    have one."""
     if shape.kind == "custom":
         return float(np.sqrt(_custom_shape_var(shape) / max(icc, 1e-9)))
     eval_type, params = shape.eval_type, shape.params
@@ -296,10 +364,10 @@ _CUSTOM_SHAPE_RANGE: dict[str, tuple[float, float, bool]] = {
 
 
 def _custom_shape_var(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 0) -> float:
-    """MC-estimated population variance of a "custom" shape's bare sampler
-    (no run-noise added) -- the analogue of _beta_var(a,b)/total_std**2 for
-    shapes with no closed-form variance. Memoized by label (custom_sampler
-    is a pure function of (rng, n) for every shape in the catalog)."""
+    """Estimate a custom shape's variance by drawing a large sample and
+    measuring it directly, since there's no textbook formula for a bespoke
+    mixture/inflated/heavy-tail sampler. Cached per shape, since the sampler
+    always produces the same statistical properties no matter when it's called."""
     if shape.label not in _CUSTOM_SHAPE_VAR_CACHE:
         rng = np.random.default_rng(seed)
         _CUSTOM_SHAPE_VAR_CACHE[shape.label] = float(np.var(shape.custom_sampler(rng, n_mc)))
@@ -307,9 +375,8 @@ def _custom_shape_var(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 0) -
 
 
 def _custom_shape_mean(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 1) -> float:
-    """MC-estimated population mean of a "custom" shape's bare sampler --
-    the analogue of a/(a+b) (continuous) or mu (likert/grades) for shapes
-    with no closed-form mean. Memoized by label."""
+    """Same idea as _custom_shape_var, but for the mean instead of the
+    variance: estimate it from a large sample since there's no formula."""
     if shape.label not in _CUSTOM_SHAPE_MEAN_CACHE:
         rng = np.random.default_rng(seed)
         _CUSTOM_SHAPE_MEAN_CACHE[shape.label] = float(np.mean(shape.custom_sampler(rng, n_mc)))
@@ -321,26 +388,24 @@ _CUSTOM_SHAPE_QUANTILE_GRID_CACHE: dict[int, np.ndarray] = {}
 
 
 def _custom_shape_inverse_cdf(shape: ShapeSpec, q: np.ndarray, *, n_mc: int = 200_000, seed: int = 2) -> np.ndarray:
-    """Empirical inverse-CDF of a "custom" shape's bare sampler: maps
-    quantiles in (0, 1) to values, standing in for a closed-form .ppf() that
-    doesn't exist for bespoke samplers (mixtures, inflated, heavy-tail).
-    Used by sample_group_truth's base_corr < 1.0 path for custom shapes --
-    the same Gaussian-copula trick binary/continuous "param" shapes use
-    (norm.cdf -> .ppf), just with this in place of stats.beta.ppf.
+    """Given percentiles (q, between 0 and 1), return the matching values
+    for a custom shape -- e.g. q=0.5 returns roughly the shape's median.
 
-    The MC sample is cached and sorted once per shape (memoized by label,
-    same pattern as _custom_shape_var/_custom_shape_mean); np.interp linearly
-    interpolates between its order statistics, treated as a piecewise-linear
-    empirical quantile function. Point masses (e.g. zero-inflated's 70%
-    spike at 0) survive exactly: they occupy a contiguous run of the sorted
-    sample, so any quantile landing inside that run interpolates between two
-    copies of the same value and returns it unchanged.
+    Well-known distributions like the Beta have a built-in function for
+    this ("percent-point function" / inverse CDF). Custom shapes (mixtures,
+    inflated distributions, heavy tails) don't, so we approximate it: draw a
+    large sample once, sort it, and look up percentiles by linear
+    interpolation between the sorted values. This is what lets
+    sample_group_truth generate "partially agreeing" groups for custom
+    shapes (see its base_corr parameter) the same way it does for
+    well-known distributions -- the percentile-lookup step is just
+    table-based here instead of formula-based.
 
-    Caveat (documented in the harness README): this preserves *rank*
-    correlation between groups exactly equal to base_corr (rank correlation
-    is invariant under the monotonic copula-quantile mapping), but Pearson
-    correlation only approximately, since the empirical quantile function is
-    a nonlinear map for non-uniform shapes.
+    A nice side effect: a "spike" in the data (e.g. 70% of zero-inflated
+    values sitting exactly at 0) survives this process exactly, because that
+    spike occupies a contiguous block of the sorted sample, so any
+    percentile that lands inside it interpolates between two copies of the
+    same value.
     """
     if shape.label not in _CUSTOM_SHAPE_SORTED_SAMPLE_CACHE:
         rng = np.random.default_rng(seed)
@@ -353,10 +418,11 @@ def _custom_shape_inverse_cdf(shape: ShapeSpec, q: np.ndarray, *, n_mc: int = 20
 
 
 def _hetero_noise_scale(base: np.ndarray, lo: float, hi: float) -> np.ndarray:
-    """Per-item heteroscedastic noise-std multiplier: scales toward 0 near
-    the [lo, hi] boundaries (where item-level variance is naturally squeezed)
-    and peaks at 1.0 at the midpoint -- same shape _legacy_build_multirun_sources'/
-    _legacy_build_pair_multirun_sources' per-eval-type "_hetero" branches used."""
+    """Per-item multiplier for "noisier in the middle, quieter at the edges"
+    measurement error. Real scores near the boundary of their range (e.g. a
+    near-perfect or near-zero score) have less room to wobble than a
+    mid-range score does, so this returns close to 0 near lo/hi and peaks
+    at 1.0 right in the middle of the range."""
     p = np.clip((base - lo) / (hi - lo), 0.0, 1.0)
     return 2.0 * np.sqrt(p * (1.0 - p))
 
@@ -364,11 +430,16 @@ def _hetero_noise_scale(base: np.ndarray, lo: float, hi: float) -> np.ndarray:
 def _equicorrelated_noise(
     rng: np.random.Generator, n: int, runs: int, k: int, group_vars: np.ndarray, corr: float,
 ) -> np.ndarray:
-    """k correlated mean-zero Gaussian noise streams, shape (k, n, runs):
-    Var(noise_j) = group_vars[j], Corr(noise_a, noise_b) = corr for all
-    a != b. Generalizes the shared/indiv split (equal variance per group) to
-    per-group variances via a shared standard-normal factor scaled by each
-    group's own std."""
+    """Generate k streams of random noise (one per group), shape (k, n, runs),
+    where every pair of streams has the same correlation `corr` with each
+    other, and each stream j has its own variance `group_vars[j]`.
+
+    The trick: draw one "shared" random stream that every group's noise
+    partly consists of, plus an "individual" stream unique to each group,
+    and blend the two with weights chosen so the resulting correlation
+    between any two groups works out to exactly `corr` (corr=0 -> fully
+    independent noise per group; corr=1 -> every group sees identical noise).
+    """
     shared_z = rng.normal(0.0, 1.0, size=(n, runs))
     out = np.empty((k, n, runs), dtype=float)
     c = max(corr, 0.0)
@@ -380,8 +451,11 @@ def _equicorrelated_noise(
 
 
 def _equicorrelated_std_normal(rng: np.random.Generator, n: int, k: int, base_corr: float) -> np.ndarray:
-    """k equicorrelated standard-normal columns, shape (k, n, 1):
-    Var=1, Corr(z_a, z_b) = base_corr for all a != b."""
+    """Same shared/individual blending trick as _equicorrelated_noise, but
+    for k correlated standard-normal columns (mean 0, variance 1) instead of
+    noise with arbitrary per-group variance. Used as the "raw material" for
+    generating items that partially (rather than fully) agree across
+    groups -- see sample_group_truth's base_corr parameter."""
     shared_z = rng.normal(0.0, 1.0, size=(n, 1))
     bc = max(base_corr, 0.0)
     out = np.empty((k, n, 1), dtype=float)
@@ -396,73 +470,77 @@ def sample_group_truth(
     *, corr: float = 0.5, effects: np.ndarray | None = None,
     heteroscedastic: bool = False, base_corr: float = 1.0,
 ) -> np.ndarray:
-    """Truth+within-item-noise model shared by build_single_sample_sources
-    (k=1, optionally multi-run), build_pair_sources (k=2, optionally
-    multi-run/partial-agreement), build_multiarm_sources (k>=2), and
-    build_judge_bias_sources' repeated-measures truth (k=2,3,4). Returns an
-    ndarray of shape (k, n, runs).
+    """Generate scores for one or more groups from a shape in the catalog
+    above. This is the single function that every scenario in this file
+    eventually calls -- one group for a plain benchmark run, two for an A/B
+    comparison, three or more for a multi-model comparison.
 
-    icc: between-item variance / total variance (same meaning everywhere
-    it's used in the harness). May be a single float (shared by all k
-    groups -- the common case) or a length-k sequence of per-group values
-    (asymmetric reliability, e.g. build_pair_sources' run_noise_fracs sweep
-    with different f_a/f_b for the two groups).
+    Returns an array of shape (k, n, runs): k groups, n items each, and
+    `runs` independent repeats of the whole thing (most callers use runs=1
+    and just take the first repeat; runs>1 is for "what if we evaluated the
+    same items again with fresh judge noise" scenarios).
 
-    corr: correlation between any two of the k groups' within-item NOISE (0
-    = fully independent runs; 1 = identical noise draw shared across all
-    groups). k=2 at corr=0.5, base_corr=1.0, scalar icc reproduces
-    build_pair_sources' original fixed shared/individual noise split
-    exactly (see _legacy_build_pair_sources above).
+    Each item's score is built in two layers:
+      1. a "base" value -- the item's real, underlying quality
+      2. added noise -- measurement error/judge unreliability layered on top
 
-    base_corr: correlation of the GAUSSIAN-COPULA LATENT VARIABLE underlying
-    any two of the k groups' BASE/item-level values (1.0 = fully shared base
-    -- every group sees the literal same item, the harness default
-    everywhere except build_pair_sources' run_noise_fracs multi-run mode;
-    <1.0 = partial agreement, a Gaussian-copula "different items/judges,
-    correlated quality" model, generalizing
-    _legacy_build_pair_multirun_sources' cross_item_rho to general k). For
-    binary/continuous "param" shapes and all "custom" shapes, base_corr is
-    NOT the realized Pearson or Spearman correlation of the final base
-    values -- it's the correlation BEFORE the (generally nonlinear)
-    .ppf()/empirical-quantile mapping. The realized Spearman correlation
-    follows the standard Gaussian-copula identity (6/pi)*arcsin(base_corr/2)
-    for shapes with continuous marginals (verified numerically for
-    cont-mixture); shapes with large point masses (zero/one-inflated,
-    floor/ceiling-spiked) compress it further below even that, since tied
-    values get averaged ranks (verified: cont-zero-inflated's 70% spike at 0
-    realizes Spearman ~0.54 at base_corr=0.7, vs. the ~0.68 the tie-free
-    identity would predict). likert/grades "param" shapes are the one
-    exception: their base is additively decomposed in Gaussian space
-    directly (no .ppf()), so base_corr matches the realized Pearson
-    correlation of the underlying continuous latent exactly (verified:
-    grades-mid, no boundary clipping, base_corr=0.3/0.7 -> realized
-    0.2989/0.6985); the FINAL output can still differ slightly due to
-    boundary clipping (any shape near its range edges) and, for likert
-    specifically, rounding to the nearest integer score (verified: likert
-    rounding alone pulls realized correlation down by ~0.03-0.04 at
-    base_corr=0.3/0.7). At base_corr == 1.0 and scalar icc, this is a no-op
-    vs. the
-    pre-existing shared-base code path (kept as its own branch below to
-    preserve exact-parity with everything that doesn't pass base_corr/
-    per-group icc).
+    icc (intraclass correlation) controls the split between those two
+    layers: it's the fraction of the total score variance that comes from
+    real differences between items, versus noise. icc=1.0 means no noise at
+    all (every observed difference is real); a lower icc means more of what
+    you observe is just measurement noise. icc can be one number shared by
+    every group, or a list of one number per group if groups should have
+    different reliabilities.
 
-    k=1 has no inter-group correlation concept -- the single group gets the
-    FULL within-item noise variance directly (same marginal variance as any
-    one of the k>=2 groups at the same icc), reproducing
-    build_single_sample_sources' simple "param" shapes exactly when icc=1.0
-    (no separate noise layer at all); icc<1.0 at k=1, runs>1 is the
-    run_noise_frac multi-run case (f_run = 1 - icc).
+    There are two independent ways groups can be related to each other,
+    controlled by two separate parameters:
 
-    shape.kind == "custom" supports k >= 1, including icc<1.0, runs>1
-    (multi-run): the bare custom_sampler draw is treated as the per-item
-    "base", with the same additive-Gaussian within-item noise model as
-    "param" shapes, using an MC-estimated (not closed-form) base variance
-    (_custom_shape_var). At k >= 2 and base_corr < 1.0 (partial agreement),
-    custom shapes use an empirical-quantile copula in place of a closed-form
-    .ppf() (see _custom_shape_inverse_cdf) -- this preserves rank
-    correlation between groups exactly equal to base_corr, but Pearson
-    correlation only approximately (the empirical quantile function is a
-    nonlinear map for non-uniform shapes).
+    `corr` -- how correlated the NOISE is across groups. If two groups are
+    evaluated under similar conditions (e.g. the same judge having a good or
+    bad day), their measurement errors tend to move together rather than
+    being independent. corr=0 means each group's noise is drawn completely
+    independently; corr=1 means every group gets the exact same noise draw.
+
+    `base_corr` -- how correlated the underlying ITEMS are across groups,
+    before any noise is added. The default, base_corr=1.0, means every
+    group is scored on the literal same items (e.g. the same prompts judged
+    by two different models) -- the common case. A value below 1.0 models
+    "different but related" items instead -- e.g. different judges, or
+    similar-but-not-identical prompts, where quality tends to be similar
+    across groups without being identical.
+
+    To generate base_corr < 1.0, we draw a set of correlated, ordinary
+    bell-curve random numbers (one per group, with the desired correlation
+    between them), convert each one to a percentile, then look up what
+    value that percentile corresponds to in the group's own shape (using
+    the shape's own percentile function for "param" shapes, or the
+    table-based lookup in _custom_shape_inverse_cdf for "custom" ones). This
+    is a standard technique for generating correlated values that follow
+    different shapes; statisticians call it a "copula."
+
+    One subtlety worth knowing: base_corr is the correlation of those raw
+    bell-curve numbers, not quite the correlation you'll measure in the
+    final values -- converting through a shape's percentile function is
+    usually not a straight line, so it slightly changes the correlation
+    along the way (typically shrinking it somewhat). For shapes with a big
+    pile-up of identical values (e.g. 70% of values exactly 0), the
+    shrinkage is larger, since identical values don't preserve fine-grained
+    rank information. Likert and Grades "param" shapes are an exception:
+    their base values are built directly out of the same correlated
+    bell-curve numbers with no percentile-function step, so base_corr does
+    equal their real correlation almost exactly (aside from a small effect
+    from rounding/clamping at the very end).
+
+    A single group (k=1) has no cross-group correlation to speak of -- it
+    just gets the full noise variance implied by icc directly. If icc<1.0
+    and runs>1, that's the "what if we re-ran this with fresh judge noise"
+    multi-run case.
+
+    "custom" shapes (mixtures, inflated distributions, heavy tails, etc.)
+    work the same way as "param" shapes here, just using a Monte-Carlo
+    estimate of their variance (_custom_shape_var) instead of a textbook
+    formula, and the table-based percentile lookup described above instead
+    of a built-in one when base_corr < 1.0.
     """
     if effects is None:
         effects = np.zeros(k)
@@ -473,6 +551,10 @@ def sample_group_truth(
     icc_scalar = bool(np.ndim(icc) == 0)
 
     if shape.kind == "custom":
+        # "custom" shapes have no closed-form mean/variance/percentile
+        # function, so every step below substitutes a Monte-Carlo estimate
+        # or table-based lookup (see _custom_shape_var/_custom_shape_inverse_cdf)
+        # for what would otherwise be a textbook formula.
         if k == 1:
             base = shape.custom_sampler(rng, n)[:, None]  # (n, 1)
             lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
@@ -493,12 +575,13 @@ def sample_group_truth(
 
         lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
         if base_corr >= 1.0 - 1e-12:
+            # The common case: every group sees the exact same item, so just
+            # draw it once and reuse it for all k groups.
             base = np.broadcast_to(shape.custom_sampler(rng, n)[None, :, None], (k, n, 1)).copy()
         else:
-            # Partial-agreement path: equicorrelated Gaussian copula on
-            # quantiles, mapped through the shape's own empirical inverse-CDF
-            # (no closed-form .ppf() to invert through, unlike binary/
-            # continuous "param" shapes -- see _custom_shape_inverse_cdf).
+            # Partial-agreement case: draw correlated percentiles, then look
+            # each one up in this shape's own value table (see
+            # _custom_shape_inverse_cdf and sample_group_truth's docstring).
             z = _equicorrelated_std_normal(rng, n, k, base_corr)
             q = np.clip(norm.cdf(z), 1e-9, 1.0 - 1e-9)
             base = _custom_shape_inverse_cdf(shape, q)
@@ -506,13 +589,15 @@ def sample_group_truth(
             _custom_shape_var(shape) * (1.0 / max(ic, 1e-9) - 1.0) if ic < 1.0 - 1e-12 else 0.0
             for ic in icc_arr
         ])
-        # falls through to the shared noise-injection tail below (same code
-        # path "param" continuous/likert/grades shapes use once base/lo/hi/
-        # round_to_int/group_noise_vars are computed).
+        # base/lo/hi/round_to_int/group_noise_vars are now set, so this
+        # continues into the shared noise-injection code below -- the same
+        # code path "param" shapes use.
 
     elif et == "binary":
         base_p = shape.params
         if base_corr >= 1.0 - 1e-12 and icc_scalar:
+            # The common case: draw one pass-probability per item, shared by
+            # every group, then have each group flip its own biased coin.
             conc = _binary_conc_from_icc(float(icc))
             base = rng.beta(base_p * conc, (1.0 - base_p) * conc, size=(n, 1))
             out = np.empty((k, n, runs), dtype=float)
@@ -520,8 +605,9 @@ def sample_group_truth(
                 p = np.clip(base + effects[j], 0.0, 1.0)
                 out[j] = rng.binomial(1, p, size=(n, runs)).astype(float)
             return out
-        # Partial-agreement / per-group-icc path: equicorrelated Gaussian
-        # copula on quantiles, mapped through each group's own Beta(p, icc_j).
+        # Partial agreement, and/or each group having its own reliability:
+        # draw correlated percentiles, then look each one up in that group's
+        # own Beta-distributed pass-probability curve.
         z = _equicorrelated_std_normal(rng, n, k, base_corr)
         out = np.empty((k, n, runs), dtype=float)
         for j in range(k):
@@ -535,12 +621,21 @@ def sample_group_truth(
         a_beta, b_beta = shape.params
         lo, hi, round_to_int = 0.0, 1.0, False
         if base_corr >= 1.0 - 1e-12:
+            # Common case: one shared Beta-distributed value per item.
             base = np.broadcast_to(rng.beta(a_beta, b_beta, size=(n, 1)), (k, n, 1)).copy()
         else:
+            # Partial agreement: correlated percentiles, looked up in this
+            # shape's Beta distribution.
             z = _equicorrelated_std_normal(rng, n, k, base_corr)
             q = np.clip(norm.cdf(z), 1e-9, 1.0 - 1e-9)
             base = stats.beta.ppf(q, a_beta, b_beta)
     else:
+        # Likert / grades: built directly from a bell-curve ("latent")
+        # value, scaled so its spread matches the target reliability (icc),
+        # then later rounded/clamped into the visible score range. Because
+        # this skips the percentile-function step entirely, base_corr below
+        # is also the real correlation between groups' latent values (see
+        # sample_group_truth's docstring).
         mu_lat, total_std = shape.params
         lo, hi = (1.0, 5.0) if et == "likert" else (0.0, 100.0)
         round_to_int = et == "likert"
@@ -552,11 +647,12 @@ def sample_group_truth(
             base = mu_lat + total_std * np.sqrt(np.clip(icc_arr, 0.0, 1.0))[:, None, None] * z
 
     def _finish(vals: np.ndarray) -> np.ndarray:
+        """Clamp to the eval type's valid range, and round to a whole number for Likert."""
         return np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
 
     if shape.kind == "param":
         group_noise_vars = np.array([_group_noise_var(et, shape.params, ic) for ic in icc_arr])
-    # else: shape.kind == "custom" at k >= 2 already computed group_noise_vars above.
+    # ("custom" shapes already computed group_noise_vars above, at k >= 2.)
     out = np.empty((k, n, runs), dtype=float)
     if k == 1:
         if heteroscedastic and group_noise_vars[0] > 0.0:
@@ -568,12 +664,12 @@ def sample_group_truth(
         return out
 
     if heteroscedastic:
-        # Heteroscedastic noise can't share the equicorrelated-noise helper's
-        # single homoscedastic std per group; fall back to corr-mixed draws
-        # with a per-item, per-group scale (matches _legacy_build_pair_multirun_sources'
-        # "_hetero" branches, generalized to k groups / per-group icc). One
-        # shared_z draw is reused across all k groups so corr means the same
-        # thing here as in the homoscedastic _equicorrelated_noise path.
+        # _equicorrelated_noise assumes a single noise size per group, but
+        # heteroscedastic noise needs a different size for every item (see
+        # _hetero_noise_scale), so we redo the same shared/individual
+        # blending trick by hand here instead. Reusing one shared_z draw
+        # across all k groups keeps `corr`'s meaning consistent with the
+        # non-heteroscedastic path below.
         shared_z = rng.normal(0.0, 1.0, size=(n, runs))
         c = max(corr, 0.0)
         for j in range(k):
@@ -593,23 +689,26 @@ def sample_group_truth(
 def build_single_sample_sources(
     suite: str = "standard", *, run_noise_fracs: list[float] | None = None, heteroscedastic: bool = False,
 ) -> list[CISource]:
-    """Canonical synthetic single-sample CISources, drawn from the shared
-    shape catalog above via sample_group_truth(k=1).
+    """Build one CISource per shape in the catalog -- a single-group/single-
+    benchmark-run scenario, generated via sample_group_truth(k=1). Used by
+    cases/ci_single.py to check whether confidence-interval methods give
+    correctly-calibrated intervals around a single benchmark score.
 
     run_noise_fracs : sequence of float, optional
-        If given, switches to multi-run mode (for cases/ci_single.py's
-        ``--nested-mode``): for every shape, builds one CISource per
-        ``f_run`` in this list, with ``generate_runs(rng, n, runs) -> (n,
-        runs)`` set (icc = 1 - f_run fed through sample_group_truth(k=1,
-        runs>1) -- the within-item run-noise variance grows as f_run grows).
-        If ``None`` (the default), every shape gets exactly one flat,
-        single-run CISource (generate_runs=None), matching this function's
-        pre-multi-run behavior exactly.
+        If given, switches to "what if we re-ran the same benchmark and got
+        fresh judge noise" mode (cases/ci_single.py's ``--nested-mode``):
+        for every shape, builds one CISource per run-noise fraction `f` in
+        this list, where `f` is the share of total score variance that
+        comes from re-run noise rather than real item differences
+        (icc = 1 - f). Its ``generate_runs(rng, n, runs) -> (n, runs)``
+        field lets a caller draw multiple noisy re-runs of the same n
+        items. If ``None`` (the default), every shape just gets one plain,
+        single-run CISource.
     heteroscedastic : bool
-        Only meaningful when run_noise_fracs is given: scales each item's
-        run-noise std down near the eval type's score-range boundaries
-        (where item-level variance is naturally squeezed) instead of using
-        one fixed std for every item -- see sample_group_truth.
+        Only meaningful when run_noise_fracs is given: makes the size of
+        the re-run noise depend on where an item's score falls in its valid
+        range (smaller near the boundaries) instead of using one fixed
+        noise size for every item -- see sample_group_truth.
     """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
@@ -644,10 +743,14 @@ def build_single_sample_sources(
     return sources
 
 
-# Explicit stress-test binary regimes with highly one-sided discordance --
-# not part of the shape catalog (no icc/shape decomposition; these are
-# literally pre-specified joint discordance probabilities). Shared by
-# build_pair_sources' flat and multi-run (run_noise_fracs) paths.
+# Hand-picked, highly lopsided paired binary (pass/fail) scenarios -- e.g.
+# "model A almost always fails where model B succeeds, and they almost never
+# disagree the other way." These don't fit the icc/shape catalog above (they
+# specify the four joint outcome probabilities directly: both pass, both
+# fail, A-only, B-only), but they're useful stress tests for paired tests
+# like McNemar's, since real A/B comparisons sometimes really do look this
+# lopsided. Each tuple is (label, P(A passes, B fails), P(A fails, B passes),
+# P(both pass)) -- shared by build_pair_sources' plain and multi-run paths.
 _ASYM_BINARY_SPECS: list[tuple[str, float, float, float]] = [
     ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
     ("binary-onesided-pos-extreme", 0.384, 0.001, 0.000),
@@ -669,10 +772,11 @@ def _build_pair_sources_multirun(
     heteroscedastic: bool, pairwise_noise_grid: bool, pairwise_noise_grid_max: int | None,
     pairwise_noise_grid_seed: int, cross_item_rho: float,
 ) -> list[CIPairSource]:
-    """build_pair_sources' run_noise_fracs branch: the same (eval_type,
-    shape, d) sweep as the flat path, but over (f_a, f_b) run-noise-frac
-    pairs instead of icc_values, routed through sample_group_truth(k=2,
-    base_corr=cross_item_rho, icc=[1-f_a, 1-f_b])."""
+    """The "what if we re-ran both models and got fresh judge noise" version
+    of build_pair_sources: same (eval_type, shape, effect size) sweep as the
+    plain path, but swept over pairs of run-noise fractions (f_a, f_b)
+    instead of fixed reliability values, via
+    sample_group_truth(k=2, base_corr=cross_item_rho, icc=[1-f_a, 1-f_b])."""
     if pairwise_noise_grid:
         noise_pairs = [(float(fa), float(fb)) for fa in run_noise_fracs for fb in run_noise_fracs]
     else:
@@ -684,8 +788,6 @@ def _build_pair_sources_multirun(
 
     sources: list[CIPairSource] = []
     for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
-        # Custom shapes are included too -- sample_group_truth's Phase 2
-        # empirical-quantile copula supports base_corr < 1.0 for them now.
         shapes_here = _tier_shapes(catalog, suite)
         for f_a, f_b in noise_pairs:
             icc_a, icc_b = 1.0 - f_a, 1.0 - f_b
@@ -706,12 +808,11 @@ def _build_pair_sources_multirun(
                         rng: np.random.Generator, n: int, runs: int,
                         _shape: ShapeSpec = shape_, _icc: list[float] = icc_pair_, _d: float = delta_,
                     ) -> tuple[np.ndarray, np.ndarray]:
-                        # corr=0.0: run-noise is independent between A and B
-                        # here (matches _legacy_build_pair_multirun_sources,
-                        # which never correlated noise across groups -- only
-                        # the base/item-level value is rho-correlated, via
-                        # base_corr). The flat (non-multirun) path's corr=0.5
-                        # default is a separate, unrelated axis.
+                        # corr=0.0: A's and B's re-run noise is independent
+                        # here -- only the items themselves are correlated
+                        # (via base_corr/cross_item_rho), not the noise on
+                        # top of them. This is a separate knob from the
+                        # plain (non-multirun) path's corr=0.5 default.
                         out = sample_group_truth(
                             _shape, n, runs, 2, _icc, rng, effects=np.array([0.0, _d]),
                             heteroscedastic=heteroscedastic, base_corr=cross_item_rho, corr=0.0,
@@ -725,9 +826,10 @@ def _build_pair_sources_multirun(
                         run_noise_frac=0.5 * (f_a + f_b), run_noise_frac_a=f_a, run_noise_frac_b=f_b,
                     ))
 
-    # Asym binary stress test, generalized with a redraw-frac run-noise
-    # mechanism: each run independently redraws the joint (A, B) state with
-    # probability f_eff instead of keeping the item's fixed joint state.
+    # Re-run version of the lopsided binary stress tests above: each item
+    # starts with a fixed joint (A, B) outcome, but on each run there's a
+    # probability f_eff that the item's outcome gets redrawn fresh instead
+    # of reusing the original one -- the binary analogue of run-noise.
     if suite in ("expanded", "extreme"):
         for shape_label, p10, p01, p11 in _ASYM_BINARY_SPECS:
             p00 = 1.0 - (p11 + p10 + p01)
@@ -778,40 +880,47 @@ def build_pair_sources(
     pairwise_noise_grid_seed: int = 42,
     cross_item_rho: float = 0.7,
 ) -> list[CIPairSource]:
-    """Return canonical synthetic paired-difference CIPairSources, parameterised
-    by ICC and Cohen's d -- a thin (icc, shape, d) sweep over
-    sample_group_truth(k=2) using the full shape catalog above, "custom"
-    shapes (mixtures, inflated, heavy-tail) included. The flat path here
-    uses base_corr=1.0 (the default); the run_noise_fracs multi-run path
-    (_build_pair_sources_multirun) uses base_corr=cross_item_rho < 1.0,
-    which custom shapes now support via an empirical-quantile copula (see
-    ShapeSpec/sample_group_truth docs).
+    """Build paired-comparison scenarios (e.g. "model A vs. model B on the
+    same n items") across the whole shape catalog -- including "custom"
+    shapes like mixtures and inflated distributions -- by sweeping
+    reliability (icc) and effect size (Cohen's d) through
+    sample_group_truth(k=2). Used by cases/ci_paired.py to check whether
+    paired-difference confidence-interval methods are correctly calibrated.
 
-    ICC = between-input variance / total variance; Cohen's d = delta /
-    total_std (group_total_std(shape, icc)).
+    The plain path (run_noise_fracs=None) has A and B scored on the literal
+    same items (base_corr=1.0, sample_group_truth's default). The multi-run
+    path below instead has A and B scored on related-but-not-identical
+    items (base_corr=cross_item_rho < 1.0).
+
+    icc = the fraction of total score variance that's real item-to-item
+    variation rather than noise (see sample_group_truth). Cohen's d = the
+    size of the gap between A and B, measured in units of one shape's own
+    spread (group_total_std(shape, icc)) -- so "d=0.3" means the same real
+    thing for every shape, not a fixed raw number.
 
     Parameters
     ----------
     suite : str
         'standard', 'expanded', or 'extreme'.
     icc_values : sequence of float
-        ICC values to sweep. Each value generates a separate scenario batch.
+        Reliability values to sweep. Each value generates a separate scenario batch.
         Ignored when run_noise_fracs is given.
     cohens_d_values : sequence of float
-        Non-null standardised effect sizes. A null (d=0) variant is
+        Non-zero effect sizes to test. A null (d=0) variant is
         automatically prepended when include_null=True.
     include_null : bool
         If True, prepend d=0 scenarios for every (eval_type, shape, icc)
-        combination, flagged is_null=True (used to measure Type I error).
+        combination, flagged is_null=True (used to measure Type I error --
+        false positives when there's truly no difference).
     run_noise_fracs : sequence of float, optional
-        If given, switches to multi-run mode (for cases/ci_paired.py's
+        If given, switches to "re-run with fresh judge noise, on
+        related-but-not-identical items" mode (cases/ci_paired.py's
         ``--nested-mode``): icc_values is ignored, and instead every (f_a,
-        f_b) pair from this list (f_a == f_b unless pairwise_noise_grid)
-        sweeps icc_a = 1 - f_a, icc_b = 1 - f_b through
+        f_b) pair from this list (f_a == f_b unless pairwise_noise_grid) is
+        used as A's and B's run-noise fraction, via
         sample_group_truth(k=2, base_corr=cross_item_rho). If ``None`` (the
-        default), every scenario is flat/single-run with base_corr=1.0
-        (fully shared base), matching this function's pre-multi-run
-        behavior exactly.
+        default), every scenario is a plain single-run comparison on shared
+        items (base_corr=1.0).
     heteroscedastic : bool
         Only meaningful when run_noise_fracs is given -- see sample_group_truth.
     pairwise_noise_grid : bool
@@ -822,10 +931,10 @@ def build_pair_sources(
         (f_a, f_b) grid down to this many pairs (deterministic given
         pairwise_noise_grid_seed) if the full grid would be larger.
     cross_item_rho : float
-        Only meaningful when run_noise_fracs is given: the base_corr fed to
-        sample_group_truth -- correlation between A's and B's item-level
-        truth (1.0 = identical item; <1.0 = "different items/judges,
-        correlated quality").
+        Only meaningful when run_noise_fracs is given: how correlated A's
+        and B's items are with each other (the base_corr fed to
+        sample_group_truth) -- 1.0 means identical items, lower values
+        model "different but related" items/judges.
     """
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
@@ -845,11 +954,6 @@ def build_pair_sources(
     icc_list = list(icc_values)
 
     for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
-        # Custom shapes (mixtures, inflated, heavy-tail) get swept here too --
-        # sample_group_truth supports them at k=2/base_corr=1.0 (the default
-        # here). This is the riskiest, closest-to-real-world part of the
-        # catalog, so it shouldn't be exempt from the pairwise power/Type-I
-        # checks the way it used to be (param-only).
         shapes_here = _tier_shapes(catalog, suite)
         for icc in icc_list:
             for shape in shapes_here:
@@ -874,9 +978,7 @@ def build_pair_sources(
                         icc=icc, cohens_d=d, is_null=is_null,
                     ))
 
-    # Explicit stress-test binary regimes with highly one-sided discordance --
-    # not part of the shape catalog (no icc/shape decomposition; these are
-    # literally pre-specified joint discordance probabilities), kept as-is.
+    # The hand-picked lopsided binary scenarios from _ASYM_BINARY_SPECS above.
     if suite in ("expanded", "extreme"):
         for shape_label, p10, p01, p11 in _ASYM_BINARY_SPECS:
             p00 = 1.0 - (p11 + p10 + p01)
@@ -887,7 +989,9 @@ def build_pair_sources(
             true_diff = float(p10 - p01)
             label = f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|p11={p11:.3f}|p00={p00:.3f}"
 
-            def _gen_binary_asym(rng: np.random.Generator, n: int, runs: int, _probs: np.ndarray = probs) -> tuple[np.ndarray, np.ndarray]:
+            def _gen_binary_asym(
+                rng: np.random.Generator, n: int, runs: int, _probs: np.ndarray = probs,
+            ) -> tuple[np.ndarray, np.ndarray]:
                 z = rng.choice(4, size=(n, runs), p=_probs)
                 a = np.isin(z, (0, 1)).astype(float)
                 b = np.isin(z, (0, 2)).astype(float)
@@ -907,6 +1011,7 @@ def _estimate_true_mean_mc_runs(
     seed: int = 0,
     n_mc: int = 500_000,
 ) -> float:
+    """Same idea as _estimate_true_mean_mc, for a multi-run generator."""
     rng = np.random.default_rng(seed)
     return float(np.mean(generate_runs(rng, n_mc, 1)))
 
@@ -914,14 +1019,11 @@ def _estimate_true_mean_mc_runs(
 # ---------------------------------------------------------------------------
 # Multi-arm sources (for cases/pvalues.py's multi-arm multiplicity benchmark)
 # ---------------------------------------------------------------------------
-# Sweeps the SAME shape catalog (BINARY_SHAPES/CONTINUOUS_SHAPES/
-# LIKERT_SHAPES/GRADES_SHAPES) build_pair_sources uses, generalized from k=2
-# to k arms via sample_group_truth -- so multi-arm benchmarking gets the
-# same shape-robustness as the pairwise comparison, not a separate, narrower
-# bespoke catalog. "custom" shapes (mixtures, inflated, heavy-tail) are
-# included too, at base_corr=1.0 (the default here). Arm 0 carries the
-# alternative-hypothesis shift (cohens_d * group_total_std); arms 1..k-1
-# stay at the shared baseline.
+# Like build_pair_sources, but for comparing k >= 2 arms at once (e.g. five
+# models on a leaderboard) instead of just two -- used to check whether
+# multiple-comparison corrections keep the false-positive rate under control
+# as the number of arms grows. Arm 0 gets the effect-size shift; the rest
+# share the same baseline distribution.
 
 
 def build_multiarm_sources(
@@ -940,10 +1042,6 @@ def build_multiarm_sources(
 
     sources: list[MultiArmSource] = []
     for eval_type in eval_types:
-        # Custom shapes (mixtures, inflated, heavy-tail) are included too --
-        # sample_group_truth supports them at k>=2/base_corr=1.0 (the
-        # default here), so the multi-arm FWER/power sweep no longer skips
-        # the catalog's most realistic-pathology shapes.
         for shape in _tier_shapes(SHAPES_BY_EVAL_TYPE[eval_type], suite):
             sources.append(MultiArmSource(
                 label=shape.label, eval_type=eval_type, generate_scores=_make_generator(shape),
@@ -952,20 +1050,19 @@ def build_multiarm_sources(
     return sources
 
 
-
 # ---------------------------------------------------------------------------
 # Judge-bias sources (for cases/pvalues.py's PPI-correction calibration mode)
 # ---------------------------------------------------------------------------
-# Ported from sim_type_i_calibration.py's Scenario/_build_scenarios/_run_one
-# data-generation helpers. Sweeps JUDGE-MEASUREMENT-ERROR parameters (bias,
-# scale-calibration slope, label sparsity/MNAR-ness, repeated-measures error
-# correlation) layered on top of ONE representative shape per eval type,
-# drawn from the SAME shape catalog (BINARY_SHAPES/CONTINUOUS_SHAPES/
-# LIKERT_SHAPES/GRADES_SHAPES) build_pair_sources/build_multiarm_sources
-# use, via sample_group_truth -- so judge bias/noise is an orthogonal sweep
-# on the same truth-generating process, not its own separate distribution
-# family. `eval_type` excludes "binary": ttest/MWU/ANOVA aren't designed
-# for 0/1 outcomes, so PPI mode only sweeps continuous/likert/grades.
+# This section models an LLM-as-judge setup: ground-truth scores exist, but
+# we only see (a) a biased/noisy LLM-judge score for every item, and (b) a
+# small number of accurate human labels. The question PPI (prediction-powered
+# inference) correction answers is whether we can still test hypotheses
+# correctly using mostly-LLM-judged data plus a few real labels -- this
+# section sweeps one judge-bias/noise/labeling factor at a time, on top of
+# the same per-eval-type truth model the rest of the file uses, to check
+# whether that correction holds up. `eval_type` here excludes "binary":
+# the t-test/Mann-Whitney/ANOVA family this mode checks isn't designed for
+# 0/1 outcomes.
 
 _PPI_REPRESENTATIVE_SHAPE_LABEL: dict[str, str] = {
     "continuous": "cont-right-skew", "likert": "likert-mid", "grades": "grades-mid",
@@ -973,73 +1070,89 @@ _PPI_REPRESENTATIVE_SHAPE_LABEL: dict[str, str] = {
 
 
 def _ppi_shape(eval_type: str, shape_label: str | None = None) -> ShapeSpec:
+    """Look up the ShapeSpec a judge-bias scenario should draw truth from --
+    a specific override (shape_label) if given, otherwise the eval type's
+    default representative shape (_PPI_REPRESENTATIVE_SHAPE_LABEL)."""
     label = shape_label if shape_label is not None else _PPI_REPRESENTATIVE_SHAPE_LABEL[eval_type]
     return next(s for s in SHAPES_BY_EVAL_TYPE[eval_type] if s.label == label)
 
 
 def _ppi_shape_anchor(shape: ShapeSpec) -> float:
-    """Mean of a ShapeSpec's truth distribution -- used both as the
-    judge-bias model's mu_null and as the slope-distortion anchor point."""
+    """The mean of a shape's truth distribution. Used as the reference
+    point the judge-bias/slope model below distorts scores around -- e.g. a
+    judge that "compresses" scores toward the middle does so relative to
+    this point, not relative to 0."""
     if shape.kind == "custom":
         return _custom_shape_mean(shape)
     if shape.eval_type == "continuous":
         a, b = shape.params
         return a / (a + b)
-    return float(shape.params[0])  # likert/grades: (mu, total_std)
+    return float(shape.params[0])  # likert/grades: (mean, total spread)
 
 
-_JB_MIN_LAB = 15
-JUDGE_BIAS_LMM_RUNS_R = 3
+_JB_MIN_LAB = 15  # always label at least this many items, even if label_frac would round down further
+JUDGE_BIAS_LMM_RUNS_R = 3  # number of repeated LLM "re-runs" simulated for the nested-runs test structure
 JUDGE_BIAS_LMM_FACTORIAL_FACTORS = pd.DataFrame({
     "f1": ["a", "a", "b", "b"],
     "f2": ["x", "y", "x", "y"],
 })
 
 
-def _jb_biases(sc: JudgeBiasSource) -> tuple[float, float, float]:
-    if sc.bias_type == "none":
+def _jb_biases(scenario: JudgeBiasSource) -> tuple[float, float, float]:
+    """The (group A, group B, group C) judge bias amounts for a 3-group
+    scenario. "none" = no bias; "constant" = every group gets the same
+    bias (so a paired/relative test should still come out unbiased);
+    "differential" = only group A is biased, which a paired/relative test
+    SHOULD be able to detect as a real difference."""
+    if scenario.bias_type == "none":
         return 0.0, 0.0, 0.0
-    if sc.bias_type == "constant":
-        return sc.bias_const, sc.bias_const, sc.bias_const
-    if sc.bias_type == "differential":
-        return sc.bias_delta, 0.0, 0.0
-    raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
+    if scenario.bias_type == "constant":
+        return scenario.bias_const, scenario.bias_const, scenario.bias_const
+    if scenario.bias_type == "differential":
+        return scenario.bias_delta, 0.0, 0.0
+    raise ValueError(f"Unknown bias_type: {scenario.bias_type!r}")
 
 
-def _jb_biases_4(sc: JudgeBiasSource) -> tuple[float, float, float, float]:
-    if sc.bias_type == "none":
+def _jb_biases_4(scenario: JudgeBiasSource) -> tuple[float, float, float, float]:
+    """Same as _jb_biases, for the 4-group (2x2 factorial) test structure."""
+    if scenario.bias_type == "none":
         return 0.0, 0.0, 0.0, 0.0
-    if sc.bias_type == "constant":
-        return (sc.bias_const,) * 4
-    if sc.bias_type == "differential":
-        return sc.bias_delta, 0.0, 0.0, 0.0
-    raise ValueError(f"Unknown bias_type: {sc.bias_type!r}")
+    if scenario.bias_type == "constant":
+        return (scenario.bias_const,) * 4
+    if scenario.bias_type == "differential":
+        return scenario.bias_delta, 0.0, 0.0, 0.0
+    raise ValueError(f"Unknown bias_type: {scenario.bias_type!r}")
 
 
-def _jb_judge_params_3(sc: JudgeBiasSource) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
-    b1, b2, b3 = _jb_biases(sc)
-    biases = (b1 + sc.bias_extra_a, b2 + sc.bias_extra_b, b3 + sc.bias_extra_c)
-    slopes = (sc.slope_a, sc.slope_b, sc.slope_c)
+def _jb_judge_params_3(scenario: JudgeBiasSource) -> tuple[tuple[float, float, float], tuple[float, float, float]]:
+    """The full per-group judge-miscalibration parameters for 3 groups:
+    each group's bias (its overall offset from the truth) and slope (how
+    much it stretches or compresses the score range)."""
+    b1, b2, b3 = _jb_biases(scenario)
+    biases = (b1 + scenario.bias_extra_a, b2 + scenario.bias_extra_b, b3 + scenario.bias_extra_c)
+    slopes = (scenario.slope_a, scenario.slope_b, scenario.slope_c)
     return biases, slopes
 
 
-def _jb_judge_params_4(sc: JudgeBiasSource) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
-    b1, b2, b3, b4 = _jb_biases_4(sc)
-    biases = (b1 + sc.bias_extra_a, b2 + sc.bias_extra_b, b3 + sc.bias_extra_c, b4 + sc.bias_extra_d)
-    slopes = (sc.slope_a, sc.slope_b, sc.slope_c, sc.slope_d)
+def _jb_judge_params_4(
+    scenario: JudgeBiasSource,
+) -> tuple[tuple[float, float, float, float], tuple[float, float, float, float]]:
+    """Same as _jb_judge_params_3, for the 4-group (2x2 factorial) test structure."""
+    b1, b2, b3, b4 = _jb_biases_4(scenario)
+    biases = (b1 + scenario.bias_extra_a, b2 + scenario.bias_extra_b, b3 + scenario.bias_extra_c, b4 + scenario.bias_extra_d)
+    slopes = (scenario.slope_a, scenario.slope_b, scenario.slope_c, scenario.slope_d)
     return biases, slopes
 
 
 def _contaminated_noise_stds(noise_sd: float, contam_frac: float, contam_scale: float) -> tuple[float, float]:
-    """Solve for (sigma_normal, sigma_catastrophic) of a two-component,
-    zero-mean Gaussian variance-mixture -- weight (1 - contam_frac) at
-    sigma_normal, weight contam_frac at sigma_catastrophic = contam_scale *
-    sigma_normal -- whose TOTAL variance equals noise_sd**2 exactly. This is
-    what keeps noise_family="contaminated" meaning the same noise_sd/icc
-    everywhere noise_family="gaussian" does: it only redistributes WHERE
-    that fixed total variance comes from (mostly a small width, occasionally
-    a much larger one), modeling "judge is mostly right, occasionally
-    catastrophically wrong" instead of symmetric/uniform measurement error.
+    """Work out the two noise sizes for a "judge is usually right, but
+    sometimes way off" error model: a normal-width error most of the time,
+    and a much wider (contam_scale times bigger) "catastrophic" error the
+    rest of the time (with probability contam_frac). The two widths are
+    solved so that, blended together, their overall noise size still comes
+    out to exactly noise_sd -- so swapping in this noise model doesn't
+    change what noise_sd means anywhere else in the harness, only how that
+    fixed amount of noise is distributed across items.
     """
     noise_var = noise_sd ** 2
     denom = (1.0 - contam_frac) + contam_frac * contam_scale ** 2
@@ -1053,6 +1166,11 @@ def _jb_llm(
     slope: float = 1.0, anchor: float = 0.0,
     noise_family: str = "gaussian", contam_frac: float = 0.10, contam_scale: float = 4.0,
 ) -> np.ndarray:
+    """Turn ground-truth scores into simulated LLM-judge scores: apply a
+    miscalibration (`slope` stretches/compresses the range around `anchor`,
+    `bias` shifts it), then add measurement-error noise. `noise_family`
+    picks how that noise is distributed -- "gaussian" (plain, symmetric
+    noise) or "contaminated" (see _contaminated_noise_stds)."""
     pred = anchor + slope * (truth - anchor) + bias
     if noise_sd == 0.0:
         return pred
@@ -1071,6 +1189,10 @@ def _jb_llm_repeated(
     rng: np.random.Generator, anchor: float, corr: float,
     noise_family: str = "gaussian", contam_frac: float = 0.10, contam_scale: float = 4.0,
 ) -> list[np.ndarray]:
+    """Same idea as _jb_llm, but for several groups/conditions at once,
+    where their judge errors should be correlated rather than independent
+    (`corr`) -- e.g. the same judge scoring the same item under several
+    conditions, where a bad day affects every condition's score together."""
     if len(truths) == 0:
         return []
     n = len(truths[0])
@@ -1098,14 +1220,16 @@ def _jb_llm_repeated(
         return out
 
     if noise_family == "contaminated":
-        # shared_regime drives a CORRELATED "is this a catastrophic-error
-        # item" event across groups (via the same copula-style threshold
-        # trick base_corr uses for custom shapes: norm.cdf(u) < contam_frac
-        # gives marginal P(catastrophic)=contam_frac with cross-group regime
-        # correlation = corr) -- representing e.g. "the judge has a bad day
-        # on this specific item" being a shared, not independent, event
-        # across paired/repeated conditions. The ERROR MAGNITUDE within a
-        # regime is still drawn independently per group/condition.
+        # shared_regime decides, per item, whether THIS item is having a
+        # "catastrophic error" moment -- and that decision is itself
+        # correlated across groups/conditions by `corr` (same shared/
+        # individual blending idea as _equicorrelated_std_normal, just
+        # thresholded into a yes/no event instead of used as a number
+        # directly). This represents "the judge has a bad day on this
+        # specific item" as something that tends to affect every condition
+        # together, not independently. The size of the error within
+        # whichever regime an item lands in is still drawn independently
+        # per group/condition.
         shared_regime = rng.normal(0.0, 1.0, n)
         out = []
         for tr, b, sd, m in zip(truths, biases, noise_sds, slopes):
@@ -1128,6 +1252,18 @@ def _jb_label_indices(
     signal: np.ndarray, n_lab: int, rng: np.random.Generator,
     mnar: bool, mnar_strength: float, mnar_mode: str,
 ) -> np.ndarray:
+    """Pick which n_lab out of len(signal) items get a real human label.
+
+    If mnar is False, picks uniformly at random -- labeling effort is
+    "missing completely at random." If mnar is True ("missing not at
+    random"), items get picked with probability weighted by `signal`
+    instead, modeling a more realistic labeling process where humans are
+    more likely to double-check certain items rather than a random subset:
+    mnar_mode="high" preferentially labels high-scoring items;
+    "extreme" preferentially labels items with unusually high OR low
+    scores. mnar_strength controls how strong that preference is (0 =
+    uniform, larger = more skewed toward the preferred items).
+    """
     n = len(signal)
     if (not mnar) or mnar_strength <= 0.0:
         return rng.choice(n, n_lab, replace=False)
@@ -1154,6 +1290,9 @@ def _jb_labels_independent(
     truth: np.ndarray, frac: float, rng: np.random.Generator,
     mnar: bool = False, mnar_strength: float = 1.0, mnar_mode: str = "high",
 ) -> np.ndarray:
+    """Reveal the true score for a `frac` fraction of one group's items
+    (chosen via _jb_label_indices) and hide the rest as NaN -- simulating
+    "we only have human labels for some of the items the LLM judged."""
     n = len(truth)
     if n < _JB_MIN_LAB:
         raise ValueError(f"Need n >= {_JB_MIN_LAB} to enforce n_lab >= {_JB_MIN_LAB}; got n={n}")
@@ -1168,6 +1307,11 @@ def _jb_labels_shared(
     truths: list[np.ndarray], frac: float, rng: np.random.Generator,
     mnar: bool = False, mnar_strength: float = 1.0, mnar_mode: str = "high",
 ) -> list[np.ndarray]:
+    """Same idea as _jb_labels_independent, but for several
+    paired/repeated groups at once: the SAME set of items gets labeled
+    across every group (e.g. the same n prompts get human-labeled for both
+    model A's and model B's responses), chosen based on each item's average
+    truth across groups rather than any single group's truth alone."""
     n = len(truths[0])
     if n < _JB_MIN_LAB:
         raise ValueError(f"Need n >= {_JB_MIN_LAB} to enforce n_lab >= {_JB_MIN_LAB}; got n={n}")
@@ -1183,13 +1327,14 @@ def _jb_labels_shared(
 
 
 def build_judge_bias_sources() -> list[JudgeBiasSource]:
-    """Curated, factor-at-a-time judge-bias scenario sweep, ported from
-    sim_type_i_calibration.py's _build_scenarios(). Each scenario varies
-    exactly one factor from a fixed baseline (eval type, sample size, group
-    balance, label fraction, label mechanism, LLM noise, bias type,
-    scale/slope calibration, group-specific calibration, repeated-measures
-    error correlation, heteroskedastic noise), plus a few multi-factor
-    interaction stress tests."""
+    """A curated, one-factor-at-a-time sweep of judge-bias scenarios. Every
+    scenario starts from the same baseline (B, below) and changes exactly
+    one thing -- eval type, sample size, group balance, label fraction,
+    how labels get chosen, LLM noise level, bias type, scale/slope
+    miscalibration, per-group miscalibration, repeated-measures error
+    correlation, heteroskedastic noise, or noise family -- plus a few
+    scenarios at the end that change several factors together as a
+    harder stress test."""
     B: dict = dict(
         eval_type="continuous", icc=0.20, n=100, n2=None, n3=None,
         label_frac=0.20, llm_noise=0.20, llm_noise2=None, llm_noise3=None,
@@ -1202,11 +1347,11 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
 
     S: list[JudgeBiasSource] = []
 
-    def sc(name, tag, **kw):
+    def make_scenario(name, tag, **kw):
         return JudgeBiasSource(name=name, tag=tag, **{**B, **kw})
 
     for eval_type in ["continuous", "likert", "grades"]:
-        S.append(sc(f"eval_type.{eval_type}", "eval_type", eval_type=eval_type))
+        S.append(make_scenario(f"eval_type.{eval_type}", "eval_type", eval_type=eval_type))
 
     # Truth-distribution shape factor: does PPI correction still fix Type-I
     # inflation when the underlying truth is a pathological ("custom")
@@ -1214,83 +1359,97 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # scoring clusters -- instead of the smooth Beta/Normal representative
     # shape every other scenario in this sweep uses? See ShapeSpec/
     # _ppi_shape/JudgeBiasSource.shape_label.
-    S.append(sc("shape.cont-zero-inflated", "shape", eval_type="continuous", shape_label="cont-zero-inflated"))
-    S.append(sc("shape.likert-bimodal", "shape", eval_type="likert", shape_label="likert-bimodal"))
-    S.append(sc("shape.grades-mixture", "shape", eval_type="grades", shape_label="grades-mixture"))
+    S.append(make_scenario("shape.cont-zero-inflated", "shape", eval_type="continuous", shape_label="cont-zero-inflated"))
+    S.append(make_scenario("shape.likert-bimodal", "shape", eval_type="likert", shape_label="likert-bimodal"))
+    S.append(make_scenario("shape.grades-mixture", "shape", eval_type="grades", shape_label="grades-mixture"))
 
     for n in [60, 100, 200, 400]:
-        S.append(sc(f"n={n}", "sample_size", n=n))
+        S.append(make_scenario(f"n={n}", "sample_size", n=n))
 
-    S.append(sc("balance.1:1", "balance", n=100, n2=100, n3=100))
-    S.append(sc("balance.2:1", "balance", n=67, n2=133, n3=100))
-    S.append(sc("balance.4:1", "balance", n=40, n2=160, n3=100))
+    S.append(make_scenario("balance.1:1", "balance", n=100, n2=100, n3=100))
+    S.append(make_scenario("balance.2:1", "balance", n=67, n2=133, n3=100))
+    S.append(make_scenario("balance.4:1", "balance", n=40, n2=160, n3=100))
 
     for lab in [0.05, 0.10, 0.20, 0.40]:
-        S.append(sc(f"lab.{lab:.0%}", "label_frac", label_frac=lab))
+        S.append(make_scenario(f"lab.{lab:.0%}", "label_frac", label_frac=lab))
 
-    S.append(sc("label.mcar", "label_mechanism", label_mnar=False, mnar_strength=0.0))
-    S.append(sc("label.mnar-mild", "label_mechanism", label_mnar=True, mnar_strength=0.8, mnar_mode="high"))
-    S.append(sc("label.mnar-strong", "label_mechanism", label_mnar=True, mnar_strength=1.6, mnar_mode="high"))
+    S.append(make_scenario("label.mcar", "label_mechanism", label_mnar=False, mnar_strength=0.0))
+    S.append(make_scenario("label.mnar-mild", "label_mechanism", label_mnar=True, mnar_strength=0.8, mnar_mode="high"))
+    S.append(make_scenario("label.mnar-strong", "label_mechanism", label_mnar=True, mnar_strength=1.6, mnar_mode="high"))
 
     for noise in [0.0, 0.10, 0.35, 0.70]:
-        S.append(sc(f"noise.{noise}", "llm_noise", llm_noise=noise))
+        S.append(make_scenario(f"noise.{noise}", "llm_noise", llm_noise=noise))
 
     for bt in ["none", "constant", "differential"]:
-        S.append(sc(f"bias.{bt}", "bias_type", bias_type=bt))
+        S.append(make_scenario(f"bias.{bt}", "bias_type", bias_type=bt))
 
-    S.append(sc("scale.none", "scale_bias", bias_type="none", slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0))
-    S.append(sc("scale.compress", "scale_bias", bias_type="none", slope_a=0.80, slope_b=0.80, slope_c=0.80, slope_d=0.80))
-    S.append(sc("scale.expand", "scale_bias", bias_type="none", slope_a=1.20, slope_b=1.20, slope_c=1.20, slope_d=1.20))
+    S.append(make_scenario(
+        "scale.none", "scale_bias", bias_type="none", slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0,
+    ))
+    S.append(make_scenario(
+        "scale.compress", "scale_bias", bias_type="none", slope_a=0.80, slope_b=0.80, slope_c=0.80, slope_d=0.80,
+    ))
+    S.append(make_scenario(
+        "scale.expand", "scale_bias", bias_type="none", slope_a=1.20, slope_b=1.20, slope_c=1.20, slope_d=1.20,
+    ))
 
-    S.append(sc("gcal.none", "group_calibration", bias_type="none"))
-    S.append(sc(
+    S.append(make_scenario("gcal.none", "group_calibration", bias_type="none"))
+    S.append(make_scenario(
         "gcal.mild", "group_calibration", bias_type="none",
         bias_extra_a=0.15, bias_extra_b=-0.05, bias_extra_c=0.05, bias_extra_d=-0.10,
         slope_a=1.15, slope_b=0.95, slope_c=1.05, slope_d=0.90,
     ))
-    S.append(sc(
+    S.append(make_scenario(
         "gcal.strong", "group_calibration", bias_type="none",
         bias_extra_a=0.30, bias_extra_b=-0.10, bias_extra_c=0.10, bias_extra_d=-0.20,
         slope_a=1.30, slope_b=0.90, slope_c=1.10, slope_d=0.80,
     ))
 
-    S.append(sc("corr.0.0", "repeated_corr", repeated_corr=0.0, bias_type="none"))
-    S.append(sc("corr.0.3", "repeated_corr", repeated_corr=0.3, bias_type="none"))
-    S.append(sc("corr.0.7", "repeated_corr", repeated_corr=0.7, bias_type="none"))
+    S.append(make_scenario("corr.0.0", "repeated_corr", repeated_corr=0.0, bias_type="none"))
+    S.append(make_scenario("corr.0.3", "repeated_corr", repeated_corr=0.3, bias_type="none"))
+    S.append(make_scenario("corr.0.7", "repeated_corr", repeated_corr=0.7, bias_type="none"))
 
-    S.append(sc("hetero.mild", "heteroskedastic", llm_noise=0.05, llm_noise2=0.50, llm_noise3=0.25))
-    S.append(sc("hetero.extreme", "heteroskedastic", llm_noise=0.02, llm_noise2=0.80, llm_noise3=0.40))
+    S.append(make_scenario("hetero.mild", "heteroskedastic", llm_noise=0.05, llm_noise2=0.50, llm_noise3=0.25))
+    S.append(make_scenario("hetero.extreme", "heteroskedastic", llm_noise=0.02, llm_noise2=0.80, llm_noise3=0.40))
 
     # Judge-noise FAMILY factor: does PPI correction still fix Type-I
     # inflation when judge measurement error is "mostly right, occasionally
-    # catastrophically wrong" (a contaminated/heavy-tailed Gaussian mixture)
-    # instead of symmetric, uniform-width Gaussian noise? Same total noise
-    # variance (noise_sd**2) as the gaussian baseline either way -- only
-    # where that variance comes from differs. See JudgeBiasSource.noise_family.
-    S.append(sc("noise_family.contaminated-mild", "noise_family", noise_family="contaminated", contam_frac=0.10, contam_scale=3.0))
-    S.append(sc("noise_family.contaminated-strong", "noise_family", noise_family="contaminated", contam_frac=0.10, contam_scale=6.0))
-    S.append(sc("noise_family.contaminated+corr", "noise_family", noise_family="contaminated", contam_frac=0.15, contam_scale=5.0, repeated_corr=0.5))
+    # way off" (see _contaminated_noise_stds) instead of plain, symmetric
+    # Gaussian noise? See JudgeBiasSource.noise_family for what this changes
+    # (and doesn't: the total noise variance stays the same either way).
+    S.append(make_scenario(
+        "noise_family.contaminated-mild", "noise_family",
+        noise_family="contaminated", contam_frac=0.10, contam_scale=3.0,
+    ))
+    S.append(make_scenario(
+        "noise_family.contaminated-strong", "noise_family",
+        noise_family="contaminated", contam_frac=0.10, contam_scale=6.0,
+    ))
+    S.append(make_scenario(
+        "noise_family.contaminated+corr", "noise_family",
+        noise_family="contaminated", contam_frac=0.15, contam_scale=5.0, repeated_corr=0.5,
+    ))
 
-    S.append(sc("stress.small+sparse", "stress", n=30, label_frac=0.07))
-    S.append(sc("stress.large+noisy", "stress", n=300, llm_noise=0.70))
-    S.append(sc("stress.unbal+diff", "stress", n=40, n2=200, label_frac=0.08))
-    S.append(sc("stress.tiny_lab", "stress", n=200, label_frac=0.02))
+    S.append(make_scenario("stress.small+sparse", "stress", n=30, label_frac=0.07))
+    S.append(make_scenario("stress.large+noisy", "stress", n=300, llm_noise=0.70))
+    S.append(make_scenario("stress.unbal+diff", "stress", n=40, n2=200, label_frac=0.08))
+    S.append(make_scenario("stress.tiny_lab", "stress", n=200, label_frac=0.02))
 
-    S.append(sc(
+    S.append(make_scenario(
         "interact.small+unbal+hetero+diff", "interaction",
         n=30, n2=120, n3=80, label_frac=0.05, llm_noise=0.05, llm_noise2=0.70, llm_noise3=0.35,
         bias_type="differential",
     ))
-    S.append(sc(
+    S.append(make_scenario(
         "interact.small+sparse+noisy+const", "interaction",
         n=40, label_frac=0.05, llm_noise=0.80, bias_type="constant",
     ))
-    S.append(sc(
+    S.append(make_scenario(
         "interact.large+sparse+hetero+diff", "interaction",
         n=250, n2=400, n3=300, label_frac=0.03, llm_noise=0.02, llm_noise2=0.50, llm_noise3=0.90,
         bias_type="differential",
     ))
-    S.append(sc(
+    S.append(make_scenario(
         "interact.mid+extreme-hetero+none", "interaction",
         n=100, n2=150, n3=60, label_frac=0.08, llm_noise=0.01, llm_noise2=0.90, llm_noise3=0.40,
         bias_type="none",
@@ -1301,8 +1460,11 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
 
 @dataclass
 class JudgeBiasCellData:
-    """Output of generate_judge_bias_cell: every test-structure's truth/LLM/label
-    arrays for one (JudgeBiasSource, rep) draw."""
+    """One replicate's worth of data from generate_judge_bias_cell: the
+    LLM-judge scores and (sparse, possibly biased-toward-certain-items)
+    human labels for every test structure this harness checks (independent
+    pairs/triples, paired/repeated measurements, a 2x2 factorial design,
+    and repeated LLM runs)."""
 
     llm_a2: np.ndarray
     llm_b2: np.ndarray
@@ -1338,88 +1500,128 @@ class JudgeBiasCellData:
 
 
 def generate_judge_bias_cell(
-    sc: JudgeBiasSource, rng: np.random.Generator, *, lmm_runs_r: int = JUDGE_BIAS_LMM_RUNS_R,
+    scenario: JudgeBiasSource, rng: np.random.Generator, *, lmm_runs_r: int = JUDGE_BIAS_LMM_RUNS_R,
 ) -> JudgeBiasCellData:
-    """Draw one replicate's worth of truth/LLM-judge/human-label arrays for
-    every test structure (two independent groups, paired/repeated, three
-    independent groups, three repeated conditions, a 2x2 crossed-factor
-    design, and nested LLM runs), from one continuing rng stream.
+    """Draw one full replicate's worth of data -- ground truth, LLM-judge
+    scores, and human labels -- for every test structure this PPI-mode
+    sweep checks at once, all drawn from the same continuing rng stream.
 
-    Truth comes from ONE representative shape per eval type (_ppi_shape),
-    drawn via sample_group_truth -- k=1 (icc=1.0) for the independent-groups
-    structures, k=2/3/4 at sc.icc for the paired/repeated structures -- the
-    same shape catalog and generator build_pair_sources/build_multiarm_sources
-    use, instead of this scenario family's own bespoke distribution.
+    Truth comes from one representative shape per eval type (_ppi_shape),
+    via sample_group_truth -- the same shape catalog and generator
+    build_pair_sources/build_multiarm_sources use, so judge-bias scenarios
+    are layered on top of a realistic truth model rather than a separate,
+    simplified one.
 
-    Effect size: ``sc.effect_size`` injects a real, monotonic mean shift into
-    the truth itself (group/condition 0 unshifted, 1 gets +effect_size, 2 gets
-    +2*effect_size, ...) -- 0.0 (the Type-I sweep default) makes this a no-op;
-    >0 turns the same scenario grid into a power sweep.
+    ``scenario.effect_size`` optionally injects a real difference between
+    groups/conditions directly into the truth (group/condition 0 stays at
+    baseline, 1 gets +effect_size, 2 gets +2*effect_size, and so on). At
+    0.0 (the default, used for checking false-positive rates) there's no
+    real difference at all; setting it above 0 turns the same scenario grid
+    into a check of how often a real difference gets correctly detected.
     """
-    shape = _ppi_shape(sc.eval_type, sc.shape_label)
-    n1 = sc.n
-    n2 = sc.n2 if sc.n2 is not None else sc.n
-    n3 = sc.n3 if sc.n3 is not None else sc.n
-    noise1 = sc.llm_noise
-    noise2 = sc.llm_noise2 if sc.llm_noise2 is not None else sc.llm_noise
-    noise3 = sc.llm_noise3 if sc.llm_noise3 is not None else sc.llm_noise
+    shape = _ppi_shape(scenario.eval_type, scenario.shape_label)
+    n1 = scenario.n
+    n2 = scenario.n2 if scenario.n2 is not None else scenario.n
+    n3 = scenario.n3 if scenario.n3 is not None else scenario.n
+    noise1 = scenario.llm_noise
+    noise2 = scenario.llm_noise2 if scenario.llm_noise2 is not None else scenario.llm_noise
+    noise3 = scenario.llm_noise3 if scenario.llm_noise3 is not None else scenario.llm_noise
     anchor = _ppi_shape_anchor(shape)
-    (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _jb_judge_params_3(sc)
-    es = sc.effect_size
+    (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _jb_judge_params_3(scenario)
+    es = scenario.effect_size
 
     def _marginal(n: int) -> np.ndarray:
         return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
 
     def _repeated(n: int, n_conditions: int, effects: np.ndarray) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, n_conditions, sc.icc, rng, effects=effects)[:, :, 0]
+        return sample_group_truth(shape, n, 1, n_conditions, scenario.icc, rng, effects=effects)[:, :, 0]
 
     # -- Independent two-group data (ttest, mannwhitney) --
     truth_a2 = _marginal(n1)
     truth_b2 = _marginal(n2) + es
-    llm_a2 = _jb_llm(truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
-    llm_b2 = _jb_llm(truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
-    lab_a2 = _jb_labels_independent(truth_a2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
-    lab_b2 = _jb_labels_independent(truth_b2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    llm_a2 = _jb_llm(
+        truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+    )
+    llm_b2 = _jb_llm(
+        truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+    )
+    lab_a2 = _jb_labels_independent(
+        truth_a2, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
+    lab_b2 = _jb_labels_independent(
+        truth_b2, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
 
     # -- Paired data (wilcoxon) --
     truth_x, truth_y = _repeated(n1, 2, np.array([0.0, es]))
     llm_x, llm_y = _jb_llm_repeated(
         [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
-        rng, anchor=anchor, corr=sc.repeated_corr,
-        noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
+        rng, anchor=anchor, corr=scenario.repeated_corr,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
     )
-    lab_x, lab_y = _jb_labels_shared([truth_x, truth_y], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    lab_x, lab_y = _jb_labels_shared(
+        [truth_x, truth_y], scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
 
     # -- Independent three-group data (anova_ind) --
     truth_a3 = _marginal(n1)
     truth_b3 = _marginal(n2) + es
     truth_c3 = _marginal(n3) + 2 * es
-    llm_a3 = _jb_llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
-    llm_b3 = _jb_llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
-    llm_c3 = _jb_llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
-    lab_a3 = _jb_labels_independent(truth_a3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
-    lab_b3 = _jb_labels_independent(truth_b3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
-    lab_c3 = _jb_labels_independent(truth_c3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    llm_a3 = _jb_llm(
+        truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+    )
+    llm_b3 = _jb_llm(
+        truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+    )
+    llm_c3 = _jb_llm(
+        truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+    )
+    lab_a3 = _jb_labels_independent(
+        truth_a3, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
+    lab_b3 = _jb_labels_independent(
+        truth_b3, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
+    lab_c3 = _jb_labels_independent(
+        truth_c3, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
 
     # -- Repeated-measures three-group data (anova_rep, friedman, lmm) --
     truth_A, truth_B, truth_C = _repeated(n1, 3, np.array([0.0, es, 2 * es]))
     llm_A, llm_B, llm_C = _jb_llm_repeated(
         [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
-        rng, anchor=anchor, corr=sc.repeated_corr,
-        noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
+        rng, anchor=anchor, corr=scenario.repeated_corr,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
     )
-    lab_A, lab_B, lab_C = _jb_labels_shared([truth_A, truth_B, truth_C], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    lab_A, lab_B, lab_C = _jb_labels_shared(
+        [truth_A, truth_B, truth_C], scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
 
     # -- 2x2 crossed fixed-factor data (lmm_factorial) --
-    (bias_w, bias_x, bias_y, bias_z), (slope_w, slope_x, slope_y, slope_z) = _jb_judge_params_4(sc)
+    (bias_w, bias_x, bias_y, bias_z), (slope_w, slope_x, slope_y, slope_z) = _jb_judge_params_4(scenario)
     truth_W, truth_X, truth_Y, truth_Z = _repeated(n1, 4, np.array([0.0, es, 2 * es, 3 * es]))
     llm_W, llm_X, llm_Y, llm_Z = _jb_llm_repeated(
         [truth_W, truth_X, truth_Y, truth_Z], [bias_w, bias_x, bias_y, bias_z],
         [noise1, noise2, noise3, noise1], [slope_w, slope_x, slope_y, slope_z],
-        rng, anchor=anchor, corr=sc.repeated_corr,
-        noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
+        rng, anchor=anchor, corr=scenario.repeated_corr,
+        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
     )
-    lab_W, lab_X, lab_Y, lab_Z = _jb_labels_shared([truth_W, truth_X, truth_Y, truth_Z], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
+    lab_W, lab_X, lab_Y, lab_Z = _jb_labels_shared(
+        [truth_W, truth_X, truth_Y, truth_Z], scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
 
     # -- Nested run replication (lmm_runs) --
     a_cols: list[np.ndarray] = []
@@ -1428,8 +1630,8 @@ def generate_judge_bias_cell(
     for _ in range(lmm_runs_r):
         rA, rB, rC = _jb_llm_repeated(
             [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
-            rng, anchor=anchor, corr=sc.repeated_corr,
-            noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
+            rng, anchor=anchor, corr=scenario.repeated_corr,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
         )
         a_cols.append(rA)
         b_cols.append(rB)
@@ -1448,48 +1650,63 @@ def generate_judge_bias_cell(
     )
 
 
-def estimate_judge_bias_gold_null_values(sc: JudgeBiasSource, *, n_mc: int = 3000, seed: int = 0) -> dict[str, float]:
-    """Monte Carlo expectation of each test's raw estimand on pure-truth (no
-    LLM bias/noise) data at this scenario's exact sample sizes -- the
-    bias/coverage effect-size check's "true null value" (not always exactly
-    0; see sim_type_i_calibration.py's _gold_null_values docstring for why).
+def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int = 3000, seed: int = 0) -> dict[str, float]:
+    """Estimate, by simulation, what each test's underlying quantity should
+    average out to when there's truly no effect -- using only ground-truth
+    data (no LLM bias/noise at all) at this scenario's exact sample sizes.
+    This is the baseline a bias/coverage check compares against.
+
+    This "true null value" isn't always 0, even though there's no real
+    effect: for example, a between-group variance estimator (used by the
+    ANOVA-style tests) is built to average out to roughly the noise level
+    itself when groups are identical, not to 0 -- a real difference between
+    groups would push it higher than that, not away from 0. Estimating it
+    by simulation, rather than assuming 0, avoids baking in a wrong
+    assumption about what "no effect" looks like for that particular test.
     """
-    from evalstats.tests import _p_x_gt_y_midrank, _anova_between_variance_from_groups, _repeated_condition_variance, _friedman_rank_variance
+    from evalstats.tests import (
+        _anova_between_variance_from_groups,
+        _friedman_rank_variance,
+        _p_x_gt_y_midrank,
+        _repeated_condition_variance,
+    )
 
     rng = np.random.default_rng(seed)
-    shape = _ppi_shape(sc.eval_type, sc.shape_label)
-    n1 = sc.n
-    n2 = sc.n2 if sc.n2 is not None else sc.n
-    n3 = sc.n3 if sc.n3 is not None else sc.n
+    shape = _ppi_shape(scenario.eval_type, scenario.shape_label)
+    n1 = scenario.n
+    n2 = scenario.n2 if scenario.n2 is not None else scenario.n
+    n3 = scenario.n3 if scenario.n3 is not None else scenario.n
 
     def _marginal(n: int) -> np.ndarray:
         return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
 
     def _repeated(n: int, n_conditions: int) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, n_conditions, sc.icc, rng)[:, :, 0]
+        return sample_group_truth(shape, n, 1, n_conditions, scenario.icc, rng)[:, :, 0]
 
-    diffs2 = np.empty(n_mc)
-    thetas2 = np.empty(n_mc)
+    # For each test family, repeatedly draw pure-truth data and average the
+    # test's raw statistic over n_mc draws, to estimate its true null value.
+    diffs2 = np.empty(n_mc)  # mean difference (ttest)
+    thetas2 = np.empty(n_mc)  # rank-based effect measure (mann-whitney)
     for i in range(n_mc):
         a = _marginal(n1)
         b = _marginal(n2)
         diffs2[i] = a.mean() - b.mean()
         thetas2[i] = _p_x_gt_y_midrank(a, b) - 0.5
 
-    meds = np.empty(n_mc)
+    meds = np.empty(n_mc)  # median paired difference (wilcoxon)
     for i in range(n_mc):
         x, y = _repeated(n1, 2)
         meds[i] = float(np.median(x - y))
 
-    bv = np.empty(n_mc)
+    bv = np.empty(n_mc)  # between-group variance (anova_ind)
     for i in range(n_mc):
         a3 = _marginal(n1)
         b3 = _marginal(n2)
         c3 = _marginal(n3)
         bv[i] = _anova_between_variance_from_groups([a3, b3, c3])
 
-    rv = np.empty(n_mc)
-    frv = np.empty(n_mc)
+    rv = np.empty(n_mc)  # between-condition variance (anova_rep)
+    frv = np.empty(n_mc)  # rank-based between-condition variance (friedman)
     for i in range(n_mc):
         mat = _repeated(n1, 3).T  # (n1, 3)
         rv[i] = _repeated_condition_variance(mat)
