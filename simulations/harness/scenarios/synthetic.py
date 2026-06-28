@@ -27,10 +27,13 @@ from __future__ import annotations
 from typing import Callable
 
 import numpy as np
+from scipy import stats
+from scipy.stats import norm
 
 from . import CISource, CIPairSource
 
 SCENARIO_SUITES = ["standard", "expanded", "extreme"]
+RUN_NOISE_FRACS_DEFAULT = [0.01, 0.1, 0.3, 0.5]
 
 
 def _true_mean_clipped_normal(
@@ -639,5 +642,723 @@ def build_pair_sources(
                     generate_pair=_gen_grades, true_diff=true_diff,
                     icc=icc, cohens_d=d, is_null=is_null,
                 ))
+
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# Multi-run (nested-mode) single-sample sources
+# ---------------------------------------------------------------------------
+# Ported from sim_compare_boot_nested.py's build_multirun_scenarios(). Used by
+# cases/ci_single.py's --nested-mode, parameterized by run_noise_frac rather
+# than ICC: f_run = sigma^2_run / (sigma^2_input + sigma^2_run). Low f_run =
+# high ICC = clustered runs; f_run ~= 1 = run noise dominates.
+
+
+def _estimate_true_mean_mc_runs(
+    generate_runs: Callable[[np.random.Generator, int, int], np.ndarray],
+    *,
+    seed: int = 0,
+    n_mc: int = 500_000,
+) -> float:
+    rng = np.random.default_rng(seed)
+    return float(np.mean(generate_runs(rng, n_mc, 1)))
+
+
+def build_multirun_sources(
+    run_noise_fracs: list[float],
+    suite: str = "standard",
+    heteroscedastic: bool = False,
+) -> list[CISource]:
+    """Build single-sample multi-run sources parameterised by run_noise_frac.
+
+    DGPs (matching build_single_sample_sources' shape families):
+      binary:     Bernoulli-Beta hierarchical. p_i ~ Beta(conc*p0, conc*(1-p0)),
+                  ICC = 1/(conc+1), f_run = conc/(conc+1).
+      continuous: base_i ~ Beta(a,b), x_{i,r} = clip(base_i + N(0,sigma_run), 0,1).
+      likert:     latent_i ~ N(mu, sigma_input), x_{i,r} = round(clip(latent_i + N(0,sigma_run),1,5)).
+      grades:     same as likert, clipped to [0, 100].
+    """
+    if suite not in SCENARIO_SUITES:
+        raise ValueError(f"Unknown scenario suite: {suite}")
+
+    sources: list[CISource] = []
+
+    def _add(label: str, eval_type: str, gen_fn, true_mean: float, f: float) -> None:
+        sources.append(CISource(
+            label=label, eval_type=eval_type, true_mean=true_mean,
+            generate=lambda rng, n, _g=gen_fn: _g(rng, n, 1)[:, 0],
+            generate_runs=gen_fn, run_noise_frac=f,
+        ))
+
+    # -- Binary --
+    binary_ps = [0.1, 0.3, 0.5, 0.7, 0.9]
+    if suite in ("expanded", "extreme"):
+        binary_ps += [0.02, 0.05, 0.95, 0.98]
+
+    for p0 in binary_ps:
+        for f in run_noise_fracs:
+            conc = float(max(f, 1e-6)) / float(max(1.0 - f, 1e-6))
+            p_, c_ = p0, conc
+
+            def _gen_bin(rng: np.random.Generator, n: int, runs: int, _p: float = p_, _c: float = c_) -> np.ndarray:
+                p_i = rng.beta(_c * _p, _c * (1.0 - _p), size=(n, 1))
+                return rng.binomial(1, p_i, size=(n, runs)).astype(float)
+
+            _add(f"p={p0}|f={f:.2f}", "binary", _gen_bin, p0, f)
+
+    # -- Continuous [0, 1] --
+    continuous_specs: list[tuple[str, float, float]] = [
+        ("Uniform", 1.0, 1.0), ("U-shaped", 0.5, 0.5), ("right-skewed", 2.0, 8.0),
+        ("left-skewed", 8.0, 2.0), ("moderate-skew", 2.0, 5.0),
+    ]
+    if suite in ("expanded", "extreme"):
+        continuous_specs.extend([
+            ("extreme-right", 0.35, 6.0), ("extreme-left", 6.0, 0.35),
+            ("near-boundaries", 0.3, 0.3), ("near-center", 6.0, 6.0),
+        ])
+
+    for shape_label, a_b, b_b in continuous_specs:
+        var_base = _beta_var(a_b, b_b)
+        for f in run_noise_fracs:
+            sigma_run = float(np.sqrt(var_base * f / max(1.0 - f, 1e-9)))
+            a_, b_, sr_ = a_b, b_b, sigma_run
+
+            def _gen_cont(
+                rng: np.random.Generator, n: int, runs: int,
+                _a: float = a_, _b: float = b_, _sr: float = sr_, _hetero: bool = heteroscedastic,
+            ) -> np.ndarray:
+                base = rng.beta(_a, _b, size=(n, 1))
+                if _sr > 0.0:
+                    if _hetero:
+                        sigma_i = _sr * 2.0 * np.sqrt(base * (1.0 - base))
+                        noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                    else:
+                        noise = rng.normal(0.0, _sr, size=(n, runs))
+                else:
+                    noise = np.zeros((n, runs))
+                return np.clip(base + noise, 0.0, 1.0)
+
+            true_mean = _estimate_true_mean_mc_runs(_gen_cont)
+            _add(f"{shape_label}|f={f:.2f}", "continuous", _gen_cont, true_mean, f)
+
+    # logit-normal base (always included)
+    for f in run_noise_fracs:
+        rng_tmp = np.random.default_rng(1)
+        base_logit = rng_tmp.normal(-0.35, 1.35, 200_000)
+        base_vals = 1.0 / (1.0 + np.exp(-base_logit))
+        var_logit = float(np.var(base_vals))
+        sigma_run = float(np.sqrt(var_logit * f / max(1.0 - f, 1e-9)))
+        sr_ = sigma_run
+
+        def _gen_logit(
+            rng: np.random.Generator, n: int, runs: int, _sr: float = sr_, _hetero: bool = heteroscedastic,
+        ) -> np.ndarray:
+            logits = rng.normal(-0.35, 1.35, size=(n, 1))
+            base = 1.0 / (1.0 + np.exp(-logits))
+            if _sr > 0.0:
+                if _hetero:
+                    sigma_i = _sr * 2.0 * np.sqrt(base * (1.0 - base))
+                    noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                else:
+                    noise = rng.normal(0.0, _sr, size=(n, runs))
+            else:
+                noise = np.zeros((n, runs))
+            return np.clip(base + noise, 0.0, 1.0)
+
+        true_mean = _estimate_true_mean_mc_runs(_gen_logit)
+        _add(f"logit-normal|f={f:.2f}", "continuous", _gen_logit, true_mean, f)
+
+    # zero-inflated and one-inflated
+    for shape_name, spike_val, beta_a, beta_b, spike_prob in [
+        ("zero-inflated", 0.0, 2.0, 4.0, 0.70), ("one-inflated", 1.0, 4.0, 2.0, 0.70),
+    ]:
+        rng_tmp = np.random.default_rng(2)
+        spike_mask = rng_tmp.random(200_000) < spike_prob
+        body = rng_tmp.beta(beta_a, beta_b, 200_000)
+        base_vals_zi = np.where(spike_mask, spike_val, body)
+        var_zi = float(np.var(base_vals_zi))
+
+        for f in run_noise_fracs:
+            sigma_run = float(np.sqrt(var_zi * f / max(1.0 - f, 1e-9)))
+            sv_, ba_, bb_, sp_, sr_ = spike_val, beta_a, beta_b, spike_prob, sigma_run
+
+            def _gen_infl(
+                rng: np.random.Generator, n: int, runs: int,
+                _sv: float = sv_, _ba: float = ba_, _bb: float = bb_, _sp: float = sp_, _sr: float = sr_,
+                _hetero: bool = heteroscedastic,
+            ) -> np.ndarray:
+                spike_i = rng.random((n, 1)) < _sp
+                base = np.where(spike_i, _sv, rng.beta(_ba, _bb, size=(n, 1)))
+                if _sr > 0.0:
+                    if _hetero:
+                        sigma_i = _sr * 2.0 * np.sqrt(base * (1.0 - base))
+                        noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                    else:
+                        noise = rng.normal(0.0, _sr, size=(n, runs))
+                else:
+                    noise = np.zeros((n, runs))
+                return np.clip(base + noise, 0.0, 1.0)
+
+            true_mean = _estimate_true_mean_mc_runs(_gen_infl)
+            _add(f"{shape_name}|f={f:.2f}", "continuous", _gen_infl, true_mean, f)
+
+    if suite in ("expanded", "extreme"):
+        rng_tmp = np.random.default_rng(3)
+        sel = rng_tmp.binomial(1, 0.55, size=200_000).astype(bool)
+        v = np.empty(200_000, dtype=float)
+        v[sel] = rng_tmp.beta(0.5, 4.0, size=int(np.sum(sel)))
+        v[~sel] = rng_tmp.beta(5.5, 1.2, size=int(np.sum(~sel)))
+        var_mix = float(np.var(v))
+
+        for f in run_noise_fracs:
+            sigma_run = float(np.sqrt(var_mix * f / max(1.0 - f, 1e-9)))
+            sr_ = sigma_run
+
+            def _gen_mix(
+                rng: np.random.Generator, n: int, runs: int, _sr: float = sr_, _hetero: bool = heteroscedastic,
+            ) -> np.ndarray:
+                selector = rng.binomial(1, 0.55, size=(n, 1)).astype(bool)
+                base = np.where(selector, rng.beta(0.5, 4.0, size=(n, 1)), rng.beta(5.5, 1.2, size=(n, 1)))
+                if _sr > 0.0:
+                    if _hetero:
+                        sigma_i = _sr * 2.0 * np.sqrt(base * (1.0 - base))
+                        noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                    else:
+                        noise = rng.normal(0.0, _sr, size=(n, runs))
+                else:
+                    noise = np.zeros((n, runs))
+                return np.clip(base + noise, 0.0, 1.0)
+
+            true_mean = _estimate_true_mean_mc_runs(_gen_mix)
+            _add(f"mix-Beta|f={f:.2f}", "continuous", _gen_mix, true_mean, f)
+
+    # -- Likert 1-5 --
+    _likert_standard: list[tuple[str, float, float, bool]] = [
+        ("uniform", 3.0, 2.0, False), ("skewed-low", 2.0, 1.1, False), ("skewed-high", 4.0, 1.1, False),
+        ("bimodal", 3.0, 0.65, True), ("center-peaked", 3.0, 0.55, False),
+    ]
+    if suite in ("expanded", "extreme"):
+        _likert_standard += [
+            ("near-floor", 1.5, 0.65, False), ("near-ceiling", 4.5, 0.65, False), ("flat-middle", 3.0, 1.4, False),
+        ]
+
+    for shape_label, mu_lat, s0, is_bimodal in _likert_standard:
+        for f in run_noise_fracs:
+            sigma_input_l = float(np.sqrt(max(1.0 - f, 0.0))) * s0
+            sigma_run_l = float(np.sqrt(f)) * s0
+            m_, si_, sr_, bim_ = mu_lat, sigma_input_l, sigma_run_l, is_bimodal
+
+            if is_bimodal:
+                def _gen_likert_bim(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _m: float = m_, _si: float = si_, _sr: float = sr_, _hetero: bool = heteroscedastic,
+                ) -> np.ndarray:
+                    mode = rng.integers(0, 2, size=(n, 1))
+                    mu_mode = np.where(mode == 0, _m - 1.5, _m + 1.5)
+                    latent_i = mu_mode + rng.normal(0.0, _si, size=(n, 1))
+                    if _sr > 0.0:
+                        if _hetero:
+                            p_i = np.clip((latent_i - 1.0) / 4.0, 0.0, 1.0)
+                            sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                            noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                        else:
+                            noise = rng.normal(0.0, _sr, size=(n, runs))
+                    else:
+                        noise = np.zeros((n, runs))
+                    return np.rint(np.clip(latent_i + noise, 1.0, 5.0))
+
+                gen_fn = _gen_likert_bim
+            else:
+                def _gen_likert_norm(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _m: float = m_, _si: float = si_, _sr: float = sr_, _hetero: bool = heteroscedastic,
+                ) -> np.ndarray:
+                    latent_i = rng.normal(_m, _si, size=(n, 1)) if _si > 0.0 else np.full((n, 1), _m)
+                    if _sr > 0.0:
+                        if _hetero:
+                            p_i = np.clip((latent_i - 1.0) / 4.0, 0.0, 1.0)
+                            sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                            noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                        else:
+                            noise = rng.normal(0.0, _sr, size=(n, runs))
+                    else:
+                        noise = np.zeros((n, runs))
+                    return np.rint(np.clip(latent_i + noise, 1.0, 5.0))
+
+                gen_fn = _gen_likert_norm
+
+            true_mean = _estimate_true_mean_mc_runs(gen_fn)
+            _add(f"{shape_label}|f={f:.2f}", "likert", gen_fn, true_mean, f)
+
+    if suite in ("expanded", "extreme"):
+        for f in run_noise_fracs:
+            sigma_input_l = float(np.sqrt(max(1.0 - f, 0.0))) * 0.50
+            sigma_run_l = float(np.sqrt(f)) * 0.50
+            si_, sr_ = sigma_input_l, sigma_run_l
+
+            def _gen_likert_polarized(
+                rng: np.random.Generator, n: int, runs: int,
+                _si: float = si_, _sr: float = sr_, _hetero: bool = heteroscedastic,
+            ) -> np.ndarray:
+                sel = rng.random((n, 1)) < 0.5
+                mu_i = np.where(sel, 1.3, 4.7)
+                latent_i = mu_i + rng.normal(0.0, _si, size=(n, 1)) if _si > 0.0 else mu_i.astype(float)
+                if _sr > 0.0:
+                    if _hetero:
+                        p_i = np.clip((latent_i - 1.0) / 4.0, 0.0, 1.0)
+                        sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                        noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                    else:
+                        noise = rng.normal(0.0, _sr, size=(n, runs))
+                else:
+                    noise = np.zeros((n, runs))
+                return np.rint(np.clip(latent_i + noise, 1.0, 5.0))
+
+            true_mean = _estimate_true_mean_mc_runs(_gen_likert_polarized)
+            _add(f"polarized|f={f:.2f}", "likert", _gen_likert_polarized, true_mean, f)
+
+    # -- Grades 0-100 --
+    _grades_standard: list[tuple[str, float, float]] = [
+        ("symmetric", 50.0, 20.0), ("high-scoring", 75.0, 15.0), ("low-scoring", 35.0, 20.0),
+        ("ceiling-heavy", 88.0, 10.0), ("floor-heavy", 12.0, 10.0),
+    ]
+    if suite in ("expanded", "extreme"):
+        _grades_standard += [
+            ("very-high", 92.0, 7.0), ("very-low", 8.0, 7.0), ("high-variance", 50.0, 34.0),
+        ]
+
+    for shape_label, mu_g, s0_g in _grades_standard:
+        for f in run_noise_fracs:
+            sigma_input_g = float(np.sqrt(max(1.0 - f, 0.0))) * s0_g
+            sigma_run_g = float(np.sqrt(f)) * s0_g
+            m_, si_, sr_ = mu_g, sigma_input_g, sigma_run_g
+
+            def _gen_grades(
+                rng: np.random.Generator, n: int, runs: int,
+                _m: float = m_, _si: float = si_, _sr: float = sr_, _hetero: bool = heteroscedastic,
+            ) -> np.ndarray:
+                latent_i = rng.normal(_m, _si, size=(n, 1)) if _si > 0.0 else np.full((n, 1), _m)
+                if _sr > 0.0:
+                    if _hetero:
+                        p_i = np.clip(latent_i / 100.0, 0.0, 1.0)
+                        sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                        noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                    else:
+                        noise = rng.normal(0.0, _sr, size=(n, runs))
+                else:
+                    noise = np.zeros((n, runs))
+                return np.clip(latent_i + noise, 0.0, 100.0)
+
+            true_mean = _estimate_true_mean_mc_runs(_gen_grades)
+            _add(f"{shape_label}|f={f:.2f}", "grades", _gen_grades, true_mean, f)
+
+    # Grades mixture (always included)
+    for f in run_noise_fracs:
+        rng_tmp = np.random.default_rng(4)
+        flags_tmp = rng_tmp.choice(3, size=200_000, p=[0.20, 0.50, 0.30])
+        base_tmp = np.empty(200_000, dtype=float)
+        for bucket, mu_b, sig_b in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
+            msk = flags_tmp == bucket
+            base_tmp[msk] = rng_tmp.normal(mu_b, sig_b, size=int(np.sum(msk)))
+        var_mix = float(np.var(np.clip(base_tmp, 0.0, 100.0)))
+        sigma_run_m = float(np.sqrt(var_mix * f / max(1.0 - f, 1e-9)))
+        sr_ = sigma_run_m
+
+        def _gen_grade_mix(
+            rng: np.random.Generator, n: int, runs: int, _sr: float = sr_, _hetero: bool = heteroscedastic,
+        ) -> np.ndarray:
+            flags = rng.choice(3, size=(n, 1), p=[0.20, 0.50, 0.30])
+            mu_i = np.where(flags == 0, 22.0, np.where(flags == 1, 58.0, 88.0)).astype(float)
+            sig_i = np.where(flags == 0, 11.0, np.where(flags == 1, 14.0, 8.0)).astype(float)
+            base_i = np.clip(mu_i + rng.normal(0.0, 1.0, size=(n, 1)) * sig_i, 0.0, 100.0)
+            if _sr > 0.0:
+                if _hetero:
+                    p_i = np.clip(base_i / 100.0, 0.0, 1.0)
+                    sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                    noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                else:
+                    noise = rng.normal(0.0, _sr, size=(n, runs))
+            else:
+                noise = np.zeros((n, runs))
+            return np.clip(base_i + noise, 0.0, 100.0)
+
+        true_mean = _estimate_true_mean_mc_runs(_gen_grade_mix)
+        _add(f"mixture-truncnorm(3 components)|f={f:.2f}", "grades", _gen_grade_mix, true_mean, f)
+
+    # Heavy-tail t(df=3) grades scenario (always included)
+    for f in run_noise_fracs:
+        rng_tmp = np.random.default_rng(5)
+        base_ht = np.clip(52.0 + 16.0 * rng_tmp.standard_t(df=3.0, size=200_000), 0.0, 100.0)
+        var_ht = float(np.var(base_ht))
+        sigma_run_h = float(np.sqrt(var_ht * f / max(1.0 - f, 1e-9)))
+        sr_ = sigma_run_h
+
+        def _gen_grade_heavy_tail(
+            rng: np.random.Generator, n: int, runs: int, _sr: float = sr_, _hetero: bool = heteroscedastic,
+        ) -> np.ndarray:
+            base_i = np.clip(52.0 + 16.0 * rng.standard_t(df=3.0, size=(n, 1)), 0.0, 100.0)
+            if _sr > 0.0:
+                if _hetero:
+                    p_i = np.clip(base_i / 100.0, 0.0, 1.0)
+                    sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                    noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                else:
+                    noise = rng.normal(0.0, _sr, size=(n, runs))
+            else:
+                noise = np.zeros((n, runs))
+            return np.clip(base_i + noise, 0.0, 100.0)
+
+        true_mean = _estimate_true_mean_mc_runs(_gen_grade_heavy_tail)
+        _add(f"heavy-tail t(df=3)|f={f:.2f}", "grades", _gen_grade_heavy_tail, true_mean, f)
+
+    # Expanded-suite floor/ceiling spiked grades scenarios
+    if suite in ("expanded", "extreme"):
+        for spike_name, spike_value, body_mu, body_sigma in [
+            ("zero-spiked(pi=0.40,N(45,20))", 0.0, 45.0, 20.0),
+            ("hundred-spiked(pi=0.40,N(65,18))", 100.0, 65.0, 18.0),
+        ]:
+            rng_tmp = np.random.default_rng(6)
+            spike_mask = rng_tmp.random(200_000) < 0.40
+            body = np.clip(rng_tmp.normal(body_mu, body_sigma, size=200_000), 0.0, 100.0)
+            base_sp = np.where(spike_mask, spike_value, body)
+            var_sp = float(np.var(base_sp))
+
+            for f in run_noise_fracs:
+                sigma_run_sp = float(np.sqrt(var_sp * f / max(1.0 - f, 1e-9)))
+                sv_, bm_, bs_, sr_ = spike_value, body_mu, body_sigma, sigma_run_sp
+
+                def _gen_grade_spiked(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _sv: float = sv_, _bm: float = bm_, _bs: float = bs_, _sr: float = sr_,
+                    _hetero: bool = heteroscedastic,
+                ) -> np.ndarray:
+                    spike_i = rng.random((n, 1)) < 0.40
+                    body_i = np.clip(rng.normal(_bm, _bs, size=(n, 1)), 0.0, 100.0)
+                    base_i = np.where(spike_i, _sv, body_i)
+                    if _sr > 0.0:
+                        if _hetero:
+                            p_i = np.clip(base_i / 100.0, 0.0, 1.0)
+                            sigma_i = _sr * 2.0 * np.sqrt(p_i * (1.0 - p_i))
+                            noise = rng.normal(0.0, 1.0, size=(n, runs)) * sigma_i
+                        else:
+                            noise = rng.normal(0.0, _sr, size=(n, runs))
+                    else:
+                        noise = np.zeros((n, runs))
+                    return np.clip(base_i + noise, 0.0, 100.0)
+
+                true_mean = _estimate_true_mean_mc_runs(_gen_grade_spiked)
+                _add(f"{spike_name}|f={f:.2f}", "grades", _gen_grade_spiked, true_mean, f)
+
+    return sources
+
+
+# ---------------------------------------------------------------------------
+# Multi-run (nested-mode) paired-difference sources
+# ---------------------------------------------------------------------------
+# Ported from sim_compare_boot_nested.py's build_pair_multirun_scenarios().
+# Used by cases/ci_paired.py's --nested-mode. Unlike build_pair_sources
+# (which shares a single between-item draw for both A and B), these use a
+# Gaussian-copula correlation (cross_item_rho) between A's and B's item-level
+# latent scores -- a more realistic "partial agreement" DGP -- and let A and B
+# have independently swept run-noise fractions (f_A, f_B).
+
+
+def build_pair_multirun_sources(
+    run_noise_fracs: list[float],
+    suite: str = "standard",
+    cohens_d_values: list[float] | None = None,
+    include_null: bool = False,
+    heteroscedastic: bool = False,
+    pairwise_noise_grid: bool = False,
+    pairwise_noise_grid_max: int | None = None,
+    pairwise_noise_grid_seed: int = 42,
+    cross_item_rho: float = 0.7,
+) -> list[CIPairSource]:
+    if cohens_d_values is None:
+        cohens_d_values = [0.3]
+
+    d_list: list[float] = []
+    if include_null:
+        d_list.append(0.0)
+    d_list.extend(d for d in cohens_d_values if d > 0.0)
+
+    if pairwise_noise_grid:
+        noise_pairs = [(float(fa), float(fb)) for fa in run_noise_fracs for fb in run_noise_fracs]
+    else:
+        noise_pairs = [(float(f), float(f)) for f in run_noise_fracs]
+
+    if pairwise_noise_grid_max is not None and pairwise_noise_grid_max > 0 and len(noise_pairs) > pairwise_noise_grid_max:
+        rng_grid = np.random.default_rng(pairwise_noise_grid_seed)
+        keep_idx = np.sort(rng_grid.choice(len(noise_pairs), size=pairwise_noise_grid_max, replace=False))
+        noise_pairs = [noise_pairs[int(i)] for i in keep_idx]
+
+    sources: list[CIPairSource] = []
+
+    def _add(label, eval_type, gen_pair, true_diff, f_a, f_b, icc, is_null) -> None:
+        sources.append(CIPairSource(
+            label=label, eval_type=eval_type, true_diff=true_diff, generate_pair=gen_pair,
+            icc=icc, is_null=is_null, run_noise_frac=0.5 * (f_a + f_b),
+            run_noise_frac_a=f_a, run_noise_frac_b=f_b,
+        ))
+
+    # -- Binary --
+    binary_shapes: list[tuple[str, float]] = [
+        ("binary-balanced", 0.5), ("binary-high", 0.8), ("binary-low", 0.2),
+    ]
+    if suite in ("expanded", "extreme"):
+        binary_shapes += [("binary-rare", 0.05), ("binary-near-ceil", 0.93)]
+
+    for shape_label, p0 in binary_shapes:
+        total_std = float(np.sqrt(p0 * (1.0 - p0)))
+        for f_a, f_b in noise_pairs:
+            conc_a = float(max(f_a, 1e-6)) / float(max(1.0 - f_a, 1e-6))
+            conc_b = float(max(f_b, 1e-6)) / float(max(1.0 - f_b, 1e-6))
+            icc_a = 1.0 / (conc_a + 1.0)
+            icc_b = 1.0 / (conc_b + 1.0)
+            icc = 0.5 * (icc_a + icc_b)
+            for d in d_list:
+                delta = d * total_std
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = (
+                    f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}" if pairwise_noise_grid
+                    else f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                )
+                p_, ca_, cb_, delta_, rho_ = p0, conc_a, conc_b, delta, cross_item_rho
+
+                def _gen_bin_pair(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _p: float = p_, _ca: float = ca_, _cb: float = cb_, _d: float = delta_, _rho: float = rho_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    z_shared = rng.normal(size=(n, 1))
+                    z_indep = rng.normal(size=(n, 1))
+                    q_a = np.clip(norm.cdf(z_shared), 1e-9, 1.0 - 1e-9)
+                    q_b = np.clip(norm.cdf(_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep), 1e-9, 1.0 - 1e-9)
+                    p_a = stats.beta.ppf(q_a, _ca * _p, _ca * (1.0 - _p))
+                    p_b0 = stats.beta.ppf(q_b, _cb * _p, _cb * (1.0 - _p))
+                    p_b = np.clip(p_b0 + _d, 0.0, 1.0)
+                    a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
+                    b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
+                    return a, b
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_bin_pair)
+                _add(label, "binary", _gen_bin_pair, true_diff, f_a, f_b, icc, is_null)
+
+    # Explicit stress-test binary regimes with highly one-sided discordance.
+    if suite in ("expanded", "extreme"):
+        asym_binary_specs: list[tuple[str, float, float, float]] = [
+            ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
+            ("binary-onesided-pos-extreme", 0.384, 0.001, 0.000),
+            ("binary-onesided-neg-strong", 0.020, 0.300, 0.050),
+            ("binary-onesided-pos-strong", 0.300, 0.020, 0.050),
+            ("binary-onesided-neg-ultra", 0.000, 0.520, 0.000),
+            ("binary-onesided-pos-ultra", 0.520, 0.000, 0.000),
+            ("binary-onesided-neg-sparse", 0.001, 0.090, 0.030),
+            ("binary-onesided-pos-sparse", 0.090, 0.001, 0.030),
+            ("binary-onesided-neg-near-ceil", 0.000, 0.080, 0.900),
+            ("binary-onesided-pos-near-floor", 0.080, 0.000, 0.020),
+            ("binary-onesided-neg-moderate", 0.050, 0.220, 0.150),
+            ("binary-onesided-pos-moderate", 0.220, 0.050, 0.150),
+        ]
+
+        for shape_label, p10, p01, p11 in asym_binary_specs:
+            p00 = 1.0 - (p11 + p10 + p01)
+            if p00 <= 0.0:
+                raise ValueError(f"Invalid asymmetric binary scenario {shape_label}: probabilities sum to >= 1.0")
+
+            probs = np.array([p11, p10, p01, p00], dtype=float)
+            true_diff = float(p10 - p01)
+
+            for f_a, f_b in noise_pairs:
+                f_eff = 0.5 * (f_a + f_b)
+                icc = 1.0 - f_eff
+                label = (
+                    f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|p11={p11:.3f}|p00={p00:.3f}|fA={f_a:.2f}|fB={f_b:.2f}"
+                    if pairwise_noise_grid
+                    else f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|p11={p11:.3f}|p00={p00:.3f}|f={f_eff:.2f}"
+                )
+                probs_, f_ = probs, f_eff
+
+                def _gen_bin_pair_asym(
+                    rng: np.random.Generator, n: int, runs: int, _probs: np.ndarray = probs_, _f: float = f_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    z_item = rng.choice(4, size=(n, 1), p=_probs)
+                    z_run = rng.choice(4, size=(n, runs), p=_probs)
+                    redraw = rng.random((n, runs)) < _f
+                    z = np.where(redraw, z_run, z_item)
+                    a = np.isin(z, (0, 1)).astype(float)
+                    b = np.isin(z, (0, 2)).astype(float)
+                    return a, b
+
+                _add(label, "binary", _gen_bin_pair_asym, true_diff, f_a, f_b, icc, False)
+
+    # -- Continuous [0, 1] --
+    continuous_shapes: list[tuple[str, float, float]] = [
+        ("cont-uniform", 1.0, 1.0), ("cont-right-skew", 2.0, 8.0), ("cont-left-skew", 8.0, 2.0),
+    ]
+    if suite in ("expanded", "extreme"):
+        continuous_shapes += [("cont-moderate-skew", 2.0, 5.0), ("cont-boundary", 0.6, 0.6)]
+
+    for shape_label, a_b, b_b in continuous_shapes:
+        var_base = _beta_var(a_b, b_b)
+        total_std = float(np.sqrt(var_base))
+        for f_a, f_b in noise_pairs:
+            sigma_run_a = float(np.sqrt(var_base * f_a / max(1.0 - f_a, 1e-9)))
+            sigma_run_b = float(np.sqrt(var_base * f_b / max(1.0 - f_b, 1e-9)))
+            icc_a = 1.0 / (1.0 + sigma_run_a ** 2 / max(var_base, 1e-12))
+            icc_b = 1.0 / (1.0 + sigma_run_b ** 2 / max(var_base, 1e-12))
+            icc = 0.5 * (icc_a + icc_b)
+            for d in d_list:
+                delta = d * total_std
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = (
+                    f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}" if pairwise_noise_grid
+                    else f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                )
+                a_, b_, sra_, srb_, delta_, rho_ = a_b, b_b, sigma_run_a, sigma_run_b, delta, cross_item_rho
+
+                def _gen_cont_pair(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _a: float = a_, _b: float = b_, _sra: float = sra_, _srb: float = srb_, _d: float = delta_,
+                    _hetero: bool = heteroscedastic, _rho: float = rho_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    z_shared = rng.normal(size=(n, 1))
+                    z_indep = rng.normal(size=(n, 1))
+                    q_a = np.clip(norm.cdf(z_shared), 1e-9, 1.0 - 1e-9)
+                    q_b = np.clip(norm.cdf(_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep), 1e-9, 1.0 - 1e-9)
+                    base_a = stats.beta.ppf(q_a, _a, _b)
+                    base_b = stats.beta.ppf(q_b, _a, _b)
+                    if _sra > 0.0 or _srb > 0.0:
+                        if _hetero:
+                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * (_sra * 2.0 * np.sqrt(base_a * (1.0 - base_a)))
+                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * (_srb * 2.0 * np.sqrt(base_b * (1.0 - base_b)))
+                        else:
+                            noise_a = rng.normal(0.0, _sra, size=(n, runs))
+                            noise_b = rng.normal(0.0, _srb, size=(n, runs))
+                    else:
+                        noise_a = np.zeros((n, runs))
+                        noise_b = np.zeros((n, runs))
+                    a_sc = np.clip(base_a + noise_a, 0.0, 1.0)
+                    b_sc = np.clip(base_b + _d + noise_b, 0.0, 1.0)
+                    return a_sc, b_sc
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_cont_pair)
+                _add(label, "continuous", _gen_cont_pair, true_diff, f_a, f_b, icc, is_null)
+
+    # -- Likert 1-5 --
+    _LIKERT_TOTAL_STD = 1.2
+    likert_shapes: list[tuple[str, float]] = [
+        ("likert-mid", 3.0), ("likert-low", 2.2), ("likert-high", 3.8),
+    ]
+    if suite in ("expanded", "extreme"):
+        likert_shapes += [("likert-floor", 1.8), ("likert-ceil", 4.2)]
+
+    for shape_label, mu_lat in likert_shapes:
+        for f_a, f_b in noise_pairs:
+            f_eff = 0.5 * (f_a + f_b)
+            sigma_input_l = float(np.sqrt(max(1.0 - f_eff, 0.0))) * _LIKERT_TOTAL_STD
+            sigma_run_a = float(np.sqrt(f_a)) * _LIKERT_TOTAL_STD
+            sigma_run_b = float(np.sqrt(f_b)) * _LIKERT_TOTAL_STD
+            icc = 1.0 - f_eff
+            for d in d_list:
+                delta = d * _LIKERT_TOTAL_STD
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = (
+                    f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}" if pairwise_noise_grid
+                    else f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                )
+                m_, si_, sra_, srb_, delta_, rho_ = mu_lat, sigma_input_l, sigma_run_a, sigma_run_b, delta, cross_item_rho
+
+                def _gen_likert_pair(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _m: float = m_, _si: float = si_, _sra: float = sra_, _srb: float = srb_, _d: float = delta_,
+                    _hetero: bool = heteroscedastic, _rho: float = rho_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    if _si > 0.0:
+                        z_shared = rng.normal(size=(n, 1))
+                        z_indep = rng.normal(size=(n, 1))
+                        base_a = _m + _si * z_shared
+                        base_b = _m + _si * (_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep)
+                    else:
+                        base_a = np.full((n, 1), _m)
+                        base_b = np.full((n, 1), _m)
+                    if _sra > 0.0 or _srb > 0.0:
+                        if _hetero:
+                            p_i_a = np.clip((base_a - 1.0) / 4.0, 0.0, 1.0)
+                            p_i_b = np.clip((base_b - 1.0) / 4.0, 0.0, 1.0)
+                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * (_sra * 2.0 * np.sqrt(p_i_a * (1.0 - p_i_a)))
+                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * (_srb * 2.0 * np.sqrt(p_i_b * (1.0 - p_i_b)))
+                        else:
+                            noise_a = rng.normal(0.0, _sra, size=(n, runs))
+                            noise_b = rng.normal(0.0, _srb, size=(n, runs))
+                    else:
+                        noise_a = np.zeros((n, runs))
+                        noise_b = np.zeros((n, runs))
+                    a_sc = np.rint(np.clip(base_a + noise_a, 1.0, 5.0))
+                    b_sc = np.rint(np.clip(base_b + _d + noise_b, 1.0, 5.0))
+                    return a_sc, b_sc
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_likert_pair)
+                _add(label, "likert", _gen_likert_pair, true_diff, f_a, f_b, icc, is_null)
+
+    # -- Grades 0-100 --
+    _GRADES_TOTAL_STD = 20.0
+    grades_shapes: list[tuple[str, float]] = [
+        ("grades-mid", 55.0), ("grades-low", 35.0), ("grades-high", 78.0),
+    ]
+    if suite in ("expanded", "extreme"):
+        grades_shapes += [("grades-ceiling", 86.0), ("grades-floor", 20.0)]
+
+    for shape_label, mu_g in grades_shapes:
+        for f_a, f_b in noise_pairs:
+            f_eff = 0.5 * (f_a + f_b)
+            sigma_input_g = float(np.sqrt(max(1.0 - f_eff, 0.0))) * _GRADES_TOTAL_STD
+            sigma_run_a = float(np.sqrt(f_a)) * _GRADES_TOTAL_STD
+            sigma_run_b = float(np.sqrt(f_b)) * _GRADES_TOTAL_STD
+            icc = 1.0 - f_eff
+            for d in d_list:
+                delta = d * _GRADES_TOTAL_STD
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = (
+                    f"{shape_label}|fA={f_a:.2f}|fB={f_b:.2f}|{effect_tag}" if pairwise_noise_grid
+                    else f"{shape_label}|f={f_a:.2f}|{effect_tag}"
+                )
+                m_, si_, sra_, srb_, delta_, rho_ = mu_g, sigma_input_g, sigma_run_a, sigma_run_b, delta, cross_item_rho
+
+                def _gen_grades_pair(
+                    rng: np.random.Generator, n: int, runs: int,
+                    _m: float = m_, _si: float = si_, _sra: float = sra_, _srb: float = srb_, _d: float = delta_,
+                    _hetero: bool = heteroscedastic, _rho: float = rho_,
+                ) -> tuple[np.ndarray, np.ndarray]:
+                    if _si > 0.0:
+                        z_shared = rng.normal(size=(n, 1))
+                        z_indep = rng.normal(size=(n, 1))
+                        base_a = _m + _si * z_shared
+                        base_b = _m + _si * (_rho * z_shared + np.sqrt(1.0 - _rho ** 2) * z_indep)
+                    else:
+                        base_a = np.full((n, 1), _m)
+                        base_b = np.full((n, 1), _m)
+                    if _sra > 0.0 or _srb > 0.0:
+                        if _hetero:
+                            p_i_a = np.clip(base_a / 100.0, 0.0, 1.0)
+                            p_i_b = np.clip(base_b / 100.0, 0.0, 1.0)
+                            noise_a = rng.normal(0.0, 1.0, size=(n, runs)) * (_sra * 2.0 * np.sqrt(p_i_a * (1.0 - p_i_a)))
+                            noise_b = rng.normal(0.0, 1.0, size=(n, runs)) * (_srb * 2.0 * np.sqrt(p_i_b * (1.0 - p_i_b)))
+                        else:
+                            noise_a = rng.normal(0.0, _sra, size=(n, runs))
+                            noise_b = rng.normal(0.0, _srb, size=(n, runs))
+                    else:
+                        noise_a = np.zeros((n, runs))
+                        noise_b = np.zeros((n, runs))
+                    a_sc = np.clip(base_a + noise_a, 0.0, 100.0)
+                    b_sc = np.clip(base_b + _d + noise_b, 0.0, 100.0)
+                    return a_sc, b_sc
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_grades_pair)
+                _add(label, "grades", _gen_grades_pair, true_diff, f_a, f_b, icc, is_null)
 
     return sources

@@ -13,9 +13,16 @@ bootstrap, bca, bayes_bootstrap, smooth_bootstrap, bootstrap_t, t_interval
 (all eval types); wilson, jeffreys, wald, clopper_pearson, bayes_indep
 (binary only); beta, logit_t, nig, el (continuous/likert/grades only).
 
-Known exception: only this case (and, once ported, ci_paired) has a
-real-data path. ci_nested/alignment/ppi_calibration remain synthetic-only
-this pass -- see simulations/harness/README.md.
+Known exception: only this case (and ci_paired) has a real-data path.
+alignment/ppi_calibration remain synthetic-only this pass -- see
+simulations/harness/README.md.
+
+--nested-mode (ported from simulations/sim_compare_boot_nested.py) sweeps
+multi-run scenarios parameterised by run_noise_frac instead, reporting
+"flat" (cell-mean reduction) and "*_nested" (full N-by-R matrix) CI methods
+side by side so the cost of ignoring run structure is visible. There is no
+separate ci_nested case -- single- and paired-sample nested logic lives
+here and in cases/ci_paired.py respectively.
 """
 
 from __future__ import annotations
@@ -48,10 +55,24 @@ with warnings.catch_warnings():
         logit_t_ci_1d,
         nig_ci_1d,
         el_ci_1d,
+        bca_interval_1d,
+        bootstrap_means_nested,
+        bayes_bootstrap_means_nested,
+        smooth_bootstrap_means_nested,
+        bootstrap_t_ci_nested,
+        wilson_nested_de,
+        wilson_nested_od,
+        wilson_nested_bb,
+        nig_ci_nested,
     )
 
 from ..scenarios import CISource, EVAL_TYPES
-from ..scenarios.synthetic import SCENARIO_SUITES, build_single_sample_sources
+from ..scenarios.synthetic import (
+    SCENARIO_SUITES,
+    RUN_NOISE_FRACS_DEFAULT,
+    build_single_sample_sources,
+    build_multirun_sources,
+)
 from ..scenarios.real_data import SOURCES as REAL_DATA_SOURCES, build_real_data_sources
 from ..methods import (
     BOOTSTRAP_METHODS as METHODS,
@@ -67,6 +88,25 @@ from ..methods import (
     EL,
     BINARY_SINGLE_EXTRA_METHODS,
     CONTINUOUS_EXTRA_METHODS,
+    BOOTSTRAP,
+    BAYES_BOOTSTRAP,
+    NESTED_METHODS,
+    BOOTSTRAP_NESTED,
+    BAYES_NESTED,
+    SMOOTH_NESTED,
+    BCA_NESTED,
+    BOOTSTRAP_T_NESTED,
+    BINARY_FLAT_METHODS,
+    WILSON_FLAT,
+    WALD_FLAT,
+    CP_FLAT,
+    BAYES_INDEP_FLAT,
+    BINARY_NESTED_METHODS,
+    WILSON_DE,
+    WILSON_OD,
+    BETA_BINOMIAL,
+    CONTINUOUS_NESTED_METHODS,
+    NIG_NESTED,
     get_method_color,
     order_present_methods,
 )
@@ -96,6 +136,10 @@ class SimResult:
     benchmark_id: str | None = None
     corpus_size: int | None = None
     corpus_mean: float | None = None
+    run_noise_frac: float = 0.0
+    """f_run for --nested-mode rows (scenarios.synthetic.build_multirun_sources); 0.0 otherwise."""
+    runs: int = 1
+    """Runs per input for --nested-mode rows; 1 (flat) otherwise."""
 
 
 def _wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
@@ -319,6 +363,255 @@ def run_simulation(
 
 
 # ---------------------------------------------------------------------------
+# Nested mode (--nested-mode): flat vs. nested CI methods on multi-run data,
+# ported from sim_compare_boot_nested.py's _run_multirun_cell.
+# ---------------------------------------------------------------------------
+
+_CONT_NESTED_FNS = {BETA: beta_ci_1d, LOGIT_T: logit_t_ci_1d, NIG: nig_ci_1d, EL: el_ci_1d}
+
+
+def _run_nested_cell(
+    source_obj: CISource, n: int, runs: int, n_reps: int, n_bootstrap: int, bayes_n: int, alpha: float, seed,
+) -> list[SimResult]:
+    """Run all reps for one (source, n, runs) cell -- flat-vs-nested single-sample mean estimand."""
+    rng = np.random.default_rng(seed)
+    is_binary = source_obj.eval_type == "binary"
+    is_continuous = source_obj.eval_type == "continuous"
+    true_mean = source_obj.true_mean
+
+    active_methods = list(METHODS) + [T_INTERVAL] + NESTED_METHODS
+    if is_binary:
+        active_methods += BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + CONTINUOUS_NESTED_METHODS + [NIG]
+    elif is_continuous:
+        active_methods += CONTINUOUS_NESTED_METHODS + CONTINUOUS_EXTRA_METHODS
+
+    covered: dict = {m: 0 for m in active_methods}
+    total_w: dict = {m: 0.0 for m in active_methods}
+    total_t: dict = {m: 0.0 for m in active_methods}
+    total_t_sq: dict = {m: 0.0 for m in active_methods}
+
+    for _rep in range(n_reps):
+        scores = source_obj.generate_runs(rng, n, runs)  # (n, runs)
+        cell_means = scores.mean(axis=1)
+        obs_mean = float(np.mean(cell_means))
+
+        # -- Cell-means bootstrap family (flat) --
+        for method in METHODS:
+            n_draws = bayes_n if method is BAYES_BOOTSTRAP else n_bootstrap
+            _t0 = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    ci_low, ci_high = bootstrap_ci_1d(cell_means, obs_mean, method=method.name, n_bootstrap=n_draws, alpha=alpha, rng=rng)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[method] += _el
+            total_t_sq[method] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[method] += 1
+            total_w[method] += ci_high - ci_low
+
+        # -- t-interval on cell means --
+        _t0 = time.perf_counter()
+        try:
+            ci_low, ci_high = t_interval_ci_1d(cell_means, alpha)
+        except Exception:
+            ci_low = ci_high = obs_mean
+        _el = time.perf_counter() - _t0
+        total_t[T_INTERVAL] += _el
+        total_t_sq[T_INTERVAL] += _el * _el
+        if ci_low <= true_mean <= ci_high:
+            covered[T_INTERVAL] += 1
+        total_w[T_INTERVAL] += ci_high - ci_low
+
+        # -- Nested bootstrap (full N x R matrix) --
+        for method, fn in [
+            (BOOTSTRAP_NESTED, bootstrap_means_nested),
+            (BAYES_NESTED, bayes_bootstrap_means_nested),
+            (SMOOTH_NESTED, smooth_bootstrap_means_nested),
+        ]:
+            n_draws = bayes_n if method is BAYES_NESTED else n_bootstrap
+            _t0 = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r".*falling back to plain bootstrap; no KDE smoothing applied.*",
+                        category=UserWarning,
+                    )
+                    boot_stats = fn(scores, n_draws, rng)
+                ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[method] += _el
+            total_t_sq[method] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[method] += 1
+            total_w[method] += ci_high - ci_low
+
+        # -- BCa interval using nested bootstrap replicates --
+        _t0 = time.perf_counter()
+        try:
+            boot_stats = bootstrap_means_nested(scores, n_bootstrap, rng)
+            ci_low, ci_high = bca_interval_1d(cell_means, obs_mean, boot_stats, alpha)
+        except Exception:
+            ci_low = ci_high = obs_mean
+        _el = time.perf_counter() - _t0
+        total_t[BCA_NESTED] += _el
+        total_t_sq[BCA_NESTED] += _el * _el
+        if ci_low <= true_mean <= ci_high:
+            covered[BCA_NESTED] += 1
+        total_w[BCA_NESTED] += ci_high - ci_low
+
+        # -- Bootstrap-t via nested resampling --
+        _t0 = time.perf_counter()
+        try:
+            ci_low, ci_high = bootstrap_t_ci_nested(scores, obs_mean, n_bootstrap, alpha, rng)
+        except Exception:
+            ci_low = ci_high = obs_mean
+        _el = time.perf_counter() - _t0
+        total_t[BOOTSTRAP_T_NESTED] += _el
+        total_t_sq[BOOTSTRAP_T_NESTED] += _el * _el
+        if ci_low <= true_mean <= ci_high:
+            covered[BOOTSTRAP_T_NESTED] += 1
+        total_w[BOOTSTRAP_T_NESTED] += ci_high - ci_low
+
+        # -- Binary flat methods on cell means --
+        if is_binary:
+            succ_flat = int(np.round(np.sum(cell_means)))
+            n_flat = len(cell_means)
+
+            _t0 = time.perf_counter()
+            ci_low, ci_high = _wilson_ci(succ_flat, n_flat, alpha)
+            _el = time.perf_counter() - _t0
+            total_t[WILSON_FLAT] += _el
+            total_t_sq[WILSON_FLAT] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[WILSON_FLAT] += 1
+            total_w[WILSON_FLAT] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            ci_low, ci_high = wald_ci_1d(cell_means, alpha)
+            _el = time.perf_counter() - _t0
+            total_t[WALD_FLAT] += _el
+            total_t_sq[WALD_FLAT] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[WALD_FLAT] += 1
+            total_w[WALD_FLAT] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = clopper_pearson_ci_1d(cell_means, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[CP_FLAT] += _el
+            total_t_sq[CP_FLAT] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[CP_FLAT] += 1
+            total_w[CP_FLAT] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_indep_ci(cell_means, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[BAYES_INDEP_FLAT] += _el
+            total_t_sq[BAYES_INDEP_FLAT] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[BAYES_INDEP_FLAT] += 1
+            total_w[BAYES_INDEP_FLAT] += ci_high - ci_low
+
+            # -- Clustered Wilson variants (nested, multi-run) --
+            for method, fn in [(WILSON_DE, wilson_nested_de), (WILSON_OD, wilson_nested_od), (BETA_BINOMIAL, wilson_nested_bb)]:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = fn(scores, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                if ci_low <= true_mean <= ci_high:
+                    covered[method] += 1
+                total_w[method] += ci_high - ci_low
+
+        # -- NIG nested on full matrix (continuous + binary approximation) --
+        if is_binary or is_continuous:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = nig_ci_nested(scores, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[NIG_NESTED] += _el
+            total_t_sq[NIG_NESTED] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[NIG_NESTED] += 1
+            total_w[NIG_NESTED] += ci_high - ci_low
+
+        # -- NIG on cell means (binary approximation) --
+        if is_binary:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = nig_ci_1d(cell_means, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[NIG] += _el
+            total_t_sq[NIG] += _el * _el
+            if ci_low <= true_mean <= ci_high:
+                covered[NIG] += 1
+            total_w[NIG] += ci_high - ci_low
+
+        # -- Continuous extra methods on cell means --
+        if is_continuous:
+            for _method, _fn in _CONT_NESTED_FNS.items():
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = _fn(cell_means, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[_method] += _el
+                total_t_sq[_method] += _el * _el
+                if ci_low <= true_mean <= ci_high:
+                    covered[_method] += 1
+                total_w[_method] += ci_high - ci_low
+
+    return [
+        SimResult(
+            source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
+            n=n, method=method.name, n_reps=n_reps, covered=covered[method],
+            total_width=total_w[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            run_noise_frac=source_obj.run_noise_frac or 0.0, runs=runs,
+        )
+        for method in active_methods
+    ]
+
+
+def run_nested_simulation(
+    sources: list[CISource], sample_sizes: list[int], runs: int, n_reps: int, n_bootstrap: int,
+    bayes_n: int, alpha: float, progress_mode: str = "bar", seed: int = 42,
+) -> list[SimResult]:
+    ss = np.random.SeedSequence(seed)
+    cells = [(s, n) for s in sources for n in sample_sizes]
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+
+    reporter = _ProgressReporter(len(cells), mode=progress_mode, label=f"ci_single-nested[runs={runs}]")
+    results: list[SimResult] = []
+    for i, (source_obj, n) in enumerate(cells):
+        results.extend(_run_nested_cell(source_obj, n, runs, n_reps, n_bootstrap, bayes_n, alpha, child_seeds[i]))
+        reporter.update(i + 1, detail=f"{source_obj.eval_type} {source_obj.label} n={n}")
+    reporter.update(len(cells), detail="done")
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
 
@@ -422,7 +715,7 @@ def save_results_artifacts(*, results: list[SimResult], alpha: float, sample_siz
         writer.writerow([
             "source", "model", "benchmark_id", "label", "eval_type", "n", "method", "n_reps",
             "covered", "total_width", "coverage", "mean_width", "mcse", "band95_low", "band95_high",
-            "avg_time_ms", "se_time_ms", "corpus_size", "corpus_mean",
+            "avg_time_ms", "se_time_ms", "corpus_size", "corpus_mean", "run_noise_frac", "runs",
         ])
         for r in results:
             coverage = r.covered / r.n_reps
@@ -437,6 +730,7 @@ def save_results_artifacts(*, results: list[SimResult], alpha: float, sample_siz
                 f"{se_ms:.6f}" if np.isfinite(se_ms) else "",
                 r.corpus_size if r.corpus_size is not None else "",
                 f"{r.corpus_mean:.8f}" if r.corpus_mean is not None else "",
+                f"{r.run_noise_frac:.6f}", r.runs,
             ])
 
     summary_path = out_base / f"{run_stem}_summary.log"
@@ -659,6 +953,69 @@ def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_p
     return out_path
 
 
+def save_coverage_vs_run_noise_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_path: str) -> str | None:
+    """Coverage vs. run_noise_frac -- key --nested-mode plot for when nested/flat matters."""
+    import matplotlib.pyplot as plt
+
+    target = 1.0 - alpha
+    present_methods = {r.method for r in results}
+    method_objs = order_present_methods(present_methods)
+    run_noise_fracs = sorted({r.run_noise_frac for r in results})
+    if len(run_noise_fracs) < 2:
+        print(f"Skipped coverage-vs-run-noise plot (only one f_run value): {out_path}")
+        return None
+
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    nrows = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(nrows, 1, figsize=(10.0, 4.0 * nrows), squeeze=False, gridspec_kw={"hspace": 0.45})
+
+    for row_idx, et in enumerate(eval_types_present):
+        ax = axes[row_idx][0]
+        ax.axhspan(max(0.0, target - 0.04), min(1.0, target + 0.04), color="#DDDDDD", alpha=0.40, zorder=0)
+        ax.axhline(target, color="black", linewidth=1.2, linestyle="--", zorder=1)
+
+        for m in method_objs:
+            covs = []
+            for f in run_noise_fracs:
+                subset = [r for r in results if r.eval_type == et and r.method == m.name and r.run_noise_frac == f]
+                if not subset:
+                    covs.append(float("nan"))
+                    continue
+                c_tot = sum(r.covered for r in subset)
+                t_tot = sum(r.n_reps for r in subset)
+                covs.append(c_tot / t_tot if t_tot > 0 else float("nan"))
+
+            xs = [f for f, c in zip(run_noise_fracs, covs) if not np.isnan(c)]
+            ys = [c for c in covs if not np.isnan(c)]
+            if not xs:
+                continue
+            ax.plot(xs, ys, marker="o", color=m.color, linewidth=1.4, label=m.name, markersize=5, alpha=0.85)
+
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(max(0.0, target - 0.25), min(1.01, target + 0.12))
+        ax.set_xlabel("Run noise fraction  f_run = var_run / (var_input + var_run)", fontsize=9.5)
+        ax.set_ylabel("Empirical coverage", fontsize=9.5)
+        ax.set_title(f"eval type: {et}", fontsize=10.5)
+        ax.grid(axis="y", linestyle="--", linewidth=0.55, alpha=0.45)
+        ax.grid(axis="x", linestyle=":", linewidth=0.45, alpha=0.35)
+        ax.legend(fontsize=7.5, ncol=1, loc="center left", bbox_to_anchor=(1.02, 0.5), framealpha=0.85)
+
+    runs_val = results[0].runs if results else "?"
+    fig.suptitle(
+        f"Coverage vs. Run Noise Fraction\n"
+        f"ci_single (nested mode) | runs={runs_val} | alpha={alpha} | reps={n_reps}\n"
+        f"Averaged across all shapes and sample sizes",
+        fontsize=11,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=[0.02, 0.02, 0.80, 0.93])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # CLI contract
 # ---------------------------------------------------------------------------
@@ -685,6 +1042,21 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save")
     parser.add_argument("--out-dir", default="simulations/out")
     parser.add_argument("--plots-dir", default=None)
+    parser.add_argument("--nested-mode", action="store_true", default=False,
+                         help="Multi-run flat-vs-nested CI comparison (ported from "
+                              "sim_compare_boot_nested.py), synthetic only.")
+    parser.add_argument("--runs", type=int, default=3, metavar="R",
+                         help="Nested mode: runs per input when not sweeping (default: 3)")
+    parser.add_argument("--runs-sweep", type=int, nargs="+", default=None, metavar="R",
+                         help="Nested mode: sweep multiple R values, overrides --runs")
+    parser.add_argument("--run-noise-fracs", type=float, nargs="+", default=RUN_NOISE_FRACS_DEFAULT, metavar="F",
+                         help="Nested mode: f_run = var_run / (var_input + var_run) values to sweep")
+    parser.add_argument("--icc-values", type=float, nargs="+", default=None, metavar="ICC",
+                         help="Nested mode: optional ICC sweep, converted to run-noise via f_run = 1 - ICC")
+    parser.add_argument("--bayes-n", type=int, default=None, metavar="N",
+                         help="Nested mode: Bayesian bootstrap draws (default: --bootstrap-n)")
+    parser.add_argument("--heteroscedastic", action="store_true", default=False,
+                         help="Nested mode: run noise scales with input value (mimics real LLM eval variability)")
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
@@ -698,12 +1070,103 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
+        nested_mode=False, runs=3, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT,
+        icc_values=None, bayes_n=None, heteroscedastic=False,
+    )
+
+
+def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
+    """Canonical --nested-mode official preset, mirroring sim_compare_boot_nested.py's
+    --official-test (mean-estimand phase). Not wired into --official-tests (the harness
+    runs one preset per case); invoke manually:
+    python -m simulations.harness.cli ci_single --nested-mode --runs-sweep 5 --reps 200
+      --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded --icc-values 0.05 0.30 0.50
+      --run-noise-fracs 0.01 0.1 0.3 0.5 --heteroscedastic --sizes 10 20 30 50 75 100 --seed 44
+    """
+    return argparse.Namespace(
+        data_source="synthetic", scenario_suite="expanded", eval_types=None,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50,
+        reps=200, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
+        seed=base_seed, progress="bar", plots="save", save_results="save",
+        out_dir="simulations/out", plots_dir=None,
+        nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.01, 0.1, 0.3, 0.5],
+        icc_values=[0.05, 0.30, 0.50], bayes_n=10000, heteroscedastic=True,
     )
 
 
 def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
     try:
+        plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
+        nested_mode = getattr(args, "nested_mode", False)
+
+        if nested_mode:
+            if args.data_source != "synthetic":
+                raise ValueError("--nested-mode only supports --data-source synthetic.")
+
+            run_noise_fracs = list(args.run_noise_fracs)
+            if args.icc_values:
+                icc_as_run_noise = [float(np.clip(1.0 - icc, 0.0, 1.0)) for icc in args.icc_values]
+                run_noise_fracs = sorted(set(run_noise_fracs + icc_as_run_noise))
+            bayes_n = args.bayes_n if args.bayes_n is not None else args.bootstrap_n
+            runs_list = args.runs_sweep if args.runs_sweep else [args.runs]
+
+            print(f"\nci_single simulation (nested mode) -- runs={runs_list}, run_noise_fracs={run_noise_fracs}")
+            sources = build_multirun_sources(run_noise_fracs, suite=args.scenario_suite, heteroscedastic=args.heteroscedastic)
+            if args.eval_types:
+                requested = set(args.eval_types)
+                sources = [s for s in sources if s.eval_type in requested]
+            if not sources:
+                raise ValueError("No CISources left after filtering.")
+            print(f"  {len(sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}")
+
+            results: list[SimResult] = []
+            for r_val in runs_list:
+                results.extend(run_nested_simulation(
+                    sources, sample_sizes=args.sizes, runs=r_val, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
+                    bayes_n=bayes_n, alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
+                ))
+            print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps)
+
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            run_stem = f"ci_single_nested_runs{'-'.join(str(r) for r in runs_list)}_reps{args.reps}_{stamp}"
+            output_paths: list[str] = []
+
+            if args.save_results == "save":
+                output_paths += save_results_artifacts(
+                    results=results, alpha=args.alpha, sample_sizes=args.sizes, n_reps=args.reps,
+                    out_dir=args.out_dir, run_stem=run_stem,
+                )
+
+            if args.plots == "save":
+                cov_path = save_coverage_vs_n_plot(
+                    results=results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_coverage_vs_n.png"),
+                )
+                width_path = save_width_vs_n_plot(
+                    results=results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_width_vs_n.png"),
+                )
+                cost_path = save_cost_plot(
+                    results=results, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_cost_coverage.png"),
+                )
+                output_paths += [cov_path, width_path, cost_path]
+                run_noise_path = save_coverage_vs_run_noise_plot(
+                    results=results, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_coverage_vs_run_noise.png"),
+                )
+                if run_noise_path:
+                    output_paths.append(run_noise_path)
+                print(f"Saved plots: {output_paths[-4:] if run_noise_path else output_paths[-3:]}")
+
+            overall_cov = float(np.mean([r.covered / r.n_reps for r in results])) if results else float("nan")
+            return CaseResult(
+                case_name=CASE_NAME, status="ok", output_paths=output_paths,
+                key_metrics={"n_results": len(results), "overall_mean_coverage": overall_cov},
+                duration_s=time.time() - t0,
+            )
+
         plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
 
         print(f"\nci_single simulation -- data_source={args.data_source}")

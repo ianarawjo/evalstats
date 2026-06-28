@@ -19,7 +19,14 @@ Known exceptions (see simulations/harness/README.md):
   run per item) and are restricted to known-binary benchmarks, matching
   sim_tango_real.py's SINGLE_RUN_METHODS scope. Multi-run real pairs (Tango
   multirun variants, nested-diff bootstrap, lmm_diff) are deferred to a
-  future ci_nested real-data extension.
+  future real-data extension.
+
+--nested-mode (ported from simulations/sim_compare_boot_nested.py, pairwise
+phase) sweeps multi-run paired scenarios parameterised by run_noise_frac
+(synthetic only), reporting flat (cell-mean reduction) and "*_nested"/
+"*_flat"/"*_multirun_*" CI methods side by side. There is no separate
+ci_nested case -- see cases/ci_single.py's --nested-mode for the
+single-sample analogue.
 """
 
 from __future__ import annotations
@@ -56,15 +63,26 @@ with warnings.catch_warnings():
         nig_ci_1d,
         el_ci_1d,
         tango_paired_ci,
+        newcombe_paired_ci,
+        tango_paired_ci_flat,
+        tango_paired_ci_multirun_cluster,
+        tango_paired_ci_multirun_effective,
+        tango_paired_ci_multirun_moments,
     )
 
 from ...bayes_evals import binorm_cdf  # noqa: E402
 
 from ..scenarios import CIPairSource, EVAL_TYPES
-from ..scenarios.synthetic import SCENARIO_SUITES, build_pair_sources
+from ..scenarios.synthetic import (
+    SCENARIO_SUITES,
+    RUN_NOISE_FRACS_DEFAULT,
+    build_pair_sources,
+    build_pair_multirun_sources,
+)
 from ..scenarios.real_data import PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
 from ..methods import (
     BOOTSTRAP_METHODS as METHODS,
+    BAYES_BOOTSTRAP,
     T_INTERVAL,
     NIG,
     EL,
@@ -73,6 +91,17 @@ from ..methods import (
     BAYES_PAIR_INDEP,
     BAYES_PAIR_PAIRED,
     PAIRWISE_EXTRA_METHODS,
+    PAIR_DIFF_NESTED_METHODS,
+    BOOTSTRAP_DIFF_NESTED,
+    BAYES_DIFF_NESTED,
+    SMOOTH_DIFF_NESTED,
+    BINARY_PAIR_FLAT_METHODS,
+    TANGO_FLAT,
+    NEWCOMBE_FLAT,
+    BINARY_PAIR_NESTED_METHODS,
+    TANGO_MULTIRUN_CLUSTER,
+    TANGO_MULTIRUN_EFFECTIVE,
+    TANGO_MULTIRUN_MOMENTS,
     get_method_color,
     order_present_methods,
 )
@@ -104,6 +133,10 @@ class SimResult:
     benchmark_id: str | None = None
     corpus_size: int | None = None
     true_diff: float | None = None
+    run_noise_frac: float = 0.0
+    """f_run for --nested-mode rows (scenarios.synthetic.build_pair_multirun_sources); 0.0 otherwise."""
+    runs: int = 1
+    """Runs per input for --nested-mode rows; 1 (flat) otherwise."""
 
 
 def _stat(values: np.ndarray, statistic: str = "mean") -> float:
@@ -426,6 +459,190 @@ def run_simulation(
 
 
 # ---------------------------------------------------------------------------
+# Nested mode (--nested-mode): flat vs. nested pairwise CI methods on
+# multi-run data, ported from sim_compare_boot_nested.py's
+# _run_pairwise_multirun_cell. Mean-statistic only (matches the legacy
+# script -- nested mode never supported --statistic median).
+# ---------------------------------------------------------------------------
+
+
+def _run_nested_pairwise_cell(
+    source_obj: CIPairSource, n: int, runs: int, n_reps: int, n_bootstrap: int, bayes_n: int, alpha: float, seed,
+) -> list[SimResult]:
+    """Run all reps for one (source, n, runs) cell -- flat-vs-nested pairwise mean-diff estimand."""
+    rng = np.random.default_rng(seed)
+    is_binary = source_obj.eval_type == "binary"
+    true_diff = source_obj.true_diff
+
+    active_methods = list(METHODS) + [T_INTERVAL] + PAIR_DIFF_NESTED_METHODS
+    if is_binary:
+        active_methods += BINARY_PAIR_FLAT_METHODS + BINARY_PAIR_NESTED_METHODS
+
+    covered: dict = {m: 0 for m in active_methods}
+    total_w: dict = {m: 0.0 for m in active_methods}
+    total_t: dict = {m: 0.0 for m in active_methods}
+    total_t_sq: dict = {m: 0.0 for m in active_methods}
+
+    for _rep in range(n_reps):
+        a, b = source_obj.generate_pair(rng, n, runs)
+        cell_diffs = a.mean(axis=1) - b.mean(axis=1)
+        obs_diff = float(np.mean(cell_diffs))
+
+        # -- Cell-mean diff bootstrap family (flat) --
+        for method in METHODS:
+            n_draws = bayes_n if method is BAYES_BOOTSTRAP else n_bootstrap
+            _t0 = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", UserWarning)
+                    ci_low, ci_high = bootstrap_ci_1d(cell_diffs, obs_diff, method=method.name, n_bootstrap=n_draws, alpha=alpha, rng=rng)
+            except Exception:
+                ci_low = ci_high = obs_diff
+            _el = time.perf_counter() - _t0
+            total_t[method] += _el
+            total_t_sq[method] += _el * _el
+            if ci_low <= true_diff <= ci_high:
+                covered[method] += 1
+            total_w[method] += ci_high - ci_low
+
+        # -- t-interval on cell-mean diffs --
+        _t0 = time.perf_counter()
+        try:
+            ci_low, ci_high = t_interval_ci_1d(cell_diffs, alpha)
+        except Exception:
+            ci_low = ci_high = obs_diff
+        _el = time.perf_counter() - _t0
+        total_t[T_INTERVAL] += _el
+        total_t_sq[T_INTERVAL] += _el * _el
+        if ci_low <= true_diff <= ci_high:
+            covered[T_INTERVAL] += 1
+        total_w[T_INTERVAL] += ci_high - ci_low
+
+        # -- Nested pairwise diff methods (full N x R pair matrices) --
+        for method, fn in [
+            (BOOTSTRAP_DIFF_NESTED, bootstrap_diffs_nested),
+            (BAYES_DIFF_NESTED, bayes_bootstrap_diffs_nested),
+            (SMOOTH_DIFF_NESTED, smooth_bootstrap_diffs_nested),
+        ]:
+            n_draws = bayes_n if method is BAYES_DIFF_NESTED else n_bootstrap
+            _t0 = time.perf_counter()
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings(
+                        "ignore",
+                        message=r".*falling back to plain bootstrap; no KDE smoothing applied.*",
+                        category=UserWarning,
+                    )
+                    boot_stats = fn(a, b, n_draws, rng)
+                ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+            except Exception:
+                ci_low = ci_high = obs_diff
+            _el = time.perf_counter() - _t0
+            total_t[method] += _el
+            total_t_sq[method] += _el * _el
+            if ci_low <= true_diff <= ci_high:
+                covered[method] += 1
+            total_w[method] += ci_high - ci_low
+
+        # -- Binary pairwise methods --
+        if is_binary:
+            a0, b0 = a[:, 0], b[:, 0]  # first run only (flat iid baseline)
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = tango_paired_ci_flat(a, b, alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a0 - b0))
+            _el = time.perf_counter() - _t0
+            total_t[TANGO_FLAT] += _el
+            total_t_sq[TANGO_FLAT] += _el * _el
+            if ci_low <= true_diff <= ci_high:
+                covered[TANGO_FLAT] += 1
+            total_w[TANGO_FLAT] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = newcombe_paired_ci(a0, b0, alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a0 - b0))
+            _el = time.perf_counter() - _t0
+            total_t[NEWCOMBE_FLAT] += _el
+            total_t_sq[NEWCOMBE_FLAT] += _el * _el
+            if ci_low <= true_diff <= ci_high:
+                covered[NEWCOMBE_FLAT] += 1
+            total_w[NEWCOMBE_FLAT] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_indep_comp_ci(a0, b0, alpha, n_bootstrap, rng)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a0 - b0))
+            _el = time.perf_counter() - _t0
+            total_t[BAYES_PAIR_INDEP] += _el
+            total_t_sq[BAYES_PAIR_INDEP] += _el * _el
+            if ci_low <= true_diff <= ci_high:
+                covered[BAYES_PAIR_INDEP] += 1
+            total_w[BAYES_PAIR_INDEP] += ci_high - ci_low
+
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = _bayes_paired_comp_ci(a0, b0, alpha, n_bootstrap, rng)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a0 - b0))
+            _el = time.perf_counter() - _t0
+            total_t[BAYES_PAIR_PAIRED] += _el
+            total_t_sq[BAYES_PAIR_PAIRED] += _el * _el
+            if ci_low <= true_diff <= ci_high:
+                covered[BAYES_PAIR_PAIRED] += 1
+            total_w[BAYES_PAIR_PAIRED] += ci_high - ci_low
+
+            for method, fn in [
+                (TANGO_MULTIRUN_CLUSTER, tango_paired_ci_multirun_cluster),
+                (TANGO_MULTIRUN_EFFECTIVE, tango_paired_ci_multirun_effective),
+                (TANGO_MULTIRUN_MOMENTS, tango_paired_ci_multirun_moments),
+            ]:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = fn(a, b, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_diff
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                if ci_low <= true_diff <= ci_high:
+                    covered[method] += 1
+                total_w[method] += ci_high - ci_low
+
+    return [
+        SimResult(
+            source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
+            n=n, method=method.name, n_reps=n_reps, covered=covered[method],
+            total_width=total_w[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            is_null=source_obj.is_null, run_noise_frac=source_obj.run_noise_frac, runs=runs,
+        )
+        for method in active_methods
+    ]
+
+
+def run_nested_pairwise_simulation(
+    sources: list[CIPairSource], sample_sizes: list[int], runs: int, n_reps: int, n_bootstrap: int,
+    bayes_n: int, alpha: float, progress_mode: str = "bar", seed: int = 42,
+) -> list[SimResult]:
+    ss = np.random.SeedSequence(seed)
+    cells = [(s, n) for s in sources for n in sample_sizes]
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+
+    reporter = _ProgressReporter(len(cells), mode=progress_mode, label=f"ci_paired-nested[runs={runs}]")
+    results: list[SimResult] = []
+    for i, (source_obj, n) in enumerate(cells):
+        results.extend(_run_nested_pairwise_cell(source_obj, n, runs, n_reps, n_bootstrap, bayes_n, alpha, child_seeds[i]))
+        reporter.update(i + 1, detail=f"{source_obj.eval_type} {source_obj.label} n={n}")
+    reporter.update(len(cells), detail="done")
+    return results
+
+
+# ---------------------------------------------------------------------------
 # Reporting
 # ---------------------------------------------------------------------------
 
@@ -557,7 +774,7 @@ def save_results_artifacts(
         writer.writerow([
             "source", "model_a", "model_b", "benchmark_id", "label", "eval_type", "n", "method", "n_reps",
             "covered", "total_width", "coverage", "mean_width", "mcse", "band95_low", "band95_high",
-            "avg_time_ms", "se_time_ms", "is_null", "corpus_size", "true_diff",
+            "avg_time_ms", "se_time_ms", "is_null", "corpus_size", "true_diff", "run_noise_frac", "runs",
         ])
         for r in results:
             coverage = r.covered / r.n_reps
@@ -572,6 +789,7 @@ def save_results_artifacts(
                 f"{se_ms:.6f}" if np.isfinite(se_ms) else "",
                 r.is_null, r.corpus_size if r.corpus_size is not None else "",
                 f"{r.true_diff:.8f}" if r.true_diff is not None else "",
+                f"{r.run_noise_frac:.6f}", r.runs,
             ])
 
     summary_path = out_base / f"{run_stem}_summary.log"
@@ -797,6 +1015,70 @@ def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_p
     return out_path
 
 
+def save_coverage_vs_run_noise_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_path: str) -> str | None:
+    """Coverage vs. run_noise_frac -- key --nested-mode plot for when nested/flat matters."""
+    import matplotlib.pyplot as plt
+
+    target = 1.0 - alpha
+    non_null = [r for r in results if not r.is_null]
+    present_methods = {r.method for r in non_null}
+    method_objs = order_present_methods(present_methods)
+    run_noise_fracs = sorted({r.run_noise_frac for r in non_null})
+    if len(run_noise_fracs) < 2:
+        print(f"Skipped coverage-vs-run-noise plot (only one f_run value): {out_path}")
+        return None
+
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
+    nrows = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(nrows, 1, figsize=(10.0, 4.0 * nrows), squeeze=False, gridspec_kw={"hspace": 0.45})
+
+    for row_idx, et in enumerate(eval_types_present):
+        ax = axes[row_idx][0]
+        ax.axhspan(max(0.0, target - 0.04), min(1.0, target + 0.04), color="#DDDDDD", alpha=0.40, zorder=0)
+        ax.axhline(target, color="black", linewidth=1.2, linestyle="--", zorder=1)
+
+        for m in method_objs:
+            covs = []
+            for f in run_noise_fracs:
+                subset = [r for r in non_null if r.eval_type == et and r.method == m.name and r.run_noise_frac == f]
+                if not subset:
+                    covs.append(float("nan"))
+                    continue
+                c_tot = sum(r.covered for r in subset)
+                t_tot = sum(r.n_reps for r in subset)
+                covs.append(c_tot / t_tot if t_tot > 0 else float("nan"))
+
+            xs = [f for f, c in zip(run_noise_fracs, covs) if not np.isnan(c)]
+            ys = [c for c in covs if not np.isnan(c)]
+            if not xs:
+                continue
+            ax.plot(xs, ys, marker="o", color=m.color, linewidth=1.4, label=m.name, markersize=5, alpha=0.85)
+
+        ax.set_xlim(-0.02, 1.02)
+        ax.set_ylim(max(0.0, target - 0.25), min(1.01, target + 0.12))
+        ax.set_xlabel("Run noise fraction  f_run = var_run / (var_input + var_run)", fontsize=9.5)
+        ax.set_ylabel("Empirical coverage", fontsize=9.5)
+        ax.set_title(f"eval type: {et}", fontsize=10.5)
+        ax.grid(axis="y", linestyle="--", linewidth=0.55, alpha=0.45)
+        ax.grid(axis="x", linestyle=":", linewidth=0.45, alpha=0.35)
+        ax.legend(fontsize=7.5, ncol=1, loc="center left", bbox_to_anchor=(1.02, 0.5), framealpha=0.85)
+
+    runs_val = non_null[0].runs if non_null else "?"
+    fig.suptitle(
+        f"Coverage vs. Run Noise Fraction\n"
+        f"ci_paired (nested mode) | runs={runs_val} | alpha={alpha} | reps={n_reps}\n"
+        f"Averaged across all shapes and sample sizes",
+        fontsize=11,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=[0.02, 0.02, 0.80, 0.93])
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # CLI contract
 # ---------------------------------------------------------------------------
@@ -822,7 +1104,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--alpha", type=float, default=0.05)
     parser.add_argument("--sizes", type=int, nargs="+", default=[5, 10, 20, 50], metavar="N")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--icc-values", type=float, nargs="+", default=[0.05, 0.20, 0.40, 0.60, 0.80], metavar="ICC")
+    parser.add_argument("--icc-values", type=float, nargs="+", default=None, metavar="ICC",
+                         help="Flat mode: ICC sweep for build_pair_sources (default: 0.05 0.20 0.40 0.60 0.80). "
+                              "Nested mode: optional additional ICC sweep, converted via f_run = 1 - ICC.")
     parser.add_argument("--cohens-d-values", type=float, nargs="+", default=[0.3], metavar="D")
     parser.add_argument("--include-null", action="store_true", default=False)
     parser.add_argument("--progress", choices=PROGRESS_MODES, default="bar")
@@ -830,6 +1114,24 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save")
     parser.add_argument("--out-dir", default="simulations/out")
     parser.add_argument("--plots-dir", default=None)
+    parser.add_argument("--nested-mode", action="store_true", default=False,
+                         help="Multi-run flat-vs-nested pairwise CI comparison (ported from "
+                              "sim_compare_boot_nested.py), synthetic only, statistic=mean only.")
+    parser.add_argument("--runs-sweep", type=int, nargs="+", default=None, metavar="R",
+                         help="Nested mode: sweep multiple R values, overrides --runs")
+    parser.add_argument("--run-noise-fracs", type=float, nargs="+", default=RUN_NOISE_FRACS_DEFAULT, metavar="F",
+                         help="Nested mode: f_run = var_run / (var_input + var_run) values to sweep "
+                              "(--icc-values is also accepted in nested mode, converted via f_run = 1 - ICC)")
+    parser.add_argument("--heteroscedastic", action="store_true", default=False,
+                         help="Nested mode: run noise scales with input value (mimics real LLM eval variability)")
+    parser.add_argument("--pairwise-noise-grid", action="store_true", default=False,
+                         help="Nested mode: use full Cartesian grid of run-noise fractions across models "
+                              "(all f_A, f_B combinations) instead of matched f_A=f_B pairs")
+    parser.add_argument("--pairwise-noise-grid-max", type=int, default=None, metavar="K",
+                         help="Nested mode: optional cap on number of (f_A, f_B) combinations")
+    parser.add_argument("--pairwise-noise-grid-seed", type=int, default=42, metavar="N")
+    parser.add_argument("--cross-item-rho", type=float, default=0.7, metavar="RHO",
+                         help="Nested mode: Gaussian-copula correlation between A's and B's item-level latent scores")
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
@@ -843,6 +1145,29 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
+        nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
+        pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
+    )
+
+
+def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
+    """Canonical --nested-mode official preset, mirroring sim_compare_boot_nested.py's
+    --official-test (pairwise-estimand phase). Not wired into --official-tests (the
+    harness runs one preset per case); invoke manually:
+    python -m simulations.harness.cli ci_paired --nested-mode --runs-sweep 5 --reps 200
+      --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded --icc-values 0.05 0.30 0.50
+      --run-noise-fracs 0.01 0.1 0.3 0.5 --cohens-d-values 0.2 0.4 --include-null --heteroscedastic
+      --sizes 10 20 30 50 75 100 --seed 44
+    """
+    return argparse.Namespace(
+        data_source="synthetic", scenario_suite="expanded", eval_types=None,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
+        runs=5, statistic="mean", reps=200, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        sizes=[10, 20, 30, 50, 75, 100],
+        seed=base_seed, icc_values=[0.05, 0.30, 0.50], cohens_d_values=[0.2, 0.4], include_null=True,
+        progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
+        nested_mode=True, runs_sweep=[5], run_noise_fracs=[0.01, 0.1, 0.3, 0.5], heteroscedastic=True,
+        pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
     )
 
 
@@ -850,11 +1175,86 @@ def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
     try:
         plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
+        nested_mode = getattr(args, "nested_mode", False)
+
+        if nested_mode:
+            if args.data_source != "synthetic":
+                raise ValueError("--nested-mode only supports --data-source synthetic.")
+
+            run_noise_fracs = list(args.run_noise_fracs)
+            if args.icc_values:
+                icc_as_run_noise = [float(np.clip(1.0 - icc, 0.0, 1.0)) for icc in args.icc_values]
+                run_noise_fracs = sorted(set(run_noise_fracs + icc_as_run_noise))
+            bayes_n = args.bayes_n if args.bayes_n is not None else args.bootstrap_n
+            runs_list = args.runs_sweep if args.runs_sweep else [args.runs]
+
+            print(f"\nci_paired simulation (nested mode) -- runs={runs_list}, run_noise_fracs={run_noise_fracs}")
+            sources = build_pair_multirun_sources(
+                run_noise_fracs, suite=args.scenario_suite, cohens_d_values=args.cohens_d_values,
+                include_null=args.include_null, heteroscedastic=args.heteroscedastic,
+                pairwise_noise_grid=args.pairwise_noise_grid, pairwise_noise_grid_max=args.pairwise_noise_grid_max,
+                pairwise_noise_grid_seed=args.pairwise_noise_grid_seed, cross_item_rho=args.cross_item_rho,
+            )
+            if args.eval_types:
+                requested = set(args.eval_types)
+                sources = [s for s in sources if s.eval_type in requested]
+            if not sources:
+                raise ValueError("No CIPairSources left after filtering.")
+            print(f"  {len(sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}")
+
+            results: list[SimResult] = []
+            for r_val in runs_list:
+                results.extend(run_nested_pairwise_simulation(
+                    sources, sample_sizes=args.sizes, runs=r_val, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
+                    bayes_n=bayes_n, alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
+                ))
+            print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps, statistic="mean")
+
+            stamp = time.strftime("%Y%m%d_%H%M%S")
+            run_stem = f"ci_paired_nested_runs{'-'.join(str(r) for r in runs_list)}_reps{args.reps}_{stamp}"
+            output_paths: list[str] = []
+
+            if args.save_results == "save":
+                output_paths += save_results_artifacts(
+                    results=results, alpha=args.alpha, sample_sizes=args.sizes, n_reps=args.reps,
+                    statistic="mean", out_dir=args.out_dir, run_stem=run_stem,
+                )
+
+            if args.plots == "save":
+                cov_path = save_coverage_vs_n_plot(
+                    results=results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_coverage_vs_n.png"),
+                )
+                width_path = save_width_vs_n_plot(
+                    results=results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_width_vs_n.png"),
+                )
+                cost_path = save_cost_plot(
+                    results=results, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_cost_coverage.png"),
+                )
+                output_paths += [cov_path, width_path, cost_path]
+                run_noise_path = save_coverage_vs_run_noise_plot(
+                    results=results, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_coverage_vs_run_noise.png"),
+                )
+                if run_noise_path:
+                    output_paths.append(run_noise_path)
+                print(f"Saved plots: {output_paths[-4:] if run_noise_path else output_paths[-3:]}")
+
+            non_null = [r for r in results if not r.is_null]
+            overall_cov = float(np.mean([r.covered / r.n_reps for r in non_null])) if non_null else float("nan")
+            return CaseResult(
+                case_name=CASE_NAME, status="ok", output_paths=output_paths,
+                key_metrics={"n_results": len(results), "overall_mean_coverage": overall_cov},
+                duration_s=time.time() - t0,
+            )
 
         print(f"\nci_paired simulation -- data_source={args.data_source}, statistic={args.statistic}")
         if args.data_source == "synthetic":
+            icc_values = args.icc_values if args.icc_values is not None else [0.05, 0.20, 0.40, 0.60, 0.80]
             sources = build_pair_sources(
-                suite=args.scenario_suite, icc_values=args.icc_values,
+                suite=args.scenario_suite, icc_values=icc_values,
                 cohens_d_values=args.cohens_d_values, include_null=args.include_null,
             )
         else:
