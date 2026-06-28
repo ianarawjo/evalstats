@@ -142,3 +142,10 @@ class JudgeBiasSource:
     mnar_mode: str = "high"  # "high" | "extreme"
     repeated_corr: float = 0.0
     effect_size: float = 0.0
+    shape_label: str | None = None
+    """Override for which ShapeSpec (from scenarios.synthetic.SHAPES_BY_EVAL_TYPE[eval_type])
+    to draw truth from -- None (the default) uses the eval type's fixed
+    representative "param" shape (scenarios.synthetic._PPI_REPRESENTATIVE_SHAPE_LABEL);
+    set explicitly to sweep a "custom" (mixture/inflated/heavy-tail) shape
+    instead, so PPI-correction calibration gets checked against a
+    pathological truth distribution too, not just smooth Beta/Normal ones."""

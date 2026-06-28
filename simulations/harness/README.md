@@ -38,31 +38,46 @@ instead of each case (or each *mode* within a case) defining its own:
   suite_tier)`. `kind="param"` shapes are smooth parametric families
   (binary: Bernoulli-Beta hierarchical with base success prob `p0`;
   continuous: `Beta(a, b)`; likert/grades: latent-`Normal(mu, total_std)`
-  rounded/clipped to range) that support **any** group count `k` via the
-  generator below. `kind="custom"` shapes (mixtures, zero/one-inflated,
-  heavy-tailed, bimodal) are bespoke single-population generators with no
-  pair/multi-arm analogue -- usable only at `k=1`. `suite_tier` ("standard"
-  | "expanded") gates which shapes a given `suite` argument includes.
+  rounded/clipped to range). `kind="custom"` shapes (mixtures, zero/one-
+  inflated, heavy-tailed, bimodal) are bespoke single-population generators
+  with no closed-form CDF/quantile function. Both kinds support **any**
+  group count `k` via the generator below, but custom shapes only at
+  `base_corr=1.0` (fully shared item across groups) -- partial agreement
+  for custom shapes would need an empirical-quantile copula (no closed-form
+  `.ppf()` to invert through) and isn't implemented yet. `suite_tier`
+  ("standard" | "expanded") gates which shapes a given `suite` argument
+  includes.
 - **Generator**: `sample_group_truth(shape, n, runs, k, icc, rng, corr=0.5,
-  effects=None) -> ndarray (k, n, runs)`. `icc` = between-item variance /
-  total variance (same meaning everywhere it's used); `corr` = correlation
-  between any two of the `k` groups' within-item noise; `effects[j]` is
-  added to group `j`'s truth before clipping/rounding. `k=1` is the
-  single-sample case (no inter-group correlation concept -- the lone group
-  gets the full noise variance directly); `k=2` at `corr=0.5` reproduces
-  what was previously `build_pair_sources`' fixed, un-tunable shared/
-  individual noise split exactly; `k>2` generalizes the same model to
-  multi-arm/repeated-measures designs.
-- **Consumers**: `build_single_sample_sources()` (k=1, `CISource`),
-  `build_pair_sources()` (k=2, `CIPairSource`, ICC x Cohen's-d grid),
-  `build_multiarm_sources()` (k>=2, `MultiArmSource`, ICC x Cohen's-d x
-  eval-type sweep over the full shape catalog), and
-  `build_judge_bias_sources()` / `generate_judge_bias_cell()`
+  effects=None, heteroscedastic=False, base_corr=1.0) -> ndarray (k, n,
+  runs)`. `icc` = between-item variance / total variance (same meaning
+  everywhere it's used; may be a scalar or a length-k per-group sequence);
+  `corr` = correlation between any two of the `k` groups' within-item
+  noise; `base_corr` = correlation between any two of the `k` groups'
+  item-level/base values (a Gaussian-copula "different items/judges,
+  correlated quality" model for `kind="param"` shapes; broadcast-only,
+  `base_corr=1.0`-only for `kind="custom"`); `effects[j]` is added to group
+  `j`'s truth before clipping/rounding. `k=1` is the single-sample case (no
+  inter-group correlation concept -- the lone group gets the full noise
+  variance directly); `k=2` at `corr=0.5`, `base_corr=1.0`, scalar `icc`
+  reproduces what was previously `build_pair_sources`' fixed, un-tunable
+  shared/individual noise split exactly; `k>2` generalizes the same model
+  to multi-arm/repeated-measures designs.
+- **Consumers**: `build_single_sample_sources()` (k=1, `CISource`, full
+  catalog including custom shapes), `build_pair_sources()` (k=2,
+  `CIPairSource`, ICC x Cohen's-d grid, full catalog including custom
+  shapes -- except its `run_noise_fracs` multi-run path, which stays
+  param-shapes-only since it needs `base_corr<1.0`), `build_multiarm_sources()`
+  (k>=2, `MultiArmSource`, ICC x Cohen's-d x eval-type sweep over the full
+  catalog including custom shapes), and `build_judge_bias_sources()` /
+  `generate_judge_bias_cell()`
   (`JudgeBiasSource` / `JudgeBiasCellData`, for `cases/pvalues.py`'s PPI
   mode -- picks ONE representative shape per eval type via `_ppi_shape`,
   layering judge-bias/noise/MNAR-label sweeps on top of the same truth
-  model). All four pull from the identical shape catalog and generator, so
-  a given `(icc, cohens_d)` means the same thing in every one of them.
+  model; `JudgeBiasSource.shape_label` can override the representative
+  shape to sweep a pathological "custom" one instead -- see the `shape.*`
+  scenarios in `build_judge_bias_sources()`). All four pull from the
+  identical shape catalog and generator, so a given `(icc, cohens_d)` means
+  the same thing in every one of them.
 - `_legacy_build_single_sample_sources()` / `_legacy_build_pair_sources()`
   are the pre-unification implementations, kept (unused, not imported by
   any case) purely as a reference/audit trail for the merge.
@@ -279,3 +294,18 @@ per-mode legacy-script parity). Verification shifted to:
   mechanism (item-vs-fresh-draw mixing) matched bit-for-bit (0 mismatches
   across all 12 specs, exact RNG-stream parity, since that block's generator
   was copied verbatim into the new `build_pair_sources` path).
+- **Custom shapes at k>=2** (`build_pair_sources`'s and `build_multiarm_sources`'
+  flat paths, plus three new `shape.*` PPI scenarios): mixtures, zero/one-
+  inflated, and heavy-tailed shapes were previously k=1-only, exempting the
+  catalog's most realistic-pathology shapes from the pairwise/multi-arm/PPI
+  power and Type-I-error checks. Sanity-checked post-extension: Type-I error
+  for every custom-shape pair sits within MC noise of nominal alpha=0.05
+  across all bootstrap/permutation/parametric pairwise methods (reps=200);
+  multi-arm FWER stays controlled under correction for every custom shape;
+  PPI correction still pulls the corrected rejection rate back to ~alpha for
+  all three new `shape.*` scenarios even when the uncorrected rate is
+  severely inflated (e.g. `shape.cont-zero-inflated`'s uncorrected rate hits
+  ~1.0 across every test -- a fixed additive judge bias is enormous relative
+  to a distribution where 70% of mass sits at exactly 0 -- while the
+  corrected rate stays near alpha for all of them, a legitimate and
+  reportable robustness finding, not an artifact).

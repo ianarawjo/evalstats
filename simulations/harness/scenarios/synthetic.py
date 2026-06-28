@@ -501,7 +501,11 @@ class ShapeSpec:
     params: tuple | float | None = None
     """binary: base_p (float); continuous: (a, b); likert/grades: (mu, total_std)."""
     custom_sampler: Callable[[np.random.Generator, int], np.ndarray] | None = None
-    """For kind="custom": draws n FINAL (already clipped/rounded) values directly. k=1 only."""
+    """For kind="custom": draws n FINAL (already clipped/rounded) values
+    directly for one population/item draw. Any k is supported via
+    sample_group_truth, but only at base_corr=1.0 (fully shared item across
+    groups) -- partial agreement (base_corr<1.0) isn't implemented for
+    custom shapes yet."""
     suite_tier: str = "standard"  # "standard" | "expanded"
 
 
@@ -631,10 +635,16 @@ def _group_noise_var(eval_type: str, params, icc: float) -> float:
     raise ValueError(f"_group_noise_var: unsupported eval_type {eval_type!r}")
 
 
-def group_total_std(eval_type: str, params, icc: float) -> float:
-    """Total marginal std of one (eval_type, params) truth+noise model at a
-    given icc -- so cohens_d * group_total_std(...) is the same effect-size
-    convention build_pair_sources/build_multiarm_sources/PPI all share."""
+def group_total_std(shape: ShapeSpec, icc: float) -> float:
+    """Total marginal std of one shape's truth+noise model at a given icc --
+    so cohens_d * group_total_std(...) is the same effect-size convention
+    build_pair_sources/build_multiarm_sources/PPI all share. Custom shapes
+    use the same "fixed base variance, noise grows as icc shrinks"
+    convention as continuous param shapes, with an MC-estimated base
+    variance (_custom_shape_var) standing in for the closed-form one."""
+    if shape.kind == "custom":
+        return float(np.sqrt(_custom_shape_var(shape) / max(icc, 1e-9)))
+    eval_type, params = shape.eval_type, shape.params
     if eval_type == "binary":
         p0 = params
         return float(np.sqrt(p0 * (1.0 - p0)))
@@ -648,6 +658,7 @@ def group_total_std(eval_type: str, params, icc: float) -> float:
 
 
 _CUSTOM_SHAPE_VAR_CACHE: dict[str, float] = {}
+_CUSTOM_SHAPE_MEAN_CACHE: dict[str, float] = {}
 _CUSTOM_SHAPE_RANGE: dict[str, tuple[float, float, bool]] = {
     "continuous": (0.0, 1.0, False), "likert": (1.0, 5.0, True), "grades": (0.0, 100.0, False),
 }
@@ -662,6 +673,16 @@ def _custom_shape_var(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 0) -
         rng = np.random.default_rng(seed)
         _CUSTOM_SHAPE_VAR_CACHE[shape.label] = float(np.var(shape.custom_sampler(rng, n_mc)))
     return _CUSTOM_SHAPE_VAR_CACHE[shape.label]
+
+
+def _custom_shape_mean(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 1) -> float:
+    """MC-estimated population mean of a "custom" shape's bare sampler --
+    the analogue of a/(a+b) (continuous) or mu (likert/grades) for shapes
+    with no closed-form mean. Memoized by label."""
+    if shape.label not in _CUSTOM_SHAPE_MEAN_CACHE:
+        rng = np.random.default_rng(seed)
+        _CUSTOM_SHAPE_MEAN_CACHE[shape.label] = float(np.mean(shape.custom_sampler(rng, n_mc)))
+    return _CUSTOM_SHAPE_MEAN_CACHE[shape.label]
 
 
 def _hetero_noise_scale(base: np.ndarray, lo: float, hi: float) -> np.ndarray:
@@ -743,11 +764,15 @@ def sample_group_truth(
     (no separate noise layer at all); icc<1.0 at k=1, runs>1 is the
     run_noise_frac multi-run case (f_run = 1 - icc).
 
-    shape.kind == "custom" requires k == 1 (these bespoke single-population
-    generators have no pair/multi-arm analogue), but DOES support icc<1.0,
-    runs>1 (multi-run): the bare custom_sampler draw is treated as the
-    per-item "base", with the same additive-Gaussian within-item noise model
-    as "param" shapes, using an MC-estimated (not closed-form) base variance.
+    shape.kind == "custom" supports k >= 1, including icc<1.0, runs>1
+    (multi-run): the bare custom_sampler draw is treated as the per-item
+    "base", with the same additive-Gaussian within-item noise model as
+    "param" shapes, using an MC-estimated (not closed-form) base variance
+    (_custom_shape_var). At k >= 2, custom shapes currently only support
+    base_corr == 1.0 (fully shared item across groups) -- partial
+    agreement (base_corr < 1.0) for custom shapes needs an empirical-
+    quantile copula (no closed-form .ppf() to invert through, unlike
+    binary/continuous) and isn't implemented yet.
     """
     if effects is None:
         effects = np.zeros(k)
@@ -758,26 +783,42 @@ def sample_group_truth(
     icc_scalar = bool(np.ndim(icc) == 0)
 
     if shape.kind == "custom":
-        if k != 1:
-            raise ValueError(f"Custom shape {shape.label!r} only supports k=1 (single-sample), got k={k}")
-        base = shape.custom_sampler(rng, n)[:, None]  # (n, 1)
-        lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
-        ic = float(icc_arr[0])
-        if ic >= 1.0 - 1e-12:
-            noise = np.zeros((n, runs))
-        else:
-            noise_var = _custom_shape_var(shape) * (1.0 / max(ic, 1e-9) - 1.0)
-            sigma = float(np.sqrt(max(noise_var, 0.0)))
-            if heteroscedastic:
-                noise = rng.normal(0.0, 1.0, size=(n, runs)) * (sigma * _hetero_noise_scale(base, lo, hi))
+        if k == 1:
+            base = shape.custom_sampler(rng, n)[:, None]  # (n, 1)
+            lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
+            ic = float(icc_arr[0])
+            if ic >= 1.0 - 1e-12:
+                noise = np.zeros((n, runs))
             else:
-                noise = rng.normal(0.0, sigma, size=(n, runs))
-        vals = base + effects[0] + noise
-        out = np.empty((1, n, runs), dtype=float)
-        out[0] = np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
-        return out
+                noise_var = _custom_shape_var(shape) * (1.0 / max(ic, 1e-9) - 1.0)
+                sigma = float(np.sqrt(max(noise_var, 0.0)))
+                if heteroscedastic:
+                    noise = rng.normal(0.0, 1.0, size=(n, runs)) * (sigma * _hetero_noise_scale(base, lo, hi))
+                else:
+                    noise = rng.normal(0.0, sigma, size=(n, runs))
+            vals = base + effects[0] + noise
+            out = np.empty((1, n, runs), dtype=float)
+            out[0] = np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
+            return out
 
-    if et == "binary":
+        if base_corr < 1.0 - 1e-12:
+            raise NotImplementedError(
+                f"Custom shape {shape.label!r}: base_corr < 1.0 (partial agreement) at k={k} "
+                "is not implemented yet -- needs an empirical-quantile copula since custom "
+                "shapes have no closed-form .ppf() to invert through. Use base_corr=1.0 "
+                "(fully shared item across groups) for now."
+            )
+        lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
+        base = np.broadcast_to(shape.custom_sampler(rng, n)[None, :, None], (k, n, 1)).copy()
+        group_noise_vars = np.array([
+            _custom_shape_var(shape) * (1.0 / max(ic, 1e-9) - 1.0) if ic < 1.0 - 1e-12 else 0.0
+            for ic in icc_arr
+        ])
+        # falls through to the shared noise-injection tail below (same code
+        # path "param" continuous/likert/grades shapes use once base/lo/hi/
+        # round_to_int/group_noise_vars are computed).
+
+    elif et == "binary":
         base_p = shape.params
         if base_corr >= 1.0 - 1e-12 and icc_scalar:
             conc = _binary_conc_from_icc(float(icc))
@@ -798,7 +839,7 @@ def sample_group_truth(
             out[j] = rng.binomial(1, p_j, size=(n, runs)).astype(float)
         return out
 
-    if et == "continuous":
+    elif et == "continuous":
         a_beta, b_beta = shape.params
         lo, hi, round_to_int = 0.0, 1.0, False
         if base_corr >= 1.0 - 1e-12:
@@ -821,7 +862,9 @@ def sample_group_truth(
     def _finish(vals: np.ndarray) -> np.ndarray:
         return np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
 
-    group_noise_vars = np.array([_group_noise_var(et, shape.params, ic) for ic in icc_arr])
+    if shape.kind == "param":
+        group_noise_vars = np.array([_group_noise_var(et, shape.params, ic) for ic in icc_arr])
+    # else: shape.kind == "custom" at k >= 2 already computed group_noise_vars above.
     out = np.empty((k, n, runs), dtype=float)
     if k == 1:
         if heteroscedastic and group_noise_vars[0] > 0.0:
@@ -954,7 +997,7 @@ def _build_pair_sources_multirun(
             icc_a, icc_b = 1.0 - f_a, 1.0 - f_b
             icc_eff = 0.5 * (icc_a + icc_b)
             for shape in param_shapes:
-                total_std = group_total_std(eval_type, shape.params, icc_eff)
+                total_std = group_total_std(shape, icc_eff)
                 for d in d_list:
                     delta = d * total_std
                     is_null = d == 0.0
@@ -1043,11 +1086,15 @@ def build_pair_sources(
 ) -> list[CIPairSource]:
     """Return canonical synthetic paired-difference CIPairSources, parameterised
     by ICC and Cohen's d -- a thin (icc, shape, d) sweep over
-    sample_group_truth(k=2) using the shape catalog above ("param" shapes
-    only; "custom" shapes have no pair analogue, see ShapeSpec docs).
+    sample_group_truth(k=2) using the full shape catalog above, "custom"
+    shapes (mixtures, inflated, heavy-tail) included (at base_corr=1.0, the
+    default here -- see ShapeSpec/sample_group_truth docs for the base_corr
+    < 1.0 limitation that's still custom-shape-only). The run_noise_fracs
+    multi-run path (_build_pair_sources_multirun) is still param-shapes-only,
+    since it always uses base_corr=cross_item_rho < 1.0.
 
     ICC = between-input variance / total variance; Cohen's d = delta /
-    total_std (group_total_std(eval_type, shape.params, icc)).
+    total_std (group_total_std(shape, icc)).
 
     Parameters
     ----------
@@ -1104,10 +1151,15 @@ def build_pair_sources(
     icc_list = list(icc_values)
 
     for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
-        param_shapes = [s for s in _tier_shapes(catalog, suite) if s.kind == "param"]
+        # Custom shapes (mixtures, inflated, heavy-tail) get swept here too --
+        # sample_group_truth supports them at k=2/base_corr=1.0 (the default
+        # here). This is the riskiest, closest-to-real-world part of the
+        # catalog, so it shouldn't be exempt from the pairwise power/Type-I
+        # checks the way it used to be (param-only).
+        shapes_here = _tier_shapes(catalog, suite)
         for icc in icc_list:
-            for shape in param_shapes:
-                total_std = group_total_std(eval_type, shape.params, icc)
+            for shape in shapes_here:
+                total_std = group_total_std(shape, icc)
                 for d in d_list:
                     delta = d * total_std
                     is_null = d == 0.0
@@ -1892,9 +1944,10 @@ def _legacy_build_pair_multirun_sources(
 # LIKERT_SHAPES/GRADES_SHAPES) build_pair_sources uses, generalized from k=2
 # to k arms via sample_group_truth -- so multi-arm benchmarking gets the
 # same shape-robustness as the pairwise comparison, not a separate, narrower
-# bespoke catalog. "param" shapes only (custom shapes have no k-arm
-# analogue). Arm 0 carries the alternative-hypothesis shift (cohens_d *
-# group_total_std); arms 1..k-1 stay at the shared baseline.
+# bespoke catalog. "custom" shapes (mixtures, inflated, heavy-tail) are
+# included too, at base_corr=1.0 (the default here). Arm 0 carries the
+# alternative-hypothesis shift (cohens_d * group_total_std); arms 1..k-1
+# stay at the shared baseline.
 
 
 def build_multiarm_sources(
@@ -1913,12 +1966,14 @@ def build_multiarm_sources(
 
     sources: list[MultiArmSource] = []
     for eval_type in eval_types:
+        # Custom shapes (mixtures, inflated, heavy-tail) are included too --
+        # sample_group_truth supports them at k>=2/base_corr=1.0 (the
+        # default here), so the multi-arm FWER/power sweep no longer skips
+        # the catalog's most realistic-pathology shapes.
         for shape in _tier_shapes(SHAPES_BY_EVAL_TYPE[eval_type], suite):
-            if shape.kind != "param":
-                continue
             sources.append(MultiArmSource(
                 label=shape.label, eval_type=eval_type, generate_scores=_make_generator(shape),
-                alt_delta=cohens_d * group_total_std(eval_type, shape.params, icc),
+                alt_delta=cohens_d * group_total_std(shape, icc),
             ))
     return sources
 
@@ -1943,14 +1998,16 @@ _PPI_REPRESENTATIVE_SHAPE_LABEL: dict[str, str] = {
 }
 
 
-def _ppi_shape(eval_type: str) -> ShapeSpec:
-    label = _PPI_REPRESENTATIVE_SHAPE_LABEL[eval_type]
+def _ppi_shape(eval_type: str, shape_label: str | None = None) -> ShapeSpec:
+    label = shape_label if shape_label is not None else _PPI_REPRESENTATIVE_SHAPE_LABEL[eval_type]
     return next(s for s in SHAPES_BY_EVAL_TYPE[eval_type] if s.label == label)
 
 
 def _ppi_shape_anchor(shape: ShapeSpec) -> float:
-    """Mean of a 'param' ShapeSpec's truth distribution -- used both as the
+    """Mean of a ShapeSpec's truth distribution -- used both as the
     judge-bias model's mu_null and as the slope-distortion anchor point."""
+    if shape.kind == "custom":
+        return _custom_shape_mean(shape)
     if shape.eval_type == "continuous":
         a, b = shape.params
         return a / (a + b)
@@ -2118,6 +2175,16 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     for eval_type in ["continuous", "likert", "grades"]:
         S.append(sc(f"eval_type.{eval_type}", "eval_type", eval_type=eval_type))
 
+    # Truth-distribution shape factor: does PPI correction still fix Type-I
+    # inflation when the underlying truth is a pathological ("custom")
+    # shape -- refusal-like zero-inflation, bimodal pass/fail, multi-modal
+    # scoring clusters -- instead of the smooth Beta/Normal representative
+    # shape every other scenario in this sweep uses? See ShapeSpec/
+    # _ppi_shape/JudgeBiasSource.shape_label.
+    S.append(sc("shape.cont-zero-inflated", "shape", eval_type="continuous", shape_label="cont-zero-inflated"))
+    S.append(sc("shape.likert-bimodal", "shape", eval_type="likert", shape_label="likert-bimodal"))
+    S.append(sc("shape.grades-mixture", "shape", eval_type="grades", shape_label="grades-mixture"))
+
     for n in [60, 100, 200, 400]:
         S.append(sc(f"n={n}", "sample_size", n=n))
 
@@ -2246,7 +2313,7 @@ def generate_judge_bias_cell(
     +2*effect_size, ...) -- 0.0 (the Type-I sweep default) makes this a no-op;
     >0 turns the same scenario grid into a power sweep.
     """
-    shape = _ppi_shape(sc.eval_type)
+    shape = _ppi_shape(sc.eval_type, sc.shape_label)
     n1 = sc.n
     n2 = sc.n2 if sc.n2 is not None else sc.n
     n3 = sc.n3 if sc.n3 is not None else sc.n
@@ -2343,7 +2410,7 @@ def estimate_judge_bias_gold_null_values(sc: JudgeBiasSource, *, n_mc: int = 300
     from evalstats.tests import _p_x_gt_y_midrank, _anova_between_variance_from_groups, _repeated_condition_variance, _friedman_rank_variance
 
     rng = np.random.default_rng(seed)
-    shape = _ppi_shape(sc.eval_type)
+    shape = _ppi_shape(sc.eval_type, sc.shape_label)
     n1 = sc.n
     n2 = sc.n2 if sc.n2 is not None else sc.n
     n3 = sc.n3 if sc.n3 is not None else sc.n
