@@ -32,10 +32,17 @@ import pandas as pd
 from scipy import stats
 from scipy.stats import norm
 
-from . import CISource, CIPairSource, MultiArmSource, JudgeBiasSource
+from . import CISource, CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES
 
 SCENARIO_SUITES = ["standard", "expanded", "extreme"]
 RUN_NOISE_FRACS_DEFAULT = [0.01, 0.1, 0.3, 0.5]
+
+# Latent-scale total standard deviations for Likert / Grades, shared by
+# build_pair_sources, build_multiarm_sources, and build_judge_bias_sources'
+# truth model -- fixes the total marginal std for each score type so a
+# given (icc, cohens_d) means the same thing everywhere it's used.
+_LIKERT_TOTAL_STD = 1.2  # latent scale, maps to {1,...,5} after rounding
+_GRADES_TOTAL_STD = 20.0  # [0, 100] scale
 
 
 def _true_mean_clipped_normal(
@@ -62,8 +69,15 @@ def _estimate_true_mean_mc(
     return float(np.mean(generate(rng, n_mc)))
 
 
-def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
-    """Return canonical synthetic single-sample CISources across the four eval types."""
+def _legacy_build_single_sample_sources(suite: str = "standard") -> list["CISource"]:
+    """UNUSED -- kept for reference only. Superseded by the new
+    build_single_sample_sources below, which sources its "param" shapes
+    (Beta/latent-Normal families) from the SAME module-level shape catalogs
+    (BINARY_SHAPES/CONTINUOUS_SHAPES/LIKERT_SHAPES/GRADES_SHAPES) that
+    build_pair_sources and build_multiarm_sources use, via sample_group_truth
+    with k=1. Not imported by any case; left in place only so the original,
+    independently-evolved single-sample catalog is still visible for
+    comparison/audit."""
     if suite not in SCENARIO_SUITES:
         raise ValueError(f"Unknown scenario suite: {suite}")
 
@@ -118,8 +132,6 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
             )
         )
 
-    # logit-normal is a principled model for bounded continuous scores
-    # (common in LLM rubric outputs); always included in standard suite.
     def _gen_logit_normal(rng: np.random.Generator, n: int) -> np.ndarray:
         logits = rng.normal(-0.35, 1.35, size=n)
         return 1.0 / (1.0 + np.exp(-logits))
@@ -133,10 +145,6 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
         )
     )
 
-    # Zero-inflated and one-inflated -- point-mass spike at the boundary mixed
-    # with a Beta component. Models extreme low/high LLM performance: a model
-    # that almost always fails produces a spike at 0; a near-ceiling model
-    # produces a spike at 1. True means are computed analytically.
     def _gen_zero_inflated(rng: np.random.Generator, n: int) -> np.ndarray:
         spike = rng.random(n) < 0.70
         return np.where(spike, 0.0, rng.beta(2.0, 4.0, n))
@@ -146,7 +154,6 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
             label="zero-inflated(pi=0.70,Beta(2,4))",
             eval_type="continuous",
             generate=_gen_zero_inflated,
-            # E[X] = 0.70*0 + 0.30*Beta_mean = 0.30 * 2/(2+4)
             true_mean=0.30 * (2.0 / 6.0),
         )
     )
@@ -160,7 +167,6 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
             label="one-inflated(pi=0.70,Beta(4,2))",
             eval_type="continuous",
             generate=_gen_one_inflated,
-            # E[X] = 0.70*1 + 0.30*Beta_mean = 0.70 + 0.30 * 4/(4+2)
             true_mean=0.70 + 0.30 * (4.0 / 6.0),
         )
     )
@@ -182,78 +188,47 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
             )
         )
 
-    # ------------------------------------------------------------------
-    # Likert 1-5: latent-normal model
-    # ------------------------------------------------------------------
-    # Each generator draws from N(mu_lat, sigma_lat) on a latent scale, then
-    # rounds to integers in {1,...,5} via rint+clip. True means are estimated
-    # via MC (n_mc=500,000; SE < 0.001).
-
-    def _make_likert_normal(mu: float, sigma: float) -> Callable[[np.random.Generator, int], np.ndarray]:
+    def _make_likert_normal(mu: float, sigma: float):
         def _gen(rng: np.random.Generator, n: int, _m: float = mu, _s: float = sigma) -> np.ndarray:
             return np.clip(np.rint(rng.normal(_m, _s, n)), 1.0, 5.0)
         return _gen
 
-    def _make_likert_bimodal(mu1: float, mu2: float, sigma: float) -> Callable[[np.random.Generator, int], np.ndarray]:
+    def _make_likert_bimodal(mu1: float, mu2: float, sigma: float):
         def _gen(rng: np.random.Generator, n: int, _m1: float = mu1, _m2: float = mu2, _s: float = sigma) -> np.ndarray:
             sel = rng.random(n) < 0.5
             latents = np.where(sel, rng.normal(_m1, _s, n), rng.normal(_m2, _s, n))
             return np.clip(np.rint(latents), 1.0, 5.0)
         return _gen
 
-    # Standard suite: five shapes covering the main families
     _likert_standard = [
-        ("uniform", _make_likert_normal(3.0, 2.0)),  # high variance -> flat
-        ("skewed-low", _make_likert_normal(2.0, 1.1)),  # mass at 1-2
-        ("skewed-high", _make_likert_normal(4.0, 1.1)),  # mass at 4-5
-        ("bimodal", _make_likert_bimodal(1.5, 4.5, 0.65)),  # peaks at extremes
-        ("center-peaked", _make_likert_normal(3.0, 0.55)),  # sharp peak at 3
+        ("uniform", _make_likert_normal(3.0, 2.0)),
+        ("skewed-low", _make_likert_normal(2.0, 1.1)),
+        ("skewed-high", _make_likert_normal(4.0, 1.1)),
+        ("bimodal", _make_likert_bimodal(1.5, 4.5, 0.65)),
+        ("center-peaked", _make_likert_normal(3.0, 0.55)),
     ]
     for label, gen in _likert_standard:
-        sources.append(
-            CISource(
-                label=label,
-                eval_type="likert",
-                generate=gen,
-                true_mean=_estimate_true_mean_mc(gen),
-            )
-        )
+        sources.append(CISource(label=label, eval_type="likert", generate=gen, true_mean=_estimate_true_mean_mc(gen)))
 
     if suite in ("expanded", "extreme"):
         _likert_expanded = [
-            ("near-floor", _make_likert_normal(1.5, 0.65)),  # mostly 1s
-            ("near-ceiling", _make_likert_normal(4.5, 0.65)),  # mostly 5s
-            ("polarized", _make_likert_bimodal(1.3, 4.7, 0.50)),  # extreme bimodal
-            ("flat-middle", _make_likert_normal(3.0, 1.4)),  # moderate spread
+            ("near-floor", _make_likert_normal(1.5, 0.65)),
+            ("near-ceiling", _make_likert_normal(4.5, 0.65)),
+            ("polarized", _make_likert_bimodal(1.3, 4.7, 0.50)),
+            ("flat-middle", _make_likert_normal(3.0, 1.4)),
         ]
         for label, gen in _likert_expanded:
-            sources.append(
-                CISource(
-                    label=label,
-                    eval_type="likert",
-                    generate=gen,
-                    true_mean=_estimate_true_mean_mc(gen),
-                )
-            )
+            sources.append(CISource(label=label, eval_type="likert", generate=gen, true_mean=_estimate_true_mean_mc(gen)))
 
-    # ------------------------------------------------------------------
-    # Grades 0-100: truncated normals of varying centre and spread
-    # ------------------------------------------------------------------
     grade_specs = [
-        ("symmetric", 50, 20),  # centred, moderate spread
-        ("high-scoring", 75, 15),  # near ceiling
-        ("low-scoring", 35, 20),  # near floor
-        ("ceiling-heavy", 88, 10),  # mass near 100 -- heavy clipping
-        ("floor-heavy", 12, 10),  # mass near 0 -- heavy clipping
+        ("symmetric", 50, 20),
+        ("high-scoring", 75, 15),
+        ("low-scoring", 35, 20),
+        ("ceiling-heavy", 88, 10),
+        ("floor-heavy", 12, 10),
     ]
     if suite in ("expanded", "extreme"):
-        grade_specs.extend(
-            [
-                ("very-high", 92, 7),
-                ("very-low", 8, 7),
-                ("high-variance", 50, 34),
-            ]
-        )
+        grade_specs.extend([("very-high", 92, 7), ("very-low", 8, 7), ("high-variance", 50, 34)])
 
     for label, mu, sigma in grade_specs:
         mu_, sigma_ = mu, sigma
@@ -262,15 +237,11 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
             CISource(
                 label=f"{label} N({mu_},{sigma_})",
                 eval_type="grades",
-                generate=lambda rng, n, _m=mu_, _s=sigma_: np.clip(
-                    rng.normal(_m, _s, n), 0.0, 100.0
-                ),
+                generate=lambda rng, n, _m=mu_, _s=sigma_: np.clip(rng.normal(_m, _s, n), 0.0, 100.0),
                 true_mean=true_mean_,
             )
         )
 
-    # Mixture of 3 normal components -- captures bimodal/trimodal grade
-    # distributions common in LLM evals (fail / partial / full credit).
     def _gen_grade_mixture(rng: np.random.Generator, n: int) -> np.ndarray:
         flags = rng.choice(3, size=n, p=[0.20, 0.50, 0.30])
         vals = np.empty(n, dtype=float)
@@ -288,8 +259,6 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
         )
     )
 
-    # Heavy-tailed t(df=3) -- models grade distributions with occasional
-    # outlier runs (model crashes, OOD inputs, etc.).
     def _gen_grade_heavy_tail(rng: np.random.Generator, n: int) -> np.ndarray:
         vals = 52.0 + 16.0 * rng.standard_t(df=3.0, size=n)
         return np.clip(vals, 0.0, 100.0)
@@ -304,9 +273,6 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
     )
 
     if suite in ("expanded", "extreme"):
-        # Zero-spiked and hundred-spiked grades -- point-mass spike at floor/ceiling
-        # mixed with a truncated-normal body. Models complete failure (spike at 0)
-        # and near-perfect performance (spike at 100) common in LLM coding/math evals.
         def _gen_grade_zero_spiked(rng: np.random.Generator, n: int) -> np.ndarray:
             spike = rng.random(n) < 0.40
             body = np.clip(rng.normal(45.0, 20.0, n), 0.0, 100.0)
@@ -334,6 +300,140 @@ def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
                 true_mean=_estimate_true_mean_mc(_gen_grade_hundred_spiked),
             )
         )
+
+    return sources
+
+
+def _legacy_build_pair_sources(
+    suite: str = "standard",
+    icc_values: list[float] | tuple[float, ...] = (0.10, 0.25, 0.40),
+    cohens_d_values: list[float] | tuple[float, ...] = (0.3,),
+    include_null: bool = False,
+) -> list["CIPairSource"]:
+    """UNUSED -- kept for reference only. Superseded by the new
+    build_pair_sources below, which is a thin (icc, shape, d) sweep over
+    sample_group_truth(k=2) using the SAME module-level shape catalogs
+    build_single_sample_sources (k=1) and build_multiarm_sources (k>=2) use.
+    Not imported by any case."""
+    if suite not in SCENARIO_SUITES:
+        raise ValueError(f"Unknown scenario suite: {suite}")
+
+    sources: list[CIPairSource] = []
+    icc_list = list(icc_values)
+    d_list = list(cohens_d_values)
+    if include_null:
+        d_list = [0.0] + [d for d in d_list if d > 0.0]
+
+    binary_shapes: list[tuple[str, float]] = [
+        ("binary-balanced", 0.5), ("binary-high", 0.8), ("binary-low", 0.2), ("binary-near-ceil", 0.92),
+    ]
+    if suite in ("expanded", "extreme"):
+        binary_shapes += [("binary-rare", 0.05), ("binary-near-ceil-hi", 0.95)]
+
+    for icc in icc_list:
+        conc = _binary_conc_from_icc(icc)
+        for shape_label, base_p in binary_shapes:
+            total_std = float(np.sqrt(base_p * (1.0 - base_p)))
+            for d in d_list:
+                delta = d * total_std
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                bp_, delta_, conc_ = base_p, delta, conc
+
+                def _gen_binary(rng, n, runs, _bp=bp_, _d=delta_, _c=conc_):
+                    p_a = rng.beta(_bp * _c, (1.0 - _bp) * _c, size=(n, 1))
+                    p_b = np.clip(p_a + _d, 0.0, 1.0)
+                    a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
+                    b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
+                    return a, b
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_binary)
+                sources.append(CIPairSource(label=label, eval_type="binary", generate_pair=_gen_binary, true_diff=true_diff, icc=icc, cohens_d=d, is_null=is_null))
+
+    continuous_shapes: list[tuple[str, float, float]] = [
+        ("cont-uniform", 1.0, 1.0), ("cont-right-skew", 2.0, 8.0), ("cont-left-skew", 8.0, 2.0),
+    ]
+    if suite in ("expanded", "extreme"):
+        continuous_shapes += [("cont-moderate-skew", 2.0, 5.0), ("cont-boundary", 0.6, 0.6)]
+
+    for icc in icc_list:
+        for shape_label, a_beta, b_beta in continuous_shapes:
+            var_base = _beta_var(a_beta, b_beta)
+            noise_std = float(np.sqrt(max(var_base * (1.0 / max(icc, 1e-9) - 1.0) / 2.0, 0.0)))
+            total_std = float(np.sqrt(var_base / max(icc, 1e-9)))
+            for d in d_list:
+                delta = d * total_std
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                a_, b_, ns_, delta_ = a_beta, b_beta, noise_std, delta
+
+                def _gen_continuous(rng, n, runs, _a=a_, _b=b_, _ns=ns_, _d=delta_):
+                    base = rng.beta(_a, _b, size=(n, 1))
+                    shared = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
+                    a_vals = np.clip(base + shared + indiv_a, 0.0, 1.0)
+                    b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 1.0)
+                    return a_vals, b_vals
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_continuous)
+                sources.append(CIPairSource(label=label, eval_type="continuous", generate_pair=_gen_continuous, true_diff=true_diff, icc=icc, cohens_d=d, is_null=is_null))
+
+    likert_shapes: list[tuple[str, float]] = [("likert-mid", 3.0), ("likert-low", 2.2), ("likert-high", 3.8)]
+    if suite in ("expanded", "extreme"):
+        likert_shapes += [("likert-polarized", 3.0), ("likert-floor", 1.8)]
+
+    for icc in icc_list:
+        base_std_l = float(np.sqrt(icc)) * _LIKERT_TOTAL_STD
+        noise_std_l = float(np.sqrt(max((1.0 - icc) / 2.0, 0.0))) * _LIKERT_TOTAL_STD
+        for shape_label, mu_lat in likert_shapes:
+            for d in d_list:
+                delta = d * _LIKERT_TOTAL_STD
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                m_, bs_, ns_, delta_ = mu_lat, base_std_l, noise_std_l, delta
+
+                def _gen_likert(rng, n, runs, _m=m_, _bs=bs_, _ns=ns_, _d=delta_):
+                    base = rng.normal(_m, _bs, size=(n, 1))
+                    shared = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
+                    a_vals = np.rint(np.clip(base + shared + indiv_a, 1.0, 5.0))
+                    b_vals = np.rint(np.clip(base + _d + shared + indiv_b, 1.0, 5.0))
+                    return a_vals, b_vals
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_likert)
+                sources.append(CIPairSource(label=label, eval_type="likert", generate_pair=_gen_likert, true_diff=true_diff, icc=icc, cohens_d=d, is_null=is_null))
+
+    grades_shapes: list[tuple[str, float]] = [("grades-mid", 55.0), ("grades-low", 35.0), ("grades-high", 78.0)]
+    if suite in ("expanded", "extreme"):
+        grades_shapes += [("grades-ceiling", 86.0), ("grades-floor", 20.0)]
+
+    for icc in icc_list:
+        base_std_g = float(np.sqrt(icc)) * _GRADES_TOTAL_STD
+        noise_std_g = float(np.sqrt(max((1.0 - icc) / 2.0, 0.0))) * _GRADES_TOTAL_STD
+        for shape_label, mu_g in grades_shapes:
+            for d in d_list:
+                delta = d * _GRADES_TOTAL_STD
+                is_null = d == 0.0
+                effect_tag = "null" if is_null else f"d={d:.2f}"
+                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
+                m_, bs_, ns_, delta_ = mu_g, base_std_g, noise_std_g, delta
+
+                def _gen_grades(rng, n, runs, _m=m_, _bs=bs_, _ns=ns_, _d=delta_):
+                    base = rng.normal(_m, _bs, size=(n, 1))
+                    shared = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
+                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
+                    a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
+                    b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 100.0)
+                    return a_vals, b_vals
+
+                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_grades)
+                sources.append(CIPairSource(label=label, eval_type="grades", generate_pair=_gen_grades, true_diff=true_diff, icc=icc, cohens_d=d, is_null=is_null))
 
     return sources
 
@@ -369,6 +469,277 @@ def _estimate_true_pair_diff(
     return float(np.mean(a[:, 0] - b[:, 0]))
 
 
+# ---------------------------------------------------------------------------
+# Unified per-eval-type shape catalog + truth/noise generator
+# ---------------------------------------------------------------------------
+# ONE shape catalog (binary/continuous/likert/grades) and ONE generator
+# function (sample_group_truth) shared by build_single_sample_sources (k=1),
+# build_pair_sources (k=2), build_multiarm_sources (k>=2), and
+# build_judge_bias_sources' truth model (picks one representative shape) --
+# so a given (icc, cohens_d) means the same thing everywhere, and the paper
+# can describe one truth-generating process per eval type instead of one
+# per simulation mode. Merges and supersedes both this file's previous,
+# independently-evolved build_single_sample_sources catalog (richer shape
+# variety: mixtures, inflated, heavy-tailed, bimodal) and build_pair_sources
+# catalog (icc-parameterized, but narrower shape variety) -- the merged
+# catalog keeps every shape family from both (see _legacy_* functions above
+# for the pre-merge originals).
+#
+# "param" shapes are smooth parametric families that support ANY k via the
+# icc/corr noise-layering below. "custom" shapes (mixtures, inflated, heavy-
+# tailed, bimodal) are bespoke one-off generators that only make sense as a
+# single population characteristic -- usable only at k=1, matching their
+# scope before this unification (sim_compare_boot.py never had pair/multi-
+# arm analogues for them either).
+
+
+@dataclass(frozen=True)
+class ShapeSpec:
+    label: str
+    eval_type: str
+    kind: str  # "param" | "custom"
+    params: tuple | float | None = None
+    """binary: base_p (float); continuous: (a, b); likert/grades: (mu, total_std)."""
+    custom_sampler: Callable[[np.random.Generator, int], np.ndarray] | None = None
+    """For kind="custom": draws n FINAL (already clipped/rounded) values directly. k=1 only."""
+    suite_tier: str = "standard"  # "standard" | "expanded"
+
+
+def _tier_shapes(catalog: list[ShapeSpec], suite: str) -> list[ShapeSpec]:
+    if suite in ("expanded", "extreme"):
+        return catalog
+    return [s for s in catalog if s.suite_tier == "standard"]
+
+
+BINARY_SHAPES: list[ShapeSpec] = [
+    ShapeSpec("p=0.10", "binary", "param", 0.10),
+    ShapeSpec("p=0.20", "binary", "param", 0.20),
+    ShapeSpec("p=0.30", "binary", "param", 0.30),
+    ShapeSpec("p=0.50", "binary", "param", 0.50),
+    ShapeSpec("p=0.70", "binary", "param", 0.70),
+    ShapeSpec("p=0.80", "binary", "param", 0.80),
+    ShapeSpec("p=0.90", "binary", "param", 0.90),
+    ShapeSpec("p=0.92", "binary", "param", 0.92),
+    ShapeSpec("p=0.02", "binary", "param", 0.02, suite_tier="expanded"),
+    ShapeSpec("p=0.05", "binary", "param", 0.05, suite_tier="expanded"),
+    ShapeSpec("p=0.95", "binary", "param", 0.95, suite_tier="expanded"),
+    ShapeSpec("p=0.98", "binary", "param", 0.98, suite_tier="expanded"),
+]
+
+CONTINUOUS_SHAPES: list[ShapeSpec] = [
+    ShapeSpec("cont-uniform", "continuous", "param", (1.0, 1.0)),
+    ShapeSpec("cont-u-shaped", "continuous", "param", (0.5, 0.5)),
+    ShapeSpec("cont-right-skew", "continuous", "param", (2.0, 8.0)),
+    ShapeSpec("cont-left-skew", "continuous", "param", (8.0, 2.0)),
+    ShapeSpec("cont-moderate-skew", "continuous", "param", (2.0, 5.0), suite_tier="expanded"),
+    ShapeSpec("cont-boundary", "continuous", "param", (0.6, 0.6), suite_tier="expanded"),
+    ShapeSpec("cont-extreme-right", "continuous", "param", (0.35, 6.0), suite_tier="expanded"),
+    ShapeSpec("cont-extreme-left", "continuous", "param", (6.0, 0.35), suite_tier="expanded"),
+    ShapeSpec("cont-near-boundaries", "continuous", "param", (0.3, 0.3), suite_tier="expanded"),
+    ShapeSpec("cont-near-center", "continuous", "param", (6.0, 6.0), suite_tier="expanded"),
+    ShapeSpec("cont-logit-normal", "continuous", "custom", custom_sampler=lambda rng, n: 1.0 / (1.0 + np.exp(-rng.normal(-0.35, 1.35, size=n)))),
+    ShapeSpec(
+        "cont-zero-inflated", "continuous", "custom",
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.70, 0.0, rng.beta(2.0, 4.0, n)),
+    ),
+    ShapeSpec(
+        "cont-one-inflated", "continuous", "custom",
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.70, 1.0, rng.beta(4.0, 2.0, n)),
+    ),
+    ShapeSpec(
+        "cont-mixture", "continuous", "custom", suite_tier="expanded",
+        custom_sampler=lambda rng, n: np.where(
+            rng.binomial(1, 0.55, size=n).astype(bool), rng.beta(0.5, 4.0, n), rng.beta(5.5, 1.2, n),
+        ),
+    ),
+]
+
+LIKERT_SHAPES: list[ShapeSpec] = [
+    ShapeSpec("likert-mid", "likert", "param", (3.0, 1.2)),
+    ShapeSpec("likert-low", "likert", "param", (2.2, 1.2)),
+    ShapeSpec("likert-high", "likert", "param", (3.8, 1.2)),
+    ShapeSpec("likert-uniform", "likert", "param", (3.0, 2.0)),
+    ShapeSpec("likert-skewed-low", "likert", "param", (2.0, 1.1)),
+    ShapeSpec("likert-skewed-high", "likert", "param", (4.0, 1.1)),
+    ShapeSpec("likert-center-peaked", "likert", "param", (3.0, 0.55)),
+    ShapeSpec("likert-floor", "likert", "param", (1.8, 1.2), suite_tier="expanded"),
+    ShapeSpec("likert-near-floor", "likert", "param", (1.5, 0.65), suite_tier="expanded"),
+    ShapeSpec("likert-near-ceiling", "likert", "param", (4.5, 0.65), suite_tier="expanded"),
+    ShapeSpec("likert-flat-middle", "likert", "param", (3.0, 1.4), suite_tier="expanded"),
+    ShapeSpec(
+        "likert-bimodal", "likert", "custom",
+        custom_sampler=lambda rng, n: np.clip(np.rint(np.where(rng.random(n) < 0.5, rng.normal(1.5, 0.65, n), rng.normal(4.5, 0.65, n))), 1.0, 5.0),
+    ),
+    ShapeSpec(
+        "likert-bimodal-extreme", "likert", "custom", suite_tier="expanded",
+        custom_sampler=lambda rng, n: np.clip(np.rint(np.where(rng.random(n) < 0.5, rng.normal(1.3, 0.50, n), rng.normal(4.7, 0.50, n))), 1.0, 5.0),
+    ),
+]
+
+GRADES_SHAPES: list[ShapeSpec] = [
+    ShapeSpec("grades-mid", "grades", "param", (55.0, 20.0)),
+    ShapeSpec("grades-low", "grades", "param", (35.0, 20.0)),
+    ShapeSpec("grades-high", "grades", "param", (78.0, 20.0)),
+    ShapeSpec("grades-high-scoring", "grades", "param", (75.0, 15.0)),
+    ShapeSpec("grades-ceiling-heavy", "grades", "param", (88.0, 10.0)),
+    ShapeSpec("grades-floor-heavy", "grades", "param", (12.0, 10.0)),
+    ShapeSpec("grades-ceiling", "grades", "param", (86.0, 20.0), suite_tier="expanded"),
+    ShapeSpec("grades-floor", "grades", "param", (20.0, 20.0), suite_tier="expanded"),
+    ShapeSpec("grades-very-high", "grades", "param", (92.0, 7.0), suite_tier="expanded"),
+    ShapeSpec("grades-very-low", "grades", "param", (8.0, 7.0), suite_tier="expanded"),
+    ShapeSpec("grades-high-variance", "grades", "param", (50.0, 34.0), suite_tier="expanded"),
+    ShapeSpec(
+        "grades-mixture", "grades", "custom",
+        custom_sampler=lambda rng, n: np.clip(_grade_mixture_sampler(rng, n), 0.0, 100.0),
+    ),
+    ShapeSpec("grades-heavy-tail", "grades", "custom", custom_sampler=lambda rng, n: np.clip(52.0 + 16.0 * rng.standard_t(df=3.0, size=n), 0.0, 100.0)),
+    ShapeSpec(
+        "grades-zero-spiked", "grades", "custom", suite_tier="expanded",
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.40, 0.0, np.clip(rng.normal(45.0, 20.0, n), 0.0, 100.0)),
+    ),
+    ShapeSpec(
+        "grades-hundred-spiked", "grades", "custom", suite_tier="expanded",
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.40, 100.0, np.clip(rng.normal(65.0, 18.0, n), 0.0, 100.0)),
+    ),
+]
+
+SHAPES_BY_EVAL_TYPE: dict[str, list[ShapeSpec]] = {
+    "binary": BINARY_SHAPES, "continuous": CONTINUOUS_SHAPES, "likert": LIKERT_SHAPES, "grades": GRADES_SHAPES,
+}
+
+
+def _grade_mixture_sampler(rng: np.random.Generator, n: int) -> np.ndarray:
+    flags = rng.choice(3, size=n, p=[0.20, 0.50, 0.30])
+    vals = np.empty(n, dtype=float)
+    for bucket, mu, sigma in [(0, 22.0, 11.0), (1, 58.0, 14.0), (2, 88.0, 8.0)]:
+        mask = flags == bucket
+        vals[mask] = rng.normal(mu, sigma, size=int(np.sum(mask)))
+    return vals
+
+
+def _group_noise_var(eval_type: str, params, icc: float) -> float:
+    """Total per-group noise variance (Var(shared)+Var(indiv) at corr=0.5)
+    implied by icc, for one "param" shape. Binary has no separate Gaussian
+    noise layer (its within-item variability is the Bernoulli draw itself)."""
+    if eval_type == "continuous":
+        a_beta, b_beta = params
+        var_base = _beta_var(a_beta, b_beta)
+        return var_base * (1.0 / max(icc, 1e-9) - 1.0)
+    if eval_type in ("likert", "grades"):
+        _mu, total_std = params
+        return (1.0 - icc) * total_std ** 2
+    raise ValueError(f"_group_noise_var: unsupported eval_type {eval_type!r}")
+
+
+def group_total_std(eval_type: str, params, icc: float) -> float:
+    """Total marginal std of one (eval_type, params) truth+noise model at a
+    given icc -- so cohens_d * group_total_std(...) is the same effect-size
+    convention build_pair_sources/build_multiarm_sources/PPI all share."""
+    if eval_type == "binary":
+        p0 = params
+        return float(np.sqrt(p0 * (1.0 - p0)))
+    if eval_type == "continuous":
+        a_beta, b_beta = params
+        return float(np.sqrt(_beta_var(a_beta, b_beta) / max(icc, 1e-9)))
+    if eval_type in ("likert", "grades"):
+        _mu, total_std = params
+        return float(total_std)
+    raise ValueError(f"group_total_std: unsupported eval_type {eval_type!r}")
+
+
+def sample_group_truth(
+    shape: ShapeSpec, n: int, runs: int, k: int, icc: float, rng: np.random.Generator,
+    *, corr: float = 0.5, effects: np.ndarray | None = None,
+) -> np.ndarray:
+    """Truth+within-item-noise model shared by build_single_sample_sources
+    (k=1), build_pair_sources (k=2), build_multiarm_sources (k>=2), and
+    build_judge_bias_sources' repeated-measures truth (k=2,3,4). Returns an
+    ndarray of shape (k, n, runs).
+
+    icc: between-item variance / total variance (same meaning everywhere
+    it's used in the harness). corr: correlation between any two of the k
+    groups' within-item noise (0 = fully independent runs; 1 = identical
+    noise draw shared across all groups). k=2 at corr=0.5 reproduces
+    build_pair_sources' original fixed shared/individual noise split
+    exactly (see _legacy_build_pair_sources above). k=1 has no inter-group
+    correlation concept -- the single group gets the FULL within-item noise
+    variance directly (same marginal variance as any one of the k>=2 groups
+    at the same icc), reproducing build_single_sample_sources' simple
+    "param" shapes exactly when icc=1.0 (no separate noise layer at all).
+
+    shape.kind == "custom" requires k == 1 (these bespoke single-population
+    generators have no pair/multi-arm analogue).
+    """
+    if effects is None:
+        effects = np.zeros(k)
+    et = shape.eval_type
+
+    if shape.kind == "custom":
+        if k != 1:
+            raise ValueError(f"Custom shape {shape.label!r} only supports k=1 (single-sample), got k={k}")
+        out = np.empty((1, n, runs), dtype=float)
+        for r in range(runs):
+            out[0, :, r] = shape.custom_sampler(rng, n) + effects[0]
+        return out
+
+    if et == "binary":
+        base_p = shape.params
+        conc = _binary_conc_from_icc(icc)
+        base = rng.beta(base_p * conc, (1.0 - base_p) * conc, size=(n, 1))
+        out = np.empty((k, n, runs), dtype=float)
+        for j in range(k):
+            p = np.clip(base + effects[j], 0.0, 1.0)
+            out[j] = rng.binomial(1, p, size=(n, runs)).astype(float)
+        return out
+
+    noise_var = _group_noise_var(et, shape.params, icc)
+    if et == "continuous":
+        a_beta, b_beta = shape.params
+        base = rng.beta(a_beta, b_beta, size=(n, 1))
+        lo, hi, round_to_int = 0.0, 1.0, False
+    else:
+        mu_lat, total_std = shape.params
+        base_std = float(np.sqrt(icc)) * total_std
+        base = rng.normal(mu_lat, base_std, size=(n, 1))
+        lo, hi = (1.0, 5.0) if et == "likert" else (0.0, 100.0)
+        round_to_int = et == "likert"
+
+    def _finish(vals: np.ndarray) -> np.ndarray:
+        return np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
+
+    out = np.empty((k, n, runs), dtype=float)
+    if k == 1:
+        noise = rng.normal(0.0, float(np.sqrt(max(noise_var, 0.0))), size=(n, runs))
+        out[0] = _finish(base + effects[0] + noise)
+        return out
+
+    shared_std = float(np.sqrt(max(corr, 0.0) * noise_var))
+    indiv_std = float(np.sqrt(max(1.0 - corr, 0.0) * noise_var))
+    shared = rng.normal(0.0, shared_std, size=(n, runs))
+    for j in range(k):
+        indiv = rng.normal(0.0, indiv_std, size=(n, runs))
+        out[j] = _finish(base + effects[j] + shared + indiv)
+    return out
+
+
+def build_single_sample_sources(suite: str = "standard") -> list[CISource]:
+    """Canonical synthetic single-sample CISources, drawn from the shared
+    shape catalog above via sample_group_truth(k=1)."""
+    if suite not in SCENARIO_SUITES:
+        raise ValueError(f"Unknown scenario suite: {suite}")
+
+    sources: list[CISource] = []
+    for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
+        for shape in _tier_shapes(catalog, suite):
+            def _gen(rng: np.random.Generator, n: int, _shape: ShapeSpec = shape) -> np.ndarray:
+                return sample_group_truth(_shape, n, 1, 1, 1.0, rng)[0, :, 0]
+
+            true_mean = _estimate_true_mean_mc(_gen)
+            sources.append(CISource(label=shape.label, eval_type=eval_type, generate=_gen, true_mean=true_mean))
+
+    return sources
+
+
 def build_pair_sources(
     suite: str = "standard",
     icc_values: list[float] | tuple[float, ...] = (0.10, 0.25, 0.40),
@@ -376,22 +747,12 @@ def build_pair_sources(
     include_null: bool = False,
 ) -> list[CIPairSource]:
     """Return canonical synthetic paired-difference CIPairSources, parameterised
-    by ICC and Cohen's d.
+    by ICC and Cohen's d -- a thin (icc, shape, d) sweep over
+    sample_group_truth(k=2) using the shape catalog above ("param" shapes
+    only; "custom" shapes have no pair analogue, see ShapeSpec docs).
 
-    Data-generating processes are reparameterised so that the intraclass
-    correlation (ICC = between-input variance / total variance) and the
-    standardised effect size (Cohen's d = delta / total_std) are explicit
-    inputs. This makes the sweep principled and reviewer-defensible.
-
-    ICC definitions per eval type
-    ------------------------------
-    Binary    : Bernoulli-Beta hierarchical model. Per-input success probs
-                p_i ~ Beta(conc*p0, conc*(1-p0)), giving ICC = 1/(conc+1).
-    Continuous: Beta base distribution with ICC-derived Gaussian noise.
-                ICC = Var(base) / (Var(base) + 2*noise_std^2).
-    Likert    : Latent-normal model. ICC = base_std^2 / total_var,
-                total_std fixed at _LIKERT_TOTAL_STD on the latent scale.
-    Grades    : Same latent-normal structure; total_std = _GRADES_TOTAL_STD.
+    ICC = between-input variance / total variance; Cohen's d = delta /
+    total_std (group_total_std(eval_type, shape.params, icc)).
 
     Parameters
     ----------
@@ -410,63 +771,39 @@ def build_pair_sources(
         raise ValueError(f"Unknown scenario suite: {suite}")
 
     sources: list[CIPairSource] = []
-
     icc_list = list(icc_values)
     d_list = list(cohens_d_values)
     if include_null:
         d_list = [0.0] + [d for d in d_list if d > 0.0]
 
-    # Latent-scale standard deviations for Likert / Grades -- fix the total
-    # marginal std for each score type so Cohen's d has a concrete, consistent
-    # meaning across ICC levels.
-    _LIKERT_TOTAL_STD = 1.2  # latent scale, maps to {1,...,5} after rounding
-    _GRADES_TOTAL_STD = 20.0  # [0, 100] scale
+    for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
+        param_shapes = [s for s in _tier_shapes(catalog, suite) if s.kind == "param"]
+        for icc in icc_list:
+            for shape in param_shapes:
+                total_std = group_total_std(eval_type, shape.params, icc)
+                for d in d_list:
+                    delta = d * total_std
+                    is_null = d == 0.0
+                    effect_tag = "null" if is_null else f"d={d:.2f}"
+                    label = f"{shape.label}|icc={icc:.2f}|{effect_tag}"
+                    shape_, icc_, delta_ = shape, icc, delta
 
-    # ------------------------------------------------------------------
-    # Binary: ICC = 1/(conc+1) <-> conc = 1/ICC - 1
-    # total_std ~ sqrt(p0*(1-p0)); delta = d * total_std
-    # ------------------------------------------------------------------
-    binary_shapes: list[tuple[str, float]] = [
-        ("binary-balanced", 0.5),
-        ("binary-high", 0.8),
-        ("binary-low", 0.2),
-        ("binary-near-ceil", 0.92),
-    ]
-    if suite in ("expanded", "extreme"):
-        binary_shapes += [
-            ("binary-rare", 0.05),
-            ("binary-near-ceil-hi", 0.95),
-        ]
+                    def _gen_pair(
+                        rng: np.random.Generator, n: int, runs: int,
+                        _shape: ShapeSpec = shape_, _icc: float = icc_, _d: float = delta_,
+                    ) -> tuple[np.ndarray, np.ndarray]:
+                        out = sample_group_truth(_shape, n, runs, 2, _icc, rng, effects=np.array([0.0, _d]))
+                        return out[0], out[1]
 
-    for icc in icc_list:
-        conc = _binary_conc_from_icc(icc)
-        for shape_label, base_p in binary_shapes:
-            total_std = float(np.sqrt(base_p * (1.0 - base_p)))
-            for d in d_list:
-                delta = d * total_std
-                is_null = d == 0.0
-                effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
-                bp_, delta_, conc_ = base_p, delta, conc
+                    true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_pair)
+                    sources.append(CIPairSource(
+                        label=label, eval_type=eval_type, generate_pair=_gen_pair, true_diff=true_diff,
+                        icc=icc, cohens_d=d, is_null=is_null,
+                    ))
 
-                def _gen_binary(
-                    rng: np.random.Generator, n: int, runs: int,
-                    _bp: float = bp_, _d: float = delta_, _c: float = conc_,
-                ) -> tuple[np.ndarray, np.ndarray]:
-                    p_a = rng.beta(_bp * _c, (1.0 - _bp) * _c, size=(n, 1))
-                    p_b = np.clip(p_a + _d, 0.0, 1.0)
-                    a = rng.binomial(1, p_a, size=(n, runs)).astype(float)
-                    b = rng.binomial(1, p_b, size=(n, runs)).astype(float)
-                    return a, b
-
-                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_binary)
-                sources.append(CIPairSource(
-                    label=label, eval_type="binary",
-                    generate_pair=_gen_binary, true_diff=true_diff,
-                    icc=icc, cohens_d=d, is_null=is_null,
-                ))
-
-    # Explicit stress-test binary regimes with highly one-sided discordance.
+    # Explicit stress-test binary regimes with highly one-sided discordance --
+    # not part of the shape catalog (no icc/shape decomposition; these are
+    # literally pre-specified joint discordance probabilities), kept as-is.
     if suite in ("expanded", "extreme"):
         asym_binary_specs: list[tuple[str, float, float, float]] = [
             ("binary-onesided-neg-extreme", 0.001, 0.384, 0.000),
@@ -486,166 +823,26 @@ def build_pair_sources(
         for shape_label, p10, p01, p11 in asym_binary_specs:
             p00 = 1.0 - (p11 + p10 + p01)
             if p00 <= 0.0:
-                raise ValueError(
-                    f"Invalid asymmetric binary scenario {shape_label}: probabilities sum to >= 1.0"
-                )
+                raise ValueError(f"Invalid asymmetric binary scenario {shape_label}: probabilities sum to >= 1.0")
 
             probs = np.array([p11, p10, p01, p00], dtype=float)
             true_diff = float(p10 - p01)
             label = f"{shape_label}|p10={p10:.3f}|p01={p01:.3f}|p11={p11:.3f}|p00={p00:.3f}"
 
-            def _gen_binary_asym(
-                rng: np.random.Generator, n: int, runs: int, _probs: np.ndarray = probs,
-            ) -> tuple[np.ndarray, np.ndarray]:
+            def _gen_binary_asym(rng: np.random.Generator, n: int, runs: int, _probs: np.ndarray = probs) -> tuple[np.ndarray, np.ndarray]:
                 z = rng.choice(4, size=(n, runs), p=_probs)
                 a = np.isin(z, (0, 1)).astype(float)
                 b = np.isin(z, (0, 2)).astype(float)
                 return a, b
 
             sources.append(CIPairSource(
-                label=label, eval_type="binary",
-                generate_pair=_gen_binary_asym, true_diff=true_diff,
+                label=label, eval_type="binary", generate_pair=_gen_binary_asym, true_diff=true_diff,
                 icc=0.0, cohens_d=0.0, is_null=False,
             ))
 
-    # ------------------------------------------------------------------
-    # Continuous [0, 1]: Beta(a, b) base + ICC-derived Gaussian noise.
-    # ICC = Var(base) / (Var(base) + 2*noise_std^2)
-    #   -> noise_std = sqrt(Var(base) * (1/ICC - 1) / 2)
-    # total_std ~ sqrt(Var(base)/ICC); delta = d * total_std.
-    # ------------------------------------------------------------------
-    continuous_shapes: list[tuple[str, float, float]] = [
-        ("cont-uniform", 1.0, 1.0),
-        ("cont-right-skew", 2.0, 8.0),
-        ("cont-left-skew", 8.0, 2.0),
-    ]
-    if suite in ("expanded", "extreme"):
-        continuous_shapes += [
-            ("cont-moderate-skew", 2.0, 5.0),
-            ("cont-boundary", 0.6, 0.6),
-        ]
-
-    for icc in icc_list:
-        for shape_label, a_beta, b_beta in continuous_shapes:
-            var_base = _beta_var(a_beta, b_beta)
-            noise_std = float(np.sqrt(max(var_base * (1.0 / max(icc, 1e-9) - 1.0) / 2.0, 0.0)))
-            total_std = float(np.sqrt(var_base / max(icc, 1e-9)))
-            for d in d_list:
-                delta = d * total_std
-                is_null = d == 0.0
-                effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
-                a_, b_, ns_, delta_ = a_beta, b_beta, noise_std, delta
-
-                def _gen_continuous(
-                    rng: np.random.Generator, n: int, runs: int,
-                    _a: float = a_, _b: float = b_, _ns: float = ns_, _d: float = delta_,
-                ) -> tuple[np.ndarray, np.ndarray]:
-                    base = rng.beta(_a, _b, size=(n, 1))
-                    shared = rng.normal(0.0, _ns, size=(n, runs))
-                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
-                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
-                    a_vals = np.clip(base + shared + indiv_a, 0.0, 1.0)
-                    b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 1.0)
-                    return a_vals, b_vals
-
-                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_continuous)
-                sources.append(CIPairSource(
-                    label=label, eval_type="continuous",
-                    generate_pair=_gen_continuous, true_diff=true_diff,
-                    icc=icc, cohens_d=d, is_null=is_null,
-                ))
-
-    # ------------------------------------------------------------------
-    # Likert 1-5: latent-normal model rounded to {1,...,5}.
-    # ICC = base_std^2 / total_var with total_var = _LIKERT_TOTAL_STD^2.
-    # ------------------------------------------------------------------
-    likert_shapes: list[tuple[str, float]] = [
-        ("likert-mid", 3.0),
-        ("likert-low", 2.2),
-        ("likert-high", 3.8),
-    ]
-    if suite in ("expanded", "extreme"):
-        likert_shapes += [
-            ("likert-polarized", 3.0),
-            ("likert-floor", 1.8),
-        ]
-
-    for icc in icc_list:
-        base_std_l = float(np.sqrt(icc)) * _LIKERT_TOTAL_STD
-        noise_std_l = float(np.sqrt(max((1.0 - icc) / 2.0, 0.0))) * _LIKERT_TOTAL_STD
-        for shape_label, mu_lat in likert_shapes:
-            for d in d_list:
-                delta = d * _LIKERT_TOTAL_STD
-                is_null = d == 0.0
-                effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
-                m_, bs_, ns_, delta_ = mu_lat, base_std_l, noise_std_l, delta
-
-                def _gen_likert(
-                    rng: np.random.Generator, n: int, runs: int,
-                    _m: float = m_, _bs: float = bs_, _ns: float = ns_, _d: float = delta_,
-                ) -> tuple[np.ndarray, np.ndarray]:
-                    base = rng.normal(_m, _bs, size=(n, 1))
-                    shared = rng.normal(0.0, _ns, size=(n, runs))
-                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
-                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
-                    a_vals = np.rint(np.clip(base + shared + indiv_a, 1.0, 5.0))
-                    b_vals = np.rint(np.clip(base + _d + shared + indiv_b, 1.0, 5.0))
-                    return a_vals, b_vals
-
-                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_likert)
-                sources.append(CIPairSource(
-                    label=label, eval_type="likert",
-                    generate_pair=_gen_likert, true_diff=true_diff,
-                    icc=icc, cohens_d=d, is_null=is_null,
-                ))
-
-    # ------------------------------------------------------------------
-    # Grades 0-100: same latent-normal structure; total_std = _GRADES_TOTAL_STD.
-    # ------------------------------------------------------------------
-    grades_shapes: list[tuple[str, float]] = [
-        ("grades-mid", 55.0),
-        ("grades-low", 35.0),
-        ("grades-high", 78.0),
-    ]
-    if suite in ("expanded", "extreme"):
-        grades_shapes += [
-            ("grades-ceiling", 86.0),
-            ("grades-floor", 20.0),
-        ]
-
-    for icc in icc_list:
-        base_std_g = float(np.sqrt(icc)) * _GRADES_TOTAL_STD
-        noise_std_g = float(np.sqrt(max((1.0 - icc) / 2.0, 0.0))) * _GRADES_TOTAL_STD
-        for shape_label, mu_g in grades_shapes:
-            for d in d_list:
-                delta = d * _GRADES_TOTAL_STD
-                is_null = d == 0.0
-                effect_tag = "null" if is_null else f"d={d:.2f}"
-                label = f"{shape_label}|icc={icc:.2f}|{effect_tag}"
-                m_, bs_, ns_, delta_ = mu_g, base_std_g, noise_std_g, delta
-
-                def _gen_grades(
-                    rng: np.random.Generator, n: int, runs: int,
-                    _m: float = m_, _bs: float = bs_, _ns: float = ns_, _d: float = delta_,
-                ) -> tuple[np.ndarray, np.ndarray]:
-                    base = rng.normal(_m, _bs, size=(n, 1))
-                    shared = rng.normal(0.0, _ns, size=(n, runs))
-                    indiv_a = rng.normal(0.0, _ns, size=(n, runs))
-                    indiv_b = rng.normal(0.0, _ns, size=(n, runs))
-                    a_vals = np.clip(base + shared + indiv_a, 0.0, 100.0)
-                    b_vals = np.clip(base + _d + shared + indiv_b, 0.0, 100.0)
-                    return a_vals, b_vals
-
-                true_diff = 0.0 if is_null else _estimate_true_pair_diff(_gen_grades)
-                sources.append(CIPairSource(
-                    label=label, eval_type="grades",
-                    generate_pair=_gen_grades, true_diff=true_diff,
-                    icc=icc, cohens_d=d, is_null=is_null,
-                ))
-
     return sources
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1369,154 +1566,81 @@ def build_pair_multirun_sources(
 # ---------------------------------------------------------------------------
 # Multi-arm sources (for cases/pvalues.py's multi-arm multiplicity benchmark)
 # ---------------------------------------------------------------------------
-# Ported from sim_compare_pvalues.py's build_multiarm_scenarios(). One shape
-# per eval type (plus extreme variants); arm 0 carries the alternative shift,
-# arms 1..k-1 stay at the shared baseline -- "arm 0 is the true best" is the
-# convention the multi-arm correction-strategy benchmark checks against.
+# Sweeps the SAME shape catalog (BINARY_SHAPES/CONTINUOUS_SHAPES/
+# LIKERT_SHAPES/GRADES_SHAPES) build_pair_sources uses, generalized from k=2
+# to k arms via sample_group_truth -- so multi-arm benchmarking gets the
+# same shape-robustness as the pairwise comparison, not a separate, narrower
+# bespoke catalog. "param" shapes only (custom shapes have no k-arm
+# analogue). Arm 0 carries the alternative-hypothesis shift (cohens_d *
+# group_total_std); arms 1..k-1 stay at the shared baseline.
 
 
-def build_multiarm_sources(*, include_extreme: bool = False) -> list[MultiArmSource]:
-    def _effects(k: int, delta: float) -> np.ndarray:
-        e = np.zeros(k)
-        e[0] = delta
-        return e
+def build_multiarm_sources(
+    *, suite: str = "standard", icc: float = 0.20, cohens_d: float = 0.3, eval_types: list[str] | None = None,
+) -> list[MultiArmSource]:
+    if suite not in SCENARIO_SUITES:
+        raise ValueError(f"Unknown scenario suite: {suite}")
+    eval_types = list(eval_types) if eval_types is not None else list(EVAL_TYPES)
 
-    def _gen_binary(rng, n, runs, k, delta, _base_p=0.5):
-        concentration = 10.0
-        a_ = _base_p * concentration
-        b_ = (1.0 - _base_p) * concentration
-        base = rng.beta(a_, b_, size=(n, 1))
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            p = np.clip(base + effects[j], 0.0, 1.0)
-            out[j] = rng.binomial(1, p, size=(n, runs)).astype(float)
-        return out
+    def _make_generator(shape: ShapeSpec):
+        def _gen(rng: np.random.Generator, n: int, runs: int, k: int, delta: float) -> np.ndarray:
+            effects = np.zeros(k)
+            effects[0] = delta
+            return sample_group_truth(shape, n, runs, k, icc, rng, effects=effects)
+        return _gen
 
-    def _gen_binary_sparse(rng, n, runs, k, delta):
-        return _gen_binary(rng, n, runs, k, delta, _base_p=0.01)
-
-    def _gen_continuous(rng, n, runs, k, delta):
-        base = rng.beta(2.0, 5.0, size=(n, 1))
-        shared = rng.normal(0.0, 0.10, size=(n, runs))
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            indiv = rng.normal(0.0, 0.06, size=(n, runs))
-            out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 1.0)
-        return out
-
-    def _gen_continuous_heavy_tail(rng, n, runs, k, delta):
-        base = np.clip(rng.normal(0.5, 0.15, size=(n, 1)), 0.0, 1.0)
-        shared = stats.t.rvs(df=2.5, size=(n, runs), random_state=rng) * 0.11
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            indiv = stats.t.rvs(df=2.5, size=(n, runs), random_state=rng) * 0.08
-            spikes = rng.normal(0.0, 0.30, size=(n, runs)) * (rng.random((n, runs)) < 0.03)
-            out[j] = np.clip(base + effects[j] + shared + indiv + spikes, 0.0, 1.0)
-        return out
-
-    def _gen_likert(rng, n, runs, k, delta):
-        base = rng.normal(3.0, 0.95, size=(n, 1))
-        shared = rng.normal(0.0, 0.35, size=(n, runs))
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            indiv = rng.normal(0.0, 0.25, size=(n, runs))
-            out[j] = np.rint(np.clip(base + effects[j] + shared + indiv, 1.0, 5.0))
-        return out
-
-    def _gen_likert_near_ceiling(rng, n, runs, k, delta):
-        base = rng.normal(4.45, 0.55, size=(n, 1))
-        shared = rng.normal(0.0, 0.28, size=(n, runs))
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            indiv = rng.normal(0.0, 0.20, size=(n, runs))
-            out[j] = np.rint(np.clip(base + effects[j] + shared + indiv, 1.0, 5.0))
-        return out
-
-    def _gen_grades(rng, n, runs, k, delta):
-        base = rng.normal(58.0, 18.0, size=(n, 1))
-        shared = rng.normal(0.0, 3.5, size=(n, runs))
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            indiv = rng.normal(0.0, 2.6, size=(n, runs))
-            out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 100.0)
-        return out
-
-    def _gen_grades_heavy_tail(rng, n, runs, k, delta):
-        base = np.clip(56.0 + stats.t.rvs(df=3.0, size=(n, 1), random_state=rng) * 20.0, 0.0, 100.0)
-        shared = stats.t.rvs(df=3.0, size=(n, runs), random_state=rng) * 4.2
-        effects = _effects(k, delta)
-        out = np.empty((k, n, runs), dtype=float)
-        for j in range(k):
-            indiv = stats.t.rvs(df=3.0, size=(n, runs), random_state=rng) * 3.0
-            out[j] = np.clip(base + effects[j] + shared + indiv, 0.0, 100.0)
-        return out
-
-    sources = [
-        MultiArmSource(label="binary", eval_type="binary", generate_scores=_gen_binary, alt_delta=0.05),
-        MultiArmSource(label="continuous", eval_type="continuous", generate_scores=_gen_continuous, alt_delta=0.03),
-        MultiArmSource(label="likert", eval_type="likert", generate_scores=_gen_likert, alt_delta=0.24),
-        MultiArmSource(label="grades", eval_type="grades", generate_scores=_gen_grades, alt_delta=3.0),
-    ]
-
-    if include_extreme:
-        sources.extend([
-            MultiArmSource(label="binary-ultra-sparse", eval_type="binary", generate_scores=_gen_binary_sparse, alt_delta=0.02),
-            MultiArmSource(label="continuous-heavy-tail", eval_type="continuous", generate_scores=_gen_continuous_heavy_tail, alt_delta=0.025),
-            MultiArmSource(label="likert-near-ceiling", eval_type="likert", generate_scores=_gen_likert_near_ceiling, alt_delta=0.14),
-            MultiArmSource(label="grades-heavy-tail", eval_type="grades", generate_scores=_gen_grades_heavy_tail, alt_delta=2.8),
-        ])
-
+    sources: list[MultiArmSource] = []
+    for eval_type in eval_types:
+        for shape in _tier_shapes(SHAPES_BY_EVAL_TYPE[eval_type], suite):
+            if shape.kind != "param":
+                continue
+            sources.append(MultiArmSource(
+                label=shape.label, eval_type=eval_type, generate_scores=_make_generator(shape),
+                alt_delta=cohens_d * group_total_std(eval_type, shape.params, icc),
+            ))
     return sources
+
 
 
 # ---------------------------------------------------------------------------
 # Judge-bias sources (for cases/pvalues.py's PPI-correction calibration mode)
 # ---------------------------------------------------------------------------
 # Ported from sim_type_i_calibration.py's Scenario/_build_scenarios/_run_one
-# data-generation helpers. Unlike the CISource/CIPairSource/MultiArmSource
-# families above (which sweep score-DISTRIBUTION shape), this sweeps
-# JUDGE-MEASUREMENT-ERROR parameters: bias, scale-calibration slope, label
-# sparsity/MNAR-ness, and repeated-measures error correlation, against a
-# narrower "dist" axis (normal/likert/skewed -- no binary; current PPI tests
-# such as ttest/MWU aren't designed for it). This is intentionally a
-# separate axis from EVAL_TYPES, not a duplicate of it.
+# data-generation helpers. Sweeps JUDGE-MEASUREMENT-ERROR parameters (bias,
+# scale-calibration slope, label sparsity/MNAR-ness, repeated-measures error
+# correlation) layered on top of ONE representative shape per eval type,
+# drawn from the SAME shape catalog (BINARY_SHAPES/CONTINUOUS_SHAPES/
+# LIKERT_SHAPES/GRADES_SHAPES) build_pair_sources/build_multiarm_sources
+# use, via sample_group_truth -- so judge bias/noise is an orthogonal sweep
+# on the same truth-generating process, not its own separate distribution
+# family. `eval_type` excludes "binary": ttest/MWU/ANOVA aren't designed
+# for 0/1 outcomes, so PPI mode only sweeps continuous/likert/grades.
 
-_JB_SIGMA_TRUTH = 1.0
-_JB_SIGMA_SUB = 0.7
-_JB_SIGMA_COND = 0.6
-_JB_MU_CONT = 3.0
-_JB_MU_BIN = 0.5
+_PPI_REPRESENTATIVE_SHAPE_LABEL: dict[str, str] = {
+    "continuous": "cont-right-skew", "likert": "likert-mid", "grades": "grades-mid",
+}
+
+
+def _ppi_shape(eval_type: str) -> ShapeSpec:
+    label = _PPI_REPRESENTATIVE_SHAPE_LABEL[eval_type]
+    return next(s for s in SHAPES_BY_EVAL_TYPE[eval_type] if s.label == label)
+
+
+def _ppi_shape_anchor(shape: ShapeSpec) -> float:
+    """Mean of a 'param' ShapeSpec's truth distribution -- used both as the
+    judge-bias model's mu_null and as the slope-distortion anchor point."""
+    if shape.eval_type == "continuous":
+        a, b = shape.params
+        return a / (a + b)
+    return float(shape.params[0])  # likert/grades: (mu, total_std)
+
+
 _JB_MIN_LAB = 15
 JUDGE_BIAS_LMM_RUNS_R = 3
 JUDGE_BIAS_LMM_FACTORIAL_FACTORS = pd.DataFrame({
     "f1": ["a", "a", "b", "b"],
     "f2": ["x", "y", "x", "y"],
 })
-
-
-def _jb_mu_null(dist: str) -> float:
-    return _JB_MU_BIN if dist == "binary" else _JB_MU_CONT
-
-
-def _jb_sample_truth(dist: str, n: int, rng: np.random.Generator) -> np.ndarray:
-    mu = _jb_mu_null(dist)
-    if dist == "normal":
-        return rng.normal(mu, _JB_SIGMA_TRUTH, n)
-    if dist == "binary":
-        return rng.binomial(1, mu, n).astype(float)
-    if dist == "likert":
-        return np.clip(np.round(rng.normal(mu, _JB_SIGMA_TRUTH, n)), 1.0, 5.0)
-    if dist == "skewed":
-        sigma_log = 0.70
-        mu_log = np.log(mu) - sigma_log ** 2 / 2
-        return rng.lognormal(mu_log, sigma_log, n)
-    raise ValueError(f"Unknown dist: {dist!r}")
 
 
 def _jb_biases(sc: JudgeBiasSource) -> tuple[float, float, float]:
@@ -1647,15 +1771,15 @@ def _jb_labels_shared(
 
 
 def build_judge_bias_sources() -> list[JudgeBiasSource]:
-    """Curated, factor-at-a-time judge-bias scenario sweep, ported verbatim
-    from sim_type_i_calibration.py's _build_scenarios(). Each scenario varies
-    exactly one factor from a fixed baseline (distribution, sample size,
-    group balance, label fraction, label mechanism, LLM noise, bias type,
+    """Curated, factor-at-a-time judge-bias scenario sweep, ported from
+    sim_type_i_calibration.py's _build_scenarios(). Each scenario varies
+    exactly one factor from a fixed baseline (eval type, sample size, group
+    balance, label fraction, label mechanism, LLM noise, bias type,
     scale/slope calibration, group-specific calibration, repeated-measures
     error correlation, heteroskedastic noise), plus a few multi-factor
     interaction stress tests."""
     B: dict = dict(
-        dist="normal", n=100, n2=None, n3=None,
+        eval_type="continuous", icc=0.20, n=100, n2=None, n3=None,
         label_frac=0.20, llm_noise=0.20, llm_noise2=None, llm_noise3=None,
         bias_type="differential", bias_delta=0.30, bias_const=0.40,
         bias_extra_a=0.0, bias_extra_b=0.0, bias_extra_c=0.0, bias_extra_d=0.0,
@@ -1669,8 +1793,8 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     def sc(name, tag, **kw):
         return JudgeBiasSource(name=name, tag=tag, **{**B, **kw})
 
-    for dist in ["normal", "likert", "skewed"]:
-        S.append(sc(f"dist.{dist}", "distribution", dist=dist))
+    for eval_type in ["continuous", "likert", "grades"]:
+        S.append(sc(f"eval_type.{eval_type}", "eval_type", eval_type=eval_type))
 
     for n in [60, 100, 200, 400]:
         S.append(sc(f"n={n}", "sample_size", n=n))
@@ -1746,9 +1870,7 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
 @dataclass
 class JudgeBiasCellData:
     """Output of generate_judge_bias_cell: every test-structure's truth/LLM/label
-    arrays for one (JudgeBiasSource, rep) draw, in the exact order
-    sim_type_i_calibration.py's _run_one draws them from one continuing rng
-    stream (required for byte-for-byte reproducibility)."""
+    arrays for one (JudgeBiasSource, rep) draw."""
 
     llm_a2: np.ndarray
     llm_b2: np.ndarray
@@ -1789,43 +1911,46 @@ def generate_judge_bias_cell(
     """Draw one replicate's worth of truth/LLM-judge/human-label arrays for
     every test structure (two independent groups, paired/repeated, three
     independent groups, three repeated conditions, a 2x2 crossed-factor
-    design, and nested LLM runs), in the fixed order
-    sim_type_i_calibration.py's _run_one uses, so results are reproducible
-    from a single continuing rng stream regardless of which tests a caller
-    actually computes from the output.
+    design, and nested LLM runs), from one continuing rng stream.
+
+    Truth comes from ONE representative shape per eval type (_ppi_shape),
+    drawn via sample_group_truth -- k=1 (icc=1.0) for the independent-groups
+    structures, k=2/3/4 at sc.icc for the paired/repeated structures -- the
+    same shape catalog and generator build_pair_sources/build_multiarm_sources
+    use, instead of this scenario family's own bespoke distribution.
 
     Effect size: ``sc.effect_size`` injects a real, monotonic mean shift into
     the truth itself (group/condition 0 unshifted, 1 gets +effect_size, 2 gets
     +2*effect_size, ...) -- 0.0 (the Type-I sweep default) makes this a no-op;
     >0 turns the same scenario grid into a power sweep.
     """
+    shape = _ppi_shape(sc.eval_type)
     n1 = sc.n
     n2 = sc.n2 if sc.n2 is not None else sc.n
     n3 = sc.n3 if sc.n3 is not None else sc.n
     noise1 = sc.llm_noise
     noise2 = sc.llm_noise2 if sc.llm_noise2 is not None else sc.llm_noise
     noise3 = sc.llm_noise3 if sc.llm_noise3 is not None else sc.llm_noise
-    anchor = _jb_mu_null(sc.dist)
+    anchor = _ppi_shape_anchor(shape)
     (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _jb_judge_params_3(sc)
     es = sc.effect_size
 
+    def _marginal(n: int) -> np.ndarray:
+        return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
+
+    def _repeated(n: int, n_conditions: int, effects: np.ndarray) -> np.ndarray:
+        return sample_group_truth(shape, n, 1, n_conditions, sc.icc, rng, effects=effects)[:, :, 0]
+
     # -- Independent two-group data (ttest, mannwhitney) --
-    truth_a2 = _jb_sample_truth(sc.dist, n1, rng)
-    truth_b2 = _jb_sample_truth(sc.dist, n2, rng) + es
+    truth_a2 = _marginal(n1)
+    truth_b2 = _marginal(n2) + es
     llm_a2 = _jb_llm(truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
     llm_b2 = _jb_llm(truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
     lab_a2 = _jb_labels_independent(truth_a2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
     lab_b2 = _jb_labels_independent(truth_b2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
     # -- Paired data (wilcoxon) --
-    base_2 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
-    if sc.dist == "binary":
-        p_sub = rng.uniform(0.2, 0.8, n1)
-        truth_x = rng.binomial(1, p_sub, n1).astype(float)
-        truth_y = rng.binomial(1, p_sub, n1).astype(float)
-    else:
-        truth_x = base_2 + rng.normal(0.0, _JB_SIGMA_COND, n1)
-        truth_y = base_2 + rng.normal(0.0, _JB_SIGMA_COND, n1) + es
+    truth_x, truth_y = _repeated(n1, 2, np.array([0.0, es]))
     llm_x, llm_y = _jb_llm_repeated(
         [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
         rng, anchor=anchor, corr=sc.repeated_corr,
@@ -1833,9 +1958,9 @@ def generate_judge_bias_cell(
     lab_x, lab_y = _jb_labels_shared([truth_x, truth_y], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
     # -- Independent three-group data (anova_ind) --
-    truth_a3 = _jb_sample_truth(sc.dist, n1, rng)
-    truth_b3 = _jb_sample_truth(sc.dist, n2, rng) + es
-    truth_c3 = _jb_sample_truth(sc.dist, n3, rng) + 2 * es
+    truth_a3 = _marginal(n1)
+    truth_b3 = _marginal(n2) + es
+    truth_c3 = _marginal(n3) + 2 * es
     llm_a3 = _jb_llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
     llm_b3 = _jb_llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
     llm_c3 = _jb_llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor)
@@ -1844,16 +1969,7 @@ def generate_judge_bias_cell(
     lab_c3 = _jb_labels_independent(truth_c3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
     # -- Repeated-measures three-group data (anova_rep, friedman, lmm) --
-    if sc.dist == "binary":
-        p_sub3 = rng.uniform(0.2, 0.8, n1)
-        truth_A = rng.binomial(1, p_sub3, n1).astype(float)
-        truth_B = rng.binomial(1, p_sub3, n1).astype(float)
-        truth_C = rng.binomial(1, p_sub3, n1).astype(float)
-    else:
-        base_3 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
-        truth_A = base_3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
-        truth_B = base_3 + rng.normal(0.0, _JB_SIGMA_COND, n1) + es
-        truth_C = base_3 + rng.normal(0.0, _JB_SIGMA_COND, n1) + 2 * es
+    truth_A, truth_B, truth_C = _repeated(n1, 3, np.array([0.0, es, 2 * es]))
     llm_A, llm_B, llm_C = _jb_llm_repeated(
         [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
         rng, anchor=anchor, corr=sc.repeated_corr,
@@ -1862,18 +1978,7 @@ def generate_judge_bias_cell(
 
     # -- 2x2 crossed fixed-factor data (lmm_factorial) --
     (bias_w, bias_x, bias_y, bias_z), (slope_w, slope_x, slope_y, slope_z) = _jb_judge_params_4(sc)
-    if sc.dist == "binary":
-        p_sub4 = rng.uniform(0.2, 0.8, n1)
-        truth_W = rng.binomial(1, p_sub4, n1).astype(float)
-        truth_X = rng.binomial(1, p_sub4, n1).astype(float)
-        truth_Y = rng.binomial(1, p_sub4, n1).astype(float)
-        truth_Z = rng.binomial(1, p_sub4, n1).astype(float)
-    else:
-        base_4 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
-        truth_W = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1)
-        truth_X = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1) + es
-        truth_Y = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1) + 2 * es
-        truth_Z = base_4 + rng.normal(0.0, _JB_SIGMA_COND, n1) + 3 * es
+    truth_W, truth_X, truth_Y, truth_Z = _repeated(n1, 4, np.array([0.0, es, 2 * es, 3 * es]))
     llm_W, llm_X, llm_Y, llm_Z = _jb_llm_repeated(
         [truth_W, truth_X, truth_Y, truth_Z], [bias_w, bias_x, bias_y, bias_z],
         [noise1, noise2, noise3, noise1], [slope_w, slope_x, slope_y, slope_z],
@@ -1916,51 +2021,41 @@ def estimate_judge_bias_gold_null_values(sc: JudgeBiasSource, *, n_mc: int = 300
     from evalstats.tests import _p_x_gt_y_midrank, _anova_between_variance_from_groups, _repeated_condition_variance, _friedman_rank_variance
 
     rng = np.random.default_rng(seed)
+    shape = _ppi_shape(sc.eval_type)
     n1 = sc.n
     n2 = sc.n2 if sc.n2 is not None else sc.n
     n3 = sc.n3 if sc.n3 is not None else sc.n
 
+    def _marginal(n: int) -> np.ndarray:
+        return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
+
+    def _repeated(n: int, n_conditions: int) -> np.ndarray:
+        return sample_group_truth(shape, n, 1, n_conditions, sc.icc, rng)[:, :, 0]
+
     diffs2 = np.empty(n_mc)
     thetas2 = np.empty(n_mc)
     for i in range(n_mc):
-        a = _jb_sample_truth(sc.dist, n1, rng)
-        b = _jb_sample_truth(sc.dist, n2, rng)
+        a = _marginal(n1)
+        b = _marginal(n2)
         diffs2[i] = a.mean() - b.mean()
         thetas2[i] = _p_x_gt_y_midrank(a, b) - 0.5
 
     meds = np.empty(n_mc)
     for i in range(n_mc):
-        base = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
-        if sc.dist == "binary":
-            p_sub = rng.uniform(0.2, 0.8, n1)
-            x = rng.binomial(1, p_sub, n1).astype(float)
-            y = rng.binomial(1, p_sub, n1).astype(float)
-        else:
-            x = base + rng.normal(0.0, _JB_SIGMA_COND, n1)
-            y = base + rng.normal(0.0, _JB_SIGMA_COND, n1)
+        x, y = _repeated(n1, 2)
         meds[i] = float(np.median(x - y))
 
     bv = np.empty(n_mc)
     for i in range(n_mc):
-        a3 = _jb_sample_truth(sc.dist, n1, rng)
-        b3 = _jb_sample_truth(sc.dist, n2, rng)
-        c3 = _jb_sample_truth(sc.dist, n3, rng)
+        a3 = _marginal(n1)
+        b3 = _marginal(n2)
+        c3 = _marginal(n3)
         bv[i] = _anova_between_variance_from_groups([a3, b3, c3])
 
     rv = np.empty(n_mc)
     frv = np.empty(n_mc)
     for i in range(n_mc):
-        if sc.dist == "binary":
-            p_sub3 = rng.uniform(0.2, 0.8, n1)
-            A = rng.binomial(1, p_sub3, n1).astype(float)
-            B = rng.binomial(1, p_sub3, n1).astype(float)
-            C = rng.binomial(1, p_sub3, n1).astype(float)
-        else:
-            base3 = rng.normal(_jb_mu_null(sc.dist), _JB_SIGMA_SUB, n1)
-            A = base3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
-            B = base3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
-            C = base3 + rng.normal(0.0, _JB_SIGMA_COND, n1)
-        mat = np.column_stack([A, B, C])
+        mat = _repeated(n1, 3).T  # (n1, 3)
         rv[i] = _repeated_condition_variance(mat)
         frv[i] = _friedman_rank_variance(mat)
 

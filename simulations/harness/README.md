@@ -28,11 +28,44 @@ purely additive.
 
 ## Shared scenario library
 
-- `scenarios/synthetic.py` -- canonical binary/continuous/likert/grades
-  single-sample generators (ported from `sim_compare_boot.py`'s
-  `build_scenarios()`). Cases should pull distributions from here rather
-  than redefining their own, so the paper can describe these distributions
-  once.
+`scenarios/synthetic.py` is built around ONE unified per-eval-type truth/
+noise model, so every case describes the same handful of distributions
+instead of each case (or each *mode* within a case) defining its own:
+
+- **Shape catalog**: `BINARY_SHAPES` / `CONTINUOUS_SHAPES` / `LIKERT_SHAPES`
+  / `GRADES_SHAPES` (indexed by eval type via `SHAPES_BY_EVAL_TYPE`), each a
+  list of `ShapeSpec(label, eval_type, kind, params, custom_sampler,
+  suite_tier)`. `kind="param"` shapes are smooth parametric families
+  (binary: Bernoulli-Beta hierarchical with base success prob `p0`;
+  continuous: `Beta(a, b)`; likert/grades: latent-`Normal(mu, total_std)`
+  rounded/clipped to range) that support **any** group count `k` via the
+  generator below. `kind="custom"` shapes (mixtures, zero/one-inflated,
+  heavy-tailed, bimodal) are bespoke single-population generators with no
+  pair/multi-arm analogue -- usable only at `k=1`. `suite_tier` ("standard"
+  | "expanded") gates which shapes a given `suite` argument includes.
+- **Generator**: `sample_group_truth(shape, n, runs, k, icc, rng, corr=0.5,
+  effects=None) -> ndarray (k, n, runs)`. `icc` = between-item variance /
+  total variance (same meaning everywhere it's used); `corr` = correlation
+  between any two of the `k` groups' within-item noise; `effects[j]` is
+  added to group `j`'s truth before clipping/rounding. `k=1` is the
+  single-sample case (no inter-group correlation concept -- the lone group
+  gets the full noise variance directly); `k=2` at `corr=0.5` reproduces
+  what was previously `build_pair_sources`' fixed, un-tunable shared/
+  individual noise split exactly; `k>2` generalizes the same model to
+  multi-arm/repeated-measures designs.
+- **Consumers**: `build_single_sample_sources()` (k=1, `CISource`),
+  `build_pair_sources()` (k=2, `CIPairSource`, ICC x Cohen's-d grid),
+  `build_multiarm_sources()` (k>=2, `MultiArmSource`, ICC x Cohen's-d x
+  eval-type sweep over the full shape catalog), and
+  `build_judge_bias_sources()` / `generate_judge_bias_cell()`
+  (`JudgeBiasSource` / `JudgeBiasCellData`, for `cases/pvalues.py`'s PPI
+  mode -- picks ONE representative shape per eval type via `_ppi_shape`,
+  layering judge-bias/noise/MNAR-label sweeps on top of the same truth
+  model). All four pull from the identical shape catalog and generator, so
+  a given `(icc, cohens_d)` means the same thing in every one of them.
+- `_legacy_build_single_sample_sources()` / `_legacy_build_pair_sources()`
+  are the pre-unification implementations, kept (unused, not imported by
+  any case) purely as a reference/audit trail for the merge.
 - `scenarios/real_data.py` -- DOVE_Lite / OpenEval corpus loaders (ported
   from `sim_dove.py`), exposed through the same `CISource` interface as the
   synthetic generators (`generate(rng, n) -> ndarray`, `true_mean`) so a
@@ -44,20 +77,11 @@ purely additive.
   `build_pair_multirun_sources()` (ported from
   `sim_compare_boot_nested.py`), parameterized by `run_noise_frac` rather
   than ICC, for `cases/ci_single.py`'s and `cases/ci_paired.py`'s
-  `--nested-mode`. `CISource` gained an optional `generate_runs(rng, n,
-  runs) -> (n, runs)` field for this (`None` for ordinary flat sources);
-  `CIPairSource.generate_pair` was already `runs`-aware so no interface
-  change was needed there.
-- `scenarios/synthetic.py` also has `build_multiarm_sources()` (ported from
-  `sim_compare_pvalues.py`'s `build_multiarm_scenarios()`), exposed as
-  `MultiArmSource` (`generate_scores(rng, n, runs, k, delta) -> (k, n,
-  runs)`), and `build_judge_bias_sources()` / `generate_judge_bias_cell()`
-  (ported from `sim_type_i_calibration.py`'s `_build_scenarios()` /
-  `_run_one()`'s data-generation half), exposed as `JudgeBiasSource` and
-  `JudgeBiasCellData` -- all for `cases/pvalues.py`. `cases/pvalues.py`'s
-  pairwise (non-PPI) mode reuses the existing `build_pair_sources()` rather
-  than porting `sim_compare_pvalues.py`'s own near-duplicate pairwise
-  generator -- see Known exceptions below.
+  `--nested-mode` -- a separate axis (run-noise sweep, not icc/shape sweep)
+  from the unification above, left untouched. `CISource` gained an optional
+  `generate_runs(rng, n, runs) -> (n, runs)` field for this (`None` for
+  ordinary flat sources); `CIPairSource.generate_pair` was already
+  `runs`-aware so no interface change was needed there.
 
 ## Shared method registry
 
@@ -141,22 +165,23 @@ same way `evalstats.core.resampling` is.
   decision trustworthy" at different levels of the stack (raw CI/p-value
   procedures vs. high-level `evalstats.tests` wrappers with PPI), sharing
   report/plot/CLI scaffolding but not scenario generators.
-- `cases/pvalues.py`'s `--mode pairwise` reuses `build_pair_sources()` (the
-  same ICC x Cohen's-d grid `ci_paired` uses) rather than porting
-  `sim_compare_pvalues.py`'s own near-duplicate pairwise generator. This
-  means its synthetic scenarios do **not** numerically match the legacy
-  script's pairwise phase (different distributions/parameterization) --
-  verification for this mode is by sanity check (Type-I error ~ alpha,
-  power increasing with effect size and n) rather than exact parity. The
-  per-method p-value computation (`_pairwise_pvalue`) and `--mode multiarm`
-  (scenarios, metrics, and cell-level orchestration) were ported faithfully
-  and do match exactly -- see Verification below.
-- `cases/pvalues.py`'s `--mode ppi` "dist" axis (normal/likert/skewed) is
-  intentionally narrower than `EVAL_TYPES` (no binary -- current PPI tests
-  like ttest/MWU aren't designed for it) and is a different axis entirely
-  from `EVAL_TYPES` (judge-measurement-error parameters: bias, scale-
-  calibration slope, label sparsity/MNAR-ness, repeated-measures error
-  correlation -- not score-distribution shape).
+- `cases/pvalues.py`'s `--mode pairwise`/`--mode multiarm`/`--mode ppi` all
+  reuse the SAME shape catalog and `sample_group_truth` generator described
+  above. None of the three numerically matches its legacy script anymore
+  (`sim_compare_pvalues.py`'s own pairwise/multi-arm generators,
+  `sim_type_i_calibration.py`'s "normal"/"likert"/"skewed" truth model) --
+  this was a deliberate, agreed-upon trade: cross-mode consistency (one
+  truth-generating process per eval type, describable once in the paper)
+  over per-mode exact parity with each legacy script. Verification for all
+  three is by sanity check (Type-I error ~ alpha, power increasing with
+  effect size and n) -- see Verification below.
+- `cases/pvalues.py`'s `--mode ppi` sweeps `eval_type` in
+  `{continuous, likert, grades}` (no binary -- current PPI tests like
+  ttest/MWU/ANOVA aren't designed for 0/1 outcomes), picking one
+  representative shape per eval type (`cont-right-skew` / `likert-mid` /
+  `grades-mid`) rather than sweeping the full shape catalog the way
+  `--mode multiarm` does -- judge-bias/noise/MNAR-label parameters are
+  PPI's actual axis of interest, not distribution shape.
 - `judge_bias.py` (planned, for `alignment`) will keep
   `sim_alignment_methods.py`'s agreement-rate proxy-noise model as its own
   named generator, separate from `scenarios/synthetic.py`'s
@@ -167,62 +192,52 @@ same way `evalstats.core.resampling` is.
 
 ## Verification
 
-- `ci_single`'s synthetic path was checked against the legacy
-  `sim_compare_boot.py --estimand mean` for exact numeric parity (same
-  seed): all per-(eval_type, scenario, n, method) coverage and width values
-  matched to 8 decimal places across binary and continuous eval types. The
-  one expected exception is the `beta` CI method, which is itself an
-  unseeded parametric bootstrap in `evalstats.core.resampling.beta_ci_1d`
-  (no `rng` threaded through by either the legacy script or the harness),
-  so its width has inherent run-to-run Monte Carlo noise independent of
-  this port.
-- `ci_paired`'s synthetic path was checked against the legacy
-  `sim_compare_boot.py --estimand pairwise` for exact numeric parity (same
-  seed) across binary and continuous eval types, including the
-  `--include-null` Type I error path: 0 mismatches across 144+240 rows
-  checked (coverage and mean width, all methods including
-  `newcombe_score`/`tango_score`/`bayes_indep_comp`/`bayes_paired_comp`).
-- `ci_single --nested-mode` was checked against the legacy
-  `sim_compare_boot_nested.py --estimand mean` for exact numeric parity
-  (same seed) across binary and continuous eval types: 0 mismatches across
-  880 rows checked (every nested/flat method except `beta`, which has the
-  same inherent unseeded-MC-noise exception noted above).
-- `ci_paired --nested-mode` was checked against the legacy
-  `sim_compare_boot_nested.py --estimand pairwise` for exact numeric parity
-  (same seed) across binary and continuous eval types, including
-  `--include-null`: 0 mismatches across 600 rows checked (every flat,
-  nested, and Tango-multirun method).
-- `pvalues --mode multiarm` was checked against the legacy
-  `sim_compare_pvalues.py` multi-arm phase for exact numeric parity (same
-  seed): `build_multiarm_sources()` vs. `build_multiarm_scenarios()`'s raw
-  generator output matched across all 8 shapes (4 base + 4 extreme) and
-  multiple seeds; `_compute_multiarm_metrics` matched across 15 trials x 5
-  correction strategies; the full per-(scenario, n) cell worker
-  (`_run_multiarm_cell` vs. `_multiarm_cell_worker`) matched with 0
-  mismatches across 8 scenarios x 10 (correction, condition) rows = 80 rows.
-- `pvalues --mode pairwise`'s per-method p-value computation
-  (`_pairwise_pvalue`) matched the legacy function exactly across 8 trials x
-  12 methods (binary and non-binary), including the `mcnemar`/`fisher_exact`
-  /`newcombe`/`bayes_binary` binary-only special cases. The scenario data
-  itself is a known, documented exception (reuses `build_pair_sources()`
-  rather than porting the legacy script's own pairwise generator -- see
-  Known exceptions), so this mode was sanity-checked instead of exact-
-  matched: at reps=300, sizes=[30, 60], Type-I error sits at or near the
-  nominal alpha=0.05 for all methods except `fisher_exact` (a known
-  conservativeness-inversion artifact of exact tests on small/sparse binary
-  tables also present in the legacy script) and `bayes_binary` (a known
-  liberal bias from its prior), and power increases monotonically with both
-  Cohen's d and n for every method.
-- `pvalues --mode ppi` was checked against the legacy
-  `sim_type_i_calibration.py`'s `_run_one` for exact reproduction (same
-  seed): since `generate_judge_bias_cell` already reproduces `_run_one`'s
-  entire data-generation sequence byte-for-byte (verified separately across
-  6 scenarios including binary dist, MNAR, and `repeated_corr`), and the
-  per-replicate test-computation code calls the identical sequence of
-  `evalstats.tests` PPI functions in the identical order, single-replicate
-  runs starting from the same seed are exactly reproducible end to end: 0
-  mismatches across all 43 scenarios x 3 reps x 11 tests = 1419 corrected/
-  uncorrected reject-decision pairs checked, including every bootstrap-based
-  PPI correction (`_ppi_two_sample`, `_ppi_paired_arrays`,
-  `_ppi_kruskal_wallis_pairwise`) and closed-form LMM Wald test
-  (`lmm`/`lmm_factorial`/`lmm_runs`).
+Two generations of verification exist here, reflecting the shape-catalog
+unification described above:
+
+**Pre-unification** (`ci_single`, `ci_paired`, and `pvalues`' first port),
+checked against the original legacy scripts for exact numeric parity, byte
+for byte, at fixed seeds:
+- `ci_single`'s synthetic path vs. `sim_compare_boot.py --estimand mean`:
+  all per-(eval_type, scenario, n, method) coverage/width matched to 8
+  decimal places (binary, continuous), except `beta` (itself an unseeded
+  parametric bootstrap, inherent MC noise on both sides).
+- `ci_paired`'s synthetic path vs. `sim_compare_boot.py --estimand
+  pairwise`, including `--include-null`: 0 mismatches / 384 rows.
+- `ci_single --nested-mode` vs. `sim_compare_boot_nested.py --estimand
+  mean`: 0 mismatches / 880 rows (except `beta`, same exception).
+- `ci_paired --nested-mode` vs. `sim_compare_boot_nested.py --estimand
+  pairwise`, including `--include-null`: 0 mismatches / 600 rows.
+- `pvalues --mode multiarm` vs. `sim_compare_pvalues.py`'s multi-arm phase:
+  generator output, `_compute_multiarm_metrics`, and the full cell worker
+  all matched exactly (80+ rows, 5 correction strategies).
+- `pvalues --mode ppi` vs. `sim_type_i_calibration.py`'s `_run_one`: 0
+  mismatches across 43 scenarios x 3 reps x 11 tests = 1419 reject-decision
+  pairs, including every bootstrap-based PPI correction and LMM Wald test.
+
+**Post-unification** (current state): the shape catalog merge intentionally
+broke exact parity with the legacy scripts for `build_pair_sources`,
+`build_single_sample_sources`, `build_multiarm_sources`, and
+`build_judge_bias_sources`/`generate_judge_bias_cell` -- this was an
+explicit, agreed trade (cross-mode truth-distribution consistency over
+per-mode legacy-script parity). Verification shifted to:
+- **Algebraic + numeric equivalence of the refactor itself**: the new
+  `sample_group_truth(k=2, corr=0.5, ...)` was derived to exactly reproduce
+  the *pre-unification* `build_pair_sources`' fixed shared/individual noise
+  split (verified algebraically: both reduce to the same `noise_std`).
+  Confirmed numerically against `_legacy_build_pair_sources` (the kept,
+  unused pre-merge implementation) for every (eval_type, shape, icc,
+  cohens_d) combination present in both catalogs: 0 mismatches across 252
+  continuous/likert/grades rows (matched by label) + 36 binary rows
+  (matched by underlying `p0`, since binary shape labels were renamed from
+  `binary-balanced`/etc. to `p=0.50`/etc. when the catalogs merged), each
+  checked at 3 seeds.
+- **Sanity checks** (Type-I error ~ alpha, power increasing with effect
+  size and n, FWER controlled by correction strategy, PPI-corrected rates
+  near nominal alpha vs. heavily inflated uncorrected rates) across all
+  three `pvalues` modes and `ci_single`/`ci_paired`, post-unification, at
+  moderate rep counts. No regressions found beyond pre-existing, shape-
+  specific fragilities already present in the legacy catalogs (e.g.
+  `logit_t`'s poor coverage on zero/one-inflated continuous shapes and on
+  likert/grades scores generally -- confirmed present identically in
+  `_legacy_build_single_sample_sources`, not introduced by the merge).

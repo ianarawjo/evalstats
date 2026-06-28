@@ -9,12 +9,14 @@ Given LLM-only scores (no human labels), which raw p-value/rejection
 procedure is best calibrated?
 
 - ``pairwise``: Type-I error and power for pairwise A-vs-B comparisons,
-  reusing ``scenarios.synthetic.build_pair_sources``'s ICC x Cohen's-d grid
+  via ``scenarios.synthetic.build_pair_sources``'s ICC x Cohen's-d grid
   (the same paired-difference scenario library ``cases/ci_paired.py`` uses)
   as the null/weak-alt/full-alt conditions.
 - ``multiarm``: family-wise false-positive rate and best-arm selection power
   across p-value correction strategies (holm/bonferroni/fdr_bh/
-  friedman_nemenyi), via ``scenarios.synthetic.build_multiarm_sources``.
+  friedman_nemenyi), via ``scenarios.synthetic.build_multiarm_sources``,
+  sweeping the SAME shape catalog ``build_pair_sources`` uses, generalized
+  to k arms.
 
 PPI-corrected path (ported from ``simulations/sim_type_i_calibration.py``)
 ---------------------------------------------------------------------------
@@ -23,23 +25,29 @@ PPI-corrected path (ported from ``simulations/sim_type_i_calibration.py``)
   inflation that judge bias/miscalibration causes in the uncorrected
   (scipy-equivalent) version? Sweeps judge-bias parameters via
   ``scenarios.synthetic.build_judge_bias_sources`` /
-  ``generate_judge_bias_cell``, one factor at a time from a fixed baseline.
+  ``generate_judge_bias_cell``, one factor at a time from a fixed baseline,
+  layered on top of ONE representative shape per eval type from the SAME
+  catalog the other two modes use.
 
 There is no separate ``ppi_calibration`` case: it was folded in here instead,
 since both halves answer "is this statistical decision trustworthy" at
 different levels of the stack (raw CI/p-value procedures vs. high-level
-``evalstats.tests`` wrappers with PPI), sharing only report/plot/CLI
-scaffolding, not scenario generators.
+``evalstats.tests`` wrappers with PPI), sharing report/plot/CLI scaffolding
+AND, as of the shape-catalog unification, the underlying truth-generating
+process too (``scenarios.synthetic.sample_group_truth`` -- see that
+module's docstring and the harness README's "Shared scenario library"
+section).
 
 Known exceptions (see simulations/harness/README.md):
-- ``multiarm``'s shape catalog (one shape per eval type, +4 under
-  ``--include-extreme``) is narrower than ``build_single_sample_sources``'s;
-  ported faithfully from the legacy script rather than retrofitted onto the
-  richer single/paired catalog.
-- ``ppi`` mode's "dist" axis (normal/likert/skewed) is intentionally
-  narrower than ``EVAL_TYPES`` (no binary -- current PPI tests like
-  ttest/MWU aren't designed for it) and is a different axis entirely
-  (judge-measurement-error parameters, not score-distribution shape).
+- ``ppi`` mode sweeps ``eval_type`` in ``{continuous, likert, grades}`` (no
+  binary -- current PPI tests like ttest/MWU/ANOVA aren't designed for 0/1
+  outcomes), picking one representative shape per eval type rather than
+  sweeping the full catalog the way ``multiarm`` does -- judge-bias/noise/
+  MNAR-label parameters are PPI's actual axis of interest, not shape.
+- None of the three modes numerically matches its legacy script anymore
+  (a deliberate trade: cross-mode truth-distribution consistency over
+  per-mode legacy-script parity) -- verification is by sanity check
+  (Type-I ~ alpha, power increasing with effect size/n) for all three.
 """
 
 from __future__ import annotations
@@ -989,8 +997,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--multiarm-method", default=SMOOTH_BOOTSTRAP.name, metavar="METHOD",
                          choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name],
                          help="multiarm mode: pairwise_differences-family method used to derive raw p-values before correction")
-    parser.add_argument("--include-extreme", action="store_true", default=False,
-                         help="multiarm mode: also run the 4 extreme-shape variants from build_multiarm_sources")
+    parser.add_argument("--multiarm-icc", type=float, default=0.20, metavar="ICC",
+                         help="multiarm mode: ICC for build_multiarm_sources' shared truth/noise model "
+                              "(same meaning as --icc-values in pairwise mode)")
+    parser.add_argument("--multiarm-cohens-d", type=float, default=0.3, metavar="D",
+                         help="multiarm mode: alt-condition effect size (Cohen's d) for build_multiarm_sources")
 
     # ppi mode
     parser.add_argument("--tests", nargs="+", choices=[m.name for m in PPI_TEST_METHODS], default=None, metavar="TEST",
@@ -1009,7 +1020,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100], runs=1, statistic="mean",
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
-        k_arms=4, multiarm_method=SMOOTH_BOOTSTRAP.name, include_extreme=True,
+        k_arms=4, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000,
     )
 
@@ -1057,10 +1068,10 @@ def run(args: argparse.Namespace) -> CaseResult:
 
         if "multiarm" in modes:
             print(f"\npvalues simulation (multi-arm, non-PPI) -- k={args.k_arms}, method={args.multiarm_method}")
-            ma_sources = build_multiarm_sources(include_extreme=args.include_extreme)
-            if args.eval_types:
-                requested = set(args.eval_types)
-                ma_sources = [s for s in ma_sources if s.eval_type in requested]
+            ma_sources = build_multiarm_sources(
+                suite=args.scenario_suite, icc=args.multiarm_icc, cohens_d=args.multiarm_cohens_d,
+                eval_types=args.eval_types,
+            )
             if not ma_sources:
                 raise ValueError("No MultiArmSources left after filtering.")
             print(f"  {len(ma_sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}")

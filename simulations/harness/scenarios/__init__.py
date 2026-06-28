@@ -88,21 +88,35 @@ class MultiArmSource:
 class JudgeBiasSource:
     """One judge-bias/miscalibration scenario for cases/pvalues.py's PPI mode.
 
-    Mirrors ``sim_type_i_calibration.py``'s ``Scenario`` dataclass field for
-    field. Built by ``scenarios.synthetic.build_judge_bias_sources``; consumed
-    via ``scenarios.synthetic.generate_judge_bias_cell(source, rng)``, which
-    draws ground truth, LLM-judge scores (with bias/slope distortion), and
-    sparse (possibly MNAR) human labels for every test structure (two
-    independent groups, paired/repeated, three independent groups, three
-    repeated conditions, a 2x2 crossed-factor design, and nested LLM runs)
+    Originally mirrored ``sim_type_i_calibration.py``'s ``Scenario`` dataclass
+    field for field, including its own narrower truth-distribution axis
+    ("normal"/"likert"/"skewed", unrelated to ``EVAL_TYPES``). That axis was
+    later unified onto ``EVAL_TYPES`` (binary excluded -- ttest/MWU aren't
+    designed for 0/1 outcomes) so the harness has ONE truth-generating
+    process per eval type shared by ``build_pair_sources``,
+    ``build_multiarm_sources``, and this scenario family (one representative
+    ``ShapeSpec`` per eval type, via ``_ppi_shape``), with judge bias/noise/
+    MNAR-labels layered on top as an orthogonal sweep -- see the harness
+    README's Known exceptions for the rationale. Built by
+    ``scenarios.synthetic.build_judge_bias_sources``; consumed via
+    ``scenarios.synthetic.generate_judge_bias_cell(source, rng)``, which
+    draws ground truth (via ``sample_group_truth``), LLM-judge scores (with
+    bias/slope distortion), and sparse (possibly MNAR) human labels for
+    every test structure (two independent groups, paired/repeated, three
+    independent groups, three repeated conditions, a 2x2 crossed-factor
+    design, and nested LLM runs)
     in one call, in a fixed draw order, so a single ``rng`` stream feeds every
-    active test deterministically -- exactly as the legacy script's
-    ``_run_one`` does.
+    active test deterministically.
     """
 
     name: str
     tag: str
-    dist: str = "normal"  # "normal" | "binary" | "likert" | "skewed"
+    eval_type: str = "continuous"  # "continuous" | "likert" | "grades" (no "binary": see above)
+    icc: float = 0.20
+    """Intraclass correlation for the paired/repeated test structures' truth
+    model (same meaning as build_pair_sources'/build_multiarm_sources' icc:
+    between-subject variance / total variance). Not currently swept across
+    scenarios -- fixed at a baseline consistent with the rest of the harness."""
     n: int = 100
     n2: int | None = None
     n3: int | None = None
