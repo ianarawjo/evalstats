@@ -502,10 +502,10 @@ class ShapeSpec:
     """binary: base_p (float); continuous: (a, b); likert/grades: (mu, total_std)."""
     custom_sampler: Callable[[np.random.Generator, int], np.ndarray] | None = None
     """For kind="custom": draws n FINAL (already clipped/rounded) values
-    directly for one population/item draw. Any k is supported via
-    sample_group_truth, but only at base_corr=1.0 (fully shared item across
-    groups) -- partial agreement (base_corr<1.0) isn't implemented for
-    custom shapes yet."""
+    directly for one population/item draw. Any k and any base_corr are
+    supported via sample_group_truth (base_corr<1.0 partial agreement uses
+    an empirical-quantile copula -- see _custom_shape_inverse_cdf -- since
+    these bespoke samplers have no closed-form .ppf())."""
     suite_tier: str = "standard"  # "standard" | "expanded"
 
 
@@ -685,6 +685,42 @@ def _custom_shape_mean(shape: ShapeSpec, *, n_mc: int = 200_000, seed: int = 1) 
     return _CUSTOM_SHAPE_MEAN_CACHE[shape.label]
 
 
+_CUSTOM_SHAPE_SORTED_SAMPLE_CACHE: dict[str, np.ndarray] = {}
+_CUSTOM_SHAPE_QUANTILE_GRID_CACHE: dict[int, np.ndarray] = {}
+
+
+def _custom_shape_inverse_cdf(shape: ShapeSpec, q: np.ndarray, *, n_mc: int = 200_000, seed: int = 2) -> np.ndarray:
+    """Empirical inverse-CDF of a "custom" shape's bare sampler: maps
+    quantiles in (0, 1) to values, standing in for a closed-form .ppf() that
+    doesn't exist for bespoke samplers (mixtures, inflated, heavy-tail).
+    Used by sample_group_truth's base_corr < 1.0 path for custom shapes --
+    the same Gaussian-copula trick binary/continuous "param" shapes use
+    (norm.cdf -> .ppf), just with this in place of stats.beta.ppf.
+
+    The MC sample is cached and sorted once per shape (memoized by label,
+    same pattern as _custom_shape_var/_custom_shape_mean); np.interp linearly
+    interpolates between its order statistics, treated as a piecewise-linear
+    empirical quantile function. Point masses (e.g. zero-inflated's 70%
+    spike at 0) survive exactly: they occupy a contiguous run of the sorted
+    sample, so any quantile landing inside that run interpolates between two
+    copies of the same value and returns it unchanged.
+
+    Caveat (documented in the harness README): this preserves *rank*
+    correlation between groups exactly equal to base_corr (rank correlation
+    is invariant under the monotonic copula-quantile mapping), but Pearson
+    correlation only approximately, since the empirical quantile function is
+    a nonlinear map for non-uniform shapes.
+    """
+    if shape.label not in _CUSTOM_SHAPE_SORTED_SAMPLE_CACHE:
+        rng = np.random.default_rng(seed)
+        _CUSTOM_SHAPE_SORTED_SAMPLE_CACHE[shape.label] = np.sort(shape.custom_sampler(rng, n_mc))
+    if n_mc not in _CUSTOM_SHAPE_QUANTILE_GRID_CACHE:
+        _CUSTOM_SHAPE_QUANTILE_GRID_CACHE[n_mc] = np.linspace(0.0, 1.0, n_mc)
+    sorted_sample = _CUSTOM_SHAPE_SORTED_SAMPLE_CACHE[shape.label]
+    grid = _CUSTOM_SHAPE_QUANTILE_GRID_CACHE[n_mc]
+    return np.interp(q, grid, sorted_sample)
+
+
 def _hetero_noise_scale(base: np.ndarray, lo: float, hi: float) -> np.ndarray:
     """Per-item heteroscedastic noise-std multiplier: scales toward 0 near
     the [lo, hi] boundaries (where item-level variance is naturally squeezed)
@@ -747,15 +783,37 @@ def sample_group_truth(
     build_pair_sources' original fixed shared/individual noise split
     exactly (see _legacy_build_pair_sources above).
 
-    base_corr: correlation between any two of the k groups' BASE/item-level
-    values (1.0 = fully shared base -- every group sees the literal same
-    item, the harness default everywhere except build_pair_sources'
-    run_noise_fracs multi-run mode; <1.0 = partial agreement, a Gaussian-
-    copula "different items/judges, correlated quality" model, generalizing
-    _legacy_build_pair_multirun_sources' cross_item_rho to general k). At base_corr
-    == 1.0 and scalar icc, this is a no-op vs. the pre-existing shared-base
-    code path (kept as its own branch below to preserve exact-parity with
-    everything that doesn't pass base_corr/per-group icc).
+    base_corr: correlation of the GAUSSIAN-COPULA LATENT VARIABLE underlying
+    any two of the k groups' BASE/item-level values (1.0 = fully shared base
+    -- every group sees the literal same item, the harness default
+    everywhere except build_pair_sources' run_noise_fracs multi-run mode;
+    <1.0 = partial agreement, a Gaussian-copula "different items/judges,
+    correlated quality" model, generalizing
+    _legacy_build_pair_multirun_sources' cross_item_rho to general k). For
+    binary/continuous "param" shapes and all "custom" shapes, base_corr is
+    NOT the realized Pearson or Spearman correlation of the final base
+    values -- it's the correlation BEFORE the (generally nonlinear)
+    .ppf()/empirical-quantile mapping. The realized Spearman correlation
+    follows the standard Gaussian-copula identity (6/pi)*arcsin(base_corr/2)
+    for shapes with continuous marginals (verified numerically for
+    cont-mixture); shapes with large point masses (zero/one-inflated,
+    floor/ceiling-spiked) compress it further below even that, since tied
+    values get averaged ranks (verified: cont-zero-inflated's 70% spike at 0
+    realizes Spearman ~0.54 at base_corr=0.7, vs. the ~0.68 the tie-free
+    identity would predict). likert/grades "param" shapes are the one
+    exception: their base is additively decomposed in Gaussian space
+    directly (no .ppf()), so base_corr matches the realized Pearson
+    correlation of the underlying continuous latent exactly (verified:
+    grades-mid, no boundary clipping, base_corr=0.3/0.7 -> realized
+    0.2989/0.6985); the FINAL output can still differ slightly due to
+    boundary clipping (any shape near its range edges) and, for likert
+    specifically, rounding to the nearest integer score (verified: likert
+    rounding alone pulls realized correlation down by ~0.03-0.04 at
+    base_corr=0.3/0.7). At base_corr == 1.0 and scalar icc, this is a no-op
+    vs. the
+    pre-existing shared-base code path (kept as its own branch below to
+    preserve exact-parity with everything that doesn't pass base_corr/
+    per-group icc).
 
     k=1 has no inter-group correlation concept -- the single group gets the
     FULL within-item noise variance directly (same marginal variance as any
@@ -768,11 +826,12 @@ def sample_group_truth(
     (multi-run): the bare custom_sampler draw is treated as the per-item
     "base", with the same additive-Gaussian within-item noise model as
     "param" shapes, using an MC-estimated (not closed-form) base variance
-    (_custom_shape_var). At k >= 2, custom shapes currently only support
-    base_corr == 1.0 (fully shared item across groups) -- partial
-    agreement (base_corr < 1.0) for custom shapes needs an empirical-
-    quantile copula (no closed-form .ppf() to invert through, unlike
-    binary/continuous) and isn't implemented yet.
+    (_custom_shape_var). At k >= 2 and base_corr < 1.0 (partial agreement),
+    custom shapes use an empirical-quantile copula in place of a closed-form
+    .ppf() (see _custom_shape_inverse_cdf) -- this preserves rank
+    correlation between groups exactly equal to base_corr, but Pearson
+    correlation only approximately (the empirical quantile function is a
+    nonlinear map for non-uniform shapes).
     """
     if effects is None:
         effects = np.zeros(k)
@@ -801,15 +860,17 @@ def sample_group_truth(
             out[0] = np.rint(np.clip(vals, lo, hi)) if round_to_int else np.clip(vals, lo, hi)
             return out
 
-        if base_corr < 1.0 - 1e-12:
-            raise NotImplementedError(
-                f"Custom shape {shape.label!r}: base_corr < 1.0 (partial agreement) at k={k} "
-                "is not implemented yet -- needs an empirical-quantile copula since custom "
-                "shapes have no closed-form .ppf() to invert through. Use base_corr=1.0 "
-                "(fully shared item across groups) for now."
-            )
         lo, hi, round_to_int = _CUSTOM_SHAPE_RANGE[et]
-        base = np.broadcast_to(shape.custom_sampler(rng, n)[None, :, None], (k, n, 1)).copy()
+        if base_corr >= 1.0 - 1e-12:
+            base = np.broadcast_to(shape.custom_sampler(rng, n)[None, :, None], (k, n, 1)).copy()
+        else:
+            # Partial-agreement path: equicorrelated Gaussian copula on
+            # quantiles, mapped through the shape's own empirical inverse-CDF
+            # (no closed-form .ppf() to invert through, unlike binary/
+            # continuous "param" shapes -- see _custom_shape_inverse_cdf).
+            z = _equicorrelated_std_normal(rng, n, k, base_corr)
+            q = np.clip(norm.cdf(z), 1e-9, 1.0 - 1e-9)
+            base = _custom_shape_inverse_cdf(shape, q)
         group_noise_vars = np.array([
             _custom_shape_var(shape) * (1.0 / max(ic, 1e-9) - 1.0) if ic < 1.0 - 1e-12 else 0.0
             for ic in icc_arr
@@ -992,11 +1053,13 @@ def _build_pair_sources_multirun(
 
     sources: list[CIPairSource] = []
     for eval_type, catalog in SHAPES_BY_EVAL_TYPE.items():
-        param_shapes = [s for s in _tier_shapes(catalog, suite) if s.kind == "param"]
+        # Custom shapes are included too -- sample_group_truth's Phase 2
+        # empirical-quantile copula supports base_corr < 1.0 for them now.
+        shapes_here = _tier_shapes(catalog, suite)
         for f_a, f_b in noise_pairs:
             icc_a, icc_b = 1.0 - f_a, 1.0 - f_b
             icc_eff = 0.5 * (icc_a + icc_b)
-            for shape in param_shapes:
+            for shape in shapes_here:
                 total_std = group_total_std(shape, icc_eff)
                 for d in d_list:
                     delta = d * total_std
@@ -1087,11 +1150,11 @@ def build_pair_sources(
     """Return canonical synthetic paired-difference CIPairSources, parameterised
     by ICC and Cohen's d -- a thin (icc, shape, d) sweep over
     sample_group_truth(k=2) using the full shape catalog above, "custom"
-    shapes (mixtures, inflated, heavy-tail) included (at base_corr=1.0, the
-    default here -- see ShapeSpec/sample_group_truth docs for the base_corr
-    < 1.0 limitation that's still custom-shape-only). The run_noise_fracs
-    multi-run path (_build_pair_sources_multirun) is still param-shapes-only,
-    since it always uses base_corr=cross_item_rho < 1.0.
+    shapes (mixtures, inflated, heavy-tail) included. The flat path here
+    uses base_corr=1.0 (the default); the run_noise_fracs multi-run path
+    (_build_pair_sources_multirun) uses base_corr=cross_item_rho < 1.0,
+    which custom shapes now support via an empirical-quantile copula (see
+    ShapeSpec/sample_group_truth docs).
 
     ICC = between-input variance / total variance; Cohen's d = delta /
     total_std (group_total_std(shape, icc)).
@@ -2056,39 +2119,98 @@ def _jb_judge_params_4(sc: JudgeBiasSource) -> tuple[tuple[float, float, float, 
     return biases, slopes
 
 
+def _contaminated_noise_stds(noise_sd: float, contam_frac: float, contam_scale: float) -> tuple[float, float]:
+    """Solve for (sigma_normal, sigma_catastrophic) of a two-component,
+    zero-mean Gaussian variance-mixture -- weight (1 - contam_frac) at
+    sigma_normal, weight contam_frac at sigma_catastrophic = contam_scale *
+    sigma_normal -- whose TOTAL variance equals noise_sd**2 exactly. This is
+    what keeps noise_family="contaminated" meaning the same noise_sd/icc
+    everywhere noise_family="gaussian" does: it only redistributes WHERE
+    that fixed total variance comes from (mostly a small width, occasionally
+    a much larger one), modeling "judge is mostly right, occasionally
+    catastrophically wrong" instead of symmetric/uniform measurement error.
+    """
+    noise_var = noise_sd ** 2
+    denom = (1.0 - contam_frac) + contam_frac * contam_scale ** 2
+    sigma_normal = float(np.sqrt(noise_var / max(denom, 1e-12)))
+    sigma_catastrophic = contam_scale * sigma_normal
+    return sigma_normal, sigma_catastrophic
+
+
 def _jb_llm(
     truth: np.ndarray, bias: float, noise_sd: float, rng: np.random.Generator,
     slope: float = 1.0, anchor: float = 0.0,
+    noise_family: str = "gaussian", contam_frac: float = 0.10, contam_scale: float = 4.0,
 ) -> np.ndarray:
     pred = anchor + slope * (truth - anchor) + bias
     if noise_sd == 0.0:
         return pred
-    return pred + rng.normal(0.0, noise_sd, len(truth))
+    if noise_family == "gaussian":
+        return pred + rng.normal(0.0, noise_sd, len(truth))
+    if noise_family == "contaminated":
+        sigma_normal, sigma_catastrophic = _contaminated_noise_stds(noise_sd, contam_frac, contam_scale)
+        is_catastrophic = rng.random(len(truth)) < contam_frac
+        sd_per_item = np.where(is_catastrophic, sigma_catastrophic, sigma_normal)
+        return pred + rng.normal(0.0, 1.0, len(truth)) * sd_per_item
+    raise ValueError(f"Unknown noise_family: {noise_family!r}")
 
 
 def _jb_llm_repeated(
     truths: list[np.ndarray], biases: list[float], noise_sds: list[float], slopes: list[float],
     rng: np.random.Generator, anchor: float, corr: float,
+    noise_family: str = "gaussian", contam_frac: float = 0.10, contam_scale: float = 4.0,
 ) -> list[np.ndarray]:
     if len(truths) == 0:
         return []
     n = len(truths[0])
     if corr <= 0.0:
-        return [_jb_llm(tr, b, s, rng, slope=m, anchor=anchor) for tr, b, s, m in zip(truths, biases, noise_sds, slopes)]
+        return [
+            _jb_llm(tr, b, s, rng, slope=m, anchor=anchor, noise_family=noise_family,
+                    contam_frac=contam_frac, contam_scale=contam_scale)
+            for tr, b, s, m in zip(truths, biases, noise_sds, slopes)
+        ]
 
     corr_clamped = min(max(corr, 0.0), 0.999)
     w_shared = float(np.sqrt(corr_clamped))
     w_ind = float(np.sqrt(1.0 - corr_clamped))
-    shared = rng.normal(0.0, 1.0, n)
-    out: list[np.ndarray] = []
-    for tr, b, sd, m in zip(truths, biases, noise_sds, slopes):
-        pred = anchor + m * (tr - anchor) + b
-        if sd == 0.0:
-            out.append(pred)
-            continue
-        err = sd * (w_shared * shared + w_ind * rng.normal(0.0, 1.0, n))
-        out.append(pred + err)
-    return out
+
+    if noise_family == "gaussian":
+        shared = rng.normal(0.0, 1.0, n)
+        out: list[np.ndarray] = []
+        for tr, b, sd, m in zip(truths, biases, noise_sds, slopes):
+            pred = anchor + m * (tr - anchor) + b
+            if sd == 0.0:
+                out.append(pred)
+                continue
+            err = sd * (w_shared * shared + w_ind * rng.normal(0.0, 1.0, n))
+            out.append(pred + err)
+        return out
+
+    if noise_family == "contaminated":
+        # shared_regime drives a CORRELATED "is this a catastrophic-error
+        # item" event across groups (via the same copula-style threshold
+        # trick base_corr uses for custom shapes: norm.cdf(u) < contam_frac
+        # gives marginal P(catastrophic)=contam_frac with cross-group regime
+        # correlation = corr) -- representing e.g. "the judge has a bad day
+        # on this specific item" being a shared, not independent, event
+        # across paired/repeated conditions. The ERROR MAGNITUDE within a
+        # regime is still drawn independently per group/condition.
+        shared_regime = rng.normal(0.0, 1.0, n)
+        out = []
+        for tr, b, sd, m in zip(truths, biases, noise_sds, slopes):
+            pred = anchor + m * (tr - anchor) + b
+            if sd == 0.0:
+                out.append(pred)
+                continue
+            sigma_normal, sigma_catastrophic = _contaminated_noise_stds(sd, contam_frac, contam_scale)
+            u = w_shared * shared_regime + w_ind * rng.normal(0.0, 1.0, n)
+            is_catastrophic = norm.cdf(u) < contam_frac
+            sd_per_item = np.where(is_catastrophic, sigma_catastrophic, sigma_normal)
+            err = rng.normal(0.0, 1.0, n) * sd_per_item
+            out.append(pred + err)
+        return out
+
+    raise ValueError(f"Unknown noise_family: {noise_family!r}")
 
 
 def _jb_label_indices(
@@ -2228,6 +2350,16 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     S.append(sc("hetero.mild", "heteroskedastic", llm_noise=0.05, llm_noise2=0.50, llm_noise3=0.25))
     S.append(sc("hetero.extreme", "heteroskedastic", llm_noise=0.02, llm_noise2=0.80, llm_noise3=0.40))
 
+    # Judge-noise FAMILY factor: does PPI correction still fix Type-I
+    # inflation when judge measurement error is "mostly right, occasionally
+    # catastrophically wrong" (a contaminated/heavy-tailed Gaussian mixture)
+    # instead of symmetric, uniform-width Gaussian noise? Same total noise
+    # variance (noise_sd**2) as the gaussian baseline either way -- only
+    # where that variance comes from differs. See JudgeBiasSource.noise_family.
+    S.append(sc("noise_family.contaminated-mild", "noise_family", noise_family="contaminated", contam_frac=0.10, contam_scale=3.0))
+    S.append(sc("noise_family.contaminated-strong", "noise_family", noise_family="contaminated", contam_frac=0.10, contam_scale=6.0))
+    S.append(sc("noise_family.contaminated+corr", "noise_family", noise_family="contaminated", contam_frac=0.15, contam_scale=5.0, repeated_corr=0.5))
+
     S.append(sc("stress.small+sparse", "stress", n=30, label_frac=0.07))
     S.append(sc("stress.large+noisy", "stress", n=300, llm_noise=0.70))
     S.append(sc("stress.unbal+diff", "stress", n=40, n2=200, label_frac=0.08))
@@ -2333,8 +2465,8 @@ def generate_judge_bias_cell(
     # -- Independent two-group data (ttest, mannwhitney) --
     truth_a2 = _marginal(n1)
     truth_b2 = _marginal(n2) + es
-    llm_a2 = _jb_llm(truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
-    llm_b2 = _jb_llm(truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
+    llm_a2 = _jb_llm(truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
+    llm_b2 = _jb_llm(truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
     lab_a2 = _jb_labels_independent(truth_a2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
     lab_b2 = _jb_labels_independent(truth_b2, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
@@ -2343,6 +2475,7 @@ def generate_judge_bias_cell(
     llm_x, llm_y = _jb_llm_repeated(
         [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
         rng, anchor=anchor, corr=sc.repeated_corr,
+        noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
     )
     lab_x, lab_y = _jb_labels_shared([truth_x, truth_y], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
@@ -2350,9 +2483,9 @@ def generate_judge_bias_cell(
     truth_a3 = _marginal(n1)
     truth_b3 = _marginal(n2) + es
     truth_c3 = _marginal(n3) + 2 * es
-    llm_a3 = _jb_llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
-    llm_b3 = _jb_llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
-    llm_c3 = _jb_llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor)
+    llm_a3 = _jb_llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
+    llm_b3 = _jb_llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
+    llm_c3 = _jb_llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor, noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale)
     lab_a3 = _jb_labels_independent(truth_a3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
     lab_b3 = _jb_labels_independent(truth_b3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
     lab_c3 = _jb_labels_independent(truth_c3, sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
@@ -2362,6 +2495,7 @@ def generate_judge_bias_cell(
     llm_A, llm_B, llm_C = _jb_llm_repeated(
         [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
         rng, anchor=anchor, corr=sc.repeated_corr,
+        noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
     )
     lab_A, lab_B, lab_C = _jb_labels_shared([truth_A, truth_B, truth_C], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
@@ -2372,6 +2506,7 @@ def generate_judge_bias_cell(
         [truth_W, truth_X, truth_Y, truth_Z], [bias_w, bias_x, bias_y, bias_z],
         [noise1, noise2, noise3, noise1], [slope_w, slope_x, slope_y, slope_z],
         rng, anchor=anchor, corr=sc.repeated_corr,
+        noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
     )
     lab_W, lab_X, lab_Y, lab_Z = _jb_labels_shared([truth_W, truth_X, truth_Y, truth_Z], sc.label_frac, rng, mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode)
 
@@ -2383,6 +2518,7 @@ def generate_judge_bias_cell(
         rA, rB, rC = _jb_llm_repeated(
             [truth_A, truth_B, truth_C], [bias_a, bias_b, bias_c], [noise1, noise2, noise3], [slope_a, slope_b, slope_c],
             rng, anchor=anchor, corr=sc.repeated_corr,
+            noise_family=sc.noise_family, contam_frac=sc.contam_frac, contam_scale=sc.contam_scale,
         )
         a_cols.append(rA)
         b_cols.append(rB)

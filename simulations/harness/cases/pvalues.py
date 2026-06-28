@@ -27,7 +27,11 @@ PPI-corrected path (ported from ``simulations/sim_type_i_calibration.py``)
   ``scenarios.synthetic.build_judge_bias_sources`` /
   ``generate_judge_bias_cell``, one factor at a time from a fixed baseline,
   layered on top of ONE representative shape per eval type from the SAME
-  catalog the other two modes use.
+  catalog the other two modes use. Includes a ``noise_family.*`` factor
+  (``JudgeBiasSource.noise_family="contaminated"``) checking the same
+  question under "judge mostly right, occasionally catastrophically wrong"
+  measurement error instead of the default symmetric Gaussian -- same total
+  noise variance either way, just redistributed.
 
 There is no separate ``ppi_calibration`` case: it was folded in here instead,
 since both halves answer "is this statistical decision trustworthy" at

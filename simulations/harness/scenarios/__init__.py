@@ -149,3 +149,20 @@ class JudgeBiasSource:
     set explicitly to sweep a "custom" (mixture/inflated/heavy-tail) shape
     instead, so PPI-correction calibration gets checked against a
     pathological truth distribution too, not just smooth Beta/Normal ones."""
+    noise_family: str = "gaussian"  # "gaussian" | "contaminated"
+    """LLM-judge measurement-error noise family (scenarios.synthetic._jb_llm/
+    _jb_llm_repeated). "gaussian" (the default, used everywhere except the
+    noise_family.* scenarios below) is symmetric, uniform-width measurement
+    error. "contaminated" is a zero-mean two-component variance-mixture --
+    mostly a small width, occasionally (probability contam_frac) a much
+    larger one -- modeling "judge is mostly right, occasionally
+    catastrophically wrong" instead. Total noise variance (and therefore
+    llm_noise's calibrated meaning) is identical between the two families;
+    only how that variance is distributed across items differs."""
+    contam_frac: float = 0.10
+    """"contaminated" noise_family only: probability an item's judge error
+    is drawn from the large-width (catastrophic) component."""
+    contam_scale: float = 4.0
+    """"contaminated" noise_family only: the catastrophic component's std is
+    this multiple of the normal component's std (solved jointly with
+    contam_frac so total variance stays fixed -- see _contaminated_noise_stds)."""

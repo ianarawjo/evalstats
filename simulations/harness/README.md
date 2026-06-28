@@ -78,6 +78,23 @@ instead of each case (or each *mode* within a case) defining its own:
   scenarios in `build_judge_bias_sources()`). All four pull from the
   identical shape catalog and generator, so a given `(icc, cohens_d)` means
   the same thing in every one of them.
+- The LLM-judge MEASUREMENT-ERROR model (`_jb_llm`/`_jb_llm_repeated`,
+  layered on top of truth by `generate_judge_bias_cell` -- a separate axis
+  from the shape catalog above; see `JudgeBiasSource`'s docstring) defaults
+  to symmetric Gaussian noise but supports `JudgeBiasSource.noise_family =
+  "contaminated"`: a zero-mean two-component variance-mixture (mostly a
+  small width, occasionally -- probability `contam_frac` -- a much larger
+  one, `contam_scale` times wider), solved so its TOTAL variance always
+  equals what `noise_family="gaussian"` would use at the same `llm_noise`
+  -- modeling "judge is mostly right, occasionally catastrophically wrong"
+  as an opt-in robustness check rather than a default-model replacement
+  (changing the default would invalidate this harness's exact-parity
+  verification against the legacy scripts). For repeated-measures
+  structures, the "is this a catastrophic-error item" REGIME is correlated
+  across groups/conditions via the same copula-style mechanism `base_corr`
+  uses (`repeated_corr` controls it, same parameter that correlates
+  Gaussian noise magnitude in the default family) -- see
+  `build_judge_bias_sources()`'s `noise_family.*` scenarios.
 - `_legacy_build_single_sample_sources()` / `_legacy_build_pair_sources()`
   are the pre-unification implementations, kept (unused, not imported by
   any case) purely as a reference/audit trail for the merge.
@@ -309,3 +326,45 @@ per-mode legacy-script parity). Verification shifted to:
   to a distribution where 70% of mass sits at exactly 0 -- while the
   corrected rate stays near alpha for all of them, a legitimate and
   reportable robustness finding, not an artifact).
+- **Custom shapes at base_corr<1.0** (`_custom_shape_inverse_cdf`'s
+  empirical-quantile copula, unblocking custom shapes in
+  `build_pair_sources`' `run_noise_fracs` multi-run path): marginal mean and
+  point-mass fraction (e.g. `cont-zero-inflated`'s 70% spike at exactly 0)
+  are preserved exactly regardless of base_corr, confirming the copula
+  doesn't distort the shape's own distribution. Realized rank/Pearson
+  correlation were checked against the Gaussian-copula's known identity
+  (Spearman = (6/pi)*arcsin(base_corr/2) for continuous marginals) and
+  matched exactly for a tie-free custom shape (`cont-mixture`); shapes with
+  large point masses (`cont-zero-inflated`) realize a further-compressed
+  correlation due to tied ranks, as expected -- documented as a caveat in
+  `sample_group_truth`'s `base_corr` docstring rather than treated as a
+  defect, since the SAME caveat applies to `base_corr`'s pre-existing
+  binary/continuous "param"-shape copula path too (this was a latent
+  inaccuracy in last session's docstring, corrected here: `base_corr` is
+  the latent Gaussian-copula correlation, not the realized output
+  correlation, for every shape except likert/grades, whose base is
+  additively decomposed in Gaussian space directly and so realizes
+  `base_corr` as its Pearson correlation exactly, modulo likert's rounding
+  and any shape's boundary clipping). Type-I error for a custom-shape pair
+  under the new `base_corr<1.0` multi-run path was cross-checked against
+  the same shape's `base_corr=1.0` flat-path Type-I error and found
+  consistent (~0.90 coverage for the unbiased `bootstrap` method on
+  `cont-zero-inflated` either way) -- a pre-existing, shape-specific
+  fragility, not introduced by this extension.
+- **Contaminated judge noise** (`_contaminated_noise_stds`, `noise_family`
+  on `_jb_llm`/`_jb_llm_repeated`/`JudgeBiasSource`): variance-preservation
+  confirmed exactly (a `noise_sd=0.20` zero-mean two-component mixture at
+  `contam_frac=0.10, contam_scale=4.0` realizes total variance 0.0400,
+  matching `noise_sd**2` to 4 decimal places at n=500,000) and the resulting
+  distribution is correctly heavy-tailed (excess kurtosis ~12.9 vs. the
+  Gaussian baseline's ~3.0 at the same total variance). The correlated-
+  regime mechanism was checked directly: at `repeated_corr=0`, the
+  co-occurrence rate of "catastrophic" judge errors across two repeated
+  conditions matches the independence baseline (~0.011 vs. predicted
+  ~0.011); at `repeated_corr=0.9` it's ~3x higher (~0.030), confirming the
+  regime-correlation knob works as intended. End-to-end: PPI correction
+  still pulls the corrected rejection rate back to ~alpha across all three
+  `noise_family.*` scenarios and every test, even though the uncorrected
+  rate is the same maximal ~1.0 as the Gaussian-noise differential-bias
+  baseline -- i.e. PPI's Type-I-inflation fix is not an artifact of
+  assuming symmetric judge-noise.
