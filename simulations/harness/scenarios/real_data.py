@@ -15,17 +15,21 @@ silently skipped by the caller (see ``cases/ci_single.py``).
 
 from __future__ import annotations
 
+import csv as _csv
 import json
 import re
 from collections import defaultdict
 from dataclasses import dataclass
+from itertools import combinations
+from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-from . import CISource
+from . import CISource, CIPairSource
 
 SOURCES = ["dove", "openeval", "all"]
+PAIR_SOURCES = ["dove", "openeval", "inspect", "all"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # DOVE_Lite -- constants and benchmark specs
@@ -841,3 +845,493 @@ def build_real_data_sources(
         )
 
     return [corpus_to_ci_source(c) for c in corpora]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Paired (shared-item) real data -- ported from simulations/sim_tango_real.py
+#
+# Restricted to known-binary benchmarks (same restriction as the legacy
+# script: Newcombe/Tango/Bayes-paired CI formulas are binary-only) and to
+# R=1 (single run per item) -- multi-run real pairs (Tango multirun variants,
+# nested-diff bootstrap, lmm_diff) are a documented exception, deferred to a
+# future ci_nested real-data extension. See harness README known exceptions.
+# ─────────────────────────────────────────────────────────────────────────────
+
+DOVE_PAIR_BINARY_BENCHMARKS = ["hellaswag", "arc_challenge", "gsm8k", "squad", "quality"]
+
+DOVE_PAIR_FILE: dict[str, str] = {
+    "hellaswag": "hellaswag.parquet",
+    "arc_challenge": "ai2_arc.arc_challenge.parquet",
+    "gsm8k": "gsm8k.parquet",
+    "squad": "squad.parquet",
+    "quality": "quality.parquet",
+}
+
+# Default (model, benchmark) pairs to load. Multiple models per benchmark ->
+# pairs are formed from all combinations.
+DOVE_PAIR_DEFAULT_MODEL_BENCH: list[tuple[str, str]] = [
+    ("Llama-3.2-1B-Instruct", "hellaswag"),
+    ("OLMoE-1B-7B-0924-Instruct", "hellaswag"),
+    ("Mistral-7B-Instruct-v0.3", "hellaswag"),
+    ("Meta-Llama-3-8B-Instruct", "hellaswag"),
+    ("Llama-3.2-1B-Instruct", "arc_challenge"),
+    ("OLMoE-1B-7B-0924-Instruct", "arc_challenge"),
+    ("Mistral-7B-Instruct-v0.3", "arc_challenge"),
+    ("Meta-Llama-3-8B-Instruct", "arc_challenge"),
+]
+
+OPENEVAL_PAIR_BINARY_SPECS: dict[str, dict] = {
+    "mmlu-pro": {"metric_name": None, "score_scale": 1.0},
+    "gpqa": {"metric_name": None, "score_scale": 1.0},
+    "boolq": {"metric_name": None, "score_scale": 1.0},
+    "imdb": {"metric_name": None, "score_scale": 1.0},
+    "culturalbench": {"metric_name": None, "score_scale": 1.0},
+    "opentom": {"metric_name": None, "score_scale": 1.0},
+    "bbq": {"metric_name": None, "score_scale": 1.0},
+    "hi-tom": {"metric_name": None, "score_scale": 1.0},
+    "omni-math": {"metric_name": None, "score_scale": 1.0},
+    "emobench": {"metric_name": None, "score_scale": 1.0},
+    "salad-bench": {"metric_name": None, "score_scale": 1.0},
+}
+
+# Default (model, benchmark) pairs confirmed to have data in OpenEval.
+OPENEVAL_PAIR_DEFAULT_MODEL_BENCH: list[tuple[str, str]] = [
+    ("falcon-40b", "bbq"),
+    ("llama-7b", "bbq"),
+    ("qwen-2.5-32b-instruct", "bbq"),
+    ("gemma-2-27b-it", "mmlu-pro"),
+    ("gemma-3-4b-it", "mmlu-pro"),
+    ("qwen-3-30b-instruct", "mmlu-pro"),
+    ("llama-2-70b-hf", "mmlu-pro"),
+    ("DeepSeek-R1", "culturalbench"),
+    ("gpt-4o", "culturalbench"),
+    ("gpt-4.1-mini", "culturalbench"),
+    ("o4-mini", "culturalbench"),
+    ("grok-4", "culturalbench"),
+    ("gpt-4o-mini", "hi-tom"),
+    ("grok-4", "hi-tom"),
+    ("phi-4", "hi-tom"),
+    ("DeepSeek-R1", "hi-tom"),
+    ("DeepSeek-R1", "opentom"),
+    ("gpt-4.1", "opentom"),
+    ("o1", "opentom"),
+    ("DeepSeek-R1", "salad-bench"),
+    ("grok-4", "salad-bench"),
+    ("kimi-k2", "salad-bench"),
+    ("phi-4", "salad-bench"),
+    ("gemma-3-27b-it", "omni-math"),
+    ("qwen-2.5-14b-instruct", "omni-math"),
+    ("qwen-2.5-72b-instruct", "omni-math"),
+    ("llama-2-13b-hf", "omni-math"),
+]
+
+
+@dataclass
+class CorpusPair:
+    """Aligned paired scores for two models on the same benchmark (R=1 only)."""
+    model_a: str
+    model_b: str
+    benchmark_id: str
+    source: str  # "dove" | "openeval" | "inspect"
+    scores_a: np.ndarray  # shape (N,)
+    scores_b: np.ndarray  # shape (N,)
+    true_diff: float  # mean(scores_a - scores_b) -- population ground truth
+    corpus_size: int  # N = number of shared items
+
+
+def corpus_pair_to_ci_pair_source(cp: CorpusPair) -> CIPairSource:
+    """Wrap a real-data CorpusPair as a CIPairSource (WOR subsampling, R=1 only)."""
+    scores_a, scores_b, n_total = cp.scores_a, cp.scores_b, cp.corpus_size
+
+    def _generate_pair(
+        rng: np.random.Generator, n: int, runs: int,
+        _a: np.ndarray = scores_a, _b: np.ndarray = scores_b, _n_total: int = n_total,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if runs != 1:
+            raise ValueError("Real-data pair sources only support runs=1 in this pass.")
+        idxs = rng.choice(_n_total, size=n, replace=False)
+        return _a[idxs].reshape(n, 1), _b[idxs].reshape(n, 1)
+
+    return CIPairSource(
+        label=f"{cp.model_a} vs {cp.model_b}/{cp.benchmark_id}",
+        eval_type="binary",
+        true_diff=cp.true_diff,
+        generate_pair=_generate_pair,
+        source=cp.source,
+        max_n=cp.corpus_size,
+        model_a=cp.model_a,
+        model_b=cp.model_b,
+        benchmark_id=cp.benchmark_id,
+    )
+
+
+def _dove_load_item_scores(
+    model: str,
+    benchmark_id: str,
+    *,
+    dove_repo: str = DOVE_REPO,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+) -> dict[int, float] | None:
+    """Load DOVE_Lite for one (model, benchmark) and return {sample_index: score}."""
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    fname = DOVE_PAIR_FILE.get(benchmark_id)
+    if fname is None:
+        print(f"  Skip  {model}/{benchmark_id}: not a supported binary benchmark")
+        return None
+
+    path_candidates: list[str] = [f"{model}/en/{shots}_shot/{fname}" for shots in (0, 5, 2, 3)]
+    path_candidates.append(f"{model}/en/5_shots/{fname}")
+
+    dataset = None
+    for fp in path_candidates:
+        try:
+            dataset = load_dataset(dove_repo, data_files=fp, split="train", token=hf_token, cache_dir=cache_dir)
+            break
+        except Exception:
+            continue
+
+    if dataset is None:
+        print(f"  Skip  {model}/{benchmark_id}: no DOVE file found")
+        return None
+
+    col_names = dataset.column_names
+    raw_scores: list[float] = []
+    if "evaluation" in col_names:
+        eval_col = dataset["evaluation"]
+        if isinstance(eval_col, list) and eval_col and isinstance(eval_col[0], dict):
+            raw_scores = [float(e.get("score", float("nan"))) for e in eval_col]
+        else:
+            try:
+                raw_scores = [float(v) for v in dataset["evaluation"]["score"]]
+            except Exception:
+                pass
+    if not raw_scores and "score" in col_names:
+        raw_scores = [float(v) for v in dataset["score"]]
+    if not raw_scores:
+        print(f"  Skip  {model}/{benchmark_id}: score extraction failed")
+        return None
+
+    indices: list[int] | None = None
+    if "sample_index" in col_names:
+        try:
+            indices = [int(v) for v in dataset["sample_index"]]
+        except Exception:
+            pass
+    if indices is None and "instance" in col_names:
+        try:
+            inst_col = dataset["instance"]
+            if isinstance(inst_col, list) and inst_col and isinstance(inst_col[0], dict):
+                indices = [int(inst["sample_identifier"]["hf_index"]) for inst in inst_col]
+        except Exception:
+            pass
+
+    if indices is None:
+        return {i: s for i, s in enumerate(raw_scores) if np.isfinite(s)}
+
+    result: dict[int, float] = {}
+    for idx, score in zip(indices, raw_scores):
+        if idx not in result and np.isfinite(score):
+            result[idx] = score
+    return result
+
+
+def build_dove_corpus_pairs(
+    model_bench_pairs: list[tuple[str, str]],
+    *,
+    dove_repo: str = DOVE_REPO,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+    min_pair_size: int = 50,
+) -> list[CorpusPair]:
+    """Build CorpusPairs from DOVE_Lite by loading and aligning on sample_index."""
+    bench_models: dict[str, list[str]] = defaultdict(list)
+    for model, bench in model_bench_pairs:
+        if bench in DOVE_PAIR_BINARY_BENCHMARKS:
+            bench_models[bench].append(model)
+        else:
+            print(f"  Warning: {bench} is not a supported binary DOVE benchmark. Skipping.")
+
+    corpus_pairs: list[CorpusPair] = []
+    for bench, models in bench_models.items():
+        print(f"\nLoading DOVE_Lite: benchmark={bench}, models={models} ...")
+        item_maps: dict[str, dict[int, float]] = {}
+        for model in models:
+            m = _dove_load_item_scores(model, bench, dove_repo=dove_repo, hf_token=hf_token, cache_dir=cache_dir)
+            if m is not None:
+                print(f"  OK    {model}/{bench}: {len(m)} items")
+                item_maps[model] = m
+
+        if len(item_maps) < 2:
+            print(f"  Skip  {bench}: fewer than 2 models loaded successfully.")
+            continue
+
+        loaded_models = list(item_maps.keys())
+        for model_a, model_b in combinations(loaded_models, 2):
+            shared_keys = sorted(item_maps[model_a].keys() & item_maps[model_b].keys())
+            if len(shared_keys) < min_pair_size:
+                print(f"  Skip  ({model_a}, {model_b}) on {bench}: only {len(shared_keys)} shared items < {min_pair_size}")
+                continue
+            scores_a = np.array([item_maps[model_a][k] for k in shared_keys])
+            scores_b = np.array([item_maps[model_b][k] for k in shared_keys])
+            true_diff = float(np.mean(scores_a - scores_b))
+            print(
+                f"  Pair  ({model_a} vs {model_b}) on {bench}: N={len(shared_keys)}, "
+                f"mean_A={np.mean(scores_a):.4f}, mean_B={np.mean(scores_b):.4f}, true_diff={true_diff:+.4f}"
+            )
+            corpus_pairs.append(CorpusPair(
+                model_a=model_a, model_b=model_b, benchmark_id=bench, source="dove",
+                scores_a=scores_a, scores_b=scores_b, true_diff=true_diff, corpus_size=len(shared_keys),
+            ))
+
+    print(f"\n  {len(corpus_pairs)} corpus pairs built from DOVE_Lite.\n")
+    return corpus_pairs
+
+
+def build_openeval_corpus_pairs(
+    model_bench_pairs: list[tuple[str, str]],
+    *,
+    openeval_repo: str = OPENEVAL_REPO,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+    min_pair_size: int = 50,
+) -> list[CorpusPair]:
+    """Build CorpusPairs from OpenEval by aligning on item_id (binary benchmarks only)."""
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    unknown_benches = [b for _, b in model_bench_pairs if b not in OPENEVAL_PAIR_BINARY_SPECS]
+    if unknown_benches:
+        print(
+            f"Warning: unsupported OpenEval binary benchmark IDs: {sorted(set(unknown_benches))}.\n"
+            f"  Supported: {list(OPENEVAL_PAIR_BINARY_SPECS)}"
+        )
+        model_bench_pairs = [(m, b) for m, b in model_bench_pairs if b in OPENEVAL_PAIR_BINARY_SPECS]
+    if not model_bench_pairs:
+        return []
+
+    pairs_set = set(model_bench_pairs)
+    bench_set = {b for _, b in model_bench_pairs}
+
+    print("Loading OpenEval response table (~1.4 GB; cached after first download) ...")
+    response_ds = load_dataset(openeval_repo, "response", split="train", token=hf_token, cache_dir=cache_dir)
+
+    def _keep_row(batch: dict) -> list[bool]:
+        keep = []
+        for rid, model_val in zip(batch["response_id"], batch["model"]):
+            source, _ = _oe_parse_response_id(rid)
+            if source not in bench_set:
+                keep.append(False)
+                continue
+            mname = _oe_get_model_name(model_val)
+            keep.append((mname, source) in pairs_set)
+        return keep
+
+    response_ds = response_ds.filter(_keep_row, batched=True, batch_size=5_000)
+    print(f"  {len(response_ds):,} responses after filtering.")
+
+    item_maps: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    n_dedup = 0
+    for row in response_ds:
+        rid = row.get("response_id", "")
+        source, item_id = _oe_parse_response_id(rid)
+        if source is None:
+            continue
+        mname = _oe_get_model_name(row.get("model"))
+        if mname is None or (mname, source) not in pairs_set:
+            continue
+        key = (mname, source)
+        if item_id in item_maps[key]:
+            n_dedup += 1
+            continue
+        spec = OPENEVAL_PAIR_BINARY_SPECS[source]
+        score = _oe_extract_score(row.get("scores"), spec["metric_name"])
+        if score is not None and np.isfinite(score):
+            item_maps[key][item_id] = float(score) * spec["score_scale"]
+
+    if n_dedup > 0:
+        print(f"  {n_dedup:,} duplicate rows removed (kept first per item x model).")
+
+    for (model, bench), scores_map in list(item_maps.items()):
+        keys = list(scores_map.keys())
+        vals = np.array([scores_map[k] for k in keys], dtype=float)
+        non_binary_mask = ~np.isin(vals, [0.0, 1.0])
+        if np.any(non_binary_mask):
+            rounded_vals = np.clip(np.rint(vals), 0.0, 1.0)
+            unique_bad = np.unique(vals[non_binary_mask])[:5]
+            print(f"  Warning: {model}/{bench} has {int(np.sum(non_binary_mask)):,} non-binary scores (e.g. {unique_bad}). Rounded to {{0,1}}.")
+            item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rounded_vals)}
+
+    corpus_pairs: list[CorpusPair] = []
+    for bench in sorted(bench_set):
+        requested = list(dict.fromkeys(m for m, b in model_bench_pairs if b == bench))
+        bench_models = [m for m in requested if (m, bench) in item_maps and item_maps[(m, bench)]]
+        if len(bench_models) < 2:
+            print(f"  Skip  {bench}: fewer than 2 models with data.")
+            continue
+        print(f"\n  Benchmark: {bench}")
+        for model in bench_models:
+            print(f"    {model}: {len(item_maps[(model, bench)]):,} items")
+        for model_a, model_b in combinations(bench_models, 2):
+            map_a = item_maps[(model_a, bench)]
+            map_b = item_maps[(model_b, bench)]
+            shared_ids = sorted(map_a.keys() & map_b.keys())
+            if len(shared_ids) < min_pair_size:
+                print(f"  Skip  ({model_a}, {model_b}) on {bench}: {len(shared_ids)} shared items < {min_pair_size}")
+                continue
+            scores_a = np.array([map_a[k] for k in shared_ids])
+            scores_b = np.array([map_b[k] for k in shared_ids])
+            bad_a = scores_a[~np.isin(scores_a, [0.0, 1.0])]
+            bad_b = scores_b[~np.isin(scores_b, [0.0, 1.0])]
+            if len(bad_a) > 0 or len(bad_b) > 0:
+                print(f"  Skip  ({model_a} vs {model_b}) on {bench}: non-binary scores after alignment. Skipping pair.")
+                continue
+            true_diff = float(np.mean(scores_a - scores_b))
+            print(
+                f"  Pair  ({model_a} vs {model_b}): N={len(shared_ids)}, mean_A={np.mean(scores_a):.4f}, "
+                f"mean_B={np.mean(scores_b):.4f}, true_diff={true_diff:+.4f}"
+            )
+            corpus_pairs.append(CorpusPair(
+                model_a=model_a, model_b=model_b, benchmark_id=bench, source="openeval",
+                scores_a=scores_a, scores_b=scores_b, true_diff=true_diff, corpus_size=len(shared_ids),
+            ))
+
+    print(f"\n  {len(corpus_pairs)} corpus pairs built from OpenEval.\n")
+    return corpus_pairs
+
+
+def build_inspect_corpus_pairs(
+    csv_path: str,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    *,
+    min_pair_size: int = 50,
+) -> list[CorpusPair]:
+    """Build CorpusPairs (R=1 only) from a CSV produced by collect_inspect_benchmarks.py.
+
+    CSV columns: benchmark, model, item_id, run_idx, score. Any run_idx != 0
+    is discarded (this pass is flat/R=1 only -- see module docstring).
+    """
+    p = Path(csv_path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Inspect data file not found: {csv_path}\n  Run collect_inspect_benchmarks.py first to generate it."
+        )
+
+    item_maps: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    print(f"Loading Inspect AI data from: {csv_path}")
+    n_rows = 0
+    with p.open(newline="") as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            bench = row.get("benchmark", "").strip()
+            model = row.get("model", "").strip()
+            item_id = row.get("item_id", "").strip()
+            try:
+                run_idx = int(row.get("run_idx", 0))
+                score = float(row.get("score", float("nan")))
+            except (ValueError, TypeError):
+                continue
+            if run_idx != 0 or not bench or not model or not item_id or not np.isfinite(score):
+                continue
+            if benchmarks is not None and bench not in benchmarks:
+                continue
+            if models is not None and model not in models:
+                continue
+            item_maps[(model, bench)][item_id] = score
+            n_rows += 1
+
+    print(f"  {n_rows:,} rows loaded (run_idx=0 only).")
+    if not item_maps:
+        print("  No data found -- check --benchmarks / --models filters match the CSV.")
+        return []
+
+    all_benches = sorted({b for _, b in item_maps.keys()})
+    corpus_pairs: list[CorpusPair] = []
+
+    for bench in all_benches:
+        bench_models = sorted(m for m, b in item_maps.keys() if b == bench)
+        if len(bench_models) < 2:
+            print(f"  Skip  {bench}: only {len(bench_models)} model(s) -- need >= 2 to form a pair")
+            continue
+        print(f"\n  Benchmark: {bench}")
+        for model in bench_models:
+            print(f"    {model}: {len(item_maps[(model, bench)]):,} items")
+
+        for model_a, model_b in combinations(bench_models, 2):
+            map_a = item_maps[(model_a, bench)]
+            map_b = item_maps[(model_b, bench)]
+            shared_ids = sorted(map_a.keys() & map_b.keys())
+            if len(shared_ids) < min_pair_size:
+                print(f"  Skip  ({model_a} vs {model_b}) on {bench}: {len(shared_ids)} shared items < {min_pair_size}")
+                continue
+            scores_a = np.array([map_a[k] for k in shared_ids])
+            scores_b = np.array([map_b[k] for k in shared_ids])
+            true_diff = float(np.mean(scores_a - scores_b))
+            short_a = model_a.split("/")[-1] if "/" in model_a else model_a
+            short_b = model_b.split("/")[-1] if "/" in model_b else model_b
+            print(
+                f"  Pair  ({short_a} vs {short_b}): N={len(shared_ids)}, mean_A={np.mean(scores_a):.4f}, "
+                f"mean_B={np.mean(scores_b):.4f}, true_diff={true_diff:+.4f}"
+            )
+            corpus_pairs.append(CorpusPair(
+                model_a=model_a, model_b=model_b, benchmark_id=bench, source="inspect",
+                scores_a=scores_a, scores_b=scores_b, true_diff=true_diff, corpus_size=len(shared_ids),
+            ))
+
+    print(f"\n  {len(corpus_pairs)} corpus pairs built from Inspect AI data.\n")
+    return corpus_pairs
+
+
+def build_real_pair_sources(
+    source: str,
+    *,
+    benchmarks: list[str] | None = None,
+    models: list[str] | None = None,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+    min_pair_size: int = 50,
+    inspect_csv: str | None = None,
+) -> list[CIPairSource]:
+    """Resolve (model, benchmark) pairs for `source` and return them as CIPairSources.
+
+    `source` is one of "dove", "openeval", "inspect", or "all" ("all" skips
+    "inspect" since it requires an explicit --inspect-csv path). R=1 only --
+    see module docstring.
+    """
+    if source not in PAIR_SOURCES:
+        raise ValueError(f"Unknown real-data pair source: {source!r}. Choices: {PAIR_SOURCES}")
+
+    def _filter_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        out = pairs
+        if benchmarks:
+            out = [(m, b) for m, b in out if b in benchmarks]
+        if models:
+            out = [(m, b) for m, b in out if m in models]
+        return out
+
+    corpus_pairs: list[CorpusPair] = []
+    if source in ("dove", "all"):
+        corpus_pairs += build_dove_corpus_pairs(
+            _filter_pairs(DOVE_PAIR_DEFAULT_MODEL_BENCH),
+            hf_token=hf_token, cache_dir=cache_dir, min_pair_size=min_pair_size,
+        )
+    if source in ("openeval", "all"):
+        corpus_pairs += build_openeval_corpus_pairs(
+            _filter_pairs(OPENEVAL_PAIR_DEFAULT_MODEL_BENCH),
+            hf_token=hf_token, cache_dir=cache_dir, min_pair_size=min_pair_size,
+        )
+    if source == "inspect":
+        if not inspect_csv:
+            raise ValueError("--inspect-csv is required when --data-source inspect.")
+        corpus_pairs += build_inspect_corpus_pairs(
+            inspect_csv, models=models, benchmarks=benchmarks, min_pair_size=min_pair_size,
+        )
+
+    return [corpus_pair_to_ci_pair_source(cp) for cp in corpus_pairs]

@@ -15,11 +15,12 @@ import sys
 import time
 from pathlib import Path
 
-from .cases import ci_single
+from .cases import ci_single, ci_paired
 from .manifest import write_manifest
 
 CASES = {
     ci_single.CASE_NAME: ci_single,
+    ci_paired.CASE_NAME: ci_paired,
 }
 
 

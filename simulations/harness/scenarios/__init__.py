@@ -29,3 +29,28 @@ class CISource:
     max_n: int | None = None  # corpus size bound for real-data sources; None = unbounded
     model: str | None = None
     benchmark_id: str | None = None
+
+
+@dataclass
+class CIPairSource:
+    """Paired-difference analogue of CISource (used by cases/ci_paired.py).
+
+    ``generate_pair(rng, n, runs)`` returns ``(a, b)``, each shape ``(n,
+    runs)`` -- one row per sampled input, one column per run. Synthetic
+    sources draw i.i.d.; real-data sources (``scenarios/real_data.py``) draw
+    without replacement from a fixed corpus pair and only support ``runs=1``
+    in this pass (see harness README known exceptions).
+    """
+
+    label: str
+    eval_type: str
+    true_diff: float
+    generate_pair: Callable[[np.random.Generator, int, int], tuple[np.ndarray, np.ndarray]]
+    source: str = "synthetic"  # "synthetic" | "dove" | "openeval" | "inspect"
+    max_n: int | None = None
+    icc: float = 0.0
+    cohens_d: float = 0.0
+    is_null: bool = False
+    model_a: str | None = None
+    model_b: str | None = None
+    benchmark_id: str | None = None
