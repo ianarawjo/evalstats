@@ -1209,6 +1209,23 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
+def quick_args(base_seed: int = 43) -> argparse.Namespace:
+    """Fast sanity-check preset for --quick-test: same shape catalog as
+    official_args() but with reps/sizes/bootstrap_n cut down for a quick pass
+    that confirms the pipeline (incl. --latex output) still works."""
+    return argparse.Namespace(
+        data_source="synthetic", scenario_suite="standard", eval_types=None,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
+        runs=1, statistic="mean", reps=3, bootstrap_n=200, bayes_n=200, alpha=0.05,
+        sizes=[10, 30, 50],
+        seed=base_seed, icc_values=[0.20], cohens_d_values=[0.3], include_null=True,
+        progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
+        nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
+        pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
+        latex=True,
+    )
+
+
 def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     """Canonical --nested-mode official preset, mirroring sim_compare_boot_nested.py's
     --official-test (pairwise-estimand phase). Not wired into --official-tests (the

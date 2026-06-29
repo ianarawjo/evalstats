@@ -1141,6 +1141,22 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
+def quick_args(base_seed: int = 43) -> argparse.Namespace:
+    """Fast sanity-check preset for --quick-test: runs all three modes
+    (pairwise, multiarm, ppi) with cut-down sweeps/reps/tests for a quick pass
+    that confirms the pipeline (incl. --latex output) still works. Restricts
+    eval_types/tests/k_arms rather than sweeping the full catalog -- this is
+    for pipeline confidence, not a representative result."""
+    return argparse.Namespace(
+        mode="all", reps=3, alpha=0.05, seed=base_seed,
+        progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
+        scenario_suite="standard", eval_types=["continuous"], sizes=[10, 30, 50], runs=1, statistic="mean",
+        bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
+        k_arms=3, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
+        tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
+    )
+
+
 def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
     try:
