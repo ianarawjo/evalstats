@@ -88,6 +88,7 @@ with warnings.catch_warnings():
     )
     from evalstats.core.mixed_effects import _fit_lmm_general, _get_fe_vcov_sm
 
+from ..latex_tables import booktabs_table, escape_latex, eval_type_label
 from ..scenarios import CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -345,7 +346,46 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     print()
 
 
-def save_results_artifacts_pairwise(*, results: list[PairwiseResult], alpha: float, out_dir: str, run_stem: str) -> list[str]:
+def latex_pairwise_overall_summary(results: list[PairwiseResult], alpha: float) -> str:
+    """LaTeX booktabs overall summary: per-method Type-I error + power, collapsed across eval types/sizes."""
+    present_methods = {r.method for r in results}
+    method_labels = [m.name for m in order_present_methods(present_methods)]
+    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+    conditions = sorted({r.condition for r in results if r.condition != "null"})
+
+    rows = []
+    for m in method_labels:
+        m_rows = [r for r in results if r.method == m]
+        if not m_rows:
+            continue
+        covered = {r.eval_type for r in m_rows}
+        null_rows = [r for r in m_rows if r.condition == "null"]
+        c_tot = sum(r.rejects for r in null_rows)
+        t_tot = sum(r.n_reps for r in null_rows)
+        type1 = c_tot / t_tot if t_tot > 0 else float("nan")
+        power_cells = []
+        for c in conditions:
+            c_rows = [r for r in m_rows if r.condition == c]
+            cr = sum(r.rejects for r in c_rows)
+            ct = sum(r.n_reps for r in c_rows)
+            power_cells.append(cr / ct if ct > 0 else float("nan"))
+        mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
+        rows.append([
+            escape_latex(m),
+            f"{type1:.3f}" if np.isfinite(type1) else "-",
+            f"{mean_power:.3f}" if np.isfinite(mean_power) else "-",
+            eval_type_label(covered, eval_types_present),
+        ])
+
+    return booktabs_table(
+        caption=f"pvalues (pairwise, non-PPI): Type-I error and mean power across conditions (nominal alpha={alpha}).",
+        label="tab:pvalues_pairwise_overall",
+        columns=["Method", "Type-I error", "Mean power", "Eval types"],
+        rows=rows,
+    )
+
+
+def save_results_artifacts_pairwise(*, results: list[PairwiseResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_pairwise_results.csv"
@@ -361,7 +401,10 @@ def save_results_artifacts_pairwise(*, results: list[PairwiseResult], alpha: flo
     buf = io.StringIO()
     with redirect_stdout(buf):
         print_pairwise_report(results, alpha=alpha)
-    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    summary_text = buf.getvalue()
+    if latex:
+        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_pairwise_overall_summary(results, alpha=alpha)
+    summary_path.write_text(summary_text, encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
     return [str(csv_path), str(summary_path)]
@@ -592,7 +635,39 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
     print()
 
 
-def save_results_artifacts_multiarm(*, results: list[MultiArmResult], alpha: float, out_dir: str, run_stem: str) -> list[str]:
+def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) -> str:
+    """LaTeX booktabs overall summary: per-correction FWER + best-arm power, collapsed across eval types."""
+    corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
+    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+
+    rows = []
+    for corr in corrections:
+        c_rows = [r for r in results if r.correction == corr]
+        covered = {r.eval_type for r in c_rows}
+        null_rows = [r for r in c_rows if r.condition == "null"]
+        alt_rows = [r for r in c_rows if r.condition == "alt"]
+        fwer_t = sum(r.n_reps for r in null_rows)
+        fwer_c = sum(r.any_reject for r in null_rows)
+        power_t = sum(r.n_reps for r in alt_rows)
+        power_c = sum(r.best_selected for r in alt_rows)
+        fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
+        power = power_c / power_t if power_t > 0 else float("nan")
+        rows.append([
+            escape_latex(corr),
+            f"{fwer:.3f}" if np.isfinite(fwer) else "-",
+            f"{power:.3f}" if np.isfinite(power) else "-",
+            eval_type_label(covered, eval_types_present),
+        ])
+
+    return booktabs_table(
+        caption=f"pvalues (multi-arm, non-PPI): FWER and best-arm selection power (nominal alpha={alpha}).",
+        label="tab:pvalues_multiarm_overall",
+        columns=["Correction", "FWER", "Best-arm power", "Eval types"],
+        rows=rows,
+    )
+
+
+def save_results_artifacts_multiarm(*, results: list[MultiArmResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_multiarm_results.csv"
@@ -608,7 +683,10 @@ def save_results_artifacts_multiarm(*, results: list[MultiArmResult], alpha: flo
     buf = io.StringIO()
     with redirect_stdout(buf):
         print_multiarm_report(results, alpha=alpha)
-    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    summary_text = buf.getvalue()
+    if latex:
+        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_multiarm_overall_summary(results, alpha=alpha)
+    summary_path.write_text(summary_text, encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
     return [str(csv_path), str(summary_path)]
@@ -902,7 +980,36 @@ def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
     print()
 
 
-def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str) -> list[str]:
+def latex_ppi_overall_summary(results: list[PPIResult], alpha: float) -> str:
+    """LaTeX booktabs overall summary: per-test corrected/uncorrected Type-I rate, averaged across scenarios.
+
+    PPIResult has no eval_type axis (scenarios are judge-bias/noise sweeps, not
+    distribution shapes), so there's no "Eval types" column here.
+    """
+    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    rows = []
+    for t in tests:
+        t_rows = [r for r in results if r.test == t]
+        c_tot = sum(r.corrected_rejects for r in t_rows)
+        u_tot = sum(r.uncorrected_rejects for r in t_rows)
+        n_tot = sum(r.n_reps for r in t_rows)
+        rate_c = c_tot / n_tot if n_tot > 0 else float("nan")
+        rate_u = u_tot / n_tot if n_tot > 0 else float("nan")
+        rows.append([
+            escape_latex(t),
+            f"{rate_c:.3f}" if np.isfinite(rate_c) else "-",
+            f"{rate_u:.3f}" if np.isfinite(rate_u) else "-",
+        ])
+
+    return booktabs_table(
+        caption=f"pvalues (PPI-corrected): corrected vs. uncorrected Type-I rate (nominal alpha={alpha}).",
+        label="tab:pvalues_ppi_overall",
+        columns=["Test", "Corrected", "Uncorrected"],
+        rows=rows,
+    )
+
+
+def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_results.csv"
@@ -919,7 +1026,10 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
     buf = io.StringIO()
     with redirect_stdout(buf):
         print_ppi_report(results, alpha=alpha)
-    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    summary_text = buf.getvalue()
+    if latex:
+        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_ppi_overall_summary(results, alpha=alpha)
+    summary_path.write_text(summary_text, encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
     return [str(csv_path), str(summary_path)]
@@ -979,6 +1089,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--save-results", choices=RESULTS_MODES, default="save")
     parser.add_argument("--out-dir", default="simulations/out")
     parser.add_argument("--plots-dir", default=None)
+    parser.add_argument("--latex", action="store_true", default=False,
+                         help="Append a LaTeX booktabs overall-summary table to each saved summary .log file.")
 
     # pairwise mode
     parser.add_argument("--data-source", choices=DATA_SOURCES, default="synthetic",
@@ -1088,7 +1200,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             run_stem = f"pvalues_pairwise_reps{args.reps}_{stamp}"
             if args.save_results == "save":
-                output_paths += save_results_artifacts_pairwise(results=pw_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem)
+                output_paths += save_results_artifacts_pairwise(results=pw_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False))
             if args.plots == "save":
                 plot_path = save_pairwise_typeI_power_plot(results=pw_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_power.png"))
                 output_paths.append(plot_path)
@@ -1118,7 +1230,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             run_stem = f"pvalues_multiarm_reps{args.reps}_{stamp}"
             if args.save_results == "save":
-                output_paths += save_results_artifacts_multiarm(results=ma_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem)
+                output_paths += save_results_artifacts_multiarm(results=ma_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False))
             if args.plots == "save":
                 plot_path = save_multiarm_fwer_power_plot(results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_fwer_power.png"))
                 output_paths.append(plot_path)
@@ -1143,7 +1255,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             run_stem = f"pvalues_ppi_reps{args.reps}_{stamp}"
             if args.save_results == "save":
-                output_paths += save_results_artifacts_ppi(results=ppi_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem)
+                output_paths += save_results_artifacts_ppi(results=ppi_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False))
             if args.plots == "save":
                 plot_path = save_ppi_typeI_plot(results=ppi_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected.png"))
                 output_paths.append(plot_path)

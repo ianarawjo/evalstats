@@ -64,6 +64,7 @@ with warnings.catch_warnings():
         nig_ci_nested,
     )
 
+from ..latex_tables import booktabs_table, escape_latex, eval_type_label
 from ..scenarios import CISource, EVAL_TYPES
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -702,7 +703,61 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
-def save_results_artifacts(*, results: list[SimResult], alpha: float, sample_sizes: list[int], n_reps: int, out_dir: str, run_stem: str) -> list[str]:
+def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
+    """LaTeX booktabs version of print_report's OVERALL SUMMARY block."""
+    target = 1.0 - alpha
+    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+    present_methods = {r.method for r in results}
+    method_labels = [m.name for m in order_present_methods(present_methods)]
+
+    agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    for r in results:
+        cov = r.covered / r.n_reps
+        width = r.total_width / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width))
+        c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
+        agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
+
+    all_cov: dict[str, list[float]] = defaultdict(list)
+    all_wid: dict[str, list[float]] = defaultdict(list)
+    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    method_eval_types: dict[str, set[str]] = defaultdict(set)
+    for (et, m, n), vals in agg.items():
+        all_cov[m].extend(v[0] for v in vals)
+        all_wid[m].extend(v[1] for v in vals)
+        method_eval_types[m].add(et)
+        c, t = agg_counts[(et, m, n)]
+        c_prev, t_prev = all_counts[m]
+        all_counts[m] = (c_prev + c, t_prev + t)
+
+    rows = []
+    for m in method_labels:
+        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
+        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
+        c_tot, t_tot = all_counts[m]
+        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        avg_ms, se_ms = _time_stats([r for r in results if r.method == m])
+        time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
+        et_label = eval_type_label(method_eval_types[m], eval_types_present)
+        rows.append([
+            escape_latex(m),
+            f"{mc:.3f}" if np.isfinite(mc) else "-",
+            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+            f"{mw:.4f}" if np.isfinite(mw) else "-",
+            time_str,
+            et_label,
+        ])
+
+    return booktabs_table(
+        caption=f"ci\\_single: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}).",
+        label="tab:ci_single_overall",
+        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Time (ms)", "Eval types"],
+        rows=rows,
+    )
+
+
+def save_results_artifacts(*, results: list[SimResult], alpha: float, sample_sizes: list[int], n_reps: int, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
 
@@ -734,7 +789,10 @@ def save_results_artifacts(*, results: list[SimResult], alpha: float, sample_siz
     buf = io.StringIO()
     with redirect_stdout(buf):
         print_report(results, sample_sizes=sample_sizes, alpha=alpha, n_reps=n_reps)
-    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    summary_text = buf.getvalue()
+    if latex:
+        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_overall_summary(results, alpha=alpha, n_reps=n_reps)
+    summary_path.write_text(summary_text, encoding="utf-8")
 
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -1055,6 +1113,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Nested mode: optional ICC sweep, converted to run-noise via f_run = 1 - ICC")
     parser.add_argument("--bayes-n", type=int, default=None, metavar="N",
                          help="Nested mode: Bayesian bootstrap draws (default: --bootstrap-n)")
+    parser.add_argument("--latex", action="store_true", default=False,
+                         help="Append a LaTeX booktabs overall-summary table to the saved summary .log file.")
     parser.add_argument("--heteroscedastic", action="store_true", default=False,
                          help="Nested mode: run noise scales with input value (mimics real LLM eval variability)")
 
@@ -1137,7 +1197,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             if args.save_results == "save":
                 output_paths += save_results_artifacts(
                     results=results, alpha=args.alpha, sample_sizes=args.sizes, n_reps=args.reps,
-                    out_dir=args.out_dir, run_stem=run_stem,
+                    out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False),
                 )
 
             if args.plots == "save":
@@ -1202,7 +1262,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         if args.save_results == "save":
             output_paths += save_results_artifacts(
                 results=results, alpha=args.alpha, sample_sizes=args.sizes, n_reps=args.reps,
-                out_dir=args.out_dir, run_stem=run_stem,
+                out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False),
             )
 
         if args.plots == "save":
