@@ -167,7 +167,7 @@ class _ProgressReporter:
             return
         frac = min(step, self.total) / self.total
         filled = int(28 * frac)
-        bar = "#" * filled + "." * (28 - filled)
+        bar = "█" * filled + "░" * (28 - filled)
         elapsed = max(now - self.start, 1e-9)
         rate = step / elapsed
         eta_sec = max(self.total - step, 0) / max(rate, 1e-12)
@@ -958,25 +958,189 @@ def run_ppi_simulation(
     return results
 
 
-def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
-    print(f"\n{'='*90}\n  PVALUES (PPI-CORRECTED) -- TYPE I ERROR CALIBRATION\n  Nominal alpha: {alpha}\n{'='*90}")
-    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
-    print(f"\n  {'Scenario':<32} {'Test':<14} {'corrected':>10} {'uncorrected':>12} {'failed':>7}")
-    for r in results:
-        rate_c = r.corrected_rejects / r.n_reps if r.n_reps > 0 else float("nan")
-        rate_u = r.uncorrected_rejects / r.n_reps if r.n_reps > 0 else float("nan")
-        print(f"  {r.name:<32} {r.test:<14} {rate_c:>10.3f} {rate_u:>12.3f} {r.n_failed:>7d}")
+def _ppi_wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Wilson score interval for a Bernoulli rate (ported from
+    sim_type_i_calibration.py's ``_wilson_interval``)."""
+    if n <= 0:
+        return (float("nan"), float("nan"))
+    p = k / n
+    z2 = z * z
+    denom = 1.0 + z2 / n
+    center = (p + z2 / (2.0 * n)) / denom
+    radius = (z / denom) * ((p * (1.0 - p) / n + z2 / (4.0 * n * n)) ** 0.5)
+    lo = max(0.0, center - radius)
+    hi = min(1.0, center + radius)
+    return lo, hi
 
-    print(f"\n{'-'*90}\n  OVERALL SUMMARY (averaged across all scenarios)\n{'-'*90}")
-    print(f"\n  {'Test':<14} {'corrected':>10} {'uncorrected':>12}")
+
+def _ppi_holm_rejections(pvals: list[tuple[tuple[str, str], float]], alpha: float = 0.05) -> set[tuple[str, str]]:
+    """Rejected (scenario, test) cells under Holm-Bonferroni family-wise error
+    control (ported from sim_type_i_calibration.py's ``_holm_rejections``)."""
+    ordered = sorted(pvals, key=lambda x: x[1])
+    m = len(ordered)
+    rejected: set[tuple[str, str]] = set()
+    for i, (cell, p) in enumerate(ordered):
+        thresh = alpha / (m - i)
+        if p <= thresh:
+            rejected.add(cell)
+        else:
+            break
+    return rejected
+
+
+def _fmt_ppi_rate(rate: float | None, flag2: float, flag3: float) -> str:
+    if rate is None:
+        return "  n/a  "
+    s = f"{rate:.3f}"
+    if rate > flag3:
+        return s + "●●"
+    if rate > flag2:
+        return s + "● "
+    return s + "  "
+
+
+def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
+    """Scenario x test calibration table, mirroring sim_type_i_calibration.py's
+    ``_print_table``: tag-grouped scenario rows, one column per test, per-cell
+    2-sigma/3-sigma inflation flags, a Wilson-CI miscalibration flag (dagger),
+    a Holm-Bonferroni family-wise flag (double-dagger), and a SUMMARY section
+    with flag counts plus per-test corrected/uncorrected max/mean/median --
+    instead of one flat row per (scenario, test) cell and a single
+    averaged-rate table.
+    """
+    if not results:
+        print("\n  (no PPI results)")
+        return
+
+    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    n_reps = results[0].n_reps
+    sigma = (alpha * (1 - alpha) / n_reps) ** 0.5 if n_reps > 0 else float("nan")
+    flag2 = alpha + 2 * sigma
+    flag3 = alpha + 3 * sigma
+
+    width = 90
+    bar = "-" * width
+    dbar = "=" * width
+    col_w = max(9, max((len(t) for t in tests), default=9) + 1)
+
+    cell: dict[tuple[str, str], PPIResult] = {(r.name, r.test): r for r in results}
+    scenario_order: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    for r in results:
+        if r.name not in seen:
+            seen.add(r.name)
+            scenario_order.append((r.name, r.tag))
+    name_w = max((len(name) for name, _tag in scenario_order), default=30) + 2
+
+    tag_order: list[str] = []
+    for _, tag in scenario_order:
+        if tag not in tag_order:
+            tag_order.append(tag)
+
+    def rate_of(name: str, test: str) -> float | None:
+        r = cell.get((name, test))
+        if r is None or r.n_reps <= 0:
+            return None
+        return r.corrected_rejects / r.n_reps
+
+    def uncorrected_rate_of(name: str, test: str) -> float | None:
+        r = cell.get((name, test))
+        if r is None or r.n_reps <= 0:
+            return None
+        return r.uncorrected_rejects / r.n_reps
+
+    def wilson_outside(name: str, test: str) -> bool:
+        r = cell.get((name, test))
+        if r is None or r.n_reps <= 0:
+            return False
+        lo, hi = _ppi_wilson_interval(r.corrected_rejects, r.n_reps)
+        return (alpha < lo) or (alpha > hi)
+
+    print()
+    print(dbar)
+    print("  PVALUES (PPI-CORRECTED) -- TYPE I ERROR CALIBRATION")
+    print(f"  n_reps={n_reps}  alpha={alpha}")
+    print(f"  2σ flag (●): rate > {flag2:.3f}    3σ flag (●●): rate > {flag3:.3f}")
+    print("  Wilson flag (†): 95% CI for rejection rate excludes alpha")
+    print("  Holm flag (‡): exact binomial miscalibration survives family-wise correction")
+    print(dbar)
+
+    print()
+    print(f"  {'Scenario':<{name_w}}" + "".join(f"{t:^{col_w}}" for t in tests))
+    print(bar)
+
+    pvals: list[tuple[tuple[str, str], float]] = []
+    for name, _tag in scenario_order:
+        for t in tests:
+            r = cell.get((name, t))
+            if r is not None and r.n_reps > 0:
+                p = float(scipy_stats.binomtest(r.corrected_rejects, r.n_reps, alpha, alternative="two-sided").pvalue)
+                pvals.append(((name, t), p))
+    holm_bad = _ppi_holm_rejections(pvals, alpha=0.05)
+
+    for tag in tag_order:
+        print(f"\n[{tag}]")
+        for name, sc_tag in scenario_order:
+            if sc_tag != tag:
+                continue
+            row = f"  {name:<{name_w - 2}}"
+            for t in tests:
+                row += f" {_fmt_ppi_rate(rate_of(name, t), flag2, flag3):<{col_w - 1}}"
+            n_failed_row = sum(cell[(name, t)].n_failed for t in tests if (name, t) in cell)
+            if n_failed_row:
+                row += f" ✗{n_failed_row}"
+            if any(wilson_outside(name, t) for t in tests):
+                row += "  †"
+            if any((name, t) in holm_bad for t in tests):
+                row += "‡"
+            print(row)
+
+    # -- Summary --------------------------------------------------------------
+    print()
+    print(bar)
+    print("SUMMARY")
+    print()
+
+    n_scenarios = len(scenario_order)
+    n_conditions = sum(1 for name, _tag in scenario_order for t in tests if (name, t) in cell)
+    total_failed = sum(r.n_failed for r in results)
+
+    all_corr = [rate_of(name, t) for name, _tag in scenario_order for t in tests]
+    all_unc = [uncorrected_rate_of(name, t) for name, _tag in scenario_order for t in tests]
+
+    flags2 = sum(1 for r in all_corr if r is not None and r > flag2)
+    flags3 = sum(1 for r in all_corr if r is not None and r > flag3)
+    wilson_miscal = sum(1 for name, _tag in scenario_order for t in tests if wilson_outside(name, t))
+    nominal_miscal = sum(1 for _, p in pvals if p < 0.05)
+    uncorrected_flags2 = sum(1 for r in all_unc if r is not None and r > flag2)
+    uncorrected_flags3 = sum(1 for r in all_unc if r is not None and r > flag3)
+
+    print(f"  Scenarios: {n_scenarios}  |  Tests: {len(tests)}  |  Conditions: {n_conditions}  |  Failed reps: {total_failed}")
+    print(f"  Inflated at 2σ (rate > {flag2:.3f}):  {flags2}/{n_conditions}")
+    print(f"  Inflated at 3σ (rate > {flag3:.3f}):  {flags3}/{n_conditions}")
+    print(f"  Wilson miscalibrated (alpha outside 95% CI): {wilson_miscal}/{n_conditions}")
+    print(f"  Exact-binomial p<0.05 (corrected rates, unadjusted): {nominal_miscal}/{n_conditions}")
+    print(f"  Holm-confirmed miscalibrated cells: {len(holm_bad)}/{n_conditions}")
+    print()
+    print("  Uncorrected aggregate")
+    print(f"  Inflated at 2σ (rate > {flag2:.3f}):  {uncorrected_flags2}/{n_conditions}")
+    print(f"  Inflated at 3σ (rate > {flag3:.3f}):  {uncorrected_flags3}/{n_conditions}")
+    print()
+    print(f"  {'Test':<14}  {'corr max':>9}  {'corr mean':>9}  {'corr med':>9}  {'unc max':>9}  {'unc mean':>9}  {'unc med':>9}")
     for t in tests:
-        t_rows = [r for r in results if r.test == t]
-        c_tot = sum(r.corrected_rejects for r in t_rows)
-        u_tot = sum(r.uncorrected_rejects for r in t_rows)
-        n_tot = sum(r.n_reps for r in t_rows)
-        rate_c = c_tot / n_tot if n_tot > 0 else float("nan")
-        rate_u = u_tot / n_tot if n_tot > 0 else float("nan")
-        print(f"  {t:<14} {rate_c:>10.3f} {rate_u:>12.3f}")
+        col_rates = [r for r in (rate_of(name, t) for name, _tag in scenario_order) if r is not None]
+        col_uncorrected = [r for r in (uncorrected_rate_of(name, t) for name, _tag in scenario_order) if r is not None]
+        if col_rates or col_uncorrected:
+            corr_max = max(col_rates) if col_rates else float("nan")
+            corr_mean = float(np.mean(col_rates)) if col_rates else float("nan")
+            corr_median = float(np.median(col_rates)) if col_rates else float("nan")
+            unc_max = max(col_uncorrected) if col_uncorrected else float("nan")
+            unc_mean = float(np.mean(col_uncorrected)) if col_uncorrected else float("nan")
+            unc_median = float(np.median(col_uncorrected)) if col_uncorrected else float("nan")
+            print(
+                f"  {t:<14}  {corr_max:>9.3f}  {corr_mean:>9.3f}  {corr_median:>9.3f}  "
+                f"{unc_max:>9.3f}  {unc_mean:>9.3f}  {unc_median:>9.3f}"
+            )
     print()
 
 
@@ -1188,15 +1352,20 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
     ``data_source="real"`` (or 'openeval'/'inspect') restricts mode to
     'pairwise' -- the only mode whose sources come from --data-source;
     multiarm/ppi are synthetic-only (see README), so re-running them here
-    would just recompute the identical synthetic sweep a second time.
-    --quick-test calls this twice per case (synthetic, then real) so the
-    real-data pairwise path doesn't go unexercised between --official-tests
-    runs."""
+    would just recompute the identical synthetic sweep a second time. It also
+    switches eval_types to 'binary': real-data pairwise sources are binary-
+    only by construction (corpus_pair_to_ci_pair_source hardcodes
+    eval_type="binary" for both openeval and inspect -- see README's "known
+    exceptions"), so the synthetic variant's 'continuous' filter would leave
+    zero sources. --quick-test calls this twice per case (synthetic, then
+    real) so the real-data pairwise path doesn't go unexercised between
+    --official-tests runs."""
     mode = "all" if data_source == "synthetic" else "pairwise"
+    eval_types = ["continuous"] if data_source == "synthetic" else ["binary"]
     return argparse.Namespace(
         mode=mode, reps=3, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
-        data_source=data_source, scenario_suite="standard", eval_types=["continuous"], sizes=[10, 30, 50],
+        data_source=data_source, scenario_suite="standard", eval_types=eval_types, sizes=[10, 30, 50],
         runs=1, statistic="mean",
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,

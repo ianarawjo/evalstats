@@ -417,7 +417,7 @@ class _ProgressReporter:
             return
         frac = min(step, self.total) / self.total
         filled = int(28 * frac)
-        bar = "#" * filled + "." * (28 - filled)
+        bar = "█" * filled + "░" * (28 - filled)
         elapsed = max(now - self.start, 1e-9)
         rate = step / elapsed
         eta_sec = max(self.total - step, 0) / max(rate, 1e-12)
