@@ -16,7 +16,11 @@ from pathlib import Path
 from .cases import CaseResult
 
 
-def write_manifest(out_dir: str, results: list[CaseResult], args_by_case: dict[str, argparse.Namespace]) -> str:
+def write_manifest(out_dir: str, results: list[CaseResult], args_list: list[argparse.Namespace]) -> str:
+    """``args_list`` must be parallel to ``results`` (same length, same order)
+    -- a plain list rather than a dict keyed by case_name, since a single
+    case can now run more than once per invocation (--quick-test's synthetic
+    + real data-source calls), which would collide on a case_name key."""
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     manifest_path = out_base / "manifest.json"
@@ -31,9 +35,9 @@ def write_manifest(out_dir: str, results: list[CaseResult], args_by_case: dict[s
                 "output_paths": r.output_paths,
                 "key_metrics": r.key_metrics,
                 "error": r.error,
-                "args": vars(args_by_case[r.case_name]) if r.case_name in args_by_case else None,
+                "args": vars(case_args),
             }
-            for r in results
+            for r, case_args in zip(results, args_list)
         ],
     }
     manifest_path.write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")

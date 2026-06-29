@@ -51,10 +51,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--quick-test", action="store_true", default=False,
         help=(
             "Run a fast sanity-check preset for every case (sizes=10,30,50; "
-            "reps=3; --plots save; --progress bar; --latex), writing every "
+            "reps=3; --plots save; --progress bar; --latex), TWICE per case "
+            "(once --data-source synthetic, once real), writing every "
             "artifact into one timestamped simulations/out/quick_<timestamp>/ "
             "directory with a manifest.json index. For confirming the pipeline "
-            "still works before committing to a full --official-tests run."
+            "still works (synthetic AND real-data paths) before committing to "
+            "a full --official-tests run."
         ),
     )
     subparsers = parser.add_subparsers(dest="case", metavar="case")
@@ -65,27 +67,34 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _run_preset(case_names: list[str], args_factory, dir_prefix: str, label: str) -> bool:
-    """Run `args_factory()` for each named case, writing every artifact into one
+    """Run `args_factory(module)` for each named case -- it may return a single
+    Namespace or a list of Namespaces to run back to back (e.g. --quick-test's
+    synthetic + real data-source calls) -- writing every artifact into one
     timestamped simulations/out/<dir_prefix>_<timestamp>/ directory with a
-    manifest.json index. Returns True if every case succeeded."""
+    manifest.json index. Returns True if every case (and every variant) succeeded."""
     stamp = time.strftime("%Y%m%d_%H%M%S")
     manifest_out_dir = f"simulations/out/{dir_prefix}_{stamp}"
     results = []
-    args_by_case: dict[str, argparse.Namespace] = {}
+    args_list: list[argparse.Namespace] = []
 
     for name in case_names:
         module = CASES[name]
-        case_args = args_factory(module)
-        case_args.out_dir = manifest_out_dir
-        case_args.plots_dir = str(Path(manifest_out_dir) / "plots")
-        print(f"\n{'=' * 72}\n{label}: {name}\n{'=' * 72}")
-        result = module.run(case_args)
-        results.append(result)
-        args_by_case[name] = case_args
-        if result.status != "ok":
-            print(f"\n  Case {name} FAILED: {result.error}")
+        variants = args_factory(module)
+        if isinstance(variants, argparse.Namespace):
+            variants = [variants]
+        for case_args in variants:
+            case_args.out_dir = manifest_out_dir
+            case_args.plots_dir = str(Path(manifest_out_dir) / "plots")
+            data_source = getattr(case_args, "data_source", None)
+            suffix = f" (data_source={data_source})" if data_source else ""
+            print(f"\n{'=' * 72}\n{label}: {name}{suffix}\n{'=' * 72}")
+            result = module.run(case_args)
+            results.append(result)
+            args_list.append(case_args)
+            if result.status != "ok":
+                print(f"\n  Case {name} FAILED: {result.error}")
 
-    write_manifest(manifest_out_dir, results, args_by_case)
+    write_manifest(manifest_out_dir, results, args_list)
 
     failed = [r for r in results if r.status != "ok"]
     if failed:
@@ -114,7 +123,11 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.quick_test:
-        ok = _run_preset(list(CASES), lambda module: module.quick_args(), "quick", "QUICK TEST")
+        ok = _run_preset(
+            list(CASES),
+            lambda module: [module.quick_args(), module.quick_args(data_source="real")],
+            "quick", "QUICK TEST",
+        )
         if not ok:
             sys.exit(1)
         return

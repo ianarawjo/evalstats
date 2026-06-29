@@ -1036,32 +1036,53 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
 
 
 def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str) -> str:
-    """Corrected vs. uncorrected Type-I rate per test, averaged across scenarios."""
+    """Per-scenario corrected vs. uncorrected Type-I rate scatter, one jittered
+    column per test. Mirrors sim_type_i_calibration.py's ``_plot_results``
+    scatter (gray uncorrected dots behind colored corrected dots, one dot per
+    scenario, dashed alpha line) rather than collapsing every scenario into a
+    single averaged bar, which hid per-scenario miscalibration entirely.
+    """
     import matplotlib.pyplot as plt
 
     tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
-    fig, ax = plt.subplots(figsize=(9.0, 5.0))
-    x = np.arange(len(tests))
-    width = 0.35
+    fig, ax = plt.subplots(figsize=(10.0, 5.8))
+    rng = np.random.default_rng(0)
+    colors = [plt.cm.tab10(i) for i in range(len(tests))]
+    unc_label_added = False
+    all_rates: list[np.ndarray] = []
 
-    rates_c, rates_u = [], []
-    for t in tests:
+    for j, t in enumerate(tests):
         t_rows = [r for r in results if r.test == t]
-        c_tot = sum(r.corrected_rejects for r in t_rows)
-        u_tot = sum(r.uncorrected_rejects for r in t_rows)
-        n_tot = sum(r.n_reps for r in t_rows)
-        rates_c.append(c_tot / n_tot if n_tot > 0 else float("nan"))
-        rates_u.append(u_tot / n_tot if n_tot > 0 else float("nan"))
+        rates_u = np.array([r.uncorrected_rejects / r.n_reps if r.n_reps else float("nan") for r in t_rows])
+        rates_c = np.array([r.corrected_rejects / r.n_reps if r.n_reps else float("nan") for r in t_rows])
+        all_rates.append(rates_u)
+        all_rates.append(rates_c)
 
-    ax.bar(x - width / 2, rates_u, width, label="uncorrected", color="#d62728", alpha=0.85)
-    ax.bar(x + width / 2, rates_c, width, label="PPI-corrected", color="#2ca02c", alpha=0.85)
-    ax.axhline(alpha, color="black", linestyle="--", linewidth=1.2, label=f"nominal alpha={alpha}")
-    ax.set_xticks(x)
+        keep_u = np.isfinite(rates_u)
+        x_u = j + rng.uniform(-0.16, 0.16, size=int(np.sum(keep_u)))
+        ax.scatter(
+            x_u, rates_u[keep_u], s=18, alpha=0.35, color="#808080",
+            label="uncorrected" if not unc_label_added else None, zorder=1,
+        )
+        unc_label_added = True
+
+        keep_c = np.isfinite(rates_c)
+        x_c = j + rng.uniform(-0.16, 0.16, size=int(np.sum(keep_c)))
+        ax.scatter(x_c, rates_c[keep_c], s=20, alpha=0.65, color=colors[j], label=t, zorder=2)
+
+    ax.axhline(alpha, color="black", ls="--", lw=1.1, label=f"alpha={alpha}")
+    ax.set_xlim(-0.5, len(tests) - 0.5)
+    scatter_max = np.nanmax(np.concatenate(all_rates)) if all_rates else float("nan")
+    if not np.isfinite(scatter_max):
+        scatter_max = 0.2
+    ax.set_ylim(0.0, max(0.2, float(scatter_max) * 1.05))
+    ax.set_xticks(np.arange(len(tests)))
     ax.set_xticklabels(tests, rotation=30, ha="right", fontsize=8)
-    ax.set_ylabel("Type-I rejection rate (averaged across scenarios)")
-    ax.set_title("pvalues (PPI-corrected): Type-I calibration, corrected vs. uncorrected")
-    ax.legend(fontsize=8)
-    ax.grid(axis="y", linestyle="--", linewidth=0.5, alpha=0.4)
+    ax.set_ylabel("Observed rejection rate")
+    ax.set_xlabel("Test")
+    ax.set_title("pvalues (PPI-corrected): Type-I calibration scatter (per-scenario cells)")
+    ax.grid(axis="y", alpha=0.25, lw=0.8)
+    ax.legend(loc="upper right", fontsize=8, ncol=2)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
@@ -1158,16 +1179,24 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
-def quick_args(base_seed: int = 43) -> argparse.Namespace:
+def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
     """Fast sanity-check preset for --quick-test: runs all three modes
     (pairwise, multiarm, ppi) with cut-down sweeps/reps/tests for a quick pass
     that confirms the pipeline (incl. --latex output) still works. Restricts
     eval_types/tests/k_arms rather than sweeping the full catalog -- this is
-    for pipeline confidence, not a representative result."""
+    for pipeline confidence, not a representative result.
+    ``data_source="real"`` (or 'openeval'/'inspect') restricts mode to
+    'pairwise' -- the only mode whose sources come from --data-source;
+    multiarm/ppi are synthetic-only (see README), so re-running them here
+    would just recompute the identical synthetic sweep a second time.
+    --quick-test calls this twice per case (synthetic, then real) so the
+    real-data pairwise path doesn't go unexercised between --official-tests
+    runs."""
+    mode = "all" if data_source == "synthetic" else "pairwise"
     return argparse.Namespace(
-        mode="all", reps=3, alpha=0.05, seed=base_seed,
+        mode=mode, reps=3, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
-        data_source="synthetic", scenario_suite="standard", eval_types=["continuous"], sizes=[10, 30, 50],
+        data_source=data_source, scenario_suite="standard", eval_types=["continuous"], sizes=[10, 30, 50],
         runs=1, statistic="mean",
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
@@ -1216,7 +1245,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             )
             print_pairwise_report(pw_results, alpha=args.alpha)
 
-            run_stem = f"pvalues_pairwise_reps{args.reps}_{stamp}"
+            run_stem = f"pvalues_pairwise_{args.data_source}_reps{args.reps}_{stamp}"
             if args.save_results == "save":
                 output_paths += save_results_artifacts_pairwise(results=pw_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False))
             if args.plots == "save":

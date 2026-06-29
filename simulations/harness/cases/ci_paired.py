@@ -1209,12 +1209,16 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
-def quick_args(base_seed: int = 43) -> argparse.Namespace:
+def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
     """Fast sanity-check preset for --quick-test: same shape catalog as
     official_args() but with reps/sizes/bootstrap_n cut down for a quick pass
-    that confirms the pipeline (incl. --latex output) still works."""
+    that confirms the pipeline (incl. --latex output) still works.
+    ``data_source="real"`` (or 'openeval'/'inspect') swaps in
+    build_real_pair_sources() instead of the synthetic shape catalog --
+    --quick-test calls this twice per case (synthetic, then real) so the
+    real-data path doesn't go unexercised between --official-tests runs."""
     return argparse.Namespace(
-        data_source="synthetic", scenario_suite="standard", eval_types=None,
+        data_source=data_source, scenario_suite="standard", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=1, statistic="mean", reps=3, bootstrap_n=200, bayes_n=200, alpha=0.05,
         sizes=[10, 30, 50],
