@@ -82,6 +82,9 @@ with warnings.catch_warnings():
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
+        _ppi_anova_independent,
+        _ppi_anova_repeated,
+        _ppi_friedman,
         _ppi_kruskal_wallis_pairwise,
         _ppi_lmm_p_value,
         _kw_pairwise_thetas,
@@ -347,11 +350,16 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
 
 
 def latex_pairwise_overall_summary(results: list[PairwiseResult], alpha: float) -> str:
-    """LaTeX booktabs overall summary: per-method Type-I error + power, collapsed across eval types/sizes."""
+    """LaTeX booktabs overall summary: per-method Type-I error (with its 95%
+    MC band) + mean power, collapsed across eval types, plus one Type-I
+    column per sample size actually swept, appended to the right -- the
+    aggregate Type-I column collapses across n and can hide miscalibration
+    that only shows up at small or large sample sizes."""
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     conditions = sorted({r.condition for r in results if r.condition != "null"})
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
 
     rows = []
     for m in method_labels:
@@ -363,6 +371,7 @@ def latex_pairwise_overall_summary(results: list[PairwiseResult], alpha: float) 
         c_tot = sum(r.rejects for r in null_rows)
         t_tot = sum(r.n_reps for r in null_rows)
         type1 = c_tot / t_tot if t_tot > 0 else float("nan")
+        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         power_cells = []
         for c in conditions:
             c_rows = [r for r in m_rows if r.condition == c]
@@ -370,17 +379,26 @@ def latex_pairwise_overall_summary(results: list[PairwiseResult], alpha: float) 
             ct = sum(r.n_reps for r in c_rows)
             power_cells.append(cr / ct if ct > 0 else float("nan"))
         mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
-        rows.append([
+        row = [
             escape_latex(m),
             f"{type1:.3f}" if np.isfinite(type1) else "-",
+            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{mean_power:.3f}" if np.isfinite(mean_power) else "-",
             eval_type_label(covered, eval_types_present),
-        ])
+        ]
+        for n in sizes_present:
+            n_rows = [r for r in null_rows if r.n == n]
+            c_n = sum(r.rejects for r in n_rows)
+            t_n = sum(r.n_reps for r in n_rows)
+            type1_n = c_n / t_n if t_n > 0 else float("nan")
+            row.append(f"{type1_n:.3f}" if np.isfinite(type1_n) else "-")
+        rows.append(row)
 
     return booktabs_table(
         caption=f"pvalues (pairwise, non-PPI): Type-I error and mean power across conditions (nominal alpha={alpha}).",
         label="tab:pvalues_pairwise_overall",
-        columns=["Method", "Type-I error", "Mean power", "Eval types"],
+        columns=["Method", "Type-I error", "95\\% MC band", "Mean power", "Eval types"]
+                + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
 
@@ -636,9 +654,14 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
 
 
 def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) -> str:
-    """LaTeX booktabs overall summary: per-correction FWER + best-arm power, collapsed across eval types."""
+    """LaTeX booktabs overall summary: per-correction FWER (with its 95% MC
+    band) + best-arm power, collapsed across eval types, plus one FWER
+    column per sample size actually swept, appended to the right -- the
+    aggregate FWER column collapses across n and can hide miscalibration
+    that only shows up at small or large sample sizes."""
     corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
 
     rows = []
     for corr in corrections:
@@ -652,17 +675,27 @@ def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) 
         power_c = sum(r.best_selected for r in alt_rows)
         fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
         power = power_c / power_t if power_t > 0 else float("nan")
-        rows.append([
+        _, _, lo, hi = _mc_proportion_stats(fwer_c, fwer_t)
+        row = [
             escape_latex(corr),
             f"{fwer:.3f}" if np.isfinite(fwer) else "-",
+            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{power:.3f}" if np.isfinite(power) else "-",
             eval_type_label(covered, eval_types_present),
-        ])
+        ]
+        for n in sizes_present:
+            n_rows = [r for r in null_rows if r.n == n]
+            c_n = sum(r.any_reject for r in n_rows)
+            t_n = sum(r.n_reps for r in n_rows)
+            fwer_n = c_n / t_n if t_n > 0 else float("nan")
+            row.append(f"{fwer_n:.3f}" if np.isfinite(fwer_n) else "-")
+        rows.append(row)
 
     return booktabs_table(
         caption=f"pvalues (multi-arm, non-PPI): FWER and best-arm selection power (nominal alpha={alpha}).",
         label="tab:pvalues_multiarm_overall",
-        columns=["Correction", "FWER", "Best-arm power", "Eval types"],
+        columns=["Correction", "FWER", "95\\% MC band", "Best-arm power", "Eval types"]
+                + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
 
@@ -752,6 +785,41 @@ class PPIResult:
     corrected_rejects: int
     uncorrected_rejects: int
     n_failed: int = 0
+    n: int = 0
+    """Group/condition-A sample size for this scenario (JudgeBiasSource.n).
+    Only the 'sample_size' tag actually sweeps this (n=60/100/200/400);
+    every other scenario uses the fixed baseline -- see
+    latex_ppi_overall_summary's per-n columns, which are sourced from that
+    one tag rather than every scenario (most of which share n=100)."""
+
+
+@dataclass
+class PPIEffectResult:
+    """Bias and CI-coverage summary for one (scenario, test) cell's
+    PPI-corrected point estimate -- complements PPIResult's Type-I check
+    (does the p-value stay calibrated) with: is the estimate itself centered
+    at the truth, and does its CI cover that truth at the nominal rate?
+    Ported from sim_type_i_calibration.py's effect_results/_gold_null_values
+    check; see run_ppi_effect_check."""
+    name: str
+    tag: str
+    test: str
+    n: int
+    n_samples: int
+    """Number of successful (non-failed) bootstrap draws this cell's stats are based on."""
+    null_value: float
+    """Monte Carlo gold-reference null value this estimate is compared against
+    (not always 0 -- see estimate_judge_bias_gold_null_values)."""
+    mean_bias: float
+    """mean(estimate - null_value) across draws."""
+    bias_z: float
+    """mean_bias / SE(mean_bias) -- a |z| > 3 flags a real (not just noisy) bias."""
+    coverage: float
+    """Fraction of draws whose CI contains null_value."""
+    mean_ci_width: float
+    uncorrected_bias_z: float
+    """Same z-score, but for the RAW (pre-PPI) LLM-only estimate -- contrast
+    for how much PPI correction actually reduced bias."""
 
 
 def _uncorrected_anova_independent_p_value(groups: list[np.ndarray]) -> float:
@@ -937,6 +1005,7 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
         PPIResult(
             name=sc.name, tag=sc.tag, test=t, n_reps=n_reps,
             corrected_rejects=corrected[t], uncorrected_rejects=uncorrected[t], n_failed=failed[t],
+            n=sc.n,
         )
         for t in active_tests
     ]
@@ -953,6 +1022,186 @@ def run_ppi_simulation(
     results: list[PPIResult] = []
     for i, sc in enumerate(sources):
         results.extend(_run_ppi_cell(sc, active_tests, n_reps, n_boot, child_seeds[i]))
+        reporter.update(i + 1, detail=f"{sc.name}")
+    reporter.update(len(sources), detail="done")
+    return results
+
+
+# ---------------------------------------------------------------------------
+# PPI mode, effect-size calibration: bias and CI coverage of the PPI-
+# corrected point estimate itself, complementing run_ppi_simulation's Type-I
+# check (does the p-value stay calibrated). Ported from
+# sim_type_i_calibration.py's effect_results/_gold_null_values check. lmm/
+# lmm_factorial/lmm_runs are intentionally excluded (same as the legacy
+# script): their headline estimand is a quadratic form in the fixed effects
+# with no valid CI by design -- see es.tests.lmm()'s docstring.
+# ---------------------------------------------------------------------------
+
+_PPI_EFFECT_TESTS = (
+    TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name,
+    ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
+)
+
+
+def _run_ppi_effect_cell(
+    sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_boot: int, seed,
+) -> dict[str, list[tuple[float, float, float, float]]]:
+    """Draw n_reps fresh replicates and capture each active effect-check
+    test's PPI-corrected (estimate, ci_low, ci_high, llm_estimate) per rep.
+
+    Runs as its OWN dedicated pass (with its own, typically much smaller,
+    --effect-reps count) rather than piggybacking on run_ppi_simulation's
+    Type-I sweep the way sim_type_i_calibration.py's _run_one does for its
+    "free" tests -- this keeps _run_ppi_cell's Type-I return type/call site
+    completely unchanged, at the cost of redrawing ttest/ttest_welch/mw/
+    wilcoxon/kruskal's bootstrap a second time (cheap at the smaller
+    effect-reps count this is meant to run at). anova_ind/anova_rep/friedman
+    call the bootstrap-based SCALAR-estimate functions here (_ppi_anova_
+    independent/_ppi_anova_repeated/_ppi_friedman) instead of the closed-form
+    p-value-only ones run_ppi_simulation uses, since only the former carry an
+    estimate/CI -- the same reason sim_type_i_calibration.py's anova family
+    needed a separate pass (_run_one_effect_anova) too.
+    """
+    rng = np.random.default_rng(seed)
+    out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
+
+    def _rng_seed() -> int:
+        return int(rng.integers(0, 2 ** 31))
+
+    for _ in range(n_reps):
+        cell = generate_judge_bias_cell(sc, rng)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if TTEST.name in active_tests:
+                try:
+                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    out[TTEST.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if TTEST_WELCH.name in active_tests:
+                try:
+                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    out[TTEST_WELCH.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if MW.name in active_tests:
+                try:
+                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    out[MW.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if WILCOXON.name in active_tests:
+                try:
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    out[WILCOXON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if ANOVA_IND.name in active_tests:
+                try:
+                    r = _ppi_anova_independent([cell.llm_a3, cell.llm_b3, cell.llm_c3], [cell.lab_a3, cell.lab_b3, cell.lab_c3], _ALPHA, n_boot, _rng_seed())
+                    out[ANOVA_IND.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if ANOVA_REP.name in active_tests:
+                try:
+                    r = _ppi_anova_repeated([cell.llm_A, cell.llm_B, cell.llm_C], [cell.lab_A, cell.lab_B, cell.lab_C], _ALPHA, n_boot, _rng_seed())
+                    out[ANOVA_REP.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if FRIEDMAN.name in active_tests:
+                try:
+                    r = _ppi_friedman([cell.llm_A, cell.llm_B, cell.llm_C], [cell.lab_A, cell.lab_B, cell.lab_C], _ALPHA, n_boot, _rng_seed())
+                    out[FRIEDMAN.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if KRUSKAL.name in active_tests:
+                try:
+                    groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
+                    groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
+                    pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    llm_theta = _kw_pairwise_thetas(groups_kw, pw["pairs"])
+                    out[KRUSKAL.name].append((
+                        float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
+                        float(np.mean(pw["ci_hi"])), float(np.mean(llm_theta)),
+                    ))
+                except Exception:
+                    pass
+
+    return dict(out)
+
+
+def _effect_cell_stats(
+    samples: list[tuple[float, float, float, float]], null_val: float,
+) -> tuple[float, float, float, float, int]:
+    """(mean_bias, z, coverage_rate, mean_ci_width, n) for one (scenario,
+    test) cell -- ported from sim_type_i_calibration.py's helper of the same
+    name."""
+    n = len(samples)
+    if n == 0:
+        return float("nan"), float("nan"), float("nan"), float("nan"), 0
+    estimates = np.array([s[0] for s in samples]) - null_val
+    contains = np.array([(s[1] <= null_val <= s[2]) for s in samples])
+    ci_widths = np.array([s[2] - s[1] for s in samples])
+    bias_mean = float(estimates.mean())
+    bias_se = float(estimates.std(ddof=1) / np.sqrt(n)) if n > 1 else float("nan")
+    z = bias_mean / bias_se if bias_se and bias_se > 0 else float("nan")
+    coverage = float(contains.mean())
+    mean_ci_width = float(ci_widths.mean())
+    return bias_mean, z, coverage, mean_ci_width, n
+
+
+def _uncorrected_bias_z(samples: list[tuple[float, float, float, float]], null_val: float) -> float:
+    """z-score of the RAW (pre-PPI) LLM-only estimate's bias -- a contrast for
+    how much PPI correction reduced bias. No CI exists for the raw estimate,
+    so this is bias only, not coverage."""
+    n = len(samples)
+    if n < 2:
+        return float("nan")
+    raw = np.array([s[3] for s in samples]) - null_val
+    se = float(raw.std(ddof=1) / np.sqrt(n))
+    return float(raw.mean() / se) if se > 0 else float("nan")
+
+
+def run_ppi_effect_check(
+    sources: list[JudgeBiasSource], active_tests: list[str], n_reps: int, n_boot: int,
+    gold_null_mc: int = 3000, progress_mode: str = "bar", seed: int = 44,
+) -> list[PPIEffectResult]:
+    """Bias and CI-coverage check for the PPI-corrected point estimate itself.
+
+    Complements run_ppi_simulation's Type-I check ("does the p-value stay
+    calibrated") with "is the estimate centered at the truth, and does its CI
+    cover that truth at the nominal rate" -- ported from
+    sim_type_i_calibration.py's second check.
+    """
+    effect_tests = [t for t in active_tests if t in _PPI_EFFECT_TESTS]
+    if not effect_tests:
+        return []
+    ss = np.random.SeedSequence(seed)
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(sources))]
+
+    reporter = _ProgressReporter(len(sources), mode=progress_mode, label="pvalues-ppi-effect")
+    results: list[PPIEffectResult] = []
+    for i, sc in enumerate(sources):
+        gold_null = estimate_judge_bias_gold_null_values(sc, n_mc=gold_null_mc, seed=int(child_seeds[i][0]))
+        samples_by_test = _run_ppi_effect_cell(sc, effect_tests, n_reps, n_boot, child_seeds[i])
+        for t in effect_tests:
+            samples = samples_by_test.get(t, [])
+            null_val = gold_null.get(t, 0.0)
+            bias_mean, z, coverage, mean_width, n = _effect_cell_stats(samples, null_val)
+            unc_z = _uncorrected_bias_z(samples, null_val)
+            results.append(PPIEffectResult(
+                name=sc.name, tag=sc.tag, test=t, n=sc.n, n_samples=n,
+                null_value=null_val, mean_bias=bias_mean, bias_z=z,
+                coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
+            ))
         reporter.update(i + 1, detail=f"{sc.name}")
     reporter.update(len(sources), detail="done")
     return results
@@ -1145,12 +1394,18 @@ def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
 
 
 def latex_ppi_overall_summary(results: list[PPIResult], alpha: float) -> str:
-    """LaTeX booktabs overall summary: per-test corrected/uncorrected Type-I rate, averaged across scenarios.
+    """LaTeX booktabs overall summary: per-test corrected/uncorrected Type-I
+    rate (each with its 95% MC band), averaged across scenarios, plus one
+    corrected-rate column per sample size actually swept by the
+    'sample_size' tag (n=60/100/200/400 -- the only scenarios that
+    deliberately vary n; every other scenario shares the fixed baseline),
+    appended to the right.
 
-    PPIResult has no eval_type axis (scenarios are judge-bias/noise sweeps, not
-    distribution shapes), so there's no "Eval types" column here.
+    PPIResult has no eval_type axis (scenarios are judge-bias/noise sweeps,
+    not distribution shapes), so there's no "Eval types" column here.
     """
     tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    sizes_present = sorted({r.n for r in results if r.tag == "sample_size"})
     rows = []
     for t in tests:
         t_rows = [r for r in results if r.test == t]
@@ -1159,16 +1414,28 @@ def latex_ppi_overall_summary(results: list[PPIResult], alpha: float) -> str:
         n_tot = sum(r.n_reps for r in t_rows)
         rate_c = c_tot / n_tot if n_tot > 0 else float("nan")
         rate_u = u_tot / n_tot if n_tot > 0 else float("nan")
-        rows.append([
+        _, _, lo_c, hi_c = _mc_proportion_stats(c_tot, n_tot)
+        _, _, lo_u, hi_u = _mc_proportion_stats(u_tot, n_tot)
+        row = [
             escape_latex(t),
             f"{rate_c:.3f}" if np.isfinite(rate_c) else "-",
+            f"${lo_c:.3f}\\text{{--}}{hi_c:.3f}$" if np.isfinite(lo_c) else "-",
             f"{rate_u:.3f}" if np.isfinite(rate_u) else "-",
-        ])
+            f"${lo_u:.3f}\\text{{--}}{hi_u:.3f}$" if np.isfinite(lo_u) else "-",
+        ]
+        for n in sizes_present:
+            n_rows = [r for r in t_rows if r.tag == "sample_size" and r.n == n]
+            c_n = sum(r.corrected_rejects for r in n_rows)
+            t_n = sum(r.n_reps for r in n_rows)
+            rate_n = c_n / t_n if t_n > 0 else float("nan")
+            row.append(f"{rate_n:.3f}" if np.isfinite(rate_n) else "-")
+        rows.append(row)
 
     return booktabs_table(
         caption=f"pvalues (PPI-corrected): corrected vs. uncorrected Type-I rate (nominal alpha={alpha}).",
         label="tab:pvalues_ppi_overall",
-        columns=["Test", "Corrected", "Uncorrected"],
+        columns=["Test", "Corrected", "95\\% MC band", "Uncorrected", "95\\% MC band"]
+                + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
 
@@ -1179,10 +1446,10 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
     csv_path = out_base / f"{run_stem}_ppi_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["name", "tag", "test", "n_reps", "corrected_rejects", "uncorrected_rejects", "n_failed", "corrected_rate", "uncorrected_rate"])
+        writer.writerow(["name", "tag", "n", "test", "n_reps", "corrected_rejects", "uncorrected_rejects", "n_failed", "corrected_rate", "uncorrected_rate"])
         for r in results:
             writer.writerow([
-                r.name, r.tag, r.test, r.n_reps, r.corrected_rejects, r.uncorrected_rejects, r.n_failed,
+                r.name, r.tag, r.n, r.test, r.n_reps, r.corrected_rejects, r.uncorrected_rejects, r.n_failed,
                 f"{r.corrected_rejects / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.uncorrected_rejects / r.n_reps:.8f}" if r.n_reps else "",
             ])
@@ -1247,6 +1514,215 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     ax.set_title("pvalues (PPI-corrected): Type-I calibration scatter (per-scenario cells)")
     ax.grid(axis="y", alpha=0.25, lw=0.8)
     ax.legend(loc="upper right", fontsize=8, ncol=2)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def print_ppi_effect_report(results: list[PPIEffectResult], alpha: float) -> None:
+    """Bias & CI-coverage summary, mirroring sim_type_i_calibration.py's
+    ``_print_effect_table``: per-test mean bias, worst |z|, coverage, worst
+    coverage scenario, and mean CI width, plus a flagged-cells list (|bias
+    z| > 3, or coverage meaningfully under the 1-alpha target)."""
+    if not results:
+        print(
+            "\n  (no PPI effect-check results -- active --tests must include at least one of "
+            f"{', '.join(_PPI_EFFECT_TESTS)})"
+        )
+        return
+
+    target_cov = 1.0 - alpha
+    cov_flag_margin = 0.02
+    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+
+    width = 96
+    bar = "-" * width
+    dbar = "=" * width
+    print()
+    print(dbar)
+    print("  PVALUES (PPI-CORRECTED) -- EFFECT-SIZE CALIBRATION (bias & CI coverage)")
+    print("  (vs. Monte Carlo gold-reference null per scenario/test -- see estimate_judge_bias_gold_null_values)")
+    print(dbar)
+    print()
+    header = (
+        f"  {'Test':<12} {'n':>7} {'mean bias':>10} {'worst |z|':>10} "
+        f"{'worst scen (bias)':<26} {'coverage':>9} {'cov min':>8} {'worst scen (cov)':<24} "
+        f"{'mean width':>11}"
+    )
+    print(header)
+    print(bar)
+
+    flagged: list[str] = []
+    for t in tests:
+        t_rows = [r for r in results if r.test == t and r.n_samples > 0]
+        if not t_rows:
+            continue
+        n_total = sum(r.n_samples for r in t_rows)
+        weights = [r.n_samples for r in t_rows]
+        mean_bias = float(np.average([r.mean_bias for r in t_rows], weights=weights))
+        mean_width = float(np.average([r.mean_ci_width for r in t_rows], weights=weights))
+        coverage = float(np.average([r.coverage for r in t_rows], weights=weights))
+        worst_bias = max(t_rows, key=lambda r: abs(r.bias_z) if np.isfinite(r.bias_z) else 0.0)
+        worst_cov = min(t_rows, key=lambda r: r.coverage if np.isfinite(r.coverage) else 1.0)
+
+        print(
+            f"  {t:<12} {n_total:>7} {mean_bias:>+10.4f} {abs(worst_bias.bias_z) if np.isfinite(worst_bias.bias_z) else 0.0:>10.2f} "
+            f"{worst_bias.name:<26} {coverage:>9.3f} {worst_cov.coverage:>8.3f} {worst_cov.name:<24} "
+            f"{mean_width:>11.4f}"
+        )
+
+        for r in t_rows:
+            if np.isfinite(r.bias_z) and abs(r.bias_z) > 3.0:
+                flagged.append(
+                    f"    bias    {r.name:<28} {t:<10} mean={r.mean_bias:+.4f}  z={r.bias_z:+.2f}  (n={r.n_samples})"
+                )
+            lo_cov, hi_cov = _ppi_wilson_interval(int(round(r.coverage * r.n_samples)), r.n_samples)
+            if hi_cov < target_cov - cov_flag_margin:
+                flagged.append(
+                    f"    cover   {r.name:<28} {t:<10} coverage={r.coverage:.3f}  "
+                    f"Wilson=[{lo_cov:.3f},{hi_cov:.3f}]  (n={r.n_samples})"
+                )
+
+    print()
+    if flagged:
+        print(f"  Flagged cells (|bias z| > 3, or coverage Wilson upper bound < {target_cov - cov_flag_margin:.2f}):")
+        for line in flagged:
+            print(line)
+    else:
+        print("  No scenario x test cells flagged for bias or under-coverage.")
+    print()
+
+
+def latex_ppi_effect_overall_summary(results: list[PPIEffectResult], alpha: float) -> str:
+    """LaTeX booktabs overall summary: per-test bias and CI coverage (with
+    its 95% MC band) and mean CI width of the PPI-corrected point estimate,
+    averaged across scenarios -- complements latex_ppi_overall_summary's
+    Type-I table with "is the estimate itself trustworthy," not just "does
+    the p-value stay calibrated."""
+    target_cov = 1.0 - alpha
+    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    rows = []
+    for t in tests:
+        t_rows = [r for r in results if r.test == t and r.n_samples > 0]
+        if not t_rows:
+            continue
+        n_tot = sum(r.n_samples for r in t_rows)
+        weights = [r.n_samples for r in t_rows]
+        mean_bias = float(np.average([r.mean_bias for r in t_rows], weights=weights))
+        mean_width = float(np.average([r.mean_ci_width for r in t_rows], weights=weights))
+        cov_count = sum(int(round(r.coverage * r.n_samples)) for r in t_rows)
+        coverage = cov_count / n_tot if n_tot > 0 else float("nan")
+        _, _, lo, hi = _mc_proportion_stats(cov_count, n_tot)
+        rows.append([
+            escape_latex(t),
+            f"{mean_bias:+.4f}",
+            f"{coverage:.3f}" if np.isfinite(coverage) else "-",
+            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+            f"{mean_width:.4f}" if np.isfinite(mean_width) else "-",
+        ])
+
+    return booktabs_table(
+        caption=f"pvalues (PPI-corrected): bias and CI coverage of the corrected point estimate (nominal {target_cov:.0%}).",
+        label="tab:pvalues_ppi_effect_overall",
+        columns=["Test", "Mean bias", "Coverage", "95\\% MC band", "Mean CI width"],
+        rows=rows,
+    )
+
+
+def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_ppi_effect_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "name", "tag", "n", "test", "n_samples", "null_value",
+            "mean_bias", "bias_z", "coverage", "mean_ci_width", "uncorrected_bias_z",
+        ])
+        for r in results:
+            writer.writerow([
+                r.name, r.tag, r.n, r.test, r.n_samples, r.null_value,
+                r.mean_bias, r.bias_z, r.coverage, r.mean_ci_width, r.uncorrected_bias_z,
+            ])
+    summary_path = out_base / f"{run_stem}_ppi_effect_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_effect_report(results, alpha=alpha)
+    summary_text = buf.getvalue()
+    if latex:
+        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_ppi_effect_overall_summary(results, alpha=alpha)
+    summary_path.write_text(summary_text, encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_ppi_effect_plot(*, results: list[PPIEffectResult], alpha: float, out_path: str) -> str:
+    """Bias-z / CI-coverage / CI-width scatter, one jittered column per test
+    -- mirrors sim_type_i_calibration.py's ``_plot_effect_results`` (3
+    panels), reading directly off PPIEffectResult's already-aggregated
+    per-scenario stats rather than raw bootstrap samples."""
+    import matplotlib.pyplot as plt
+
+    if not results:
+        raise ValueError("save_ppi_effect_plot: no PPI effect-check results to plot.")
+
+    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    target_cov = 1.0 - alpha
+    fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16.0, 5.5))
+    rng = np.random.default_rng(0)
+    colors = [plt.cm.tab10(i) for i in range(len(tests))]
+
+    for j, t in enumerate(tests):
+        t_rows = [r for r in results if r.test == t and r.n_samples > 0]
+        if not t_rows:
+            continue
+        x = j + rng.uniform(-0.16, 0.16, size=len(t_rows))
+
+        z = np.array([r.bias_z for r in t_rows])
+        keep_z = np.isfinite(z)
+        ax1.scatter(x[keep_z], z[keep_z], s=22, alpha=0.7, color=colors[j], label=t)
+
+        cov = np.array([r.coverage for r in t_rows])
+        keep_c = np.isfinite(cov)
+        ax2.scatter(x[keep_c], cov[keep_c], s=22, alpha=0.7, color=colors[j])
+
+        wid = np.array([r.mean_ci_width for r in t_rows])
+        keep_w = np.isfinite(wid)
+        ax3.scatter(x[keep_w], wid[keep_w], s=22, alpha=0.7, color=colors[j])
+
+    ax1.axhline(0.0, color="black", ls="--", lw=1.0)
+    ax1.axhline(3.0, color="red", ls=":", lw=0.9)
+    ax1.axhline(-3.0, color="red", ls=":", lw=0.9)
+    ax1.set_xticks(np.arange(len(tests)))
+    ax1.set_xticklabels(tests, rotation=30, ha="right", fontsize=8)
+    ax1.set_ylabel("Bias z-score")
+    ax1.set_title("Estimate bias (z vs. gold null)")
+    ax1.grid(axis="y", alpha=0.25, lw=0.8)
+
+    ax2.axhline(target_cov, color="black", ls="--", lw=1.1, label=f"target={target_cov:.2f}")
+    ax2.set_xticks(np.arange(len(tests)))
+    ax2.set_xticklabels(tests, rotation=30, ha="right", fontsize=8)
+    ax2.set_ylim(0.0, 1.02)
+    ax2.set_ylabel("CI coverage of gold null")
+    ax2.set_title("CI coverage")
+    ax2.grid(axis="y", alpha=0.25, lw=0.8)
+    ax2.legend(loc="lower left", fontsize=8)
+
+    ax3.set_xticks(np.arange(len(tests)))
+    ax3.set_xticklabels(tests, rotation=30, ha="right", fontsize=8)
+    ax3.set_ylabel("Mean CI width")
+    ax3.set_title("CI width")
+    ax3.grid(axis="y", alpha=0.25, lw=0.8)
+
+    handles, labels = ax1.get_legend_handles_labels()
+    fig.suptitle("pvalues (PPI-corrected): effect-size calibration (bias, coverage, width)", y=1.12, fontsize=12)
+    fig.legend(handles, labels, loc="lower center", ncol=min(len(tests), 8), fontsize=8, bbox_to_anchor=(0.5, 1.0))
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
@@ -1324,6 +1800,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="ppi mode: restrict to these evalstats.tests names (default: all)")
     parser.add_argument("--ppi-n-boot", type=int, default=1000, metavar="N",
                          help="ppi mode: PPI bootstrap resample count")
+    parser.add_argument("--effect-reps", type=int, default=200, metavar="N",
+                         help="ppi mode: reps for the bias/CI-coverage effect-size check of the corrected "
+                              "point estimate (separate, typically smaller, pass from --reps' Type-I sweep)")
+    parser.add_argument("--effect-gold-mc", type=int, default=3000, metavar="N",
+                         help="ppi mode: Monte Carlo reps used to estimate each scenario/test's gold-reference "
+                              "null value (estimate_judge_bias_gold_null_values)")
+    parser.add_argument("--no-effect-check", action="store_true", default=False,
+                         help="ppi mode: skip the bias/CI-coverage effect-size check, running Type-I calibration only")
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
@@ -1339,7 +1823,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=4, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=None, ppi_n_boot=2000,
+        tests=None, ppi_n_boot=2000, effect_reps=200, effect_gold_mc=3000, no_effect_check=False,
     )
 
 
@@ -1371,6 +1855,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=3, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
+        effect_reps=5, effect_gold_mc=200, no_effect_check=False,
     )
 
 
@@ -1483,6 +1968,37 @@ def run(args: argparse.Namespace) -> CaseResult:
             key_metrics["ppi_n_results"] = len(ppi_results)
             key_metrics["ppi_mean_corrected_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
             key_metrics["ppi_mean_uncorrected_type1"] = float(u_tot / n_tot) if n_tot else float("nan")
+
+            if not getattr(args, "no_effect_check", False):
+                effect_reps = getattr(args, "effect_reps", 200)
+                effect_gold_mc = getattr(args, "effect_gold_mc", 3000)
+                print(f"\npvalues simulation (PPI-corrected, effect-size check) -- effect_reps={effect_reps}, gold_mc={effect_gold_mc}")
+                effect_results = run_ppi_effect_check(
+                    jb_sources, active_tests=active_tests, n_reps=effect_reps, n_boot=args.ppi_n_boot,
+                    gold_null_mc=effect_gold_mc, progress_mode=args.progress, seed=args.seed + 1,
+                )
+                print_ppi_effect_report(effect_results, alpha=args.alpha)
+
+                effect_stem = f"pvalues_ppi_effect_reps{effect_reps}_{stamp}"
+                if effect_results:
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_effect(
+                            results=effect_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=effect_stem,
+                            latex=getattr(args, "latex", False),
+                        )
+                    if args.plots == "save":
+                        effect_plot_path = save_ppi_effect_plot(
+                            results=effect_results, alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width.png"),
+                        )
+                        output_paths.append(effect_plot_path)
+                        print(f"Saved plot: {effect_plot_path}")
+
+                    key_metrics["ppi_effect_n_results"] = len(effect_results)
+                    finite_z = [r.bias_z for r in effect_results if np.isfinite(r.bias_z)]
+                    key_metrics["ppi_effect_mean_abs_bias_z"] = float(np.mean(np.abs(finite_z))) if finite_z else float("nan")
+                    finite_cov = [r.coverage for r in effect_results if np.isfinite(r.coverage)]
+                    key_metrics["ppi_effect_mean_coverage"] = float(np.mean(finite_cov)) if finite_cov else float("nan")
 
         return CaseResult(
             case_name=CASE_NAME, status="ok", output_paths=output_paths,

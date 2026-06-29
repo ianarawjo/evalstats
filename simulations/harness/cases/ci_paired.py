@@ -759,12 +759,17 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
 
 
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
-    """LaTeX booktabs version of print_report's OVERALL SUMMARY block (non-null rows only)."""
+    """LaTeX booktabs version of print_report's OVERALL SUMMARY block
+    (non-null rows only), plus one coverage column per sample size actually
+    swept, appended to the right -- the aggregate "Coverage" column
+    collapses across n and can hide miscalibration that only shows up at
+    small or large sample sizes."""
     target = 1.0 - alpha
     non_null = [r for r in results if not r.is_null]
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)}
     present_methods = {r.method for r in non_null}
     method_labels = [m.name for m in order_present_methods(present_methods)]
+    sizes_present = sorted({r.n for r in non_null})
 
     agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
@@ -778,6 +783,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     all_cov: dict[str, list[float]] = defaultdict(list)
     all_wid: dict[str, list[float]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
     method_eval_types: dict[str, set[str]] = defaultdict(set)
     for (et, m, n), vals in agg.items():
         all_cov[m].extend(v[0] for v in vals)
@@ -786,6 +792,8 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         c, t = agg_counts[(et, m, n)]
         c_prev, t_prev = all_counts[m]
         all_counts[m] = (c_prev + c, t_prev + t)
+        c_prev_n, t_prev_n = per_n_counts[(m, n)]
+        per_n_counts[(m, n)] = (c_prev_n + c, t_prev_n + t)
 
     rows = []
     for m in method_labels:
@@ -796,19 +804,25 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         avg_ms, se_ms = _time_stats([r for r in non_null if r.method == m])
         time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
         et_label = eval_type_label(method_eval_types[m], eval_types_present)
-        rows.append([
+        row = [
             escape_latex(m),
             f"{mc:.3f}" if np.isfinite(mc) else "-",
             f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{mw:.4f}" if np.isfinite(mw) else "-",
             time_str,
             et_label,
-        ])
+        ]
+        for n in sizes_present:
+            c_n, t_n = per_n_counts.get((m, n), (0, 0))
+            cov_n = c_n / t_n if t_n > 0 else float("nan")
+            row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+        rows.append(row)
 
     return booktabs_table(
         caption=f"ci\\_paired: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}).",
         label="tab:ci_paired_overall",
-        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Time (ms)", "Eval types"],
+        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Time (ms)", "Eval types"]
+                + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
 
