@@ -1167,8 +1167,10 @@ def quick_args(base_seed: int = 43) -> argparse.Namespace:
     return argparse.Namespace(
         mode="all", reps=3, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
-        scenario_suite="standard", eval_types=["continuous"], sizes=[10, 30, 50], runs=1, statistic="mean",
+        data_source="synthetic", scenario_suite="standard", eval_types=["continuous"], sizes=[10, 30, 50],
+        runs=1, statistic="mean",
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=3, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
     )
