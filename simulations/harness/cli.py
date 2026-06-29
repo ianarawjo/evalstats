@@ -3,7 +3,7 @@
 Usage:
   python -m simulations.harness.cli --list-cases
   python -m simulations.harness.cli ci_single --reps 50 --sizes 10 20
-  python -m simulations.harness.cli ci_single --data-source dove
+  python -m simulations.harness.cli ci_single --data-source real
   python -m simulations.harness.cli --official-tests all
   python -m simulations.harness.cli --official-tests ci_single
 """

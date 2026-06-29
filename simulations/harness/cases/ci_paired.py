@@ -1,11 +1,9 @@
 """ci_paired case: paired-difference CI coverage, synthetic and/or real benchmark data.
 
-Consolidates ``simulations/sim_compare_boot.py``'s pairwise ("--estimand
-pairwise") simulation loop and ``simulations/sim_tango_real.py``'s real-data
-loop into one engine operating over ``scenarios.CIPairSource`` objects, so
-the same CI-method dispatch and report format covers synthetic paired
-distributions (``scenarios/synthetic.py``) and real shared-item DOVE_Lite /
-OpenEval / Inspect-AI corpora (``scenarios/real_data.py``) alike.
+One engine operating over ``scenarios.CIPairSource`` objects, so the same
+CI-method dispatch and report format covers synthetic paired distributions
+(``scenarios/synthetic.py``) and real shared-item OpenEval / Inspect AI
+corpora (``scenarios/real_data.py``) alike.
 
 Methods compared
 -----------------
@@ -15,11 +13,10 @@ statistic=mean only); newcombe_score, tango_score, bayes_indep_comp,
 bayes_paired_comp (binary, statistic=mean only).
 
 Known exceptions (see simulations/harness/README.md):
-- Real-data pairs (dove/openeval/inspect) only support R=1 (flat, single
-  run per item) and are restricted to known-binary benchmarks, matching
-  sim_tango_real.py's SINGLE_RUN_METHODS scope. Multi-run real pairs (Tango
-  multirun variants, nested-diff bootstrap, lmm_diff) are deferred to a
-  future real-data extension.
+- Real-data pairs (openeval/inspect/real) only support R=1 (flat, single
+  run per item) and are restricted to known-binary benchmarks. Multi-run
+  real pairs (Tango multirun variants, nested-diff bootstrap, lmm_diff) are
+  deferred to a future real-data extension.
 
 --nested-mode (ported from simulations/sim_compare_boot_nested.py, pairwise
 phase) sweeps multi-run paired scenarios parameterised by run_noise_frac
@@ -78,7 +75,7 @@ from ..scenarios.synthetic import (
     RUN_NOISE_FRACS_DEFAULT,
     build_pair_sources,
 )
-from ..scenarios.real_data import PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
+from ..scenarios.real_data import DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
 from ..methods import (
     BOOTSTRAP_METHODS as METHODS,
     BAYES_BOOTSTRAP,
@@ -116,7 +113,7 @@ RESULTS_MODES = ["save", "off"]
 
 @dataclass
 class SimResult:
-    source: str  # "synthetic" | "dove" | "openeval" | "inspect"
+    source: str  # "synthetic" | "openeval" | "inspect" | "real"
     label: str
     eval_type: str
     n: int
@@ -1094,7 +1091,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hf-token", default=None)
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--min-pair-size", type=int, default=50)
-    parser.add_argument("--inspect-csv", default=None, help="Path to CSV from collect_inspect_benchmarks.py (required for --data-source inspect)")
+    parser.add_argument("--inspect-csv", default=None,
+                         help=f"Path to CSV from collect_inspect_benchmarks.py "
+                              f"(used by --data-source inspect/real; defaults to {DEFAULT_INSPECT_CSV!r})")
     parser.add_argument("--runs", type=int, default=1, metavar="R", help="Runs per input. R>=3 activates nested bootstrap logic (synthetic only; default: 1)")
     parser.add_argument("--statistic", choices=["mean", "median"], default="mean")
     parser.add_argument("--reps", type=int, default=200, metavar="N")
@@ -1136,7 +1135,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def official_args(base_seed: int = 42) -> argparse.Namespace:
     """Canonical official-test preset, mirroring sim_compare_boot.py --official-test
     (pairwise phase). Synthetic only -- real-data sources need network/HF access
-    not assumed available; run --data-source dove/openeval/inspect manually."""
+    not assumed available; run --data-source openeval/inspect/real manually."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,

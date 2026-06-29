@@ -4,7 +4,7 @@ A ``CISource`` represents one "population" with a known (or precisely
 estimated) true mean from which samples of size ``n`` can be drawn. Synthetic
 sources (``synthetic.py``) generate i.i.d. draws from a parametric
 distribution; real-data sources (``real_data.py``) draw without replacement
-from a fixed corpus of real eval scores (DOVE_Lite / OpenEval). Both expose
+from a fixed corpus of real eval scores (OpenEval / Inspect AI). Both expose
 the same ``generate(rng, n) -> ndarray`` interface so a single simulation
 loop (e.g. ``cases/ci_single.py``) can run over either.
 """
@@ -25,7 +25,7 @@ class CISource:
     eval_type: str
     true_mean: float
     generate: Callable[[np.random.Generator, int], np.ndarray]
-    source: str = "synthetic"  # "synthetic" | "dove" | "openeval"
+    source: str = "synthetic"  # "synthetic" | "openeval" | "inspect" | "real"
     max_n: int | None = None  # corpus size bound for real-data sources; None = unbounded
     model: str | None = None
     benchmark_id: str | None = None
@@ -53,7 +53,7 @@ class CIPairSource:
     eval_type: str
     true_diff: float
     generate_pair: Callable[[np.random.Generator, int, int], tuple[np.ndarray, np.ndarray]]
-    source: str = "synthetic"  # "synthetic" | "dove" | "openeval" | "inspect"
+    source: str = "synthetic"  # "synthetic" | "openeval" | "inspect" | "real"
     max_n: int | None = None
     icc: float = 0.0
     cohens_d: float = 0.0

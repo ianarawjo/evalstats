@@ -8,7 +8,7 @@ command.
 ```
 python -m simulations.harness.cli --list-cases
 python -m simulations.harness.cli ci_single --reps 50 --sizes 10 20
-python -m simulations.harness.cli ci_single --data-source dove
+python -m simulations.harness.cli ci_single --data-source real
 python -m simulations.harness.cli ci_single --nested-mode --runs-sweep 5 --reps 200
 python -m simulations.harness.cli ci_paired --nested-mode --runs-sweep 5 --reps 200 --include-null
 python -m simulations.harness.cli pvalues --mode pairwise --reps 200 --sizes 10 20 50
@@ -95,16 +95,16 @@ instead of each case (or each *mode* within a case) defining its own:
   uses (`repeated_corr` controls it, same parameter that correlates
   Gaussian noise magnitude in the default family) -- see
   `build_judge_bias_sources()`'s `noise_family.*` scenarios.
-- `_legacy_build_single_sample_sources()` / `_legacy_build_pair_sources()`
-  are the pre-unification implementations, kept (unused, not imported by
-  any case) purely as a reference/audit trail for the merge.
-- `scenarios/real_data.py` -- DOVE_Lite / OpenEval corpus loaders (ported
-  from `sim_dove.py`), exposed through the same `CISource` interface as the
-  synthetic generators (`generate(rng, n) -> ndarray`, `true_mean`) so a
-  single simulation loop can run over either. Also has shared-item DOVE /
-  OpenEval / Inspect-AI *pairing* (ported from `sim_tango_real.py`),
+- `scenarios/real_data.py` -- OpenEval (downloaded from the HuggingFace Hub
+  on first use) / Inspect AI (a CSV of locally-run results, see
+  `simulations/collect_inspect_benchmarks.py`) corpus loaders, exposed
+  through the same `CISource` interface as the synthetic generators
+  (`generate(rng, n) -> ndarray`, `true_mean`) so a single simulation loop
+  can run over either. Also has shared-item OpenEval / Inspect AI *pairing*,
   exposed as `CIPairSource` (`generate_pair(rng, n, runs) -> (a, b)`,
-  `true_diff`) for `cases/ci_paired.py`.
+  `true_diff`) for `cases/ci_paired.py`. `--data-source real` combines
+  openeval + inspect for maximum real-data diversity, skipping inspect with
+  a warning (rather than failing) if its CSV isn't present locally.
 - `cases/ci_single.py`'s and `cases/ci_paired.py`'s `--nested-mode`
   (multi-run, parameterized by `run_noise_frac` rather than ICC -- `f_run =
   1 - icc`) is now an optional axis on the SAME `build_single_sample_sources`
@@ -164,8 +164,8 @@ reused as-is across the pairwise-pvalue and PPI-test-name groupings.
 
 | Case | Status | Ported from | Data sources |
 |---|---|---|---|
-| `ci_single` | implemented | `sim_compare_boot.py` (single-sample) + `sim_dove.py` + `sim_compare_boot_nested.py` (mean phase, via `--nested-mode`) | synthetic, dove, openeval, all (`--nested-mode`: synthetic only) |
-| `ci_paired` | implemented | `sim_compare_boot.py` (pairwise) + `sim_tango_real.py` + `sim_compare_boot_nested.py` (pairwise phase, via `--nested-mode`) | synthetic, dove, openeval, inspect, all (`--nested-mode`: synthetic only) |
+| `ci_single` | implemented | `sim_compare_boot.py` (single-sample) + `sim_compare_boot_nested.py` (mean phase, via `--nested-mode`) | synthetic, openeval, inspect, real (`--nested-mode`: synthetic only) |
+| `ci_paired` | implemented | `sim_compare_boot.py` (pairwise) + `sim_tango_real.py` + `sim_compare_boot_nested.py` (pairwise phase, via `--nested-mode`) | synthetic, openeval, inspect, real (`--nested-mode`: synthetic only) |
 | `pvalues` | implemented | `sim_compare_pvalues.py` (`--mode pairwise`/`multiarm`) + `sim_type_i_calibration.py` (`--mode ppi`) | synthetic only |
 | `alignment` | planned | `sim_alignment_methods.py` | synthetic only |
 
@@ -195,7 +195,7 @@ same way `evalstats.core.resampling` is.
 
 - `alignment` is synthetic-only for now -- a natural fit for OpenEval (which
   has paired human + LLM labels) once ported.
-- `ci_paired`'s real-data path (dove/openeval/inspect) only supports `runs=1`
+- `ci_paired`'s real-data path (openeval/inspect/real) only supports `runs=1`
   (flat, single run per item) and is restricted to known-binary benchmarks,
   matching `sim_tango_real.py`'s `SINGLE_RUN_METHODS` scope. Multi-run real
   pairs (Tango multirun variants, nested-diff bootstrap, `lmm_diff`) are
@@ -205,7 +205,7 @@ same way `evalstats.core.resampling` is.
   never supported `--statistic median` for its multi-run paths.
 - `official_args()` for both `ci_single` and `ci_paired` is synthetic-only --
   real-data sources need network/HF Hub access not assumed available in
-  `--official-tests` runs. Run `--data-source dove/openeval/inspect` manually
+  `--official-tests` runs. Run `--data-source openeval/inspect/real` manually
   when that access is available.
 - `scenarios/synthetic.py`'s `"extreme"` suite is currently identical to
   `"expanded"` -- reserved for future stress-test scenarios as more cases

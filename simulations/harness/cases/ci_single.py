@@ -1,10 +1,8 @@
 """ci_single case: single-sample CI coverage, synthetic and/or real benchmark data.
 
-Consolidates ``simulations/sim_compare_boot.py``'s single-sample ("mean"
-estimand) simulation loop and ``simulations/sim_dove.py``'s real-data loop
-into one engine operating over ``scenarios.CISource`` objects, so the same
+One engine operating over ``scenarios.CISource`` objects, so the same
 CI-method dispatch and report format covers synthetic distributions
-(``scenarios/synthetic.py``) and real DOVE_Lite/OpenEval corpora
+(``scenarios/synthetic.py``) and real OpenEval/Inspect AI corpora
 (``scenarios/real_data.py``) alike.
 
 Methods compared
@@ -72,7 +70,7 @@ from ..scenarios.synthetic import (
     RUN_NOISE_FRACS_DEFAULT,
     build_single_sample_sources,
 )
-from ..scenarios.real_data import SOURCES as REAL_DATA_SOURCES, build_real_data_sources
+from ..scenarios.real_data import DEFAULT_INSPECT_CSV, SOURCES as REAL_DATA_SOURCES, build_real_data_sources
 from ..methods import (
     BOOTSTRAP_METHODS as METHODS,
     T_INTERVAL,
@@ -121,7 +119,7 @@ RESULTS_MODES = ["save", "off"]
 
 @dataclass
 class SimResult:
-    source: str  # "synthetic" | "dove" | "openeval"
+    source: str  # "synthetic" | "openeval" | "inspect" | "real"
     label: str  # scenario label (synthetic) or "model/benchmark_id" (real)
     eval_type: str
     n: int
@@ -1031,6 +1029,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--hf-token", default=None)
     parser.add_argument("--cache-dir", default=None)
     parser.add_argument("--min-corpus-size", type=int, default=50)
+    parser.add_argument("--inspect-csv", default=None,
+                         help=f"Path to CSV from collect_inspect_benchmarks.py "
+                              f"(used by --data-source inspect/real; defaults to {DEFAULT_INSPECT_CSV!r})")
     parser.add_argument("--reps", type=int, default=200, metavar="N")
     parser.add_argument("--bootstrap-n", type=int, default=500, metavar="N")
     parser.add_argument("--alpha", type=float, default=0.05)
@@ -1061,10 +1062,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 def official_args(base_seed: int = 42) -> argparse.Namespace:
     """Canonical official-test preset, mirroring sim_compare_boot.py --official-test
     (single-sample phase). Synthetic only -- real-data sources need network/HF
-    access not assumed available; run --data-source dove/openeval manually."""
+    access not assumed available; run --data-source openeval/inspect/real manually."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=2000, bootstrap_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
@@ -1084,7 +1085,7 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     """
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=200, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
@@ -1177,6 +1178,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             sources = build_real_data_sources(
                 args.data_source, benchmarks=args.benchmarks, models=args.models,
                 hf_token=args.hf_token, cache_dir=args.cache_dir, min_corpus_size=args.min_corpus_size,
+                inspect_csv=args.inspect_csv,
             )
 
         if args.eval_types:
