@@ -359,6 +359,7 @@ def group_total_std(shape: ShapeSpec, icc: float) -> float:
 _CUSTOM_SHAPE_VAR_CACHE: dict[str, float] = {}
 _CUSTOM_SHAPE_MEAN_CACHE: dict[str, float] = {}
 _CUSTOM_SHAPE_RANGE: dict[str, tuple[float, float, bool]] = {
+    "binary": (0.0, 1.0, True),
     "continuous": (0.0, 1.0, False), "likert": (1.0, 5.0, True), "grades": (0.0, 100.0, False),
 }
 

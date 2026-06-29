@@ -98,6 +98,7 @@ from ..scenarios.synthetic import (
     estimate_judge_bias_gold_null_values,
     JUDGE_BIAS_LMM_FACTORIAL_FACTORS,
 )
+from ..scenarios.real_data import DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
 from ..methods import (
     PAIRWISE_PVALUE_METHODS,
     MCNEMAR,
@@ -132,6 +133,7 @@ from . import CaseResult
 CASE_NAME = "pvalues"
 
 MODES = ["pairwise", "multiarm", "ppi", "all"]
+DATA_SOURCES = ["synthetic"] + REAL_PAIR_SOURCES
 PROGRESS_MODES = ["bar", "cell", "off"]
 PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
@@ -979,22 +981,35 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plots-dir", default=None)
 
     # pairwise mode
+    parser.add_argument("--data-source", choices=DATA_SOURCES, default="synthetic",
+                         help="pairwise mode: 'synthetic' (default), or a real-data source: " + ", ".join(REAL_PAIR_SOURCES))
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
-                         help="pairwise mode: synthetic scenario breadth for build_pair_sources")
+                         help="pairwise mode: synthetic scenario breadth for build_pair_sources (ignored for real data sources)")
     parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE",
                          help="pairwise/multiarm modes: restrict to these eval types")
     parser.add_argument("--sizes", type=int, nargs="+", default=[10, 20, 50, 100], metavar="N",
                          help="pairwise/multiarm modes: sample sizes to sweep")
     parser.add_argument("--runs", type=int, default=1, metavar="R",
-                         help="pairwise/multiarm modes: runs per input (R>1 activates binary majority-vote/nested paths)")
+                         help="pairwise/multiarm modes: runs per input (R>1 activates binary majority-vote/nested paths; "
+                              "real-data pairwise sources only support --runs 1)")
     parser.add_argument("--statistic", choices=["mean", "median"], default="mean",
                          help="pairwise/multiarm modes: statistic passed to evalstats.core.paired")
     parser.add_argument("--bootstrap-n", type=int, default=500, metavar="N",
                          help="pairwise/multiarm modes: bootstrap resample count")
     parser.add_argument("--icc-values", type=float, nargs="+", default=[0.05, 0.20, 0.40, 0.60, 0.80], metavar="ICC",
-                         help="pairwise mode: ICC sweep for build_pair_sources")
+                         help="pairwise mode: ICC sweep for build_pair_sources (ignored for real data sources)")
     parser.add_argument("--cohens-d-values", type=float, nargs="+", default=[0.2, 0.4], metavar="D",
-                         help="pairwise mode: alt-condition effect sizes for build_pair_sources")
+                         help="pairwise mode: alt-condition effect sizes for build_pair_sources (ignored for real data sources)")
+    parser.add_argument("--benchmarks", nargs="+", default=None, metavar="ID",
+                         help="pairwise mode, real data: benchmark IDs to filter to")
+    parser.add_argument("--models", nargs="+", default=None, metavar="NAME",
+                         help="pairwise mode, real data: model names to filter to")
+    parser.add_argument("--hf-token", default=None, help="pairwise mode, real data")
+    parser.add_argument("--cache-dir", default=None, help="pairwise mode, real data")
+    parser.add_argument("--min-pair-size", type=int, default=50, help="pairwise mode, real data")
+    parser.add_argument("--inspect-csv", default=None,
+                         help=f"pairwise mode, real data: path to CSV from collect_inspect_benchmarks.py "
+                              f"(used by --data-source inspect/real; defaults to {DEFAULT_INSPECT_CSV!r})")
 
     # multiarm mode
     parser.add_argument("--k-arms", type=int, default=4, metavar="K", help="multiarm mode: number of arms")
@@ -1022,8 +1037,10 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     return argparse.Namespace(
         mode="all", reps=1000, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
-        scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100], runs=1, statistic="mean",
+        data_source="synthetic", scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100],
+        runs=1, statistic="mean",
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=4, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000,
     )
@@ -1039,11 +1056,23 @@ def run(args: argparse.Namespace) -> CaseResult:
         modes = [args.mode] if args.mode != "all" else ["pairwise", "multiarm", "ppi"]
 
         if "pairwise" in modes:
-            print(f"\npvalues simulation (pairwise, non-PPI) -- suite={args.scenario_suite}, statistic={args.statistic}")
-            sources = build_pair_sources(
-                suite=args.scenario_suite, icc_values=args.icc_values,
-                cohens_d_values=args.cohens_d_values, include_null=True,
-            )
+            print(f"\npvalues simulation (pairwise, non-PPI) -- data_source={args.data_source}, statistic={args.statistic}")
+            if args.data_source == "synthetic":
+                sources = build_pair_sources(
+                    suite=args.scenario_suite, icc_values=args.icc_values,
+                    cohens_d_values=args.cohens_d_values, include_null=True,
+                )
+            else:
+                runs = args.runs
+                if runs != 1:
+                    print("  Warning: real-data sources only support --runs 1 in this pass; forcing runs=1.")
+                    runs = 1
+                args = argparse.Namespace(**{**vars(args), "runs": runs})
+                sources = build_real_pair_sources(
+                    args.data_source, benchmarks=args.benchmarks, models=args.models,
+                    hf_token=args.hf_token, cache_dir=args.cache_dir, min_pair_size=args.min_pair_size,
+                    inspect_csv=args.inspect_csv,
+                )
             if args.eval_types:
                 requested = set(args.eval_types)
                 sources = [s for s in sources if s.eval_type in requested]

@@ -32,6 +32,7 @@ from typing import Any
 import numpy as np
 
 from . import CISource, CIPairSource
+from .synthetic import ShapeSpec
 
 SOURCES = ["openeval", "inspect", "real"]
 PAIR_SOURCES = ["openeval", "inspect", "real"]
@@ -191,6 +192,35 @@ def corpus_to_ci_source(corpus: Corpus) -> CISource:
     )
 
 
+def corpus_to_shape_spec(corpus: Corpus) -> ShapeSpec:
+    """Wrap a real-data Corpus as a "custom" ShapeSpec, so it can be used
+    anywhere a synthetic shape can: ``sample_group_truth``'s k-group/icc/
+    base_corr machinery, ``group_total_std``, ``build_pair_sources``,
+    ``build_multiarm_sources``, and the judge-bias scenario family all
+    already work with any "custom" shape via its bare ``custom_sampler``,
+    with no further changes needed.
+
+    Draws are bootstrap resamples (with replacement) of the corpus's real
+    scores, rather than the without-replacement subsampling
+    ``corpus_to_ci_source``/``corpus_pair_to_ci_pair_source`` use elsewhere.
+    Bootstrap draws compose cleanly with this machinery regardless of how
+    many items/groups/runs are requested -- without-replacement sampling
+    would otherwise need n bounded by the corpus size in every one of those
+    call sites, several of which draw far more than one "item" at once
+    (e.g. a k-group multi-arm sweep, or a large Monte Carlo estimate of the
+    shape's own mean/variance).
+    """
+    scores = corpus.scores
+
+    def _sampler(rng: np.random.Generator, n: int, _scores: np.ndarray = scores) -> np.ndarray:
+        return rng.choice(_scores, size=n, replace=True)
+
+    return ShapeSpec(
+        label=f"real:{corpus.source}:{corpus.model}/{corpus.benchmark_id}",
+        eval_type=corpus.eval_type, kind="custom", custom_sampler=_sampler,
+    )
+
+
 def _score_dist_summary(scores: np.ndarray, eval_type: str) -> str:
     """Score distribution diagnostic for corpus load-time output."""
     n = len(scores)
@@ -322,6 +352,27 @@ def _oe_first_metric_name(scores_val: Any) -> str | None:
     return None
 
 
+def _load_openeval_response_table(
+    openeval_repo: str, hf_token: str | None, cache_dir: str | None,
+) -> Any:
+    """Load OpenEval's full "response" table.
+
+    The repo's own dataset card declares a split literally named "all" for
+    this config (a convenience "every benchmark" split) -- but recent
+    ``datasets`` versions reserve "all" as a special keyword and refuse to
+    build a DatasetDict containing a split by that name, raising a ValueError
+    before we ever get to select "train". Loading via an explicit
+    ``data_files`` glob bypasses the repo's YAML split definitions entirely
+    (the library treats it as a one-off parquet load instead), which dodges
+    the crash and gives the same combined row set the "all" split would have.
+    """
+    from datasets import load_dataset
+    return load_dataset(
+        openeval_repo, data_files="response/*.parquet", split="train",
+        token=hf_token, cache_dir=cache_dir,
+    )
+
+
 def list_openeval_models(
     *,
     openeval_repo: str = OPENEVAL_REPO,
@@ -331,7 +382,7 @@ def list_openeval_models(
 ) -> dict[str, dict[str, int]]:
     """Return {model_name: {benchmark_source: response_count}}."""
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401
     except ImportError:
         raise ImportError("pip install datasets")
 
@@ -342,7 +393,7 @@ def list_openeval_models(
         "Scanning OpenEval response table for model names and benchmark coverage ..."
     )
     print(msg)
-    ds = load_dataset(openeval_repo, "response", split="train", token=hf_token, cache_dir=cache_dir)
+    ds = _load_openeval_response_table(openeval_repo, hf_token, cache_dir)
     counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for row in ds:
         name = _oe_get_model_name(row.get("model"))
@@ -361,12 +412,12 @@ def list_openeval_benchmarks(
 ) -> dict[str, int]:
     """Return {benchmark_source: response_count} for all benchmarks in OpenEval."""
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401
     except ImportError:
         raise ImportError("pip install datasets")
 
     print("Scanning OpenEval response table for benchmark IDs ...")
-    ds = load_dataset(openeval_repo, "response", split="train", token=hf_token, cache_dir=cache_dir)
+    ds = _load_openeval_response_table(openeval_repo, hf_token, cache_dir)
     counts: dict[str, int] = defaultdict(int)
     for row in ds:
         source, _ = _oe_parse_response_id(row.get("response_id", ""))
@@ -390,7 +441,7 @@ def build_openeval_corpora(
     --benchmarks <id> to discover valid combinations.
     """
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401
     except ImportError:
         raise ImportError("pip install datasets")
 
@@ -409,7 +460,7 @@ def build_openeval_corpora(
     benchmark_ids_set = {b for _, b in pairs}
 
     print("Loading OpenEval response table (~6.4 GB; cached after first download) ...")
-    response_ds = load_dataset(openeval_repo, "response", split="train", token=hf_token, cache_dir=cache_dir)
+    response_ds = _load_openeval_response_table(openeval_repo, hf_token, cache_dir)
 
     print(f"  Filtering to {len(pairs)} (model, benchmark) pairs ...")
 
@@ -697,7 +748,7 @@ def build_openeval_corpus_pairs(
 ) -> list[CorpusPair]:
     """Build CorpusPairs from OpenEval by aligning on item_id (binary benchmarks only)."""
     try:
-        from datasets import load_dataset
+        import datasets  # noqa: F401
     except ImportError:
         raise ImportError("pip install datasets")
 
@@ -715,7 +766,7 @@ def build_openeval_corpus_pairs(
     bench_set = {b for _, b in model_bench_pairs}
 
     print("Loading OpenEval response table (~1.4 GB; cached after first download) ...")
-    response_ds = load_dataset(openeval_repo, "response", split="train", token=hf_token, cache_dir=cache_dir)
+    response_ds = _load_openeval_response_table(openeval_repo, hf_token, cache_dir)
 
     def _keep_row(batch: dict) -> list[bool]:
         keep = []

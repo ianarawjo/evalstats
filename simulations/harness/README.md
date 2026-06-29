@@ -102,9 +102,16 @@ instead of each case (or each *mode* within a case) defining its own:
   (`generate(rng, n) -> ndarray`, `true_mean`) so a single simulation loop
   can run over either. Also has shared-item OpenEval / Inspect AI *pairing*,
   exposed as `CIPairSource` (`generate_pair(rng, n, runs) -> (a, b)`,
-  `true_diff`) for `cases/ci_paired.py`. `--data-source real` combines
-  openeval + inspect for maximum real-data diversity, skipping inspect with
-  a warning (rather than failing) if its CSV isn't present locally.
+  `true_diff`) for `cases/ci_paired.py` and `cases/pvalues.py`'s `--mode
+  pairwise`. `--data-source real` combines openeval + inspect for maximum
+  real-data diversity, skipping inspect with a warning (rather than
+  failing) if its CSV isn't present locally. `corpus_to_shape_spec(corpus)`
+  wraps a real `Corpus` as a "custom" `ShapeSpec` (bootstrap-resampled, i.e.
+  with replacement, unlike the without-replacement subsampling
+  `corpus_to_ci_source`/`corpus_pair_to_ci_pair_source` use) so real
+  marginal distributions can be dropped into any of `synthetic.py`'s
+  k-group/icc/base_corr machinery -- the foundation for grounding
+  `multiarm`/`ppi` mode in real data too.
 - `cases/ci_single.py`'s and `cases/ci_paired.py`'s `--nested-mode`
   (multi-run, parameterized by `run_noise_frac` rather than ICC -- `f_run =
   1 - icc`) is now an optional axis on the SAME `build_single_sample_sources`
@@ -166,7 +173,7 @@ reused as-is across the pairwise-pvalue and PPI-test-name groupings.
 |---|---|---|---|
 | `ci_single` | implemented | `sim_compare_boot.py` (single-sample) + `sim_compare_boot_nested.py` (mean phase, via `--nested-mode`) | synthetic, openeval, inspect, real (`--nested-mode`: synthetic only) |
 | `ci_paired` | implemented | `sim_compare_boot.py` (pairwise) + `sim_tango_real.py` + `sim_compare_boot_nested.py` (pairwise phase, via `--nested-mode`) | synthetic, openeval, inspect, real (`--nested-mode`: synthetic only) |
-| `pvalues` | implemented | `sim_compare_pvalues.py` (`--mode pairwise`/`multiarm`) + `sim_type_i_calibration.py` (`--mode ppi`) | synthetic only |
+| `pvalues` | implemented | `sim_compare_pvalues.py` (`--mode pairwise`/`multiarm`) + `sim_type_i_calibration.py` (`--mode ppi`) | `--mode pairwise`: synthetic, openeval, inspect, real; `multiarm`/`ppi`: synthetic only |
 | `alignment` | planned | `sim_alignment_methods.py` | synthetic only |
 
 There is no separate `ci_nested` case: `sim_compare_boot_nested.py` was
