@@ -960,6 +960,7 @@ def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_p
         ax.axhline(target, color="black", linewidth=1.1, linestyle="--", zorder=1)
 
         legend_handles = []
+        all_xs: list[float] = []
         for m in method_objs:
             color = m.color
             m_results = [r for r in et_results if r.method == m.name]
@@ -980,6 +981,7 @@ def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_p
 
             xs = [p[1] for p in points]
             ys = [p[2] for p in points]
+            all_xs.extend(xs)
             ax.plot(xs, ys, color=color, linewidth=1.1, alpha=0.55, zorder=2)
             ax.errorbar(xs, ys, xerr=[p[3] for p in points], fmt="o", color=color,
                         markersize=6, markeredgewidth=0.7, markeredgecolor="white",
@@ -993,13 +995,21 @@ def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_p
             legend_handles.append(plt.Line2D([0], [0], marker="o", color=color, markerfacecolor=color, markersize=7, label=m.name, linewidth=1.5))
 
         ax.set_xscale("log")
-        ax.set_xlabel("Mean CI time (ms) -- log scale  [error bars: +-1.96 SE]", fontsize=9.5)
+        ax.set_xlabel("Mean CI time (ms) -- log scale", fontsize=9.5)
         ax.set_ylabel("Coverage rate", fontsize=9.5)
         ax.set_title(f"eval type: {et}", fontsize=10.5)
         ax.set_ylim(max(0.0, target - 0.20), min(1.01, target + 0.12))
         ax.grid(axis="y", linestyle="--", linewidth=0.55, alpha=0.45)
         ax.grid(axis="x", linestyle=":", linewidth=0.45, alpha=0.35)
         ax.tick_params(labelsize=8.5)
+        if all_xs:
+            import matplotlib.ticker as _ticker
+            lo_ms, hi_ms = min(all_xs), max(all_xs)
+            n_ticks = max(4, min(8, len(all_xs) // 2))
+            tick_locs = np.logspace(np.log10(max(lo_ms, 1e-9)), np.log10(max(hi_ms, 1e-8)), n_ticks)
+            ax.xaxis.set_major_locator(_ticker.FixedLocator(tick_locs))
+            ax.xaxis.set_major_formatter(_ticker.FuncFormatter(lambda x, _: f"{x:.3g}"))
+            ax.xaxis.set_minor_locator(_ticker.NullLocator())
 
         if not et_results:
             ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")

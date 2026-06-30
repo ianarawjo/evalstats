@@ -485,6 +485,31 @@ def save_pairwise_typeI_power_plot(*, results: list[PairwiseResult], alpha: floa
         ax_pw.set_ylabel("Rejection rate (alt)")
         ax_pw.set_xscale("log")
         ax_t1.legend(fontsize=6.5, loc="upper right")
+        import matplotlib.ticker as _ticker
+        _loc = _ticker.FixedLocator(sample_sizes)
+        _fmt = _ticker.FuncFormatter(lambda x, _: str(int(x)))
+        _nul = _ticker.NullLocator()
+        for _ax in (ax_t1, ax_pw):
+            _ax.xaxis.set_major_locator(_loc)
+            _ax.xaxis.set_major_formatter(_fmt)
+            _ax.xaxis.set_minor_locator(_nul)
+        # Ensure y=0 lines are visible even when all methods have zero Type-I error
+        # (binary null under the shared-item model gives d_i=0 for all i, so all
+        # tests correctly return p=1 -- FWER=0 is right, but visually looks blank).
+        t1_lo, t1_hi = ax_t1.get_ylim()
+        if t1_hi - t1_lo < 0.04:
+            ax_t1.set_ylim(-0.005, max(t1_hi, alpha + 0.04))
+        elif t1_lo > -0.003:
+            ax_t1.set_ylim(-0.003, t1_hi)
+        if et == "binary":
+            null_t1_vals = [
+                r.rejects / r.n_reps
+                for r in [r for r in et_rows if r.condition == "null"]
+                if r.n_reps > 0
+            ]
+            if null_t1_vals and max(null_t1_vals) == 0.0:
+                ax_t1.text(0.5, 0.25, "T1=0 (shared-item model:\nA≡B under null)", transform=ax_t1.transAxes,
+                           ha="center", va="center", fontsize=7.5, color="#555555", style="italic")
 
     fig.suptitle(f"pvalues (pairwise, non-PPI): Type-I + Power | alpha={alpha}", fontsize=12)
     with warnings.catch_warnings():
@@ -522,36 +547,67 @@ def _compute_multiarm_metrics(
 ) -> dict[str, tuple[bool, bool]]:
     """Compute (any_reject, best_selected) for every correction strategy.
 
-    Bootstrap/permutation p-values are computed once with correction='none';
-    each non-Friedman correction is applied to the same raw p-values.
+    Holm/Bonferroni/FDR use truly raw (marginal) bootstrap p-values from a
+    call with simultaneous_ci=False.  The ``max_t`` entry is a separate call
+    with simultaneous_ci=True; for bootstrap-compatible methods the resulting
+    p-values are Romano-Wolf max-T FWER-controlled p-values -- each is the
+    min p-value commensurate with the simultaneous CI that was reported to the
+    user.  For non-bootstrap methods (permutation) max_t falls back to the
+    Bonferroni CI widening p-value.
     """
     results: dict[str, tuple[bool, bool]] = {}
     k = len(labels)
     pairs = [(labels[i], labels[j]) for i in range(k) for j in range(i + 1, k)]
-    label_to_idx = {lbl: i for i, lbl in enumerate(labels)}
 
-    non_friedman = [c for c in corrections if c != "friedman_nemenyi"]
-    if non_friedman:
-        matrix_none = all_pairwise(
+    non_friedman_non_maxt = [c for c in corrections if c not in ("friedman_nemenyi", "max_t")]
+    include_max_t = "max_t" in corrections
+
+    if non_friedman_non_maxt or include_max_t:
+        # Raw (marginal) p-values: no simultaneous-CI adjustment, no post-hoc correction.
+        matrix_raw = all_pairwise(
             scores=scores, labels=labels, method=method, ci=1.0 - alpha,
             n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
+            simultaneous_ci=False,
         )
-        raw_p = np.array([matrix_none.get(a, b).p_value for (a, b) in pairs])
+        raw_p = np.array([matrix_raw.get(a, b).p_value for (a, b) in pairs])
         pair_to_idx = {pair: idx for idx, pair in enumerate(pairs)}
 
-        for correction in non_friedman:
+        for correction in non_friedman_non_maxt:
             adj_p = raw_p if correction == "none" else correct_pvalues(raw_p, correction)
             has_any = bool(np.any(adj_p < alpha))
-
             best = labels[0]
             best_selected = True
             for other in labels[1:]:
                 pair_idx = pair_to_idx.get((best, other))
-                if pair_idx is None or not (adj_p[pair_idx] < alpha and matrix_none.get(best, other).point_diff > 0.0):
+                if pair_idx is None or not (adj_p[pair_idx] < alpha and matrix_raw.get(best, other).point_diff > 0.0):
                     best_selected = False
                     break
-
             results[correction] = (has_any, best_selected)
+
+        if include_max_t:
+            # Max-T simultaneous CIs: separate call with simultaneous_ci=True.
+            # For bootstrap-compatible methods, p_value in the result is the
+            # Romano-Wolf max-T p-value (FWER-controlled via the joint bootstrap
+            # null distribution of max|T_ij|).  Rejecting when max-T p < alpha is
+            # exactly equivalent to checking whether the simultaneous CI excludes 0.
+            try:
+                matrix_maxt = all_pairwise(
+                    scores=scores, labels=labels, method=method, ci=1.0 - alpha,
+                    n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
+                    simultaneous_ci=True,
+                )
+                maxt_p = np.array([matrix_maxt.get(a, b).p_value for (a, b) in pairs])
+                has_any = bool(np.any(maxt_p < alpha))
+                best = labels[0]
+                best_selected = True
+                for other in labels[1:]:
+                    pair_idx = pair_to_idx.get((best, other))
+                    if pair_idx is None or not (maxt_p[pair_idx] < alpha and matrix_maxt.get(best, other).point_diff > 0.0):
+                        best_selected = False
+                        break
+                results["max_t"] = (has_any, best_selected)
+            except Exception:
+                results["max_t"] = (False, False)
 
     if "friedman_nemenyi" in corrections:
         try:
@@ -615,18 +671,18 @@ def _run_multiarm_cell(
 
 
 def run_multiarm_simulation(
-    sources: list[MultiArmSource], sample_sizes: list[int], runs: int, k_arms: int, n_reps: int,
+    sources: list[MultiArmSource], sample_sizes: list[int], runs: int, k_values: list[int], n_reps: int,
     n_bootstrap: int, alpha: float, multiarm_method: str, statistic: str, progress_mode: str = "bar", seed: int = 42,
 ) -> list[MultiArmResult]:
     ss = np.random.SeedSequence(seed)
-    cells = [(s, n) for s in sources for n in sample_sizes]
+    cells = [(s, n, k) for s in sources for n in sample_sizes for k in k_values]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pvalues-multiarm")
     results: list[MultiArmResult] = []
-    for i, (source, n) in enumerate(cells):
-        results.extend(_run_multiarm_cell(source, n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, child_seeds[i]))
-        reporter.update(i + 1, detail=f"{source.eval_type} n={n}")
+    for i, (source, n, k) in enumerate(cells):
+        results.extend(_run_multiarm_cell(source, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, child_seeds[i]))
+        reporter.update(i + 1, detail=f"{source.eval_type} n={n} k={k}")
     reporter.update(len(cells), detail="done")
     return results
 
@@ -635,33 +691,36 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
     print(f"\n{'='*78}\n  PVALUES (MULTI-ARM, NON-PPI) -- FWER + BEST-ARM POWER\n  Nominal alpha: {alpha}\n{'='*78}")
     corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    ks_present = sorted({r.k for r in results})
     for et in eval_types_present:
-        et_rows = [r for r in results if r.eval_type == et]
-        print(f"\n  [{et}]")
-        print(f"    {'Correction':<18} {'FWER':>8} {'BestPower':>10}")
-        for corr in corrections:
-            c_rows = [r for r in et_rows if r.correction == corr]
-            null_rows = [r for r in c_rows if r.condition == "null"]
-            alt_rows = [r for r in c_rows if r.condition == "alt"]
-            fwer_t = sum(r.n_reps for r in null_rows)
-            fwer_c = sum(r.any_reject for r in null_rows)
-            power_t = sum(r.n_reps for r in alt_rows)
-            power_c = sum(r.best_selected for r in alt_rows)
-            fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
-            power = power_c / power_t if power_t > 0 else float("nan")
-            print(f"    {corr:<18} {fwer:>8.3f} {power:>10.3f}")
+        for k in ks_present:
+            subset = [r for r in results if r.eval_type == et and r.k == k]
+            if not subset:
+                continue
+            print(f"\n  [{et}, k={k}]")
+            print(f"    {'Correction':<20} {'FWER':>8} {'BestPower':>10}")
+            for corr in corrections:
+                c_rows = [r for r in subset if r.correction == corr]
+                null_rows = [r for r in c_rows if r.condition == "null"]
+                alt_rows = [r for r in c_rows if r.condition == "alt"]
+                fwer_t = sum(r.n_reps for r in null_rows)
+                fwer_c = sum(r.any_reject for r in null_rows)
+                power_t = sum(r.n_reps for r in alt_rows)
+                power_c = sum(r.best_selected for r in alt_rows)
+                fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
+                power = power_c / power_t if power_t > 0 else float("nan")
+                print(f"    {corr:<20} {fwer:>8.3f} {power:>10.3f}")
     print()
 
 
 def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) -> str:
     """LaTeX booktabs overall summary: per-correction FWER (with its 95% MC
     band) + best-arm power, collapsed across eval types, plus one FWER
-    column per sample size actually swept, appended to the right -- the
-    aggregate FWER column collapses across n and can hide miscalibration
-    that only shows up at small or large sample sizes."""
+    column per sample size and per k value actually swept."""
     corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    ks_present = sorted({r.k for r in results if r.condition == "null"})
 
     rows = []
     for corr in corrections:
@@ -689,13 +748,21 @@ def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) 
             t_n = sum(r.n_reps for r in n_rows)
             fwer_n = c_n / t_n if t_n > 0 else float("nan")
             row.append(f"{fwer_n:.3f}" if np.isfinite(fwer_n) else "-")
+        for k in ks_present:
+            k_rows = [r for r in null_rows if r.k == k]
+            c_k = sum(r.any_reject for r in k_rows)
+            t_k = sum(r.n_reps for r in k_rows)
+            fwer_k = c_k / t_k if t_k > 0 else float("nan")
+            row.append(f"{fwer_k:.3f}" if np.isfinite(fwer_k) else "-")
         rows.append(row)
 
     return booktabs_table(
-        caption=f"pvalues (multi-arm, non-PPI): FWER and best-arm selection power (nominal alpha={alpha}).",
+        caption=f"pvalues (multi-arm, non-PPI): FWER and best-arm selection power (nominal alpha={alpha}). "
+                f"Per-$n$ and per-$k$ FWER columns are collapsed across the other dimension and across eval types.",
         label="tab:pvalues_multiarm_overall",
         columns=["Correction", "FWER", "95\\% MC band", "Best-arm power", "Eval types"]
-                + [f"n={n}" for n in sizes_present],
+                + [f"n={n}" for n in sizes_present]
+                + [f"k={k}" for k in ks_present],
         rows=rows,
     )
 
@@ -758,6 +825,65 @@ def save_multiarm_fwer_power_plot(*, results: list[MultiArmResult], alpha: float
         ax.legend(fontsize=7, loc="lower right")
 
     fig.suptitle("pvalues (multi-arm, non-PPI): FWER vs. best-arm power", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
+    """FWER and best-arm power as a function of k (number of arms), one curve per
+    correction method, collapsed across eval types and sample sizes.  Only
+    produced when more than one k value was swept; returns out_path unchanged
+    (without writing) if all results share the same k."""
+    import matplotlib.pyplot as plt
+
+    ks_present = sorted({r.k for r in results})
+    if len(ks_present) < 2:
+        return out_path
+
+    fig, (ax_fwer, ax_pow) = plt.subplots(1, 2, figsize=(10.0, 4.5))
+    ax_fwer.axhline(alpha, color="black", linewidth=1.0, linestyle="--", label=f"α={alpha}")
+    ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
+
+    for m in MULTIARM_CORRECTION_METHODS:
+        c_rows = [r for r in results if r.correction == m.name]
+        if not c_rows:
+            continue
+        xs, ys_fwer, ys_pow = [], [], []
+        for k in ks_present:
+            k_rows = [r for r in c_rows if r.k == k]
+            null_rows = [r for r in k_rows if r.condition == "null"]
+            alt_rows = [r for r in k_rows if r.condition == "alt"]
+            fwer_t = sum(r.n_reps for r in null_rows)
+            fwer_c = sum(r.any_reject for r in null_rows)
+            power_t = sum(r.n_reps for r in alt_rows)
+            power_c = sum(r.best_selected for r in alt_rows)
+            if fwer_t == 0 or power_t == 0:
+                continue
+            xs.append(k)
+            ys_fwer.append(fwer_c / fwer_t)
+            ys_pow.append(power_c / power_t)
+        if xs:
+            ax_fwer.plot(xs, ys_fwer, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            ax_pow.plot(xs, ys_pow, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+
+    ax_fwer.set_xlabel("k (number of arms)")
+    ax_fwer.set_ylabel("FWER (null)")
+    ax_fwer.set_title("FWER vs. number of arms")
+    ax_fwer.set_ylim(bottom=0.0)
+    ax_fwer.legend(fontsize=7)
+
+    ax_pow.set_xlabel("k (number of arms)")
+    ax_pow.set_ylabel("Best-arm selection power (alt)")
+    ax_pow.set_title("Power vs. number of arms")
+    ax_pow.set_ylim(0.0, 1.02)
+    ax_pow.legend(fontsize=7)
+
+    fig.suptitle("pvalues (multi-arm, non-PPI): FWER and power vs. k", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -1785,7 +1911,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               f"(used by --data-source inspect/real; defaults to {DEFAULT_INSPECT_CSV!r})")
 
     # multiarm mode
-    parser.add_argument("--k-arms", type=int, default=4, metavar="K", help="multiarm mode: number of arms")
+    parser.add_argument("--k-arms", nargs="+", type=int, default=[4], metavar="K",
+                        help="multiarm mode: number of arms to sweep (one or more values, e.g. --k-arms 3 5 10); "
+                             "max-T and post-hoc corrections are compared at each k")
     parser.add_argument("--multiarm-method", default=SMOOTH_BOOTSTRAP.name, metavar="METHOD",
                          choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name],
                          help="multiarm mode: pairwise_differences-family method used to derive raw p-values before correction")
@@ -1816,13 +1944,13 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     pairwise+multiarm run and sim_type_i_calibration.py's full 43-scenario
     11-test sweep. Synthetic only."""
     return argparse.Namespace(
-        mode="all", reps=1000, alpha=0.05, seed=base_seed,
+        mode="all", reps=300, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         data_source="synthetic", scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100],
         runs=1, statistic="mean",
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        k_arms=4, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
+        k_arms=[3, 5, 10], multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000, effect_reps=200, effect_gold_mc=3000, no_effect_check=False,
     )
 
@@ -1853,7 +1981,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         runs=1, statistic="mean",
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        k_arms=3, multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
+        k_arms=[3], multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
     )
@@ -1913,17 +2041,18 @@ def run(args: argparse.Namespace) -> CaseResult:
             key_metrics["pairwise_mean_type1"] = type1
 
         if "multiarm" in modes:
-            print(f"\npvalues simulation (multi-arm, non-PPI) -- k={args.k_arms}, method={args.multiarm_method}")
+            k_values = args.k_arms if isinstance(args.k_arms, list) else [args.k_arms]
+            print(f"\npvalues simulation (multi-arm, non-PPI) -- k={k_values}, method={args.multiarm_method}")
             ma_sources = build_multiarm_sources(
                 suite=args.scenario_suite, icc=args.multiarm_icc, cohens_d=args.multiarm_cohens_d,
                 eval_types=args.eval_types,
             )
             if not ma_sources:
                 raise ValueError("No MultiArmSources left after filtering.")
-            print(f"  {len(ma_sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}")
+            print(f"  {len(ma_sources)} sources, sizes={args.sizes}, k_values={k_values}, reps={args.reps}, alpha={args.alpha}")
 
             ma_results = run_multiarm_simulation(
-                ma_sources, sample_sizes=args.sizes, runs=args.runs, k_arms=args.k_arms, n_reps=args.reps,
+                ma_sources, sample_sizes=args.sizes, runs=args.runs, k_values=k_values, n_reps=args.reps,
                 n_bootstrap=args.bootstrap_n, alpha=args.alpha, multiarm_method=args.multiarm_method,
                 statistic=args.statistic, progress_mode=args.progress, seed=args.seed,
             )
@@ -1936,6 +2065,10 @@ def run(args: argparse.Namespace) -> CaseResult:
                 plot_path = save_multiarm_fwer_power_plot(results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_fwer_power.png"))
                 output_paths.append(plot_path)
                 print(f"Saved plot: {plot_path}")
+                vs_k_path = save_multiarm_fwer_vs_k_plot(results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_fwer_vs_k.png"))
+                if Path(vs_k_path).exists():
+                    output_paths.append(vs_k_path)
+                    print(f"Saved plot: {vs_k_path}")
 
             null_rows = [r for r in ma_results if r.condition == "null"]
             fwer = sum(r.any_reject for r in null_rows) / sum(r.n_reps for r in null_rows) if null_rows else float("nan")

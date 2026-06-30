@@ -152,7 +152,8 @@ CORR_HOLM = Method("holm", "#cedb9c")
 CORR_BONFERRONI = Method("bonferroni", "#e7ba52")
 CORR_FDR_BH = Method("fdr_bh", "#ad494a")
 CORR_FRIEDMAN_NEMENYI = Method("friedman_nemenyi", "#a55194")
-MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_FRIEDMAN_NEMENYI]
+CORR_MAX_T = Method("max_t", "#5254a3")
+MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_FRIEDMAN_NEMENYI, CORR_MAX_T]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- evalstats.tests wrapper names (PPI-corrected path),
