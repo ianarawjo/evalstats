@@ -12,6 +12,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
@@ -39,6 +40,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("--list-cases", action="store_true", help="List available cases and exit.")
+    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
+                        help="Parallel worker processes for --official-tests/--quick-test presets (default: cpu_count-1).")
     parser.add_argument(
         "--official-tests", default=None, metavar="all|case1,case2,...",
         help=(
@@ -66,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _run_preset(case_names: list[str], args_factory, dir_prefix: str, label: str) -> bool:
+def _run_preset(case_names: list[str], args_factory, dir_prefix: str, label: str, n_workers: int = 1) -> bool:
     """Run `args_factory(module)` for each named case -- it may return a single
     Namespace or a list of Namespaces to run back to back (e.g. --quick-test's
     synthetic + real data-source calls) -- writing every artifact into one
@@ -85,9 +88,10 @@ def _run_preset(case_names: list[str], args_factory, dir_prefix: str, label: str
         for case_args in variants:
             case_args.out_dir = manifest_out_dir
             case_args.plots_dir = str(Path(manifest_out_dir) / "plots")
+            case_args.workers = n_workers
             data_source = getattr(case_args, "data_source", None)
             suffix = f" (data_source={data_source})" if data_source else ""
-            print(f"\n{'=' * 72}\n{label}: {name}{suffix}\n{'=' * 72}")
+            print(f"\n{'=' * 72}\n{label}: {name}{suffix}  [workers={n_workers}]\n{'=' * 72}")
             result = module.run(case_args)
             results.append(result)
             args_list.append(case_args)
@@ -117,7 +121,8 @@ def main(argv: list[str] | None = None) -> None:
         unknown = [c for c in case_names if c not in CASES]
         if unknown:
             parser.error(f"Unknown case(s) in --official-tests: {unknown}. Available: {list(CASES)}")
-        ok = _run_preset(case_names, lambda module: module.official_args(), "official", "OFFICIAL TEST")
+        ok = _run_preset(case_names, lambda module: module.official_args(), "official", "OFFICIAL TEST",
+                         n_workers=args.workers)
         if not ok:
             sys.exit(1)
         return
@@ -126,7 +131,7 @@ def main(argv: list[str] | None = None) -> None:
         ok = _run_preset(
             list(CASES),
             lambda module: [module.quick_args(), module.quick_args(data_source="real")],
-            "quick", "QUICK TEST",
+            "quick", "QUICK TEST", n_workers=args.workers,
         )
         if not ok:
             sys.exit(1)

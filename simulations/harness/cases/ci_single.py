@@ -29,6 +29,8 @@ import argparse
 import csv
 import io
 import itertools
+import multiprocessing as _mp
+import os
 import time
 import warnings
 from collections import defaultdict
@@ -334,6 +336,20 @@ class _ProgressReporter:
             print()
 
 
+_CELL_SOURCES: list = []  # fork-inherited worker state for run_simulation
+_NESTED_CELL_SOURCES: list = []  # fork-inherited worker state for run_nested_simulation
+
+
+def _run_cell_worker(args: tuple) -> list[SimResult]:
+    sc_idx, n, n_reps, n_bootstrap, alpha, seed = args
+    return _run_cell(_CELL_SOURCES[sc_idx], n, n_reps, n_bootstrap, alpha, seed)
+
+
+def _run_nested_cell_worker(args: tuple) -> list[SimResult]:
+    sc_idx, n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed = args
+    return _run_nested_cell(_NESTED_CELL_SOURCES[sc_idx], n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed)
+
+
 def run_simulation(
     sources: list[CISource],
     sample_sizes: list[int],
@@ -342,10 +358,14 @@ def run_simulation(
     alpha: float,
     progress_mode: str = "bar",
     seed: int = 42,
+    n_workers: int = 1,
 ) -> list[SimResult]:
+    global _CELL_SOURCES
+    _CELL_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
-    cells = [(s, n) for s in sources for n in sample_sizes if s.max_n is None or n < s.max_n]
+    cells = [(i, n) for i, s in enumerate(sources) for n in sample_sizes if s.max_n is None or n < s.max_n]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+    args_list = [(*cell, n_reps, n_bootstrap, alpha, seed) for cell, seed in zip(cells, child_seeds)]
 
     skipped = [(s, n) for s in sources for n in sample_sizes if not (s.max_n is None or n < s.max_n)]
     for s, n in skipped:
@@ -353,9 +373,17 @@ def run_simulation(
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="ci_single")
     results: list[SimResult] = []
-    for i, (source_obj, n) in enumerate(cells):
-        results.extend(_run_cell(source_obj, n, n_reps, n_bootstrap, alpha, child_seeds[i]))
-        reporter.update(i + 1, detail=f"{source_obj.eval_type} {source_obj.label} n={n}")
+    if n_workers <= 1:
+        for i, a in enumerate(args_list):
+            results.extend(_run_cell_worker(a))
+            sc_idx, n = cells[i]
+            reporter.update(i + 1, detail=f"{sources[sc_idx].eval_type} {sources[sc_idx].label} n={n}")
+    else:
+        ctx = _mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_cell_worker, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1)
     reporter.update(len(cells), detail="done")
     return results
 
@@ -594,17 +622,28 @@ def _run_nested_cell(
 
 def run_nested_simulation(
     sources: list[CISource], sample_sizes: list[int], runs: int, n_reps: int, n_bootstrap: int,
-    bayes_n: int, alpha: float, progress_mode: str = "bar", seed: int = 42,
+    bayes_n: int, alpha: float, progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
 ) -> list[SimResult]:
+    global _NESTED_CELL_SOURCES
+    _NESTED_CELL_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
-    cells = [(s, n) for s in sources for n in sample_sizes]
+    cells = [(i, n) for i, s in enumerate(sources) for n in sample_sizes]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+    args_list = [(sc_idx, n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed) for (sc_idx, n), seed in zip(cells, child_seeds)]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label=f"ci_single-nested[runs={runs}]")
     results: list[SimResult] = []
-    for i, (source_obj, n) in enumerate(cells):
-        results.extend(_run_nested_cell(source_obj, n, runs, n_reps, n_bootstrap, bayes_n, alpha, child_seeds[i]))
-        reporter.update(i + 1, detail=f"{source_obj.eval_type} {source_obj.label} n={n}")
+    if n_workers <= 1:
+        for i, a in enumerate(args_list):
+            results.extend(_run_nested_cell_worker(a))
+            sc_idx, n = cells[i]
+            reporter.update(i + 1, detail=f"{sources[sc_idx].eval_type} {sources[sc_idx].label} n={n}")
+    else:
+        ctx = _mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_nested_cell_worker, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1)
     reporter.update(len(cells), detail="done")
     return results
 
@@ -1140,6 +1179,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Append a LaTeX booktabs overall-summary table to the saved summary .log file.")
     parser.add_argument("--heteroscedastic", action="store_true", default=False,
                          help="Nested mode: run noise scales with input value (mimics real LLM eval variability)")
+    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
+                         help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
@@ -1155,6 +1196,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs=3, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT,
         icc_values=None, bayes_n=None, heteroscedastic=False,
+        workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
@@ -1175,6 +1217,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs=3, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT,
         icc_values=None, bayes_n=None, heteroscedastic=False, latex=True,
+        workers=1,
     )
 
 
@@ -1194,6 +1237,7 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
         out_dir="simulations/out", plots_dir=None,
         nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.01, 0.1, 0.3, 0.5],
         icc_values=[0.05, 0.30, 0.50], bayes_n=10000, heteroscedastic=True,
+        workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
@@ -1226,10 +1270,12 @@ def run(args: argparse.Namespace) -> CaseResult:
             print(f"  {len(sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}")
 
             results: list[SimResult] = []
+            n_workers = getattr(args, "workers", 1)
             for r_val in runs_list:
                 results.extend(run_nested_simulation(
                     sources, sample_sizes=args.sizes, runs=r_val, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
                     bayes_n=bayes_n, alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
+                    n_workers=n_workers,
                 ))
             print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps)
 
@@ -1295,6 +1341,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         results = run_simulation(
             sources, sample_sizes=args.sizes, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
             alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
+            n_workers=getattr(args, "workers", 1),
         )
         print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps)
 

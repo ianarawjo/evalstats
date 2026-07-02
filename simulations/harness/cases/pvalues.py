@@ -60,6 +60,8 @@ import argparse
 import csv
 import io
 import math
+import multiprocessing as _mp
+import os
 import time
 import warnings
 from collections import defaultdict
@@ -301,19 +303,55 @@ def _run_pairwise_cell(
     ]
 
 
+_PAIRWISE_SOURCES: list = []  # fork-inherited worker state for run_pairwise_simulation
+_MULTIARM_SOURCES: list = []  # fork-inherited worker state for run_multiarm_simulation
+
+
+def _run_pairwise_cell_worker(args: tuple) -> list[PairwiseResult]:
+    sc_idx, n, runs, n_reps, n_bootstrap, alpha, statistic, seed = args
+    return _run_pairwise_cell(_PAIRWISE_SOURCES[sc_idx], n, runs, n_reps, n_bootstrap, alpha, statistic, seed)
+
+
+def _run_multiarm_cell_worker(args: tuple) -> list[MultiArmResult]:
+    sc_idx, n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed = args
+    return _run_multiarm_cell(_MULTIARM_SOURCES[sc_idx], n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed)
+
+
+def _run_ppi_cell_worker(args: tuple) -> list:
+    sc, active_tests, n_reps, n_boot, seed = args
+    return _run_ppi_cell(sc, active_tests, n_reps, n_boot, seed)
+
+
+def _run_ppi_effect_cell_worker(args: tuple) -> tuple:
+    sc, active_tests, n_reps, n_boot, seed = args
+    return (sc, _run_ppi_effect_cell(sc, active_tests, n_reps, n_boot, seed))
+
+
 def run_pairwise_simulation(
     sources: list[CIPairSource], sample_sizes: list[int], runs: int, n_reps: int, n_bootstrap: int,
-    alpha: float, statistic: str, progress_mode: str = "bar", seed: int = 42,
+    alpha: float, statistic: str, progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
 ) -> list[PairwiseResult]:
+    global _PAIRWISE_SOURCES
+    _PAIRWISE_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
-    cells = [(s, n) for s in sources for n in sample_sizes]
+    cells = [(i, n) for i, s in enumerate(sources) for n in sample_sizes]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+    args_list = [(sc_idx, n, runs, n_reps, n_bootstrap, alpha, statistic, seed)
+                 for (sc_idx, n), seed in zip(cells, child_seeds)]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pvalues-pairwise")
     results: list[PairwiseResult] = []
-    for i, (source, n) in enumerate(cells):
-        results.extend(_run_pairwise_cell(source, n, runs, n_reps, n_bootstrap, alpha, statistic, child_seeds[i]))
-        reporter.update(i + 1, detail=f"{source.eval_type} {source.label} n={n}")
+    if n_workers <= 1:
+        for i, a in enumerate(args_list):
+            results.extend(_run_pairwise_cell_worker(a))
+            sc_idx, n = cells[i]
+            reporter.update(i + 1, detail=f"{sources[sc_idx].eval_type} {sources[sc_idx].label} n={n}")
+    else:
+        ctx = _mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_pairwise_cell_worker, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1)
     reporter.update(len(cells), detail="done")
     return results
 
@@ -672,17 +710,30 @@ def _run_multiarm_cell(
 
 def run_multiarm_simulation(
     sources: list[MultiArmSource], sample_sizes: list[int], runs: int, k_values: list[int], n_reps: int,
-    n_bootstrap: int, alpha: float, multiarm_method: str, statistic: str, progress_mode: str = "bar", seed: int = 42,
+    n_bootstrap: int, alpha: float, multiarm_method: str, statistic: str, progress_mode: str = "bar",
+    seed: int = 42, n_workers: int = 1,
 ) -> list[MultiArmResult]:
+    global _MULTIARM_SOURCES
+    _MULTIARM_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
-    cells = [(s, n, k) for s in sources for n in sample_sizes for k in k_values]
+    cells = [(i, n, k) for i, s in enumerate(sources) for n in sample_sizes for k in k_values]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+    args_list = [(sc_idx, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed)
+                 for (sc_idx, n, k), seed in zip(cells, child_seeds)]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pvalues-multiarm")
     results: list[MultiArmResult] = []
-    for i, (source, n, k) in enumerate(cells):
-        results.extend(_run_multiarm_cell(source, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, child_seeds[i]))
-        reporter.update(i + 1, detail=f"{source.eval_type} n={n} k={k}")
+    if n_workers <= 1:
+        for i, a in enumerate(args_list):
+            results.extend(_run_multiarm_cell_worker(a))
+            sc_idx, n, k = cells[i]
+            reporter.update(i + 1, detail=f"{sources[sc_idx].eval_type} n={n} k={k}")
+    else:
+        ctx = _mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_multiarm_cell_worker, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1)
     reporter.update(len(cells), detail="done")
     return results
 
@@ -1139,16 +1190,24 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
 
 def run_ppi_simulation(
     sources: list[JudgeBiasSource], active_tests: list[str], n_reps: int, n_boot: int,
-    progress_mode: str = "bar", seed: int = 42,
+    progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
 ) -> list[PPIResult]:
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(sources))]
+    args_list = [(sc, active_tests, n_reps, n_boot, seed) for sc, seed in zip(sources, child_seeds)]
 
     reporter = _ProgressReporter(len(sources), mode=progress_mode, label="pvalues-ppi")
     results: list[PPIResult] = []
-    for i, sc in enumerate(sources):
-        results.extend(_run_ppi_cell(sc, active_tests, n_reps, n_boot, child_seeds[i]))
-        reporter.update(i + 1, detail=f"{sc.name}")
+    if n_workers <= 1:
+        for i, a in enumerate(args_list):
+            results.extend(_run_ppi_cell_worker(a))
+            reporter.update(i + 1, detail=f"{sources[i].name}")
+    else:
+        ctx = _mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_ppi_cell_worker, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1)
     reporter.update(len(sources), detail="done")
     return results
 
@@ -1298,7 +1357,7 @@ def _uncorrected_bias_z(samples: list[tuple[float, float, float, float]], null_v
 
 def run_ppi_effect_check(
     sources: list[JudgeBiasSource], active_tests: list[str], n_reps: int, n_boot: int,
-    gold_null_mc: int = 3000, progress_mode: str = "bar", seed: int = 44,
+    gold_null_mc: int = 3000, progress_mode: str = "bar", seed: int = 44, n_workers: int = 1,
 ) -> list[PPIEffectResult]:
     """Bias and CI-coverage check for the PPI-corrected point estimate itself.
 
@@ -1315,6 +1374,30 @@ def run_ppi_effect_check(
 
     reporter = _ProgressReporter(len(sources), mode=progress_mode, label="pvalues-ppi-effect")
     results: list[PPIEffectResult] = []
+
+    if n_workers > 1:
+        args_list = [(sc, effect_tests, n_reps, n_boot, seed) for sc, seed in zip(sources, child_seeds)]
+        ctx = _mp.get_context("fork")
+        gold_nulls = [estimate_judge_bias_gold_null_values(sc, n_mc=gold_null_mc, seed=int(child_seeds[i][0]))
+                      for i, sc in enumerate(sources)]
+        with ctx.Pool(n_workers) as pool:
+            for i, (sc, samples_by_test) in enumerate(pool.imap_unordered(_run_ppi_effect_cell_worker, args_list)):
+                sc_idx = next(j for j, s in enumerate(sources) if s is sc)
+                gold_null = gold_nulls[sc_idx]
+                for t in effect_tests:
+                    samples = samples_by_test.get(t, [])
+                    null_val = gold_null.get(t, 0.0)
+                    bias_mean, z, coverage, mean_width, n = _effect_cell_stats(samples, null_val)
+                    unc_z = _uncorrected_bias_z(samples, null_val)
+                    results.append(PPIEffectResult(
+                        name=sc.name, tag=sc.tag, test=t, n=sc.n, n_samples=n,
+                        null_value=null_val, mean_bias=bias_mean, bias_z=z,
+                        uncorrected_bias_z=unc_z, coverage=coverage, mean_width=mean_width,
+                    ))
+                reporter.update(i + 1)
+        reporter.update(len(sources), detail="done")
+        return results
+
     for i, sc in enumerate(sources):
         gold_null = estimate_judge_bias_gold_null_values(sc, n_mc=gold_null_mc, seed=int(child_seeds[i][0]))
         samples_by_test = _run_ppi_effect_cell(sc, effect_tests, n_reps, n_boot, child_seeds[i])
@@ -1936,6 +2019,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "null value (estimate_judge_bias_gold_null_values)")
     parser.add_argument("--no-effect-check", action="store_true", default=False,
                          help="ppi mode: skip the bias/CI-coverage effect-size check, running Type-I calibration only")
+    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
+                         help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
@@ -1952,6 +2037,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3, 5, 10], multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000, effect_reps=200, effect_gold_mc=3000, no_effect_check=False,
+        workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
@@ -1984,6 +2070,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         k_arms=[3], multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
+        workers=1,
     )
 
 
@@ -2024,6 +2111,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             pw_results = run_pairwise_simulation(
                 sources, sample_sizes=args.sizes, runs=args.runs, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
                 alpha=args.alpha, statistic=args.statistic, progress_mode=args.progress, seed=args.seed,
+                n_workers=getattr(args, "workers", 1),
             )
             print_pairwise_report(pw_results, alpha=args.alpha)
 
@@ -2055,6 +2143,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 ma_sources, sample_sizes=args.sizes, runs=args.runs, k_values=k_values, n_reps=args.reps,
                 n_bootstrap=args.bootstrap_n, alpha=args.alpha, multiarm_method=args.multiarm_method,
                 statistic=args.statistic, progress_mode=args.progress, seed=args.seed,
+                n_workers=getattr(args, "workers", 1),
             )
             print_multiarm_report(ma_results, alpha=args.alpha)
 
@@ -2083,7 +2172,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             ppi_results = run_ppi_simulation(
                 jb_sources, active_tests=active_tests, n_reps=args.reps, n_boot=args.ppi_n_boot,
-                progress_mode=args.progress, seed=args.seed,
+                progress_mode=args.progress, seed=args.seed, n_workers=getattr(args, "workers", 1),
             )
             print_ppi_report(ppi_results, alpha=args.alpha)
 
@@ -2109,6 +2198,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 effect_results = run_ppi_effect_check(
                     jb_sources, active_tests=active_tests, n_reps=effect_reps, n_boot=args.ppi_n_boot,
                     gold_null_mc=effect_gold_mc, progress_mode=args.progress, seed=args.seed + 1,
+                    n_workers=getattr(args, "workers", 1),
                 )
                 print_ppi_effect_report(effect_results, alpha=args.alpha)
 
