@@ -607,6 +607,118 @@ def _p_x_gt_y_midrank(x: np.ndarray, y: np.ndarray) -> float:
     return float((n_lt.sum() + 0.5 * (n_le - n_lt).sum()) / (len(x) * len(y)))
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Non-PPI paired/binary p-value helpers
+#
+# These back evalstats.core.paired's binary and permutation pairwise-comparison
+# methods (newcombe, tango, fisher_exact, bayes_binary, sign_test,
+# permutation), none of which have a PPI-corrected estimand designed yet.
+# They live here — rather than being reimplemented in evalstats.core.paired —
+# so every scipy-backed p-value in evalstats has exactly one implementation.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _mcnemar_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
+    """Exact two-sided McNemar p-value for paired binary data.
+
+    Under H0 (no difference), n10 ~ Binomial(m, 0.5) where m = n10 + n01 is
+    the number of discordant pairs.  The two-sided p-value is
+    ``2 * P(X ≤ min(n10, n01))`` clamped to [0, 1].
+
+    Returns 1.0 when m == 0 (perfect agreement, no discordant pairs).
+    """
+    from scipy.stats import binom
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    m = n10 + n01
+    if m == 0:
+        return 1.0
+    k = min(n10, n01)
+    p = float(2.0 * binom.cdf(k, m, 0.5))
+    return min(p, 1.0)
+
+
+def _fisher_exact_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
+    """Two-sided Fisher's exact p-value on the paired 2×2 contingency table.
+
+    Uses table layout::
+
+        [[n11, n10],
+         [n01, n00]]
+
+    where n10 is ``A=1, B=0`` and n01 is ``A=0, B=1``.
+
+    Note that Fisher's exact test treats margins as fixed and does not exploit
+    pairing in the same way as McNemar; it is provided as an optional
+    conservative exact alternative for binary comparisons.
+    """
+    from scipy.stats import fisher_exact
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+
+    n11 = int(np.sum((a_bin == 1) & (b_bin == 1)))
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    n00 = int(np.sum((a_bin == 0) & (b_bin == 0)))
+
+    table = np.array([[n11, n10], [n01, n00]], dtype=int)
+    _, p = fisher_exact(table, alternative="two-sided")
+    p = float(p)
+    if not np.isfinite(p):
+        return 1.0
+    return min(max(p, 0.0), 1.0)
+
+
+def _paired_sign_test_p(diffs: np.ndarray) -> float:
+    """Exact two-sided paired sign-test p-value on non-zero differences.
+
+    Drops ties (zero differences), then tests whether positive/negative signs
+    are equally likely under H0 via Binomial(n_nonzero, 0.5).
+
+    Returns 1.0 when all paired differences are zero.
+    """
+    from scipy.stats import binomtest
+
+    nonzero = np.asarray(diffs)[np.asarray(diffs) != 0]
+    n_nonzero = int(len(nonzero))
+    if n_nonzero == 0:
+        return 1.0
+
+    n_positive = int(np.sum(nonzero > 0))
+    p = float(binomtest(n_positive, n_nonzero, p=0.5, alternative="two-sided").pvalue)
+    if not np.isfinite(p):
+        return 1.0
+    return min(max(p, 0.0), 1.0)
+
+
+def _paired_signflip_pvalue(
+    diffs: np.ndarray,
+    *,
+    statistic: str,
+    n_samples: int,
+    rng: np.random.Generator,
+) -> float:
+    """Two-sided paired randomization p-value via sign-flipping.
+
+    The null hypothesis is that paired differences are symmetric around zero,
+    so each per-input difference can be multiplied by +1 or -1 with equal
+    probability. This is the standard paired permutation/randomization test.
+    """
+    observed = abs(float(np.median(diffs)) if statistic == "median" else float(np.mean(diffs)))
+    m = len(diffs)
+    signs = rng.choice(np.array([-1.0, 1.0]), size=(n_samples, m), replace=True)
+    signed = signs * diffs[np.newaxis, :]
+    if statistic == "median":
+        null_stats = np.median(signed, axis=1)
+    else:
+        null_stats = np.mean(signed, axis=1)
+    extreme_count = int(np.sum(np.abs(null_stats) >= observed))
+    return float((extreme_count + 1) / (n_samples + 1))
+
+
 def _kw_pairwise_thetas(
     group_arrays: list[np.ndarray],
     pairs: list[tuple[int, int]],

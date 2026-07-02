@@ -17,8 +17,17 @@ from dataclasses import dataclass
 from typing import Literal, Optional
 
 import numpy as np
-from scipy.stats import rankdata, friedmanchisquare, studentized_range
+from scipy.stats import rankdata, studentized_range
 
+from ..tests import (
+    ttest as _es_ttest,
+    wilcoxon as _es_wilcoxon,
+    friedman as _es_friedman,
+    _mcnemar_p,
+    _fisher_exact_p,
+    _paired_sign_test_p,
+    _paired_signflip_pvalue,
+)
 from .resampling import (
     bca_interval_1d,
     bayes_bootstrap_means_1d,
@@ -84,103 +93,6 @@ def _rank_biserial(diffs: np.ndarray) -> float:
     return (r_plus - r_minus) / total if total > 0 else 0.0
 
 
-def _wilcoxon_signed_rank_p(diffs: np.ndarray) -> Optional[float]:
-    """Two-sided Wilcoxon signed-rank p-value for per-input paired differences.
-
-    Uses ``zero_method='wilcox'`` (discards zero differences before ranking),
-    which is the most common convention.  Returns ``None`` if the test cannot
-    be computed (all differences are zero, or fewer than one non-zero pair).
-    """
-    from scipy.stats import wilcoxon  # scipy is a core dep; import here to keep top-level clean
-
-    if int(np.sum(diffs != 0)) < 1:
-        return None
-    try:
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            result = wilcoxon(diffs, zero_method="wilcox", alternative="two-sided")
-        return float(result.pvalue)
-    except ValueError:
-        return None
-
-
-def _mcnemar_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
-    """Exact two-sided McNemar p-value for paired binary data.
-
-    Under H0 (no difference), n10 ~ Binomial(m, 0.5) where m = n10 + n01 is
-    the number of discordant pairs.  The two-sided p-value is
-    ``2 * P(X ≤ min(n10, n01))`` clamped to [0, 1].
-
-    Returns 1.0 when m == 0 (perfect agreement, no discordant pairs).
-    """
-    from scipy.stats import binom
-
-    a_bin = (values_a >= 0.5).astype(int)
-    b_bin = (values_b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    m = n10 + n01
-    if m == 0:
-        return 1.0
-    k = min(n10, n01)
-    p = float(2.0 * binom.cdf(k, m, 0.5))
-    return min(p, 1.0)
-
-
-def _fisher_exact_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
-    """Two-sided Fisher's exact p-value on the paired 2×2 contingency table.
-
-    Uses table layout::
-
-        [[n11, n10],
-         [n01, n00]]
-
-    where n10 is ``A=1, B=0`` and n01 is ``A=0, B=1``.
-
-    Note that Fisher's exact test treats margins as fixed and does not exploit
-    pairing in the same way as McNemar; it is provided as an optional
-    conservative exact alternative for binary comparisons.
-    """
-    from scipy.stats import fisher_exact
-
-    a_bin = (values_a >= 0.5).astype(int)
-    b_bin = (values_b >= 0.5).astype(int)
-
-    n11 = int(np.sum((a_bin == 1) & (b_bin == 1)))
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    n00 = int(np.sum((a_bin == 0) & (b_bin == 0)))
-
-    table = np.array([[n11, n10], [n01, n00]], dtype=int)
-    _, p = fisher_exact(table, alternative="two-sided")
-    p = float(p)
-    if not np.isfinite(p):
-        return 1.0
-    return min(max(p, 0.0), 1.0)
-
-
-def _paired_sign_test_p(diffs: np.ndarray) -> float:
-    """Exact two-sided paired sign-test p-value on non-zero differences.
-
-    Drops ties (zero differences), then tests whether positive/negative signs
-    are equally likely under H0 via Binomial(n_nonzero, 0.5).
-
-    Returns 1.0 when all paired differences are zero.
-    """
-    from scipy.stats import binomtest
-
-    nonzero = np.asarray(diffs)[np.asarray(diffs) != 0]
-    n_nonzero = int(len(nonzero))
-    if n_nonzero == 0:
-        return 1.0
-
-    n_positive = int(np.sum(nonzero > 0))
-    p = float(binomtest(n_positive, n_nonzero, p=0.5, alternative="two-sided").pvalue)
-    if not np.isfinite(p):
-        return 1.0
-    return min(max(p, 0.0), 1.0)
-
-
 def _compute_agreement_mcc(
     values_a: np.ndarray,
     values_b: np.ndarray,
@@ -217,31 +129,6 @@ def _compute_agreement_mcc(
     else:
         mcc = float((tp * tn - fp * fn) / (denom_sq ** 0.5))
     return mcc, (n11, n10, n01, n00)
-
-
-def _paired_signflip_pvalue(
-    diffs: np.ndarray,
-    *,
-    statistic: Literal["mean", "median"],
-    n_samples: int,
-    rng: np.random.Generator,
-) -> float:
-    """Two-sided paired randomization p-value via sign-flipping.
-
-    The null hypothesis is that paired differences are symmetric around zero,
-    so each per-input difference can be multiplied by +1 or -1 with equal
-    probability. This is the standard paired permutation/randomization test.
-    """
-    observed = abs(_stat(diffs, statistic))
-    m = len(diffs)
-    signs = rng.choice(np.array([-1.0, 1.0]), size=(n_samples, m), replace=True)
-    signed = signs * diffs[np.newaxis, :]
-    if statistic == "median":
-        null_stats = np.median(signed, axis=1)
-    else:
-        null_stats = np.mean(signed, axis=1)
-    extreme_count = int(np.sum(np.abs(null_stats) >= observed))
-    return float((extreme_count + 1) / (n_samples + 1))
 
 
 @dataclass
@@ -371,10 +258,12 @@ def friedman_nemenyi(scores: np.ndarray, labels: list[str]) -> FriedmanResult:
     if not np.all(np.isfinite(scores)):
         raise ValueError("scores must contain only finite values")
 
-    # Friedman omnibus test.
+    # Friedman omnibus test — delegates to evalstats.tests.friedman (uncorrected
+    # path) so the scipy call has a single implementation.
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", RuntimeWarning)
-        stat, p_val = friedmanchisquare(*[scores[i] for i in range(k)])
+        _res = _es_friedman(*[scores[i] for i in range(k)], print_result=False)
+    stat, p_val = _res.statistic, _res.p_value
     if not (np.isfinite(stat) and np.isfinite(p_val)):
         # Degenerate case (e.g., all treatments tied for every input).
         stat, p_val = 0.0, 1.0
@@ -590,6 +479,25 @@ def pairwise_differences(
             and is_binary_scores(np.stack([values_a, values_b]))
         ):
             agr_mcc, bin_conf = _compute_agreement_mcc(values_a, values_b)
+
+        # Two-sided Wilcoxon signed-rank p-value, reported alongside whatever
+        # primary method was chosen. Calls evalstats.tests.wilcoxon directly
+        # (uncorrected path) rather than a local reimplementation, so the
+        # scipy call has a single home. That function raises when all paired
+        # differences are zero (matching plain scipy); caught here since a
+        # supplementary stat should degrade to None rather than crash the
+        # whole comparison.
+        wa = values_a if values_a is not None else diffs
+        wb = values_b if values_b is not None else np.zeros_like(diffs)
+        wilcoxon_p: Optional[float] = None
+        if int(np.sum((wa - wb) != 0)) >= 1:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    wilcoxon_p = float(_es_wilcoxon(wa, wb, print_result=False).p_value)
+            except ValueError:
+                wilcoxon_p = None
+
         return PairedDiffResult(
             template_a=label_a,
             template_b=label_b,
@@ -603,7 +511,7 @@ def pairwise_differences(
             per_input_diffs=diffs,
             n_runs=1,
             statistic=statistic,
-            wilcoxon_p=_wilcoxon_signed_rank_p(diffs),
+            wilcoxon_p=wilcoxon_p,
             agreement_mcc=agr_mcc,
             binary_confusion=bin_conf,
             multi_ci=multi_ci_dict,
@@ -809,15 +717,16 @@ def pairwise_differences(
     # Paired t-interval path                                              #
     # ------------------------------------------------------------------ #
     if method == "t_interval":
-        from scipy.stats import ttest_rel
         flat = scores.mean(axis=2) if scores.ndim == 3 else scores
         values_a = flat[idx_a]
         values_b = flat[idx_b]
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         ci_low, ci_high = t_interval_ci_1d(diffs, alpha_val)
-        t_result = ttest_rel(values_a, values_b)
-        p_value = float(t_result.pvalue) if np.isfinite(t_result.pvalue) else 1.0
+        # Delegates to evalstats.tests.ttest (uncorrected paired path) so the
+        # scipy call has a single implementation.
+        t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
+        p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
         mci = {_a: t_interval_ci_1d(diffs, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
@@ -1048,7 +957,17 @@ def _pairwise_diffs_seeded(
     if method == "auto":
         test_name = f"auto→{test_name}"
 
-    wilcoxon_p = _wilcoxon_signed_rank_p(cell_diffs)
+    # Two-sided Wilcoxon signed-rank p-value on cell means, reported alongside
+    # whatever primary (nested) method was chosen. See the non-seeded path in
+    # pairwise_differences for why the ValueError guard is needed here.
+    wilcoxon_p: Optional[float] = None
+    if int(np.sum(cell_diffs != 0)) >= 1:
+        try:
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore")
+                wilcoxon_p = float(_es_wilcoxon(cell_means_a, cell_means_b, print_result=False).p_value)
+        except ValueError:
+            wilcoxon_p = None
 
     # Agreement MCC for seeded binary data: use per-input majority vote.
     agr_mcc: Optional[float] = None
