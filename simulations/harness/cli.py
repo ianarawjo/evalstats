@@ -4,8 +4,7 @@ Usage:
   python -m simulations.harness.cli --list-cases
   python -m simulations.harness.cli ci_single --reps 50 --sizes 10 20
   python -m simulations.harness.cli ci_single --data-source real
-  python -m simulations.harness.cli --official-tests all
-  python -m simulations.harness.cli --official-tests ci_single
+  python -m simulations.harness.cli --official-tests
   python -m simulations.harness.cli --quick-test
 """
 
@@ -43,11 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                         help="Parallel worker processes for --official-tests/--quick-test presets (default: cpu_count-1).")
     parser.add_argument(
-        "--official-tests", default=None, metavar="all|case1,case2,...",
+        "--official-tests", action="store_true", default=False,
         help=(
-            "Run the canonical official-test preset for the given case(s) "
-            "(or 'all'), writing every artifact into one timestamped "
-            "simulations/out/official_<timestamp>/ directory with a manifest.json index."
+            "Show an interactive menu of official-test variants (synthetic, real data, "
+            "nested) and run the selected subset, writing all artifacts into one "
+            "timestamped simulations/out/official_<timestamp>/ directory."
         ),
     )
     parser.add_argument(
@@ -68,6 +67,87 @@ def build_parser() -> argparse.ArgumentParser:
         module.add_arguments(sp)
     return parser
 
+
+# ---------------------------------------------------------------------------
+# Official-test menu
+# ---------------------------------------------------------------------------
+
+def _collect_official_variants() -> list[tuple[str, str, argparse.Namespace]]:
+    """Return all official-test variants as (case_name, label, args) triples."""
+    variants: list[tuple[str, str, argparse.Namespace]] = []
+    for name, module in CASES.items():
+        for label, args in module.official_variants():
+            variants.append((name, label, args))
+    return variants
+
+
+def _show_official_menu(variants: list[tuple[str, str, argparse.Namespace]]) -> list[tuple[str, str, argparse.Namespace]]:
+    """Print the official-test menu and return the user-selected variants."""
+    sep = "=" * 72
+    print(f"\n{sep}\n  OFFICIAL TESTS — select variants to run\n{sep}\n")
+    for i, (case_name, label, _) in enumerate(variants, 1):
+        print(f"  {i:2d}.  {case_name:<15}  {label}")
+    print(f"\n   A   Run all {len(variants)} variants sequentially")
+    print("   Q   Quit\n")
+
+    while True:
+        try:
+            raw = input("Select tests to run (space-separated numbers, A, or Q): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return []
+
+        if not raw:
+            continue
+        if raw.lower() == "q":
+            return []
+        if raw.lower() == "a":
+            return list(variants)
+
+        try:
+            indices = [int(x) - 1 for x in raw.split()]
+            if all(0 <= idx < len(variants) for idx in indices):
+                return [variants[idx] for idx in indices]
+            print(f"  Please enter numbers between 1 and {len(variants)}, 'A', or 'Q'.")
+        except ValueError:
+            print(f"  Invalid input — enter numbers like \"1 3\", 'A' for all, or 'Q' to quit.")
+
+
+def _run_official_selected(
+    selected: list[tuple[str, str, argparse.Namespace]],
+    n_workers: int,
+    manifest_out_dir: str,
+) -> bool:
+    """Run the selected (case_name, label, args) variants and write a manifest. Returns True on full success."""
+    results = []
+    args_list = []
+    sep = "=" * 72
+    for case_name, label, case_args in selected:
+        module = CASES[case_name]
+        case_args.out_dir = manifest_out_dir
+        case_args.plots_dir = str(Path(manifest_out_dir) / "plots")
+        case_args.workers = n_workers
+        print(f"\n{sep}\nOFFICIAL TEST: {case_name} — {label}  [workers={n_workers}]\n{sep}")
+        result = module.run(case_args)
+        results.append(result)
+        args_list.append(case_args)
+        if result.status != "ok":
+            print(f"\n  *** {case_name} ({label}) FAILED: {result.error}")
+
+    write_manifest(manifest_out_dir, results, args_list)
+
+    failed = [r for r in results if r.status != "ok"]
+    if failed:
+        print(f"\n{len(failed)} variant(s) failed.")
+    else:
+        print(f"\nAll {len(results)} variant(s) completed successfully.")
+        print(f"Artifacts: {manifest_out_dir}/")
+    return not failed
+
+
+# ---------------------------------------------------------------------------
+# Quick-test preset runner (unchanged)
+# ---------------------------------------------------------------------------
 
 def _run_preset(case_names: list[str], args_factory, dir_prefix: str, label: str, n_workers: int = 1) -> bool:
     """Run `args_factory(module)` for each named case -- it may return a single
@@ -117,12 +197,14 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if args.official_tests:
-        case_names = list(CASES) if args.official_tests == "all" else [c.strip() for c in args.official_tests.split(",")]
-        unknown = [c for c in case_names if c not in CASES]
-        if unknown:
-            parser.error(f"Unknown case(s) in --official-tests: {unknown}. Available: {list(CASES)}")
-        ok = _run_preset(case_names, lambda module: module.official_args(), "official", "OFFICIAL TEST",
-                         n_workers=args.workers)
+        stamp = time.strftime("%Y%m%d_%H%M%S")
+        manifest_out_dir = f"simulations/out/official_{stamp}"
+        all_variants = _collect_official_variants()
+        selected = _show_official_menu(all_variants)
+        if not selected:
+            print("No variants selected — exiting.")
+            return
+        ok = _run_official_selected(selected, n_workers=args.workers, manifest_out_dir=manifest_out_dir)
         if not ok:
             sys.exit(1)
         return
@@ -138,7 +220,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     if not args.case:
-        parser.error("Specify a case (e.g. ci_single) or use --official-tests all. Use --list-cases to see options.")
+        parser.error("Specify a case (e.g. ci_single) or use --official-tests. Use --list-cases to see options.")
 
     module = CASES[args.case]
     result = module.run(args)

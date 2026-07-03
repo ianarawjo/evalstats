@@ -1330,8 +1330,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
     """Canonical official-test preset, mirroring sim_compare_boot.py --official-test
-    (pairwise phase). Synthetic only -- real-data sources need network/HF access
-    not assumed available; run --data-source openeval/inspect/real manually."""
+    (pairwise phase). Synthetic data."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
@@ -1343,6 +1342,30 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )
+
+
+def real_official_args(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for real data sources (requires network/HF access)."""
+    return argparse.Namespace(
+        data_source="real", scenario_suite="expanded", eval_types=None,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
+        runs=1, statistic="mean", reps=2000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
+        seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
+        progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
+        nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
+        pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
+        workers=max(1, (os.cpu_count() or 2) - 1),
+    )
+
+
+def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace]]:
+    """All official-test variants for this case, as (label, args) pairs."""
+    return [
+        ("synthetic", official_args(base_seed)),
+        ("real data", real_official_args(base_seed)),
+        ("nested / synthetic", nested_official_args()),
+    ]
 
 
 def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
