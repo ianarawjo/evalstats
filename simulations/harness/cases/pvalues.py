@@ -75,7 +75,7 @@ import scipy.stats as scipy_stats
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
-    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi, _mcnemar_p
+    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi
     from evalstats.core.stats_utils import correct_pvalues
     from evalstats.tests import (
         _ppi_two_sample,
@@ -90,6 +90,7 @@ with warnings.catch_warnings():
         _ppi_kruskal_wallis_pairwise,
         _ppi_lmm_p_value,
         _kw_pairwise_thetas,
+        _mcnemar_p,
     )
     from evalstats.core.mixed_effects import _fit_lmm_general, _get_fe_vcov_sm
 
@@ -110,6 +111,7 @@ from ..methods import (
     MCNEMAR,
     FISHER_EXACT,
     BOOTSTRAP,
+    BOOTSTRAP_T,
     BCA,
     BAYES_BOOTSTRAP,
     SMOOTH_BOOTSTRAP,
@@ -1997,8 +1999,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--k-arms", nargs="+", type=int, default=[4], metavar="K",
                         help="multiarm mode: number of arms to sweep (one or more values, e.g. --k-arms 3 5 10); "
                              "max-T and post-hoc corrections are compared at each k")
-    parser.add_argument("--multiarm-method", default=SMOOTH_BOOTSTRAP.name, metavar="METHOD",
-                         choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name],
+    parser.add_argument("--multiarm-method", default=BOOTSTRAP_T.name, metavar="METHOD",
+                         choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name, BOOTSTRAP_T.name],
                          help="multiarm mode: pairwise_differences-family method used to derive raw p-values before correction")
     parser.add_argument("--multiarm-icc", type=float, default=0.20, metavar="ICC",
                          help="multiarm mode: ICC for build_multiarm_sources' shared truth/noise model "
@@ -2035,7 +2037,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         runs=1, statistic="mean",
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        k_arms=[3, 5, 10], multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
+        k_arms=[3, 5, 10], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000, effect_reps=200, effect_gold_mc=3000, no_effect_check=False,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )
@@ -2067,7 +2069,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         runs=1, statistic="mean",
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        k_arms=[3], multiarm_method=SMOOTH_BOOTSTRAP.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
+        k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         workers=1,

@@ -36,6 +36,8 @@ from .resampling import (
     smooth_bootstrap_diffs_nested,
     bootstrap_diffs_nested,
     bootstrap_means_1d,
+    bootstrap_t_ci_1d,
+    bootstrap_t_ci_nested,
     resolve_resampling_method,
     newcombe_paired_ci,
     tango_paired_ci,
@@ -380,7 +382,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -403,7 +405,8 @@ def pairwise_differences(
     method : str
         Statistical method: ``'auto'`` (default), ``'bootstrap'``, ``'bca'``,
         ``'bayes_bootstrap'`` (Bayesian bootstrap), ``'smooth_bootstrap'``
-        (smoothed bootstrap via Gaussian KDE), ``'newcombe'`` for paired
+        (smoothed bootstrap via Gaussian KDE), ``'bootstrap_t'``
+        (studentized bootstrap-t CI), ``'newcombe'`` for paired
         binary (0/1) data using Newcombe CI + exact McNemar p-value,
         ``'tango'`` for paired binary (0/1) data using Tango score CI +
         exact McNemar p-value, or
@@ -457,6 +460,52 @@ def pairwise_differences(
     def _bootstrap_tail_pvalue(boot_centered_stats: np.ndarray, point: float) -> float:
         extreme_count = np.sum(np.abs(boot_centered_stats) >= abs(point))
         return float((extreme_count + 1) / (n_bootstrap + 1))
+
+    def _bootstrap_t_tail_pvalue_1d(values: np.ndarray, observed_stat: float) -> float:
+        """Two-sided bootstrap-t p-value for 1-D paired differences.
+
+        Uses studentized pivots ``t* = (theta* - theta_hat) / se*`` and compares
+        against ``|t_obs| = |theta_hat| / se_obs`` for the null ``theta = 0``.
+        Falls back to centered-bootstrap tail p-value when studentization is
+        unstable or undefined.
+        """
+        n = len(values)
+        centered_values = values - observed_stat
+
+        def _fallback_centered_tail_pvalue() -> float:
+            centered_boot = bootstrap_means_1d(
+                centered_values, n_bootstrap=n_bootstrap, rng=rng, statistic="mean",
+            )
+            return _bootstrap_tail_pvalue(centered_boot, observed_stat)
+
+        if n < 2:
+            # Degenerate case: no variance estimate is available for studentization.
+            return 1.0
+
+        idx = rng.integers(0, n, size=(n_bootstrap, n))
+        samples = values[idx]                                # (B, n)
+        boot_stats = samples.mean(axis=1)                    # (B,)
+        boot_ses = np.std(samples, ddof=1, axis=1) / np.sqrt(n)
+
+        se_obs = float(np.std(values, ddof=1)) / np.sqrt(n)
+        if se_obs <= 0.0 or not np.isfinite(se_obs):
+            return _fallback_centered_tail_pvalue()
+
+        valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+        if not np.any(valid):
+            return _fallback_centered_tail_pvalue()
+        se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+        tiny_frac = float(np.mean(valid & (boot_ses < se_floor)))
+        if tiny_frac > 0.05:
+            return _fallback_centered_tail_pvalue()
+        valid = valid & (boot_ses >= se_floor)
+        if not np.any(valid):
+            return _fallback_centered_tail_pvalue()
+
+        t_stats = (boot_stats[valid] - observed_stat) / boot_ses[valid]
+        t_obs = abs(observed_stat) / se_obs
+        extreme_count = int(np.sum(np.abs(t_stats) >= t_obs))
+        return float((extreme_count + 1) / (len(t_stats) + 1))
 
     def _build_result(
         *,
@@ -784,38 +833,66 @@ def pairwise_differences(
         if multi_ci:
             mci = {_a: _percentile_ci(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
 
-    elif resolved_method in {"bca", "bayes_bootstrap", "smooth_bootstrap"}:
+    elif resolved_method in {"bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"}:
         samplers = {
             "bca": bootstrap_means_1d,
             "bayes_bootstrap": bayes_bootstrap_means_1d,
             "smooth_bootstrap": smooth_bootstrap_means_1d,
+            "bootstrap_t": bootstrap_means_1d,
         }
         sampler = samplers[resolved_method]
 
-        boot_stats = sampler(
-            diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
+        if resolved_method == "bootstrap_t":
+            ci_low, ci_high = bootstrap_t_ci_1d(
+                diffs,
+                point_d,
+                n_bootstrap,
+                alpha,
+                rng,
+                statistic=statistic,
+            )
+            if multi_ci:
+                mci = {
+                    _a: bootstrap_t_ci_1d(
+                        diffs,
+                        point_d,
+                        n_bootstrap,
+                        _a,
+                        rng,
+                        statistic=statistic,
+                    )
+                    for _a in GRADIENT_CI_ALPHAS
+                }
+        else:
+            boot_stats = sampler(
+                diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+            )
+
         if resolved_method == "bca":
             ci_low, ci_high = bca_interval_1d(
                 diffs, point_d, boot_stats, alpha, statistic=statistic,
             )
             if multi_ci:
                 mci = {_a: bca_interval_1d(diffs, point_d, boot_stats, _a, statistic=statistic) for _a in GRADIENT_CI_ALPHAS}
-        else:
+        elif resolved_method != "bootstrap_t":
             ci_low, ci_high = _percentile_ci(boot_stats, alpha)
             if multi_ci:
                 mci = {_a: _percentile_ci(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
 
-        centered_diffs = diffs - point_d
-        boot_centered_stats = sampler(
-            centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-        )
-        p_value = _bootstrap_tail_pvalue(boot_centered_stats, point_d)
+        if resolved_method == "bootstrap_t" and statistic == "mean":
+            p_value = _bootstrap_t_tail_pvalue_1d(diffs, point_d)
+        else:
+            centered_diffs = diffs - point_d
+            boot_centered_stats = sampler(
+                centered_diffs, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+            )
+            p_value = _bootstrap_tail_pvalue(boot_centered_stats, point_d)
 
         test_labels = {
             "bca": "bca bootstrap",
             "bayes_bootstrap": "bayesian bootstrap",
             "smooth_bootstrap": "smooth bootstrap",
+            "bootstrap_t": "bootstrap-t",
         }
         test_name = f"{test_labels[resolved_method]} (n={n_bootstrap})"
 
@@ -846,7 +923,7 @@ def _pairwise_diffs_seeded(
     label_a: str,
     label_b: str,
     *,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "permutation", "sign_test"],
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "permutation", "sign_test"],
     ci: float,
     n_bootstrap: int,
     rng: np.random.Generator,
@@ -894,6 +971,50 @@ def _pairwise_diffs_seeded(
         extreme_count = np.sum(np.abs(boot_centered) >= abs(point_d))
         return float((extreme_count + 1) / (n_bootstrap + 1))
 
+    def _bootstrap_t_tail_pvalue_nested(diff_scores: np.ndarray) -> float:
+        """Two-sided bootstrap-t p-value for seeded paired differences.
+
+        ``diff_scores`` has shape ``(M, R)``. Studentization is performed using
+        bootstrap replicate SE over resampled input-level cell means.
+        """
+        m_inputs, n_runs = diff_scores.shape
+        cell_means_obs = diff_scores.mean(axis=1)
+        se_obs = float(np.std(cell_means_obs, ddof=1)) / np.sqrt(m_inputs)
+
+        if se_obs <= 0.0 or not np.isfinite(se_obs):
+            boot_stats_fallback = bootstrap_diffs_nested(
+                scores_a, scores_b, n_bootstrap, rng, statistic="mean",
+            )
+            return _bootstrap_tail_pvalue(boot_stats_fallback)
+
+        input_idx = rng.integers(0, m_inputs, size=(n_bootstrap, m_inputs))
+        run_idx = rng.integers(0, n_runs, size=(n_bootstrap, m_inputs, n_runs))
+
+        selected = diff_scores[input_idx]  # (B, M, R)
+        b_rng = np.arange(n_bootstrap)[:, np.newaxis, np.newaxis]
+        m_rng = np.arange(m_inputs)[np.newaxis, :, np.newaxis]
+        resampled = selected[b_rng, m_rng, run_idx]  # (B, M, R)
+        cell_means_boot = resampled.mean(axis=2)  # (B, M)
+
+        boot_stats = cell_means_boot.mean(axis=1)  # (B,)
+        boot_ses = np.std(cell_means_boot, ddof=1, axis=1) / np.sqrt(m_inputs)
+
+        valid = np.isfinite(boot_ses) & (boot_ses > 0.0)
+        if not np.any(valid):
+            return _bootstrap_tail_pvalue(boot_stats)
+        se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+        tiny_frac = float(np.mean(valid & (boot_ses < se_floor)))
+        if tiny_frac > 0.05:
+            return _bootstrap_tail_pvalue(boot_stats)
+        valid = valid & (boot_ses >= se_floor)
+        if not np.any(valid):
+            return _bootstrap_tail_pvalue(boot_stats)
+
+        t_stats = (boot_stats[valid] - point_d) / boot_ses[valid]
+        t_obs = abs(point_d) / se_obs
+        extreme_count = int(np.sum(np.abs(t_stats) >= t_obs))
+        return float((extreme_count + 1) / (len(t_stats) + 1))
+
     mci_seeded: Optional[dict[float, tuple[float, float]]] = None
 
     if method == "permutation":
@@ -918,36 +1039,76 @@ def _pairwise_diffs_seeded(
         p_value = _paired_sign_test_p(cell_diffs)
         test_name = f"nested paired sign test + bootstrap ci (n={n_bootstrap}, R={R})"
 
-    elif resolved_method in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap"}:
+    elif resolved_method in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"}:
         samplers = {
             "bootstrap": bootstrap_diffs_nested,
             "bca": bootstrap_diffs_nested,
             "bayes_bootstrap": bayes_bootstrap_diffs_nested,
             "smooth_bootstrap": smooth_bootstrap_diffs_nested,
+            "bootstrap_t": bootstrap_diffs_nested,
         }
-        boot_stats = samplers[resolved_method](
-            scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
-        )
 
-        if resolved_method == "bca":
-            # BCa: jackknife over inputs (the outer sampling unit) using cell_diffs.
-            ci_low, ci_high = bca_interval_1d(
-                cell_diffs, point_d, boot_stats, alpha, statistic=statistic,
+        if resolved_method == "bootstrap_t" and statistic == "mean":
+            # bootstrap_t_ci_nested/_bootstrap_t_tail_pvalue_nested draw their
+            # own studentized resamples; the plain sampler is not needed here.
+            diff_scores = scores_a - scores_b  # (M, R)
+            ci_low, ci_high = bootstrap_t_ci_nested(
+                diff_scores,
+                point_d,
+                n_bootstrap,
+                alpha,
+                rng,
             )
             if multi_ci:
-                mci_seeded = {_a: bca_interval_1d(cell_diffs, point_d, boot_stats, _a, statistic=statistic) for _a in GRADIENT_CI_ALPHAS}
+                mci_seeded = {
+                    _a: bootstrap_t_ci_nested(
+                        diff_scores,
+                        point_d,
+                        n_bootstrap,
+                        _a,
+                        rng,
+                    )
+                    for _a in GRADIENT_CI_ALPHAS
+                }
+            p_value = _bootstrap_t_tail_pvalue_nested(diff_scores)
         else:
-            ci_low, ci_high = _percentile_ci(boot_stats)
-            if multi_ci:
-                mci_seeded = {_a: _percentile_ci_alpha(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
+            boot_stats = samplers[resolved_method](
+                scores_a, scores_b, n_bootstrap, rng, statistic=statistic,
+            )
 
-        p_value = _bootstrap_tail_pvalue(boot_stats)
+            if resolved_method == "bootstrap_t":
+                # statistic == "median": studentization isn't implemented for
+                # median, so fall back to plain percentile bootstrap.
+                warnings.warn(
+                    "nested bootstrap-t studentization is implemented for "
+                    "'mean'; falling back to percentile bootstrap for "
+                    "'median'.",
+                    UserWarning,
+                    stacklevel=3,
+                )
+                ci_low, ci_high = _percentile_ci(boot_stats)
+                if multi_ci:
+                    mci_seeded = {_a: _percentile_ci_alpha(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
+            elif resolved_method == "bca":
+                # BCa: jackknife over inputs (the outer sampling unit) using cell_diffs.
+                ci_low, ci_high = bca_interval_1d(
+                    cell_diffs, point_d, boot_stats, alpha, statistic=statistic,
+                )
+                if multi_ci:
+                    mci_seeded = {_a: bca_interval_1d(cell_diffs, point_d, boot_stats, _a, statistic=statistic) for _a in GRADIENT_CI_ALPHAS}
+            else:
+                ci_low, ci_high = _percentile_ci(boot_stats)
+                if multi_ci:
+                    mci_seeded = {_a: _percentile_ci_alpha(boot_stats, _a) for _a in GRADIENT_CI_ALPHAS}
+
+            p_value = _bootstrap_tail_pvalue(boot_stats)
 
         test_labels = {
             "bootstrap": "nested bootstrap",
             "bca": "nested bca bootstrap",
             "bayes_bootstrap": "nested bayesian bootstrap",
             "smooth_bootstrap": "nested smooth bootstrap",
+            "bootstrap_t": "nested bootstrap-t",
         }
         test_name = f"{test_labels[resolved_method]} (n={n_bootstrap}, R={R})"
 
@@ -1101,7 +1262,7 @@ def _max_stat_simultaneous_cis(
         Ignored when *precomputed_boot_stats* is supplied.
     method : str
         Bootstrap variant.  Supported: ``'bootstrap'``, ``'bca'``,
-        ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'auto'``
+        ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'bootstrap_t'``, ``'auto'``
         (treated as ``'smooth_bootstrap'``), ``'permutation'``,
         ``'sign_test'``.  Methods that do not use bootstrap resampling
         for CIs (``'newcombe'``, ``'tango'``, ``'fisher_exact'``, ``'bayes_binary'``,
@@ -1156,7 +1317,7 @@ def _max_stat_simultaneous_cis(
 
     # ── Standard path: resample from raw scores ───────────────────────────────
     _BOOTSTRAP_COMPATIBLE = {
-        "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
+        "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
         "permutation", "sign_test", "auto",
     }
     # Resolve 'auto' to its concrete method
@@ -1323,8 +1484,60 @@ def _max_stat_simultaneous_cis(
                 bandwidths=bandwidths, noise_rng=rng,
             )  # (B, k)
 
+        elif method == "bootstrap_t" and statistic == "mean":
+            # Studentized max-T: per-bootstrap-sample SE eliminates the
+            # anti-conservative bias of plain pivots, which underestimate
+            # SE by sqrt((n-1)/n).  The studentized pivot T_b = (d_b - d_obs)/se_b
+            # and observed t_obs = |d_obs|/se_obs both follow approximately
+            # t_{M-1}, so the Romano-Wolf guarantee holds.
+            input_idx = rng.integers(0, M, size=(n_bootstrap, M))
+            obs_se = np.std(diffs_mat, axis=1, ddof=1) / np.sqrt(M)  # (k,)
+
+            M_mat_T = diffs_mat.T  # (M, k) — transposed for cache-friendly access
+            batch_sz = 128
+            bmeans_rows: list[np.ndarray] = []
+            bses_rows: list[np.ndarray] = []
+            for _s in range(0, n_bootstrap, batch_sz):
+                _e = min(_s + batch_sz, n_bootstrap)
+                chunk = M_mat_T[input_idx[_s:_e]]  # (batch, M, k)
+                bmeans_rows.append(chunk.mean(axis=1))
+                bses_rows.append(chunk.std(axis=1, ddof=1) / np.sqrt(M))
+            boot_means_b = np.concatenate(bmeans_rows, axis=0)  # (B, k)
+            boot_ses_b = np.concatenate(bses_rows, axis=0)  # (B, k)
+
+            se_b_safe = np.where(boot_ses_b > 1e-12, boot_ses_b, 1.0)
+            T_stud = (boot_means_b - point_ests) / se_b_safe  # (B, k)
+
+            obs_se_safe = np.where(obs_se > 1e-12, obs_se, 1.0)
+            t_obs_stud = np.abs(point_ests) / obs_se_safe  # (k,)
+            se_valid_b = obs_se > 1e-12
+            if not np.any(se_valid_b):
+                return {}, {}
+
+            M_b_stud = np.max(np.abs(T_stud[:, se_valid_b]), axis=1)  # (B,)
+            c_stud = float(np.quantile(M_b_stud, ci))
+            B_total_stud = len(M_b_stud)
+
+            sim_cis_stud: dict = {}
+            max_t_pvalues_stud: dict = {}
+            for p_idx, pair in enumerate(pairs):
+                if se_valid_b[p_idx]:
+                    half = c_stud * float(obs_se[p_idx])
+                    sim_cis_stud[pair] = (
+                        float(point_ests[p_idx] - half),
+                        float(point_ests[p_idx] + half),
+                    )
+                    t_val = float(t_obs_stud[p_idx])
+                    extreme = int(np.sum(M_b_stud >= t_val))
+                    max_t_pvalues_stud[pair] = float((extreme + 1) / (B_total_stud + 1))
+                else:
+                    sim_cis_stud[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
+                    max_t_pvalues_stud[pair] = 1.0
+            return sim_cis_stud, max_t_pvalues_stud
+
         else:
-            # bootstrap, bca, permutation, sign_test — shared integer indices.
+            # bootstrap, bca, permutation, sign_test, bootstrap_t+median —
+            # shared integer indices, plain (non-studentized) pivots.
             input_idx = rng.integers(0, M, size=(n_bootstrap, M))
             # _batch_resample already computes the per-pair statistic: (B, k)
             boot_stats = _batch_resample(diffs_mat, input_idx, statistic)  # (B, k)
@@ -1381,7 +1594,7 @@ def _bonferroni_simultaneous_cis(
 
 # Methods for which _max_stat_simultaneous_cis can produce bootstrap CIs.
 _SIMULTANEOUS_CI_BOOTSTRAP_METHODS = {
-    "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap",
+    "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
     "permutation", "sign_test", "auto",
 }
 
@@ -1436,7 +1649,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
@@ -1474,7 +1687,7 @@ def all_pairwise(
         (family-wise) CIs.  The method is chosen automatically:
 
         * **Bootstrap-compatible methods** (``'bootstrap'``, ``'bca'``,
-          ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'permutation'``,
+                    ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'bootstrap_t'``, ``'permutation'``,
           ``'sign_test'``, ``'auto'``): studentized bootstrap max-T
           (Romano–Wolf).  All pairs share the same bootstrap resamples so
           the joint distribution of ``max_{(i,j)} |T_ij^b|`` accounts for
@@ -1586,7 +1799,7 @@ def all_pairwise(
                     p_value=(
                         sim_pvalues.get(pair, r.p_value)
                         if sim_method == "max_t" and method in {
-                            "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto",
+                            "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto",
                         }
                         else r.p_value
                     ),
@@ -1623,7 +1836,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",

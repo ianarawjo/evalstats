@@ -81,7 +81,7 @@ def bootstrap_ranks(
     labels: list[str],
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "permutation"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "bayes_binary", "permutation"] = "auto",
     statistic: Literal["mean", "median"] = "mean",
 ) -> RankDistribution:
     """Compute bootstrap distribution over template rankings.
@@ -99,8 +99,9 @@ def bootstrap_ranks(
         Number of bootstrap iterations.
     method : str
         Resampling method for API consistency: ``'bootstrap'``, ``'bca'``,
-        ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, or ``'auto'``.  Rank
+        ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'bootstrap_t'``, or ``'auto'``.  Rank
         distributions use multinomial (``'bootstrap'``/``'bca'``),
+        multinomial (``'bootstrap_t'``),
         Dirichlet (``'bayes_bootstrap'``), or smoothed KDE
         (``'smooth_bootstrap'``) outer weights. ``'auto'`` resolves to
         ``'smooth_bootstrap'``.
@@ -118,7 +119,7 @@ def bootstrap_ranks(
     if rng is None:
         rng = np.random.default_rng()
 
-    if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "permutation"}:
+    if method not in {"bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "bayes_binary", "permutation"}:
         raise ValueError(f"Unknown method: {method}")
 
     # Rank distribution does not use a special Bayesian binary model;
@@ -128,6 +129,8 @@ def bootstrap_ranks(
     if method == "bayes_binary":
         effective_method = "smooth_bootstrap"
     elif method == "permutation":
+        effective_method = "bootstrap"
+    elif method == "bootstrap_t":
         effective_method = "bootstrap"
     else:
         effective_method = method
