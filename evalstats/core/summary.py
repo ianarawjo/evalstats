@@ -84,7 +84,7 @@ def _rank_method_label(bundle: "AnalysisBundle") -> str:
 def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
     """Return True when single-sample CIs were computed with Wilson intervals."""
     method = (bundle.resolved_ci_method or "").lower()
-    return method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    return method in {"wilson", "newcombe", "bayes_binary"}
 
 
 def _pairwise_p_value_label(test_method: str) -> str:
@@ -94,8 +94,6 @@ def _pairwise_p_value_label(test_method: str) -> str:
         return "McNemar"
     if "newcombe" in method:
         return "McNemar exact"
-    if "fisher exact" in method:
-        return "Fisher exact"
     if "sign test" in method:
         return "paired sign test"
     if "wilcoxon" in method:
@@ -109,7 +107,7 @@ def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
     """Choose the p-value shown in single-pair summaries.
 
     Default behavior is to display the Wilcoxon signed-rank p-value when
-    available, while preserving exact-test paths (McNemar/Fisher/sign test)
+    available, while preserving exact-test paths (McNemar/sign test)
     where ``pair.p_value`` is the canonical inferential p-value.
     """
     method = pair.test_method.lower()
@@ -117,7 +115,6 @@ def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
         "tango" in method
         or "newcombe" in method
         or "mcnemar" in method
-        or "fisher exact" in method
         or "sign test" in method
     )
     if not is_exact_path and pair.wilcoxon_p is not None:
@@ -939,11 +936,6 @@ def _print_pairwise_section(
     is_newcombe_pairwise = (
         first_result is not None
         and "newcombe" in first_result.test_method.lower()
-        and "fisher" not in first_result.test_method.lower()
-    )
-    is_fisher_pairwise = (
-        first_result is not None
-        and "fisher exact" in first_result.test_method.lower()
     )
     is_sign_pairwise = (
         first_result is not None
@@ -961,8 +953,6 @@ def _print_pairwise_section(
     if p_value_method == "auto":
         if is_newcombe_pairwise:
             eff_p_source, p_col_header = "boot", "p (McNemar)"
-        elif is_fisher_pairwise:
-            eff_p_source, p_col_header = "boot", "p (Fisher)"
         elif is_sign_pairwise:
             eff_p_source, p_col_header = "boot", "p (sign)"
         elif is_bootstrap_path:
@@ -1191,8 +1181,6 @@ def _print_pairwise_section(
         if eff_p_source in {"max_t", "boot"}:
             if is_newcombe_pairwise:
                 print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
-            elif is_fisher_pairwise:
-                print(f"  {p_col_header} = Fisher's exact test (two-sided, uncorrected)")
             elif is_sign_pairwise:
                 print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")
             elif eff_p_source == "max_t":

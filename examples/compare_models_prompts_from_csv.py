@@ -68,7 +68,6 @@ def _parse_args() -> argparse.Namespace:
             "lmm",
             "wilson",
             "newcombe",
-            "fisher_exact",
         ],
         help="Statistical method passed to evalstats.analyze(...).",
     )

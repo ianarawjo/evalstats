@@ -68,11 +68,12 @@ with warnings.catch_warnings():
         tango_paired_ci_multirun_effective,
         tango_paired_ci_multirun_moments,
     )
+    from evalstats.core.stats_utils import interval_score, rescaled_ci
 
 from ...bayes_evals import binorm_cdf  # noqa: E402
 
 from ..latex_tables import booktabs_table, escape_latex, eval_type_label
-from ..scenarios import CIPairSource, EVAL_TYPES
+from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
@@ -124,6 +125,8 @@ class SimResult:
     n_reps: int
     covered: int
     total_width: float
+    total_score: float = 0.0
+    """Sum of interval_score() (see evalstats.core.stats_utils) across n_reps."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     is_null: bool = False
@@ -290,9 +293,16 @@ def _run_cell(
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
+    total_score: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
     true_diff = source_obj.true_diff
+
+    def _record(method, ci_low: float, ci_high: float) -> None:
+        if ci_low <= true_diff <= ci_high:
+            covered[method] += 1
+        total_w[method] += ci_high - ci_low
+        total_score[method] += interval_score(ci_low, ci_high, true_diff, alpha)
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -311,25 +321,32 @@ def _run_cell(
             _el = time.perf_counter() - _t0
             total_t[method] += _el
             total_t_sq[method] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[method] += 1
-            total_w[method] += ci_high - ci_low
+            _record(method, ci_low, ci_high)
 
         if add_pairwise_extras:
             pair_diffs = a.mean(axis=1) - b.mean(axis=1)
             obs = float(np.mean(pair_diffs))
+            # A paired difference of two [scale_lo, scale_hi] values ranges
+            # over [-span, span], naturally centred at 0 -- not [scale_lo,
+            # scale_hi] itself. nig_ci_1d's default prior assumes its input
+            # is centred at the scale's midpoint, so pass diff_lo/diff_hi
+            # (not scale_lo/scale_hi) to correctly re-centre it at 0.
+            _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
+            diff_span = _scale_hi - _scale_lo
+            diff_lo, diff_hi = -diff_span, diff_span
             for method, fn in zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, nig_ci_1d, el_ci_1d)):
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = fn(pair_diffs, alpha)
+                    if fn is nig_ci_1d:
+                        ci_low, ci_high = rescaled_ci(fn, pair_diffs, alpha, diff_lo, diff_hi)
+                    else:
+                        ci_low, ci_high = fn(pair_diffs, alpha)
                 except Exception:
                     ci_low = ci_high = obs
                 _el = time.perf_counter() - _t0
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
-                if ci_low <= true_diff <= ci_high:
-                    covered[method] += 1
-                total_w[method] += ci_high - ci_low
+                _record(method, ci_low, ci_high)
 
         if add_newcombe:
             _t0 = time.perf_counter()
@@ -340,9 +357,7 @@ def _run_cell(
             _el = time.perf_counter() - _t0
             total_t[NEWCOMBE] += _el
             total_t_sq[NEWCOMBE] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[NEWCOMBE] += 1
-            total_w[NEWCOMBE] += ci_high - ci_low
+            _record(NEWCOMBE, ci_low, ci_high)
 
         if add_tango:
             _t0 = time.perf_counter()
@@ -353,9 +368,7 @@ def _run_cell(
             _el = time.perf_counter() - _t0
             total_t[TANGO] += _el
             total_t_sq[TANGO] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[TANGO] += 1
-            total_w[TANGO] += ci_high - ci_low
+            _record(TANGO, ci_low, ci_high)
 
         if add_bayes_binary:
             _t0 = time.perf_counter()
@@ -366,9 +379,7 @@ def _run_cell(
             _el = time.perf_counter() - _t0
             total_t[BAYES_PAIR_INDEP] += _el
             total_t_sq[BAYES_PAIR_INDEP] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[BAYES_PAIR_INDEP] += 1
-            total_w[BAYES_PAIR_INDEP] += ci_high - ci_low
+            _record(BAYES_PAIR_INDEP, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -378,15 +389,14 @@ def _run_cell(
             _el = time.perf_counter() - _t0
             total_t[BAYES_PAIR_PAIRED] += _el
             total_t_sq[BAYES_PAIR_PAIRED] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[BAYES_PAIR_PAIRED] += 1
-            total_w[BAYES_PAIR_PAIRED] += ci_high - ci_low
+            _record(BAYES_PAIR_PAIRED, ci_low, ci_high)
 
     return [
         SimResult(
             source=source_obj.source, label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
-            total_width=total_w[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            total_width=total_w[method], total_score=total_score[method],
+            total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, model_a=source_obj.model_a, model_b=source_obj.model_b,
             benchmark_id=source_obj.benchmark_id, corpus_size=source_obj.max_n,
             true_diff=(source_obj.true_diff if source_obj.source != "synthetic" else None),
@@ -505,8 +515,15 @@ def _run_nested_pairwise_cell(
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
+    total_score: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
+
+    def _record(method, ci_low: float, ci_high: float) -> None:
+        if ci_low <= true_diff <= ci_high:
+            covered[method] += 1
+        total_w[method] += ci_high - ci_low
+        total_score[method] += interval_score(ci_low, ci_high, true_diff, alpha)
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -526,9 +543,7 @@ def _run_nested_pairwise_cell(
             _el = time.perf_counter() - _t0
             total_t[method] += _el
             total_t_sq[method] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[method] += 1
-            total_w[method] += ci_high - ci_low
+            _record(method, ci_low, ci_high)
 
         # -- t-interval on cell-mean diffs --
         _t0 = time.perf_counter()
@@ -539,9 +554,7 @@ def _run_nested_pairwise_cell(
         _el = time.perf_counter() - _t0
         total_t[T_INTERVAL] += _el
         total_t_sq[T_INTERVAL] += _el * _el
-        if ci_low <= true_diff <= ci_high:
-            covered[T_INTERVAL] += 1
-        total_w[T_INTERVAL] += ci_high - ci_low
+        _record(T_INTERVAL, ci_low, ci_high)
 
         # -- Nested pairwise diff methods (full N x R pair matrices) --
         for method, fn in [
@@ -566,9 +579,7 @@ def _run_nested_pairwise_cell(
             _el = time.perf_counter() - _t0
             total_t[method] += _el
             total_t_sq[method] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[method] += 1
-            total_w[method] += ci_high - ci_low
+            _record(method, ci_low, ci_high)
 
         # -- Binary pairwise methods --
         if is_binary:
@@ -582,9 +593,7 @@ def _run_nested_pairwise_cell(
             _el = time.perf_counter() - _t0
             total_t[TANGO_FLAT] += _el
             total_t_sq[TANGO_FLAT] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[TANGO_FLAT] += 1
-            total_w[TANGO_FLAT] += ci_high - ci_low
+            _record(TANGO_FLAT, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -594,9 +603,7 @@ def _run_nested_pairwise_cell(
             _el = time.perf_counter() - _t0
             total_t[NEWCOMBE_FLAT] += _el
             total_t_sq[NEWCOMBE_FLAT] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[NEWCOMBE_FLAT] += 1
-            total_w[NEWCOMBE_FLAT] += ci_high - ci_low
+            _record(NEWCOMBE_FLAT, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -606,9 +613,7 @@ def _run_nested_pairwise_cell(
             _el = time.perf_counter() - _t0
             total_t[BAYES_PAIR_INDEP] += _el
             total_t_sq[BAYES_PAIR_INDEP] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[BAYES_PAIR_INDEP] += 1
-            total_w[BAYES_PAIR_INDEP] += ci_high - ci_low
+            _record(BAYES_PAIR_INDEP, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -618,9 +623,7 @@ def _run_nested_pairwise_cell(
             _el = time.perf_counter() - _t0
             total_t[BAYES_PAIR_PAIRED] += _el
             total_t_sq[BAYES_PAIR_PAIRED] += _el * _el
-            if ci_low <= true_diff <= ci_high:
-                covered[BAYES_PAIR_PAIRED] += 1
-            total_w[BAYES_PAIR_PAIRED] += ci_high - ci_low
+            _record(BAYES_PAIR_PAIRED, ci_low, ci_high)
 
             for method, fn in [
                 (TANGO_MULTIRUN_CLUSTER, tango_paired_ci_multirun_cluster),
@@ -635,15 +638,14 @@ def _run_nested_pairwise_cell(
                 _el = time.perf_counter() - _t0
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
-                if ci_low <= true_diff <= ci_high:
-                    covered[method] += 1
-                total_w[method] += ci_high - ci_low
+                _record(method, ci_low, ci_high)
 
     return [
         SimResult(
             source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
-            total_width=total_w[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            total_width=total_w[method], total_score=total_score[method],
+            total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, run_noise_frac=source_obj.run_noise_frac, runs=runs,
         )
         for method in active_methods
@@ -711,6 +713,55 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
     return avg * 1000.0, float(np.sqrt(var / total_reps)) * 1000.0
 
 
+def _print_overall_summary_table(
+    title: str,
+    eval_types: list[str],
+    results: list[SimResult],
+    agg: dict[tuple, list[tuple[float, float, float]]],
+    agg_counts: dict[tuple, tuple[int, int]],
+    target: float,
+) -> None:
+    """Print one OVERALL SUMMARY table, aggregated only over `eval_types`.
+
+    No-ops (prints nothing) if none of `eval_types` are present in `results`,
+    so callers can unconditionally request e.g. a binary-only table even when
+    a given run has no binary data. `results` should already be non-null
+    (i.e. `is_null=False`) since `agg`/`agg_counts` are built from those.
+    """
+    present_methods = {r.method for r in results if r.eval_type in eval_types}
+    if not present_methods:
+        return
+    method_labels = [m.name for m in order_present_methods(present_methods)]
+
+    all_cov: dict[str, list[float]] = defaultdict(list)
+    all_wid: dict[str, list[float]] = defaultdict(list)
+    all_score: dict[str, list[float]] = defaultdict(list)
+    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    for (et, m, n), vals in agg.items():
+        if et not in eval_types:
+            continue
+        all_cov[m].extend(v[0] for v in vals)
+        all_wid[m].extend(v[1] for v in vals)
+        all_score[m].extend(v[2] for v in vals)
+        c, t = agg_counts[(et, m, n)]
+        c_prev, t_prev = all_counts[m]
+        all_counts[m] = (c_prev + c, t_prev + t)
+
+    print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}")
+    for m in method_labels:
+        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
+        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
+        ms = float(np.mean(all_score[m])) if all_score[m] else float("nan")
+        c_tot, t_tot = all_counts[m]
+        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        avg_ms, se_ms = _time_stats(
+            [r for r in results if r.method == m and r.eval_type in eval_types]
+        )
+        time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}")
+
+
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int, statistic: str) -> None:
     target = 1.0 - alpha
     non_null = [r for r in results if not r.is_null]
@@ -718,12 +769,13 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     present_methods = {r.method for r in non_null}
     method_labels = [m.name for m in order_present_methods(present_methods)]
 
-    agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
     for r in non_null:
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width))
+        score = r.total_score / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
@@ -735,7 +787,9 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print(f"\n{sep}\n  CI_PAIRED COVERAGE -- SIMULATION RESULTS\n"
           f"  Estimand: paired template difference ({statistic})\n"
           f"  Nominal coverage: {target:.0%}   |   reps/cell: {n_reps}\n"
-          f"  v = under-covered   ^ = over-conservative\n{sep}")
+          f"  v = under-covered   ^ = over-conservative\n"
+          f"  Score = interval score (width + (2/alpha)*miss-distance; lower is better --\n"
+          f"  see evalstats.core.stats_utils.interval_score)\n{sep}")
 
     for et in eval_types_present:
         print(f"\n  [{et}]")
@@ -748,26 +802,22 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
                 row += "  " + (" " * 7 if np.isnan(cov) else f"{cov:.3f}{_cov_marker(cov, target)}".ljust(8))
             print(row)
 
-    print(f"\n{'-'*72}\n  OVERALL SUMMARY (averaged across eval types, sources, n)\n{'-'*72}")
-    all_cov: dict[str, list[float]] = defaultdict(list)
-    all_wid: dict[str, list[float]] = defaultdict(list)
-    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    for (et, m, n), vals in agg.items():
-        all_cov[m].extend(v[0] for v in vals)
-        all_wid[m].extend(v[1] for v in vals)
-        c, t = agg_counts[(et, m, n)]
-        c_prev, t_prev = all_counts[m]
-        all_counts[m] = (c_prev + c, t_prev + t)
-
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Time(ms)':>14}")
-    for m in method_labels:
-        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
-        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
-        c_tot, t_tot = all_counts[m]
-        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
-        avg_ms, se_ms = _time_stats([r for r in non_null if r.method == m])
-        time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {time_str:>14}")
+    # Split into three OVERALL SUMMARY tables -- binary, continuous [0,1], and
+    # numeric (likert + grades averaged together) -- since these data types
+    # are answered by very different method families and a single pooled
+    # table obscures which methods actually perform best for which type.
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- BINARY (averaged across sources, n)",
+        ["binary"], non_null, agg, agg_counts, target,
+    )
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- CONTINUOUS [0,1] (averaged across sources, n)",
+        ["continuous"], non_null, agg, agg_counts, target,
+    )
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- NUMERIC: LIKERT + GRADES (averaged across sources, n)",
+        ["likert", "grades"], non_null, agg, agg_counts, target,
+    )
 
     null_results = [r for r in results if r.is_null]
     if null_results:
@@ -811,23 +861,26 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     method_labels = [m.name for m in order_present_methods(present_methods)]
     sizes_present = sorted({r.n for r in non_null})
 
-    agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
     for r in non_null:
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width))
+        score = r.total_score / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
     all_cov: dict[str, list[float]] = defaultdict(list)
     all_wid: dict[str, list[float]] = defaultdict(list)
+    all_score: dict[str, list[float]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
     per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
     method_eval_types: dict[str, set[str]] = defaultdict(set)
     for (et, m, n), vals in agg.items():
         all_cov[m].extend(v[0] for v in vals)
         all_wid[m].extend(v[1] for v in vals)
+        all_score[m].extend(v[2] for v in vals)
         method_eval_types[m].add(et)
         c, t = agg_counts[(et, m, n)]
         c_prev, t_prev = all_counts[m]
@@ -839,6 +892,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     for m in method_labels:
         mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
         mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
+        ms = float(np.mean(all_score[m])) if all_score[m] else float("nan")
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats([r for r in non_null if r.method == m])
@@ -849,6 +903,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             f"{mc:.3f}" if np.isfinite(mc) else "-",
             f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{mw:.4f}" if np.isfinite(mw) else "-",
+            f"{ms:.4f}" if np.isfinite(ms) else "-",
             time_str,
             et_label,
         ]
@@ -859,9 +914,12 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         rows.append(row)
 
     return booktabs_table(
-        caption=f"ci\\_paired: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}).",
+        caption=(
+            f"ci\\_paired: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
+            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better)."
+        ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Time (ms)", "Eval types"]
+        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
@@ -1416,7 +1474,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             sources = build_real_pair_sources(
                 args.data_source, benchmarks=args.benchmarks, models=args.models,
                 hf_token=args.hf_token, cache_dir=args.cache_dir, min_pair_size=args.min_pair_size,
-                inspect_csv=args.inspect_csv,
+                inspect_csv=args.inspect_csv, include_null=args.include_null,
             )
 
         if args.eval_types:

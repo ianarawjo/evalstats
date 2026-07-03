@@ -61,7 +61,7 @@ def test_compare_prompts_stores_global_alpha():
     set_alpha_ci(0.03)
     report = es.compare_prompts(
         {"a": [1, 1, 0, 1, 0], "b": [0, 0, 1, 0, 0]},
-        method="fisher_exact",
+        method="newcombe",
         correction="none",
         rng=_rng(),
     )
@@ -73,7 +73,7 @@ def test_compare_prompts_explicit_alpha_overrides_global():
     set_alpha_ci(0.03)
     report = es.compare_prompts(
         {"a": [1, 1, 0, 1, 0], "b": [0, 0, 1, 0, 0]},
-        method="fisher_exact",
+        method="newcombe",
         correction="none",
         alpha=0.10,
         rng=_rng(),

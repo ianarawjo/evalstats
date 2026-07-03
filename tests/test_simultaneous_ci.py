@@ -28,11 +28,11 @@ def _rng(seed: int = 0) -> np.random.Generator:
 # ---------------------------------------------------------------------------
 
 def test_unsupported_methods_return_empty_dict():
-    """Non-bootstrap methods (newcombe, bayes_binary, fisher_exact) return {}."""
+    """Non-bootstrap methods (newcombe, bayes_binary) return {}."""
     scores = _rng(0).normal(0, 1, (3, 20))
     labels = ["m0", "m1", "m2"]
     pairs = [("m0", "m1"), ("m0", "m2")]
-    for method in ["newcombe", "bayes_binary", "fisher_exact"]:
+    for method in ["newcombe", "bayes_binary"]:
         cis, pvals = _max_stat_simultaneous_cis(
             scores, pairs, labels, method, 0.95, 100, _rng(0), "mean"
         )

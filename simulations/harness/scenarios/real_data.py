@@ -738,6 +738,51 @@ def corpus_pair_to_ci_pair_source(cp: CorpusPair) -> CIPairSource:
     )
 
 
+def corpus_pair_to_null_ci_pair_source(cp: CorpusPair) -> CIPairSource:
+    """Build a real-data *null* (H0: no true difference) CIPairSource from a
+    CorpusPair, for Type-I error calibration checks (ci_paired.py's "TYPE I
+    ERROR RATE" section, pvalues.py's pairwise Type-I column).
+
+    Two distinct real models can't be forced to have a "true" zero
+    difference the way a synthetic scenario can (there's no d=0 analogue of
+    a real A-vs-B corpus). Instead this uses the standard permutation-null
+    construction: each rep independently label-swaps (a_i, b_i) -> (b_i,
+    a_i) per item with probability 0.5. Every emitted value is still a real,
+    unmodified observed score -- preserving the corpus's actual noise,
+    skew, and item-level correlation -- but symmetrizing the A/B assignment
+    makes E[mean(A) - mean(B)] = 0 exactly. This is the same random
+    sign-flip resampling a permutation test's null distribution is built
+    from, applied once per rep instead of many.
+    """
+    scores_a, scores_b, n_total = cp.scores_a, cp.scores_b, cp.corpus_size
+
+    def _generate_pair(
+        rng: np.random.Generator, n: int, runs: int,
+        _a: np.ndarray = scores_a, _b: np.ndarray = scores_b, _n_total: int = n_total,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        if runs != 1:
+            raise ValueError("Real-data pair sources only support runs=1 in this pass.")
+        idxs = rng.choice(_n_total, size=n, replace=False)
+        a, b = _a[idxs], _b[idxs]
+        swap = rng.random(n) < 0.5
+        a_null = np.where(swap, b, a)
+        b_null = np.where(swap, a, b)
+        return a_null.reshape(n, 1), b_null.reshape(n, 1)
+
+    return CIPairSource(
+        label=f"{cp.model_a} vs {cp.model_b}/{cp.benchmark_id}|null",
+        eval_type="binary",
+        true_diff=0.0,
+        generate_pair=_generate_pair,
+        source=cp.source,
+        max_n=cp.corpus_size,
+        model_a=cp.model_a,
+        model_b=cp.model_b,
+        benchmark_id=cp.benchmark_id,
+        is_null=True,
+    )
+
+
 def build_openeval_corpus_pairs(
     model_bench_pairs: list[tuple[str, str]],
     *,
@@ -998,6 +1043,7 @@ def build_real_pair_sources(
     cache_dir: str | None = None,
     min_pair_size: int = 50,
     inspect_csv: str | None = None,
+    include_null: bool = False,
 ) -> list[CIPairSource]:
     """Resolve (model, benchmark) pairs for `source` and return them as CIPairSources.
 
@@ -1005,6 +1051,14 @@ def build_real_pair_sources(
     "openeval" and "inspect" for maximum real-data diversity, skipping
     "inspect" with a warning rather than failing if its CSV isn't found
     locally). R=1 only -- see module docstring.
+
+    include_null : bool
+        If True, also emit a permutation-null CIPairSource (see
+        corpus_pair_to_null_ci_pair_source) for every corpus pair, doubling
+        the source count. Needed for any Type-I error calibration check on
+        real data -- without it there are no is_null=True rows to measure
+        Type-I against (real A-vs-B pairs have a genuine, generally
+        nonzero, true difference by construction).
     """
     if source not in PAIR_SOURCES:
         raise ValueError(f"Unknown real-data pair source: {source!r}. Choices: {PAIR_SOURCES}")
@@ -1036,4 +1090,7 @@ def build_real_pair_sources(
         else:
             print(f"  Note: --real requested but inspect CSV not found at {csv_path!r} -- skipping inspect, using openeval only.")
 
-    return [corpus_pair_to_ci_pair_source(cp) for cp in corpus_pairs]
+    sources = [corpus_pair_to_ci_pair_source(cp) for cp in corpus_pairs]
+    if include_null:
+        sources += [corpus_pair_to_null_ci_pair_source(cp) for cp in corpus_pairs]
+    return sources

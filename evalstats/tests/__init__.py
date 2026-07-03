@@ -611,7 +611,7 @@ def _p_x_gt_y_midrank(x: np.ndarray, y: np.ndarray) -> float:
 # Non-PPI paired/binary p-value helpers
 #
 # These back evalstats.core.paired's binary and permutation pairwise-comparison
-# methods (newcombe, tango, fisher_exact, bayes_binary, sign_test,
+# methods (newcombe, tango, bayes_binary, sign_test,
 # permutation), none of which have a PPI-corrected estimand designed yet.
 # They live here — rather than being reimplemented in evalstats.core.paired —
 # so every scipy-backed p-value in evalstats has exactly one implementation.
@@ -638,38 +638,6 @@ def _mcnemar_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
     k = min(n10, n01)
     p = float(2.0 * binom.cdf(k, m, 0.5))
     return min(p, 1.0)
-
-
-def _fisher_exact_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
-    """Two-sided Fisher's exact p-value on the paired 2×2 contingency table.
-
-    Uses table layout::
-
-        [[n11, n10],
-         [n01, n00]]
-
-    where n10 is ``A=1, B=0`` and n01 is ``A=0, B=1``.
-
-    Note that Fisher's exact test treats margins as fixed and does not exploit
-    pairing in the same way as McNemar; it is provided as an optional
-    conservative exact alternative for binary comparisons.
-    """
-    from scipy.stats import fisher_exact
-
-    a_bin = (values_a >= 0.5).astype(int)
-    b_bin = (values_b >= 0.5).astype(int)
-
-    n11 = int(np.sum((a_bin == 1) & (b_bin == 1)))
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    n00 = int(np.sum((a_bin == 0) & (b_bin == 0)))
-
-    table = np.array([[n11, n10], [n01, n00]], dtype=int)
-    _, p = fisher_exact(table, alternative="two-sided")
-    p = float(p)
-    if not np.isfinite(p):
-        return 1.0
-    return min(max(p, 0.0), 1.0)
 
 
 def _paired_sign_test_p(diffs: np.ndarray) -> float:

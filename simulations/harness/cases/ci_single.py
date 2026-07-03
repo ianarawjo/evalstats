@@ -65,9 +65,10 @@ with warnings.catch_warnings():
         wilson_nested_bb,
         nig_ci_nested,
     )
+    from evalstats.core.stats_utils import interval_score, rescaled_ci
 
 from ..latex_tables import booktabs_table, escape_latex, eval_type_label
-from ..scenarios import CISource, EVAL_TYPES
+from ..scenarios import CISource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     RUN_NOISE_FRACS_DEFAULT,
@@ -130,6 +131,8 @@ class SimResult:
     n_reps: int
     covered: int
     total_width: float
+    total_score: float = 0.0
+    """Sum of interval_score() (see evalstats.core.stats_utils) across n_reps."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     model: str | None = None
@@ -176,9 +179,16 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
+    total_score: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
     true_mean = source_obj.true_mean
+
+    def _record(method, ci_low: float, ci_high: float) -> None:
+        if ci_low <= true_mean <= ci_high:
+            covered[method] += 1
+        total_w[method] += ci_high - ci_low
+        total_score[method] += interval_score(ci_low, ci_high, true_mean, alpha)
 
     for _rep in range(n_reps):
         values = source_obj.generate(rng, n)
@@ -197,9 +207,7 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             _el = time.perf_counter() - _t0
             total_t[method] += _el
             total_t_sq[method] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[method] += 1
-            total_w[method] += ci_high - ci_low
+            _record(method, ci_low, ci_high)
 
         _t0 = time.perf_counter()
         try:
@@ -209,23 +217,27 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
         _el = time.perf_counter() - _t0
         total_t[T_INTERVAL] += _el
         total_t_sq[T_INTERVAL] += _el * _el
-        if ci_low <= true_mean <= ci_high:
-            covered[T_INTERVAL] += 1
-        total_w[T_INTERVAL] += ci_high - ci_low
+        _record(T_INTERVAL, ci_low, ci_high)
 
         if not is_binary:
+            # beta/logit_t/nig assume a [0, 1] scale (domain check or prior
+            # centred at 0.5); rescale likert (1-5) / grades (0-100) onto
+            # [0, 1] first so those assumptions actually hold. el_ci_1d is
+            # nonparametric (data-driven x_min/x_max) and needs no rescale.
+            scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             for _method, _fn in zip(CONTINUOUS_EXTRA_METHODS, (beta_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = _fn(values, alpha)
+                    if _fn is el_ci_1d:
+                        ci_low, ci_high = _fn(values, alpha)
+                    else:
+                        ci_low, ci_high = rescaled_ci(_fn, values, alpha, scale_lo, scale_hi)
                 except Exception:
                     ci_low = ci_high = obs_mean
                 _el = time.perf_counter() - _t0
                 total_t[_method] += _el
                 total_t_sq[_method] += _el * _el
-                if ci_low <= true_mean <= ci_high:
-                    covered[_method] += 1
-                total_w[_method] += ci_high - ci_low
+                _record(_method, ci_low, ci_high)
 
         if is_binary:
             successes = int(np.sum(values >= 0.5))
@@ -235,9 +247,7 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             _el = time.perf_counter() - _t0
             total_t[WILSON] += _el
             total_t_sq[WILSON] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[WILSON] += 1
-            total_w[WILSON] += ci_high - ci_low
+            _record(WILSON, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -247,18 +257,14 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             _el = time.perf_counter() - _t0
             total_t[JEFFREYS] += _el
             total_t_sq[JEFFREYS] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[JEFFREYS] += 1
-            total_w[JEFFREYS] += ci_high - ci_low
+            _record(JEFFREYS, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             ci_low, ci_high = wald_ci_1d(values, alpha)
             _el = time.perf_counter() - _t0
             total_t[WALD] += _el
             total_t_sq[WALD] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[WALD] += 1
-            total_w[WALD] += ci_high - ci_low
+            _record(WALD, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -268,9 +274,7 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             _el = time.perf_counter() - _t0
             total_t[CLOPPER_PEARSON] += _el
             total_t_sq[CLOPPER_PEARSON] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[CLOPPER_PEARSON] += 1
-            total_w[CLOPPER_PEARSON] += ci_high - ci_low
+            _record(CLOPPER_PEARSON, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -280,15 +284,14 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             _el = time.perf_counter() - _t0
             total_t[BAYES_SINGLE] += _el
             total_t_sq[BAYES_SINGLE] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[BAYES_SINGLE] += 1
-            total_w[BAYES_SINGLE] += ci_high - ci_low
+            _record(BAYES_SINGLE, ci_low, ci_high)
 
     return [
         SimResult(
             source=source_obj.source, label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
-            total_width=total_w[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            total_width=total_w[method], total_score=total_score[method],
+            total_time=total_t[method], total_time_sq=total_t_sq[method],
             model=source_obj.model, benchmark_id=source_obj.benchmark_id,
             corpus_size=source_obj.max_n, corpus_mean=(source_obj.true_mean if source_obj.source != "synthetic" else None),
         )
@@ -413,8 +416,15 @@ def _run_nested_cell(
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
+    total_score: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
+
+    def _record(method, ci_low: float, ci_high: float) -> None:
+        if ci_low <= true_mean <= ci_high:
+            covered[method] += 1
+        total_w[method] += ci_high - ci_low
+        total_score[method] += interval_score(ci_low, ci_high, true_mean, alpha)
 
     for _rep in range(n_reps):
         scores = source_obj.generate_runs(rng, n, runs)  # (n, runs)
@@ -434,9 +444,7 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[method] += _el
             total_t_sq[method] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[method] += 1
-            total_w[method] += ci_high - ci_low
+            _record(method, ci_low, ci_high)
 
         # -- t-interval on cell means --
         _t0 = time.perf_counter()
@@ -447,9 +455,7 @@ def _run_nested_cell(
         _el = time.perf_counter() - _t0
         total_t[T_INTERVAL] += _el
         total_t_sq[T_INTERVAL] += _el * _el
-        if ci_low <= true_mean <= ci_high:
-            covered[T_INTERVAL] += 1
-        total_w[T_INTERVAL] += ci_high - ci_low
+        _record(T_INTERVAL, ci_low, ci_high)
 
         # -- Nested bootstrap (full N x R matrix) --
         for method, fn in [
@@ -474,9 +480,7 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[method] += _el
             total_t_sq[method] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[method] += 1
-            total_w[method] += ci_high - ci_low
+            _record(method, ci_low, ci_high)
 
         # -- BCa interval using nested bootstrap replicates --
         _t0 = time.perf_counter()
@@ -488,9 +492,7 @@ def _run_nested_cell(
         _el = time.perf_counter() - _t0
         total_t[BCA_NESTED] += _el
         total_t_sq[BCA_NESTED] += _el * _el
-        if ci_low <= true_mean <= ci_high:
-            covered[BCA_NESTED] += 1
-        total_w[BCA_NESTED] += ci_high - ci_low
+        _record(BCA_NESTED, ci_low, ci_high)
 
         # -- Bootstrap-t via nested resampling --
         _t0 = time.perf_counter()
@@ -501,9 +503,7 @@ def _run_nested_cell(
         _el = time.perf_counter() - _t0
         total_t[BOOTSTRAP_T_NESTED] += _el
         total_t_sq[BOOTSTRAP_T_NESTED] += _el * _el
-        if ci_low <= true_mean <= ci_high:
-            covered[BOOTSTRAP_T_NESTED] += 1
-        total_w[BOOTSTRAP_T_NESTED] += ci_high - ci_low
+        _record(BOOTSTRAP_T_NESTED, ci_low, ci_high)
 
         # -- Binary flat methods on cell means --
         if is_binary:
@@ -515,18 +515,14 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[WILSON_FLAT] += _el
             total_t_sq[WILSON_FLAT] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[WILSON_FLAT] += 1
-            total_w[WILSON_FLAT] += ci_high - ci_low
+            _record(WILSON_FLAT, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             ci_low, ci_high = wald_ci_1d(cell_means, alpha)
             _el = time.perf_counter() - _t0
             total_t[WALD_FLAT] += _el
             total_t_sq[WALD_FLAT] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[WALD_FLAT] += 1
-            total_w[WALD_FLAT] += ci_high - ci_low
+            _record(WALD_FLAT, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -536,9 +532,7 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[CP_FLAT] += _el
             total_t_sq[CP_FLAT] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[CP_FLAT] += 1
-            total_w[CP_FLAT] += ci_high - ci_low
+            _record(CP_FLAT, ci_low, ci_high)
 
             _t0 = time.perf_counter()
             try:
@@ -548,9 +542,7 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[BAYES_INDEP_FLAT] += _el
             total_t_sq[BAYES_INDEP_FLAT] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[BAYES_INDEP_FLAT] += 1
-            total_w[BAYES_INDEP_FLAT] += ci_high - ci_low
+            _record(BAYES_INDEP_FLAT, ci_low, ci_high)
 
             # -- Clustered Wilson variants (nested, multi-run) --
             for method, fn in [(WILSON_DE, wilson_nested_de), (WILSON_OD, wilson_nested_od), (BETA_BINOMIAL, wilson_nested_bb)]:
@@ -562,9 +554,7 @@ def _run_nested_cell(
                 _el = time.perf_counter() - _t0
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
-                if ci_low <= true_mean <= ci_high:
-                    covered[method] += 1
-                total_w[method] += ci_high - ci_low
+                _record(method, ci_low, ci_high)
 
         # -- NIG nested on full matrix (continuous + binary approximation) --
         if is_binary or is_continuous:
@@ -576,9 +566,7 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[NIG_NESTED] += _el
             total_t_sq[NIG_NESTED] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[NIG_NESTED] += 1
-            total_w[NIG_NESTED] += ci_high - ci_low
+            _record(NIG_NESTED, ci_low, ci_high)
 
         # -- NIG on cell means (binary approximation) --
         if is_binary:
@@ -590,9 +578,7 @@ def _run_nested_cell(
             _el = time.perf_counter() - _t0
             total_t[NIG] += _el
             total_t_sq[NIG] += _el * _el
-            if ci_low <= true_mean <= ci_high:
-                covered[NIG] += 1
-            total_w[NIG] += ci_high - ci_low
+            _record(NIG, ci_low, ci_high)
 
         # -- Continuous extra methods on cell means --
         if is_continuous:
@@ -605,15 +591,14 @@ def _run_nested_cell(
                 _el = time.perf_counter() - _t0
                 total_t[_method] += _el
                 total_t_sq[_method] += _el * _el
-                if ci_low <= true_mean <= ci_high:
-                    covered[_method] += 1
-                total_w[_method] += ci_high - ci_low
+                _record(_method, ci_low, ci_high)
 
     return [
         SimResult(
             source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
-            total_width=total_w[method], total_time=total_t[method], total_time_sq=total_t_sq[method],
+            total_width=total_w[method], total_score=total_score[method],
+            total_time=total_t[method], total_time_sq=total_t_sq[method],
             run_noise_frac=source_obj.run_noise_frac or 0.0, runs=runs,
         )
         for method in active_methods
@@ -680,18 +665,67 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
     return avg * 1000.0, float(np.sqrt(var / total_reps)) * 1000.0
 
 
+def _print_overall_summary_table(
+    title: str,
+    eval_types: list[str],
+    results: list[SimResult],
+    agg: dict[tuple, list[tuple[float, float, float]]],
+    agg_counts: dict[tuple, tuple[int, int]],
+    target: float,
+) -> None:
+    """Print one OVERALL SUMMARY table, aggregated only over `eval_types`.
+
+    No-ops (prints nothing) if none of `eval_types` are present in `results`,
+    so callers can unconditionally request e.g. a binary-only table even when
+    a given run has no binary data.
+    """
+    present_methods = {r.method for r in results if r.eval_type in eval_types}
+    if not present_methods:
+        return
+    method_labels = [m.name for m in order_present_methods(present_methods)]
+
+    all_cov: dict[str, list[float]] = defaultdict(list)
+    all_wid: dict[str, list[float]] = defaultdict(list)
+    all_score: dict[str, list[float]] = defaultdict(list)
+    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    for (et, m, n), vals in agg.items():
+        if et not in eval_types:
+            continue
+        all_cov[m].extend(v[0] for v in vals)
+        all_wid[m].extend(v[1] for v in vals)
+        all_score[m].extend(v[2] for v in vals)
+        c, t = agg_counts[(et, m, n)]
+        c_prev, t_prev = all_counts[m]
+        all_counts[m] = (c_prev + c, t_prev + t)
+
+    print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}")
+    for m in method_labels:
+        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
+        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
+        ms = float(np.mean(all_score[m])) if all_score[m] else float("nan")
+        c_tot, t_tot = all_counts[m]
+        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        avg_ms, se_ms = _time_stats(
+            [r for r in results if r.method == m and r.eval_type in eval_types]
+        )
+        time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}")
+
+
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int) -> None:
     target = 1.0 - alpha
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
 
-    agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
     for r in results:
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width))
+        score = r.total_score / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
@@ -706,7 +740,9 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     sep = "=" * 72
     print(f"\n{sep}\n  CI_SINGLE COVERAGE -- SIMULATION RESULTS\n"
           f"  Nominal coverage: {target:.0%}   |   reps/cell: {n_reps}\n"
-          f"  v = under-covered   ^ = over-conservative\n{sep}")
+          f"  v = under-covered   ^ = over-conservative\n"
+          f"  Score = interval score (width + (2/alpha)*miss-distance; lower is better --\n"
+          f"  see evalstats.core.stats_utils.interval_score)\n{sep}")
 
     for et in eval_types_present:
         print(f"\n  [{et}]")
@@ -719,26 +755,22 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
                 row += "  " + (" " * 7 if np.isnan(cov) else f"{cov:.3f}{_cov_marker(cov, target)}".ljust(8))
             print(row)
 
-    print(f"\n{'-'*72}\n  OVERALL SUMMARY (averaged across eval types, sources, n)\n{'-'*72}")
-    all_cov: dict[str, list[float]] = defaultdict(list)
-    all_wid: dict[str, list[float]] = defaultdict(list)
-    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    for (et, m, n), vals in agg.items():
-        all_cov[m].extend(v[0] for v in vals)
-        all_wid[m].extend(v[1] for v in vals)
-        c, t = agg_counts[(et, m, n)]
-        c_prev, t_prev = all_counts[m]
-        all_counts[m] = (c_prev + c, t_prev + t)
-
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Time(ms)':>14}")
-    for m in method_labels:
-        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
-        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
-        c_tot, t_tot = all_counts[m]
-        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
-        avg_ms, se_ms = _time_stats([r for r in results if r.method == m])
-        time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {time_str:>14}")
+    # Split into three OVERALL SUMMARY tables -- binary, continuous [0,1], and
+    # numeric (likert + grades averaged together) -- since these data types
+    # are answered by very different method families and a single pooled
+    # table obscures which methods actually perform best for which type.
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- BINARY (averaged across sources, n)",
+        ["binary"], results, agg, agg_counts, target,
+    )
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- CONTINUOUS [0,1] (averaged across sources, n)",
+        ["continuous"], results, agg, agg_counts, target,
+    )
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- NUMERIC: LIKERT + GRADES (averaged across sources, n)",
+        ["likert", "grades"], results, agg, agg_counts, target,
+    )
     print()
 
 
@@ -753,23 +785,26 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     method_labels = [m.name for m in order_present_methods(present_methods)]
     sizes_present = sorted({r.n for r in results})
 
-    agg: dict[tuple, list[tuple[float, float]]] = defaultdict(list)
+    agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
     for r in results:
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width))
+        score = r.total_score / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
     all_cov: dict[str, list[float]] = defaultdict(list)
     all_wid: dict[str, list[float]] = defaultdict(list)
+    all_score: dict[str, list[float]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
     per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
     method_eval_types: dict[str, set[str]] = defaultdict(set)
     for (et, m, n), vals in agg.items():
         all_cov[m].extend(v[0] for v in vals)
         all_wid[m].extend(v[1] for v in vals)
+        all_score[m].extend(v[2] for v in vals)
         method_eval_types[m].add(et)
         c, t = agg_counts[(et, m, n)]
         c_prev, t_prev = all_counts[m]
@@ -781,6 +816,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     for m in method_labels:
         mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
         mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
+        ms = float(np.mean(all_score[m])) if all_score[m] else float("nan")
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats([r for r in results if r.method == m])
@@ -791,6 +827,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             f"{mc:.3f}" if np.isfinite(mc) else "-",
             f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{mw:.4f}" if np.isfinite(mw) else "-",
+            f"{ms:.4f}" if np.isfinite(ms) else "-",
             time_str,
             et_label,
         ]
@@ -801,9 +838,12 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         rows.append(row)
 
     return booktabs_table(
-        caption=f"ci\\_single: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}).",
+        caption=(
+            f"ci\\_single: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
+            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better)."
+        ),
         label="tab:ci_single_overall",
-        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Time (ms)", "Eval types"]
+        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
     )

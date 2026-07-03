@@ -327,7 +327,7 @@ def test_analyze_auto_non_binary_uses_t_interval():
                      method="auto", rng=_rng(34))
     pair = bundle.pairwise.get("A", "B")
     assert "t-interval" in pair.test_method.lower()
-    assert bundle.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert bundle.resolved_ci_method not in {"wilson", "newcombe", "bayes_binary"}
 
 
 def test_analyze_auto_binary_resolved_method_is_tango():
@@ -385,7 +385,7 @@ def test_analyze_explicit_bayes_binary_advantage_uses_wilson():
     scores = _binary_scores(3, 40, [0.7, 0.5, 0.3], seed=51)
     bundle = analyze(_benchmark(scores, ["A", "B", "C"]),
                      method="bayes_binary", rng=_rng(51))
-    assert bundle.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert bundle.resolved_ci_method in {"wilson", "newcombe", "bayes_binary"}
 
 
 def test_analyze_explicit_bayes_binary_raises_for_non_binary():
@@ -494,7 +494,7 @@ def test_compare_prompts_explicit_bayes_binary_binary_data():
     report = es.compare_prompts(scores, method="bayes_binary", rng=_rng(65))
     pair = report.pairwise.get("A", "B")
     assert "bayes binary" in pair.test_method.lower()
-    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert report.full_analysis.resolved_ci_method in {"wilson", "newcombe", "bayes_binary"}
 
 
 def test_compare_prompts_explicit_bayes_binary_raises_for_non_binary():
@@ -516,7 +516,7 @@ def test_compare_prompts_auto_non_binary_uses_t_interval():
     report = es.compare_prompts(scores, method="auto", n_bootstrap=300, rng=_rng(67))
     pair = report.pairwise.get("A", "B")
     assert "t-interval" in pair.test_method.lower()
-    assert report.full_analysis.resolved_ci_method not in {"wilson", "newcombe", "fisher_exact", "bayes_binary"}
+    assert report.full_analysis.resolved_ci_method not in {"wilson", "newcombe", "bayes_binary"}
 
 
 # ---------------------------------------------------------------------------

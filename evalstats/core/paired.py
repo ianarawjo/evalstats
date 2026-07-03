@@ -24,7 +24,6 @@ from ..tests import (
     wilcoxon as _es_wilcoxon,
     friedman as _es_friedman,
     _mcnemar_p,
-    _fisher_exact_p,
     _paired_sign_test_p,
     _paired_signflip_pvalue,
 )
@@ -51,7 +50,7 @@ from .resampling import (
     _weighted_medians_rows,
 )
 from .stats_utils import correct_pvalues
-from ..config import get_alpha_ci, GRADIENT_CI_ALPHAS
+from ..config import get_alpha_ci, GRADIENT_CI_ALPHAS, MAX_T_AUTO_METHOD
 
 
 BAYES_BINARY_LARGE_N_THRESHOLD = 200
@@ -382,7 +381,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -410,8 +409,6 @@ def pairwise_differences(
         binary (0/1) data using Newcombe CI + exact McNemar p-value,
         ``'tango'`` for paired binary (0/1) data using Tango score CI +
         exact McNemar p-value, or
-        ``'fisher_exact'`` for paired binary (0/1) data using Newcombe CI
-        + two-sided Fisher's exact p-value on the 2×2 contingency table, or
         ``'bayes_binary'`` for paired binary (0/1) data using the
         Dirichlet-multinomial Bayesian model (Bowyer et al. 2025).
         Requires binary data; raises ValueError otherwise.
@@ -675,46 +672,6 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name="tango",
-            values_a=values_a,
-            values_b=values_b,
-            multi_ci_dict=mci,
-        )
-
-    if method == "fisher_exact":
-        if scores.ndim == 3:
-            if scores.shape[2] > 1:
-                warnings.warn(
-                    "method='fisher_exact' uses binary outcomes and therefore "
-                    "uses run index 0 when repeated runs are present.",
-                    UserWarning,
-                    stacklevel=3,
-                )
-            flat = scores[:, :, 0]
-        else:
-            flat = scores
-
-        if not is_binary_scores(flat):
-            raise ValueError(
-                "method='fisher_exact' requires binary (0/1) data, but "
-                "non-binary values were found in the score array. "
-                "Use is_binary_scores() to check before calling."
-            )
-
-        values_a = flat[idx_a]
-        values_b = flat[idx_b]
-        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
-        alpha_val = 1.0 - ci
-        ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
-        p_value = _fisher_exact_p(values_a, values_b)
-        mci = {_a: newcombe_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
-        return _build_result(
-            diffs=diffs,
-            point_d=point_d,
-            std_d=std_d,
-            ci_low=ci_low,
-            ci_high=ci_high,
-            p_value=p_value,
-            test_name="fisher exact (newcombe ci)",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
@@ -1265,7 +1222,7 @@ def _max_stat_simultaneous_cis(
         ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'bootstrap_t'``, ``'auto'``
         (treated as ``'smooth_bootstrap'``), ``'permutation'``,
         ``'sign_test'``.  Methods that do not use bootstrap resampling
-        for CIs (``'newcombe'``, ``'tango'``, ``'fisher_exact'``, ``'bayes_binary'``,
+        for CIs (``'newcombe'``, ``'tango'``, ``'bayes_binary'``,
         ``'lmm'``) are not supported; an empty dict is returned for these.
         Ignored when *precomputed_boot_stats* is supplied.
     ci : float
@@ -1322,7 +1279,7 @@ def _max_stat_simultaneous_cis(
     }
     # Resolve 'auto' to its concrete method
     if method == "auto":
-        method = "smooth_bootstrap"
+        method = MAX_T_AUTO_METHOD
 
     if method not in _BOOTSTRAP_COMPATIBLE:
         return {}, {}
@@ -1557,7 +1514,7 @@ def _bonferroni_simultaneous_cis(
     ``per_input_diffs`` already stored in each :class:`PairedDiffResult`.
     This makes the result independent of the original CI method, so it
     works as a universal fallback for non-bootstrap methods such as
-    ``'newcombe'``, ``'tango'``, ``'fisher_exact'``, and ``'bayes_binary'``.
+    ``'newcombe'``, ``'tango'``, and ``'bayes_binary'``.
 
     Returns
     -------
@@ -1616,7 +1573,7 @@ def _simultaneous_cis_router(
     (:func:`_max_stat_simultaneous_cis`) when the chosen test *method* is
     bootstrap-compatible.  Falls back to Bonferroni t-intervals
     (:func:`_bonferroni_simultaneous_cis`) for analytical methods such as
-    ``'newcombe'``, ``'tango'``, ``'fisher_exact'``, and ``'bayes_binary'``, and also
+    ``'newcombe'``, ``'tango'``, and ``'bayes_binary'``, and also
     as a safety net if the bootstrap path returns an empty result.
 
     Returns
@@ -1649,7 +1606,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
@@ -1693,7 +1650,7 @@ def all_pairwise(
           the joint distribution of ``max_{(i,j)} |T_ij^b|`` accounts for
           the correlation between comparisons.  Less conservative than
           Bonferroni and widely used in genomics for situations with many correlated tests. 
-            * **Analytical methods** (``'newcombe'``, ``'tango'``, ``'fisher_exact'``,
+            * **Analytical methods** (``'newcombe'``, ``'tango'``,
           ``'bayes_binary'``): Bonferroni t-intervals at the
           ``1 − (1−α)/k`` level, computed from ``per_input_diffs``.
 
@@ -1836,7 +1793,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "fisher_exact", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",

@@ -74,7 +74,6 @@ _SMOKE_METHODS = [
     "wilson",
     "newcombe",
     "tango",
-    "fisher_exact",
 ]
 
 
@@ -88,7 +87,7 @@ _SMOKE_ANALYZE_CASES = [
     )
     if not (method == "lmm" and statistic == "median")
     if not (
-        method in {"bayes_binary", "wilson", "newcombe", "tango", "fisher_exact"}
+        method in {"bayes_binary", "wilson", "newcombe", "tango"}
         and evaluator_mode == "aggregate"
     )
 ]

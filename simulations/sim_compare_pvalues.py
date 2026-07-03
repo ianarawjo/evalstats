@@ -65,7 +65,6 @@ with np.errstate(all="ignore"):
 
 PAIRWISE_METHODS = [
     "mcnemar",          # exact McNemar test (binary only)
-    "fisher_exact",     # Fisher's exact test on paired 2x2 (binary only)
     "bootstrap",
     "bca",
     "bayes_bootstrap",
@@ -712,7 +711,7 @@ def _pairwise_pvalue(
     if method == "paired_t":
         return _safe_paired_t_p(diffs)
 
-    if method in {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"}:
+    if method in {"newcombe", "bayes_binary", "mcnemar"}:
         # These methods require binary (0/1) input. When runs > 1, collapse
         # multiple runs to a single binary value via majority vote (mean >= 0.5).
         aa = (a.mean(axis=1) >= 0.5).astype(float)
@@ -746,7 +745,7 @@ def _pairwise_pvalue(
 
 
 def _method_allowed(eval_type: str, method: str, runs: int = 1) -> bool:
-    binary_only = {"newcombe", "bayes_binary", "mcnemar", "fisher_exact"}
+    binary_only = {"newcombe", "bayes_binary", "mcnemar"}
     # These methods require binary inputs; they are excluded for non-binary eval types.
     # When runs > 1, _pairwise_pvalue collapses runs via majority vote before calling them.
     if method in binary_only and eval_type != "binary":

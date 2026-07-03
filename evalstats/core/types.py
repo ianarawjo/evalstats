@@ -28,7 +28,6 @@ CommonStatsMethods = Literal[
     "newcombe",
     "tango",
     "permutation",
-    "fisher_exact",
     "sign_test",
 ]
 CompareMethod = CommonStatsMethods

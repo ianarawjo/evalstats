@@ -18,6 +18,19 @@ import numpy as np
 
 EVAL_TYPES = ["binary", "continuous", "likert", "grades"]
 
+# Canonical (lo, hi) natural-scale bounds per eval type -- see synthetic.py's
+# per-shape generators (grades/likert are clipped to exactly these ranges).
+# Used to rescale data onto [0, 1] before calling CI methods whose domain or
+# prior (e.g. nig_ci_1d, logit_t_ci_1d) assumes a [0, 1]-bounded scale, since
+# only "binary"/"continuous" are natively [0, 1] -- "likert" (1-5) and
+# "grades" (0-100) are not.
+EVAL_TYPE_SCALE_BOUNDS: dict[str, tuple[float, float]] = {
+    "binary": (0.0, 1.0),
+    "continuous": (0.0, 1.0),
+    "likert": (1.0, 5.0),
+    "grades": (0.0, 100.0),
+}
+
 
 @dataclass
 class CISource:

@@ -195,15 +195,13 @@ def _build_parser() -> argparse.ArgumentParser:
             "wilson",
             "newcombe",
             "tango",
-            "fisher_exact",
         ],
         default="auto",
         metavar="METHOD",
         help=(
             "Inference method (default: auto). Use 'lmm' for mixed-effects modeling; "
             "binary-only modes include 'bayes_binary', 'wilson', 'newcombe', "
-            "'tango', and "
-            "'fisher_exact'."
+            "and 'tango'."
         ),
     )
     analyze.add_argument(

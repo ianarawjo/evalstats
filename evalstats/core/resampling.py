@@ -8,6 +8,8 @@ from typing import Literal, Optional
 import numpy as np
 from scipy import stats
 
+from ..config import BOOTSTRAP_AUTO_MIN_N
+
 
 def _stat(values: np.ndarray, statistic: Literal["mean", "median"]) -> float:
     """Apply *statistic* to a 1-D array and return a Python float."""
@@ -1294,14 +1296,14 @@ def resolve_resampling_method(
 ) -> Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]:
     """Resolve ``method='auto'`` to a concrete bootstrap method.
 
-    ``method='auto'`` resolves to ``'bootstrap'`` when ``sample_size >= 200``
-    (plain bootstrap is simpler and at least as accurate at that scale) and
-    ``'smooth_bootstrap'`` otherwise.
+    ``method='auto'`` resolves to ``'bootstrap'`` when
+    ``sample_size >= config.BOOTSTRAP_AUTO_MIN_N`` (plain bootstrap is simpler
+    and at least as accurate at that scale) and ``'bootstrap_t'`` otherwise.
     ``'bayes_bootstrap'`` and ``'smooth_bootstrap'`` are passed through unchanged.
     """
     _ = (bca_min_n, bca_max_n)
     if method == "auto":
-        return "bootstrap" if sample_size >= 200 else "smooth_bootstrap"
+        return "bootstrap" if sample_size >= BOOTSTRAP_AUTO_MIN_N else "bootstrap_t"
     return method  # type: ignore[return-value]
 
 

@@ -109,7 +109,6 @@ from ..scenarios.real_data import DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR
 from ..methods import (
     PAIRWISE_PVALUE_METHODS,
     MCNEMAR,
-    FISHER_EXACT,
     BOOTSTRAP,
     BOOTSTRAP_T,
     BCA,
@@ -147,7 +146,7 @@ PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
 ALPHA_DEFAULT = 0.05
 
-_BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name, FISHER_EXACT.name}
+_BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name}
 
 
 class _ProgressReporter:
@@ -203,6 +202,8 @@ def _mc_proportion_stats(successes: int, total: int, z: float = 1.96) -> tuple[f
 # procedures, ported from sim_compare_pvalues.py's pairwise phase. Reuses
 # scenarios.synthetic.build_pair_sources -- its is_null rows are the "null"
 # condition, its cohens_d_values sweep is the alt-condition power curve.
+# Real-data sources (build_real_pair_sources) have no synthetic Cohen's d;
+# their non-null condition is labeled "real" instead (see _run_pairwise_cell).
 # ---------------------------------------------------------------------------
 
 
@@ -212,7 +213,7 @@ class PairwiseResult:
     label: str
     n: int
     method: str
-    condition: str  # "null" | f"d={cohens_d:.2f}"
+    condition: str  # "null" | f"d={cohens_d:.2f}" | "real" (real-data non-null)
     n_reps: int
     rejects: int
     p_sum: float
@@ -277,7 +278,15 @@ def _run_pairwise_cell(
     source: CIPairSource, n: int, runs: int, n_reps: int, n_bootstrap: int, alpha: float, statistic: str, seed,
 ) -> list[PairwiseResult]:
     methods = _pairwise_methods_allowed(source.eval_type)
-    condition = "null" if source.is_null else f"d={source.cohens_d:.2f}"
+    if source.is_null:
+        condition = "null"
+    elif source.source != "synthetic":
+        # Real A-vs-B pairs have a genuine (usually nonzero) true_diff, but no
+        # synthetic Cohen's d -- label the power column "real" rather than the
+        # misleading "d=0.00" (CIPairSource.cohens_d's default for real data).
+        condition = "real"
+    else:
+        condition = f"d={source.cohens_d:.2f}"
 
     ss = np.random.SeedSequence(seed)
     data_rng = np.random.default_rng(ss.spawn(1)[0])
@@ -325,8 +334,8 @@ def _run_ppi_cell_worker(args: tuple) -> list:
 
 
 def _run_ppi_effect_cell_worker(args: tuple) -> tuple:
-    sc, active_tests, n_reps, n_boot, seed = args
-    return (sc, _run_ppi_effect_cell(sc, active_tests, n_reps, n_boot, seed))
+    sc_idx, sc, active_tests, n_reps, n_boot, seed = args
+    return (sc_idx, _run_ppi_effect_cell(sc, active_tests, n_reps, n_boot, seed))
 
 
 def run_pairwise_simulation(
@@ -468,90 +477,88 @@ def save_results_artifacts_pairwise(*, results: list[PairwiseResult], alpha: flo
     return [str(csv_path), str(summary_path)]
 
 
-def save_pairwise_typeI_power_plot(*, results: list[PairwiseResult], alpha: float, out_path: str) -> str:
-    """Type-I error (left) and power-vs-n curves (right) per eval type."""
+def _save_pairwise_typeI_power_plot_one(
+    *, results: list[PairwiseResult], alpha: float, out_path: str, eval_type: str,
+) -> str:
+    """Save a Type-I error (left) + power (right) plot for a single eval_type."""
     import matplotlib.pyplot as plt
+    import matplotlib.ticker as _ticker
 
     present_methods = {r.method for r in results}
     method_objs = order_present_methods(present_methods)
-    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    et_rows = [r for r in results if r.eval_type == eval_type]
     sample_sizes = sorted({r.n for r in results})
 
-    nrows = max(len(eval_types_present), 1)
-    fig, axes = plt.subplots(nrows=nrows, ncols=2, figsize=(11.0, 4.2 * nrows), squeeze=False, gridspec_kw={"hspace": 0.5})
+    fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(11.0, 4.2), squeeze=False)
+    ax_t1, ax_pw = axes[0][0], axes[0][1]
+    ax_t1.axhline(alpha, color="black", linewidth=1.0, linestyle="--")
+    ax_t1.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
 
-    for row_idx, et in enumerate(eval_types_present):
-        ax_t1, ax_pw = axes[row_idx][0], axes[row_idx][1]
-        et_rows = [r for r in results if r.eval_type == et]
-        ax_t1.axhline(alpha, color="black", linewidth=1.0, linestyle="--")
-        ax_t1.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
-
-        for m in method_objs:
-            m_rows = [r for r in et_rows if r.method == m.name]
-            if not m_rows:
+    for m in method_objs:
+        m_rows = [r for r in et_rows if r.method == m.name]
+        if not m_rows:
+            continue
+        null_rows = [r for r in m_rows if r.condition == "null"]
+        xs, ys = [], []
+        for n in sample_sizes:
+            subset = [r for r in null_rows if r.n == n]
+            if not subset:
                 continue
-            null_rows = [r for r in m_rows if r.condition == "null"]
-            xs, ys = [], []
-            for n in sample_sizes:
-                subset = [r for r in null_rows if r.n == n]
-                if not subset:
-                    continue
-                c = sum(r.rejects for r in subset)
-                t = sum(r.n_reps for r in subset)
-                xs.append(n)
-                ys.append(c / t if t > 0 else float("nan"))
-            if xs:
-                ax_t1.plot(xs, ys, marker="o", color=m.color, markersize=4, linewidth=1.2, label=m.name, alpha=0.85)
+            c = sum(r.rejects for r in subset)
+            t = sum(r.n_reps for r in subset)
+            xs.append(n)
+            ys.append(c / t if t > 0 else float("nan"))
+        if xs:
+            ax_t1.plot(xs, ys, marker="o", color=m.color, markersize=4, linewidth=1.2, label=m.name, alpha=0.85)
 
-            alt_rows = [r for r in m_rows if r.condition != "null"]
-            xs2, ys2 = [], []
-            for n in sample_sizes:
-                subset = [r for r in alt_rows if r.n == n]
-                if not subset:
-                    continue
-                c = sum(r.rejects for r in subset)
-                t = sum(r.n_reps for r in subset)
-                xs2.append(n)
-                ys2.append(c / t if t > 0 else float("nan"))
-            if xs2:
-                ax_pw.plot(xs2, ys2, marker="o", color=m.color, markersize=4, linewidth=1.2, label=m.name, alpha=0.85)
+        alt_rows = [r for r in m_rows if r.condition != "null"]
+        xs2, ys2 = [], []
+        for n in sample_sizes:
+            subset = [r for r in alt_rows if r.n == n]
+            if not subset:
+                continue
+            c = sum(r.rejects for r in subset)
+            t = sum(r.n_reps for r in subset)
+            xs2.append(n)
+            ys2.append(c / t if t > 0 else float("nan"))
+        if xs2:
+            ax_pw.plot(xs2, ys2, marker="o", color=m.color, markersize=4, linewidth=1.2, label=m.name, alpha=0.85)
 
-        ax_t1.set_title(f"{et}: Type-I error")
-        ax_t1.set_xlabel("n")
-        ax_t1.set_ylabel("Rejection rate (null)")
-        ax_t1.set_xscale("log")
-        ax_pw.set_title(f"{et}: power (mean over alt conditions)")
-        ax_pw.set_xlabel("n")
-        ax_pw.set_ylabel("Rejection rate (alt)")
-        ax_pw.set_xscale("log")
-        ax_t1.legend(fontsize=6.5, loc="upper right")
-        import matplotlib.ticker as _ticker
-        _loc = _ticker.FixedLocator(sample_sizes)
-        _fmt = _ticker.FuncFormatter(lambda x, _: str(int(x)))
-        _nul = _ticker.NullLocator()
-        for _ax in (ax_t1, ax_pw):
-            _ax.xaxis.set_major_locator(_loc)
-            _ax.xaxis.set_major_formatter(_fmt)
-            _ax.xaxis.set_minor_locator(_nul)
-        # Ensure y=0 lines are visible even when all methods have zero Type-I error
-        # (binary null under the shared-item model gives d_i=0 for all i, so all
-        # tests correctly return p=1 -- FWER=0 is right, but visually looks blank).
-        t1_lo, t1_hi = ax_t1.get_ylim()
-        if t1_hi - t1_lo < 0.04:
-            ax_t1.set_ylim(-0.005, max(t1_hi, alpha + 0.04))
-        elif t1_lo > -0.003:
-            ax_t1.set_ylim(-0.003, t1_hi)
-        if et == "binary":
-            null_t1_vals = [
-                r.rejects / r.n_reps
-                for r in [r for r in et_rows if r.condition == "null"]
-                if r.n_reps > 0
-            ]
-            if null_t1_vals and max(null_t1_vals) == 0.0:
-                ax_t1.text(0.5, 0.25, "T1=0 (shared-item model:\nA≡B under null)", transform=ax_t1.transAxes,
-                           ha="center", va="center", fontsize=7.5, color="#555555", style="italic")
+    ax_t1.set_title(f"{eval_type}: Type-I error")
+    ax_t1.set_xlabel("n")
+    ax_t1.set_ylabel("Rejection rate (null)")
+    ax_t1.set_xscale("log")
+    ax_pw.set_title(f"{eval_type}: power (mean over alt conditions)")
+    ax_pw.set_xlabel("n")
+    ax_pw.set_ylabel("Rejection rate (alt)")
+    ax_pw.set_xscale("log")
+    ax_t1.legend(fontsize=6.5, loc="upper right")
+    _loc = _ticker.FixedLocator(sample_sizes)
+    _fmt = _ticker.FuncFormatter(lambda x, _: str(int(x)))
+    _nul = _ticker.NullLocator()
+    for _ax in (ax_t1, ax_pw):
+        _ax.xaxis.set_major_locator(_loc)
+        _ax.xaxis.set_major_formatter(_fmt)
+        _ax.xaxis.set_minor_locator(_nul)
+    # Ensure y=0 lines are visible even when all methods have zero Type-I error
+    # (binary null under the shared-item model gives d_i=0 for all i, so all
+    # tests correctly return p=1 -- FWER=0 is right, but visually looks blank).
+    t1_lo, t1_hi = ax_t1.get_ylim()
+    if t1_hi - t1_lo < 0.04:
+        ax_t1.set_ylim(-0.005, max(t1_hi, alpha + 0.04))
+    elif t1_lo > -0.003:
+        ax_t1.set_ylim(-0.003, t1_hi)
+    if eval_type == "binary":
+        null_t1_vals = [
+            r.rejects / r.n_reps
+            for r in [r for r in et_rows if r.condition == "null"]
+            if r.n_reps > 0
+        ]
+        if null_t1_vals and max(null_t1_vals) == 0.0:
+            ax_t1.text(0.5, 0.25, "T1=0 (shared-item model:\nA≡B under null)", transform=ax_t1.transAxes,
+                       ha="center", va="center", fontsize=7.5, color="#555555", style="italic")
 
-    fig.suptitle(f"pvalues (pairwise, non-PPI): Type-I + Power | alpha={alpha}", fontsize=12)
+    fig.suptitle(f"pvalues (pairwise, non-PPI): Type-I + Power [{eval_type}] | alpha={alpha}", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -559,6 +566,25 @@ def save_pairwise_typeI_power_plot(*, results: list[PairwiseResult], alpha: floa
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+def save_pairwise_typeI_power_plot(*, results: list[PairwiseResult], alpha: float, out_path: str) -> list[str]:
+    """Save one Type-I error + power plot per eval_type present in results.
+
+    ``out_path`` is used as the base path; ``_{eval_type}`` is inserted before
+    the file extension for each saved file.  Returns all saved paths.
+    """
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    if not eval_types_present:
+        return []
+    base = Path(out_path)
+    stem, suffix = base.stem, base.suffix or ".png"
+    saved: list[str] = []
+    for et in eval_types_present:
+        et_path = str(base.parent / f"{stem}_{et}{suffix}")
+        _save_pairwise_typeI_power_plot_one(results=results, alpha=alpha, out_path=et_path, eval_type=et)
+        saved.append(et_path)
+    return saved
 
 
 # ---------------------------------------------------------------------------
@@ -579,6 +605,7 @@ class MultiArmResult:
     n_reps: int
     any_reject: int
     best_selected: int
+    total_time: float = 0.0  # total wall-clock seconds for all n_reps of this condition
 
 
 def _compute_multiarm_metrics(
@@ -682,16 +709,19 @@ def _run_multiarm_cell(
 
     agg_any: dict[tuple[str, str], int] = {(c, cond): 0 for c in corrections for cond in ("null", "alt")}
     agg_best: dict[tuple[str, str], int] = {(c, cond): 0 for c in corrections for cond in ("null", "alt")}
+    agg_time: dict[str, float] = {"null": 0.0, "alt": 0.0}
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         for _ in range(n_reps):
             for condition, delta in (("null", 0.0), ("alt", source.alt_delta)):
+                _t0 = time.perf_counter()
                 scores = source.generate_scores(rng, n, runs, k_arms, delta)
                 metrics = _compute_multiarm_metrics(
                     scores=scores, labels=labels, method=multiarm_method, corrections=corrections,
                     n_bootstrap=n_bootstrap, alpha=alpha, statistic=statistic, rng=rng,
                 )
+                agg_time[condition] += time.perf_counter() - _t0
                 for correction in corrections:
                     any_reject, best_selected = metrics.get(correction, (False, False))
                     if any_reject:
@@ -704,6 +734,7 @@ def _run_multiarm_cell(
             eval_type=source.eval_type, label=source.label, n=n, k=k_arms, correction=correction,
             condition=condition, n_reps=n_reps, any_reject=agg_any[(correction, condition)],
             best_selected=agg_best[(correction, condition)],
+            total_time=agg_time[condition],
         )
         for correction in corrections
         for condition in ("null", "alt")
@@ -740,6 +771,17 @@ def run_multiarm_simulation(
     return results
 
 
+def _time_stats_multiarm(results: list[MultiArmResult]) -> tuple[float, float]:
+    """Average ± SE of wall-clock time per rep in milliseconds across cells."""
+    valid = [r for r in results if r.total_time > 0 and r.n_reps > 0]
+    if not valid:
+        return float("nan"), float("nan")
+    per_rep_ms = [r.total_time * 1000.0 / r.n_reps for r in valid]
+    avg = float(np.mean(per_rep_ms))
+    se = float(np.std(per_rep_ms, ddof=1) / np.sqrt(len(per_rep_ms))) if len(per_rep_ms) > 1 else 0.0
+    return avg, se
+
+
 def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
     print(f"\n{'='*78}\n  PVALUES (MULTI-ARM, NON-PPI) -- FWER + BEST-ARM POWER\n  Nominal alpha: {alpha}\n{'='*78}")
     corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
@@ -763,7 +805,34 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
                 fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
                 power = power_c / power_t if power_t > 0 else float("nan")
                 print(f"    {corr:<20} {fwer:>8.3f} {power:>10.3f}")
-    print()
+
+    print(f"\n{'-'*72}\n  OVERALL SUMMARY (averaged across eval types, sources, n, k)\n{'-'*72}")
+    k_cols = "".join(f"  {'k='+str(k):>6}" for k in ks_present)
+    print(f"\n  {'Correction':<20}  {'FWER':>6}  {'Band95':>13}  {'BestPow':>8}  {'Time(ms)':>14}{k_cols}")
+    for corr in corrections:
+        c_rows = [r for r in results if r.correction == corr]
+        null_rows = [r for r in c_rows if r.condition == "null"]
+        alt_rows = [r for r in c_rows if r.condition == "alt"]
+        fwer_c = sum(r.any_reject for r in null_rows)
+        fwer_t = sum(r.n_reps for r in null_rows)
+        power_c = sum(r.best_selected for r in alt_rows)
+        power_t = sum(r.n_reps for r in alt_rows)
+        fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
+        power = power_c / power_t if power_t > 0 else float("nan")
+        _, _, lo, hi = _mc_proportion_stats(fwer_c, fwer_t)
+        avg_ms, se_ms = _time_stats_multiarm(null_rows)
+        band = f"{lo:.3f}-{hi:.3f}" if np.isfinite(lo) else "-"
+        time_str = f"{avg_ms:.1f}+-{se_ms:.1f}" if np.isfinite(avg_ms) else "-"
+        marker = "*" if np.isfinite(fwer) and fwer > alpha + 0.02 else " "
+        k_fwer = ""
+        for k in ks_present:
+            k_null = [r for r in null_rows if r.k == k]
+            kc = sum(r.any_reject for r in k_null)
+            kt = sum(r.n_reps for r in k_null)
+            kf = kc / kt if kt > 0 else float("nan")
+            k_fwer += f"  {kf:>6.3f}" if np.isfinite(kf) else f"  {'  -':>6}"
+        print(f"  {corr:<20}  {fwer:>5.3f}{marker}  {band:>13}  {power:>8.3f}  {time_str:>14}{k_fwer}")
+    print(f"  (* = FWER > alpha + 0.02)")
 
 
 def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) -> str:
@@ -788,11 +857,14 @@ def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) 
         fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
         power = power_c / power_t if power_t > 0 else float("nan")
         _, _, lo, hi = _mc_proportion_stats(fwer_c, fwer_t)
+        avg_ms, se_ms = _time_stats_multiarm(null_rows)
+        time_str = f"${avg_ms:.1f} \\pm {se_ms:.1f}$" if np.isfinite(avg_ms) else "-"
         row = [
             escape_latex(corr),
             f"{fwer:.3f}" if np.isfinite(fwer) else "-",
             f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{power:.3f}" if np.isfinite(power) else "-",
+            time_str,
             eval_type_label(covered, eval_types_present),
         ]
         for n in sizes_present:
@@ -813,7 +885,7 @@ def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) 
         caption=f"pvalues (multi-arm, non-PPI): FWER and best-arm selection power (nominal alpha={alpha}). "
                 f"Per-$n$ and per-$k$ FWER columns are collapsed across the other dimension and across eval types.",
         label="tab:pvalues_multiarm_overall",
-        columns=["Correction", "FWER", "95\\% MC band", "Best-arm power", "Eval types"]
+        columns=["Correction", "FWER", "95\\% MC band", "Best-arm power", "Time (ms)", "Eval types"]
                 + [f"n={n}" for n in sizes_present]
                 + [f"k={k}" for k in ks_present],
         rows=rows,
@@ -826,11 +898,13 @@ def save_results_artifacts_multiarm(*, results: list[MultiArmResult], alpha: flo
     csv_path = out_base / f"{run_stem}_multiarm_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["eval_type", "label", "n", "k", "correction", "condition", "n_reps", "any_reject", "best_selected", "any_reject_rate", "best_selected_rate"])
+        writer.writerow(["eval_type", "label", "n", "k", "correction", "condition", "n_reps", "any_reject", "best_selected", "any_reject_rate", "best_selected_rate", "total_time_s", "time_ms_per_rep"])
         for r in results:
+            time_ms = (r.total_time * 1000.0 / r.n_reps) if r.n_reps > 0 and r.total_time > 0 else float("nan")
             writer.writerow([
                 r.eval_type, r.label, r.n, r.k, r.correction, r.condition, r.n_reps, r.any_reject, r.best_selected,
                 f"{r.any_reject / r.n_reps:.8f}", f"{r.best_selected / r.n_reps:.8f}",
+                f"{r.total_time:.6f}", f"{time_ms:.4f}" if not (time_ms != time_ms) else "",
             ])
     summary_path = out_base / f"{run_stem}_multiarm_summary.log"
     buf = io.StringIO()
@@ -1378,13 +1452,13 @@ def run_ppi_effect_check(
     results: list[PPIEffectResult] = []
 
     if n_workers > 1:
-        args_list = [(sc, effect_tests, n_reps, n_boot, seed) for sc, seed in zip(sources, child_seeds)]
+        args_list = [(i, sc, effect_tests, n_reps, n_boot, seed) for i, (sc, seed) in enumerate(zip(sources, child_seeds))]
         ctx = _mp.get_context("fork")
         gold_nulls = [estimate_judge_bias_gold_null_values(sc, n_mc=gold_null_mc, seed=int(child_seeds[i][0]))
                       for i, sc in enumerate(sources)]
         with ctx.Pool(n_workers) as pool:
-            for i, (sc, samples_by_test) in enumerate(pool.imap_unordered(_run_ppi_effect_cell_worker, args_list)):
-                sc_idx = next(j for j, s in enumerate(sources) if s is sc)
+            for i, (sc_idx, samples_by_test) in enumerate(pool.imap_unordered(_run_ppi_effect_cell_worker, args_list)):
+                sc = sources[sc_idx]
                 gold_null = gold_nulls[sc_idx]
                 for t in effect_tests:
                     samples = samples_by_test.get(t, [])
@@ -1394,7 +1468,7 @@ def run_ppi_effect_check(
                     results.append(PPIEffectResult(
                         name=sc.name, tag=sc.tag, test=t, n=sc.n, n_samples=n,
                         null_value=null_val, mean_bias=bias_mean, bias_z=z,
-                        uncorrected_bias_z=unc_z, coverage=coverage, mean_width=mean_width,
+                        uncorrected_bias_z=unc_z, coverage=coverage, mean_ci_width=mean_width,
                     ))
                 reporter.update(i + 1)
         reporter.update(len(sources), detail="done")
@@ -2061,7 +2135,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
     real) so the real-data pairwise path doesn't go unexercised between
     --official-tests runs."""
     mode = "all" if data_source == "synthetic" else "pairwise"
-    eval_types = ["continuous"] if data_source == "synthetic" else ["binary"]
+    eval_types = ["binary", "continuous"] if data_source == "synthetic" else ["binary"]
     return argparse.Namespace(
         mode=mode, reps=3, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
@@ -2101,7 +2175,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 sources = build_real_pair_sources(
                     args.data_source, benchmarks=args.benchmarks, models=args.models,
                     hf_token=args.hf_token, cache_dir=args.cache_dir, min_pair_size=args.min_pair_size,
-                    inspect_csv=args.inspect_csv,
+                    inspect_csv=args.inspect_csv, include_null=True,
                 )
             if args.eval_types:
                 requested = set(args.eval_types)
@@ -2121,9 +2195,10 @@ def run(args: argparse.Namespace) -> CaseResult:
             if args.save_results == "save":
                 output_paths += save_results_artifacts_pairwise(results=pw_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False))
             if args.plots == "save":
-                plot_path = save_pairwise_typeI_power_plot(results=pw_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_power.png"))
-                output_paths.append(plot_path)
-                print(f"Saved plot: {plot_path}")
+                plot_paths = save_pairwise_typeI_power_plot(results=pw_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_power.png"))
+                for plot_path in plot_paths:
+                    output_paths.append(plot_path)
+                    print(f"Saved plot: {plot_path}")
 
             null_rows = [r for r in pw_results if r.condition == "null"]
             type1 = float(np.mean([r.rejects / r.n_reps for r in null_rows])) if null_rows else float("nan")
