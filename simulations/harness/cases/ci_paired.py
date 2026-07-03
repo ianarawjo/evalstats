@@ -720,6 +720,7 @@ def _print_overall_summary_table(
     agg: dict[tuple, list[tuple[float, float, float]]],
     agg_counts: dict[tuple, tuple[int, int]],
     target: float,
+    sizes_present: list[int],
 ) -> None:
     """Print one OVERALL SUMMARY table, aggregated only over `eval_types`.
 
@@ -737,6 +738,7 @@ def _print_overall_summary_table(
     all_wid: dict[str, list[float]] = defaultdict(list)
     all_score: dict[str, list[float]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
     for (et, m, n), vals in agg.items():
         if et not in eval_types:
             continue
@@ -746,9 +748,12 @@ def _print_overall_summary_table(
         c, t = agg_counts[(et, m, n)]
         c_prev, t_prev = all_counts[m]
         all_counts[m] = (c_prev + c, t_prev + t)
+        c_prev_n, t_prev_n = per_n_counts[(m, n)]
+        per_n_counts[(m, n)] = (c_prev_n + c, t_prev_n + t)
 
+    n_cols_hdr = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
     for m in method_labels:
         mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
         mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
@@ -759,7 +764,12 @@ def _print_overall_summary_table(
             [r for r in results if r.method == m and r.eval_type in eval_types]
         )
         time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}")
+        n_cols_vals = ""
+        for n in sizes_present:
+            c_n, t_n = per_n_counts.get((m, n), (0, 0))
+            cov_n = c_n / t_n if t_n > 0 else float("nan")
+            n_cols_vals += f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} " if np.isfinite(cov_n) else f"  {'  -':>7}"
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
 
 
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int, statistic: str) -> None:
@@ -806,17 +816,18 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     # numeric (likert + grades averaged together) -- since these data types
     # are answered by very different method families and a single pooled
     # table obscures which methods actually perform best for which type.
+    sizes_present = sorted({r.n for r in non_null})
     _print_overall_summary_table(
-        "OVERALL SUMMARY -- BINARY (averaged across sources, n)",
-        ["binary"], non_null, agg, agg_counts, target,
+        "OVERALL SUMMARY -- BINARY (averaged across sources)",
+        ["binary"], non_null, agg, agg_counts, target, sizes_present,
     )
     _print_overall_summary_table(
-        "OVERALL SUMMARY -- CONTINUOUS [0,1] (averaged across sources, n)",
-        ["continuous"], non_null, agg, agg_counts, target,
+        "OVERALL SUMMARY -- CONTINUOUS [0,1] (averaged across sources)",
+        ["continuous"], non_null, agg, agg_counts, target, sizes_present,
     )
     _print_overall_summary_table(
-        "OVERALL SUMMARY -- NUMERIC: LIKERT + GRADES (averaged across sources, n)",
-        ["likert", "grades"], non_null, agg, agg_counts, target,
+        "OVERALL SUMMARY -- NUMERIC: LIKERT + GRADES (averaged across sources)",
+        ["likert", "grades"], non_null, agg, agg_counts, target, sizes_present,
     )
 
     null_results = [r for r in results if r.is_null]

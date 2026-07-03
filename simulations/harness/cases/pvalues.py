@@ -395,6 +395,38 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
                 pw = cr / ct if ct > 0 else float("nan")
                 row += f"  {pw:>12.3f}"
             print(row)
+
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    n_cols = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
+    print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n)\n{'-'*72}")
+    print(f"\n  {'Method':<20}  {'TypeI':>6}  {'Band95':>13}  {'MeanPow':>8}{n_cols}")
+    for m in method_labels:
+        m_rows = [r for r in results if r.method == m]
+        if not m_rows:
+            continue
+        null_rows = [r for r in m_rows if r.condition == "null"]
+        c_tot = sum(r.rejects for r in null_rows)
+        t_tot = sum(r.n_reps for r in null_rows)
+        type1 = c_tot / t_tot if t_tot > 0 else float("nan")
+        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+        band = f"{lo:.3f}-{hi:.3f}" if np.isfinite(lo) else "-"
+        power_cells = []
+        for c in conditions:
+            c_rows = [r for r in m_rows if r.condition == c]
+            cr = sum(r.rejects for r in c_rows)
+            ct = sum(r.n_reps for r in c_rows)
+            power_cells.append(cr / ct if ct > 0 else float("nan"))
+        mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
+        marker = "*" if np.isfinite(type1) and type1 > alpha + 0.02 else " "
+        n_type1 = ""
+        for n in sizes_present:
+            n_rows = [r for r in null_rows if r.n == n]
+            c_n = sum(r.rejects for r in n_rows)
+            t_n = sum(r.n_reps for r in n_rows)
+            t1_n = c_n / t_n if t_n > 0 else float("nan")
+            n_type1 += f"  {t1_n:>7.3f}" if np.isfinite(t1_n) else f"  {'  -':>7}"
+        print(f"  {m:<20}  {type1:>5.3f}{marker}  {band:>13}  {mean_power:>8.3f}{n_type1}")
+    print(f"  (* = TypeI > alpha + 0.02)")
     print()
 
 
@@ -806,9 +838,11 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
                 power = power_c / power_t if power_t > 0 else float("nan")
                 print(f"    {corr:<20} {fwer:>8.3f} {power:>10.3f}")
 
-    print(f"\n{'-'*72}\n  OVERALL SUMMARY (averaged across eval types, sources, n, k)\n{'-'*72}")
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n, k)\n{'-'*72}")
+    n_cols = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
     k_cols = "".join(f"  {'k='+str(k):>6}" for k in ks_present)
-    print(f"\n  {'Correction':<20}  {'FWER':>6}  {'Band95':>13}  {'BestPow':>8}  {'Time(ms)':>14}{k_cols}")
+    print(f"\n  {'Correction':<20}  {'FWER':>6}  {'Band95':>13}  {'BestPow':>8}  {'Time(ms)':>14}{n_cols}{k_cols}")
     for corr in corrections:
         c_rows = [r for r in results if r.correction == corr]
         null_rows = [r for r in c_rows if r.condition == "null"]
@@ -824,6 +858,13 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
         band = f"{lo:.3f}-{hi:.3f}" if np.isfinite(lo) else "-"
         time_str = f"{avg_ms:.1f}+-{se_ms:.1f}" if np.isfinite(avg_ms) else "-"
         marker = "*" if np.isfinite(fwer) and fwer > alpha + 0.02 else " "
+        n_fwer = ""
+        for n in sizes_present:
+            n_null = [r for r in null_rows if r.n == n]
+            nc = sum(r.any_reject for r in n_null)
+            nt = sum(r.n_reps for r in n_null)
+            nf = nc / nt if nt > 0 else float("nan")
+            n_fwer += f"  {nf:>7.3f}" if np.isfinite(nf) else f"  {'  -':>7}"
         k_fwer = ""
         for k in ks_present:
             k_null = [r for r in null_rows if r.k == k]
@@ -831,7 +872,7 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
             kt = sum(r.n_reps for r in k_null)
             kf = kc / kt if kt > 0 else float("nan")
             k_fwer += f"  {kf:>6.3f}" if np.isfinite(kf) else f"  {'  -':>6}"
-        print(f"  {corr:<20}  {fwer:>5.3f}{marker}  {band:>13}  {power:>8.3f}  {time_str:>14}{k_fwer}")
+        print(f"  {corr:<20}  {fwer:>5.3f}{marker}  {band:>13}  {power:>8.3f}  {time_str:>14}{n_fwer}{k_fwer}")
     print(f"  (* = FWER > alpha + 0.02)")
 
 
