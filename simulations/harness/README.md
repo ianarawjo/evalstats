@@ -13,6 +13,7 @@ python -m simulations.harness.cli ci_single --nested-mode --runs-sweep 5 --reps 
 python -m simulations.harness.cli ci_paired --nested-mode --runs-sweep 5 --reps 200 --include-null
 python -m simulations.harness.cli pvalues --mode pairwise --reps 200 --sizes 10 20 50
 python -m simulations.harness.cli pvalues --mode multiarm --k-arms 4
+python -m simulations.harness.cli pvalues --mode simultaneous_ci --k-arms 4
 python -m simulations.harness.cli pvalues --mode ppi --tests ttest wilcoxon anova_rep
 python -m simulations.harness.cli --official-tests all
 python -m simulations.harness.cli --official-tests ci_single
@@ -110,8 +111,24 @@ instead of each case (or each *mode* within a case) defining its own:
   with replacement, unlike the without-replacement subsampling
   `corpus_to_ci_source`/`corpus_pair_to_ci_pair_source` use) so real
   marginal distributions can be dropped into any of `synthetic.py`'s
-  k-group/icc/base_corr machinery -- the foundation for grounding
-  `multiarm`/`ppi` mode in real data too.
+  k-group/icc/base_corr machinery -- currently unused (`ppi` mode still has
+  no real-data variant; see below).
+  `MultiArmCorpus`/`multiarm_corpus_to_source`/`build_real_multiarm_sources`
+  are a separate, more direct real-data path for `cases/pvalues.py`'s
+  `--mode multiarm`: for each benchmark, ALL of its available real models
+  (not just a curated pair) are aligned on shared `item_id`, ordered by
+  descending real corpus mean (arm 0 = the empirically best-performing real
+  model, matching `MultiArmSource`'s "arm 0 carries the alternative
+  hypothesis" convention). The "alt" condition returns those real,
+  unpermuted arms (a genuine best-arm signal, no synthetic delta injected);
+  the "null" condition (`delta == 0.0`) independently permutes each sampled
+  item's k real scores across arm slots -- the same permutation-null idea
+  as `corpus_pair_to_null_ci_pair_source`, generalized to k arms, so every
+  emitted value is still real and unmodified but the expected across-arm
+  difference is zeroed out. `MultiArmSource.max_k` bounds `--k-arms` to
+  however many real models a benchmark actually has, the same way `max_n`
+  bounds `--sizes`; oversized k/n cells are skipped with a warning rather
+  than failing the run.
 - `cases/ci_single.py`'s and `cases/ci_paired.py`'s `--nested-mode`
   (multi-run, parameterized by `run_noise_frac` rather than ICC -- `f_run =
   1 - icc`) is now an optional axis on the SAME `build_single_sample_sources`
@@ -173,7 +190,7 @@ reused as-is across the pairwise-pvalue and PPI-test-name groupings.
 |---|---|---|---|
 | `ci_single` | implemented | `sim_compare_boot.py` (single-sample) + `sim_compare_boot_nested.py` (mean phase, via `--nested-mode`) | synthetic, openeval, inspect, real (`--nested-mode`: synthetic only) |
 | `ci_paired` | implemented | `sim_compare_boot.py` (pairwise) + `sim_tango_real.py` + `sim_compare_boot_nested.py` (pairwise phase, via `--nested-mode`) | synthetic, openeval, inspect, real (`--nested-mode`: synthetic only) |
-| `pvalues` | implemented | `sim_compare_pvalues.py` (`--mode pairwise`/`multiarm`) + `sim_type_i_calibration.py` (`--mode ppi`) | `--mode pairwise`: synthetic, openeval, inspect, real; `multiarm`/`ppi`: synthetic only |
+| `pvalues` | implemented | `sim_compare_pvalues.py` (`--mode pairwise`/`multiarm`) + `sim_type_i_calibration.py` (`--mode ppi`); `--mode simultaneous_ci` is new (no legacy script) | `--mode pairwise`/`multiarm`/`simultaneous_ci`: synthetic, openeval, inspect, real; `ppi`: synthetic only |
 | `alignment` | planned | `sim_alignment_methods.py` | synthetic only |
 
 There is no separate `ci_nested` case: `sim_compare_boot_nested.py` was
@@ -234,12 +251,34 @@ same way `evalstats.core.resampling` is.
   three is by sanity check (Type-I error ~ alpha, power increasing with
   effect size and n) -- see Verification below.
 - `cases/pvalues.py`'s `--mode ppi` sweeps `eval_type` in
-  `{continuous, likert, grades}` (no binary -- current PPI tests like
-  ttest/MWU/ANOVA aren't designed for 0/1 outcomes), picking one
-  representative shape per eval type (`cont-right-skew` / `likert-mid` /
-  `grades-mid`) rather than sweeping the full shape catalog the way
-  `--mode multiarm` does -- judge-bias/noise/MNAR-label parameters are
-  PPI's actual axis of interest, not distribution shape.
+  `{continuous, likert, grades}` in full, picking one representative shape
+  per eval type (`cont-right-skew` / `likert-mid` / `grades-mid`) rather
+  than sweeping the full shape catalog the way `--mode multiarm` does --
+  judge-bias/noise/MNAR-label parameters are PPI's actual axis of interest,
+  not distribution shape. `binary` (representative shape `p=0.50`) is
+  supported only for the mean-based tests -- `ttest`/`ttest_welch`
+  (two independent groups), `paired_t` (paired), and `bayes_bootstrap`
+  (paired, Dirichlet-weighted) -- since a proportion is just the mean of a
+  0/1 variable, so PPI's rectifier applies unchanged; it runs as a single
+  baseline-settings scenario rather than being swept across every other
+  factor. `bayes_bootstrap` PPI-corrects the identical paired-mean estimand
+  as `paired_t`, but via Dirichlet-weighted (Bayesian) bootstrap resampling
+  (`evalstats.tests._ppi_paired_bayes_bootstrap`) instead of
+  `evalstats.ppi.correct`'s classical resampling -- carrying over the
+  smoothing advantage that makes it `--mode pairwise`'s strongest
+  non-PPI p-value method on sparse/discrete binary data, rather than
+  losing it to a generic mean-based correction. `mcnemar` is deliberately
+  NOT PPI-corrected: its defining feature is an exact small-sample binomial
+  test on discordant-pair counts, and a PPI-corrected numerator is
+  generally non-integer, breaking that exactness -- left as future work.
+  The rank-based family (`mw`/`wilcoxon`/`friedman`/`kruskal`) and ANOVA/LMM
+  stay continuous/likert/grades-only: they assume a scale that breaks down
+  under binary's massive ties, and the additive noise/bias/slope
+  judge-miscalibration model (`scenarios.synthetic._jb_llm`/
+  `_jb_llm_repeated`) has no binary equivalent for those structures -- see
+  `_jb_llm_binary`/`_jb_llm_repeated_binary`, a confusion-matrix
+  (flip-probability) model used only for the two-group-independent and
+  paired structures.
 - `judge_bias.py` (planned, for `alignment`) will keep
   `sim_alignment_methods.py`'s agreement-rate proxy-noise model as its own
   named generator, separate from `scenarios/synthetic.py`'s

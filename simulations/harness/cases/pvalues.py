@@ -1,7 +1,7 @@
 """pvalues case: p-value/rejection-decision calibration, non-PPI and PPI-corrected.
 
-Consolidates two complementary benchmarks into one file with three modes
-(``--mode {pairwise,multiarm,ppi,all}``):
+Consolidates two complementary benchmarks into one file with several modes
+(``--mode {pairwise,multiarm,ppi,simultaneous_ci,pairwise_multiarm,all}``):
 
 Non-PPI path (ported from ``simulations/sim_compare_pvalues.py``)
 ------------------------------------------------------------------
@@ -17,6 +17,24 @@ procedure is best calibrated?
   friedman_nemenyi), via ``scenarios.synthetic.build_multiarm_sources``,
   sweeping the SAME shape catalog ``build_pair_sources`` uses, generalized
   to k arms.
+- ``simultaneous_ci``: family-wise CI coverage and average per-comparison
+  width for the three simultaneous-CI constructions with a well-established
+  dual to multiarm's p-value corrections -- ``none`` (naive per-pair CI, no
+  simultaneous adjustment -- the "why do you need any correction?"
+  baseline), Bonferroni t-intervals, and max-T (studentized bootstrap,
+  Romano-Wolf, what ``evalstats.core.paired.all_pairwise`` uses by default)
+  -- forced side by side on the SAME draw with the SAME point-estimate
+  method held fixed (bypassing ``all_pairwise``'s own automatic
+  method-based routing for max-T/Bonferroni), on the identical k-arm
+  sources ``multiarm`` uses. multiarm's other three corrections
+  (holm/fdr_bh/friedman_nemenyi) have no such CI dual -- holm/fdr_bh are
+  p-value-only adjustments, and friedman_nemenyi operates on rank
+  differences rather than the raw mean-difference scale a CI needs. This is
+  the evidence for why max-T is the harness's default simultaneous-CI
+  method: it should hit nominal coverage same as Bonferroni (unlike
+  ``none``, which should visibly under-cover as k grows), so a narrower
+  average width at matching coverage is what actually distinguishes it from
+  Bonferroni.
 
 PPI-corrected path (ported from ``simulations/sim_type_i_calibration.py``)
 ---------------------------------------------------------------------------
@@ -43,11 +61,32 @@ module's docstring and the harness README's "Shared scenario library"
 section).
 
 Known exceptions (see simulations/harness/README.md):
-- ``ppi`` mode sweeps ``eval_type`` in ``{continuous, likert, grades}`` (no
-  binary -- current PPI tests like ttest/MWU/ANOVA aren't designed for 0/1
-  outcomes), picking one representative shape per eval type rather than
-  sweeping the full catalog the way ``multiarm`` does -- judge-bias/noise/
-  MNAR-label parameters are PPI's actual axis of interest, not shape.
+- ``ppi`` mode's one-factor-at-a-time sweep covers ``eval_type`` in
+  ``{continuous, likert, grades}`` in full (one representative shape per
+  eval type rather than the full catalog ``multiarm`` sweeps -- judge-bias/
+  noise/label-fraction/etc. parameters are PPI's actual axis of interest,
+  not distribution shape); ``binary`` is supported only for the
+  two-independent-groups/paired mean-based tests (``ttest``/``ttest_welch``/
+  ``paired_t``/``bayes_bootstrap`` -- a proportion is just the mean of a
+  0/1 variable, so PPI's rectifier applies unchanged), as a single
+  baseline-settings scenario rather than swept across every other factor.
+  ``bayes_bootstrap`` PPI-corrects the same paired-mean estimand as
+  ``paired_t`` but via Dirichlet-weighted (Bayesian) bootstrap resampling
+  instead of ``evalstats.ppi.correct``'s classical one (see
+  ``evalstats.tests._ppi_paired_bayes_bootstrap``), carrying over the
+  smoothing advantage that makes it the strongest pairwise p-value method
+  on sparse/discrete binary data in ``--mode pairwise``'s non-PPI
+  comparison. ``mcnemar`` is intentionally NOT PPI-corrected here: its
+  distinguishing feature is an EXACT small-sample binomial test on
+  discordant-pair counts, and a PPI-corrected numerator is generally
+  non-integer, breaking that exactness -- left as future work pending a
+  firmer statistical basis rather than shipping an ad-hoc adaptation. The
+  rank-based family (``mw``/``wilcoxon``/``friedman``/``kruskal``) and
+  ANOVA/LMM remain continuous/likert/grades-only: they assume a scale that
+  doesn't hold up under binary's massive ties, and the judge-bias noise
+  model used for those structures doesn't have a binary-compatible variant
+  (yet) -- see ``scenarios.synthetic``'s
+  ``_jb_llm_binary``/``_jb_llm_repeated_binary``.
 - None of the three modes numerically matches its legacy script anymore
   (a deliberate trade: cross-mode truth-distribution consistency over
   per-mode legacy-script parity) -- verification is by sanity check
@@ -75,11 +114,13 @@ import scipy.stats as scipy_stats
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
-    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi
+    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi, _bonferroni_simultaneous_cis
     from evalstats.core.stats_utils import correct_pvalues
+    from evalstats.core.resampling import bayes_bootstrap_means_1d
     from evalstats.tests import (
         _ppi_two_sample,
         _ppi_paired_arrays,
+        _ppi_paired_bayes_bootstrap,
         _p_x_gt_y_midrank,
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
@@ -105,7 +146,9 @@ from ..scenarios.synthetic import (
     estimate_judge_bias_gold_null_values,
     JUDGE_BIAS_LMM_FACTORIAL_FACTORS,
 )
-from ..scenarios.real_data import DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
+from ..scenarios.real_data import (
+    DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources, build_real_multiarm_sources,
+)
 from ..methods import (
     PAIRWISE_PVALUE_METHODS,
     MCNEMAR,
@@ -121,6 +164,7 @@ from ..methods import (
     WILCOXON,
     PAIRED_T,
     MULTIARM_CORRECTION_METHODS,
+    SIMULTANEOUS_CI_METHODS,
     PPI_TEST_METHODS,
     TTEST,
     TTEST_WELCH,
@@ -139,7 +183,7 @@ from . import CaseResult
 
 CASE_NAME = "pvalues"
 
-MODES = ["pairwise", "multiarm", "ppi", "all"]
+MODES = ["pairwise", "multiarm", "ppi", "simultaneous_ci", "pairwise_multiarm", "all"]
 DATA_SOURCES = ["synthetic"] + REAL_PAIR_SOURCES
 PROGRESS_MODES = ["bar", "cell", "off"]
 PLOT_MODES = ["save", "off"]
@@ -297,6 +341,13 @@ def _run_pairwise_cell(
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
+        # Real paired binary data frequently has many items where both
+        # models score identically (diffs == 0), which triggers scipy's
+        # nan_policy="omit" wrapper (_axis_nan_policy.py) to warn about
+        # catastrophic cancellation in its internal moment calculation --
+        # benign here (the p-value is still valid), same as the
+        # friedmanchisquare/kruskal RuntimeWarning suppression below.
+        warnings.simplefilter("ignore", RuntimeWarning)
         for _ in range(n_reps):
             a, b = source.generate_pair(data_rng, n, runs)
             for m in methods:
@@ -372,12 +423,19 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
-    conditions = sorted({r.condition for r in results if r.condition != "null"})
 
     for et in eval_types_present:
         et_rows = [r for r in results if r.eval_type == et]
+        # Per-eval-type, not global: some eval types (e.g. "binary", via
+        # build_pair_sources' hand-picked asymmetric scenarios) have a
+        # non-null condition literally labeled "d=0.00" alongside the real
+        # "null" rows. Computing this list globally would leak that column
+        # into every other eval type's table too, where no such non-null
+        # d=0.00 rows exist -- showing a spurious all-nan "power(d=0.00)"
+        # column instead of just omitting it.
+        et_conditions = sorted({r.condition for r in et_rows if r.condition != "null"})
         print(f"\n  [{et}]")
-        hdr = f"    {'Method':<14} {'typeI':>8}" + "".join(f"  power({c})".rjust(14) for c in conditions)
+        hdr = f"    {'Method':<14} {'typeI':>8}" + "".join(f"  power({c})".rjust(14) for c in et_conditions)
         print(hdr)
         for m in method_labels:
             m_rows = [r for r in et_rows if r.method == m]
@@ -388,7 +446,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
             t_tot = sum(r.n_reps for r in null_rows)
             type1 = c_tot / t_tot if t_tot > 0 else float("nan")
             row = f"    {m:<14} {type1:>8.3f}"
-            for c in conditions:
+            for c in et_conditions:
                 c_rows = [r for r in m_rows if r.condition == c]
                 cr = sum(r.rejects for r in c_rows)
                 ct = sum(r.n_reps for r in c_rows)
@@ -396,6 +454,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
                 row += f"  {pw:>12.3f}"
             print(row)
 
+    conditions = sorted({r.condition for r in results if r.condition != "null"})
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
     n_cols = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
     print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n)\n{'-'*72}")
@@ -773,6 +832,27 @@ def _run_multiarm_cell(
     ]
 
 
+def _multiarm_cell_feasible(s: MultiArmSource, n: int, k: int) -> bool:
+    """Shared by run_multiarm_simulation and run_simultaneous_ci_simulation
+    (both sweep the same MultiArmSource list over the same n x k grid)."""
+    return (s.max_n is None or n < s.max_n) and (s.max_k is None or k <= s.max_k)
+
+
+def _multiarm_style_cells(
+    sources: list[MultiArmSource], sample_sizes: list[int], k_values: list[int],
+) -> list[tuple[int, int, int]]:
+    """(source_idx, n, k) cells feasible for every source, printing a skip
+    warning (mirroring CISource.max_n's skip pattern) for infeasible ones."""
+    cells = [(i, n, k) for i, s in enumerate(sources) for n in sample_sizes for k in k_values
+             if _multiarm_cell_feasible(s, n, k)]
+    skipped = [(s, n, k) for s in sources for n in sample_sizes for k in k_values
+               if not _multiarm_cell_feasible(s, n, k)]
+    for s, n, k in skipped:
+        reason = f"n={n} >= corpus size {s.max_n}" if not (s.max_n is None or n < s.max_n) else f"k={k} > {s.max_k} real arms available"
+        print(f"  Warning: {reason} for {s.label}. Skipping.")
+    return cells
+
+
 def run_multiarm_simulation(
     sources: list[MultiArmSource], sample_sizes: list[int], runs: int, k_values: list[int], n_reps: int,
     n_bootstrap: int, alpha: float, multiarm_method: str, statistic: str, progress_mode: str = "bar",
@@ -781,7 +861,8 @@ def run_multiarm_simulation(
     global _MULTIARM_SOURCES
     _MULTIARM_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
-    cells = [(i, n, k) for i, s in enumerate(sources) for n in sample_sizes for k in k_values]
+    cells = _multiarm_style_cells(sources, sample_sizes, k_values)
+
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
     args_list = [(sc_idx, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed)
                  for (sc_idx, n, k), seed in zip(cells, child_seeds)]
@@ -1062,6 +1143,452 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
 
 
 # ---------------------------------------------------------------------------
+# Simultaneous-CI mode (non-PPI): calibration check for
+# evalstats.core.paired.all_pairwise's simultaneous (family-wise) confidence
+# intervals. Checks the three of multiarm's six p-value correction
+# strategies that have an established simultaneous-CI dual: `none` (naive
+# per-pair CI, no adjustment -- the uncorrected baseline), Bonferroni
+# t-intervals, and max-T (studentized bootstrap, Romano-Wolf) -- the two
+# non-naive constructions all_pairwise's own router (_simultaneous_cis_router)
+# picks between automatically based on whether `method` is
+# bootstrap-compatible. (holm/fdr_bh/friedman_nemenyi have no CI dual --
+# holm/fdr_bh are p-value-only adjustments, friedman_nemenyi is on the rank
+# scale -- so they're multiarm-only.) The router's auto-selection isn't
+# something a caller can independently override, so this mode reaches past
+# it (via the private _bonferroni_simultaneous_cis helper) to force all
+# three constructions on the exact same draw with the exact same
+# point-estimate `method` held fixed, which is the only way to get an
+# apples-to-apples "does max-T actually beat Bonferroni (and beat doing
+# nothing), all else equal" comparison instead of confounding the
+# CI-construction choice with a method-family choice too.
+#
+# Reuses the SAME k-arm MultiArmSource scenarios (synthetic and real) that
+# --mode multiarm sweeps, since both questions ("which p-value correction"
+# and "which CI construction") share the identical underlying k-arm
+# generative model -- just a different measurement per rep (coverage +
+# width of the constructed simultaneous CI, instead of reject/best-arm).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class SimultaneousCIResult:
+    eval_type: str
+    label: str
+    n: int
+    k: int
+    ci_method: str  # "max_t" | "bonferroni"
+    condition: str  # "null" | "alt"
+    n_reps: int
+    all_covered: int
+    """Count of reps where EVERY one of the k(k-1)/2 pairwise simultaneous
+    CIs simultaneously contained its true difference (the family-wise
+    coverage event -- the CI-construction analogue of multiarm's
+    any_reject/FWER, just measuring the opposite: a miss on ANY pair, not a
+    false rejection on any pair)."""
+    total_width: float
+    """Sum, across reps, of that rep's MEAN CI width across all k(k-1)/2
+    pairs -- dividing by n_reps gives the average per-comparison width,
+    comparable across different k and n."""
+    total_time: float = 0.0  # total wall-clock seconds for all n_reps of this condition
+
+
+def _run_simultaneous_ci_cell(
+    source: MultiArmSource, n: int, runs: int, k_arms: int, n_reps: int, n_bootstrap: int,
+    alpha: float, multiarm_method: str, statistic: str, seed,
+) -> list[SimultaneousCIResult]:
+    labels = [f"arm_{i}" for i in range(k_arms)]
+    pairs = [(labels[i], labels[j]) for i in range(k_arms) for j in range(i + 1, k_arms)]
+    ci = 1.0 - alpha
+    rng = np.random.default_rng(seed)
+
+    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS]
+    agg_covered: dict[tuple[str, str], int] = {(m, cond): 0 for m in ci_methods for cond in ("null", "alt")}
+    agg_width: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in ci_methods for cond in ("null", "alt")}
+    agg_time: dict[str, float] = {"null": 0.0, "alt": 0.0}
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", UserWarning)
+        warnings.simplefilter("ignore", RuntimeWarning)
+        for _ in range(n_reps):
+            for condition, delta in (("null", 0.0), ("alt", source.alt_delta)):
+                _t0 = time.perf_counter()
+                scores = source.generate_scores(rng, n, runs, k_arms, delta)
+                true_means = source.true_means(k_arms, delta)
+
+                # Raw (unadjusted) per-pair results -- gives per_input_diffs
+                # for Bonferroni's t-interval formula, held for ALL THREE CI
+                # constructions so only the CI math differs, not the draw.
+                # The raw per-pair CI (matrix_raw.get(*pair).ci_low/.ci_high,
+                # at plain level `ci`, no simultaneous widening at all) IS
+                # the "none" construction -- multiarm's own "why do you need
+                # any correction?" baseline, on the CI side instead of p-values.
+                matrix_raw = all_pairwise(
+                    scores=scores, labels=labels, method=multiarm_method, ci=ci,
+                    n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
+                    simultaneous_ci=False,
+                )
+                none_cis = {pair: (matrix_raw.get(*pair).ci_low, matrix_raw.get(*pair).ci_high) for pair in pairs}
+                bonf_cis = _bonferroni_simultaneous_cis(results=matrix_raw.results, pairs=pairs, ci=ci)
+
+                # max-T: all_pairwise's router picks it automatically whenever
+                # `multiarm_method` is bootstrap-compatible (the harness's
+                # default multiarm methods all are); guard against the rare
+                # degenerate-data fallback so a silent Bonferroni substitution
+                # never gets miscounted as a max-T result.
+                maxt_cis: dict = {}
+                matrix_maxt = all_pairwise(
+                    scores=scores, labels=labels, method=multiarm_method, ci=ci,
+                    n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
+                    simultaneous_ci=True,
+                )
+                if matrix_maxt.simultaneous_ci_method == "max_t":
+                    maxt_cis = {pair: (matrix_maxt.get(*pair).ci_low, matrix_maxt.get(*pair).ci_high) for pair in pairs}
+
+                agg_time[condition] += time.perf_counter() - _t0
+
+                for method_name, cis in (("none", none_cis), ("bonferroni", bonf_cis), ("max_t", maxt_cis)):
+                    if not cis:
+                        continue
+                    widths: list[float] = []
+                    covered_all = True
+                    for (label_a, label_b) in pairs:
+                        idx_a, idx_b = labels.index(label_a), labels.index(label_b)
+                        true_diff = true_means[idx_a] - true_means[idx_b]
+                        lo, hi = cis[(label_a, label_b)]
+                        widths.append(hi - lo)
+                        if not (lo <= true_diff <= hi):
+                            covered_all = False
+                    agg_width[(method_name, condition)] += float(np.mean(widths)) if widths else 0.0
+                    if covered_all:
+                        agg_covered[(method_name, condition)] += 1
+
+    return [
+        SimultaneousCIResult(
+            eval_type=source.eval_type, label=source.label, n=n, k=k_arms, ci_method=method_name,
+            condition=condition, n_reps=n_reps, all_covered=agg_covered[(method_name, condition)],
+            total_width=agg_width[(method_name, condition)], total_time=agg_time[condition],
+        )
+        for method_name in ci_methods
+        for condition in ("null", "alt")
+    ]
+
+
+_SIMULTANEOUS_CI_SOURCES: list = []  # fork-inherited worker state for run_simultaneous_ci_simulation
+
+
+def _run_simultaneous_ci_cell_worker(args: tuple) -> list[SimultaneousCIResult]:
+    sc_idx, n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed = args
+    return _run_simultaneous_ci_cell(
+        _SIMULTANEOUS_CI_SOURCES[sc_idx], n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed,
+    )
+
+
+def run_simultaneous_ci_simulation(
+    sources: list[MultiArmSource], sample_sizes: list[int], runs: int, k_values: list[int], n_reps: int,
+    n_bootstrap: int, alpha: float, multiarm_method: str, statistic: str, progress_mode: str = "bar",
+    seed: int = 42, n_workers: int = 1,
+) -> list[SimultaneousCIResult]:
+    global _SIMULTANEOUS_CI_SOURCES
+    _SIMULTANEOUS_CI_SOURCES = list(sources)
+    ss = np.random.SeedSequence(seed)
+    cells = _multiarm_style_cells(sources, sample_sizes, k_values)
+
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+    args_list = [(sc_idx, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed)
+                 for (sc_idx, n, k), seed in zip(cells, child_seeds)]
+
+    reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pvalues-simultaneous_ci")
+    results: list[SimultaneousCIResult] = []
+    if n_workers <= 1:
+        for i, a in enumerate(args_list):
+            results.extend(_run_simultaneous_ci_cell_worker(a))
+            sc_idx, n, k = cells[i]
+            reporter.update(i + 1, detail=f"{sources[sc_idx].eval_type} n={n} k={k}")
+    else:
+        ctx = _mp.get_context("fork")
+        with ctx.Pool(n_workers) as pool:
+            for i, cell_results in enumerate(pool.imap_unordered(_run_simultaneous_ci_cell_worker, args_list)):
+                results.extend(cell_results)
+                reporter.update(i + 1)
+    reporter.update(len(cells), detail="done")
+    return results
+
+
+def _time_stats_simultaneous_ci(results: list[SimultaneousCIResult]) -> tuple[float, float]:
+    """Average ± SE of wall-clock time per rep in milliseconds across cells."""
+    valid = [r for r in results if r.total_time > 0 and r.n_reps > 0]
+    if not valid:
+        return float("nan"), float("nan")
+    per_rep_ms = [r.total_time * 1000.0 / r.n_reps for r in valid]
+    avg = float(np.mean(per_rep_ms))
+    se = float(np.std(per_rep_ms, ddof=1) / np.sqrt(len(per_rep_ms))) if len(per_rep_ms) > 1 else 0.0
+    return avg, se
+
+
+def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: float) -> None:
+    target = 1.0 - alpha
+    print(f"\n{'='*78}\n  PVALUES (SIMULTANEOUS CI) -- none vs. BONFERRONI vs. max-T\n"
+          f"  Nominal family-wise coverage: {target:.0%}\n{'='*78}")
+    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    ks_present = sorted({r.k for r in results})
+
+    for et in eval_types_present:
+        for k in ks_present:
+            subset = [r for r in results if r.eval_type == et and r.k == k]
+            if not subset:
+                continue
+            print(f"\n  [{et}, k={k}]")
+            print(f"    {'CI method':<12} {'Cov(null)':>10} {'Width(null)':>12} {'Cov(alt)':>10} {'Width(alt)':>12}")
+            for cm in ci_methods:
+                c_rows = [r for r in subset if r.ci_method == cm]
+                null_rows = [r for r in c_rows if r.condition == "null"]
+                alt_rows = [r for r in c_rows if r.condition == "alt"]
+                t_null = sum(r.n_reps for r in null_rows)
+                c_null = sum(r.all_covered for r in null_rows)
+                w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+                t_alt = sum(r.n_reps for r in alt_rows)
+                c_alt = sum(r.all_covered for r in alt_rows)
+                w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+                cov_null = c_null / t_null if t_null > 0 else float("nan")
+                cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
+                print(f"    {cm:<12} {cov_null:>10.3f} {w_null:>12.4f} {cov_alt:>10.3f} {w_alt:>12.4f}")
+
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    ks_for_cols = ks_present
+    print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n, k)\n{'-'*72}")
+    n_cols = "".join(f"  {'n='+str(n):>9}" for n in sizes_present)
+    k_cols = "".join(f"  {'k='+str(k):>8}" for k in ks_for_cols)
+    print(f"\n  {'CI method':<12}  {'Cov(null)':>9}  {'Band95':>13}  {'Width(null)':>11}  "
+          f"{'Cov(alt)':>8}  {'Width(alt)':>10}  {'Time(ms)':>14}{n_cols}{k_cols}")
+    for cm in ci_methods:
+        c_rows = [r for r in results if r.ci_method == cm]
+        null_rows = [r for r in c_rows if r.condition == "null"]
+        alt_rows = [r for r in c_rows if r.condition == "alt"]
+        t_null = sum(r.n_reps for r in null_rows)
+        c_null = sum(r.all_covered for r in null_rows)
+        w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+        t_alt = sum(r.n_reps for r in alt_rows)
+        c_alt = sum(r.all_covered for r in alt_rows)
+        w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+        cov_null = c_null / t_null if t_null > 0 else float("nan")
+        cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
+        _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
+        band = f"{lo:.3f}-{hi:.3f}" if np.isfinite(lo) else "-"
+        avg_ms, se_ms = _time_stats_simultaneous_ci(null_rows)
+        time_str = f"{avg_ms:.1f}+-{se_ms:.1f}" if np.isfinite(avg_ms) else "-"
+        marker = "*" if np.isfinite(cov_null) and abs(cov_null - target) > 0.02 else " "
+        n_cells = ""
+        for n in sizes_present:
+            n_null = [r for r in null_rows if r.n == n]
+            nc = sum(r.all_covered for r in n_null)
+            nt = sum(r.n_reps for r in n_null)
+            nf = nc / nt if nt > 0 else float("nan")
+            n_cells += f"  {nf:>9.3f}" if np.isfinite(nf) else f"  {'  -':>9}"
+        k_cells = ""
+        for k in ks_for_cols:
+            k_null = [r for r in null_rows if r.k == k]
+            kc = sum(r.all_covered for r in k_null)
+            kt = sum(r.n_reps for r in k_null)
+            kf = kc / kt if kt > 0 else float("nan")
+            k_cells += f"  {kf:>8.3f}" if np.isfinite(kf) else f"  {'  -':>8}"
+        print(f"  {cm:<12}  {cov_null:>8.3f}{marker}  {band:>13}  {w_null:>11.4f}  "
+              f"{cov_alt:>8.3f}  {w_alt:>10.4f}  {time_str:>14}{n_cells}{k_cells}")
+    print(f"  (* = |coverage - nominal| > 0.02; narrower Width at matching coverage is better)")
+    print()
+
+
+def latex_simultaneous_ci_overall_summary(results: list[SimultaneousCIResult], alpha: float) -> str:
+    """LaTeX booktabs overall summary: per-CI-method family-wise coverage
+    (null, with its 95% MC band) + average width (null and alt), collapsed
+    across eval types, plus one coverage column per sample size actually
+    swept -- the headline evidence for max-T over the alternatives: `none`
+    should visibly under-cover (no simultaneous adjustment at all), while
+    Bonferroni and max-T should both hit nominal coverage, so the tie-breaker
+    between those two is which one gets there with a narrower average CI."""
+    target = 1.0 - alpha
+    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
+    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
+
+    rows = []
+    for cm in ci_methods:
+        c_rows = [r for r in results if r.ci_method == cm]
+        covered = {r.eval_type for r in c_rows}
+        null_rows = [r for r in c_rows if r.condition == "null"]
+        alt_rows = [r for r in c_rows if r.condition == "alt"]
+        t_null = sum(r.n_reps for r in null_rows)
+        c_null = sum(r.all_covered for r in null_rows)
+        w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+        t_alt = sum(r.n_reps for r in alt_rows)
+        c_alt = sum(r.all_covered for r in alt_rows)
+        w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+        cov_null = c_null / t_null if t_null > 0 else float("nan")
+        cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
+        _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
+        row = [
+            escape_latex(cm),
+            f"{cov_null:.3f}" if np.isfinite(cov_null) else "-",
+            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+            f"{w_null:.4f}" if np.isfinite(w_null) else "-",
+            f"{cov_alt:.3f}" if np.isfinite(cov_alt) else "-",
+            f"{w_alt:.4f}" if np.isfinite(w_alt) else "-",
+            eval_type_label(covered, eval_types_present),
+        ]
+        for n in sizes_present:
+            n_rows = [r for r in null_rows if r.n == n]
+            c_n = sum(r.all_covered for r in n_rows)
+            t_n = sum(r.n_reps for r in n_rows)
+            cov_n = c_n / t_n if t_n > 0 else float("nan")
+            row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+        rows.append(row)
+
+    return booktabs_table(
+        caption=f"pvalues (simultaneous CI): family-wise coverage and average per-comparison width, "
+                f"none vs. Bonferroni vs. max-T (nominal coverage={target:.0%}).",
+        label="tab:pvalues_simultaneous_ci_overall",
+        columns=["CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Cov(alt)", "Width(alt)", "Eval types"]
+                + [f"n={n}" for n in sizes_present],
+        rows=rows,
+    )
+
+
+def save_results_artifacts_simultaneous_ci(
+    *, results: list[SimultaneousCIResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False,
+) -> list[str]:
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_simultaneous_ci_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["eval_type", "label", "n", "k", "ci_method", "condition", "n_reps", "all_covered", "coverage_rate", "avg_width", "total_time_s", "time_ms_per_rep"])
+        for r in results:
+            time_ms = (r.total_time * 1000.0 / r.n_reps) if r.n_reps > 0 and r.total_time > 0 else float("nan")
+            writer.writerow([
+                r.eval_type, r.label, r.n, r.k, r.ci_method, r.condition, r.n_reps, r.all_covered,
+                f"{r.all_covered / r.n_reps:.8f}", f"{r.total_width / r.n_reps:.8f}",
+                f"{r.total_time:.6f}", f"{time_ms:.4f}" if not (time_ms != time_ms) else "",
+            ])
+    summary_path = out_base / f"{run_stem}_simultaneous_ci_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_simultaneous_ci_report(results, alpha=alpha)
+    summary_text = buf.getvalue()
+    if latex:
+        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_simultaneous_ci_overall_summary(results, alpha=alpha)
+    summary_path.write_text(summary_text, encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_simultaneous_ci_coverage_width_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
+    """Coverage vs. width, one point per CI method per eval type (null
+    condition) -- the direct visual case for max-T: `none` should sit well
+    below the nominal-coverage line (no simultaneous adjustment at all),
+    while Bonferroni and max-T should both sit near it, so between those two
+    the one further left (narrower average width) is the better default."""
+    import matplotlib.pyplot as plt
+
+    target = 1.0 - alpha
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    nrows = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(nrows=1, ncols=nrows, figsize=(5.0 * nrows, 5.0), squeeze=False)
+
+    for col_idx, et in enumerate(eval_types_present):
+        ax = axes[0][col_idx]
+        et_rows = [r for r in results if r.eval_type == et]
+        ax.axhline(target, color="black", linestyle="--", linewidth=1.0)
+        for m in SIMULTANEOUS_CI_METHODS:
+            c_rows = [r for r in et_rows if r.ci_method == m.name and r.condition == "null"]
+            t_tot = sum(r.n_reps for r in c_rows)
+            c_tot = sum(r.all_covered for r in c_rows)
+            w_tot = sum(r.total_width for r in c_rows)
+            if t_tot == 0:
+                continue
+            cov = c_tot / t_tot
+            width = w_tot / t_tot
+            ax.scatter([width], [cov], color=m.color, s=60, label=m.name, edgecolors="white", linewidths=0.6)
+        ax.set_xlabel("Average per-comparison CI width (null)")
+        ax.set_ylabel("Family-wise coverage (null)")
+        ax.set_title(f"eval type: {et}")
+        ax.set_ylim(0.0, 1.02)
+        ax.legend(fontsize=7, loc="lower right")
+
+    fig.suptitle("pvalues (simultaneous CI): coverage vs. width, none vs. Bonferroni vs. max-T", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
+    """Family-wise coverage and average width as a function of k (number of
+    arms), one curve per CI method, collapsed across eval types and sample
+    sizes -- mirrors save_multiarm_fwer_vs_k_plot. This is the direct
+    picture of "pairwise comparisons grow as k(k-1)/2": `none`'s coverage
+    should fall further below nominal as k grows (more chances to miss),
+    and Bonferroni's width should grow faster than max-T's, since
+    Bonferroni's per-comparison budget (alpha/pairs) shrinks with the pair
+    count while max-T's joint bootstrap doesn't pay that same tax. Only
+    produced when more than one k value was swept; returns out_path
+    unchanged (without writing) if all results share the same k."""
+    import matplotlib.pyplot as plt
+
+    target = 1.0 - alpha
+    ks_present = sorted({r.k for r in results})
+    if len(ks_present) < 2:
+        return out_path
+
+    fig, (ax_cov, ax_width) = plt.subplots(1, 2, figsize=(10.0, 4.5))
+    ax_cov.axhline(target, color="black", linewidth=1.0, linestyle="--", label=f"nominal={target:.0%}")
+
+    for m in SIMULTANEOUS_CI_METHODS:
+        c_rows = [r for r in results if r.ci_method == m.name]
+        if not c_rows:
+            continue
+        xs, ys_cov, ys_width = [], [], []
+        for k in ks_present:
+            k_rows = [r for r in c_rows if r.k == k]
+            null_rows = [r for r in k_rows if r.condition == "null"]
+            t_null = sum(r.n_reps for r in null_rows)
+            c_null = sum(r.all_covered for r in null_rows)
+            w_null = sum(r.total_width for r in null_rows)
+            if t_null == 0:
+                continue
+            xs.append(k)
+            ys_cov.append(c_null / t_null)
+            ys_width.append(w_null / t_null)
+        if xs:
+            ax_cov.plot(xs, ys_cov, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            ax_width.plot(xs, ys_width, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+
+    ax_cov.set_xlabel("k (number of arms)")
+    ax_cov.set_ylabel("Family-wise coverage (null)")
+    ax_cov.set_title("Coverage vs. number of arms")
+    ax_cov.set_ylim(0.0, 1.02)
+    ax_cov.legend(fontsize=7)
+
+    ax_width.set_xlabel("k (number of arms)")
+    ax_width.set_ylabel("Average per-comparison CI width (null)")
+    ax_width.set_title("Width vs. number of arms")
+    ax_width.set_ylim(bottom=0.0)
+    ax_width.legend(fontsize=7)
+
+    fig.suptitle("pvalues (simultaneous CI): coverage and width vs. k", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # PPI mode: Type-I error calibration for evalstats.tests' PPI-corrected
 # wrappers under judge bias/miscalibration, ported from
 # sim_type_i_calibration.py's _run_one. Calls evalstats.tests' internal PPI
@@ -1147,6 +1674,17 @@ def _uncorrected_kruskal_p_value(groups: list[np.ndarray]) -> float:
         return float(scipy_stats.kruskal(*groups).pvalue)
 
 
+def _uncorrected_bayes_bootstrap_paired_p_value(diffs: np.ndarray, n_boot: int, rng: np.random.Generator) -> float:
+    """LLM-only (uncorrected) Bayesian-bootstrap two-sided p-value for
+    H0: mean(diffs) = 0 -- the same Dirichlet-weighted resampling
+    evalstats.core.paired's 'bayes_bootstrap' method uses, applied directly
+    (no PPI correction) as the baseline _ppi_paired_bayes_bootstrap's
+    corrected version is compared against."""
+    boots = bayes_bootstrap_means_1d(diffs, n_boot, rng, statistic="mean")
+    p = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
+    return min(max(p, 0.0), 1.0)
+
+
 def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
     """Uncorrected (LLM-only) Wald F-test for score ~ <fixed factors> + (1|input),
     fit via statsmodels MixedLM (REML); _fit_lmm_general handles single-factor,
@@ -1166,8 +1704,26 @@ def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
 
 _ALPHA = ALPHA_DEFAULT
 
+# Binary judge-bias data only supports the mean-based tests (a proportion is
+# just the mean of a 0/1 variable, so PPI's rectifier applies unchanged --
+# see scenarios.synthetic's binary judge-bias comment). The rank-based
+# family (mw/wilcoxon/friedman/kruskal) and ANOVA/LMM assume a scale that
+# doesn't hold up under binary's massive ties, and generate_judge_bias_cell
+# doesn't extend its additive noise/bias/slope judge model to a 0/1
+# judgment for those structures either.
+_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name}
+
+
+def _ppi_effective_tests(sc: JudgeBiasSource, active_tests: list[str]) -> list[str]:
+    """Restrict active_tests to what this scenario's eval_type actually
+    supports -- currently only matters for eval_type="binary"."""
+    if sc.eval_type != "binary":
+        return active_tests
+    return [t for t in active_tests if t in _PPI_BINARY_COMPATIBLE_TESTS]
+
 
 def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_boot: int, seed) -> list[PPIResult]:
+    active_tests = _ppi_effective_tests(sc, active_tests)
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in active_tests}
     uncorrected: dict[str, int] = {t: 0 for t in active_tests}
@@ -1217,6 +1773,24 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[WILCOXON.name] += 1
+
+            if PAIRED_T.name in active_tests:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(cell.llm_x, cell.llm_y).pvalue)
+                    uncorrected[PAIRED_T.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.mean, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    corrected[PAIRED_T.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[PAIRED_T.name] += 1
+
+            if BAYES_BOOTSTRAP.name in active_tests:
+                try:
+                    p_u = _uncorrected_bayes_bootstrap_paired_p_value(cell.llm_x - cell.llm_y, n_boot, np.random.default_rng(_rng_seed()))
+                    uncorrected[BAYES_BOOTSTRAP.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_bayes_bootstrap(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, n_boot, _rng_seed())
+                    corrected[BAYES_BOOTSTRAP.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[BAYES_BOOTSTRAP.name] += 1
 
             if ANOVA_IND.name in active_tests:
                 try:
@@ -1340,7 +1914,7 @@ def run_ppi_simulation(
 # ---------------------------------------------------------------------------
 
 _PPI_EFFECT_TESTS = (
-    TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name,
+    TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
 )
 
@@ -1364,6 +1938,7 @@ def _run_ppi_effect_cell(
     estimate/CI -- the same reason sim_type_i_calibration.py's anova family
     needed a separate pass (_run_one_effect_anova) too.
     """
+    active_tests = _ppi_effective_tests(sc, active_tests)
     rng = np.random.default_rng(seed)
     out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
 
@@ -1400,6 +1975,20 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
                     out[WILCOXON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PAIRED_T.name in active_tests:
+                try:
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.mean, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    out[PAIRED_T.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if BAYES_BOOTSTRAP.name in active_tests:
+                try:
+                    r = _ppi_paired_bayes_bootstrap(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, n_boot, _rng_seed())
+                    out[BAYES_BOOTSTRAP.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -1505,6 +2094,8 @@ def run_ppi_effect_check(
                     samples = samples_by_test.get(t, [])
                     null_val = gold_null.get(t, 0.0)
                     bias_mean, z, coverage, mean_width, n = _effect_cell_stats(samples, null_val)
+                    if n == 0:
+                        continue  # test not valid for this scenario's eval_type (e.g. binary) -- see _ppi_effective_tests
                     unc_z = _uncorrected_bias_z(samples, null_val)
                     results.append(PPIEffectResult(
                         name=sc.name, tag=sc.tag, test=t, n=sc.n, n_samples=n,
@@ -1522,6 +2113,8 @@ def run_ppi_effect_check(
             samples = samples_by_test.get(t, [])
             null_val = gold_null.get(t, 0.0)
             bias_mean, z, coverage, mean_width, n = _effect_cell_stats(samples, null_val)
+            if n == 0:
+                continue  # test not valid for this scenario's eval_type (e.g. binary) -- see _ppi_effective_tests
             unc_z = _uncorrected_bias_z(samples, null_val)
             results.append(PPIEffectResult(
                 name=sc.name, tag=sc.tag, test=t, n=sc.n, n_samples=n,
@@ -2067,7 +2660,11 @@ def save_ppi_effect_plot(*, results: list[PPIEffectResult], alpha: float, out_pa
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--mode", choices=MODES, default="all",
                          help="'pairwise' (non-PPI A/B), 'multiarm' (non-PPI k-arm), "
-                              "'ppi' (PPI-corrected calibration), or 'all' (default: run all three)")
+                              "'ppi' (PPI-corrected calibration), 'simultaneous_ci' (none vs. Bonferroni vs. "
+                              "max-T simultaneous-CI coverage/width, on the same k-arm sources as multiarm), "
+                              "'pairwise_multiarm' (just pairwise+multiarm), or 'all' (default: every mode "
+                              "applicable to --data-source -- pairwise+multiarm+ppi+simultaneous_ci for "
+                              "synthetic, pairwise+multiarm+simultaneous_ci for real data)")
     parser.add_argument("--reps", type=int, default=200, metavar="N")
     parser.add_argument("--alpha", type=float, default=ALPHA_DEFAULT)
     parser.add_argument("--seed", type=int, default=42)
@@ -2081,7 +2678,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
     # pairwise mode
     parser.add_argument("--data-source", choices=DATA_SOURCES, default="synthetic",
-                         help="pairwise mode: 'synthetic' (default), or a real-data source: " + ", ".join(REAL_PAIR_SOURCES))
+                         help="pairwise/multiarm modes: 'synthetic' (default), or a real-data source: " + ", ".join(REAL_PAIR_SOURCES))
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="pairwise mode: synthetic scenario breadth for build_pair_sources (ignored for real data sources)")
     parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE",
@@ -2100,28 +2697,33 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--cohens-d-values", type=float, nargs="+", default=[0.2, 0.4], metavar="D",
                          help="pairwise mode: alt-condition effect sizes for build_pair_sources (ignored for real data sources)")
     parser.add_argument("--benchmarks", nargs="+", default=None, metavar="ID",
-                         help="pairwise mode, real data: benchmark IDs to filter to")
+                         help="pairwise/multiarm modes, real data: benchmark IDs to filter to")
     parser.add_argument("--models", nargs="+", default=None, metavar="NAME",
-                         help="pairwise mode, real data: model names to filter to")
-    parser.add_argument("--hf-token", default=None, help="pairwise mode, real data")
-    parser.add_argument("--cache-dir", default=None, help="pairwise mode, real data")
-    parser.add_argument("--min-pair-size", type=int, default=50, help="pairwise mode, real data")
+                         help="pairwise/multiarm modes, real data: model names to filter to")
+    parser.add_argument("--hf-token", default=None, help="pairwise/multiarm modes, real data")
+    parser.add_argument("--cache-dir", default=None, help="pairwise/multiarm modes, real data")
+    parser.add_argument("--min-pair-size", type=int, default=50,
+                         help="pairwise/multiarm modes, real data: minimum shared items required "
+                              "(multiarm: across ALL aligned models for a benchmark, not just a pair)")
     parser.add_argument("--inspect-csv", default=None,
-                         help=f"pairwise mode, real data: path to CSV from collect_inspect_benchmarks.py "
+                         help=f"pairwise/multiarm modes, real data: path to CSV from collect_inspect_benchmarks.py "
                               f"(used by --data-source inspect/real; defaults to {DEFAULT_INSPECT_CSV!r})")
 
-    # multiarm mode
+    # multiarm mode (also used by simultaneous_ci mode -- same k-arm sources/grid)
     parser.add_argument("--k-arms", nargs="+", type=int, default=[4], metavar="K",
-                        help="multiarm mode: number of arms to sweep (one or more values, e.g. --k-arms 3 5 10); "
-                             "max-T and post-hoc corrections are compared at each k")
+                        help="multiarm/simultaneous_ci modes: number of arms to sweep (one or more values, e.g. --k-arms 3 5 10); "
+                             "max-T and post-hoc corrections are compared at each k. Real-data sources cap k at "
+                             "however many aligned real models a benchmark has; larger k values are skipped with a warning.")
     parser.add_argument("--multiarm-method", default=BOOTSTRAP_T.name, metavar="METHOD",
                          choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name, BOOTSTRAP_T.name],
-                         help="multiarm mode: pairwise_differences-family method used to derive raw p-values before correction")
+                         help="multiarm/simultaneous_ci modes: pairwise_differences-family method used to derive "
+                              "raw p-values (multiarm) / the point-estimate + bootstrap draws that both simultaneous-CI "
+                              "constructions share (simultaneous_ci) -- must be bootstrap-compatible for max-T to apply")
     parser.add_argument("--multiarm-icc", type=float, default=0.20, metavar="ICC",
-                         help="multiarm mode: ICC for build_multiarm_sources' shared truth/noise model "
+                         help="multiarm/simultaneous_ci modes: ICC for build_multiarm_sources' shared truth/noise model "
                               "(same meaning as --icc-values in pairwise mode)")
     parser.add_argument("--multiarm-cohens-d", type=float, default=0.3, metavar="D",
-                         help="multiarm mode: alt-condition effect size (Cohen's d) for build_multiarm_sources")
+                         help="multiarm/simultaneous_ci modes: alt-condition effect size (Cohen's d) for build_multiarm_sources")
 
     # ppi mode
     parser.add_argument("--tests", nargs="+", choices=[m.name for m in PPI_TEST_METHODS], default=None, metavar="TEST",
@@ -2141,26 +2743,67 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
-    """Canonical official-test preset: runs all three modes (pairwise, multiarm,
-    ppi) back to back. Synthetic data."""
+    """Canonical official-test preset: pairwise + multiarm, synthetic data.
+    PPI calibration is a separate, much slower preset (official_args_ppi)
+    split out so it can be run/skipped independently in the
+    --official-tests menu -- see official_variants().
+
+    ``k_arms`` sweeps up to k=20 (190 pairwise comparisons -- pairs grow as
+    k(k-1)/2, so this is roughly 4x the comparisons of k=10's 45) rather
+    than stopping at 10. This is deliberate, not just "more thorough": a
+    real multi-model comparison (an LLM leaderboard slice, an ablation with
+    many variants) routinely has 10-20+ arms, and Bonferroni's per-comparison
+    alpha budget (alpha/pairs) shrinks toward that same rate, which is
+    exactly the regime where its extra conservativeness over max-T
+    (--mode simultaneous_ci) -- and, on the p-value side, over max_t/holm/
+    fdr_bh's better power at matched FWER (--mode multiarm) -- becomes most
+    visible. Costs ~3.8x the k-sweep's compute vs. stopping at k=10, since
+    per-cell cost tracks the pair count; both --mode multiarm and
+    --mode simultaneous_ci reuse this same official_args() preset (see
+    official_args_simultaneous_ci) and its k_arms sweep."""
     return argparse.Namespace(
-        mode="all", reps=300, alpha=0.05, seed=base_seed,
+        mode="pairwise_multiarm", reps=300, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         data_source="synthetic", scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100],
         runs=1, statistic="mean",
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        k_arms=[3, 5, 10], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
+        k_arms=[3, 5, 10, 20], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000, effect_reps=200, effect_gold_mc=3000, no_effect_check=False,
-        workers=max(1, (os.cpu_count() or 2) - 1),
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
+def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for PPI-corrected calibration only (synthetic
+    data -- ppi has no real-data variant). Split out from official_args()
+    since it's by far the slowest of the pvalues sub-modes (43 judge-bias
+    scenarios x ~11 tests x reps, plus a separate bias/coverage effect-size
+    check), so it can be selected or skipped on its own in the
+    --official-tests menu instead of always riding along with the faster
+    pairwise/multiarm sweep."""
+    args = official_args(base_seed)
+    args.mode = "ppi"
+    return args
+
+
+def official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for simultaneous-CI calibration only (synthetic
+    data). Split out from official_args() for the same reason as
+    official_args_ppi -- lets --official-tests select/skip it independently
+    of the faster pairwise/multiarm sweep, even though it shares those
+    modes' k-arm sources."""
+    args = official_args(base_seed)
+    args.mode = "simultaneous_ci"
+    return args
+
+
 def real_official_args(base_seed: int = 42) -> argparse.Namespace:
-    """Official-test preset for real data sources (pairwise only; multiarm and
-    ppi are synthetic-only). Requires network/HF access."""
+    """Official-test preset for real data sources (pairwise + multiarm only;
+    ppi has no real-data variant, and simultaneous_ci is its own preset --
+    see real_official_args_simultaneous_ci). Requires network/HF access."""
     return argparse.Namespace(
-        mode="pairwise", reps=300, alpha=0.05, seed=base_seed,
+        mode="pairwise_multiarm", reps=300, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         data_source="real", scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100],
         runs=1, statistic="mean",
@@ -2168,46 +2811,57 @@ def real_official_args(base_seed: int = 42) -> argparse.Namespace:
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3, 5, 10], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=None, ppi_n_boot=2000, effect_reps=200, effect_gold_mc=3000, no_effect_check=False,
-        workers=max(1, (os.cpu_count() or 2) - 1),
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
+
+
+def real_official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for simultaneous-CI calibration only, real data
+    (real multi-arm sources -- see build_real_multiarm_sources). Split out
+    from real_official_args() the same way official_args_simultaneous_ci is."""
+    args = real_official_args(base_seed)
+    args.mode = "simultaneous_ci"
+    return args
 
 
 def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace]]:
     """All official-test variants for this case, as (label, args) pairs."""
     return [
-        ("synthetic (pairwise + multiarm + ppi)", official_args(base_seed)),
-        ("real data (pairwise only)", real_official_args(base_seed)),
+        ("synthetic (pairwise + multiarm)", official_args(base_seed)),
+        ("synthetic (ppi)", official_args_ppi(base_seed)),
+        ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
+        ("real data (pairwise + multiarm)", real_official_args(base_seed)),
+        ("real data (simultaneous CI)", real_official_args_simultaneous_ci(base_seed)),
     ]
 
 
 def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
-    """Fast sanity-check preset for --quick-test: runs all three modes
-    (pairwise, multiarm, ppi) with cut-down sweeps/reps/tests for a quick pass
-    that confirms the pipeline (incl. --latex output) still works. Restricts
-    eval_types/tests/k_arms rather than sweeping the full catalog -- this is
-    for pipeline confidence, not a representative result.
-    ``data_source="real"`` (or 'openeval'/'inspect') restricts mode to
-    'pairwise' -- the only mode whose sources come from --data-source;
-    multiarm/ppi are synthetic-only (see README), so re-running them here
-    would just recompute the identical synthetic sweep a second time. It also
-    switches eval_types to 'binary': real-data pairwise sources are binary-
-    only by construction (corpus_pair_to_ci_pair_source hardcodes
-    eval_type="binary" for both openeval and inspect -- see README's "known
-    exceptions"), so the synthetic variant's 'continuous' filter would leave
-    zero sources. --quick-test calls this twice per case (synthetic, then
-    real) so the real-data pairwise path doesn't go unexercised between
-    --official-tests runs."""
-    mode = "all" if data_source == "synthetic" else "pairwise"
+    """Fast sanity-check preset for --quick-test: runs every mode applicable
+    to `data_source` (mode="all" -- see run()'s "all" handling) with cut-down
+    sweeps/reps/tests for a quick pass that confirms the pipeline (incl.
+    --latex output) still works. Restricts eval_types/tests/k_arms rather
+    than sweeping the full catalog -- this is for pipeline confidence, not a
+    representative result.
+    ``data_source="real"`` (or 'openeval'/'inspect') runs pairwise + multiarm
+    + simultaneous_ci only -- ppi has no real-data variant
+    (build_judge_bias_sources is synthetic-only, see README's "known
+    exceptions"). It also switches eval_types to 'binary': real-data
+    pairwise/multiarm sources are binary-only by construction
+    (corpus_pair_to_ci_pair_source / multiarm_corpus_to_source hardcode
+    eval_type="binary" for both openeval and inspect), so the synthetic
+    variant's 'continuous' filter would leave zero sources. --quick-test
+    calls this twice per case (synthetic, then real) so the real-data paths
+    don't go unexercised between --official-tests runs."""
     eval_types = ["binary", "continuous"] if data_source == "synthetic" else ["binary"]
     return argparse.Namespace(
-        mode=mode, reps=3, alpha=0.05, seed=base_seed,
+        mode="all", reps=3, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         data_source=data_source, scenario_suite="standard", eval_types=eval_types, sizes=[10, 30, 50],
         runs=1, statistic="mean",
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=[TTEST.name, MW.name], ppi_n_boot=200, latex=True,
+        tests=[TTEST.name, MW.name, PAIRED_T.name, BAYES_BOOTSTRAP.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         workers=1,
     )
@@ -2220,7 +2874,21 @@ def run(args: argparse.Namespace) -> CaseResult:
         stamp = time.strftime("%Y%m%d_%H%M%S")
         output_paths: list[str] = []
         key_metrics: dict = {}
-        modes = [args.mode] if args.mode != "all" else ["pairwise", "multiarm", "ppi"]
+        # "all" means "every mode applicable to this data source" -- ppi has
+        # no real-data variant (build_judge_bias_sources is synthetic-only),
+        # so real/openeval/inspect data sources skip it rather than silently
+        # re-running the synthetic PPI sweep under a real-data preset.
+        # "pairwise_multiarm" is "all" minus ppi regardless of data source --
+        # lets --official-tests offer synthetic ppi as its own (slow) menu
+        # entry, separate from the faster pairwise+multiarm sweep.
+        if args.mode == "pairwise_multiarm":
+            modes = ["pairwise", "multiarm"]
+        elif args.mode != "all":
+            modes = [args.mode]
+        elif args.data_source == "synthetic":
+            modes = ["pairwise", "multiarm", "ppi", "simultaneous_ci"]
+        else:
+            modes = ["pairwise", "multiarm", "simultaneous_ci"]
 
         if "pairwise" in modes:
             print(f"\npvalues simulation (pairwise, non-PPI) -- data_source={args.data_source}, statistic={args.statistic}")
@@ -2268,17 +2936,39 @@ def run(args: argparse.Namespace) -> CaseResult:
             key_metrics["pairwise_n_results"] = len(pw_results)
             key_metrics["pairwise_mean_type1"] = type1
 
-        if "multiarm" in modes:
+        if "multiarm" in modes or "simultaneous_ci" in modes:
+            # Shared by both modes -- they sweep the identical k-arm source
+            # list/grid, just measuring something different per rep (reject/
+            # best-arm vs. CI coverage/width), so build it once even when
+            # --mode all runs both (avoids a second, possibly network-bound,
+            # real-data fetch).
             k_values = args.k_arms if isinstance(args.k_arms, list) else [args.k_arms]
-            print(f"\npvalues simulation (multi-arm, non-PPI) -- k={k_values}, method={args.multiarm_method}")
-            ma_sources = build_multiarm_sources(
-                suite=args.scenario_suite, icc=args.multiarm_icc, cohens_d=args.multiarm_cohens_d,
-                eval_types=args.eval_types,
-            )
+            print(f"\npvalues simulation (multi-arm sources) -- data_source={args.data_source}, k={k_values}")
+            if args.data_source == "synthetic":
+                ma_sources = build_multiarm_sources(
+                    suite=args.scenario_suite, icc=args.multiarm_icc, cohens_d=args.multiarm_cohens_d,
+                    eval_types=args.eval_types,
+                )
+            else:
+                runs = args.runs
+                if runs != 1:
+                    print("  Warning: real-data sources only support --runs 1 in this pass; forcing runs=1.")
+                    runs = 1
+                args = argparse.Namespace(**{**vars(args), "runs": runs})
+                ma_sources = build_real_multiarm_sources(
+                    args.data_source, benchmarks=args.benchmarks, models=args.models,
+                    hf_token=args.hf_token, cache_dir=args.cache_dir, min_arm_size=args.min_pair_size,
+                    inspect_csv=args.inspect_csv,
+                )
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    ma_sources = [s for s in ma_sources if s.eval_type in requested]
             if not ma_sources:
                 raise ValueError("No MultiArmSources left after filtering.")
             print(f"  {len(ma_sources)} sources, sizes={args.sizes}, k_values={k_values}, reps={args.reps}, alpha={args.alpha}")
 
+        if "multiarm" in modes:
+            print(f"\npvalues simulation (multi-arm, non-PPI) -- method={args.multiarm_method}")
             ma_results = run_multiarm_simulation(
                 ma_sources, sample_sizes=args.sizes, runs=args.runs, k_values=k_values, n_reps=args.reps,
                 n_bootstrap=args.bootstrap_n, alpha=args.alpha, multiarm_method=args.multiarm_method,
@@ -2303,6 +2993,45 @@ def run(args: argparse.Namespace) -> CaseResult:
             fwer = sum(r.any_reject for r in null_rows) / sum(r.n_reps for r in null_rows) if null_rows else float("nan")
             key_metrics["multiarm_n_results"] = len(ma_results)
             key_metrics["multiarm_mean_fwer"] = float(fwer)
+
+        if "simultaneous_ci" in modes:
+            print(f"\npvalues simulation (simultaneous CI, non-PPI) -- method={args.multiarm_method}")
+            sci_results = run_simultaneous_ci_simulation(
+                ma_sources, sample_sizes=args.sizes, runs=args.runs, k_values=k_values, n_reps=args.reps,
+                n_bootstrap=args.bootstrap_n, alpha=args.alpha, multiarm_method=args.multiarm_method,
+                statistic=args.statistic, progress_mode=args.progress, seed=args.seed,
+                n_workers=getattr(args, "workers", 1),
+            )
+            print_simultaneous_ci_report(sci_results, alpha=args.alpha)
+
+            run_stem = f"pvalues_simultaneous_ci_reps{args.reps}_{stamp}"
+            if args.save_results == "save":
+                output_paths += save_results_artifacts_simultaneous_ci(
+                    results=sci_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem,
+                    latex=getattr(args, "latex", False),
+                )
+            if args.plots == "save":
+                plot_path = save_simultaneous_ci_coverage_width_plot(
+                    results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_coverage_width.png"),
+                )
+                output_paths.append(plot_path)
+                print(f"Saved plot: {plot_path}")
+                vs_k_path = save_simultaneous_ci_coverage_width_vs_k_plot(
+                    results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_vs_k.png"),
+                )
+                if Path(vs_k_path).exists():
+                    output_paths.append(vs_k_path)
+                    print(f"Saved plot: {vs_k_path}")
+
+            for cm_name in ("none", "bonferroni", "max_t"):
+                cm_null_rows = [r for r in sci_results if r.ci_method == cm_name and r.condition == "null"]
+                if not cm_null_rows:
+                    continue
+                cov = sum(r.all_covered for r in cm_null_rows) / sum(r.n_reps for r in cm_null_rows)
+                width = sum(r.total_width for r in cm_null_rows) / sum(r.n_reps for r in cm_null_rows)
+                key_metrics[f"simultaneous_ci_{cm_name}_coverage"] = float(cov)
+                key_metrics[f"simultaneous_ci_{cm_name}_avg_width"] = float(width)
+            key_metrics["simultaneous_ci_n_results"] = len(sci_results)
 
         if "ppi" in modes:
             active_tests = args.tests if args.tests else [m.name for m in PPI_TEST_METHODS]

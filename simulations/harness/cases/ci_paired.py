@@ -79,7 +79,7 @@ from ..scenarios.synthetic import (
     RUN_NOISE_FRACS_DEFAULT,
     build_pair_sources,
 )
-from ..scenarios.real_data import DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources
+from ..scenarios.real_data import DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources, build_real_pair_sources_nested
 from ..methods import (
     BOOTSTRAP_METHODS as METHODS,
     BAYES_BOOTSTRAP,
@@ -713,6 +713,36 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
     return avg * 1000.0, float(np.sqrt(var / total_reps)) * 1000.0
 
 
+def _headline_cov_width_score(
+    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]],
+    m: str,
+    sizes_present: list[int],
+) -> tuple[float, float, float]:
+    """Headline (Cov, Width, Score) for method `m`: average per n first (one
+    number per n, unweighted across whatever sources contributed at that n),
+    then average those per-n numbers across n -- rather than pooling every
+    (source, n) cell into one flat list, which implicitly weights each n by
+    how many sources have data there. This matters most for Score: a method
+    that under-covers only at small n should have that penalty show up in
+    the headline average, not get diluted by unrelated large-n cells."""
+    per_n_means = []
+    for n in sizes_present:
+        vals = per_n_vals.get((m, n))
+        if vals:
+            per_n_means.append((
+                float(np.mean([v[0] for v in vals])),
+                float(np.mean([v[1] for v in vals])),
+                float(np.mean([v[2] for v in vals])),
+            ))
+    if not per_n_means:
+        return float("nan"), float("nan"), float("nan")
+    return (
+        float(np.mean([c for c, _, _ in per_n_means])),
+        float(np.mean([w for _, w, _ in per_n_means])),
+        float(np.mean([s for _, _, s in per_n_means])),
+    )
+
+
 def _print_overall_summary_table(
     title: str,
     eval_types: list[str],
@@ -734,17 +764,13 @@ def _print_overall_summary_table(
         return
     method_labels = [m.name for m in order_present_methods(present_methods)]
 
-    all_cov: dict[str, list[float]] = defaultdict(list)
-    all_wid: dict[str, list[float]] = defaultdict(list)
-    all_score: dict[str, list[float]] = defaultdict(list)
+    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
     per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
     for (et, m, n), vals in agg.items():
         if et not in eval_types:
             continue
-        all_cov[m].extend(v[0] for v in vals)
-        all_wid[m].extend(v[1] for v in vals)
-        all_score[m].extend(v[2] for v in vals)
+        per_n_vals[(m, n)].extend(vals)
         c, t = agg_counts[(et, m, n)]
         c_prev, t_prev = all_counts[m]
         all_counts[m] = (c_prev + c, t_prev + t)
@@ -755,9 +781,7 @@ def _print_overall_summary_table(
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
     for m in method_labels:
-        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
-        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
-        ms = float(np.mean(all_score[m])) if all_score[m] else float("nan")
+        mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats(
@@ -882,16 +906,12 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
-    all_cov: dict[str, list[float]] = defaultdict(list)
-    all_wid: dict[str, list[float]] = defaultdict(list)
-    all_score: dict[str, list[float]] = defaultdict(list)
+    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
     per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
     method_eval_types: dict[str, set[str]] = defaultdict(set)
     for (et, m, n), vals in agg.items():
-        all_cov[m].extend(v[0] for v in vals)
-        all_wid[m].extend(v[1] for v in vals)
-        all_score[m].extend(v[2] for v in vals)
+        per_n_vals[(m, n)].extend(vals)
         method_eval_types[m].add(et)
         c, t = agg_counts[(et, m, n)]
         c_prev, t_prev = all_counts[m]
@@ -901,9 +921,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
 
     rows = []
     for m in method_labels:
-        mc = float(np.mean(all_cov[m])) if all_cov[m] else float("nan")
-        mw = float(np.mean(all_wid[m])) if all_wid[m] else float("nan")
-        ms = float(np.mean(all_score[m])) if all_score[m] else float("nan")
+        mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats([r for r in non_null if r.method == m])
@@ -1334,13 +1352,13 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=1, statistic="mean", reps=2000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=1, statistic="mean", reps=1000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
         pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
-        workers=max(1, (os.cpu_count() or 2) - 1),
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
@@ -1349,13 +1367,32 @@ def real_official_args(base_seed: int = 42) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="real", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=1, statistic="mean", reps=2000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=1, statistic="mean", reps=1000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
         pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
-        workers=max(1, (os.cpu_count() or 2) - 1),
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
+    )
+
+
+def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
+    """Official-test preset for nested-mode real (inspect) data.
+    Requires simulations/out/inspect_benchmarks.csv (produced by
+    collect_inspect_benchmarks.py --runs 3 ...). Tests paired-diff CI
+    coverage using all three repeated runs per item collected during
+    the multi-run Inspect AI data collection phase."""
+    return argparse.Namespace(
+        data_source="inspect", scenario_suite="expanded", eval_types=None,
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
+        runs=3, statistic="mean", reps=500, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        sizes=[10, 20, 30, 50, 75, 100],
+        seed=base_seed, icc_values=None, cohens_d_values=[0.2, 0.4], include_null=False,
+        progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
+        nested_mode=True, runs_sweep=[3], run_noise_fracs=[0.0], heteroscedastic=False,
+        pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
@@ -1365,6 +1402,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic", official_args(base_seed)),
         ("real data", real_official_args(base_seed)),
         ("nested / synthetic", nested_official_args()),
+        ("nested / real data (inspect)", nested_real_official_args()),
     ]
 
 
@@ -1393,7 +1431,7 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     """Canonical --nested-mode official preset, mirroring sim_compare_boot_nested.py's
     --official-test (pairwise-estimand phase). Not wired into --official-tests (the
     harness runs one preset per case); invoke manually:
-    python -m simulations.harness.cli ci_paired --nested-mode --runs-sweep 5 --reps 200
+    python -m simulations.harness.cli ci_paired --nested-mode --runs-sweep 5 --reps 500
       --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded --icc-values 0.05 0.30 0.50
       --run-noise-fracs 0.01 0.1 0.3 0.5 --cohens-d-values 0.2 0.4 --include-null --heteroscedastic
       --sizes 10 20 30 50 75 100 --seed 44
@@ -1401,13 +1439,13 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=5, statistic="mean", reps=200, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=5, statistic="mean", reps=500, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, icc_values=[0.05, 0.30, 0.50], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=True, runs_sweep=[5], run_noise_fracs=[0.01, 0.1, 0.3, 0.5], heteroscedastic=True,
         pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
-        workers=max(1, (os.cpu_count() or 2) - 1),
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
@@ -1418,23 +1456,32 @@ def run(args: argparse.Namespace) -> CaseResult:
         nested_mode = getattr(args, "nested_mode", False)
 
         if nested_mode:
-            if args.data_source != "synthetic":
-                raise ValueError("--nested-mode only supports --data-source synthetic.")
+            if args.data_source not in ("synthetic", "inspect"):
+                raise ValueError("--nested-mode supports --data-source synthetic or inspect.")
 
-            run_noise_fracs = list(args.run_noise_fracs)
-            if args.icc_values:
-                icc_as_run_noise = [float(np.clip(1.0 - icc, 0.0, 1.0)) for icc in args.icc_values]
-                run_noise_fracs = sorted(set(run_noise_fracs + icc_as_run_noise))
             bayes_n = args.bayes_n if args.bayes_n is not None else args.bootstrap_n
             runs_list = args.runs_sweep if args.runs_sweep else [args.runs]
 
-            print(f"\nci_paired simulation (nested mode) -- runs={runs_list}, run_noise_fracs={run_noise_fracs}")
-            sources = build_pair_sources(
-                suite=args.scenario_suite, cohens_d_values=args.cohens_d_values,
-                include_null=args.include_null, run_noise_fracs=run_noise_fracs, heteroscedastic=args.heteroscedastic,
-                pairwise_noise_grid=args.pairwise_noise_grid, pairwise_noise_grid_max=args.pairwise_noise_grid_max,
-                pairwise_noise_grid_seed=args.pairwise_noise_grid_seed, cross_item_rho=args.cross_item_rho,
-            )
+            if args.data_source == "inspect":
+                csv_path = getattr(args, "inspect_csv", None) or DEFAULT_INSPECT_CSV
+                sources = build_real_pair_sources_nested(
+                    csv_path, models=args.models, benchmarks=args.benchmarks,
+                    min_pair_size=args.min_pair_size,
+                )
+                print(f"\nci_paired simulation (nested mode, inspect) -- runs={runs_list}")
+            else:
+                run_noise_fracs = list(args.run_noise_fracs)
+                if args.icc_values:
+                    icc_as_run_noise = [float(np.clip(1.0 - icc, 0.0, 1.0)) for icc in args.icc_values]
+                    run_noise_fracs = sorted(set(run_noise_fracs + icc_as_run_noise))
+                print(f"\nci_paired simulation (nested mode) -- runs={runs_list}, run_noise_fracs={run_noise_fracs}")
+                sources = build_pair_sources(
+                    suite=args.scenario_suite, cohens_d_values=args.cohens_d_values,
+                    include_null=args.include_null, run_noise_fracs=run_noise_fracs, heteroscedastic=args.heteroscedastic,
+                    pairwise_noise_grid=args.pairwise_noise_grid, pairwise_noise_grid_max=args.pairwise_noise_grid_max,
+                    pairwise_noise_grid_seed=args.pairwise_noise_grid_seed, cross_item_rho=args.cross_item_rho,
+                )
+
             if args.eval_types:
                 requested = set(args.eval_types)
                 sources = [s for s in sources if s.eval_type in requested]

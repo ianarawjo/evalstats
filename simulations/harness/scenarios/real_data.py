@@ -31,7 +31,7 @@ from typing import Any
 
 import numpy as np
 
-from . import CISource, CIPairSource
+from . import CISource, CIPairSource, MultiArmSource
 from .synthetic import ShapeSpec
 
 SOURCES = ["openeval", "inspect", "real"]
@@ -1032,6 +1032,526 @@ def build_inspect_corpus_pairs(
 
     print(f"\n  {len(corpus_pairs)} corpus pairs built from Inspect AI data.\n")
     return corpus_pairs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Multi-arm (shared-item, k>=2) real data -- cases/pvalues.py's --mode multiarm
+#
+# Same restriction as the pairwise real-data sources above: known-binary
+# benchmarks only, R=1 only. For each benchmark, ALL of its available real
+# models (not just one pair) are aligned on shared item_id and ordered by
+# descending real corpus mean -- arm 0 is therefore always the empirically
+# best-performing model, matching MultiArmSource's "arm 0 carries the
+# alternative-hypothesis shift" convention. A run requesting more arms
+# (--k-arms) than a benchmark has real models is skipped by the caller via
+# MultiArmSource.max_k, the same way an oversized --sizes n is skipped via
+# max_n.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class MultiArmCorpus:
+    """Aligned real data for >=2 models sharing one benchmark (R=1 only)."""
+    benchmark_id: str
+    source: str  # "openeval" | "inspect"
+    models: list[str]  # ordered by descending real corpus mean; models[0] is "arm 0"
+    scores: np.ndarray  # shape (len(models), N) -- aligned on shared item_id
+    corpus_size: int  # N = number of shared items
+
+
+def multiarm_corpus_to_source(mc: MultiArmCorpus) -> MultiArmSource:
+    """Wrap a real-data MultiArmCorpus as a MultiArmSource (WOR item
+    subsampling, R=1 only, k bounded by the number of aligned real models)."""
+    scores, n_total, max_k = mc.scores, mc.corpus_size, len(mc.models)
+
+    def _generate_scores(
+        rng: np.random.Generator, n: int, runs: int, k: int, delta: float,
+        _scores: np.ndarray = scores, _n_total: int = n_total, _max_k: int = max_k,
+    ) -> np.ndarray:
+        if runs != 1:
+            raise ValueError("Real-data multiarm sources only support runs=1 in this pass.")
+        if k > _max_k:
+            raise ValueError(
+                f"Requested k={k} exceeds {_max_k} real arms available for {mc.benchmark_id} "
+                f"-- filter --k-arms so k <= max_k (see MultiArmSource.max_k)."
+            )
+        idxs = rng.choice(_n_total, size=n, replace=False)
+        sub = _scores[:k][:, idxs]  # (k, n) -- the k empirically-best real models
+        if delta == 0.0:
+            # Permutation null (H0: no true difference between arms): each
+            # sampled item's k real scores are independently shuffled across
+            # arm slots, so every arm's marginal distribution converges to
+            # the same across-model mixture (equal expected value for every
+            # arm) while every emitted value is still a real, unmodified
+            # observed score -- same permutation-null idea as
+            # corpus_pair_to_null_ci_pair_source, generalized to k arms.
+            perm = np.argsort(rng.random((k, n)), axis=0)
+            sub = np.take_along_axis(sub, perm, axis=0)
+        return sub[:, :, None]  # (k, n, 1) -- runs=1
+
+    true_arm_means = scores.mean(axis=1)  # (max_k,) -- exact, same arm order as _scores[:k] above
+
+    def _true_means(k: int, delta: float, _means: np.ndarray = true_arm_means) -> np.ndarray:
+        if delta == 0.0:
+            # Permutation null: the construction above makes every arm's
+            # expected value equal, so the "true" value to check CI coverage
+            # against is 0 for every pairwise diff, not the real corpus means.
+            return np.zeros(k)
+        return _means[:k]
+
+    return MultiArmSource(
+        label=f"{mc.source}:{mc.benchmark_id}", eval_type="binary",
+        generate_scores=_generate_scores, alt_delta=1.0, source=mc.source,
+        max_n=n_total, max_k=max_k, benchmark_id=mc.benchmark_id, true_means=_true_means,
+    )
+
+
+def build_openeval_multiarm_corpora(
+    model_bench_pairs: list[tuple[str, str]],
+    *,
+    openeval_repo: str = OPENEVAL_REPO,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+    min_arm_size: int = 50,
+) -> list[MultiArmCorpus]:
+    """Build MultiArmCorpora from OpenEval: for each benchmark, align ALL its
+    requested models on shared item_id (binary benchmarks only, same
+    restriction as build_openeval_corpus_pairs)."""
+    try:
+        import datasets  # noqa: F401
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    unknown_benches = [b for _, b in model_bench_pairs if b not in OPENEVAL_PAIR_BINARY_SPECS]
+    if unknown_benches:
+        print(
+            f"Warning: unsupported OpenEval binary benchmark IDs: {sorted(set(unknown_benches))}.\n"
+            f"  Supported: {list(OPENEVAL_PAIR_BINARY_SPECS)}"
+        )
+        model_bench_pairs = [(m, b) for m, b in model_bench_pairs if b in OPENEVAL_PAIR_BINARY_SPECS]
+    if not model_bench_pairs:
+        return []
+
+    pairs_set = set(model_bench_pairs)
+    bench_set = {b for _, b in model_bench_pairs}
+
+    print("Loading OpenEval response table (~1.4 GB; cached after first download) ...")
+    response_ds = _load_openeval_response_table(openeval_repo, hf_token, cache_dir)
+
+    def _keep_row(batch: dict) -> list[bool]:
+        keep = []
+        for rid, model_val in zip(batch["response_id"], batch["model"]):
+            source, _ = _oe_parse_response_id(rid)
+            if source not in bench_set:
+                keep.append(False)
+                continue
+            mname = _oe_get_model_name(model_val)
+            keep.append((mname, source) in pairs_set)
+        return keep
+
+    response_ds = response_ds.filter(_keep_row, batched=True, batch_size=5_000)
+    print(f"  {len(response_ds):,} responses after filtering.")
+
+    item_maps: dict[tuple[str, str], dict[str, float]] = defaultdict(dict)
+    n_dedup = 0
+    for row in response_ds:
+        rid = row.get("response_id", "")
+        source, item_id = _oe_parse_response_id(rid)
+        if source is None:
+            continue
+        mname = _oe_get_model_name(row.get("model"))
+        if mname is None or (mname, source) not in pairs_set:
+            continue
+        key = (mname, source)
+        if item_id in item_maps[key]:
+            n_dedup += 1
+            continue
+        spec = OPENEVAL_PAIR_BINARY_SPECS[source]
+        score = _oe_extract_score(row.get("scores"), spec["metric_name"])
+        if score is not None and np.isfinite(score):
+            item_maps[key][item_id] = float(score) * spec["score_scale"]
+
+    if n_dedup > 0:
+        print(f"  {n_dedup:,} duplicate rows removed (kept first per item x model).")
+
+    for (model, bench), scores_map in list(item_maps.items()):
+        keys = list(scores_map.keys())
+        vals = np.array([scores_map[k] for k in keys], dtype=float)
+        non_binary_mask = ~np.isin(vals, [0.0, 1.0])
+        if np.any(non_binary_mask):
+            rounded_vals = np.clip(np.rint(vals), 0.0, 1.0)
+            unique_bad = np.unique(vals[non_binary_mask])[:5]
+            print(f"  Warning: {model}/{bench} has {int(np.sum(non_binary_mask)):,} non-binary scores (e.g. {unique_bad}). Rounded to {{0,1}}.")
+            item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rounded_vals)}
+
+    corpora: list[MultiArmCorpus] = []
+    for bench in sorted(bench_set):
+        requested = list(dict.fromkeys(m for m, b in model_bench_pairs if b == bench))
+        bench_models = [m for m in requested if (m, bench) in item_maps and item_maps[(m, bench)]]
+        if len(bench_models) < 2:
+            print(f"  Skip  {bench}: fewer than 2 models with data.")
+            continue
+        shared_ids = sorted(set.intersection(*(set(item_maps[(m, bench)].keys()) for m in bench_models)))
+        if len(shared_ids) < min_arm_size:
+            print(f"  Skip  {bench}: {len(shared_ids)} shared items across {len(bench_models)} models < {min_arm_size}")
+            continue
+        means = {m: float(np.mean([item_maps[(m, bench)][i] for i in shared_ids])) for m in bench_models}
+        ordered_models = sorted(bench_models, key=lambda m: means[m], reverse=True)
+        scores = np.array([[item_maps[(m, bench)][i] for i in shared_ids] for m in ordered_models])
+        print(
+            f"  OK    {bench}: {len(ordered_models)} models, N={len(shared_ids)} shared items, "
+            f"means={[round(means[m], 4) for m in ordered_models]}"
+        )
+        corpora.append(MultiArmCorpus(
+            benchmark_id=bench, source="openeval", models=ordered_models,
+            scores=scores, corpus_size=len(shared_ids),
+        ))
+
+    print(f"\n  {len(corpora)} multi-arm corpora built from OpenEval.\n")
+    return corpora
+
+
+def build_inspect_multiarm_corpora(
+    csv_path: str,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    *,
+    min_arm_size: int = 50,
+) -> list[MultiArmCorpus]:
+    """Build MultiArmCorpora from a CSV produced by collect_inspect_benchmarks.py:
+    for each benchmark, align ALL its available models on shared item_id."""
+    item_maps = _load_inspect_item_maps(csv_path, models=models, benchmarks=benchmarks)
+    if not item_maps:
+        print("  No data found -- check --benchmarks / --models filters match the CSV.")
+        return []
+
+    all_benches = sorted({b for _, b in item_maps.keys()})
+    corpora: list[MultiArmCorpus] = []
+
+    for bench in all_benches:
+        bench_models = sorted(m for m, b in item_maps.keys() if b == bench)
+        if len(bench_models) < 2:
+            print(f"  Skip  {bench}: only {len(bench_models)} model(s) -- need >= 2")
+            continue
+        shared_ids = sorted(set.intersection(*(set(item_maps[(m, bench)].keys()) for m in bench_models)))
+        if len(shared_ids) < min_arm_size:
+            print(f"  Skip  {bench}: {len(shared_ids)} shared items across {len(bench_models)} models < {min_arm_size}")
+            continue
+        means = {m: float(np.mean([item_maps[(m, bench)][i] for i in shared_ids])) for m in bench_models}
+        ordered_models = sorted(bench_models, key=lambda m: means[m], reverse=True)
+        scores = np.array([[item_maps[(m, bench)][i] for i in shared_ids] for m in ordered_models])
+        print(
+            f"  OK    {bench}: {len(ordered_models)} models, N={len(shared_ids)} shared items, "
+            f"means={[round(means[m], 4) for m in ordered_models]}"
+        )
+        corpora.append(MultiArmCorpus(
+            benchmark_id=bench, source="inspect", models=ordered_models,
+            scores=scores, corpus_size=len(shared_ids),
+        ))
+
+    print(f"\n  {len(corpora)} multi-arm corpora built from Inspect AI data.\n")
+    return corpora
+
+
+def build_real_multiarm_sources(
+    source: str,
+    *,
+    benchmarks: list[str] | None = None,
+    models: list[str] | None = None,
+    hf_token: str | None = None,
+    cache_dir: str | None = None,
+    min_arm_size: int = 50,
+    inspect_csv: str | None = None,
+) -> list[MultiArmSource]:
+    """Resolve real multi-arm (k>=2 aligned models per benchmark) groups for
+    `source` and return them as MultiArmSources. `source` is one of
+    "openeval", "inspect", or "real" (combines both, skipping "inspect" with
+    a warning rather than failing if its CSV isn't present locally). R=1
+    only -- see module docstring."""
+    if source not in PAIR_SOURCES:
+        raise ValueError(f"Unknown real-data multiarm source: {source!r}. Choices: {PAIR_SOURCES}")
+
+    def _filter_pairs(pairs: list[tuple[str, str]]) -> list[tuple[str, str]]:
+        out = pairs
+        if benchmarks:
+            out = [(m, b) for m, b in out if b in benchmarks]
+        if models:
+            out = [(m, b) for m, b in out if m in models]
+        return out
+
+    corpora: list[MultiArmCorpus] = []
+    if source in ("openeval", "real"):
+        corpora += build_openeval_multiarm_corpora(
+            _filter_pairs(OPENEVAL_PAIR_DEFAULT_MODEL_BENCH),
+            hf_token=hf_token, cache_dir=cache_dir, min_arm_size=min_arm_size,
+        )
+    if source == "inspect":
+        corpora += build_inspect_multiarm_corpora(
+            inspect_csv or DEFAULT_INSPECT_CSV, models=models, benchmarks=benchmarks, min_arm_size=min_arm_size,
+        )
+    if source == "real":
+        csv_path = inspect_csv or DEFAULT_INSPECT_CSV
+        if Path(csv_path).exists():
+            corpora += build_inspect_multiarm_corpora(
+                csv_path, models=models, benchmarks=benchmarks, min_arm_size=min_arm_size,
+            )
+        else:
+            print(f"  Note: --real requested but inspect CSV not found at {csv_path!r} -- skipping inspect, using openeval only.")
+
+    return [multiarm_corpus_to_source(mc) for mc in corpora]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Inspect AI -- multi-run (nested) real-data sources
+#
+# Unlike the R=1 loaders above, these keep ALL run indices per item, enabling
+# nested-bootstrap / multi-run CI methods (ci_single.py/ci_paired.py
+# --nested-mode) to be exercised on real LLM eval data.  Items with fewer
+# than ``min_runs`` distinct run indices are excluded.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _load_inspect_item_maps_multirun(
+    csv_path: str,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+) -> dict[tuple[str, str], dict[str, np.ndarray]]:
+    """Parse the Inspect CSV into {(model, benchmark): {item_id: run_scores}},
+    loading ALL run indices.  run_scores is a 1-D ndarray of scores sorted by
+    ascending run_idx."""
+    p = Path(csv_path)
+    if not p.exists():
+        raise FileNotFoundError(
+            f"Inspect data file not found: {csv_path}\n  Run collect_inspect_benchmarks.py first to generate it."
+        )
+
+    raw: dict[tuple[str, str], dict[str, dict[int, float]]] = defaultdict(lambda: defaultdict(dict))
+    print(f"Loading Inspect AI multi-run data from: {csv_path}")
+    n_rows = 0
+    with p.open(newline="") as f:
+        reader = _csv.DictReader(f)
+        for row in reader:
+            bench = row.get("benchmark", "").strip()
+            model = row.get("model", "").strip()
+            item_id = row.get("item_id", "").strip()
+            try:
+                run_idx = int(row.get("run_idx", 0))
+                score = float(row.get("score", float("nan")))
+            except (ValueError, TypeError):
+                continue
+            if not bench or not model or not item_id or not np.isfinite(score):
+                continue
+            if benchmarks is not None and bench not in benchmarks:
+                continue
+            if models is not None and model not in models:
+                continue
+            raw[(model, bench)][item_id][run_idx] = score
+            n_rows += 1
+
+    print(f"  {n_rows:,} rows loaded (all run_idx values).")
+    result: dict[tuple[str, str], dict[str, np.ndarray]] = {}
+    for key, items in raw.items():
+        result[key] = {
+            item_id: np.array([v for _, v in sorted(runs.items())], dtype=float)
+            for item_id, runs in items.items()
+        }
+    return result
+
+
+def build_inspect_corpora_multirun(
+    csv_path: str,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    *,
+    min_corpus_size: int = 50,
+    min_runs: int = 2,
+) -> list[CISource]:
+    """Build multi-run CISources from an Inspect CSV.
+
+    Each source has both ``generate`` (WOR item sample, run_idx=0) and
+    ``generate_runs(rng, n, runs)`` (WOR item sample then per-item run
+    sampling).  Items with fewer than ``min_runs`` distinct run indices are
+    excluded.  When ``runs`` exceeds an item's available run count, the
+    remaining columns are bootstrap-resampled from that item's runs.
+    """
+    raw = _load_inspect_item_maps_multirun(csv_path, models=models, benchmarks=benchmarks)
+    if not raw:
+        print("  No multi-run data found -- check --benchmarks / --models filters match the CSV.")
+        return []
+
+    sources: list[CISource] = []
+    for (model, bench), items in sorted(raw.items()):
+        eligible = {iid: arr for iid, arr in items.items() if len(arr) >= min_runs}
+        if len(eligible) < min_corpus_size:
+            n_total = len(items)
+            print(f"  Skip  {model}/{bench}: only {len(eligible)}/{n_total} items with >={min_runs} runs (need {min_corpus_size})")
+            continue
+
+        item_ids = sorted(eligible.keys())
+        run_scores: dict[str, np.ndarray] = {k: eligible[k] for k in item_ids}
+        n_items = len(item_ids)
+        all_flat = np.concatenate(list(run_scores.values()))
+        true_mean = float(np.mean(all_flat))
+        avg_runs = float(np.mean([len(v) for v in run_scores.values()]))
+        print(f"  OK    {model}/{bench}: {n_items} items, avg_runs={avg_runs:.1f}, mean={true_mean:.4f}")
+
+        def _make_generate(item_ids=item_ids, run_scores=run_scores, n_items=n_items):
+            def _generate(rng: np.random.Generator, n: int) -> np.ndarray:
+                idxs = rng.choice(n_items, size=n, replace=False)
+                return np.array([run_scores[item_ids[i]][0] for i in idxs], dtype=float)
+            return _generate
+
+        def _make_generate_runs(item_ids=item_ids, run_scores=run_scores, n_items=n_items):
+            def _generate_runs(rng: np.random.Generator, n: int, runs: int) -> np.ndarray:
+                idxs = rng.choice(n_items, size=n, replace=False)
+                out = np.empty((n, runs), dtype=float)
+                for row_i, item_idx in enumerate(idxs):
+                    arr = run_scores[item_ids[item_idx]]
+                    R = len(arr)
+                    if runs <= R:
+                        sel = rng.choice(R, size=runs, replace=False)
+                    else:
+                        sel = rng.choice(R, size=runs, replace=True)
+                    out[row_i] = arr[sel]
+                return out
+            return _generate_runs
+
+        sources.append(CISource(
+            label=f"{model}/{bench}",
+            eval_type="binary",
+            true_mean=true_mean,
+            generate=_make_generate(),
+            generate_runs=_make_generate_runs(),
+            source="inspect",
+            max_n=n_items,
+            model=model,
+            benchmark_id=bench,
+        ))
+
+    print(f"\n  {len(sources)} multi-run corpora loaded from Inspect AI data.\n")
+    return sources
+
+
+def build_inspect_corpus_pairs_multirun(
+    csv_path: str,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    *,
+    min_pair_size: int = 50,
+    min_runs: int = 2,
+) -> list[CIPairSource]:
+    """Build multi-run CIPairSources (one per model-pair on each benchmark).
+
+    ``generate_pair(rng, n, runs)`` returns ``(a, b)``, each shape ``(n,
+    runs)``: WOR item sampling, then per-item WOR run sampling (same sampled
+    run indices used for both models to preserve within-item correlation).
+    """
+    raw = _load_inspect_item_maps_multirun(csv_path, models=models, benchmarks=benchmarks)
+    if not raw:
+        print("  No multi-run data found -- check --benchmarks / --models filters match the CSV.")
+        return []
+
+    all_benches = sorted({b for _, b in raw.keys()})
+    pair_sources: list[CIPairSource] = []
+
+    for bench in all_benches:
+        bench_models = sorted(m for m, b in raw.keys() if b == bench)
+        if len(bench_models) < 2:
+            print(f"  Skip  {bench}: only {len(bench_models)} model(s) -- need >= 2")
+            continue
+        print(f"\n  Benchmark: {bench}")
+
+        for model_a, model_b in combinations(bench_models, 2):
+            items_a = raw[(model_a, bench)]
+            items_b = raw[(model_b, bench)]
+            shared_ids = sorted(
+                iid for iid in items_a.keys() & items_b.keys()
+                if len(items_a[iid]) >= min_runs and len(items_b[iid]) >= min_runs
+            )
+            if len(shared_ids) < min_pair_size:
+                print(f"  Skip  ({model_a} vs {model_b}): {len(shared_ids)} shared items with >={min_runs} runs (need {min_pair_size})")
+                continue
+
+            runs_a = {iid: items_a[iid] for iid in shared_ids}
+            runs_b = {iid: items_b[iid] for iid in shared_ids}
+            n_items = len(shared_ids)
+
+            all_a = np.concatenate(list(runs_a.values()))
+            all_b = np.concatenate(list(runs_b.values()))
+            true_diff = float(np.mean(all_a) - np.mean(all_b))
+            short_a = model_a.split("/")[-1] if "/" in model_a else model_a
+            short_b = model_b.split("/")[-1] if "/" in model_b else model_b
+            print(
+                f"  Pair  ({short_a} vs {short_b}): N={n_items}, "
+                f"mean_A={float(np.mean(all_a)):.4f}, mean_B={float(np.mean(all_b)):.4f}, true_diff={true_diff:+.4f}"
+            )
+
+            def _make_generate_pair(shared_ids=shared_ids, runs_a=runs_a, runs_b=runs_b, n_items=n_items):
+                def _generate_pair(rng: np.random.Generator, n: int, runs: int):
+                    idxs = rng.choice(n_items, size=n, replace=False)
+                    out_a = np.empty((n, runs), dtype=float)
+                    out_b = np.empty((n, runs), dtype=float)
+                    for row_i, item_idx in enumerate(idxs):
+                        iid = shared_ids[item_idx]
+                        arr_a = runs_a[iid]
+                        arr_b = runs_b[iid]
+                        Ra, Rb = len(arr_a), len(arr_b)
+                        min_R = min(Ra, Rb)
+                        if runs <= min_R:
+                            sel = rng.choice(min_R, size=runs, replace=False)
+                        else:
+                            sel = rng.choice(min_R, size=runs, replace=True)
+                        out_a[row_i] = arr_a[sel]
+                        out_b[row_i] = arr_b[sel]
+                    return out_a, out_b
+                return _generate_pair
+
+            pair_sources.append(CIPairSource(
+                label=f"{model_a} vs {model_b}/{bench}",
+                eval_type="binary",
+                true_diff=true_diff,
+                generate_pair=_make_generate_pair(),
+                source="inspect",
+                max_n=n_items,
+                is_null=False,
+                model_a=model_a,
+                model_b=model_b,
+                benchmark_id=bench,
+            ))
+
+    print(f"\n  {len(pair_sources)} multi-run corpus pairs built from Inspect AI data.\n")
+    return pair_sources
+
+
+def build_real_data_sources_nested(
+    csv_path: str,
+    *,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    min_corpus_size: int = 50,
+    min_runs: int = 2,
+) -> list[CISource]:
+    """Multi-run CISources from the inspect CSV (nested-mode analogue of
+    build_real_data_sources).  Only 'inspect' data supports multi-run."""
+    return build_inspect_corpora_multirun(
+        csv_path, models=models, benchmarks=benchmarks,
+        min_corpus_size=min_corpus_size, min_runs=min_runs,
+    )
+
+
+def build_real_pair_sources_nested(
+    csv_path: str,
+    *,
+    models: list[str] | None = None,
+    benchmarks: list[str] | None = None,
+    min_pair_size: int = 50,
+    min_runs: int = 2,
+) -> list[CIPairSource]:
+    """Multi-run CIPairSources from the inspect CSV (nested-mode analogue of
+    build_real_pair_sources).  Only 'inspect' data supports multi-run."""
+    return build_inspect_corpus_pairs_multirun(
+        csv_path, models=models, benchmarks=benchmarks,
+        min_pair_size=min_pair_size, min_runs=min_runs,
+    )
 
 
 def build_real_pair_sources(

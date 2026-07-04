@@ -89,14 +89,36 @@ class MultiArmSource:
     ``generate_scores(rng, n, runs, k, delta)`` returns an ndarray of shape
     ``(k, n, runs)`` -- arm 0 carries the alternative-hypothesis shift
     ``delta``; arms ``1..k-1`` stay at baseline. Built by
-    ``scenarios.synthetic.build_multiarm_sources``.
+    ``scenarios.synthetic.build_multiarm_sources`` (synthetic) or
+    ``scenarios.real_data.build_real_multiarm_sources`` (real data: arm 0 is
+    instead the empirically best-performing real model on that benchmark,
+    ``delta`` is only used as a null/alt switch -- 0.0 selects a per-item
+    permutation null, anything else selects the real, unpermuted arms -- and
+    R=1 only; see harness README known exceptions).
     """
 
     label: str
     eval_type: str
     generate_scores: Callable[[np.random.Generator, int, int, int, float], np.ndarray]
     alt_delta: float
-    source: str = "synthetic"
+    source: str = "synthetic"  # "synthetic" | "openeval" | "inspect" | "real"
+    max_n: int | None = None  # corpus size bound for real-data sources; None = unbounded
+    max_k: int | None = None  # max real arms (models) available; None = unbounded
+    benchmark_id: str | None = None
+    true_means: Callable[[int, float], np.ndarray] | None = None
+    """``true_means(k, delta) -> ndarray`` of shape ``(k,)``: the ground-truth
+    per-arm mean for the SAME ``(k, delta)`` a ``generate_scores`` call would
+    use, in the same arm-index order. Used by ``cases/pvalues.py``'s
+    ``--mode simultaneous_ci`` to check whether a constructed simultaneous CI
+    actually contains each pair's true difference (``true_means[i] -
+    true_means[j]``). Synthetic sources Monte-Carlo-estimate this (same
+    technique as ``scenarios.synthetic._estimate_true_pair_diff``, since
+    clipping/rounding can shift the realized mean away from the raw additive
+    ``effects`` shift); real sources return the exact aligned-corpus means
+    (or an all-equal vector for the ``delta == 0.0`` permutation null, whose
+    construction makes every arm's true value identical by design). ``None``
+    for sources that don't support this (there are none as of this writing --
+    every ``MultiArmSource`` builder sets it)."""
 
 
 @dataclass(frozen=True)
@@ -126,7 +148,7 @@ class JudgeBiasSource:
 
     name: str
     tag: str
-    eval_type: str = "continuous"  # "continuous" | "likert" | "grades" (no "binary": see above)
+    eval_type: str = "continuous"  # "continuous" | "likert" | "grades" | "binary" (binary: mean-based tests only, see above)
     icc: float = 0.20
     """Intraclass correlation for the paired/repeated test structures' truth
     model (same meaning as build_pair_sources'/build_multiarm_sources' icc:

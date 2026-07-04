@@ -155,6 +155,21 @@ CORR_MAX_T = Method("max_t", "#5254a3")
 MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_FRIEDMAN_NEMENYI, CORR_MAX_T]
 
 # ---------------------------------------------------------------------------
+# cases/pvalues.py -- simultaneous-CI construction methods (non-PPI path),
+# for --mode simultaneous_ci. Reuses CORR_NONE/CORR_MAX_T/CORR_BONFERRONI
+# as-is (same name/color as their multiarm p-value-correction counterparts):
+# CORR_NONE is the naive per-pair CI with no simultaneous adjustment at all
+# (the "why do you need any correction?" baseline, same role as multiarm's
+# own `none` row); CORR_MAX_T/CORR_BONFERRONI are the two constructions
+# evalstats.core.paired's _simultaneous_cis_router picks between. Only these
+# three of multiarm's six correction strategies have a well-established
+# simultaneous-CI dual -- holm/fdr_bh are p-value-only adjustments with no
+# associated CI, and friedman_nemenyi operates on rank differences rather
+# than the raw mean-difference scale a CI here would need.
+# ---------------------------------------------------------------------------
+SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
+
+# ---------------------------------------------------------------------------
 # cases/pvalues.py -- evalstats.tests wrapper names (PPI-corrected path),
 # ported from sim_type_i_calibration.py's TEST_NAMES. Each is run twice per
 # scenario (uncorrected -- the scipy-equivalent test on LLM-only scores -- and
@@ -162,6 +177,17 @@ MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_B
 # PPI correction fixes the Type-I inflation judge bias/miscalibration causes.
 # WILCOXON is shared with the pairwise non-PPI registry above: same
 # underlying paired-difference test, just on different data structures.
+# PAIRED_T is likewise shared with the pairwise non-PPI registry above: the
+# mean-based paired-difference sibling to WILCOXON's median-based one --
+# also the entry point for binary (a proportion is just a mean), alongside
+# TTEST/TTEST_WELCH -- see scenarios.synthetic's binary judge-bias comment.
+# BAYES_BOOTSTRAP is shared with the bootstrap-family registry above: the
+# same paired-mean-difference estimand as PAIRED_T, but PPI-corrected via a
+# Dirichlet-weighted (Bayesian) bootstrap instead of evalstats.ppi.correct's
+# classical one -- see evalstats.tests._ppi_paired_bayes_bootstrap -- to
+# carry over the smoothing advantage that makes it the strongest pairwise
+# p-value method on sparse/discrete (e.g. binary) data in --mode pairwise's
+# non-PPI comparison.
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#3182bd")
 TTEST_WELCH = Method("ttest_welch", "#6baed6")
@@ -174,7 +200,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MW, WILCOXON, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
+    TTEST, TTEST_WELCH, MW, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

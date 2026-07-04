@@ -26,6 +26,12 @@ Usage:
   # Resume after interruption (skips already-collected model/benchmark/run combos)
   python simulations/collect_inspect_benchmarks.py --resume
 
+  # Delete a corrupted/under-sampled (model, benchmark) pair, then re-collect it
+  python simulations/collect_inspect_benchmarks.py \\
+      --delete-pair openrouter/google/gemma-3n-e4b-it boolq
+  python simulations/collect_inspect_benchmarks.py \\
+      --models openrouter/google/gemma-3n-e4b-it --benchmarks boolq
+
 Environment variables:
   OPENROUTER_API_KEY — required for OpenRouter models
   OPENROUTER_BASE_URL — optional, defaults to https://openrouter.ai/api/v1
@@ -641,6 +647,50 @@ def _append_records(
 
 
 # ---------------------------------------------------------------------------
+# Delete helper (drop corrupted/incomplete model-benchmark pairs)
+# ---------------------------------------------------------------------------
+
+
+def delete_model_benchmark_rows(csv_path: str, model: str, benchmark: str) -> int:
+    """Remove all rows for one (model, benchmark) pair from the CSV in place.
+
+    Used to drop a corrupted or under-sampled pair (e.g. one that fell below
+    a downstream min_corpus_size) so a later --resume run re-collects it
+    from scratch instead of silently keeping the bad rows.
+    """
+    p = Path(csv_path)
+    if not p.exists():
+        print(f"No CSV found at {csv_path} -- nothing to delete.")
+        return 0
+
+    with p.open(newline="") as f:
+        reader = csv.DictReader(f)
+        fieldnames = reader.fieldnames or CSV_HEADER
+        rows = list(reader)
+
+    kept = [r for r in rows if not (r.get("model") == model and r.get("benchmark") == benchmark)]
+    n_removed = len(rows) - len(kept)
+    if n_removed == 0:
+        print(f"No rows found for model={model!r} benchmark={benchmark!r} in {csv_path} -- nothing deleted.")
+        return 0
+
+    tmp_path = p.with_suffix(p.suffix + ".tmp")
+    with tmp_path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(kept)
+    os.replace(tmp_path, p)
+
+    print(f"Deleted {n_removed:,} row(s) for model={model!r} benchmark={benchmark!r} from {csv_path}.")
+    print(f"  Remaining rows in CSV: {len(kept):,}")
+    print(
+        f"  Re-run with --models {model} --benchmarks {benchmark} (and --resume, the "
+        "default) to re-collect this pair."
+    )
+    return n_removed
+
+
+# ---------------------------------------------------------------------------
 # main()
 # ---------------------------------------------------------------------------
 
@@ -699,11 +749,23 @@ def main() -> None:
         "--estimate-cost", action="store_true",
         help="Print a cost breakdown for the planned collection and exit (no evals run)",
     )
+    parser.add_argument(
+        "--delete-pair", nargs=2, metavar=("MODEL", "BENCHMARK"),
+        help=(
+            "Delete all rows for this (model, benchmark) pair from --output, then exit "
+            "(no evals run). Use to drop a corrupted/under-sampled pair before re-collecting it."
+        ),
+    )
 
     args = parser.parse_args()
 
     if args.estimate_cost:
         estimate_cost(args.models, args.benchmarks, args.limit, args.runs)
+        return
+
+    if args.delete_pair:
+        model, benchmark = args.delete_pair
+        delete_model_benchmark_rows(args.output, model, benchmark)
         return
 
     api_key = os.environ.get("OPENROUTER_API_KEY")

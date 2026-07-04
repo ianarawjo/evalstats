@@ -927,6 +927,79 @@ def _ppi_paired_arrays(
     )
 
 
+def _ppi_paired_bayes_bootstrap(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+):
+    """PPI correction for a paired mean-difference estimand
+    ``mean(a_i - b_i)``, using Bayesian bootstrap (Dirichlet-weighted)
+    resampling for both the full-sample and rectifier terms, instead of
+    :func:`evalstats.ppi.correct`'s classical (multinomial) resampling.
+
+    ``evalstats.core.paired``'s ``'bayes_bootstrap'`` method uses Dirichlet
+    weighting (see :func:`evalstats.core.resampling.bayes_bootstrap_means_1d`)
+    because it gives smoother, better-calibrated coverage than a classical
+    bootstrap or an exact discrete test on sparse, heavily-tied data --
+    e.g. paired binary diffs, which only take values in {-1, 0, 1}. Routing
+    a PPI correction through ``evalstats.ppi.correct`` instead would silently
+    drop that advantage (its bootstrap loop is hardcoded to classical
+    resampling), producing a result numerically identical to a plain
+    mean-based PPI correction (e.g. a paired t-test) despite the different
+    label. This function exists to carry the Dirichlet-weighting property
+    through to the corrected estimate too.
+
+    Pairing is by array position, matching :func:`_ppi_paired_arrays`; a
+    position is included in the labeled set only when *both* ``a_lab[i]``
+    and ``b_lab[i]`` are non-NaN. The rectifier is bootstrapped as a single
+    per-item residual (``true_diff - llm_diff``) rather than as two
+    separately-resampled terms, so the same Dirichlet draw is applied to
+    both the human and LLM values for a given labeled item -- preserving
+    the pairing exactly as ``correct()`` does by reusing one integer index
+    draw for both ``Y_lab[idx_lab]`` and ``Y_hat_lab[idx_lab]``.
+    """
+    from evalstats.core.resampling import bayes_bootstrap_means_1d
+    from evalstats.ppi import PPIResult
+
+    rng = np.random.default_rng(rng)
+
+    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+    if mask.sum() == 0:
+        raise ValueError(
+            "No positions have human labels for both groups in a_lab and b_lab."
+        )
+
+    diffs_unlab = a - b
+    diffs_lab_llm = diffs_unlab[mask]
+    diffs_lab_true = (a_lab - b_lab)[mask]
+    rect_items = diffs_lab_true - diffs_lab_llm
+
+    f_unlab = float(np.mean(diffs_unlab))
+    f_lab = float(np.mean(diffs_lab_true))
+    f_hat_lab = float(np.mean(diffs_lab_llm))
+    rectifier = f_lab - f_hat_lab
+    estimate = f_unlab + rectifier
+
+    boot_unlab = bayes_bootstrap_means_1d(diffs_unlab, n_boot, rng, statistic="mean")
+    boot_rect = bayes_bootstrap_means_1d(rect_items, n_boot, rng, statistic="mean")
+    boots = boot_unlab + boot_rect
+
+    lo = float(np.percentile(boots, 100 * alpha / 2))
+    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
+    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+        p_value=p_value,
+    )
+
+
 def _sanitize_multigroup_ppi_labels(
     groups: list[np.ndarray],
     groups_lab,

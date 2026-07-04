@@ -1027,6 +1027,38 @@ def _estimate_true_mean_mc_runs(
 # share the same baseline distribution.
 
 
+def _make_multiarm_true_means_fn(
+    generate_scores: Callable[[np.random.Generator, int, int, int, float], np.ndarray],
+    alt_delta: float,
+) -> Callable[[int, float], np.ndarray]:
+    """Build a MultiArmSource.true_means callback for a synthetic k-arm
+    generator: arm 0 carries `delta`, arms 1..k-1 stay at the baseline mean
+    (see generate_scores' own contract), so only two scalars need estimating
+    -- the baseline mean (delta=0.0) and arm 0's shifted mean (delta=alt_delta)
+    -- via the same large-sample Monte Carlo technique as
+    _estimate_true_pair_diff, since clipping/rounding can shift the realized
+    mean away from the raw additive `effects` shift. Computed lazily (only
+    when --mode simultaneous_ci actually calls it) and cached, so --mode
+    multiarm/pairwise pay no extra cost.
+    """
+    cache: dict[str, float] = {}
+
+    def _ensure() -> None:
+        if cache:
+            return
+        cache["base"] = float(np.mean(generate_scores(np.random.default_rng(0), 300_000, 1, 1, 0.0)))
+        cache["arm0"] = float(np.mean(generate_scores(np.random.default_rng(1), 300_000, 1, 1, alt_delta)))
+
+    def _true_means(k: int, delta: float) -> np.ndarray:
+        _ensure()
+        out = np.full(k, cache["base"], dtype=float)
+        if delta != 0.0:
+            out[0] = cache["arm0"]
+        return out
+
+    return _true_means
+
+
 def build_multiarm_sources(
     *, suite: str = "standard", icc: float = 0.20, cohens_d: float = 0.3, eval_types: list[str] | None = None,
 ) -> list[MultiArmSource]:
@@ -1044,9 +1076,11 @@ def build_multiarm_sources(
     sources: list[MultiArmSource] = []
     for eval_type in eval_types:
         for shape in _tier_shapes(SHAPES_BY_EVAL_TYPE[eval_type], suite):
+            generate_scores = _make_generator(shape)
+            alt_delta = cohens_d * group_total_std(shape, icc)
             sources.append(MultiArmSource(
-                label=shape.label, eval_type=eval_type, generate_scores=_make_generator(shape),
-                alt_delta=cohens_d * group_total_std(shape, icc),
+                label=shape.label, eval_type=eval_type, generate_scores=generate_scores,
+                alt_delta=alt_delta, true_means=_make_multiarm_true_means_fn(generate_scores, alt_delta),
             ))
     return sources
 
@@ -1061,12 +1095,20 @@ def build_multiarm_sources(
 # correctly using mostly-LLM-judged data plus a few real labels -- this
 # section sweeps one judge-bias/noise/labeling factor at a time, on top of
 # the same per-eval-type truth model the rest of the file uses, to check
-# whether that correction holds up. `eval_type` here excludes "binary":
-# the t-test/Mann-Whitney/ANOVA family this mode checks isn't designed for
-# 0/1 outcomes.
+# whether that correction holds up. `eval_type="binary"` is supported only
+# for the two-independent-groups mean-based tests (ttest/ttest_welch/
+# paired_t -- a proportion is just the mean of a 0/1 variable, so PPI's
+# rectifier applies exactly as it does for continuous data); the rank-based
+# family (mw/wilcoxon/friedman/kruskal) and ANOVA/LMM are NOT extended to
+# binary here (heavily-tied 0/1 data breaks rank tests, and the additive
+# noise/bias/slope judge model below doesn't apply to a 0/1 judgment either
+# -- see _jb_llm_binary/_jb_llm_repeated_binary for the confusion-matrix
+# model used instead), so those tests are skipped for binary scenarios (see
+# cases/pvalues.py's _ppi_effective_tests).
 
 _PPI_REPRESENTATIVE_SHAPE_LABEL: dict[str, str] = {
     "continuous": "cont-right-skew", "likert": "likert-mid", "grades": "grades-mid",
+    "binary": "p=0.50",
 }
 
 
@@ -1088,6 +1130,8 @@ def _ppi_shape_anchor(shape: ShapeSpec) -> float:
     if shape.eval_type == "continuous":
         a, b = shape.params
         return a / (a + b)
+    if shape.eval_type == "binary":
+        return float(shape.params)  # binary: params is the bare pass rate
     return float(shape.params[0])  # likert/grades: (mean, total spread)
 
 
@@ -1249,6 +1293,59 @@ def _jb_llm_repeated(
     raise ValueError(f"Unknown noise_family: {noise_family!r}")
 
 
+def _jb_llm_binary(truth: np.ndarray, bias: float, noise_level: float, rng: np.random.Generator) -> np.ndarray:
+    """Binary analogue of _jb_llm: turn a 0/1 ground-truth array into a 0/1
+    "LLM judge" array via a confusion-matrix (flip-probability) model,
+    rather than additive noise -- adding continuous noise to a 0/1 value
+    wouldn't stay in {0, 1}.
+
+    `noise_level` is the SYMMETRIC base misclassification rate (same
+    numeric range/meaning as the continuous scenarios' llm_noise): with
+    bias=0, the judge flips a true 1 to 0 (and a true 0 to 1) with that
+    same probability either way. `bias` then pulls those two error rates
+    apart in opposite directions -- positive bias makes the judge more
+    likely to report 1 regardless of the truth (lower false-negative rate,
+    higher false-positive rate), mirroring how a positive `bias` shifts
+    predicted scores upward in the continuous model. `slope` and
+    `noise_family` have no analogue here (not yet meaningful for a plain
+    flip-probability judge) and are simply not modeled.
+    """
+    flip_neg = float(np.clip(noise_level - bias / 2.0, 0.0, 1.0))  # P(judge=0 | truth=1)
+    flip_pos = float(np.clip(noise_level + bias / 2.0, 0.0, 1.0))  # P(judge=1 | truth=0)
+    u = rng.random(len(truth))
+    is_pos = truth >= 0.5
+    return np.where(is_pos, (u >= flip_neg).astype(float), (u < flip_pos).astype(float))
+
+
+def _jb_llm_repeated_binary(
+    truths: list[np.ndarray], biases: list[float], noise_levels: list[float],
+    rng: np.random.Generator, corr: float,
+) -> list[np.ndarray]:
+    """Binary analogue of _jb_llm_repeated: correlated confusion-matrix
+    judge decisions across several paired/repeated conditions, via a
+    shared latent Gaussian (thresholded per item against each condition's
+    own flip probabilities) instead of shared additive noise -- the same
+    shared/individual blending idea _jb_llm_repeated uses, just with a
+    threshold instead of an addition as the last step."""
+    if len(truths) == 0:
+        return []
+    n = len(truths[0])
+    corr_clamped = min(max(corr, 0.0), 0.999)
+    w_shared = float(np.sqrt(corr_clamped))
+    w_ind = float(np.sqrt(1.0 - corr_clamped))
+    shared = rng.normal(0.0, 1.0, n)
+
+    out: list[np.ndarray] = []
+    for truth, bias, noise_level in zip(truths, biases, noise_levels):
+        flip_neg = float(np.clip(noise_level - bias / 2.0, 0.0, 1.0))
+        flip_pos = float(np.clip(noise_level + bias / 2.0, 0.0, 1.0))
+        z = w_shared * shared + w_ind * rng.normal(0.0, 1.0, n)
+        u = norm.cdf(z)
+        is_pos = truth >= 0.5
+        out.append(np.where(is_pos, (u >= flip_neg).astype(float), (u < flip_pos).astype(float)))
+    return out
+
+
 def _jb_label_indices(
     signal: np.ndarray, n_lab: int, rng: np.random.Generator,
     mnar: bool, mnar_strength: float, mnar_mode: str,
@@ -1353,6 +1450,14 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
 
     for eval_type in ["continuous", "likert", "grades"]:
         S.append(make_scenario(f"eval_type.{eval_type}", "eval_type", eval_type=eval_type))
+
+    # Binary is a separate, smaller-scope scenario (not swept across every
+    # other factor below the way continuous/likert/grades are): only the
+    # mean-based tests (ttest/ttest_welch/paired_t) apply to it -- see the
+    # module-level comment above _PPI_REPRESENTATIVE_SHAPE_LABEL -- so this
+    # single baseline-settings scenario is the starting point for validating
+    # PPI correction on binary (proportion) judge data.
+    S.append(make_scenario("eval_type.binary", "eval_type", eval_type="binary"))
 
     # Truth-distribution shape factor: does PPI correction still fix Type-I
     # inflation when the underlying truth is a pathological ("custom")
@@ -1537,17 +1642,24 @@ def generate_judge_bias_cell(
     def _repeated(n: int, n_conditions: int, effects: np.ndarray) -> np.ndarray:
         return sample_group_truth(shape, n, 1, n_conditions, scenario.icc, rng, effects=effects)[:, :, 0]
 
-    # -- Independent two-group data (ttest, mannwhitney) --
+    # -- Independent two-group data (ttest, mannwhitney; ttest/ttest_welch
+    # also validated on binary -- see _jb_llm_binary. `es` (effect_size) is
+    # always 0.0 in build_judge_bias_sources()'s sweep, so "+ es" below
+    # never actually pushes a binary truth_b2 value outside {0, 1}.) --
     truth_a2 = _marginal(n1)
     truth_b2 = _marginal(n2) + es
-    llm_a2 = _jb_llm(
-        truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
-        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
-    )
-    llm_b2 = _jb_llm(
-        truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor,
-        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
-    )
+    if scenario.eval_type == "binary":
+        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng)
+        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng)
+    else:
+        llm_a2 = _jb_llm(
+            truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+        )
+        llm_b2 = _jb_llm(
+            truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+        )
     lab_a2 = _jb_labels_independent(
         truth_a2, scenario.label_frac, rng,
         mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
@@ -1557,13 +1669,19 @@ def generate_judge_bias_cell(
         mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
     )
 
-    # -- Paired data (wilcoxon) --
+    # -- Paired data (wilcoxon; paired_t also validated on binary -- see
+    # _jb_llm_repeated_binary) --
     truth_x, truth_y = _repeated(n1, 2, np.array([0.0, es]))
-    llm_x, llm_y = _jb_llm_repeated(
-        [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
-        rng, anchor=anchor, corr=scenario.repeated_corr,
-        noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
-    )
+    if scenario.eval_type == "binary":
+        llm_x, llm_y = _jb_llm_repeated_binary(
+            [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
+        )
+    else:
+        llm_x, llm_y = _jb_llm_repeated(
+            [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
+            rng, anchor=anchor, corr=scenario.repeated_corr,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+        )
     lab_x, lab_y = _jb_labels_shared(
         [truth_x, truth_y], scenario.label_frac, rng,
         mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
@@ -1695,9 +1813,11 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         thetas2[i] = _p_x_gt_y_midrank(a, b) - 0.5
 
     meds = np.empty(n_mc)  # median paired difference (wilcoxon)
+    means_paired = np.empty(n_mc)  # mean paired difference (paired_t)
     for i in range(n_mc):
         x, y = _repeated(n1, 2)
         meds[i] = float(np.median(x - y))
+        means_paired[i] = float(np.mean(x - y))
 
     bv = np.empty(n_mc)  # between-group variance (anova_ind)
     for i in range(n_mc):
@@ -1718,6 +1838,8 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "ttest_welch": float(diffs2.mean()),
         "mw": float(thetas2.mean()),
         "wilcoxon": float(meds.mean()),
+        "paired_t": float(means_paired.mean()),
+        "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": float(bv.mean()),
         "anova_rep": float(rv.mean()),
         "friedman": float(frv.mean()),
