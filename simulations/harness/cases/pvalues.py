@@ -73,10 +73,26 @@ Known exceptions (see simulations/harness/README.md):
   ``bayes_bootstrap`` PPI-corrects the same paired-mean estimand as
   ``paired_t`` but via Dirichlet-weighted (Bayesian) bootstrap resampling
   instead of ``evalstats.ppi.correct``'s classical one (see
-  ``evalstats.tests._ppi_paired_bayes_bootstrap``), carrying over the
-  smoothing advantage that makes it the strongest pairwise p-value method
-  on sparse/discrete binary data in ``--mode pairwise``'s non-PPI
-  comparison. ``mcnemar`` is intentionally NOT PPI-corrected here: its
+  ``evalstats.tests._ppi_paired_bayes_bootstrap``) -- kept as a validated
+  alternative, not a recommended default (real-data testing found it
+  underperforms; ``paired_t`` is the reasonable default for binary p-values).
+  ``bootstrap_t`` PPI-corrects the SAME paired-mean estimand via a
+  studentized-bootstrap pivot (see
+  ``evalstats.tests._ppi_paired_bootstrap_t``), generalizing
+  ``evalstats.core.resampling.bootstrap_t_ci_1d``'s per-replicate SE to
+  PPI's two-term variance -- numeric (continuous/likert/grades) ONLY, not
+  extended to binary, since its value is specifically for resampling-based
+  CI estimation on numeric data at N>=50 (``ci_paired.py``), not pairwise
+  binary p-values. ``tango_score`` is the mirror image -- binary ONLY, not
+  numeric -- PPI-correcting ``evalstats.core.resampling.tango_paired_ci``'s
+  score interval (see ``evalstats.tests._ppi_paired_tango``): its variance
+  term ``(n10+n01)/n^2 - (n10-n01)^2/n^3`` is exactly
+  ``Var(diffs, ddof=0) / n``, so it generalizes to PPI's two-term variance
+  by substituting an effective n (``n_eff = Var(unlabeled diffs) /
+  V_hat_PPI``) into the SAME Wilson-style shrinkage formula -- fully
+  closed-form, no bootstrap needed, and reduces EXACTLY to the original
+  (uncorrected) formula when the "labeled" subset is the full sample with
+  no judge error. ``mcnemar`` is intentionally NOT PPI-corrected here: its
   distinguishing feature is an EXACT small-sample binomial test on
   discordant-pair counts, and a PPI-corrected numerator is generally
   non-integer, breaking that exactness -- left as future work pending a
@@ -121,6 +137,8 @@ with warnings.catch_warnings():
         _ppi_two_sample,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
+        _ppi_paired_bootstrap_t,
+        _ppi_paired_tango,
         _p_x_gt_y_midrank,
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
@@ -163,6 +181,7 @@ from ..methods import (
     BAYES_BINARY,
     WILCOXON,
     PAIRED_T,
+    TANGO,
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
     PPI_TEST_METHODS,
@@ -1685,6 +1704,48 @@ def _uncorrected_bayes_bootstrap_paired_p_value(diffs: np.ndarray, n_boot: int, 
     return min(max(p, 0.0), 1.0)
 
 
+def _uncorrected_bootstrap_t_paired_p_value(diffs: np.ndarray, n_boot: int, rng: np.random.Generator) -> float:
+    """LLM-only (uncorrected) studentized-bootstrap two-sided p-value for
+    H0: mean(diffs) = 0 -- same pivot construction as
+    evalstats.core.resampling.bootstrap_t_ci_1d (SE = std/sqrt(n) per
+    replicate), applied directly (no PPI correction) as the baseline
+    _ppi_paired_bootstrap_t's corrected version is compared against."""
+    n = len(diffs)
+    theta_hat = float(np.mean(diffs))
+    se_hat = float(np.std(diffs, ddof=1)) / np.sqrt(n) if n > 1 else 0.0
+    if not np.isfinite(se_hat) or se_hat <= 0.0:
+        return 1.0
+    idx = rng.integers(0, n, size=(n_boot, n))
+    samples = diffs[idx]
+    boot_theta = samples.mean(axis=1)
+    boot_se = np.std(samples, ddof=1, axis=1) / np.sqrt(n)
+    valid = np.isfinite(boot_se) & (boot_se > 0.0)
+    if not np.any(valid):
+        return 1.0
+    t_stats = (boot_theta[valid] - theta_hat) / boot_se[valid]
+    t_obs = theta_hat / se_hat
+    p = float(2.0 * min(np.mean(t_stats <= t_obs), np.mean(t_stats >= t_obs)))
+    return min(max(p, 0.0), 1.0)
+
+
+def _uncorrected_tango_paired_p_value(diffs: np.ndarray) -> float:
+    """LLM-only (uncorrected) two-sided p-value for H0: mean(diffs) = 0,
+    using the SAME per-item variance evalstats.core.resampling.
+    tango_paired_ci's score interval is built from (V_hat = Var(diffs,
+    ddof=0) / n, i.e. (n10+n01)/n^2 - (n10-n01)^2/n^3 for binary diffs) --
+    applied directly (no PPI correction) as the baseline
+    _ppi_paired_tango's corrected version is compared against. Closed-form,
+    no bootstrap needed."""
+    n = len(diffs)
+    d_hat = float(np.mean(diffs))
+    v_hat = float(np.mean((diffs - d_hat) ** 2)) / n if n > 0 else 0.0
+    if v_hat <= 0.0 or not np.isfinite(v_hat):
+        return 1.0
+    z_obs = d_hat / np.sqrt(v_hat)
+    p = float(2.0 * (1.0 - scipy_stats.norm.cdf(abs(z_obs))))
+    return min(max(p, 0.0), 1.0)
+
+
 def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
     """Uncorrected (LLM-only) Wald F-test for score ~ <fixed factors> + (1|input),
     fit via statsmodels MixedLM (REML); _fit_lmm_general handles single-factor,
@@ -1711,15 +1772,23 @@ _ALPHA = ALPHA_DEFAULT
 # doesn't hold up under binary's massive ties, and generate_judge_bias_cell
 # doesn't extend its additive noise/bias/slope judge model to a 0/1
 # judgment for those structures either.
-_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name}
+_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name}
+
+# The mirror-image restriction: tests whose estimand/formula is specific to
+# paired BINARY data (Tango's discordant-pair-rate score interval, with a
+# continuity correction that only makes sense for a discrete difference) and
+# so should be excluded everywhere else, the same way BOOTSTRAP_T (numeric-
+# only, see its Method-registry comment) is excluded FROM binary.
+_PPI_BINARY_ONLY_TESTS = {TANGO.name}
 
 
 def _ppi_effective_tests(sc: JudgeBiasSource, active_tests: list[str]) -> list[str]:
     """Restrict active_tests to what this scenario's eval_type actually
-    supports -- currently only matters for eval_type="binary"."""
-    if sc.eval_type != "binary":
-        return active_tests
-    return [t for t in active_tests if t in _PPI_BINARY_COMPATIBLE_TESTS]
+    supports: binary scenarios only run _PPI_BINARY_COMPATIBLE_TESTS;
+    non-binary scenarios run everything except _PPI_BINARY_ONLY_TESTS."""
+    if sc.eval_type == "binary":
+        return [t for t in active_tests if t in _PPI_BINARY_COMPATIBLE_TESTS]
+    return [t for t in active_tests if t not in _PPI_BINARY_ONLY_TESTS]
 
 
 def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_boot: int, seed) -> list[PPIResult]:
@@ -1791,6 +1860,24 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
                     corrected[BAYES_BOOTSTRAP.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[BAYES_BOOTSTRAP.name] += 1
+
+            if BOOTSTRAP_T.name in active_tests:
+                try:
+                    p_u = _uncorrected_bootstrap_t_paired_p_value(cell.llm_x - cell.llm_y, n_boot, np.random.default_rng(_rng_seed()))
+                    uncorrected[BOOTSTRAP_T.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_bootstrap_t(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, n_boot, _rng_seed())
+                    corrected[BOOTSTRAP_T.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[BOOTSTRAP_T.name] += 1
+
+            if TANGO.name in active_tests:
+                try:
+                    p_u = _uncorrected_tango_paired_p_value(cell.llm_x - cell.llm_y)
+                    uncorrected[TANGO.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
+                    corrected[TANGO.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[TANGO.name] += 1
 
             if ANOVA_IND.name in active_tests:
                 try:
@@ -1914,8 +2001,8 @@ def run_ppi_simulation(
 # ---------------------------------------------------------------------------
 
 _PPI_EFFECT_TESTS = (
-    TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
-    ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
+    TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name,
+    TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
 )
 
 
@@ -1989,6 +2076,20 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_paired_bayes_bootstrap(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, n_boot, _rng_seed())
                     out[BAYES_BOOTSTRAP.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if BOOTSTRAP_T.name in active_tests:
+                try:
+                    r = _ppi_paired_bootstrap_t(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, n_boot, _rng_seed())
+                    out[BOOTSTRAP_T.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if TANGO.name in active_tests:
+                try:
+                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
+                    out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -2861,7 +2962,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=[TTEST.name, MW.name, PAIRED_T.name, BAYES_BOOTSTRAP.name], ppi_n_boot=200, latex=True,
+        tests=[TTEST.name, MW.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         workers=1,
     )

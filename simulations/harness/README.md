@@ -256,22 +256,41 @@ same way `evalstats.core.resampling` is.
   than sweeping the full shape catalog the way `--mode multiarm` does --
   judge-bias/noise/MNAR-label parameters are PPI's actual axis of interest,
   not distribution shape. `binary` (representative shape `p=0.50`) is
-  supported only for the mean-based tests -- `ttest`/`ttest_welch`
-  (two independent groups), `paired_t` (paired), and `bayes_bootstrap`
-  (paired, Dirichlet-weighted) -- since a proportion is just the mean of a
-  0/1 variable, so PPI's rectifier applies unchanged; it runs as a single
-  baseline-settings scenario rather than being swept across every other
-  factor. `bayes_bootstrap` PPI-corrects the identical paired-mean estimand
+  supported only for tests whose estimand is the paired-mean difference
+  (a proportion is just the mean of a 0/1 variable, so PPI's rectifier
+  applies unchanged) -- `ttest`/`ttest_welch` (two independent groups),
+  `paired_t` (paired), `bayes_bootstrap` (paired, Dirichlet-weighted), and
+  `tango_score` (paired, score interval) -- as a single baseline-settings
+  scenario rather than being swept across every other factor.
+  `bayes_bootstrap` PPI-corrects the identical paired-mean estimand
   as `paired_t`, but via Dirichlet-weighted (Bayesian) bootstrap resampling
   (`evalstats.tests._ppi_paired_bayes_bootstrap`) instead of
-  `evalstats.ppi.correct`'s classical resampling -- carrying over the
-  smoothing advantage that makes it `--mode pairwise`'s strongest
-  non-PPI p-value method on sparse/discrete binary data, rather than
-  losing it to a generic mean-based correction. `mcnemar` is deliberately
-  NOT PPI-corrected: its defining feature is an exact small-sample binomial
-  test on discordant-pair counts, and a PPI-corrected numerator is
-  generally non-integer, breaking that exactness -- left as future work.
-  The rank-based family (`mw`/`wilcoxon`/`friedman`/`kruskal`) and ANOVA/LMM
+  `evalstats.ppi.correct`'s classical resampling -- kept as a validated
+  alternative method, not a recommended default: real-data testing found
+  it underperforms, so `paired_t` remains the reasonable default for
+  binary p-values. `bootstrap_t` PPI-corrects the SAME paired-mean
+  estimand via a studentized-bootstrap pivot
+  (`evalstats.tests._ppi_paired_bootstrap_t`), generalizing
+  `evalstats.core.resampling.bootstrap_t_ci_1d`'s per-replicate SE
+  (`std/sqrt(n)`) to PPI's two-independent-term variance
+  (`Var(unlabeled term)/N + Var(rectifier term)/n_lab`) -- numeric
+  (continuous/likert/grades) ONLY, not extended to binary, since its
+  value is specifically for resampling-based CI estimation on numeric
+  data at N>=50 (`ci_paired.py`), not pairwise binary p-values.
+  `tango_score` is the mirror image -- binary ONLY, not numeric --
+  PPI-correcting `evalstats.core.resampling.tango_paired_ci`'s score
+  interval (`evalstats.tests._ppi_paired_tango`): its variance term
+  `(n10+n01)/n^2 - (n10-n01)^2/n^3` is exactly `Var(diffs, ddof=0) / n`,
+  so it generalizes to PPI's two-term variance by substituting an
+  effective n (`n_eff = Var(unlabeled diffs) / V_hat_PPI`) into the SAME
+  Wilson-style shrinkage formula -- fully closed-form (no bootstrap), and
+  reduces EXACTLY to the original uncorrected formula when the "labeled"
+  subset is the full sample with no judge error (verified numerically).
+  `mcnemar` is deliberately NOT PPI-corrected: its defining feature is an
+  exact small-sample binomial test on discordant-pair counts, and a
+  PPI-corrected numerator is generally non-integer, breaking that
+  exactness -- left as future work. The rank-based family
+  (`mw`/`wilcoxon`/`friedman`/`kruskal`) and ANOVA/LMM
   stay continuous/likert/grades-only: they assume a scale that breaks down
   under binary's massive ties, and the additive noise/bias/slope
   judge-miscalibration model (`scenarios.synthetic._jb_llm`/

@@ -184,10 +184,22 @@ SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
 # BAYES_BOOTSTRAP is shared with the bootstrap-family registry above: the
 # same paired-mean-difference estimand as PAIRED_T, but PPI-corrected via a
 # Dirichlet-weighted (Bayesian) bootstrap instead of evalstats.ppi.correct's
-# classical one -- see evalstats.tests._ppi_paired_bayes_bootstrap -- to
-# carry over the smoothing advantage that makes it the strongest pairwise
-# p-value method on sparse/discrete (e.g. binary) data in --mode pairwise's
-# non-PPI comparison.
+# classical one -- see evalstats.tests._ppi_paired_bayes_bootstrap -- kept
+# as a validated alternative, not a recommended default (real-data testing
+# found it underperforms; PAIRED_T remains the reasonable default for
+# binary p-values). BOOTSTRAP_T is likewise shared: the same paired-mean
+# estimand, PPI-corrected via a studentized-bootstrap pivot generalizing
+# evalstats.core.resampling.bootstrap_t_ci_1d's per-replicate SE to PPI's
+# two-term variance -- see evalstats.tests._ppi_paired_bootstrap_t. Numeric
+# (continuous/likert/grades) only -- unlike PAIRED_T/BAYES_BOOTSTRAP, not
+# extended to binary, since bootstrap_t's value is specifically for
+# resampling-based CI estimation on numeric data at N>=50 (ci_paired.py).
+# TANGO (reusing ci_paired's existing "tango_score" Method instance) is the
+# mirror image: binary paired data ONLY, not numeric -- PPI-corrects
+# evalstats.core.resampling.tango_paired_ci's score interval by substituting
+# an effective-n derived from PPI's two-term variance into its Wilson-style
+# shrinkage formula (see evalstats.tests._ppi_paired_tango); fully
+# closed-form, no bootstrap resampling.
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#3182bd")
 TTEST_WELCH = Method("ttest_welch", "#6baed6")
@@ -200,7 +212,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MW, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
+    TTEST, TTEST_WELCH, MW, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

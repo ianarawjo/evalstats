@@ -1840,6 +1840,8 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "wilcoxon": float(meds.mean()),
         "paired_t": float(means_paired.mean()),
         "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": float(bv.mean()),
         "anova_rep": float(rv.mean()),
         "friedman": float(frv.mean()),

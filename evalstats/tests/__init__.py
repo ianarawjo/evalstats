@@ -1000,6 +1000,234 @@ def _ppi_paired_bayes_bootstrap(
     )
 
 
+def _ppi_paired_bootstrap_t(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+):
+    """PPI correction for a paired mean-difference estimand
+    ``mean(a_i - b_i)``, using a studentized bootstrap (bootstrap-t) pivot
+    instead of :func:`evalstats.ppi.correct`'s plain percentile bootstrap --
+    the paired-mean analogue of
+    :func:`evalstats.core.resampling.bootstrap_t_ci_1d`, generalized to
+    PPI's two-term variance decomposition.
+
+    ``bootstrap_t_ci_1d`` studentizes a single sample using
+    ``SE = std(sample, ddof=1) / sqrt(n)`` per replicate. A PPI estimator is
+    a SUM of two independent terms -- the full-sample (unlabeled) mean and
+    the labeled-subset rectifier -- so its variance is the sum of their two
+    variances: ``Var(unlab)/N + Var(rectifier)/n_lab`` (the same
+    independent-terms structure the PPI point estimate itself already
+    assumes). Each bootstrap replicate resamples both terms (classically,
+    matching :func:`evalstats.ppi.correct`'s resampling) and is studentized
+    by that same two-term SE, computed from the replicate's own resampled
+    arrays -- directly mirroring ``bootstrap_t_ci_1d``'s per-replicate SE,
+    just with two variance components instead of one.
+
+    Falls back to a plain percentile-bootstrap CI/p-value (mirroring
+    ``bootstrap_t_ci_1d``'s own fallback) when the observed SE is zero or
+    too many bootstrap replicates have a degenerate (near-zero) SE.
+
+    Pairing is by array position, matching :func:`_ppi_paired_arrays`; a
+    position is included in the labeled set only when *both* ``a_lab[i]``
+    and ``b_lab[i]`` are non-NaN.
+    """
+    from evalstats.ppi import PPIResult
+
+    rng = np.random.default_rng(rng)
+
+    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+    if mask.sum() == 0:
+        raise ValueError(
+            "No positions have human labels for both groups in a_lab and b_lab."
+        )
+
+    diffs_unlab = a - b
+    diffs_lab_llm = diffs_unlab[mask]
+    diffs_lab_true = (a_lab - b_lab)[mask]
+    rect_items = diffs_lab_true - diffs_lab_llm
+
+    n_all = len(diffs_unlab)
+    n_lab = len(rect_items)
+
+    f_unlab = float(np.mean(diffs_unlab))
+    f_lab = float(np.mean(diffs_lab_true))
+    f_hat_lab = float(np.mean(diffs_lab_llm))
+    rectifier = f_lab - f_hat_lab
+    estimate = float(f_unlab + rectifier)
+
+    def _var(x: np.ndarray) -> float:
+        return float(np.var(x, ddof=1)) if len(x) > 1 else 0.0
+
+    se_obs = float(np.sqrt(_var(diffs_unlab) / n_all + _var(rect_items) / n_lab))
+
+    # ── Bootstrap: chunked, vectorized, mirroring bootstrap_t_ci_1d ────────
+    chunk_size = max(1, min(n_boot, 4096, max(1, int(1_000_000 // max(max(n_all, n_lab), 1)))))
+    boot_theta = np.empty(n_boot, dtype=float)
+    boot_se = np.empty(n_boot, dtype=float)
+
+    start = 0
+    while start < n_boot:
+        stop = min(start + chunk_size, n_boot)
+        m = stop - start
+        idx_all = rng.integers(0, n_all, size=(m, n_all))
+        idx_lab = rng.integers(0, n_lab, size=(m, n_lab))
+        unlab_samples = diffs_unlab[idx_all]  # (m, n_all)
+        rect_samples = rect_items[idx_lab]    # (m, n_lab)
+        boot_theta[start:stop] = unlab_samples.mean(axis=1) + rect_samples.mean(axis=1)
+        boot_se[start:stop] = np.sqrt(
+            np.var(unlab_samples, ddof=1, axis=1) / n_all
+            + np.var(rect_samples, ddof=1, axis=1) / n_lab
+        )
+        start = stop
+
+    def _percentile_result() -> "PPIResult":
+        lo = float(np.percentile(boot_theta, 100 * alpha / 2))
+        hi = float(np.percentile(boot_theta, 100 * (1 - alpha / 2)))
+        p = float(2.0 * min(np.mean(boot_theta <= 0.0), np.mean(boot_theta >= 0.0)))
+        p = min(max(p, 0.0), 1.0)
+        return PPIResult(
+            estimate=estimate, ci_low=lo, ci_high=hi, alpha=alpha,
+            llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+            p_value=p,
+        )
+
+    if se_obs <= 0.0 or not np.isfinite(se_obs):
+        return _percentile_result()
+
+    valid = np.isfinite(boot_se) & (boot_se > 0.0)
+    if not np.any(valid):
+        return _percentile_result()
+    se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+    tiny_frac = float(np.mean(valid & (boot_se < se_floor)))
+    if tiny_frac > 0.05:
+        return _percentile_result()
+    valid = valid & (boot_se >= se_floor)
+    if not np.any(valid):
+        return _percentile_result()
+
+    t_stats = (boot_theta[valid] - estimate) / boot_se[valid]
+    t_lo = float(np.percentile(t_stats, 100.0 * alpha / 2))
+    t_hi = float(np.percentile(t_stats, 100.0 * (1.0 - alpha / 2)))
+    ci_low = float(estimate - t_hi * se_obs)
+    ci_high = float(estimate - t_lo * se_obs)
+
+    t_obs = estimate / se_obs
+    p_value = float(2.0 * min(np.mean(t_stats <= t_obs), np.mean(t_stats >= t_obs)))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+        p_value=p_value,
+    )
+
+
+def _ppi_paired_tango(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+):
+    """PPI correction for the paired binary difference estimand
+    ``evalstats.core.resampling.tango_paired_ci`` targets: ``mean(a_i - b_i)``,
+    equivalently ``(n10 - n01) / n`` (the discordant-pair-rate difference).
+
+    Tango's score interval has the Wilson-style form::
+
+        center = d_hat / (1 + z^2/n)
+        radius = z / (1 + z^2/n) * sqrt(V_hat + z^2/(4*n^2))
+
+    where ``V_hat = (n10+n01)/n^2 - (n10-n01)^2/n^3``. That's exactly
+    ``Var(a_i - b_i, ddof=0) / n`` -- the same naive per-item variance a
+    Wald interval would use, divided by the sample size, just wrapped in a
+    Wilson-style shrinkage/continuity correction for better small-sample
+    coverage. Because it's already expressed as "some reference variance,
+    divided by n," it generalizes to PPI's additive two-term variance --
+    ``V_hat_PPI = Var(unlabeled diffs)/N + Var(rectifier residuals)/n_lab``
+    -- by substituting an EFFECTIVE n that reproduces the same
+    "variance = (reference variance) / n" relationship the original formula
+    assumes: ``n_eff = Var(unlabeled diffs, ddof=0) / V_hat_PPI``. This
+    reduces EXACTLY to the original (uncorrected) Tango formula in the
+    degenerate case where the "labeled" subset is the full sample with no
+    judge error (rectifier -> 0, n_eff -> n).
+
+    Unlike the other ``_ppi_paired_*`` functions here, this is fully
+    closed-form -- no bootstrap resampling is used (or would be
+    meaningful to add): Tango's coverage guarantee comes from the
+    score-interval derivation itself, not from resampling a plug-in
+    statistic, so there is no ``n_boot``/``rng`` parameter.
+
+    Pairing is by array position, matching :func:`_ppi_paired_arrays`; a
+    position is included in the labeled set only when *both* ``a_lab[i]``
+    and ``b_lab[i]`` are non-NaN.
+    """
+    from evalstats.ppi import PPIResult
+    from scipy.stats import norm as _norm
+
+    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+    if mask.sum() == 0:
+        raise ValueError(
+            "No positions have human labels for both groups in a_lab and b_lab."
+        )
+
+    diffs_unlab = a - b
+    diffs_lab_llm = diffs_unlab[mask]
+    diffs_lab_true = (a_lab - b_lab)[mask]
+    rect_items = diffs_lab_true - diffs_lab_llm
+
+    n_all = len(diffs_unlab)
+    n_lab = len(rect_items)
+
+    f_unlab = float(np.mean(diffs_unlab))
+    f_lab = float(np.mean(diffs_lab_true))
+    f_hat_lab = float(np.mean(diffs_lab_llm))
+    rectifier = f_lab - f_hat_lab
+    estimate = float(f_unlab + rectifier)
+
+    def _pvar(x: np.ndarray) -> float:
+        # Population variance (ddof=0), matching Tango's own (n10+n01)/n -
+        # d_hat^2 derivation exactly (rather than the ddof=1 sample variance
+        # used elsewhere in this module).
+        return float(np.mean((x - np.mean(x)) ** 2)) if len(x) > 0 else 0.0
+
+    sigma2_f = _pvar(diffs_unlab)      # per-item variance, full LLM-judged sample
+    sigma2_rect = _pvar(rect_items)    # per-item variance, rectifier residuals
+    v_hat = sigma2_f / n_all + sigma2_rect / n_lab
+
+    z = float(_norm.ppf(1.0 - alpha / 2.0))
+
+    if v_hat <= 0.0 or not np.isfinite(v_hat) or sigma2_f <= 0.0:
+        # Degenerate (e.g. every diff identical): no meaningful interval to derive.
+        return PPIResult(
+            estimate=estimate, ci_low=estimate, ci_high=estimate, alpha=alpha,
+            llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+            p_value=1.0,
+        )
+
+    n_eff = sigma2_f / v_hat
+    shrink = 1.0 / (1.0 + z ** 2 / n_eff)
+    center = estimate * shrink
+    radius = float(z * shrink * np.sqrt(v_hat + z ** 2 / (4.0 * n_eff ** 2)))
+    ci_low = float(np.clip(center - radius, -1.0, 1.0))
+    ci_high = float(np.clip(center + radius, -1.0, 1.0))
+
+    z_obs = estimate / np.sqrt(v_hat)
+    p_value = float(2.0 * (1.0 - _norm.cdf(abs(z_obs))))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+        p_value=p_value,
+    )
+
+
 def _sanitize_multigroup_ppi_labels(
     groups: list[np.ndarray],
     groups_lab,
