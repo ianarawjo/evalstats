@@ -258,7 +258,7 @@ scores = {
 }
 
 report = estats.compare_models(scores)
-report.full_summary()</code></pre>
+report.summary()</code></pre>
 
       <p>Example terminal output:</p>
       <div class="terminal-screenshot">
@@ -316,8 +316,8 @@ evalstats analyze results.xlsx --sheet "Eval Results"
 # Save a Markdown summary and a mean-advantage plot
 evalstats analyze results.csv --out report.md plot.png
 
-# 95 % CIs instead of the default 99 %
-evalstats analyze results.csv --ci 0.95</code></pre>
+# 99 % CIs instead of the default 95 %
+evalstats analyze results.csv --ci 0.99</code></pre>
       <p class="aside">
         Column name aliases are accepted for convenience — e.g. <code>template</code> instead of
         <code>prompt</code>, <code>item</code> instead of <code>input</code>, or <code>value</code>

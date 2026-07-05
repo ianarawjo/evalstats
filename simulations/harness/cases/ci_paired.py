@@ -767,6 +767,7 @@ def _print_overall_summary_table(
     per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
     all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
     per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
+    min_cov: dict[str, float] = defaultdict(lambda: float("inf"))
     for (et, m, n), vals in agg.items():
         if et not in eval_types:
             continue
@@ -776,10 +777,13 @@ def _print_overall_summary_table(
         all_counts[m] = (c_prev + c, t_prev + t)
         c_prev_n, t_prev_n = per_n_counts[(m, n)]
         per_n_counts[(m, n)] = (c_prev_n + c, t_prev_n + t)
+        min_cov[m] = min(min_cov[m], min(v[0] for v in vals))
 
     n_cols_hdr = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
+    print(f"  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
+          f"  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
     for m in method_labels:
         mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
@@ -788,12 +792,14 @@ def _print_overall_summary_table(
             [r for r in results if r.method == m and r.eval_type in eval_types]
         )
         time_str = f"{avg_ms:.3f}+-{se_ms:.3f}" if np.isfinite(avg_ms) else "-"
+        worst = min_cov[m]
+        worst_str = f"{worst:.3f}{_cov_marker(worst, target)}" if np.isfinite(worst) else "-"
         n_cols_vals = ""
         for n in sizes_present:
             c_n, t_n = per_n_counts.get((m, n), (0, 0))
             cov_n = c_n / t_n if t_n > 0 else float("nan")
             n_cols_vals += f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} " if np.isfinite(cov_n) else f"  {'  -':>7}"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
 
 
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int, statistic: str) -> None:
@@ -1123,6 +1129,77 @@ def save_width_vs_n_plot(*, results: list[SimResult], sample_sizes: list[int], a
     return out_path
 
 
+def save_reliability_violin_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_path: str) -> str:
+    """Cross-scenario reliability: violin+strip of per-scenario coverage and interval
+    score, one dot per (label, method) -- i.e. per data-generating scenario, averaged
+    over sample sizes and reps but NOT over scenarios. Exposes the spread the OVERALL
+    SUMMARY table's mean hides: a method with good average coverage can still have a
+    long undercoverage tail on specific scenarios, which a single mean cannot reveal."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    target = 1.0 - alpha
+    non_null = [r for r in results if not r.is_null]
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
+    present_methods = {r.method for r in non_null}
+    method_objs = order_present_methods(present_methods)
+    method_names = [m.name for m in method_objs]
+    palette = {m.name: m.color for m in method_objs}
+
+    df = pd.DataFrame([
+        {
+            "eval_type": r.eval_type, "label": r.label, "method": r.method,
+            "coverage": r.covered / r.n_reps, "score": r.total_score / r.n_reps,
+        }
+        for r in non_null
+    ])
+    df = df[df["method"].isin(method_names)]
+    scenario_level = df.groupby(["eval_type", "label", "method"], as_index=False).agg(
+        coverage=("coverage", "mean"), score=("score", "mean"),
+    )
+
+    n_cols = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+    for col_idx, et in enumerate(eval_types_present):
+        et_df = scenario_level[scenario_level["eval_type"] == et]
+        et_methods = [name for name in method_names if name in et_df["method"].values]
+        for row_idx, (metric, ylabel) in enumerate([("coverage", "Coverage per scenario"), ("score", "Interval score per scenario")]):
+            ax = axes[row_idx][col_idx]
+            if et_df.empty:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            sns.violinplot(
+                data=et_df, x="method", y=metric, order=et_methods, hue="method",
+                hue_order=et_methods, palette=palette, cut=0, inner=None, linewidth=0.8,
+                alpha=0.35, legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="method", y=metric, order=et_methods, hue="method",
+                hue_order=et_methods, palette=palette, size=4, alpha=0.7, jitter=0.25,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
+            if metric == "coverage":
+                ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+            ax.tick_params(axis="x", rotation=45)
+            for label in ax.get_xticklabels():
+                label.set_ha("right")
+
+    fig.suptitle(
+        f"Cross-Scenario Reliability (one dot = one scenario)\nci_paired | reps={n_reps} | alpha={alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_path: str) -> str:
     """Scatter plot: x = mean CI time (log ms), y = coverage; one subplot per eval type."""
     import matplotlib.pyplot as plt
@@ -1380,7 +1457,7 @@ def real_official_args(base_seed: int = 42) -> argparse.Namespace:
 def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
     """Official-test preset for nested-mode real (inspect) data.
     Requires simulations/out/inspect_benchmarks.csv (produced by
-    collect_inspect_benchmarks.py --runs 3 ...). Tests paired-diff CI
+    collect_inspect_benchmarks.py --runs 5 ...). Tests paired-diff CI
     coverage using all three repeated runs per item collected during
     the multi-run Inspect AI data collection phase."""
     return argparse.Namespace(
@@ -1390,7 +1467,7 @@ def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
         sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, icc_values=None, cohens_d_values=[0.2, 0.4], include_null=False,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
-        nested_mode=True, runs_sweep=[3], run_noise_fracs=[0.0], heteroscedastic=False,
+        nested_mode=True, runs_sweep=[5], run_noise_fracs=[0.0], heteroscedastic=False,
         pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
         latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
@@ -1522,7 +1599,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                     results=results, alpha=args.alpha, n_reps=args.reps,
                     out_path=str(Path(plots_dir) / f"{run_stem}_cost_coverage.png"),
                 )
-                output_paths += [cov_path, width_path, cost_path]
+                reliability_path = save_reliability_violin_plot(
+                    results=results, alpha=args.alpha, n_reps=args.reps,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
+                )
+                output_paths += [cov_path, width_path, cost_path, reliability_path]
                 run_noise_path = save_coverage_vs_run_noise_plot(
                     results=results, alpha=args.alpha, n_reps=args.reps,
                     out_path=str(Path(plots_dir) / f"{run_stem}_coverage_vs_run_noise.png"),
@@ -1596,8 +1677,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                 results=results, alpha=args.alpha, n_reps=args.reps,
                 out_path=str(Path(plots_dir) / f"{run_stem}_cost_coverage.png"),
             )
-            output_paths += [cov_path, width_path, cost_path]
-            print(f"Saved plots: {cov_path}, {width_path}, {cost_path}")
+            reliability_path = save_reliability_violin_plot(
+                results=results, alpha=args.alpha, n_reps=args.reps,
+                out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
+            )
+            output_paths += [cov_path, width_path, cost_path, reliability_path]
+            print(f"Saved plots: {cov_path}, {width_path}, {cost_path}, {reliability_path}")
 
         non_null = [r for r in results if not r.is_null]
         overall_cov = float(np.mean([r.covered / r.n_reps for r in non_null])) if non_null else float("nan")

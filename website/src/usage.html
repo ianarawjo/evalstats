@@ -143,7 +143,7 @@
   <div class="ps-output"><pre>====================
  PROMPTS COMPARISON
 ====================
-3 prompts | 20 inputs | method=nig | 99% confidence intervals (CI)
+3 prompts | 20 inputs | method=nig | 95% confidence intervals (CI)
 
 --- Mean Performance (marginal NIG CIs) ---
   axis: [0.561, 1.009]  (· ±1σ, ─ CI, ● mean, │ grand mean)
@@ -160,7 +160,7 @@
   prompt_b     prompt_a                     ··──│────●────────··       +0.0965   -0.0265   +0.2195    0.600
   ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5)
 
-  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 99% CI, max_t-adjusted:
+  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 95% CI, max_t-adjusted:
     #2–#3: [prompt_b ─ prompt_a]
 
   -> Evidence suggests a clear best option: 'prompt_c'
@@ -260,7 +260,7 @@ result.summary()</code></pre>
 }
 
 result = estats.compare_models(scores)
-result.full_summary()</code></pre>
+result.summary()</code></pre>
 
   <div class="ps-output"><pre>================================================
  CROSS-MODEL RANKING (ALL MODEL/TEMPLATE PAIRS)
@@ -329,7 +329,7 @@ result.summary()</code></pre>
   <div class="ps-output"><pre>===================
  MODELS COMPARISON
 ===================
-3 models | 40 inputs | method=nig | 99% confidence intervals (CI)
+3 models | 40 inputs | method=nig | 95% confidence intervals (CI)
 
 --- Mean Performance (marginal NIG CIs) ---
   axis: [0.683, 0.937]  (· ±1σ, ─ CI, ● mean, │ grand mean)
@@ -349,7 +349,7 @@ result.summary()</code></pre>
   p (wsr) = Wilcoxon signed-rank (fdr_bh-corrected)
   stars: * p<0.01, ** p<0.001, *** p<0.0001
 
-  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 99% CI, max_t-adjusted:
+  Statistically indistinguishable rank bands (similar to critical difference diagrams) computed from 95% CI, max_t-adjusted:
     #1–#2: [qwen3-8b ─ gpt-4o-mini]
 
 --- Executive Summary (Model leaderboard) ---
@@ -371,24 +371,30 @@ result.summary()</code></pre>
 
   <h3 id="api-analyze-csv" style="margin-top:2rem;">Loading from a CSV or Excel file</h3>
   <p>
-    <code>estats.analyze()</code> mirrors the CLI — pass a file path and it handles
-    format detection automatically. Useful when you want to run the analysis from a
-    script or notebook.
+    <code>estats.analyze()</code> takes a <code>BenchmarkResult</code>, not a file path directly.
+    Load your file into a DataFrame, parse it with <code>estats.from_dataframe()</code>, then
+    analyze the result. Useful when you want to run the analysis from a script or notebook.
   </p>
-  <pre><code class="language-python">import evalstats as estats
+  <pre><code class="language-python">import pandas as pd
+import evalstats as estats
 
-result = estats.analyze("results.csv")
-result.summary()
+df = pd.read_csv("results.csv")
+benchmark, load_report = estats.from_dataframe(df, return_report=True)
+
+result = estats.analyze(benchmark)
+estats.print_analysis_summary(result)
 
 # With options
+df = pd.read_excel("results.xlsx", sheet_name="Eval Results")
+benchmark = estats.from_dataframe(df)
+
 result = estats.analyze(
-    "results.xlsx",
-    sheet="Eval Results",
-    ci=0.95,
+    benchmark,
+    ci=0.99,
     method="lmm",       # mixed-effects model
     n_bootstrap=20000,
 )
-result.summary()</code></pre>
+estats.print_analysis_summary(result)</code></pre>
 </section>
 
 
@@ -409,7 +415,7 @@ result.summary()</code></pre>
         </tr>
       </thead>
       <tbody>
-        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.99</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Confidence level. Use 0.95 for the traditional default.</td></tr>
+        <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">0.95</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Confidence level. Use 0.99 for a more conservative interval.</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">method</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Auto-selects based on data type. Options: <code>"lmm"</code>, <code>"bootstrap"</code>, <code>"smooth_bootstrap"</code>, <code>"bca"</code>, <code>"bayes_bootstrap"</code>, <code>"bayes_binary"</code>, <code>"wilson"</code>, <code>"newcombe"</code>, <code>"permutation"</code>, <code>"fisher_exact"</code>, <code>"sign_test"</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">n_bootstrap</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">10000</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Bootstrap resamples. Increase for smoother CI estimates.</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">simultaneous_ci</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">True</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Family-wise CI correction (max-T). Set to False for marginal CIs.</td></tr>
@@ -418,7 +424,7 @@ result.summary()</code></pre>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">omnibus</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Run a Friedman omnibus test before pairwise comparisons (k ≥ 3).</td></tr>
         <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">p_values</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">False</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Show pairwise p-values in the report. CLI: <code>--p-values</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">pairwise_test</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"auto"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Pairwise p-value test. Options: <code>"auto"</code>, <code>"bootstrap"</code>, <code>"wilcoxon"</code>, <code>"nemenyi"</code>. CLI: <code>--pairwise-test TEST</code> (setting this explicitly also enables p-values).</td></tr>
-        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">correction</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"holm"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Multiple-comparison correction. Options: <code>"holm"</code>, <code>"bonferroni"</code>, <code>"fdr_bh"</code>, <code>"none"</code>.</td></tr>
+        <tr style="background:var(--surface-2,#f9f9f9);"><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">correction</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">"fdr_bh"</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Multiple-comparison correction. Options: <code>"holm"</code>, <code>"bonferroni"</code>, <code>"fdr_bh"</code>, <code>"none"</code>.</td></tr>
         <tr><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd); font-family:'IBM Plex Mono',monospace;">failure_threshold</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">None</td><td style="padding:0.4rem 0.8rem; border:1px solid var(--border,#ddd);">Flag inputs scoring below this value in the robustness table.</td></tr>
       </tbody>
     </table>

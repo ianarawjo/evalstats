@@ -477,7 +477,9 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
     n_cols = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
     print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n)\n{'-'*72}")
-    print(f"\n  {'Method':<20}  {'TypeI':>6}  {'Band95':>13}  {'MeanPow':>8}{n_cols}")
+    print(f"  MaxT1 = worst per-scenario Type-I error seen for that method (not an average) --\n"
+          f"  flags methods whose good mean Type-I error hides an inflated scenario/n cell.")
+    print(f"\n  {'Method':<20}  {'TypeI':>6}  {'MaxT1':>7}  {'Band95':>13}  {'MeanPow':>8}{n_cols}")
     for m in method_labels:
         m_rows = [r for r in results if r.method == m]
         if not m_rows:
@@ -496,6 +498,14 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
             power_cells.append(cr / ct if ct > 0 else float("nan"))
         mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
         marker = "*" if np.isfinite(type1) and type1 > alpha + 0.02 else " "
+        per_label_t1 = defaultdict(lambda: [0, 0])
+        for r in null_rows:
+            acc = per_label_t1[(r.eval_type, r.label)]
+            acc[0] += r.rejects
+            acc[1] += r.n_reps
+        label_rates = [c / t for c, t in per_label_t1.values() if t > 0]
+        worst_t1 = max(label_rates) if label_rates else float("nan")
+        worst_str = f"{worst_t1:.3f}{'*' if np.isfinite(worst_t1) and worst_t1 > alpha + 0.02 else ' '}" if np.isfinite(worst_t1) else "-"
         n_type1 = ""
         for n in sizes_present:
             n_rows = [r for r in null_rows if r.n == n]
@@ -503,7 +513,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
             t_n = sum(r.n_reps for r in n_rows)
             t1_n = c_n / t_n if t_n > 0 else float("nan")
             n_type1 += f"  {t1_n:>7.3f}" if np.isfinite(t1_n) else f"  {'  -':>7}"
-        print(f"  {m:<20}  {type1:>5.3f}{marker}  {band:>13}  {mean_power:>8.3f}{n_type1}")
+        print(f"  {m:<20}  {type1:>5.3f}{marker}  {worst_str:>7}  {band:>13}  {mean_power:>8.3f}{n_type1}")
     print(f"  (* = TypeI > alpha + 0.02)")
     print()
 
@@ -695,6 +705,84 @@ def save_pairwise_typeI_power_plot(*, results: list[PairwiseResult], alpha: floa
         _save_pairwise_typeI_power_plot_one(results=results, alpha=alpha, out_path=et_path, eval_type=et)
         saved.append(et_path)
     return saved
+
+
+def save_pairwise_reliability_violin_plot(*, results: list[PairwiseResult], alpha: float, out_path: str) -> str:
+    """Cross-scenario reliability: violin+strip of per-scenario Type-I error and
+    power, one dot per (label, method) -- the pairwise-testing analogue of
+    ci_single/ci_paired's reliability violin. Exposes the spread the OVERALL
+    SUMMARY table's pooled Type-I error hides: a method with alpha-level Type-I
+    error on average can still have scenario-specific inflation that pooling
+    across labels masks."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    present_methods = {r.method for r in results}
+    method_objs = order_present_methods(present_methods)
+    method_names = [m.name for m in method_objs]
+    palette = {m.name: m.color for m in method_objs}
+
+    null_df = pd.DataFrame([
+        {"eval_type": r.eval_type, "label": r.label, "method": r.method, "typeI": r.rejects / r.n_reps}
+        for r in results if r.condition == "null" and r.n_reps > 0 and r.method in method_names
+    ])
+    alt_df = pd.DataFrame([
+        {"eval_type": r.eval_type, "label": r.label, "method": r.method, "power": r.rejects / r.n_reps}
+        for r in results if r.condition != "null" and r.n_reps > 0 and r.method in method_names
+    ])
+    null_scenario = (
+        null_df.groupby(["eval_type", "label", "method"], as_index=False).agg(typeI=("typeI", "mean"))
+        if not null_df.empty else null_df
+    )
+    alt_scenario = (
+        alt_df.groupby(["eval_type", "label", "method"], as_index=False).agg(power=("power", "mean"))
+        if not alt_df.empty else alt_df
+    )
+
+    n_cols = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+    for col_idx, et in enumerate(eval_types_present):
+        for row_idx, (scenario_df, metric, ylabel, ref_line) in enumerate([
+            (null_scenario, "typeI", "Type-I error per scenario", alpha),
+            (alt_scenario, "power", "Power per scenario", None),
+        ]):
+            ax = axes[row_idx][col_idx]
+            et_df = scenario_df[scenario_df["eval_type"] == et] if not scenario_df.empty else scenario_df
+            if et_df.empty:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            et_methods = [name for name in method_names if name in et_df["method"].values]
+            sns.violinplot(
+                data=et_df, x="method", y=metric, order=et_methods, hue="method",
+                hue_order=et_methods, palette=palette, cut=0, inner=None, linewidth=0.8,
+                alpha=0.35, legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="method", y=metric, order=et_methods, hue="method",
+                hue_order=et_methods, palette=palette, size=4, alpha=0.7, jitter=0.25,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
+            if ref_line is not None:
+                ax.axhline(ref_line, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+            ax.tick_params(axis="x", rotation=45)
+            for tick_label in ax.get_xticklabels():
+                tick_label.set_ha("right")
+
+    fig.suptitle(
+        f"Cross-Scenario Reliability (one dot = one scenario)\npvalues pairwise | alpha={alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
 
 
 # ---------------------------------------------------------------------------
@@ -940,9 +1028,11 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
 
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
     print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n, k)\n{'-'*72}")
+    print(f"  MaxFWER = worst per-scenario FWER seen for that correction (not an average) --\n"
+          f"  flags corrections whose good mean FWER hides an inflated scenario/n/k cell.")
     n_cols = "".join(f"  {'n='+str(n):>7}" for n in sizes_present)
     k_cols = "".join(f"  {'k='+str(k):>6}" for k in ks_present)
-    print(f"\n  {'Correction':<20}  {'FWER':>6}  {'Band95':>13}  {'BestPow':>8}  {'Time(ms)':>14}{n_cols}{k_cols}")
+    print(f"\n  {'Correction':<20}  {'FWER':>6}  {'MaxFWER':>8}  {'Band95':>13}  {'BestPow':>8}  {'Time(ms)':>14}{n_cols}{k_cols}")
     for corr in corrections:
         c_rows = [r for r in results if r.correction == corr]
         null_rows = [r for r in c_rows if r.condition == "null"]
@@ -958,6 +1048,14 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
         band = f"{lo:.3f}-{hi:.3f}" if np.isfinite(lo) else "-"
         time_str = f"{avg_ms:.1f}+-{se_ms:.1f}" if np.isfinite(avg_ms) else "-"
         marker = "*" if np.isfinite(fwer) and fwer > alpha + 0.02 else " "
+        per_label_fwer = defaultdict(lambda: [0, 0])
+        for r in null_rows:
+            acc = per_label_fwer[(r.eval_type, r.label)]
+            acc[0] += r.any_reject
+            acc[1] += r.n_reps
+        label_rates = [c / t for c, t in per_label_fwer.values() if t > 0]
+        worst_fwer = max(label_rates) if label_rates else float("nan")
+        worst_str = f"{worst_fwer:.3f}{'*' if np.isfinite(worst_fwer) and worst_fwer > alpha + 0.02 else ' '}" if np.isfinite(worst_fwer) else "-"
         n_fwer = ""
         for n in sizes_present:
             n_null = [r for r in null_rows if r.n == n]
@@ -972,7 +1070,7 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
             kt = sum(r.n_reps for r in k_null)
             kf = kc / kt if kt > 0 else float("nan")
             k_fwer += f"  {kf:>6.3f}" if np.isfinite(kf) else f"  {'  -':>6}"
-        print(f"  {corr:<20}  {fwer:>5.3f}{marker}  {band:>13}  {power:>8.3f}  {time_str:>14}{n_fwer}{k_fwer}")
+        print(f"  {corr:<20}  {fwer:>5.3f}{marker}  {worst_str:>8}  {band:>13}  {power:>8.3f}  {time_str:>14}{n_fwer}{k_fwer}")
     print(f"  (* = FWER > alpha + 0.02)")
 
 
@@ -1161,6 +1259,82 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
     return out_path
 
 
+def save_multiarm_reliability_violin_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
+    """Cross-scenario reliability: violin+strip of per-scenario FWER and
+    best-arm power, one dot per (label, correction) -- the multi-arm analogue
+    of the pairwise reliability violin. Exposes the spread the OVERALL SUMMARY
+    table's pooled FWER hides: a correction with alpha-level FWER on average
+    can still have scenario-specific inflation that pooling across labels
+    masks, collapsed across n and k the same way the headline table is."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
+    palette = {m.name: m.color for m in MULTIARM_CORRECTION_METHODS}
+
+    null_df = pd.DataFrame([
+        {"eval_type": r.eval_type, "label": r.label, "correction": r.correction, "fwer": r.any_reject / r.n_reps}
+        for r in results if r.condition == "null" and r.n_reps > 0
+    ])
+    alt_df = pd.DataFrame([
+        {"eval_type": r.eval_type, "label": r.label, "correction": r.correction, "power": r.best_selected / r.n_reps}
+        for r in results if r.condition == "alt" and r.n_reps > 0
+    ])
+    null_scenario = (
+        null_df.groupby(["eval_type", "label", "correction"], as_index=False).agg(fwer=("fwer", "mean"))
+        if not null_df.empty else null_df
+    )
+    alt_scenario = (
+        alt_df.groupby(["eval_type", "label", "correction"], as_index=False).agg(power=("power", "mean"))
+        if not alt_df.empty else alt_df
+    )
+
+    n_cols = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+    for col_idx, et in enumerate(eval_types_present):
+        for row_idx, (scenario_df, metric, ylabel, ref_line) in enumerate([
+            (null_scenario, "fwer", "FWER per scenario", alpha),
+            (alt_scenario, "power", "Best-arm power per scenario", None),
+        ]):
+            ax = axes[row_idx][col_idx]
+            et_df = scenario_df[scenario_df["eval_type"] == et] if not scenario_df.empty else scenario_df
+            if et_df.empty:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            et_corrections = [name for name in corrections if name in et_df["correction"].values]
+            sns.violinplot(
+                data=et_df, x="correction", y=metric, order=et_corrections, hue="correction",
+                hue_order=et_corrections, palette=palette, cut=0, inner=None, linewidth=0.8,
+                alpha=0.35, legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="correction", y=metric, order=et_corrections, hue="correction",
+                hue_order=et_corrections, palette=palette, size=4, alpha=0.7, jitter=0.25,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
+            if ref_line is not None:
+                ax.axhline(ref_line, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+            ax.tick_params(axis="x", rotation=45)
+            for tick_label in ax.get_xticklabels():
+                tick_label.set_ha("right")
+
+    fig.suptitle(
+        f"Cross-Scenario Reliability (one dot = one scenario)\npvalues multi-arm | alpha={alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 # ---------------------------------------------------------------------------
 # Simultaneous-CI mode (non-PPI): calibration check for
 # evalstats.core.paired.all_pairwise's simultaneous (family-wise) confidence
@@ -1208,6 +1382,15 @@ class SimultaneousCIResult:
     """Sum, across reps, of that rep's MEAN CI width across all k(k-1)/2
     pairs -- dividing by n_reps gives the average per-comparison width,
     comparable across different k and n."""
+    total_score: float = 0.0
+    """Sum, across reps, of that rep's FAMILY-WISE interval score: mean CI
+    width across all k(k-1)/2 pairs, plus (2/alpha) * the WORST pair's miss
+    distance (0 iff all_covered). Deliberately not the mean of each pair's own
+    interval_score() (see evalstats.core.stats_utils) -- that marginal,
+    per-comparison version rewards `none` even when its family-wise coverage
+    collapses, since each of its individual intervals is close to nominally
+    calibrated on its own. Using the worst pair's miss distance ties the
+    penalty to the same "did ANY pair miss" event that all_covered measures."""
     total_time: float = 0.0  # total wall-clock seconds for all n_reps of this condition
 
 
@@ -1223,6 +1406,7 @@ def _run_simultaneous_ci_cell(
     ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS]
     agg_covered: dict[tuple[str, str], int] = {(m, cond): 0 for m in ci_methods for cond in ("null", "alt")}
     agg_width: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in ci_methods for cond in ("null", "alt")}
+    agg_score: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in ci_methods for cond in ("null", "alt")}
     agg_time: dict[str, float] = {"null": 0.0, "alt": 0.0}
 
     with warnings.catch_warnings():
@@ -1269,15 +1453,37 @@ def _run_simultaneous_ci_cell(
                     if not cis:
                         continue
                     widths: list[float] = []
+                    miss_distances: list[float] = []
                     covered_all = True
                     for (label_a, label_b) in pairs:
                         idx_a, idx_b = labels.index(label_a), labels.index(label_b)
                         true_diff = true_means[idx_a] - true_means[idx_b]
                         lo, hi = cis[(label_a, label_b)]
                         widths.append(hi - lo)
+                        if true_diff < lo:
+                            miss_distances.append(lo - true_diff)
+                        elif true_diff > hi:
+                            miss_distances.append(true_diff - hi)
+                        else:
+                            miss_distances.append(0.0)
                         if not (lo <= true_diff <= hi):
                             covered_all = False
+                    # Family-wise interval score: mean width (still a legitimate
+                    # per-comparison cost) + (2/alpha) * the WORST pair's miss
+                    # distance, not the mean of each pair's own miss distance.
+                    # interval_score() alone is a marginal, per-comparison proper
+                    # score -- averaging it pair-by-pair rewards "none" (whose
+                    # individual pairs are each ~nominally calibrated on their
+                    # own) even when its family-wise coverage collapses, since
+                    # the penalty never triggers on the same "did ANY pair miss"
+                    # event that all_covered measures. Using max ties the miss
+                    # penalty to that exact event: it's 0 iff all_covered, and
+                    # positive iff at least one pair missed, so a method that
+                    # buys family-wise coverage by widening every interval is no
+                    # longer penalized as if it were miscalibrated per-pair.
+                    family_score = float(np.mean(widths)) + (2.0 / alpha) * (max(miss_distances) if miss_distances else 0.0)
                     agg_width[(method_name, condition)] += float(np.mean(widths)) if widths else 0.0
+                    agg_score[(method_name, condition)] += family_score
                     if covered_all:
                         agg_covered[(method_name, condition)] += 1
 
@@ -1285,7 +1491,8 @@ def _run_simultaneous_ci_cell(
         SimultaneousCIResult(
             eval_type=source.eval_type, label=source.label, n=n, k=k_arms, ci_method=method_name,
             condition=condition, n_reps=n_reps, all_covered=agg_covered[(method_name, condition)],
-            total_width=agg_width[(method_name, condition)], total_time=agg_time[condition],
+            total_width=agg_width[(method_name, condition)], total_score=agg_score[(method_name, condition)],
+            total_time=agg_time[condition],
         )
         for method_name in ci_methods
         for condition in ("null", "alt")
@@ -1358,7 +1565,7 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
             if not subset:
                 continue
             print(f"\n  [{et}, k={k}]")
-            print(f"    {'CI method':<12} {'Cov(null)':>10} {'Width(null)':>12} {'Cov(alt)':>10} {'Width(alt)':>12}")
+            print(f"    {'CI method':<12} {'Cov(null)':>10} {'Width(null)':>12} {'Score(null)':>12} {'Cov(alt)':>10} {'Width(alt)':>12} {'Score(alt)':>11}")
             for cm in ci_methods:
                 c_rows = [r for r in subset if r.ci_method == cm]
                 null_rows = [r for r in c_rows if r.condition == "null"]
@@ -1366,20 +1573,25 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
                 t_null = sum(r.n_reps for r in null_rows)
                 c_null = sum(r.all_covered for r in null_rows)
                 w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+                s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
                 t_alt = sum(r.n_reps for r in alt_rows)
                 c_alt = sum(r.all_covered for r in alt_rows)
                 w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+                s_alt = sum(r.total_score for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
                 cov_null = c_null / t_null if t_null > 0 else float("nan")
                 cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
-                print(f"    {cm:<12} {cov_null:>10.3f} {w_null:>12.4f} {cov_alt:>10.3f} {w_alt:>12.4f}")
+                print(f"    {cm:<12} {cov_null:>10.3f} {w_null:>12.4f} {s_null:>12.4f} {cov_alt:>10.3f} {w_alt:>12.4f} {s_alt:>11.4f}")
 
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
     ks_for_cols = ks_present
     print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n, k)\n{'-'*72}")
+    print(f"  MinCov = worst per-scenario family-wise coverage seen for that CI method (not\n"
+          f"  an average) -- flags methods whose good mean coverage hides an unreliable\n"
+          f"  scenario/n/k cell.")
     n_cols = "".join(f"  {'n='+str(n):>9}" for n in sizes_present)
     k_cols = "".join(f"  {'k='+str(k):>8}" for k in ks_for_cols)
-    print(f"\n  {'CI method':<12}  {'Cov(null)':>9}  {'Band95':>13}  {'Width(null)':>11}  "
-          f"{'Cov(alt)':>8}  {'Width(alt)':>10}  {'Time(ms)':>14}{n_cols}{k_cols}")
+    print(f"\n  {'CI method':<12}  {'Cov(null)':>9}  {'MinCov':>7}  {'Band95':>13}  {'Width(null)':>11}  {'Score(null)':>12}  "
+          f"{'Cov(alt)':>8}  {'Width(alt)':>10}  {'Score(alt)':>11}  {'Time(ms)':>14}{n_cols}{k_cols}")
     for cm in ci_methods:
         c_rows = [r for r in results if r.ci_method == cm]
         null_rows = [r for r in c_rows if r.condition == "null"]
@@ -1387,9 +1599,11 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
         t_null = sum(r.n_reps for r in null_rows)
         c_null = sum(r.all_covered for r in null_rows)
         w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+        s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
         t_alt = sum(r.n_reps for r in alt_rows)
         c_alt = sum(r.all_covered for r in alt_rows)
         w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+        s_alt = sum(r.total_score for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
         cov_null = c_null / t_null if t_null > 0 else float("nan")
         cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
         _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
@@ -1397,6 +1611,14 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
         avg_ms, se_ms = _time_stats_simultaneous_ci(null_rows)
         time_str = f"{avg_ms:.1f}+-{se_ms:.1f}" if np.isfinite(avg_ms) else "-"
         marker = "*" if np.isfinite(cov_null) and abs(cov_null - target) > 0.02 else " "
+        per_label_cov = defaultdict(lambda: [0, 0])
+        for r in null_rows:
+            acc = per_label_cov[(r.eval_type, r.label)]
+            acc[0] += r.all_covered
+            acc[1] += r.n_reps
+        label_rates = [c / t for c, t in per_label_cov.values() if t > 0]
+        worst_cov = min(label_rates) if label_rates else float("nan")
+        worst_str = f"{worst_cov:.3f}{'*' if np.isfinite(worst_cov) and abs(worst_cov - target) > 0.02 else ' '}" if np.isfinite(worst_cov) else "-"
         n_cells = ""
         for n in sizes_present:
             n_null = [r for r in null_rows if r.n == n]
@@ -1411,9 +1633,9 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
             kt = sum(r.n_reps for r in k_null)
             kf = kc / kt if kt > 0 else float("nan")
             k_cells += f"  {kf:>8.3f}" if np.isfinite(kf) else f"  {'  -':>8}"
-        print(f"  {cm:<12}  {cov_null:>8.3f}{marker}  {band:>13}  {w_null:>11.4f}  "
-              f"{cov_alt:>8.3f}  {w_alt:>10.4f}  {time_str:>14}{n_cells}{k_cells}")
-    print(f"  (* = |coverage - nominal| > 0.02; narrower Width at matching coverage is better)")
+        print(f"  {cm:<12}  {cov_null:>8.3f}{marker}  {worst_str:>7}  {band:>13}  {w_null:>11.4f}  {s_null:>12.4f}  "
+              f"{cov_alt:>8.3f}  {w_alt:>10.4f}  {s_alt:>11.4f}  {time_str:>14}{n_cells}{k_cells}")
+    print(f"  (* = |coverage - nominal| > 0.02; narrower Width/Score at matching coverage is better)")
     print()
 
 
@@ -1439,9 +1661,11 @@ def latex_simultaneous_ci_overall_summary(results: list[SimultaneousCIResult], a
         t_null = sum(r.n_reps for r in null_rows)
         c_null = sum(r.all_covered for r in null_rows)
         w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+        s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
         t_alt = sum(r.n_reps for r in alt_rows)
         c_alt = sum(r.all_covered for r in alt_rows)
         w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+        s_alt = sum(r.total_score for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
         cov_null = c_null / t_null if t_null > 0 else float("nan")
         cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
         _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
@@ -1450,8 +1674,10 @@ def latex_simultaneous_ci_overall_summary(results: list[SimultaneousCIResult], a
             f"{cov_null:.3f}" if np.isfinite(cov_null) else "-",
             f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
             f"{w_null:.4f}" if np.isfinite(w_null) else "-",
+            f"{s_null:.4f}" if np.isfinite(s_null) else "-",
             f"{cov_alt:.3f}" if np.isfinite(cov_alt) else "-",
             f"{w_alt:.4f}" if np.isfinite(w_alt) else "-",
+            f"{s_alt:.4f}" if np.isfinite(s_alt) else "-",
             eval_type_label(covered, eval_types_present),
         ]
         for n in sizes_present:
@@ -1463,10 +1689,12 @@ def latex_simultaneous_ci_overall_summary(results: list[SimultaneousCIResult], a
         rows.append(row)
 
     return booktabs_table(
-        caption=f"pvalues (simultaneous CI): family-wise coverage and average per-comparison width, "
-                f"none vs. Bonferroni vs. max-T (nominal coverage={target:.0%}).",
+        caption=f"pvalues (simultaneous CI): family-wise coverage, average per-comparison width, "
+                f"and average per-comparison interval score, none vs. Bonferroni vs. max-T "
+                f"(nominal coverage={target:.0%}).",
         label="tab:pvalues_simultaneous_ci_overall",
-        columns=["CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Cov(alt)", "Width(alt)", "Eval types"]
+        columns=["CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Score(null)",
+                 "Cov(alt)", "Width(alt)", "Score(alt)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
@@ -1480,12 +1708,12 @@ def save_results_artifacts_simultaneous_ci(
     csv_path = out_base / f"{run_stem}_simultaneous_ci_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["eval_type", "label", "n", "k", "ci_method", "condition", "n_reps", "all_covered", "coverage_rate", "avg_width", "total_time_s", "time_ms_per_rep"])
+        writer.writerow(["eval_type", "label", "n", "k", "ci_method", "condition", "n_reps", "all_covered", "coverage_rate", "avg_width", "avg_score", "total_time_s", "time_ms_per_rep"])
         for r in results:
             time_ms = (r.total_time * 1000.0 / r.n_reps) if r.n_reps > 0 and r.total_time > 0 else float("nan")
             writer.writerow([
                 r.eval_type, r.label, r.n, r.k, r.ci_method, r.condition, r.n_reps, r.all_covered,
-                f"{r.all_covered / r.n_reps:.8f}", f"{r.total_width / r.n_reps:.8f}",
+                f"{r.all_covered / r.n_reps:.8f}", f"{r.total_width / r.n_reps:.8f}", f"{r.total_score / r.n_reps:.8f}",
                 f"{r.total_time:.6f}", f"{time_ms:.4f}" if not (time_ms != time_ms) else "",
             ])
     summary_path = out_base / f"{run_stem}_simultaneous_ci_summary.log"
@@ -1598,6 +1826,83 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
     ax_width.legend(fontsize=7)
 
     fig.suptitle("pvalues (simultaneous CI): coverage and width vs. k", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
+    """Cross-scenario reliability: violin+strip of per-scenario family-wise
+    coverage and average per-comparison interval score (null condition), one
+    dot per (label, ci_method) -- the simultaneous-CI analogue of the
+    pairwise/multi-arm reliability violins, and consistent with ci_single/
+    ci_paired's reliability violin (coverage + interval score, not width).
+    Exposes the spread the OVERALL SUMMARY table's pooled coverage hides: a
+    method with nominal family-wise coverage on average can still miss badly
+    on a specific scenario/k cell that pooling across labels masks."""
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    target = 1.0 - alpha
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
+    palette = {m.name: m.color for m in SIMULTANEOUS_CI_METHODS}
+
+    null_rows = [r for r in results if r.condition == "null" and r.n_reps > 0]
+    df = pd.DataFrame([
+        {
+            "eval_type": r.eval_type, "label": r.label, "ci_method": r.ci_method,
+            "coverage": r.all_covered / r.n_reps, "score": r.total_score / r.n_reps,
+        }
+        for r in null_rows
+    ])
+    scenario_level = (
+        df.groupby(["eval_type", "label", "ci_method"], as_index=False).agg(
+            coverage=("coverage", "mean"), score=("score", "mean"),
+        )
+        if not df.empty else df
+    )
+
+    n_cols = max(len(eval_types_present), 1)
+    fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+    for col_idx, et in enumerate(eval_types_present):
+        et_df = scenario_level[scenario_level["eval_type"] == et] if not scenario_level.empty else scenario_level
+        for row_idx, (metric, ylabel, ref_line) in enumerate([
+            ("coverage", "Family-wise coverage per scenario", target),
+            ("score", "Interval score per scenario", None),
+        ]):
+            ax = axes[row_idx][col_idx]
+            if et_df.empty:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            et_methods = [name for name in ci_methods if name in et_df["ci_method"].values]
+            sns.violinplot(
+                data=et_df, x="ci_method", y=metric, order=et_methods, hue="ci_method",
+                hue_order=et_methods, palette=palette, cut=0, inner=None, linewidth=0.8,
+                alpha=0.35, legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="ci_method", y=metric, order=et_methods, hue="ci_method",
+                hue_order=et_methods, palette=palette, size=4, alpha=0.7, jitter=0.25,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
+            if ref_line is not None:
+                ax.axhline(ref_line, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+            ax.tick_params(axis="x", rotation=45)
+            for tick_label in ax.get_xticklabels():
+                tick_label.set_ha("right")
+
+    fig.suptitle(
+        f"Cross-Scenario Reliability (one dot = one scenario)\npvalues simultaneous CI | alpha={alpha}",
+        fontsize=12,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -3031,6 +3336,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                 for plot_path in plot_paths:
                     output_paths.append(plot_path)
                     print(f"Saved plot: {plot_path}")
+                reliability_path = save_pairwise_reliability_violin_plot(
+                    results=pw_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
+                )
+                output_paths.append(reliability_path)
+                print(f"Saved plot: {reliability_path}")
 
             null_rows = [r for r in pw_results if r.condition == "null"]
             type1 = float(np.mean([r.rejects / r.n_reps for r in null_rows])) if null_rows else float("nan")
@@ -3089,6 +3399,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if Path(vs_k_path).exists():
                     output_paths.append(vs_k_path)
                     print(f"Saved plot: {vs_k_path}")
+                reliability_path = save_multiarm_reliability_violin_plot(
+                    results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
+                )
+                output_paths.append(reliability_path)
+                print(f"Saved plot: {reliability_path}")
 
             null_rows = [r for r in ma_results if r.condition == "null"]
             fwer = sum(r.any_reject for r in null_rows) / sum(r.n_reps for r in null_rows) if null_rows else float("nan")
@@ -3123,6 +3438,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if Path(vs_k_path).exists():
                     output_paths.append(vs_k_path)
                     print(f"Saved plot: {vs_k_path}")
+                reliability_path = save_simultaneous_ci_reliability_violin_plot(
+                    results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
+                )
+                output_paths.append(reliability_path)
+                print(f"Saved plot: {reliability_path}")
 
             for cm_name in ("none", "bonferroni", "max_t"):
                 cm_null_rows = [r for r in sci_results if r.ci_method == cm_name and r.condition == "null"]
@@ -3130,8 +3450,10 @@ def run(args: argparse.Namespace) -> CaseResult:
                     continue
                 cov = sum(r.all_covered for r in cm_null_rows) / sum(r.n_reps for r in cm_null_rows)
                 width = sum(r.total_width for r in cm_null_rows) / sum(r.n_reps for r in cm_null_rows)
+                score = sum(r.total_score for r in cm_null_rows) / sum(r.n_reps for r in cm_null_rows)
                 key_metrics[f"simultaneous_ci_{cm_name}_coverage"] = float(cov)
                 key_metrics[f"simultaneous_ci_{cm_name}_avg_width"] = float(width)
+                key_metrics[f"simultaneous_ci_{cm_name}_avg_score"] = float(score)
             key_metrics["simultaneous_ci_n_results"] = len(sci_results)
 
         if "ppi" in modes:

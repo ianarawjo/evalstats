@@ -168,7 +168,7 @@ def analyze(
         ``'pymer4'`` (wraps R/lme4, requires R with lme4 and emmeans).
         Ignored for bootstrap methods.
     ci : float
-        Confidence level for intervals (default 0.99).
+        Confidence level for intervals (default 0.95).
     n_bootstrap : int
         Number of bootstrap resamples (default 10,000).  When
         ``method='lmm'`` this controls the number of parametric
@@ -474,7 +474,7 @@ def analyze_factorial(
         ``'statsmodels'`` (default) or ``'pymer4'``.
 
     ci : float
-        Confidence level for Wald intervals (default 0.99).
+        Confidence level for Wald intervals (default 0.95).
 
     correction : str
         Multiple-comparisons correction for pairwise tests:

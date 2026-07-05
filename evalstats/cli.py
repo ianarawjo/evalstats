@@ -166,7 +166,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="FLOAT",
         help=(
             "Confidence level for intervals. If omitted, uses the project-wide "
-            "default from evalstats.config.get_alpha_ci() (0.99)."
+            "default from evalstats.config.get_alpha_ci() (0.95)."
         ),
     )
     analyze.add_argument(
