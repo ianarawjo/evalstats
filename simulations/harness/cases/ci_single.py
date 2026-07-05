@@ -1295,7 +1295,7 @@ def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
         reps=500, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
-        nested_mode=True, runs=3, runs_sweep=[3], run_noise_fracs=[0.0],
+        nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.0],
         icc_values=None, bayes_n=10000, heteroscedastic=False, latex=True,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )

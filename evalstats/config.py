@@ -135,6 +135,75 @@ def resolve_auto_analyze_methods(
     )
 
 
+@dataclass(frozen=True)
+class PPIAutoMethodRule:
+    """One row of the PPI-alignment-correction ``method="auto"`` routing table.
+
+    A separate table from :data:`AUTO_ANALYZE_METHOD_TABLE`: the non-aligned
+    auto default for a given ``data_kind`` (e.g. ``"t_interval"`` for
+    continuous data) does not necessarily have a validated PPI-corrected
+    counterpart, so PPI alignment correction resolves ``"auto"`` to whichever
+    method *does* have one, instead of reusing the non-aligned default and
+    failing.
+    """
+    data_kind: DataKind
+    pairwise_method: str
+    robustness_method: str
+    reason: str
+
+
+# PPI alignment correction requires N >= 50 (enforced in
+# evalstats.api._run_alignment_ppi), so there is no small-N branch here the
+# way AUTO_ANALYZE_METHOD_TABLE has one for binary data.
+PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
+    PPIAutoMethodRule(
+        data_kind="binary",
+        pairwise_method="tango",
+        robustness_method="wilson",
+        reason=(
+            "Binary data: Tango (pairwise) and Wilson (marginal) both have "
+            "closed-form PPI-corrected forms via an effective-n substitution "
+            "(see evalstats.tests._ppi_paired_tango / _ppi_single_wilson)."
+        ),
+    ),
+    PPIAutoMethodRule(
+        data_kind="bounded_01",
+        pairwise_method="bootstrap_t",
+        robustness_method="bootstrap_t",
+        reason=(
+            "Numeric [0, 1]-bounded data: PPI-corrected studentized bootstrap "
+            "(see evalstats.tests._ppi_paired_bootstrap_t / "
+            "_ppi_single_bootstrap_t). The non-aligned default (t_interval) "
+            "has no PPI-corrected form."
+        ),
+    ),
+    PPIAutoMethodRule(
+        data_kind="continuous",
+        pairwise_method="bootstrap_t",
+        robustness_method="bootstrap_t",
+        reason="Arbitrary numeric data: same PPI-corrected studentized bootstrap as bounded_01.",
+    ),
+)
+
+
+def resolve_ppi_auto_methods(data_kind: DataKind) -> tuple[str, str]:
+    """Resolve PPI alignment correction's ``method="auto"`` to concrete
+    ``(pairwise_method, robustness_method)``, for use by
+    ``evalstats.api._run_alignment_ppi``.
+
+    Raises
+    ------
+    ValueError
+        If no PPI-corrected method is defined for ``data_kind``.
+    """
+    for rule in PPI_AUTO_METHOD_TABLE:
+        if rule.data_kind == data_kind:
+            return rule.pairwise_method, rule.robustness_method
+    raise ValueError(
+        f"No PPI-corrected auto method is defined for data_kind={data_kind!r}."
+    )
+
+
 def set_alpha_ci(alpha: float) -> None:
     """Set the default significance level used across all CI analyses.
 

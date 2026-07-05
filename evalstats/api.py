@@ -23,7 +23,6 @@ from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS
 from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
 from evalstats.core.stats_utils import correct_pvalues
-from evalstats.core.paired import _max_stat_simultaneous_cis
 from evalstats.core.summary import print_analysis_summary, print_brief_summary, _UNSET as _SUMMARY_UNSET
 
 
@@ -682,33 +681,119 @@ def _bridge_to_io(
 # PPI alignment correction
 # ─────────────────────────────────────────────────────────────────────────────
 
+_PPI_PAIRWISE_SUPPORTED = ("tango", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap")
+_PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t")
+
+
+def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng):
+    """Dispatch to the PPI-corrected pairwise implementation of *method*.
+
+    Only methods with a validated PPI-corrected counterpart (see
+    ``evalstats.tests``'s ``_ppi_paired_*``/``_ppi_two_sample`` functions,
+    calibrated via ``simulations/harness --mode ppi``) are supported here.
+    """
+    from evalstats.tests import (
+        _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
+        _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
+    )
+    if method == "tango":
+        return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
+    if method == "bootstrap_t":
+        return _ppi_paired_bootstrap_t(a, b, a_lab, b_lab, alpha, n_boot, rng)
+    if method == "bayes_bootstrap":
+        return _ppi_paired_bayes_bootstrap(a, b, a_lab, b_lab, alpha, n_boot, rng)
+    if method in ("t_interval", "bootstrap"):
+        return _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng, rectifier_func=np.mean)
+    if method == "wilcoxon":
+        return _ppi_paired_arrays(a, b, a_lab, b_lab, np.median, alpha, n_boot, rng, rectifier_func=np.mean)
+    if method == "mannwhitney":
+        return _ppi_two_sample(
+            a, b, a_lab, b_lab,
+            lambda ya, yb: float(_p_x_gt_y_midrank(ya, yb) - 0.5),
+            alpha, n_boot, rng,
+        )
+    raise ValueError(
+        f"PPI alignment correction has no validated implementation for pairwise "
+        f"method {method!r}. Supported pairwise methods: "
+        f"{', '.join(repr(m) for m in _PPI_PAIRWISE_SUPPORTED)}. "
+        "Pass method=\"auto\" to let PPI correction pick a supported method "
+        "automatically, or choose one of the methods above explicitly."
+    )
+
+
+def _ppi_pairwise_unpaired_fallback(a, b, a_lab, b_lab, alpha: float, n_boot: int, rng):
+    """Independent-groups PPI fallback for a paired-mean-diff estimand.
+
+    Used when two entities don't have enough commonly-labeled items (same
+    item labeled for both) for a proper paired PPI correction, but each
+    individually has enough of its own labels. Mathematically valid because
+    ``mean(a) - mean(b)`` decomposes into two independent rectifiers — this
+    is exactly ``evalstats.tests._ppi_two_sample``'s validated "TTEST" PPI
+    form (see ``simulations/harness/cases/pvalues.py``), just applied to
+    what would otherwise be a paired comparison.
+    """
+    from evalstats.tests import _ppi_two_sample
+    return _ppi_two_sample(a, b, a_lab, b_lab, lambda ya, yb: float(ya.mean() - yb.mean()), alpha, n_boot, rng)
+
+
+def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng):
+    """Dispatch to the PPI-corrected single-sample implementation of *method*."""
+    from evalstats.tests import _ppi_single_wilson, _ppi_single_bootstrap_t
+    if method == "wilson":
+        return _ppi_single_wilson(a, a_lab, alpha)
+    if method == "bootstrap_t":
+        return _ppi_single_bootstrap_t(a, a_lab, alpha, n_boot, rng)
+    if method == "bootstrap":
+        from evalstats.ppi import correct as _ppi_correct
+        mask = ~np.isnan(a_lab)
+        if mask.sum() == 0:
+            raise ValueError("No positions have human labels in a_lab.")
+        return _ppi_correct(
+            np.mean, Y_lab=a_lab[mask], Y_hat_lab=a[mask], Y_hat_unlab=a,
+            alpha=alpha, n_boot=n_boot, rng=rng, compute_pvalue=False,
+        )
+    raise ValueError(
+        f"PPI alignment correction has no validated implementation for robustness "
+        f"(single-entity) method {method!r}. Supported robustness methods: "
+        f"{', '.join(repr(m) for m in _PPI_ROBUSTNESS_SUPPORTED)}. "
+        "Pass method=\"auto\" to let PPI correction pick a supported method "
+        "automatically, or choose one of the methods above explicitly."
+    )
+
+
 def _run_alignment_ppi(
     cr: "ComparisonResult",
     *,
     df: pd.DataFrame,
     metric_col: str,
     factor_col: str,
+    item_col: str,
     alignment_result,
     alpha: float,
     n_boot: int,
     correction: str,
+    method: str,
     rng,
 ) -> None:
-    """Override CIs in ``cr._analysis`` in-place using Prediction-Powered Inference (PPI).
+    """Override CIs/p-values in ``cr._analysis`` in-place using Prediction-Powered
+    Inference (PPI), by dispatching to the specific PPI-corrected implementation
+    of whichever pairwise/robustness method applies (see
+    ``_ppi_pairwise_dispatch``/``_ppi_robustness_dispatch`` above).
 
-    Uses the small human-annotated subset stored in ``alignment_result`` to
-    debias the LLM-only estimates via PPI:
+    For ``method="auto"`` the PPI-specific auto table
+    (``evalstats.config.resolve_ppi_auto_methods``) picks a method validated
+    for PPI use, which need not match the non-aligned auto default for the
+    same data (e.g. numeric data defaults to ``t_interval`` without alignment,
+    but ``bootstrap_t`` once PPI correction is in play). When the user passes
+    an explicit ``method=``, that exact method's PPI-corrected counterpart is
+    used, and a clear ``ValueError`` is raised if none exists — PPI correction
+    never silently substitutes or falls back to an unvalidated method.
 
-        θ̂_PPI(e) = mean(Ŷ_all[entity==e])
-                  + mean(Y_lab[entity==e])
-                  − mean(Ŷ_lab[entity==e])
-
-    where Ŷ_all are LLM scores over all items, Y_lab are human labels on the
-    labeled subset, and Ŷ_lab are the matching LLM scores for those items.
-
-    A percentile bootstrap CI is computed by independently resampling the
-    full set (size N) and the labeled set (size n_lab) on each draw.
-    Pairwise diff CIs and p-values are derived from the same bootstrap samples.
+    Every comparison in evalstats is paired by input (see
+    ``evalstats.core.paired``'s module docstring), so this pairs items by
+    their shared position in ``bundle.benchmark``'s item-aligned score matrix
+    (``get_2d_scores()``), rather than treating LLM scores as independent
+    per-entity groups.
     """
     bundle = cr._primary_bundle()
     if bundle is None:
@@ -720,13 +805,27 @@ def _run_alignment_ppi(
         )
         return
 
+    if bundle.benchmark.is_seeded:
+        raise ValueError(
+            "PPI alignment correction does not yet support seeded benchmarks "
+            "(R >= 3 repeated runs). Aggregate runs to a single score per "
+            "(template, input) cell before passing alignment=."
+        )
+
     rng = np.random.default_rng(rng)
 
     labels = list(bundle.benchmark.template_labels)
+    input_labels = list(bundle.benchmark.input_labels)
     n_entities = len(labels)
+    n_items = len(input_labels)
     entity_idx = {e: i for i, e in enumerate(labels)}
+    item_idx = {it: j for j, it in enumerate(input_labels)}
 
-    # ── Extract labeled and unlabeled arrays ──────────────────────────────────
+    # Item-aligned LLM score matrix: scores_2d[i, j] = entity i's score on
+    # item j (NaN for incomplete-design cells; averaged over runs/evaluators).
+    scores_2d = bundle.benchmark.get_2d_scores()
+
+    # ── Extract labeled/unlabeled arrays (dataset-level counts only) ──────────
     from evalstats.ppi import resolve_arrays
     Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab = resolve_arrays(
         df, metric_col=metric_col, group_col=factor_col, alignment_result=alignment_result
@@ -762,127 +861,164 @@ def _run_alignment_ppi(
             stacklevel=4,
         )
 
-    # Warn if any entity is absent from the labeled set
-    lab_entities = set(X_lab)
-    missing = [e for e in labels if e not in lab_entities]
-    if missing:
+    # ── Item-aligned human-label matrix (n_entities x n_items) ───────────────
+    human_col = alignment_result.human_col
+    lab_rows = df.loc[df[human_col].notna(), [factor_col, item_col, human_col]]
+    lab_matrix = np.full((n_entities, n_items), np.nan)
+    for e_val, it_val, h_val in zip(
+        lab_rows[factor_col].astype(str).to_numpy(),
+        lab_rows[item_col].astype(str).to_numpy(),
+        lab_rows[human_col].to_numpy(dtype=float),
+    ):
+        ei = entity_idx.get(e_val)
+        ij = item_idx.get(it_val)
+        if ei is not None and ij is not None:
+            lab_matrix[ei, ij] = h_val
+
+    missing_entities = [e for i, e in enumerate(labels) if np.all(np.isnan(lab_matrix[i]))]
+    if missing_entities:
         warnings.warn(
             f"PPI alignment: the following entities have no human-labeled items and "
-            f"will use the uncorrected LLM-only estimate: {missing}. "
+            f"will keep their uncorrected LLM-only estimate: {missing_entities}. "
             "Consider expanding the alignment set to cover all entities.",
             UserWarning,
             stacklevel=4,
         )
 
-    # ── PPI entity mean for one set of indices ────────────────────────────────
-    def _ppi_means(y_hat_all, x_all, y_lab, y_hat_lab, x_lab):
-        means = np.empty(n_entities)
-        for i, e in enumerate(labels):
-            mask_all = (x_all == e)
-            mask_lab = (x_lab == e)
-            mu_all = float(y_hat_all[mask_all].mean()) if mask_all.any() else np.nan
-            if mask_lab.any():
-                rectifier = float(y_lab[mask_lab].mean() - y_hat_lab[mask_lab].mean())
-            else:
-                rectifier = 0.0  # no labeled data: no correction
-            means[i] = mu_all + rectifier
-        return means
+    # ── Resolve the PPI-specific pairwise/robustness method ──────────────────
+    from evalstats.core.resampling import is_binary_scores, is_bounded_01_scores
+    from evalstats.config import resolve_ppi_auto_methods
 
-    # ── Point estimates ───────────────────────────────────────────────────────
-    final_means = _ppi_means(Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab)
+    if is_binary_scores(scores_2d):
+        data_kind = "binary"
+    elif is_bounded_01_scores(scores_2d):
+        data_kind = "bounded_01"
+    else:
+        data_kind = "continuous"
 
-    # ── Bootstrap ─────────────────────────────────────────────────────────────
-    boot_means = np.empty((n_boot, n_entities))
-    for b in range(n_boot):
-        idx_all = rng.integers(0, n_all, n_all)
-        idx_lab = rng.integers(0, n_lab, n_lab)
-        boot_means[b] = _ppi_means(
-            Y_hat_unlab[idx_all], X_unlab[idx_all],
-            Y_lab[idx_lab], Y_hat_lab[idx_lab], X_lab[idx_lab],
-        )
+    if method == "auto":
+        pairwise_method, robustness_method = resolve_ppi_auto_methods(data_kind)
+    else:
+        pairwise_method = bundle.resolved_method or method
+        robustness_method = bundle.resolved_ci_method or method
 
-    final_ci_low  = np.percentile(boot_means, 100.0 * alpha / 2,       axis=0)
-    final_ci_high = np.percentile(boot_means, 100.0 * (1 - alpha / 2), axis=0)
-    final_multi_ci = {
-        a: (
-            np.percentile(boot_means, 100.0 * a / 2, axis=0),
-            np.percentile(boot_means, 100.0 * (1 - a / 2), axis=0),
-        )
-        for a in GRADIENT_CI_ALPHAS
-    }
+    # ── Point estimates (per entity) ──────────────────────────────────────────
+    final_means  = np.array(bundle.robustness.mean, dtype=float, copy=True)
+    final_ci_low = np.array(bundle.robustness.ci_low, dtype=float, copy=True)
+    final_ci_high = np.array(bundle.robustness.ci_high, dtype=float, copy=True)
+    multi_ci_lo = {a: np.array(bundle.robustness.multi_ci[a][0], dtype=float, copy=True) for a in GRADIENT_CI_ALPHAS}
+    multi_ci_hi = {a: np.array(bundle.robustness.multi_ci[a][1], dtype=float, copy=True) for a in GRADIENT_CI_ALPHAS}
+    entity_rectifier = {e: 0.0 for e in labels}
+
+    for i, e in enumerate(labels):
+        if e in missing_entities:
+            continue  # keep the uncorrected LLM-only estimate already copied above
+        valid = ~np.isnan(scores_2d[i])
+        arr = scores_2d[i, valid]
+        lab_arr = lab_matrix[i, valid]
+
+        res = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, alpha, n_boot, rng)
+        final_means[i] = res.estimate
+        final_ci_low[i] = res.ci_low
+        final_ci_high[i] = res.ci_high
+        entity_rectifier[e] = res.rectifier
+        for a in GRADIENT_CI_ALPHAS:
+            g = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, a, n_boot, rng)
+            multi_ci_lo[a][i] = g.ci_low
+            multi_ci_hi[a][i] = g.ci_high
+
+    final_multi_ci = {a: (multi_ci_lo[a], multi_ci_hi[a]) for a in GRADIENT_CI_ALPHAS}
 
     # ── Pairwise diffs ────────────────────────────────────────────────────────
     pair_keys = list(bundle.pairwise.results.keys())
-    n_pairs   = len(pair_keys)
+    n_pairs = len(pair_keys)
 
-    # Joint bootstrap diff matrix: shape (n_boot, n_pairs). Kept in memory once
-    # so it can be reused for marginal CIs, gradient bands, and max-T.
-    boot_diffs_matrix = np.empty((n_boot, n_pairs), dtype=float)
-    final_diffs       = np.empty(n_pairs, dtype=float)
-    pair_pvals        = np.empty(n_pairs, dtype=float)
+    # Simultaneous (family-wise) CIs: PPI's per-method distributions (bootstrap-t
+    # pivots, closed-form score intervals) don't share a joint null distribution
+    # the way all_pairwise()'s single-method bootstrap does for max-T, so a
+    # Bonferroni alpha adjustment is used instead when simultaneous_ci was requested.
+    use_simultaneous = bool(bundle.pairwise.simultaneous_ci) and n_pairs > 1
+    pair_alpha = alpha / n_pairs if use_simultaneous else alpha
 
-    for k, (a, b) in enumerate(pair_keys):
-        ia, ib = entity_idx[a], entity_idx[b]
-        final_diffs[k]          = float(final_means[ia] - final_means[ib])
-        boot_diffs_matrix[:, k] = boot_means[:, ia] - boot_means[:, ib]
-        pair_pvals[k] = float(
-            2.0 * min(
-                np.mean(boot_diffs_matrix[:, k] <= 0.0),
-                np.mean(boot_diffs_matrix[:, k] >= 0.0),
+    final_diffs = np.empty(n_pairs, dtype=float)
+    pair_ci_lo  = np.empty(n_pairs, dtype=float)
+    pair_ci_hi  = np.empty(n_pairs, dtype=float)
+    pair_pvals  = np.empty(n_pairs, dtype=float)
+    pair_multi_ci: dict = {a: {} for a in GRADIENT_CI_ALPHAS}
+    pair_test_method: dict = {}
+    skipped_pairs = []
+    fallback_pairs = []
+
+    for k, (ea, eb) in enumerate(pair_keys):
+        pr = bundle.pairwise.results[(ea, eb)]
+        ia, ib = entity_idx[ea], entity_idx[eb]
+        valid = ~np.isnan(scores_2d[ia]) & ~np.isnan(scores_2d[ib])
+        a_arr, b_arr = scores_2d[ia, valid], scores_2d[ib, valid]
+        a_lab_arr, b_lab_arr = lab_matrix[ia, valid], lab_matrix[ib, valid]
+
+        n_overlap = int(np.sum(~np.isnan(a_lab_arr) & ~np.isnan(b_lab_arr)))
+        n_a_only  = int(np.sum(~np.isnan(a_lab_arr)))
+        n_b_only  = int(np.sum(~np.isnan(b_lab_arr)))
+
+        if n_overlap >= 15:
+            dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
+                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
             )
-        )
-
-    # Marginal percentile CIs at the primary alpha level.
-    final_pair_ci_lo = np.percentile(boot_diffs_matrix, 100.0 * alpha / 2,       axis=0)
-    final_pair_ci_hi = np.percentile(boot_diffs_matrix, 100.0 * (1 - alpha / 2), axis=0)
-
-    # Gradient bands at secondary alpha levels (for visual display).
-    final_pair_multi_ci = {
-        a: {
-            key: (
-                float(np.percentile(boot_diffs_matrix[:, k], 100.0 * a / 2)),
-                float(np.percentile(boot_diffs_matrix[:, k], 100.0 * (1 - a / 2))),
+            pair_test_method[(ea, eb)] = f"PPI {pairwise_method}"
+        elif n_a_only >= 15 and n_b_only >= 15:
+            # Not enough items are labeled for *both* entities to run the
+            # paired PPI method, but each entity individually has enough of
+            # its own labels — fall back to independent-groups PPI (see
+            # _ppi_pairwise_unpaired_fallback), which only needs that.
+            dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_unpaired_fallback(
+                a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
             )
-            for k, key in enumerate(pair_keys)
-        }
-        for a in GRADIENT_CI_ALPHAS
-    }
+            pair_test_method[(ea, eb)] = "PPI mean-diff (unpaired fallback, insufficient item overlap)"
+            fallback_pairs.append((ea, eb))
+        else:
+            skipped_pairs.append((ea, eb))
+            final_diffs[k] = pr.point_diff
+            pair_ci_lo[k]  = pr.ci_low
+            pair_ci_hi[k]  = pr.ci_high
+            pair_pvals[k]  = pr.p_value
+            pair_test_method[(ea, eb)] = pr.test_method
+            for a in GRADIENT_CI_ALPHAS:
+                pair_multi_ci[a][(ea, eb)] = pr.multi_ci.get(a, (pr.ci_low, pr.ci_high)) if pr.multi_ci else (pr.ci_low, pr.ci_high)
+            continue
 
-    # Multiple-comparison correction on marginal p-values.
-    if correction != "none" and n_pairs > 1:
-        pair_pvals = correct_pvalues(pair_pvals, correction)
+        res = dispatch(pair_alpha, n_boot, rng)
+        final_diffs[k] = res.estimate
+        pair_ci_lo[k]  = res.ci_low
+        pair_ci_hi[k]  = res.ci_high
+        pair_pvals[k]  = res.p_value if res.p_value is not None else 1.0
 
-    # ── Simultaneous CIs (max-T) ──────────────────────────────────────────────
-    # Reuse the joint bootstrap distribution for Romano–Wolf max-T, matching the
-    # same studentized approach used by all_pairwise() for bootstrap methods.
-    # Only applied when the original analysis requested simultaneous CIs.
-    sim_cis: dict = {}
-    max_t_pvalues: dict = {}
-    if bundle.pairwise.simultaneous_ci and n_pairs > 1:
-        sim_cis, max_t_pvalues = _max_stat_simultaneous_cis(
-            scores=None,           # unused: pre-computed path
-            pairs=pair_keys,
-            labels=labels,
-            method="bootstrap",    # unused: pre-computed path
-            ci=1.0 - alpha,
-            n_bootstrap=n_boot,    # unused: pre-computed path
-            rng=None,              # unused: pre-computed path
-            statistic="mean",      # unused: pre-computed path
-            precomputed_boot_stats=boot_diffs_matrix,
-            precomputed_point_ests=final_diffs,
-        )
+        for a in GRADIENT_CI_ALPHAS:
+            g_alpha = a / n_pairs if use_simultaneous else a
+            g = dispatch(g_alpha, n_boot, rng)
+            pair_multi_ci[a][(ea, eb)] = (g.ci_low, g.ci_high)
 
-    # ── Warn about CI method override ────────────────────────────────────────
-    # Only fire when the original method is not plain percentile bootstrap —
-    # that is the only case where the user's chosen method= is being replaced.
-    original_ci_method = bundle.resolved_ci_method or "auto"
-    if original_ci_method not in {"bootstrap", "auto"}:
+    if fallback_pairs:
         warnings.warn(
-            f"PPI alignment requires using percentile bootstrap for confidence interval calculation, "
-            f"and has overridden the '{original_ci_method}' method. Gradient CI bands are recomputed from the same method.",
+            f"PPI alignment: the following pairs don't have enough commonly-labeled "
+            f"items for a paired PPI correction and used an independent-groups "
+            f"fallback instead: {fallback_pairs}. Consider labeling the same items "
+            "for every entity to enable the (more efficient) paired correction.",
             UserWarning,
             stacklevel=4,
         )
+    if skipped_pairs:
+        warnings.warn(
+            f"PPI alignment: the following pairs have fewer than 15 labeled items "
+            f"for either entity and keep their uncorrected estimate: {skipped_pairs}. "
+            "Consider expanding the alignment set to cover more entities.",
+            UserWarning,
+            stacklevel=4,
+        )
+
+    # Multiple-comparison correction on marginal p-values (unaffected by the
+    # Bonferroni simultaneous-CI adjustment above, which only widens CIs).
+    if correction != "none" and n_pairs > 1:
+        pair_pvals = correct_pvalues(pair_pvals, correction)
 
     # ── Override _analysis in-place ───────────────────────────────────────────
     bundle.robustness.mean     = final_means
@@ -890,55 +1026,43 @@ def _run_alignment_ppi(
     bundle.robustness.ci_high  = final_ci_high
     bundle.robustness.multi_ci = final_multi_ci
 
-    use_sim_cis = bool(sim_cis)
     for k, key in enumerate(pair_keys):
         pr = bundle.pairwise.results[key]
         pr.point_diff = float(final_diffs[k])
-        pr.p_value    = float(max_t_pvalues.get(key, pair_pvals[k]))
-        if use_sim_cis and key in sim_cis:
-            pr.ci_low  = float(sim_cis[key][0])
-            pr.ci_high = float(sim_cis[key][1])
-        else:
-            pr.ci_low  = float(final_pair_ci_lo[k])
-            pr.ci_high = float(final_pair_ci_hi[k])
-        pr.multi_ci   = {a: final_pair_multi_ci[a][key] for a in GRADIENT_CI_ALPHAS}
-        pr.test_method = "PPI bootstrap"
+        pr.p_value    = float(pair_pvals[k])
+        pr.ci_low     = float(pair_ci_lo[k])
+        pr.ci_high    = float(pair_ci_hi[k])
+        pr.multi_ci   = {a: pair_multi_ci[a][key] for a in GRADIENT_CI_ALPHAS}
+        pr.test_method = pair_test_method[key]
 
     # Update bundle method metadata so summary() headers reflect the PPI method.
-    bundle.resolved_ci_method = "bootstrap"
-    bundle.pairwise.simultaneous_ci_method = "max_t" if use_sim_cis else None
+    bundle.resolved_method = pairwise_method
+    bundle.resolved_ci_method = robustness_method
+    bundle.pairwise.simultaneous_ci_method = "bonferroni" if use_simultaneous else None
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
-    n_lab_per_entity = {
-        e: int((X_lab == e).sum()) for e in labels
-    }
-    rectifiers = {
-        e: float(
-            Y_lab[X_lab == e].mean() - Y_hat_lab[X_lab == e].mean()
-        ) if (X_lab == e).any() else 0.0
-        for e in labels
-    }
-
     cr._variance_components = {
         "method": "ppi",
         "n_all": n_all,
         "n_lab": n_lab,
         "n_boot": n_boot,
+        "pairwise_method": pairwise_method,
+        "robustness_method": robustness_method,
+        "data_kind": data_kind,
         "entities": {
             lbl: {
-                "n_labeled":  n_lab_per_entity[lbl],
-                "llm_mean":   float(Y_hat_unlab[X_unlab == lbl].mean())
-                              if (X_unlab == lbl).any() else None,
-                "rectifier":  rectifiers[lbl],
-                "ppi_mean":   float(final_means[i]),
+                "n_labeled": int(np.sum(~np.isnan(lab_matrix[i]))),
+                "llm_mean": float(np.nanmean(scores_2d[i])) if not np.all(np.isnan(scores_2d[i])) else None,
+                "rectifier": entity_rectifier[lbl],
+                "ppi_mean": float(final_means[i]),
             }
             for i, lbl in enumerate(labels)
         },
         "note": (
-            "Prediction-Powered Inference (PPI). "
-            "rectifier = mean(human_lab) − mean(llm_lab) per entity. "
-            "CI from percentile bootstrap with independent resampling of the "
-            "full LLM set (N) and the labeled human set (n_lab)."
+            "Prediction-Powered Inference (PPI), dispatched per resolved "
+            f"method (pairwise={pairwise_method!r}, robustness={robustness_method!r}). "
+            "Items are paired by shared position in the benchmark's item-aligned "
+            "score matrix, matching evalstats' paired-by-input design."
         ),
     }
 
@@ -990,10 +1114,12 @@ def _run_judge_alignment_if_needed(
         df=df,
         metric_col=metric_col,
         factor_col=factor_col,
+        item_col=item_col,
         alignment_result=ar,
         alpha=alpha,
         n_boot=max(n_mc, 1000),
         correction=engine_kwargs.get("correction", "fdr_bh"),
+        method=engine_kwargs.get("method", "auto"),
         rng=engine_kwargs.get("rng"),
     )
 

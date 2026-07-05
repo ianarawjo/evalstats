@@ -958,32 +958,38 @@ class TestPPISampleSizeChecks:
 
 
 class TestPPICIMethodWarning:
-    """PPI warns when it overrides a non-bootstrap CI method or simultaneous CI."""
+    """PPI dispatches to a method-specific PPI correction, or raises a clear
+    error when the resolved method has no validated PPI-corrected form
+    (rather than silently overriding it and warning, as in a previous
+    version of this API)."""
 
-    def test_warns_when_overriding_non_bootstrap_method(self):
-        """PPI should warn when the original CI method is not plain bootstrap."""
+    def test_raises_when_method_has_no_ppi_correction(self):
+        """PPI should raise a clear ValueError when the resolved method has no
+        validated PPI-corrected counterpart."""
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
-        with pytest.warns(UserWarning, match="percentile bootstrap"):
+        with pytest.raises(ValueError, match="no validated implementation"):
             es.compare(evaldata, factors="model", metric=metric,
                        alignment={metric: ar},
-                       method="bca")  # BCA would be overridden by PPI
+                       method="bca")  # BCA has no PPI-corrected form
 
-    def test_no_ci_override_warning_with_plain_bootstrap(self):
-        """No CI override warning when user already uses percentile bootstrap."""
+    def test_plain_bootstrap_method_is_ppi_corrected(self):
+        """method="bootstrap" has a validated PPI-corrected form and should
+        run without error or a method-override warning."""
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             ar = validate_alignment(evaldata, llm_metric=metric, human_groundtruth="human_score")
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
-            es.compare(evaldata, factors="model", metric=metric,
-                       alignment={metric: ar},
-                       method="bootstrap")
-        ci_warns = [
+            result = es.compare(evaldata, factors="model", metric=metric,
+                                 alignment={metric: ar},
+                                 method="bootstrap")
+        assert result._primary_bundle().resolved_ci_method == "bootstrap"
+        override_warns = [
             w for w in caught
-            if "percentile bootstrap" in str(w.message)
+            if "percentile bootstrap" in str(w.message) and "overridden" in str(w.message)
         ]
-        assert len(ci_warns) == 0
+        assert len(override_warns) == 0

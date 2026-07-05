@@ -346,15 +346,15 @@ class TestResult:
                             continue
                         clo, chi = info["corrected_ci"]
                         print(f"    {name}:  β = {info['corrected_estimate']:.4f}  [{clo:.4f}, {chi:.4f}]")
-                lab_str = (f"{self.n_labeled} of {self.n_total}"
+                lab_str = (f"{self.n_labeled} human labels of {self.n_total} total items"
                            if self.n_labeled is not None else "?")
                 correction_method = (
                     "a closed-form rectified-GLS solve with cluster-robust sandwich SEs"
                     if test == "lmm" else "the PPI bootstrap procedure"
                 )
                 note = (f"Correction applied using Prediction-Powered Inference on "
-                        f"{self._ppi_estimand()}; bias estimated from {lab_str} human "
-                        f"labels and removed via {correction_method} (Angelopoulos et al., 2023; "
+                        f"{self._ppi_estimand()}; bias estimated from {lab_str} "
+                        f"and removed via {correction_method} (Angelopoulos et al., 2023; "
                         f"Zrnic, 2024).")
                 print(f"  {self._dim(note)}")
         else:
@@ -1223,6 +1223,169 @@ def _ppi_paired_tango(
 
     return PPIResult(
         estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+        p_value=p_value,
+    )
+
+
+def _ppi_single_bootstrap_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, n_boot: int, rng):
+    """PPI correction for a single-sample mean estimand ``mean(a)``, using a
+    studentized bootstrap (bootstrap-t) pivot -- the single-sample sibling
+    of :func:`_ppi_paired_bootstrap_t` (see its docstring for the underlying
+    two-term-variance derivation), with no pairing step: just one array and
+    its own sparse human labels, instead of a paired difference.
+
+    A position is included in the labeled set only when ``a_lab[i]`` is
+    non-NaN.
+    """
+    from evalstats.ppi import PPIResult
+
+    rng = np.random.default_rng(rng)
+
+    mask = ~np.isnan(a_lab)
+    if mask.sum() == 0:
+        raise ValueError("No positions have human labels in a_lab.")
+
+    values_unlab = np.asarray(a, dtype=float)
+    values_lab_llm = values_unlab[mask]
+    values_lab_true = np.asarray(a_lab, dtype=float)[mask]
+    rect_items = values_lab_true - values_lab_llm
+
+    n_all = len(values_unlab)
+    n_lab = len(rect_items)
+
+    f_unlab = float(np.mean(values_unlab))
+    f_lab = float(np.mean(values_lab_true))
+    f_hat_lab = float(np.mean(values_lab_llm))
+    rectifier = f_lab - f_hat_lab
+    estimate = float(f_unlab + rectifier)
+
+    def _var(x: np.ndarray) -> float:
+        return float(np.var(x, ddof=1)) if len(x) > 1 else 0.0
+
+    se_obs = float(np.sqrt(_var(values_unlab) / n_all + _var(rect_items) / n_lab))
+
+    chunk_size = max(1, min(n_boot, 4096, max(1, int(1_000_000 // max(max(n_all, n_lab), 1)))))
+    boot_theta = np.empty(n_boot, dtype=float)
+    boot_se = np.empty(n_boot, dtype=float)
+
+    start = 0
+    while start < n_boot:
+        stop = min(start + chunk_size, n_boot)
+        m = stop - start
+        idx_all = rng.integers(0, n_all, size=(m, n_all))
+        idx_lab = rng.integers(0, n_lab, size=(m, n_lab))
+        unlab_samples = values_unlab[idx_all]
+        rect_samples = rect_items[idx_lab]
+        boot_theta[start:stop] = unlab_samples.mean(axis=1) + rect_samples.mean(axis=1)
+        boot_se[start:stop] = np.sqrt(
+            np.var(unlab_samples, ddof=1, axis=1) / n_all
+            + np.var(rect_samples, ddof=1, axis=1) / n_lab
+        )
+        start = stop
+
+    def _percentile_result() -> "PPIResult":
+        lo = float(np.percentile(boot_theta, 100 * alpha / 2))
+        hi = float(np.percentile(boot_theta, 100 * (1 - alpha / 2)))
+        return PPIResult(
+            estimate=estimate, ci_low=lo, ci_high=hi, alpha=alpha,
+            llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+            p_value=None,
+        )
+
+    if se_obs <= 0.0 or not np.isfinite(se_obs):
+        return _percentile_result()
+
+    valid = np.isfinite(boot_se) & (boot_se > 0.0)
+    if not np.any(valid):
+        return _percentile_result()
+    se_floor = max(np.finfo(float).eps, 1e-8 * se_obs)
+    tiny_frac = float(np.mean(valid & (boot_se < se_floor)))
+    if tiny_frac > 0.05:
+        return _percentile_result()
+    valid = valid & (boot_se >= se_floor)
+    if not np.any(valid):
+        return _percentile_result()
+
+    t_stats = (boot_theta[valid] - estimate) / boot_se[valid]
+    t_lo = float(np.percentile(t_stats, 100.0 * alpha / 2))
+    t_hi = float(np.percentile(t_stats, 100.0 * (1.0 - alpha / 2)))
+    ci_low = float(estimate - t_hi * se_obs)
+    ci_high = float(estimate - t_lo * se_obs)
+
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+        p_value=None,
+    )
+
+
+def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
+    """PPI correction for a single-sample binary proportion ``mean(a)``,
+    using evalstats.core.resampling's Wilson score interval
+    (``_wilson_neff``) with an EFFECTIVE sample size substituted in --
+    the same trick :func:`_ppi_paired_tango` uses, since Wilson's variance
+    term ``p_hat*(1-p_hat)/n`` has the identical "reference variance,
+    divided by n" structure Tango's does. ``_wilson_neff`` is also what
+    ``evalstats.core.resampling.wilson_nested_de/od/bb`` already use for
+    their own effective-n corrections (design effect, overdispersion,
+    Beta-Binomial) -- this reuses the exact same building block for a
+    PPI-based effective-n instead.
+
+    Fully closed-form -- no bootstrap resampling is used.
+
+    A position is included in the labeled set only when ``a_lab[i]`` is
+    non-NaN.
+    """
+    from evalstats.ppi import PPIResult
+    from evalstats.core.resampling import _wilson_neff
+    from scipy.stats import norm as _norm
+
+    mask = ~np.isnan(a_lab)
+    if mask.sum() == 0:
+        raise ValueError("No positions have human labels in a_lab.")
+
+    values_unlab = np.asarray(a, dtype=float)
+    values_lab_llm = values_unlab[mask]
+    values_lab_true = np.asarray(a_lab, dtype=float)[mask]
+    rect_items = values_lab_true - values_lab_llm
+
+    n_all = len(values_unlab)
+    n_lab = len(rect_items)
+
+    f_unlab = float(np.mean(values_unlab))
+    f_lab = float(np.mean(values_lab_true))
+    f_hat_lab = float(np.mean(values_lab_llm))
+    rectifier = f_lab - f_hat_lab
+    estimate = float(f_unlab + rectifier)
+
+    def _pvar(x: np.ndarray) -> float:
+        return float(np.mean((x - np.mean(x)) ** 2)) if len(x) > 0 else 0.0
+
+    sigma2_f = _pvar(values_unlab)      # = p_hat*(1-p_hat) exactly, for a 0/1 array
+    sigma2_rect = _pvar(rect_items)
+    v_hat = sigma2_f / n_all + sigma2_rect / n_lab
+
+    if v_hat <= 0.0 or not np.isfinite(v_hat) or sigma2_f <= 0.0:
+        return PPIResult(
+            estimate=estimate, ci_low=estimate, ci_high=estimate, alpha=alpha,
+            llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
+            p_value=1.0,
+        )
+
+    n_eff = sigma2_f / v_hat
+    # Wilson's own formula assumes p_hat in [0, 1]; PPI correction can, in
+    # principle, push the point estimate slightly outside that range for a
+    # small/noisy labeled subset, so clamp just for this substitution.
+    p_hat_for_wilson = float(np.clip(estimate, 0.0, 1.0))
+    ci_low, ci_high = _wilson_neff(p_hat_for_wilson, n_eff, alpha)
+
+    z_obs = estimate / np.sqrt(v_hat)
+    p_value = float(2.0 * (1.0 - _norm.cdf(abs(z_obs))))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=estimate, ci_low=float(ci_low), ci_high=float(ci_high), alpha=alpha,
         llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
         p_value=p_value,
     )

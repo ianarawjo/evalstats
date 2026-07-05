@@ -1386,7 +1386,7 @@ def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="inspect", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=3, statistic="mean", reps=500, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=3, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, icc_values=None, cohens_d_values=[0.2, 0.4], include_null=False,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
@@ -1439,7 +1439,7 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=5, statistic="mean", reps=500, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=5, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, icc_values=[0.05, 0.30, 0.50], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
