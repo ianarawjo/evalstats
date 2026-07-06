@@ -1020,6 +1020,14 @@ def _run_alignment_ppi(
     if correction != "none" and n_pairs > 1:
         pair_pvals = correct_pvalues(pair_pvals, correction)
 
+    # ── Recompute rank distribution (P(Best)/E[Rank]) under PPI ───────────────
+    # bundle.rank_dist was built from the raw, uncorrected LLM scores and does
+    # not reflect the correction above — without this, P(Best)/E[Rank] would
+    # silently stay frozen at pre-correction values even as means/CIs shift.
+    from evalstats.core.ranking import ppi_bootstrap_ranks
+    bundle.rank_dist = ppi_bootstrap_ranks(scores_2d, lab_matrix, labels, n_boot, rng)
+    bundle.ppi_applied = True
+
     # ── Override _analysis in-place ───────────────────────────────────────────
     bundle.robustness.mean     = final_means
     bundle.robustness.ci_low   = final_ci_low

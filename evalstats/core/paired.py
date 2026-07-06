@@ -387,6 +387,7 @@ def pairwise_differences(
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     multi_ci: bool = False,
+    compute_wilcoxon: bool = True,
 ) -> PairedDiffResult:
     """Compute paired differences between two templates.
 
@@ -427,6 +428,12 @@ def pairwise_differences(
     statistic : str
         Point-estimate and bootstrap statistic: ``'mean'`` (default) or
         ``'median'``.
+    compute_wilcoxon : bool
+        Whether to compute the supplementary Wilcoxon signed-rank p-value
+        (default ``True``, matching prior behavior). Set ``False`` to skip
+        it -- e.g. for callers that never read ``PairedDiffResult.wilcoxon_p``
+        and are calling this at high volume (Monte Carlo simulations), where
+        the scipy call is pure overhead.
 
     Returns
     -------
@@ -440,6 +447,7 @@ def pairwise_differences(
             scores, idx_a, idx_b, label_a, label_b,
             method=seed_method, ci=ci, n_bootstrap=n_bootstrap,
             rng=rng, statistic=statistic, multi_ci=multi_ci,
+            compute_wilcoxon=compute_wilcoxon,
         )
 
     def _paired_stats(values_a: np.ndarray, values_b: np.ndarray) -> tuple[np.ndarray, int, float, float]:
@@ -536,7 +544,7 @@ def pairwise_differences(
         wa = values_a if values_a is not None else diffs
         wb = values_b if values_b is not None else np.zeros_like(diffs)
         wilcoxon_p: Optional[float] = None
-        if int(np.sum((wa - wb) != 0)) >= 1:
+        if compute_wilcoxon and int(np.sum((wa - wb) != 0)) >= 1:
             try:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
@@ -886,6 +894,7 @@ def _pairwise_diffs_seeded(
     rng: np.random.Generator,
     statistic: Literal["mean", "median"],
     multi_ci: bool = False,
+    compute_wilcoxon: bool = True,
 ) -> PairedDiffResult:
     """Seeded paired comparison using a two-level nested bootstrap.
 
@@ -1079,7 +1088,7 @@ def _pairwise_diffs_seeded(
     # whatever primary (nested) method was chosen. See the non-seeded path in
     # pairwise_differences for why the ValueError guard is needed here.
     wilcoxon_p: Optional[float] = None
-    if int(np.sum(cell_diffs != 0)) >= 1:
+    if compute_wilcoxon and int(np.sum(cell_diffs != 0)) >= 1:
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
@@ -1615,6 +1624,7 @@ def all_pairwise(
     simultaneous_ci: bool = True,
     omnibus: bool = False,
     multi_ci: bool = False,
+    compute_wilcoxon: bool = True,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -1664,6 +1674,11 @@ def all_pairwise(
         :attr:`PairwiseMatrix.friedman`.
         ``'bonferroni'``) and annotated in each result's ``test_method``
         string.
+    compute_wilcoxon : bool
+        Forwarded to each :func:`pairwise_differences` call (default
+        ``True``). Set ``False`` to skip the supplementary Wilcoxon
+        signed-rank p-value for every pair -- e.g. for high-volume Monte
+        Carlo callers that never read ``PairedDiffResult.wilcoxon_p``.
 
     Returns
     -------
@@ -1681,7 +1696,7 @@ def all_pairwise(
             result = pairwise_differences(
                 scores, i, j, labels[i], labels[j],
                 method=method, ci=ci, n_bootstrap=n_bootstrap, rng=rng,
-                statistic=statistic, multi_ci=multi_ci,
+                statistic=statistic, multi_ci=multi_ci, compute_wilcoxon=compute_wilcoxon,
             )
             results[(labels[i], labels[j])] = result
             pairs.append((labels[i], labels[j]))

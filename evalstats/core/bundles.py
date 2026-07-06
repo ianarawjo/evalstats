@@ -89,6 +89,10 @@ class AnalysisBundle:
     factorial_lmm_info : FactorialLMMInfo or None
         Factor tests and marginal means from a factorial LMM.  Present
         only when analyze_factorial() was used.
+    ppi_applied : bool
+        True when ``compare(..., alignment=...)`` overrode this bundle's
+        robustness/pairwise/rank_dist with a Prediction-Powered Inference
+        correction (see ``evalstats.api._run_alignment_ppi``).
     """
 
     benchmark: BenchmarkResult
@@ -102,6 +106,7 @@ class AnalysisBundle:
     resolved_method: Optional[str] = None
     resolved_ci_method: Optional[str] = None
     p_value_method: Optional[str] = None
+    ppi_applied: bool = False
 
 
 @dataclass

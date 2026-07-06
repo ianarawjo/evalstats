@@ -78,6 +78,8 @@ def _rank_method_label(bundle: "AnalysisBundle") -> str:
     n = bundle.rank_dist.n_bootstrap
     first_result = next(iter(bundle.pairwise.results.values()), None)
     statistic = (first_result.statistic if first_result is not None else "mean").lower()
+    if getattr(bundle, "ppi_applied", False):
+        rank_method = f"PPI {rank_method}"
     return f"{rank_method}, n={n}, ranked by {statistic}"
 
 

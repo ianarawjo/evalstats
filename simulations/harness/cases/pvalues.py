@@ -117,6 +117,7 @@ import io
 import math
 import multiprocessing as _mp
 import os
+import threading
 import time
 import warnings
 from collections import defaultdict
@@ -130,7 +131,7 @@ import scipy.stats as scipy_stats
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
-    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi, _bonferroni_simultaneous_cis
+    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi, _bonferroni_simultaneous_cis, _simultaneous_cis_router
     from evalstats.core.stats_utils import correct_pvalues
     from evalstats.core.resampling import bayes_bootstrap_means_1d
     from evalstats.tests import (
@@ -399,8 +400,8 @@ def _run_multiarm_cell_worker(args: tuple) -> list[MultiArmResult]:
 
 
 def _run_ppi_cell_worker(args: tuple) -> list:
-    sc, active_tests, n_reps, n_boot, seed = args
-    return _run_ppi_cell(sc, active_tests, n_reps, n_boot, seed)
+    sc, active_tests, n_reps, n_boot, seed, progress_dict = args
+    return _run_ppi_cell(sc, active_tests, n_reps, n_boot, seed, progress_dict=progress_dict, progress_key=sc.name)
 
 
 def _run_ppi_effect_cell_worker(args: tuple) -> tuple:
@@ -813,12 +814,27 @@ def _compute_multiarm_metrics(
     """Compute (any_reject, best_selected) for every correction strategy.
 
     Holm/Bonferroni/FDR use truly raw (marginal) bootstrap p-values from a
-    call with simultaneous_ci=False.  The ``max_t`` entry is a separate call
-    with simultaneous_ci=True; for bootstrap-compatible methods the resulting
-    p-values are Romano-Wolf max-T FWER-controlled p-values -- each is the
-    min p-value commensurate with the simultaneous CI that was reported to the
-    user.  For non-bootstrap methods (permutation) max_t falls back to the
-    Bonferroni CI widening p-value.
+    call with simultaneous_ci=False.  The ``max_t`` entry reuses that SAME
+    call's per-pair results, feeding them into all_pairwise's own
+    simultaneous-CI router (_simultaneous_cis_router) directly rather than
+    making a second all_pairwise(..., simultaneous_ci=True) call -- the
+    latter would silently redo the entire k(k-1)/2-pair bootstrap loop from
+    scratch just to layer the simultaneous-CI step on top, since
+    all_pairwise always computes marginal results first regardless of
+    simultaneous_ci. The router only reads `results` as a Bonferroni
+    fallback (never as bootstrap input for max-T), so nothing here is
+    short-circuited or approximated relative to two separate calls.  For
+    bootstrap-compatible methods the resulting p-values are Romano-Wolf
+    max-T FWER-controlled p-values -- each is the min p-value commensurate
+    with the simultaneous CI that was reported to the user.  For
+    non-bootstrap methods (permutation) max_t falls back to the raw
+    (marginal) p-value, matching what all_pairwise itself does when its
+    router falls back to Bonferroni (it only widens the CI, not `.p_value`).
+
+    Also passes compute_wilcoxon=False to the raw all_pairwise call: the
+    Wilcoxon signed-rank p-value it would otherwise compute for every pair
+    is never read here (MULTIARM_CORRECTION_METHODS has no "wilcoxon"
+    entry), so skipping it avoids a pure-overhead scipy call per pair.
     """
     results: dict[str, tuple[bool, bool]] = {}
     k = len(labels)
@@ -832,7 +848,7 @@ def _compute_multiarm_metrics(
         matrix_raw = all_pairwise(
             scores=scores, labels=labels, method=method, ci=1.0 - alpha,
             n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
-            simultaneous_ci=False,
+            simultaneous_ci=False, compute_wilcoxon=False,
         )
         raw_p = np.array([matrix_raw.get(a, b).p_value for (a, b) in pairs])
         pair_to_idx = {pair: idx for idx, pair in enumerate(pairs)}
@@ -850,24 +866,22 @@ def _compute_multiarm_metrics(
             results[correction] = (has_any, best_selected)
 
         if include_max_t:
-            # Max-T simultaneous CIs: separate call with simultaneous_ci=True.
-            # For bootstrap-compatible methods, p_value in the result is the
-            # Romano-Wolf max-T p-value (FWER-controlled via the joint bootstrap
-            # null distribution of max|T_ij|).  Rejecting when max-T p < alpha is
-            # exactly equivalent to checking whether the simultaneous CI excludes 0.
             try:
-                matrix_maxt = all_pairwise(
-                    scores=scores, labels=labels, method=method, ci=1.0 - alpha,
-                    n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
-                    simultaneous_ci=True,
+                _sim_cis, sim_method, sim_pvalues = _simultaneous_cis_router(
+                    scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
+                    method=method, ci=1.0 - alpha, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
                 )
-                maxt_p = np.array([matrix_maxt.get(a, b).p_value for (a, b) in pairs])
+                maxt_p = (
+                    np.array([sim_pvalues[pair] for pair in pairs])
+                    if sim_method == "max_t"
+                    else raw_p
+                )
                 has_any = bool(np.any(maxt_p < alpha))
                 best = labels[0]
                 best_selected = True
                 for other in labels[1:]:
                     pair_idx = pair_to_idx.get((best, other))
-                    if pair_idx is None or not (maxt_p[pair_idx] < alpha and matrix_maxt.get(best, other).point_diff > 0.0):
+                    if pair_idx is None or not (maxt_p[pair_idx] < alpha and matrix_raw.get(best, other).point_diff > 0.0):
                         best_selected = False
                         break
                 results["max_t"] = (has_any, best_selected)
@@ -2051,13 +2065,17 @@ def _uncorrected_tango_paired_p_value(diffs: np.ndarray) -> float:
     return min(max(p, 0.0), 1.0)
 
 
-def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
-    """Uncorrected (LLM-only) Wald F-test for score ~ <fixed factors> + (1|input),
-    fit via statsmodels MixedLM (REML); _fit_lmm_general handles single-factor,
-    multi-factor, and nested-run groups alike."""
-    k = len(groups)
-    template_labels = [f"T{i}" for i in range(k)]
-    sm_result, _df_full, _x_row, _r = _fit_lmm_general(groups, template_labels, factors)
+def _lmm_wald_f_pvalue_from_fit(sm_result, k: int) -> float:
+    """Wald-to-F omnibus p-value for template fixed effects, given an
+    already-fitted MixedLM result (see _fit_lmm_general).
+
+    Factored out of _uncorrected_lmm_p_value so callers that separately need
+    the SAME LLM-only fit for the PPI correction (_ppi_lmm_p_value, via
+    precomputed_fit=) can reuse it instead of fitting the identical model
+    twice -- MixedLM's iterative MLE fit is by far the dominant cost of the
+    ppi mode's lmm/lmm_factorial/lmm_runs tests (profiled at ~70% of total
+    runtime), so this halves their cost.
+    """
     beta = sm_result.fe_params.to_numpy()
     cov = _get_fe_vcov_sm(sm_result)
     df1 = k - 1
@@ -2066,6 +2084,16 @@ def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
     wald = float(beta_t @ np.linalg.solve(cov_t, beta_t))
     f_stat = wald / df1
     return float(scipy_stats.f.sf(f_stat, df1, df2)) if f_stat > 0 else 1.0
+
+
+def _uncorrected_lmm_p_value(groups: list[np.ndarray], factors=None) -> float:
+    """Uncorrected (LLM-only) Wald F-test for score ~ <fixed factors> + (1|input),
+    fit via statsmodels MixedLM (REML); _fit_lmm_general handles single-factor,
+    multi-factor, and nested-run groups alike."""
+    k = len(groups)
+    template_labels = [f"T{i}" for i in range(k)]
+    sm_result, _df_full, _x_row, _r = _fit_lmm_general(groups, template_labels, factors)
+    return _lmm_wald_f_pvalue_from_fit(sm_result, k)
 
 
 _ALPHA = ALPHA_DEFAULT
@@ -2096,7 +2124,24 @@ def _ppi_effective_tests(sc: JudgeBiasSource, active_tests: list[str]) -> list[s
     return [t for t in active_tests if t not in _PPI_BINARY_ONLY_TESTS]
 
 
-def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_boot: int, seed) -> list[PPIResult]:
+def _run_ppi_cell(
+    sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_boot: int, seed,
+    progress_dict=None, progress_key: str | None = None,
+) -> list[PPIResult]:
+    """Run all n_reps reps for one JudgeBiasSource.
+
+    progress_dict / progress_key : optional
+        When given, ``progress_dict[progress_key]`` is updated to ``(rep,
+        n_reps)`` periodically (rate-limited to ~2/sec) as this cell runs.
+        Lets a caller peek at a long-running cell's rep-level progress
+        instead of it looking stalled until the whole cell returns -- some
+        scenarios (large sample size, or hard-to-converge LMM fits) can
+        take minutes on their own; see run_ppi_simulation's in-flight
+        reporter thread. ``progress_dict`` may be a plain dict (serial
+        mode) or a multiprocessing.Manager().dict() proxy (parallel mode)
+        -- both support the same __setitem__ interface, so this function
+        doesn't need to know which.
+    """
     active_tests = _ppi_effective_tests(sc, active_tests)
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in active_tests}
@@ -2106,7 +2151,8 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
     def _rng_seed() -> int:
         return int(rng.integers(0, 2 ** 31))
 
-    for _ in range(n_reps):
+    _last_progress_t = 0.0
+    for _rep_i in range(n_reps):
         cell = generate_judge_bias_cell(sc, rng)
 
         with warnings.catch_warnings():
@@ -2232,9 +2278,15 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
                 try:
                     groups_lmm = [cell.llm_A, cell.llm_B, cell.llm_C]
                     groups_lmm_lab = [cell.lab_A, cell.lab_B, cell.lab_C]
-                    p_u = _uncorrected_lmm_p_value(groups_lmm)
+                    k = len(groups_lmm)
+                    # Fit once, reuse for both the uncorrected Wald F-test and
+                    # the PPI correction (which needs the identical LLM-only
+                    # fit as its nuisance-parameter/reference point) -- see
+                    # _lmm_wald_f_pvalue_from_fit's docstring.
+                    fit = _fit_lmm_general(groups_lmm, [f"T{i}" for i in range(k)])
+                    p_u = _lmm_wald_f_pvalue_from_fit(fit[0], k)
                     uncorrected[LMM.name] += int(p_u < _ALPHA)
-                    p = _ppi_lmm_p_value(groups_lmm, groups_lmm_lab, k=len(groups_lmm))
+                    p = _ppi_lmm_p_value(groups_lmm, groups_lmm_lab, k=k, precomputed_fit=fit)
                     corrected[LMM.name] += int(p is not None and p < _ALPHA)
                 except Exception:
                     failed[LMM.name] += 1
@@ -2243,9 +2295,13 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
                 try:
                     groups_lf = [cell.llm_W, cell.llm_X, cell.llm_Y, cell.llm_Z]
                     groups_lf_lab = [cell.lab_W, cell.lab_X, cell.lab_Y, cell.lab_Z]
-                    p_u = _uncorrected_lmm_p_value(groups_lf, factors=JUDGE_BIAS_LMM_FACTORIAL_FACTORS)
+                    k = len(groups_lf)
+                    fit = _fit_lmm_general(groups_lf, [f"T{i}" for i in range(k)], JUDGE_BIAS_LMM_FACTORIAL_FACTORS)
+                    p_u = _lmm_wald_f_pvalue_from_fit(fit[0], k)
                     uncorrected[LMM_FACTORIAL.name] += int(p_u < _ALPHA)
-                    p = _ppi_lmm_p_value(groups_lf, groups_lf_lab, k=len(groups_lf), factors=JUDGE_BIAS_LMM_FACTORIAL_FACTORS)
+                    p = _ppi_lmm_p_value(
+                        groups_lf, groups_lf_lab, k=k, factors=JUDGE_BIAS_LMM_FACTORIAL_FACTORS, precomputed_fit=fit,
+                    )
                     corrected[LMM_FACTORIAL.name] += int(p is not None and p < _ALPHA)
                 except Exception:
                     failed[LMM_FACTORIAL.name] += 1
@@ -2254,12 +2310,20 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
                 try:
                     groups_runs = [cell.llm_A_runs, cell.llm_B_runs, cell.llm_C_runs]
                     groups_runs_lab = [cell.lab_A, cell.lab_B, cell.lab_C]
-                    p_u = _uncorrected_lmm_p_value(groups_runs)
+                    k = len(groups_runs)
+                    fit = _fit_lmm_general(groups_runs, [f"T{i}" for i in range(k)])
+                    p_u = _lmm_wald_f_pvalue_from_fit(fit[0], k)
                     uncorrected[LMM_RUNS.name] += int(p_u < _ALPHA)
-                    p = _ppi_lmm_p_value(groups_runs, groups_runs_lab, k=len(groups_runs))
+                    p = _ppi_lmm_p_value(groups_runs, groups_runs_lab, k=k, precomputed_fit=fit)
                     corrected[LMM_RUNS.name] += int(p is not None and p < _ALPHA)
                 except Exception:
                     failed[LMM_RUNS.name] += 1
+
+        if progress_dict is not None:
+            _now = time.time()
+            if _now - _last_progress_t >= 0.5 or _rep_i + 1 == n_reps:
+                progress_dict[progress_key] = (_rep_i + 1, n_reps)
+                _last_progress_t = _now
 
     return [
         PPIResult(
@@ -2271,26 +2335,98 @@ def _run_ppi_cell(sc: JudgeBiasSource, active_tests: list[str], n_reps: int, n_b
     ]
 
 
+def _ppi_in_flight_line(progress_dict, done_keys: set) -> str | None:
+    """Format a one-line snapshot of currently in-progress (i.e. reporting
+    rep-level progress but not yet returned) ppi cells, or None if there's
+    nothing worth showing. Factored out of _run_in_flight_reporter so it's
+    independently testable."""
+    snapshot = dict(progress_dict)
+    active = {name: rep_total for name, rep_total in snapshot.items() if name not in done_keys}
+    if not active:
+        return None
+    parts = [
+        f"{name}: {rep}/{total} ({100.0 * rep / total:.0f}%)"
+        for name, (rep, total) in sorted(active.items())
+    ]
+    return "  [in-flight] " + "  |  ".join(parts)
+
+
+def _run_in_flight_reporter(progress_dict, done_keys: set, done_lock, stop_event, interval: float = 8.0) -> None:
+    """Background-thread body for run_ppi_simulation's parallel path.
+
+    Some ppi scenarios (large sample size, or hard-to-converge LMM fits --
+    see cases/pvalues.py module docstring / harness README) can take
+    several minutes on their own; with imap_unordered, the main progress
+    bar only advances when a WHOLE cell returns, so a long cell looks
+    identical to a hang from the outside. This periodically prints a
+    snapshot of every currently in-flight cell's rep-level progress
+    (populated by _run_ppi_cell's progress_dict writes) so it's visible
+    that work is still happening, and roughly how far along it is.
+    """
+    while not stop_event.wait(interval):
+        with done_lock:
+            done_snapshot = set(done_keys)
+        line = _ppi_in_flight_line(progress_dict, done_snapshot)
+        if line:
+            print(f"\n{line}", flush=True)
+
+
 def run_ppi_simulation(
     sources: list[JudgeBiasSource], active_tests: list[str], n_reps: int, n_boot: int,
     progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
 ) -> list[PPIResult]:
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(sources))]
-    args_list = [(sc, active_tests, n_reps, n_boot, seed) for sc, seed in zip(sources, child_seeds)]
 
     reporter = _ProgressReporter(len(sources), mode=progress_mode, label="pvalues-ppi")
     results: list[PPIResult] = []
+
     if n_workers <= 1:
-        for i, a in enumerate(args_list):
-            results.extend(_run_ppi_cell_worker(a))
+        for i, (sc, child_seed) in enumerate(zip(sources, child_seeds)):
+            results.extend(_run_ppi_cell(sc, active_tests, n_reps, n_boot, child_seed))
             reporter.update(i + 1, detail=f"{sources[i].name}")
-    else:
+        reporter.update(len(sources), detail="done")
+        return results
+
+    # Parallel path: a shared Manager dict lets each worker report rep-level
+    # progress while it's mid-cell (see _run_ppi_cell's progress_dict), and
+    # a background thread periodically prints an in-flight snapshot -- see
+    # _run_in_flight_reporter's docstring for why this matters here
+    # specifically (long individual cells + imap_unordered's coarse
+    # per-cell-only progress signal).
+    manager = _mp.Manager()
+    progress_dict = manager.dict()
+    args_list = [
+        (sc, active_tests, n_reps, n_boot, child_seed, progress_dict)
+        for sc, child_seed in zip(sources, child_seeds)
+    ]
+
+    done_keys: set = set()
+    done_lock = threading.Lock()
+    stop_event = threading.Event()
+    reporter_thread = None
+    if progress_mode != "off":
+        reporter_thread = threading.Thread(
+            target=_run_in_flight_reporter,
+            args=(progress_dict, done_keys, done_lock, stop_event),
+            daemon=True,
+        )
+        reporter_thread.start()
+
+    try:
         ctx = _mp.get_context("fork")
         with ctx.Pool(n_workers) as pool:
             for i, cell_results in enumerate(pool.imap_unordered(_run_ppi_cell_worker, args_list)):
+                if cell_results:
+                    with done_lock:
+                        done_keys.add(cell_results[0].name)
                 results.extend(cell_results)
                 reporter.update(i + 1)
+    finally:
+        stop_event.set()
+        if reporter_thread is not None:
+            reporter_thread.join(timeout=1.0)
+
     reporter.update(len(sources), detail="done")
     return results
 
@@ -2309,6 +2445,31 @@ _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name,
     TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
 )
+
+# bayes_bootstrap/bootstrap_t/tango_score are excluded from the main ppi
+# Type-I/effect plots and reported in a separate plot instead: they read
+# differently to reviewers than the rest of PPI_TEST_METHODS (which are all
+# textbook tests -- t-test, Wilcoxon, ANOVA, Friedman, Kruskal, LMM). These
+# three are bootstrap/CI-based constructions (Bayesian bootstrap, studentized
+# bootstrap, Tango's score interval) that would read as unfamiliar or
+# confusing mixed in with the standard-methods plot -- tango_score
+# specifically is fundamentally a CI construction for binary paired
+# differences (see evalstats.tests._ppi_paired_tango), not a p-value test in
+# its own right, and it's also the only one of the three restricted to a
+# single binary scenario (_PPI_BINARY_ONLY_TESTS) rather than swept across
+# the full catalog, so it would look sparse/broken next to tests with ~44x
+# more scenarios' worth of points.
+_PPI_NONSTANDARD_TESTS = {BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name}
+
+
+def _ppi_tests_present(results, *, nonstandard: bool) -> list[str]:
+    """Test names present in results, in PPI_TEST_METHODS' canonical order,
+    filtered to the standard (textbook) subset or the nonstandard
+    (bootstrap/CI-based) subset -- see _PPI_NONSTANDARD_TESTS."""
+    present = {r.test for r in results}
+    if nonstandard:
+        return [m.name for m in PPI_TEST_METHODS if m.name in present and m.name in _PPI_NONSTANDARD_TESTS]
+    return [m.name for m in PPI_TEST_METHODS if m.name in present and m.name not in _PPI_NONSTANDARD_TESTS]
 
 
 def _run_ppi_effect_cell(
@@ -2791,19 +2952,24 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
     return [str(csv_path), str(summary_path)]
 
 
-def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str) -> str:
+def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str, nonstandard: bool = False) -> str:
     """Per-scenario corrected vs. uncorrected Type-I rate scatter, one jittered
     column per test. Mirrors sim_type_i_calibration.py's ``_plot_results``
     scatter (gray uncorrected dots behind colored corrected dots, one dot per
     scenario, dashed alpha line) rather than collapsing every scenario into a
     single averaged bar, which hid per-scenario miscalibration entirely.
+
+    nonstandard : bool
+        When False (default), plots only the standard/textbook tests
+        (excludes bayes_bootstrap/bootstrap_t/tango_score). When True,
+        plots ONLY those three bootstrap/CI-based methods instead -- see
+        _PPI_NONSTANDARD_TESTS for why they're kept out of the main plot.
     """
     import matplotlib.pyplot as plt
 
-    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    tests = _ppi_tests_present(results, nonstandard=nonstandard)
     fig, ax = plt.subplots(figsize=(10.0, 5.8))
     rng = np.random.default_rng(0)
-    colors = [plt.cm.tab10(i) for i in range(len(tests))]
     unc_label_added = False
     all_rates: list[np.ndarray] = []
 
@@ -2824,7 +2990,7 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
 
         keep_c = np.isfinite(rates_c)
         x_c = j + rng.uniform(-0.16, 0.16, size=int(np.sum(keep_c)))
-        ax.scatter(x_c, rates_c[keep_c], s=20, alpha=0.65, color=colors[j], label=t, zorder=2)
+        ax.scatter(x_c, rates_c[keep_c], s=20, alpha=0.65, color=get_method_color(t), label=t, zorder=2)
 
     ax.axhline(alpha, color="black", ls="--", lw=1.1, label=f"alpha={alpha}")
     ax.set_xlim(-0.5, len(tests) - 0.5)
@@ -2836,7 +3002,8 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     ax.set_xticklabels(tests, rotation=30, ha="right", fontsize=8)
     ax.set_ylabel("Observed rejection rate")
     ax.set_xlabel("Test")
-    ax.set_title("pvalues (PPI-corrected): Type-I calibration scatter (per-scenario cells)")
+    title_suffix = " -- bootstrap/CI-based methods" if nonstandard else ""
+    ax.set_title(f"pvalues (PPI-corrected): Type-I calibration scatter (per-scenario cells){title_suffix}")
     ax.grid(axis="y", alpha=0.25, lw=0.8)
     ax.legend(loc="upper right", fontsize=8, ncol=2)
 
@@ -2987,39 +3154,48 @@ def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: 
     return [str(csv_path), str(summary_path)]
 
 
-def save_ppi_effect_plot(*, results: list[PPIEffectResult], alpha: float, out_path: str) -> str:
+def save_ppi_effect_plot(
+    *, results: list[PPIEffectResult], alpha: float, out_path: str, nonstandard: bool = False,
+) -> str:
     """Bias-z / CI-coverage / CI-width scatter, one jittered column per test
     -- mirrors sim_type_i_calibration.py's ``_plot_effect_results`` (3
     panels), reading directly off PPIEffectResult's already-aggregated
-    per-scenario stats rather than raw bootstrap samples."""
+    per-scenario stats rather than raw bootstrap samples.
+
+    nonstandard : bool
+        When False (default), plots only the standard/textbook tests
+        (excludes bayes_bootstrap/bootstrap_t/tango_score). When True,
+        plots ONLY those three bootstrap/CI-based methods instead -- see
+        _PPI_NONSTANDARD_TESTS for why they're kept out of the main plot.
+    """
     import matplotlib.pyplot as plt
 
     if not results:
         raise ValueError("save_ppi_effect_plot: no PPI effect-check results to plot.")
 
-    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    tests = _ppi_tests_present(results, nonstandard=nonstandard)
     target_cov = 1.0 - alpha
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16.0, 5.5))
     rng = np.random.default_rng(0)
-    colors = [plt.cm.tab10(i) for i in range(len(tests))]
 
     for j, t in enumerate(tests):
         t_rows = [r for r in results if r.test == t and r.n_samples > 0]
         if not t_rows:
             continue
         x = j + rng.uniform(-0.16, 0.16, size=len(t_rows))
+        color = get_method_color(t)
 
         z = np.array([r.bias_z for r in t_rows])
         keep_z = np.isfinite(z)
-        ax1.scatter(x[keep_z], z[keep_z], s=22, alpha=0.7, color=colors[j], label=t)
+        ax1.scatter(x[keep_z], z[keep_z], s=22, alpha=0.7, color=color, label=t)
 
         cov = np.array([r.coverage for r in t_rows])
         keep_c = np.isfinite(cov)
-        ax2.scatter(x[keep_c], cov[keep_c], s=22, alpha=0.7, color=colors[j])
+        ax2.scatter(x[keep_c], cov[keep_c], s=22, alpha=0.7, color=color)
 
         wid = np.array([r.mean_ci_width for r in t_rows])
         keep_w = np.isfinite(wid)
-        ax3.scatter(x[keep_w], wid[keep_w], s=22, alpha=0.7, color=colors[j])
+        ax3.scatter(x[keep_w], wid[keep_w], s=22, alpha=0.7, color=color)
 
     ax1.axhline(0.0, color="black", ls="--", lw=1.0)
     ax1.axhline(3.0, color="red", ls=":", lw=0.9)
@@ -3046,7 +3222,8 @@ def save_ppi_effect_plot(*, results: list[PPIEffectResult], alpha: float, out_pa
     ax3.grid(axis="y", alpha=0.25, lw=0.8)
 
     handles, labels = ax1.get_legend_handles_labels()
-    fig.suptitle("pvalues (PPI-corrected): effect-size calibration (bias, coverage, width)", y=1.12, fontsize=12)
+    title_suffix = " -- bootstrap/CI-based methods" if nonstandard else ""
+    fig.suptitle(f"pvalues (PPI-corrected): effect-size calibration (bias, coverage, width){title_suffix}", y=1.12, fontsize=12)
     fig.legend(handles, labels, loc="lower center", ncol=min(len(tests), 8), fontsize=8, bbox_to_anchor=(0.5, 1.0))
 
     with warnings.catch_warnings():
@@ -3188,6 +3365,18 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
+def official_args_multiarm(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for multiarm-only calibration (synthetic data).
+    Split out from official_args() (which runs mode="pairwise_multiarm",
+    i.e. both pairwise and multiarm together) so the multiarm sweep alone
+    can be re-run on its own -- e.g. after a multiarm-specific performance
+    or correctness fix -- without paying for the separate (and unrelated)
+    pairwise sweep every time."""
+    args = official_args(base_seed)
+    args.mode = "multiarm"
+    return args
+
+
 def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for PPI-corrected calibration only (synthetic
     data -- ppi has no real-data variant). Split out from official_args()
@@ -3242,6 +3431,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
     """All official-test variants for this case, as (label, args) pairs."""
     return [
         ("synthetic (pairwise + multiarm)", official_args(base_seed)),
+        ("synthetic (multiarm)", official_args_multiarm(base_seed)),
         ("synthetic (ppi)", official_args_ppi(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
         ("real data (pairwise + multiarm)", real_official_args(base_seed)),
@@ -3488,6 +3678,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                 plot_path = save_ppi_typeI_plot(results=ppi_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected.png"))
                 output_paths.append(plot_path)
                 print(f"Saved plot: {plot_path}")
+                if any(r.test in _PPI_NONSTANDARD_TESTS for r in ppi_results):
+                    nonstd_plot_path = save_ppi_typeI_plot(
+                        results=ppi_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected_nonstandard.png"),
+                        nonstandard=True,
+                    )
+                    output_paths.append(nonstd_plot_path)
+                    print(f"Saved plot: {nonstd_plot_path}")
 
             c_tot = sum(r.corrected_rejects for r in ppi_results)
             u_tot = sum(r.uncorrected_rejects for r in ppi_results)
@@ -3521,6 +3719,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                         )
                         output_paths.append(effect_plot_path)
                         print(f"Saved plot: {effect_plot_path}")
+                        if any(r.test in _PPI_NONSTANDARD_TESTS for r in effect_results):
+                            nonstd_effect_plot_path = save_ppi_effect_plot(
+                                results=effect_results, alpha=args.alpha,
+                                out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_nonstandard.png"),
+                                nonstandard=True,
+                            )
+                            output_paths.append(nonstd_effect_plot_path)
+                            print(f"Saved plot: {nonstd_effect_plot_path}")
 
                     key_metrics["ppi_effect_n_results"] = len(effect_results)
                     finite_z = [r.bias_z for r in effect_results if np.isfinite(r.bias_z)]

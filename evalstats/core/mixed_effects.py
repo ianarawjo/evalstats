@@ -1068,6 +1068,8 @@ def _ppi_lmm_fixed_effects(
     groups_lab: list[np.ndarray],
     template_labels: list[str],
     factors: Optional["pd.DataFrame"] = None,
+    *,
+    precomputed_fit: Optional[tuple] = None,
 ) -> PPILMMResult:
     """Closed-form PPI correction for an LMM's fixed effects: any number of
     crossed fixed factors, one ``(1|input)`` random intercept, and optional
@@ -1171,6 +1173,13 @@ def _ppi_lmm_fixed_effects(
         fixed factor. Builds ``score ~ C(F1) * C(F2) * ... + (1|input)``.
         Defaults to a single implicit ``"template"`` factor (the original
         single-factor model) when not given.
+    precomputed_fit : tuple, optional
+        The exact ``(sm_result, df_full, X_row, R)`` tuple ``_fit_lmm_general``
+        would otherwise compute internally. Callers that already need the
+        LLM-only fit for something else (e.g. an uncorrected Wald F-test
+        computed from the same ``groups``) can pass it here to skip
+        refitting the identical MixedLM model a second time -- refitting is
+        by far the most expensive step in this function.
     """
     k = len(groups)
     n_inputs = groups[0].shape[0]
@@ -1182,7 +1191,10 @@ def _ppi_lmm_fixed_effects(
                 "(shape (n_inputs,)), regardless of run replication in groups."
             )
 
-    sm_result, df_full, X_row, R = _fit_lmm_general(groups, template_labels, factors)
+    if precomputed_fit is not None:
+        sm_result, df_full, X_row, R = precomputed_fit
+    else:
+        sm_result, df_full, X_row, R = _fit_lmm_general(groups, template_labels, factors)
     groups_collapsed = groups if R == 1 else [g.mean(axis=1) for g in groups]
 
     param_names = sm_result.fe_params.index.tolist()

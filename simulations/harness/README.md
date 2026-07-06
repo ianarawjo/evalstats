@@ -27,6 +27,27 @@ index (args used, output paths, key metrics, pass/fail, duration per case).
 The legacy scripts in `simulations/*.py` are left untouched; the harness is
 purely additive.
 
+## Platform notes
+
+All parallel cases (`n_workers > 1`) fork worker pools via
+`multiprocessing.get_context("fork")`. On macOS, numpy links against Apple's
+Accelerate framework for BLAS/LAPACK, which parallelizes routines like SVD
+internally via Grand Central Dispatch (GCD) worker threads; forking from a
+process that already has GCD state (from an earlier numpy/scipy call) can
+leave that state inconsistent in the child, which then segfaults
+(`EXC_BAD_ACCESS`, `"crashed on child side of fork pre-exec"` in the crash
+report) the next time it calls into Accelerate -- e.g. `statsmodels`'
+`MixedLM` REML fit (`cases/pvalues.py`'s `lmm`/`lmm_factorial`/`lmm_runs` ppi
+tests), which uses SVD internally. `multiprocessing.Pool` has no way to
+detect a worker dying this way, so `imap_unordered` just hangs forever
+waiting for a result that will never arrive -- indistinguishable from a
+stalled/slow cell from the outside. `simulations/harness/__init__.py` sets
+`VECLIB_MAXIMUM_THREADS=1` (forcing Accelerate to run single-threaded, no
+GCD dispatch) before anything else in the package can import numpy, which
+sidesteps the hazard entirely. This is automatic and needs no action from
+callers; it's documented here so a future segfault/hang during a parallel
+run isn't mistaken for a new bug.
+
 ## Shared scenario library
 
 `scenarios/synthetic.py` is built around ONE unified per-eval-type truth/

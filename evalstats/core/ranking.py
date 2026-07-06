@@ -281,6 +281,92 @@ def _bayes_bootstrap_ranks_seeded(
     )
 
 
+def ppi_bootstrap_ranks(
+    scores_2d: np.ndarray,
+    lab_matrix: np.ndarray,
+    labels: list[str],
+    n_bootstrap: int,
+    rng: np.random.Generator,
+) -> RankDistribution:
+    """PPI-aware rank distribution: jointly resamples items across entities.
+
+    ``bootstrap_ranks()`` ranks entities from the raw (uncorrected) LLM
+    judge scores, so its ``P(Best)``/``E[Rank]`` output does not reflect a
+    PPI alignment correction applied elsewhere (see
+    ``evalstats.api._run_alignment_ppi``). This function recomputes the
+    rank distribution using the PPI estimator itself: on each bootstrap
+    draw it resamples item positions once (shared across all entities, to
+    preserve the paired correlation from the benchmark's item-aligned
+    design) from the full item pool, resamples item positions once from the
+    human-labeled subset, forms each entity's PPI point estimate for that
+    draw (``mean(LLM on resampled pool) + rectifier``), and accumulates
+    tie-aware rank mass exactly like the base bootstrap.
+
+    Parameters
+    ----------
+    scores_2d : np.ndarray, shape (n_entities, n_items)
+        Item-aligned LLM judge scores (NaN for incomplete-design cells).
+    lab_matrix : np.ndarray, shape (n_entities, n_items)
+        Item-aligned human labels; NaN where an (entity, item) cell has no
+        human label.
+    labels : list[str]
+        Entity labels, in the same order as the rows of ``scores_2d``.
+    n_bootstrap : int
+        Number of bootstrap iterations.
+    rng : np.random.Generator
+
+    Returns
+    -------
+    RankDistribution
+    """
+    n_entities, n_items = scores_2d.shape
+    labeled_item_mask = ~np.all(np.isnan(lab_matrix), axis=0)
+    labeled_item_positions = np.where(labeled_item_mask)[0]
+    n_lab_items = len(labeled_item_positions)
+
+    # Fallback for entities with zero human labels anywhere: keep them at
+    # their uncorrected LLM-only mean on every draw (rectifier == 0).
+    fallback_mean = np.nanmean(scores_2d, axis=1)
+
+    rank_counts = np.zeros((n_entities, n_entities), dtype=float)
+
+    with np.errstate(invalid="ignore"):
+        for _ in range(n_bootstrap):
+            idx_all = rng.integers(0, n_items, n_items)
+            f_unlab = np.nanmean(scores_2d[:, idx_all], axis=1)
+
+            agg = np.where(np.isnan(f_unlab), fallback_mean, f_unlab)
+
+            if n_lab_items > 0:
+                idx_lab = labeled_item_positions[rng.integers(0, n_lab_items, n_lab_items)]
+                lab_vals = lab_matrix[:, idx_lab]
+                llm_at_lab = scores_2d[:, idx_lab]
+                valid = ~np.isnan(lab_vals) & ~np.isnan(llm_at_lab)
+                n_valid = valid.sum(axis=1)
+                lab_sum = np.where(valid, lab_vals, 0.0).sum(axis=1)
+                llm_sum = np.where(valid, llm_at_lab, 0.0).sum(axis=1)
+                has_lab = n_valid > 0
+                rectifier = np.zeros(n_entities)
+                rectifier[has_lab] = (
+                    lab_sum[has_lab] / n_valid[has_lab] - llm_sum[has_lab] / n_valid[has_lab]
+                )
+                agg = agg + rectifier
+
+            _accumulate_tie_aware_rank_mass(rank_counts, agg)
+
+    rank_probs = rank_counts / n_bootstrap
+    expected_ranks = (rank_probs * np.arange(1, n_entities + 1)).sum(axis=1)
+    p_best = rank_probs[:, 0]
+
+    return RankDistribution(
+        labels=labels,
+        rank_probs=rank_probs,
+        expected_ranks=expected_ranks,
+        p_best=p_best,
+        n_bootstrap=n_bootstrap,
+    )
+
+
 def _smooth_bootstrap_ranks_seeded(
     scores: np.ndarray,
     labels: list[str],

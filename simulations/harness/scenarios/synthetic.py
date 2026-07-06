@@ -30,7 +30,7 @@ Suites (how many shapes to test against):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
 import numpy as np
@@ -38,7 +38,7 @@ import pandas as pd
 from scipy import stats
 from scipy.stats import norm
 
-from . import CISource, CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES
+from . import CISource, CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 
 SCENARIO_SUITES = ["standard", "expanded", "extreme"]
 RUN_NOISE_FRACS_DEFAULT = [0.01, 0.1, 0.3, 0.5]
@@ -1424,6 +1424,30 @@ def _jb_labels_shared(
     return labs
 
 
+def _jb_bias_magnitude(eval_type: str, frac: float = 0.30) -> float:
+    """`frac` of `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, as an
+    absolute bias_delta value.
+
+    `bias_delta`/`bias_const` are RAW additive offsets on the eval type's
+    own native scale (see _jb_llm: ``pred = anchor + slope*(truth-anchor)
+    + bias``), NOT normalized to a common [0, 1] fraction -- so reusing the
+    same absolute number (e.g. the historical default of 0.30) across eval
+    types gives wildly different real severities: "30% of range" for
+    continuous ([0, 1]) but only "0.3% of range" for grades ([0, 100]).
+    Confirmed empirically that reusing 0.30 verbatim made grades' bias
+    scenarios produce essentially NO Type-I inflation (~5%, indistinguishable
+    from no bias at all) while continuous saturated at 100% -- not a
+    deliberate difference in severity, just an unconverted unit. Binary is
+    not meant to be passed here: its bias model (_jb_llm_binary) works via
+    flip-probabilities, not an additive offset, so this fractional framing
+    doesn't apply to it (its EVAL_TYPE_SCALE_BOUNDS span of 1.0 happens to
+    match continuous's anyway, so its historical bias_delta=0.30 was
+    already correctly scaled by coincidence).
+    """
+    lo, hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
+    return frac * (hi - lo)
+
+
 def build_judge_bias_sources() -> list[JudgeBiasSource]:
     """A curated, one-factor-at-a-time sweep of judge-bias scenarios. Every
     scenario starts from the same baseline (B, below) and changes exactly
@@ -1449,7 +1473,10 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
         return JudgeBiasSource(name=name, tag=tag, **{**B, **kw})
 
     for eval_type in ["continuous", "likert", "grades"]:
-        S.append(make_scenario(f"eval_type.{eval_type}", "eval_type", eval_type=eval_type))
+        S.append(make_scenario(
+            f"eval_type.{eval_type}", "eval_type", eval_type=eval_type,
+            bias_delta=_jb_bias_magnitude(eval_type),
+        ))
 
     # Binary is a separate, smaller-scope scenario (not swept across every
     # other factor below the way continuous/likert/grades are): only the
@@ -1466,8 +1493,14 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # shape every other scenario in this sweep uses? See ShapeSpec/
     # _ppi_shape/JudgeBiasSource.shape_label.
     S.append(make_scenario("shape.cont-zero-inflated", "shape", eval_type="continuous", shape_label="cont-zero-inflated"))
-    S.append(make_scenario("shape.likert-bimodal", "shape", eval_type="likert", shape_label="likert-bimodal"))
-    S.append(make_scenario("shape.grades-mixture", "shape", eval_type="grades", shape_label="grades-mixture"))
+    S.append(make_scenario(
+        "shape.likert-bimodal", "shape", eval_type="likert", shape_label="likert-bimodal",
+        bias_delta=_jb_bias_magnitude("likert"),
+    ))
+    S.append(make_scenario(
+        "shape.grades-mixture", "shape", eval_type="grades", shape_label="grades-mixture",
+        bias_delta=_jb_bias_magnitude("grades"),
+    ))
 
     for n in [60, 100, 200, 400]:
         S.append(make_scenario(f"n={n}", "sample_size", n=n))
@@ -1489,6 +1522,40 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     for bt in ["none", "constant", "differential"]:
         S.append(make_scenario(f"bias.{bt}", "bias_type", bias_type=bt))
 
+    # Bias MAGNITUDE gradient (differential only -- that's the type a
+    # relative/paired test should be able to detect; "constant" bias is
+    # deliberately the same for every group regardless of magnitude, so it
+    # doesn't need one -- see _jb_biases). The trio above only contrasts
+    # bias ABSENT (bias.none) against bias PRESENT at the shared baseline's
+    # fixed bias_delta=0.30, which is large enough that nearly every
+    # differential-biased scenario in this catalog saturates near a 100%
+    # uncorrected rejection rate -- with no scenario anywhere showing a
+    # smaller, more realistic judge-bias magnitude, the Type-I calibration
+    # plot's uncorrected dots cluster at the two extremes (~alpha or ~1.0)
+    # with nothing in between, which can look artificially bimodal/extreme
+    # to a reader skimming the plot.
+    #
+    # `bias_delta`/`bias_const` are RAW additive offsets on each eval type's
+    # own native scale (see _jb_llm: `pred = anchor + slope*(truth-anchor) +
+    # bias`), NOT normalized to a common [0, 1] fraction -- see
+    # _jb_bias_magnitude's docstring for why every differential-bias
+    # scenario above (eval_type.*/shape.*) uses it instead of a bare
+    # number. This sweep expresses magnitude as a FRACTION of each eval
+    # type's own EVAL_TYPE_SCALE_BOUNDS span, so "mild"/"moderate"/"severe"
+    # mean the same relative severity everywhere. Verified empirically
+    # (n=100/icc=0.20, uncorrected ttest rejection rate, alpha=0.05): 3% of
+    # span -> ~12-24%, 7% -> ~45-74%, 30% -> 100%, consistently across
+    # continuous/likert/grades. Binary is excluded -- its bias model
+    # (_jb_llm_binary) works via flip-probabilities, not an additive offset
+    # on a continuous scale, so this fractional framing doesn't apply the
+    # same way (though its span happens to match continuous's anyway).
+    for et in ["continuous", "likert", "grades"]:
+        for label, frac in [("mild", 0.03), ("moderate", 0.07), ("severe", 0.30)]:
+            S.append(make_scenario(
+                f"biasmag.{et}.{label}", "bias_magnitude",
+                eval_type=et, bias_type="differential", bias_delta=_jb_bias_magnitude(et, frac),
+            ))
+
     S.append(make_scenario(
         "scale.none", "scale_bias", bias_type="none", slope_a=1.0, slope_b=1.0, slope_c=1.0, slope_d=1.0,
     ))
@@ -1499,12 +1566,31 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
         "scale.expand", "scale_bias", bias_type="none", slope_a=1.20, slope_b=1.20, slope_c=1.20, slope_d=1.20,
     ))
 
+    # Per-group differential bias+slope miscalibration ("strong" below is
+    # the base pattern -- group a over-scored/expanded, b under-scored/
+    # compressed, c mildly over, d moderately under -- everything else is
+    # that SAME pattern scaled by a fraction f). The historical "mild"
+    # (f=0.5 of "strong") already saturates to ~100% uncorrected rejection,
+    # identically to "strong" itself -- not actually milder in practice, the
+    # same magnitude-labeling problem build_judge_bias_sources' bias_magnitude
+    # sweep found and fixed for bias_delta. Verified empirically (n=100,
+    # icc=0.20, uncorrected anova_ind rejection rate, alpha=0.05): f=0.05 ->
+    # ~6%, f=0.10 -> ~21%, f=0.20 -> ~58%, f=0.30 -> ~91%, f=0.40+ -> ~100%
+    # (saturated) -- so f=0.05/0.10/0.20 are the fractions that actually
+    # land in between "none" (f=0) and "strong" (f=1, kept at its original
+    # values since it's already a validated saturated-severity reference).
+    def _gcal_kwargs(frac: float) -> dict:
+        pattern = {"a": 0.30, "b": -0.10, "c": 0.10, "d": -0.20}
+        kwargs: dict = {}
+        for g, v in pattern.items():
+            kwargs[f"bias_extra_{g}"] = v * frac
+            kwargs[f"slope_{g}"] = 1.0 + v * frac
+        return kwargs
+
     S.append(make_scenario("gcal.none", "group_calibration", bias_type="none"))
-    S.append(make_scenario(
-        "gcal.mild", "group_calibration", bias_type="none",
-        bias_extra_a=0.15, bias_extra_b=-0.05, bias_extra_c=0.05, bias_extra_d=-0.10,
-        slope_a=1.15, slope_b=0.95, slope_c=1.05, slope_d=0.90,
-    ))
+    S.append(make_scenario("gcal.very-mild", "group_calibration", bias_type="none", **_gcal_kwargs(0.05)))
+    S.append(make_scenario("gcal.mild", "group_calibration", bias_type="none", **_gcal_kwargs(0.10)))
+    S.append(make_scenario("gcal.moderate", "group_calibration", bias_type="none", **_gcal_kwargs(0.20)))
     S.append(make_scenario(
         "gcal.strong", "group_calibration", bias_type="none",
         bias_extra_a=0.30, bias_extra_b=-0.10, bias_extra_c=0.10, bias_extra_d=-0.20,
@@ -1560,6 +1646,34 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
         n=100, n2=150, n3=60, label_frac=0.08, llm_noise=0.01, llm_noise2=0.90, llm_noise3=0.40,
         bias_type="none",
     ))
+
+    # Cross bias MAGNITUDE with every OTHER one-factor-at-a-time dimension
+    # above that uses bias_type="differential" at the fixed baseline
+    # bias_delta=0.30 (sample_size, balance, label_frac, label_mechanism,
+    # llm_noise, heteroskedastic, noise_family, stress, interaction, and
+    # shape). Without this, only the dedicated bias_type/bias_magnitude/
+    # group_calibration groups show any bias severity below "fully
+    # saturated," so the aggregate Type-I calibration plot's uncorrected
+    # dots cluster almost entirely at ~alpha or ~1.0 (most of the catalog
+    # is one of these ~36 scenarios). Adds two smaller-bias companion
+    # scenarios per eligible base scenario -- keeping the original
+    # UNCHANGED (same name, same "severe" bias_delta=0.30) so existing
+    # results/names stay valid -- rather than replacing it, using the SAME
+    # eval-type-relative fractions (3%/7% of range) validated in the
+    # standalone bias_magnitude sweep. The eval_type group itself is
+    # excluded: it's already exactly this cross (eval_type x bias
+    # magnitude) via the dedicated bias_magnitude group above, so adding
+    # companions here would just be exact duplicates.
+    _EXCLUDED_TAGS = {"eval_type", "bias_type", "bias_magnitude", "group_calibration"}
+    extra: list[JudgeBiasSource] = []
+    for sc in S:
+        if sc.bias_type != "differential" or sc.tag in _EXCLUDED_TAGS:
+            continue
+        for suffix, frac in [("mildbias", 0.03), ("modbias", 0.07)]:
+            extra.append(replace(
+                sc, name=f"{sc.name}.{suffix}", bias_delta=_jb_bias_magnitude(sc.eval_type, frac),
+            ))
+    S.extend(extra)
 
     return S
 

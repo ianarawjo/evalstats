@@ -2843,6 +2843,8 @@ def _ppi_lmm_p_value(
     groups_lab: list[np.ndarray],
     k: int,
     factors=None,
+    *,
+    precomputed_fit: Optional[tuple] = None,
 ) -> Optional[float]:
     """Closed-form Wald-to-F omnibus p-value for the PPI-corrected LMM template effect.
 
@@ -2860,12 +2862,18 @@ def _ppi_lmm_p_value(
     ``_ppi_anova_repeated_p_value`` / ``_ppi_friedman_p_value``. ``factors``
     is passed straight through to ``_ppi_lmm_fixed_effects`` so this same
     helper covers the single-factor, multi-factor, and nested-run lmm
-    calibration variants alike.
+    calibration variants alike. ``precomputed_fit`` is likewise forwarded
+    straight through -- see ``_ppi_lmm_fixed_effects``'s docstring -- for
+    callers that already have the LLM-only fit (e.g. from computing an
+    uncorrected Wald F-test on the same ``groups``) and want to avoid
+    fitting the identical MixedLM model twice.
     """
     from evalstats.core.mixed_effects import _ppi_lmm_fixed_effects
 
     template_labels = [f"T{i}" for i in range(k)]
-    ppi = _ppi_lmm_fixed_effects(groups, groups_lab, template_labels, factors=factors)
+    ppi = _ppi_lmm_fixed_effects(
+        groups, groups_lab, template_labels, factors=factors, precomputed_fit=precomputed_fit,
+    )
 
     df_q = k - 1
     if df_q <= 0 or ppi.n_lab <= df_q:
