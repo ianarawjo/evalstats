@@ -406,13 +406,18 @@ def _run_nested_cell(
     rng = np.random.default_rng(seed)
     is_binary = source_obj.eval_type == "binary"
     is_continuous = source_obj.eval_type == "continuous"
+    is_numeric = not is_binary  # continuous, likert, or grades
     true_mean = source_obj.true_mean
 
-    active_methods = list(METHODS) + [T_INTERVAL] + NESTED_METHODS
+    # CONTINUOUS_NESTED_METHODS (nig_ci_nested) now runs for every eval type
+    # via rescale onto [0, 1] -- identity for binary/continuous, and via
+    # EVAL_TYPE_SCALE_BOUNDS for likert/grades (see the nig_ci_nested block
+    # below), matching CONTINUOUS_EXTRA_METHODS' scope.
+    active_methods = list(METHODS) + [T_INTERVAL] + NESTED_METHODS + CONTINUOUS_NESTED_METHODS
     if is_binary:
-        active_methods += BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + CONTINUOUS_NESTED_METHODS + [NIG]
-    elif is_continuous:
-        active_methods += CONTINUOUS_NESTED_METHODS + CONTINUOUS_EXTRA_METHODS
+        active_methods += BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + [NIG]
+    if is_numeric:
+        active_methods += CONTINUOUS_EXTRA_METHODS
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
@@ -556,17 +561,20 @@ def _run_nested_cell(
                 total_t_sq[method] += _el * _el
                 _record(method, ci_low, ci_high)
 
-        # -- NIG nested on full matrix (continuous + binary approximation) --
-        if is_binary or is_continuous:
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = nig_ci_nested(scores, alpha)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[NIG_NESTED] += _el
-            total_t_sq[NIG_NESTED] += _el * _el
-            _record(NIG_NESTED, ci_low, ci_high)
+        # -- NIG nested on full matrix (all eval types) -- the hierarchical
+        # model assumes a [0, 1] scale like nig_ci_1d; binary/continuous are
+        # already there (identity rescale), likert/grades go through
+        # EVAL_TYPE_SCALE_BOUNDS first, matching CONTINUOUS_EXTRA_METHODS above.
+        _t0 = time.perf_counter()
+        try:
+            scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
+            ci_low, ci_high = rescaled_ci(nig_ci_nested, scores, alpha, scale_lo, scale_hi)
+        except Exception:
+            ci_low = ci_high = obs_mean
+        _el = time.perf_counter() - _t0
+        total_t[NIG_NESTED] += _el
+        total_t_sq[NIG_NESTED] += _el * _el
+        _record(NIG_NESTED, ci_low, ci_high)
 
         # -- NIG on cell means (binary approximation) --
         if is_binary:
@@ -580,12 +588,20 @@ def _run_nested_cell(
             total_t_sq[NIG] += _el * _el
             _record(NIG, ci_low, ci_high)
 
-        # -- Continuous extra methods on cell means --
-        if is_continuous:
+        # -- Continuous extra methods on cell means -- beta/logit_t/nig
+        # assume a [0, 1] scale (domain check or prior centred at 0.5);
+        # rescale likert (1-5) / grades (0-100) onto [0, 1] first, matching
+        # the flat case (_run_cell) above. el_ci_1d is nonparametric
+        # (data-driven x_min/x_max) and needs no rescale.
+        if is_numeric:
+            scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             for _method, _fn in _CONT_NESTED_FNS.items():
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = _fn(cell_means, alpha)
+                    if _fn is el_ci_1d:
+                        ci_low, ci_high = _fn(cell_means, alpha)
+                    else:
+                        ci_low, ci_high = rescaled_ci(_fn, cell_means, alpha, scale_lo, scale_hi)
                 except Exception:
                     ci_low = ci_high = obs_mean
                 _el = time.perf_counter() - _t0
@@ -1332,9 +1348,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
     """Canonical official-test preset, mirroring sim_compare_boot.py --official-test
-    (single-sample phase). Synthetic data."""
+    (single-sample phase). Synthetic data.
+
+    Excludes "grades" from eval_types: "continuous" already covers the
+    [0, 1]-scale case well (grades is just continuous rescaled to 0-100),
+    while "likert" is kept as a genuinely distinct limiting case (integer-
+    valued, few levels). Dropping grades cuts a third eval type out of the
+    official sweep's runtime for no real loss of coverage."""
     return argparse.Namespace(
-        data_source="synthetic", scenario_suite="expanded", eval_types=None,
+        data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=2000, bootstrap_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
@@ -1417,9 +1439,11 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     python -m simulations.harness.cli ci_single --nested-mode --runs-sweep 5 --reps 200
       --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded --icc-values 0.05 0.30 0.50
       --run-noise-fracs 0.01 0.1 0.3 0.5 --heteroscedastic --sizes 10 20 30 50 75 100 --seed 44
+
+    Excludes "grades" from eval_types -- see official_args()'s docstring.
     """
     return argparse.Namespace(
-        data_source="synthetic", scenario_suite="expanded", eval_types=None,
+        data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=500, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
@@ -1478,7 +1502,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps)
 
             stamp = time.strftime("%Y%m%d_%H%M%S")
-            run_stem = f"ci_single_nested_runs{'-'.join(str(r) for r in runs_list)}_reps{args.reps}_{stamp}"
+            run_stem = f"ci_single_nested_{args.data_source}_runs{'-'.join(str(r) for r in runs_list)}_reps{args.reps}_{stamp}"
             output_paths: list[str] = []
 
             if args.save_results == "save":

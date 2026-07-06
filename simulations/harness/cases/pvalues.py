@@ -3166,11 +3166,19 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     visible. Costs ~3.8x the k-sweep's compute vs. stopping at k=10, since
     per-cell cost tracks the pair count; both --mode multiarm and
     --mode simultaneous_ci reuse this same official_args() preset (see
-    official_args_simultaneous_ci) and its k_arms sweep."""
+    official_args_simultaneous_ci) and its k_arms sweep.
+
+    Excludes "grades" from eval_types (also inherited by official_args_ppi/
+    official_args_simultaneous_ci, which derive from this preset):
+    "continuous" already covers the [0, 1]-scale case well (grades is just
+    continuous rescaled to 0-100), while "likert" is kept as a genuinely
+    distinct limiting case (integer-valued, few levels). Dropping grades
+    cuts a third eval type out of the official sweep's runtime for no real
+    loss of coverage."""
     return argparse.Namespace(
         mode="pairwise_multiarm", reps=300, alpha=0.05, seed=base_seed,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
-        data_source="synthetic", scenario_suite="expanded", eval_types=None, sizes=[10, 20, 30, 50, 75, 100],
+        data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"], sizes=[10, 20, 30, 50, 75, 100],
         runs=1, statistic="mean",
         bootstrap_n=2000, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
@@ -3460,6 +3468,11 @@ def run(args: argparse.Namespace) -> CaseResult:
             active_tests = args.tests if args.tests else [m.name for m in PPI_TEST_METHODS]
             print(f"\npvalues simulation (PPI-corrected) -- tests={active_tests}")
             jb_sources = build_judge_bias_sources()
+            if args.eval_types:
+                requested = set(args.eval_types)
+                jb_sources = [s for s in jb_sources if s.eval_type in requested]
+            if not jb_sources:
+                raise ValueError("No JudgeBiasSources left after filtering.")
             print(f"  {len(jb_sources)} scenarios, reps={args.reps}, n_boot={args.ppi_n_boot}, alpha={args.alpha}")
 
             ppi_results = run_ppi_simulation(

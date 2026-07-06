@@ -8,7 +8,7 @@ corpora (``scenarios/real_data.py``) alike.
 Methods compared
 -----------------
 bootstrap, bca, bayes_bootstrap, smooth_bootstrap, bootstrap_t (all eval
-types, statistic=mean or median); t_interval, nig, el (non-binary,
+types, statistic=mean or median); t_interval, logit_t, nig, el (non-binary,
 statistic=mean only); newcombe_score, tango_score, bayes_indep_comp,
 bayes_paired_comp (binary, statistic=mean only).
 
@@ -59,6 +59,7 @@ with warnings.catch_warnings():
         smooth_bootstrap_diffs_nested,
         resolve_resampling_method,
         t_interval_ci_1d,
+        logit_t_ci_1d,
         nig_ci_1d,
         el_ci_1d,
         tango_paired_ci,
@@ -84,6 +85,7 @@ from ..methods import (
     BOOTSTRAP_METHODS as METHODS,
     BAYES_BOOTSTRAP,
     T_INTERVAL,
+    LOGIT_T,
     NIG,
     EL,
     NEWCOMBE,
@@ -329,15 +331,17 @@ def _run_cell(
             # A paired difference of two [scale_lo, scale_hi] values ranges
             # over [-span, span], naturally centred at 0 -- not [scale_lo,
             # scale_hi] itself. nig_ci_1d's default prior assumes its input
-            # is centred at the scale's midpoint, so pass diff_lo/diff_hi
-            # (not scale_lo/scale_hi) to correctly re-centre it at 0.
+            # is centred at the scale's midpoint, and logit_t_ci_1d requires
+            # values strictly in [0, 1], so both need diff_lo/diff_hi (not
+            # scale_lo/scale_hi) to correctly re-centre the diff at 0 (which
+            # rescaled_ci maps to 0.5 -- logit_t's own centre point).
             _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             diff_span = _scale_hi - _scale_lo
             diff_lo, diff_hi = -diff_span, diff_span
-            for method, fn in zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, nig_ci_1d, el_ci_1d)):
+            for method, fn in zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
                 _t0 = time.perf_counter()
                 try:
-                    if fn is nig_ci_1d:
+                    if fn is nig_ci_1d or fn is logit_t_ci_1d:
                         ci_low, ci_high = rescaled_ci(fn, pair_diffs, alpha, diff_lo, diff_hi)
                     else:
                         ci_low, ci_high = fn(pair_diffs, alpha)
@@ -512,6 +516,8 @@ def _run_nested_pairwise_cell(
     active_methods = list(METHODS) + [T_INTERVAL] + PAIR_DIFF_NESTED_METHODS
     if is_binary:
         active_methods += BINARY_PAIR_FLAT_METHODS + BINARY_PAIR_NESTED_METHODS
+    else:
+        active_methods += [LOGIT_T, NIG, EL]
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
@@ -555,6 +561,32 @@ def _run_nested_pairwise_cell(
         total_t[T_INTERVAL] += _el
         total_t_sq[T_INTERVAL] += _el * _el
         _record(T_INTERVAL, ci_low, ci_high)
+
+        # -- logit_t/nig/el on cell-mean diffs -- mirrors _run_cell's
+        # PAIRWISE_EXTRA_METHODS treatment above: logit_t/nig assume a
+        # [0, 1] scale, so rescale onto diff_lo/diff_hi = [-span, span]
+        # first (a zero diff maps to 0.5, logit_t/nig's own centre point).
+        # el_ci_1d is nonparametric and needs no rescale. There is no
+        # hierarchical (full N x R matrix) variant of these three for
+        # paired diffs -- unlike the bootstrap family below, they only
+        # ever see the cell-mean reduction, same as t_interval above.
+        if not is_binary:
+            _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
+            diff_span = _scale_hi - _scale_lo
+            diff_lo, diff_hi = -diff_span, diff_span
+            for method, fn in zip((LOGIT_T, NIG, EL), (logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
+                _t0 = time.perf_counter()
+                try:
+                    if fn is el_ci_1d:
+                        ci_low, ci_high = fn(cell_diffs, alpha)
+                    else:
+                        ci_low, ci_high = rescaled_ci(fn, cell_diffs, alpha, diff_lo, diff_hi)
+                except Exception:
+                    ci_low = ci_high = obs_diff
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                _record(method, ci_low, ci_high)
 
         # -- Nested pairwise diff methods (full N x R pair matrices) --
         for method, fn in [
@@ -1425,9 +1457,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
     """Canonical official-test preset, mirroring sim_compare_boot.py --official-test
-    (pairwise phase). Synthetic data."""
+    (pairwise phase). Synthetic data.
+
+    Excludes "grades" from eval_types: "continuous" already covers the
+    [0, 1]-scale case well (grades is just continuous rescaled to 0-100),
+    while "likert" is kept as a genuinely distinct limiting case (integer-
+    valued, few levels). Dropping grades cuts a third eval type out of the
+    official sweep's runtime for no real loss of coverage."""
     return argparse.Namespace(
-        data_source="synthetic", scenario_suite="expanded", eval_types=None,
+        data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=1, statistic="mean", reps=1000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
@@ -1512,9 +1550,11 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
       --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded --icc-values 0.05 0.30 0.50
       --run-noise-fracs 0.01 0.1 0.3 0.5 --cohens-d-values 0.2 0.4 --include-null --heteroscedastic
       --sizes 10 20 30 50 75 100 --seed 44
+
+    Excludes "grades" from eval_types -- see official_args()'s docstring.
     """
     return argparse.Namespace(
-        data_source="synthetic", scenario_suite="expanded", eval_types=None,
+        data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=5, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 20, 30, 50, 75, 100],
@@ -1577,7 +1617,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps, statistic="mean")
 
             stamp = time.strftime("%Y%m%d_%H%M%S")
-            run_stem = f"ci_paired_nested_runs{'-'.join(str(r) for r in runs_list)}_reps{args.reps}_{stamp}"
+            run_stem = f"ci_paired_nested_{args.data_source}_runs{'-'.join(str(r) for r in runs_list)}_reps{args.reps}_{stamp}"
             output_paths: list[str] = []
 
             if args.save_results == "save":
