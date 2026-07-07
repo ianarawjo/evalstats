@@ -39,7 +39,7 @@ OUT_PATH = Path(__file__).parent / "code_review_judge_alignment_demo.csv"
 rng = np.random.default_rng(40)
 
 N_ITEMS = 200
-N_LABELED = 40
+N_LABELED = 30
 
 # name              size_b  true_quality   bias
 #   true_quality: what a careful human reviewer would score this model's

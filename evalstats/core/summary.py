@@ -1093,7 +1093,12 @@ def _print_pairwise_section(
         fr = bundle.pairwise.friedman
         fr_p_str = _format_p_value(fr.p_value)
         fr_p_color = _BRIGHT_GREEN if fr.p_value <= 0.05 else _YELLOW
-        print(f"  Friedman omnibus: χ²({fr.df}) = {fr.statistic:.3f}, p = {fr_p_color}{fr_p_str}{_RESET}")
+        stat_note = " (uncorrected LLM-only statistic)" if getattr(bundle, "ppi_applied", False) else ""
+        p_note = " (PPI-corrected)" if getattr(bundle, "ppi_applied", False) else ""
+        print(
+            f"  Friedman omnibus: χ²({fr.df}) = {fr.statistic:.3f}{stat_note}, "
+            f"p = {fr_p_color}{fr_p_str}{_RESET}{p_note}"
+        )
         if fr.p_value > 0.05:
             print(f"  {_YELLOW}[!] Friedman p > 0.05: no significant omnibus effect — treat pairwise results with caution.{_RESET}")
 
@@ -1190,7 +1195,8 @@ def _print_pairwise_section(
             else:
                 print(f"  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected)")
         elif eff_p_source == "wsr":
-            print(f"  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected)")
+            ppi_note = ", PPI-corrected" if getattr(bundle, "ppi_applied", False) else ""
+            print(f"  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected{ppi_note})")
         elif eff_p_source == "nem":
             print(f"  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
         if eff_p_source is not None:
@@ -2212,10 +2218,19 @@ def _p_value_stars(p_value: Optional[float]) -> str:
 
 
 def _format_p_value(p_value: Optional[float]) -> str:
-    """Format p-value with significance stars; return N/A for missing values."""
+    """Format p-value with significance stars; return N/A for missing values.
+
+    Bootstrap-based p-values can come back as exactly 0.0 when the observed
+    effect never crosses zero in any resample (its true value is merely
+    "smaller than this bootstrap can resolve", not literally zero) — shown
+    as "<0.0001" rather than the misleading bare "0".
+    """
     if p_value is None:
         return "N/A"
-    return f"{p_value:.4g}{_p_value_stars(p_value)}"
+    stars = _p_value_stars(p_value)
+    if p_value <= 0.0:
+        return f"<0.0001{stars}"
+    return f"{p_value:.4g}{stars}"
 
 
 # ---------------------------------------------------------------------------

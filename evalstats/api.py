@@ -736,6 +736,140 @@ def _ppi_pairwise_unpaired_fallback(a, b, a_lab, b_lab, alpha: float, n_boot: in
     return _ppi_two_sample(a, b, a_lab, b_lab, lambda ya, yb: float(ya.mean() - yb.mean()), alpha, n_boot, rng)
 
 
+def _ppi_bootstrap_t_joint_stats(
+    scores_2d: np.ndarray,
+    lab_matrix: np.ndarray,
+    pair_keys: list,
+    entity_idx: dict,
+    n_boot: int,
+    rng: np.random.Generator,
+):
+    """Joint studentized-bootstrap statistics for max-T simultaneous CIs
+    under the PPI ``bootstrap_t`` pairwise method.
+
+    Mirrors ``_ppi_paired_bootstrap_t``'s per-pair two-term variance
+    decomposition (full-sample mean + labeled-subset rectifier), but draws
+    ONE shared item-resample per bootstrap replicate across every pair
+    instead of independent per-pair resamples — this is what makes the
+    joint distribution of the max standardized statistic across pairs valid
+    (the same principle as the non-PPI ``bootstrap_t`` branch of
+    ``evalstats.core.paired._max_stat_simultaneous_cis``, generalized to
+    PPI's two-term SE).
+
+    Requires every pair to share the same labeled-item positions — true
+    whenever items (not (entity, item) cells) are labeled, matching
+    evalstats' paired-by-input design. Returns ``None`` if that doesn't
+    hold, or if there are fewer than 15 shared labeled items, so the caller
+    can fall back to Bonferroni.
+
+    Returns
+    -------
+    tuple or None
+        ``(point_ests, obs_se, valid_pairs, M_b, t_obs)`` — ``point_ests``
+        and ``obs_se`` have shape ``(k,)`` (one per pair, in *pair_keys*
+        order), ``valid_pairs`` is a boolean mask over pairs with
+        non-degenerate SE, ``M_b`` has shape ``(n_boot,)`` (the joint max
+        statistic per bootstrap draw), and ``t_obs`` has shape ``(k,)``.
+    """
+    n_items = scores_2d.shape[1]
+    k = len(pair_keys)
+
+    lab_masks = []
+    for (ea, eb) in pair_keys:
+        ia, ib = entity_idx[ea], entity_idx[eb]
+        lab_masks.append(~np.isnan(lab_matrix[ia]) & ~np.isnan(lab_matrix[ib]))
+    first_mask = lab_masks[0]
+    if not all(np.array_equal(m, first_mask) for m in lab_masks[1:]):
+        return None
+    lab_positions = np.where(first_mask)[0]
+    n_lab = len(lab_positions)
+    if n_lab < 15:
+        return None
+
+    diffs_unlab = np.empty((k, n_items))
+    rect_items = np.empty((k, n_lab))
+    point_ests = np.empty(k)
+    obs_se = np.empty(k)
+    for p_idx, (ea, eb) in enumerate(pair_keys):
+        ia, ib = entity_idx[ea], entity_idx[eb]
+        d_unlab = scores_2d[ia] - scores_2d[ib]
+        d_lab_llm = d_unlab[lab_positions]
+        d_lab_true = (lab_matrix[ia] - lab_matrix[ib])[lab_positions]
+        rect = d_lab_true - d_lab_llm
+        diffs_unlab[p_idx] = d_unlab
+        rect_items[p_idx] = rect
+
+        f_unlab = float(np.mean(d_unlab))
+        rectifier = float(np.mean(rect))
+        point_ests[p_idx] = f_unlab + rectifier
+
+        var_unlab = float(np.var(d_unlab, ddof=1))
+        var_rect = float(np.var(rect, ddof=1)) if n_lab > 1 else 0.0
+        obs_se[p_idx] = np.sqrt(var_unlab / n_items + var_rect / n_lab)
+
+    boot_theta = np.empty((n_boot, k))
+    boot_se = np.empty((n_boot, k))
+    chunk_size = max(1, min(n_boot, 512))
+    start = 0
+    while start < n_boot:
+        stop = min(start + chunk_size, n_boot)
+        m = stop - start
+        idx_all = rng.integers(0, n_items, size=(m, n_items))  # shared across pairs
+        idx_lab = rng.integers(0, n_lab, size=(m, n_lab))      # shared across pairs
+        unlab_samples = diffs_unlab[:, idx_all]  # (k, m, n_items)
+        rect_samples = rect_items[:, idx_lab]    # (k, m, n_lab)
+        boot_theta[start:stop] = unlab_samples.mean(axis=2).T + rect_samples.mean(axis=2).T
+        boot_se[start:stop] = np.sqrt(
+            unlab_samples.var(axis=2, ddof=1).T / n_items
+            + rect_samples.var(axis=2, ddof=1).T / n_lab
+        )
+        start = stop
+
+    se_boot_safe = np.where(boot_se > 1e-12, boot_se, 1.0)
+    T = (boot_theta - point_ests[np.newaxis, :]) / se_boot_safe  # (n_boot, k)
+
+    valid_pairs = obs_se > 1e-12
+    if not np.any(valid_pairs):
+        return None
+    M_b = np.max(np.abs(T[:, valid_pairs]), axis=1)  # (n_boot,)
+
+    obs_se_safe = np.where(valid_pairs, obs_se, 1.0)
+    t_obs = np.abs(point_ests) / obs_se_safe
+
+    return point_ests, obs_se, valid_pairs, M_b, t_obs
+
+
+def _max_t_from_joint_stats(
+    point_ests: np.ndarray,
+    obs_se: np.ndarray,
+    valid_pairs: np.ndarray,
+    M_b: np.ndarray,
+    t_obs: np.ndarray,
+    pair_keys: list,
+    ci: float,
+):
+    """Turn joint bootstrap-t statistics (from
+    ``_ppi_bootstrap_t_joint_stats``) into simultaneous CIs + max-T
+    p-values at a given confidence level, without re-bootstrapping —
+    ``M_b`` is reused across every confidence level needed (headline +
+    gradient bands) since only its quantile changes.
+    """
+    c = float(np.quantile(M_b, ci))
+    B_total = len(M_b)
+    sim_cis: dict = {}
+    max_t_pvalues: dict = {}
+    for p_idx, pair in enumerate(pair_keys):
+        if valid_pairs[p_idx]:
+            half = c * float(obs_se[p_idx])
+            sim_cis[pair] = (float(point_ests[p_idx] - half), float(point_ests[p_idx] + half))
+            extreme = int(np.sum(M_b >= t_obs[p_idx]))
+            max_t_pvalues[pair] = float((extreme + 1) / (B_total + 1))
+        else:
+            sim_cis[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
+            max_t_pvalues[pair] = 1.0
+    return sim_cis, max_t_pvalues
+
+
 def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng):
     """Dispatch to the PPI-corrected single-sample implementation of *method*."""
     from evalstats.tests import _ppi_single_wilson, _ppi_single_bootstrap_t
@@ -810,6 +944,16 @@ def _run_alignment_ppi(
             "PPI alignment correction does not yet support seeded benchmarks "
             "(R >= 3 repeated runs). Aggregate runs to a single score per "
             "(template, input) cell before passing alignment=."
+        )
+
+    if bundle.p_value_method == "nem":
+        raise ValueError(
+            "PPI alignment correction has no validated implementation for "
+            "pairwise_test=\"nemenyi\" (Nemenyi post-hoc p-values derive from "
+            "Friedman ranks and there is no PPI-corrected Nemenyi in evalstats "
+            "yet). Use p_values=True (default bootstrap) or "
+            "pairwise_test=\"wilcoxon\" instead, both of which have validated "
+            "PPI corrections."
         )
 
     rng = np.random.default_rng(rng)
@@ -946,8 +1090,11 @@ def _run_alignment_ppi(
     pair_pvals  = np.empty(n_pairs, dtype=float)
     pair_multi_ci: dict = {a: {} for a in GRADIENT_CI_ALPHAS}
     pair_test_method: dict = {}
+    pair_wilcoxon_p: dict = {}
     skipped_pairs = []
     fallback_pairs = []
+
+    from evalstats.tests import _ppi_paired_arrays as _ppi_wilcoxon_arrays
 
     for k, (ea, eb) in enumerate(pair_keys):
         pr = bundle.pairwise.results[(ea, eb)]
@@ -965,6 +1112,14 @@ def _run_alignment_ppi(
                 pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
             )
             pair_test_method[(ea, eb)] = f"PPI {pairwise_method}"
+            # Companion PPI-corrected Wilcoxon signed-rank p-value (shown when
+            # pairwise_test="wilcoxon"), computed the same way es.tests.wilcoxon()
+            # does with x_lab/y_lab — independent of whichever method drove the
+            # headline point_diff/p_value above.
+            pair_wilcoxon_p[(ea, eb)] = _ppi_wilcoxon_arrays(
+                a_arr, b_arr, a_lab_arr, b_lab_arr, np.median, pair_alpha, n_boot, rng,
+                rectifier_func=np.mean,
+            ).p_value
         elif n_a_only >= 15 and n_b_only >= 15:
             # Not enough items are labeled for *both* entities to run the
             # paired PPI method, but each entity individually has enough of
@@ -975,6 +1130,10 @@ def _run_alignment_ppi(
             )
             pair_test_method[(ea, eb)] = "PPI mean-diff (unpaired fallback, insufficient item overlap)"
             fallback_pairs.append((ea, eb))
+            # No validated PPI-corrected Wilcoxon signed-rank for the unpaired
+            # fallback case (it's an inherently paired test) — show as
+            # unavailable rather than a stale/uncorrected number.
+            pair_wilcoxon_p[(ea, eb)] = None
         else:
             skipped_pairs.append((ea, eb))
             final_diffs[k] = pr.point_diff
@@ -982,6 +1141,7 @@ def _run_alignment_ppi(
             pair_ci_hi[k]  = pr.ci_high
             pair_pvals[k]  = pr.p_value
             pair_test_method[(ea, eb)] = pr.test_method
+            pair_wilcoxon_p[(ea, eb)] = pr.wilcoxon_p
             for a in GRADIENT_CI_ALPHAS:
                 pair_multi_ci[a][(ea, eb)] = pr.multi_ci.get(a, (pr.ci_low, pr.ci_high)) if pr.multi_ci else (pr.ci_low, pr.ci_high)
             continue
@@ -1020,6 +1180,62 @@ def _run_alignment_ppi(
     if correction != "none" and n_pairs > 1:
         pair_pvals = correct_pvalues(pair_pvals, correction)
 
+        # Same correction applied to the companion Wilcoxon p-values, matching
+        # all_pairwise()'s uncorrected-path behavior (which corrects wilcoxon_p
+        # as its own family, separate from the headline p_value family).
+        wsr_keys = [key for key in pair_keys if pair_wilcoxon_p[key] is not None]
+        if len(wsr_keys) > 1:
+            wsr_vals = np.array([pair_wilcoxon_p[key] for key in wsr_keys], dtype=float)
+            wsr_adj = correct_pvalues(wsr_vals, correction)
+            for key, adj_p in zip(wsr_keys, wsr_adj):
+                pair_wilcoxon_p[key] = float(adj_p)
+
+    # ── Simultaneous CIs: joint bootstrap max-T for bootstrap_t, Bonferroni
+    # otherwise ──────────────────────────────────────────────────────────────
+    # bootstrap_t is a resampling method, so (like all_pairwise()'s non-PPI
+    # bootstrap_t path) it gets the studentized bootstrap max-T correction —
+    # which uses the data's own joint null distribution and is more powerful
+    # than Bonferroni. Bonferroni (the pair_alpha=alpha/n_pairs adjustment
+    # above) remains the fallback for closed-form methods (tango/wilson) that
+    # have no bootstrap distribution to build a joint max-stat from, and for
+    # bootstrap_t itself when any pair fell back to the unpaired/skip path
+    # (those pairs don't share the paired item-resample structure max-T needs).
+    used_max_t = False
+    if (
+        pairwise_method == "bootstrap_t"
+        and use_simultaneous
+        and not fallback_pairs
+        and not skipped_pairs
+    ):
+        joint = _ppi_bootstrap_t_joint_stats(
+            scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
+        )
+        if joint is None:
+            warnings.warn(
+                "PPI alignment: could not build a joint bootstrap distribution for "
+                "max-T simultaneous CIs (pairs don't share a common set of labeled "
+                "items, or fewer than 15 shared labeled items). Falling back to "
+                "Bonferroni for simultaneous CIs. Labeling the same items across "
+                "every entity enables the more powerful max-T correction.",
+                UserWarning,
+                stacklevel=4,
+            )
+        if joint is not None:
+            point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j = joint
+            headline_ci, headline_p = _max_t_from_joint_stats(
+                point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - alpha,
+            )
+            for k, key in enumerate(pair_keys):
+                final_diffs[k] = point_ests_j[k]
+                pair_ci_lo[k], pair_ci_hi[k] = headline_ci[key]
+                pair_pvals[k] = headline_p[key]
+            for a in GRADIENT_CI_ALPHAS:
+                g_ci, _ = _max_t_from_joint_stats(
+                    point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - a,
+                )
+                pair_multi_ci[a] = g_ci
+            used_max_t = True
+
     # ── Recompute rank distribution (P(Best)/E[Rank]) under PPI ───────────────
     # bundle.rank_dist was built from the raw, uncorrected LLM scores and does
     # not reflect the correction above — without this, P(Best)/E[Rank] would
@@ -1042,11 +1258,27 @@ def _run_alignment_ppi(
         pr.ci_high    = float(pair_ci_hi[k])
         pr.multi_ci   = {a: pair_multi_ci[a][key] for a in GRADIENT_CI_ALPHAS}
         pr.test_method = pair_test_method[key]
+        wp = pair_wilcoxon_p[key]
+        pr.wilcoxon_p = float(wp) if wp is not None else None
+
+    # ── Recompute the Friedman omnibus test (if requested via omnibus=True) ───
+    # bundle.pairwise.friedman is built from the raw, uncorrected LLM scores;
+    # without this it would silently stay frozen (same χ²/p) even though the
+    # means/CIs/pairwise p-values above just changed under the correction.
+    if bundle.pairwise.friedman is not None and n_entities >= 3:
+        from evalstats.tests import _ppi_friedman_p_value
+        groups = [scores_2d[i] for i in range(n_entities)]
+        groups_lab = [lab_matrix[i] for i in range(n_entities)]
+        corrected_friedman_p = _ppi_friedman_p_value(groups, groups_lab, n_entities)
+        if corrected_friedman_p is not None:
+            bundle.pairwise.friedman.p_value = float(corrected_friedman_p)
 
     # Update bundle method metadata so summary() headers reflect the PPI method.
     bundle.resolved_method = pairwise_method
     bundle.resolved_ci_method = robustness_method
-    bundle.pairwise.simultaneous_ci_method = "bonferroni" if use_simultaneous else None
+    bundle.pairwise.simultaneous_ci_method = (
+        "max_t" if used_max_t else ("bonferroni" if use_simultaneous else None)
+    )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
     cr._variance_components = {
@@ -1149,6 +1381,9 @@ def compare(
     n_mc: int = 200,
     min_meaningful_diff=None,  # deferred
     alpha: Optional[float] = None,
+    p_values: bool = False,
+    omnibus: bool = False,
+    pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
     **kwargs: Any,
 ) -> ComparisonResult:
     """Compare entities along one or more factor axes.
@@ -1178,6 +1413,22 @@ def compare(
         Significance level / CI width: ``alpha=0.05`` → 95 % CIs.
         When ``None`` (default), uses the global value set by
         :func:`~evalstats.config.set_alpha_ci` (default 0.05).
+    p_values : bool
+        When ``True``, print a p-value column in the pairwise comparisons
+        table (default: bootstrap p-values). Combine with ``omnibus=True``
+        to switch this to Wilcoxon signed-rank (the standard Friedman
+        post-hoc), or set ``pairwise_test=`` explicitly to pick one
+        directly. When ``alignment=`` is also passed, bootstrap and
+        Wilcoxon p-values are both PPI-corrected.
+    omnibus : bool
+        When ``True``, run and print the Friedman omnibus test ("are ANY
+        of the compared entities different?") above the pairwise table.
+        Also PPI-corrected when ``alignment=`` is passed.
+    pairwise_test : {"auto", "bootstrap", "wilcoxon", "nemenyi"}
+        Which p-value to show in the pairwise table. ``"auto"`` (default)
+        picks bootstrap, or Wilcoxon when ``omnibus=True``. ``"nemenyi"``
+        requires ``omnibus=True`` and is not supported together with
+        ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).
     **kwargs
         Two uses:
 
@@ -1188,7 +1439,7 @@ def compare(
            Pass a list to select multiple values:
            ``model=["gpt-4o", "claude-3-5-sonnet"]``.
 
-        2. **Analysis engine overrides** — any of the keyword arguments
+        2. **Analysis engine overrides** — any other keyword argument
            accepted by :func:`~evalstats.core.router.analyze` (e.g.
            ``method="bca"``, ``n_bootstrap=5000``).
 
@@ -1293,6 +1544,14 @@ def compare(
         )
 
     run_col = col.get("run")
+
+    # ── fold the named p-value engine params back into kwargs so the existing
+    # column-filter/engine-kwarg split below (and the analyze() calls it
+    # feeds) doesn't need to change ──────────────────────────────────────────
+    kwargs = dict(kwargs)
+    kwargs["p_values"] = p_values
+    kwargs["omnibus"] = omnibus
+    kwargs["pairwise_test"] = pairwise_test
 
     # ── split kwargs into column filters vs. engine kwargs ────────────────────
     df, engine_kwargs = _apply_kwarg_filters(df, kwargs, _ANALYZE_PARAMS)

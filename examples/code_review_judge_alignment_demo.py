@@ -44,8 +44,14 @@ def main() -> None:
     evaldata = es.load_from(df)
 
     # ── Step 1: trust the judge ──────────────────────────────────────────────
+    # p_values=True + omnibus=True: Friedman omnibus test (are ANY models
+    # different?) plus its standard post-hoc, Wilcoxon signed-rank, on every
+    # pair -- the frequentist reporting a reviewer would expect.
     _banner("STEP 1 — Compare models, trusting the LLM judge metric as-is")
-    result = es.compare(evaldata, factors="model", metric="llm_judge_score")
+    result = es.compare(
+        evaldata, factors="model", metric="llm_judge_score",
+        p_values=True, omnibus=True,
+    )
     result.summary()
 
     # ── Step 2: question the judge ───────────────────────────────────────────
@@ -66,7 +72,7 @@ def main() -> None:
     )
 
     # ── Step 3: validate the judge against the human labels we have ─────────
-    _banner("STEP 3 — Validate the judge against the 40-item human gold set")
+    _banner("STEP 3 — Validate the judge against the 30-item human gold set")
     alignment = es.validate_alignment(
         evaldata,
         llm_metric="llm_judge_score",
@@ -75,11 +81,15 @@ def main() -> None:
     alignment.summary()
 
     # ── Step 4: re-run the SAME compare() call with alignment= ──────────────
+    # Same p_values=True/omnibus=True as step 1 -- the Friedman line and the
+    # Wilcoxon pairwise column are both PPI-corrected here too (labeled
+    # accordingly), not just the means/CIs.
     _banner("STEP 4 — Re-run compare() with alignment=, correcting for judge bias")
     result_corrected = es.compare(
         evaldata,
         factors="model",
         metric="llm_judge_score",
+        p_values=True, omnibus=True,
         alignment={"llm_judge_score": alignment},
     )
     result_corrected.summary()
