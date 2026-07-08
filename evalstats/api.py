@@ -1084,6 +1084,71 @@ def _run_alignment_ppi(
     use_simultaneous = bool(bundle.pairwise.simultaneous_ci) and n_pairs > 1
     pair_alpha = alpha / n_pairs if use_simultaneous else alpha
 
+    # ── Classify pairs up front (cheap: no bootstrapping) ─────────────────────
+    # Determines paired-dispatch vs. unpaired-fallback vs. skip-uncorrected for
+    # every pair, so we know before running any bootstrap whether a joint
+    # max-T correction is even possible (it requires every pair to use the
+    # full paired dispatch — see below).
+    pair_arrays: dict = {}
+    pair_branch: dict = {}
+    skipped_pairs = []
+    fallback_pairs = []
+    for (ea, eb) in pair_keys:
+        ia, ib = entity_idx[ea], entity_idx[eb]
+        valid = ~np.isnan(scores_2d[ia]) & ~np.isnan(scores_2d[ib])
+        a_arr, b_arr = scores_2d[ia, valid], scores_2d[ib, valid]
+        a_lab_arr, b_lab_arr = lab_matrix[ia, valid], lab_matrix[ib, valid]
+        pair_arrays[(ea, eb)] = (a_arr, b_arr, a_lab_arr, b_lab_arr)
+
+        n_overlap = int(np.sum(~np.isnan(a_lab_arr) & ~np.isnan(b_lab_arr)))
+        n_a_only  = int(np.sum(~np.isnan(a_lab_arr)))
+        n_b_only  = int(np.sum(~np.isnan(b_lab_arr)))
+        if n_overlap >= 15:
+            pair_branch[(ea, eb)] = "dispatch"
+        elif n_a_only >= 15 and n_b_only >= 15:
+            pair_branch[(ea, eb)] = "fallback"
+            fallback_pairs.append((ea, eb))
+        else:
+            pair_branch[(ea, eb)] = "skip"
+            skipped_pairs.append((ea, eb))
+
+    # ── Simultaneous CIs: joint bootstrap max-T for bootstrap_t, Bonferroni
+    # otherwise ──────────────────────────────────────────────────────────────
+    # bootstrap_t is a resampling method, so (like all_pairwise()'s non-PPI
+    # bootstrap_t path) it gets the studentized bootstrap max-T correction —
+    # which uses the data's own joint null distribution and is more powerful
+    # than Bonferroni. Bonferroni (the pair_alpha=alpha/n_pairs adjustment
+    # below) remains the fallback for closed-form methods (tango/wilson) that
+    # have no bootstrap distribution to build a joint max-stat from, and for
+    # bootstrap_t itself when any pair fell back to the unpaired/skip path
+    # (those pairs don't share the paired item-resample structure max-T needs).
+    # Computed up front (rather than after the per-pair loop below) so that,
+    # when it succeeds, the per-pair loop can skip its redundant headline +
+    # per-gradient-alpha dispatch calls entirely instead of computing them
+    # only to immediately overwrite them.
+    used_max_t = False
+    joint = None
+    if (
+        pairwise_method == "bootstrap_t"
+        and use_simultaneous
+        and not fallback_pairs
+        and not skipped_pairs
+    ):
+        joint = _ppi_bootstrap_t_joint_stats(
+            scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
+        )
+        if joint is None:
+            warnings.warn(
+                "PPI alignment: could not build a joint bootstrap distribution for "
+                "max-T simultaneous CIs (pairs don't share a common set of labeled "
+                "items, or fewer than 15 shared labeled items). Falling back to "
+                "Bonferroni for simultaneous CIs. Labeling the same items across "
+                "every entity enables the more powerful max-T correction.",
+                UserWarning,
+                stacklevel=4,
+            )
+        used_max_t = joint is not None
+
     final_diffs = np.empty(n_pairs, dtype=float)
     pair_ci_lo  = np.empty(n_pairs, dtype=float)
     pair_ci_hi  = np.empty(n_pairs, dtype=float)
@@ -1091,36 +1156,37 @@ def _run_alignment_ppi(
     pair_multi_ci: dict = {a: {} for a in GRADIENT_CI_ALPHAS}
     pair_test_method: dict = {}
     pair_wilcoxon_p: dict = {}
-    skipped_pairs = []
-    fallback_pairs = []
 
     from evalstats.tests import _ppi_paired_arrays as _ppi_wilcoxon_arrays
 
     for k, (ea, eb) in enumerate(pair_keys):
         pr = bundle.pairwise.results[(ea, eb)]
-        ia, ib = entity_idx[ea], entity_idx[eb]
-        valid = ~np.isnan(scores_2d[ia]) & ~np.isnan(scores_2d[ib])
-        a_arr, b_arr = scores_2d[ia, valid], scores_2d[ib, valid]
-        a_lab_arr, b_lab_arr = lab_matrix[ia, valid], lab_matrix[ib, valid]
+        branch = pair_branch[(ea, eb)]
+        a_arr, b_arr, a_lab_arr, b_lab_arr = pair_arrays[(ea, eb)]
 
-        n_overlap = int(np.sum(~np.isnan(a_lab_arr) & ~np.isnan(b_lab_arr)))
-        n_a_only  = int(np.sum(~np.isnan(a_lab_arr)))
-        n_b_only  = int(np.sum(~np.isnan(b_lab_arr)))
-
-        if n_overlap >= 15:
-            dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
-                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
-            )
+        if branch == "dispatch":
             pair_test_method[(ea, eb)] = f"PPI {pairwise_method}"
             # Companion PPI-corrected Wilcoxon signed-rank p-value (shown when
             # pairwise_test="wilcoxon"), computed the same way es.tests.wilcoxon()
             # does with x_lab/y_lab — independent of whichever method drove the
-            # headline point_diff/p_value above.
+            # headline point_diff/p_value above, so always computed regardless
+            # of the max-T shortcut below.
             pair_wilcoxon_p[(ea, eb)] = _ppi_wilcoxon_arrays(
                 a_arr, b_arr, a_lab_arr, b_lab_arr, np.median, pair_alpha, n_boot, rng,
                 rectifier_func=np.mean,
             ).p_value
-        elif n_a_only >= 15 and n_b_only >= 15:
+
+            if used_max_t:
+                # point estimate/CI/p-value are set below from the joint
+                # bootstrap (computed once, shared across every pair) —
+                # skip the redundant per-alpha dispatch calls that would
+                # just be overwritten.
+                continue
+
+            dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
+                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
+            )
+        elif branch == "fallback":
             # Not enough items are labeled for *both* entities to run the
             # paired PPI method, but each entity individually has enough of
             # its own labels — fall back to independent-groups PPI (see
@@ -1129,13 +1195,11 @@ def _run_alignment_ppi(
                 a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
             )
             pair_test_method[(ea, eb)] = "PPI mean-diff (unpaired fallback, insufficient item overlap)"
-            fallback_pairs.append((ea, eb))
             # No validated PPI-corrected Wilcoxon signed-rank for the unpaired
             # fallback case (it's an inherently paired test) — show as
             # unavailable rather than a stale/uncorrected number.
             pair_wilcoxon_p[(ea, eb)] = None
-        else:
-            skipped_pairs.append((ea, eb))
+        else:  # "skip"
             final_diffs[k] = pr.point_diff
             pair_ci_lo[k]  = pr.ci_low
             pair_ci_hi[k]  = pr.ci_high
@@ -1177,12 +1241,17 @@ def _run_alignment_ppi(
 
     # Multiple-comparison correction on marginal p-values (unaffected by the
     # Bonferroni simultaneous-CI adjustment above, which only widens CIs).
+    # Skipped for p_value when max-T already applies below — max-T's p-value
+    # is already family-wise controlled via the joint null and would just be
+    # overwritten, exactly mirroring all_pairwise()'s non-PPI convention where
+    # a max-T p-value supersedes rather than stacks with this correction.
     if correction != "none" and n_pairs > 1:
-        pair_pvals = correct_pvalues(pair_pvals, correction)
+        if not used_max_t:
+            pair_pvals = correct_pvalues(pair_pvals, correction)
 
-        # Same correction applied to the companion Wilcoxon p-values, matching
-        # all_pairwise()'s uncorrected-path behavior (which corrects wilcoxon_p
-        # as its own family, separate from the headline p_value family).
+        # Companion Wilcoxon p-values always get this correction as their own
+        # family, regardless of max-T — matching all_pairwise()'s uncorrected
+        # path, which never applies max-T to wilcoxon_p (see its docstring).
         wsr_keys = [key for key in pair_keys if pair_wilcoxon_p[key] is not None]
         if len(wsr_keys) > 1:
             wsr_vals = np.array([pair_wilcoxon_p[key] for key in wsr_keys], dtype=float)
@@ -1190,51 +1259,20 @@ def _run_alignment_ppi(
             for key, adj_p in zip(wsr_keys, wsr_adj):
                 pair_wilcoxon_p[key] = float(adj_p)
 
-    # ── Simultaneous CIs: joint bootstrap max-T for bootstrap_t, Bonferroni
-    # otherwise ──────────────────────────────────────────────────────────────
-    # bootstrap_t is a resampling method, so (like all_pairwise()'s non-PPI
-    # bootstrap_t path) it gets the studentized bootstrap max-T correction —
-    # which uses the data's own joint null distribution and is more powerful
-    # than Bonferroni. Bonferroni (the pair_alpha=alpha/n_pairs adjustment
-    # above) remains the fallback for closed-form methods (tango/wilson) that
-    # have no bootstrap distribution to build a joint max-stat from, and for
-    # bootstrap_t itself when any pair fell back to the unpaired/skip path
-    # (those pairs don't share the paired item-resample structure max-T needs).
-    used_max_t = False
-    if (
-        pairwise_method == "bootstrap_t"
-        and use_simultaneous
-        and not fallback_pairs
-        and not skipped_pairs
-    ):
-        joint = _ppi_bootstrap_t_joint_stats(
-            scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
+    if used_max_t:
+        point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j = joint
+        headline_ci, headline_p = _max_t_from_joint_stats(
+            point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - alpha,
         )
-        if joint is None:
-            warnings.warn(
-                "PPI alignment: could not build a joint bootstrap distribution for "
-                "max-T simultaneous CIs (pairs don't share a common set of labeled "
-                "items, or fewer than 15 shared labeled items). Falling back to "
-                "Bonferroni for simultaneous CIs. Labeling the same items across "
-                "every entity enables the more powerful max-T correction.",
-                UserWarning,
-                stacklevel=4,
+        for k, key in enumerate(pair_keys):
+            final_diffs[k] = point_ests_j[k]
+            pair_ci_lo[k], pair_ci_hi[k] = headline_ci[key]
+            pair_pvals[k] = headline_p[key]
+        for a in GRADIENT_CI_ALPHAS:
+            g_ci, _ = _max_t_from_joint_stats(
+                point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - a,
             )
-        if joint is not None:
-            point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j = joint
-            headline_ci, headline_p = _max_t_from_joint_stats(
-                point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - alpha,
-            )
-            for k, key in enumerate(pair_keys):
-                final_diffs[k] = point_ests_j[k]
-                pair_ci_lo[k], pair_ci_hi[k] = headline_ci[key]
-                pair_pvals[k] = headline_p[key]
-            for a in GRADIENT_CI_ALPHAS:
-                g_ci, _ = _max_t_from_joint_stats(
-                    point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - a,
-                )
-                pair_multi_ci[a] = g_ci
-            used_max_t = True
+            pair_multi_ci[a] = g_ci
 
     # ── Recompute rank distribution (P(Best)/E[Rank]) under PPI ───────────────
     # bundle.rank_dist was built from the raw, uncorrected LLM scores and does

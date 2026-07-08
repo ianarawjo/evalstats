@@ -312,19 +312,46 @@ def correct(
     rectifier = f_lab - f_hat_lab
 
     # ── Bootstrap CI ──────────────────────────────────────────────────────────
-    boots = np.empty(n_boot)
-    for b in range(n_boot):
-        idx_all = rng.integers(0, n_all, n_all)
-        idx_lab = rng.integers(0, n_lab, n_lab)
+    # Fast path: when there are no covariates and both functions are one of
+    # the built-ins actually used by this codebase's internal PPI dispatch
+    # (np.mean / np.median), the whole bootstrap batches over an added
+    # replicate axis instead of a Python loop with n_boot scalar calls each —
+    # this matters most for np.median, which re-sorts on every call and
+    # otherwise dominates runtime (see _ppi_paired_arrays's wilcoxon/median
+    # callers). Falls back to the general per-replicate loop for arbitrary
+    # user-supplied estimator functions or when X_lab/X_unlab are provided.
+    _fast_batch = {id(np.mean): lambda a: a.mean(axis=1), id(np.median): lambda a: np.median(a, axis=1)}
+    fast_est = _fast_batch.get(id(estimator_func)) if X_unlab is None else None
+    fast_rect = _fast_batch.get(id(_rect_fn)) if X_lab is None else None
 
-        Xa_b = X_unlab[idx_all] if X_unlab is not None else None
-        Xl_b = X_lab[idx_lab]   if X_lab   is not None else None
+    if fast_est is not None and fast_rect is not None:
+        boots = np.empty(n_boot)
+        chunk_size = max(1, min(n_boot, 4096, max(1, int(2_000_000 // max(n_all, n_lab, 1)))))
+        start = 0
+        while start < n_boot:
+            stop = min(start + chunk_size, n_boot)
+            m = stop - start
+            idx_all = rng.integers(0, n_all, size=(m, n_all))
+            idx_lab = rng.integers(0, n_lab, size=(m, n_lab))
+            b_unlab   = fast_est(Y_hat_unlab[idx_all])
+            b_lab     = fast_rect(Y_lab[idx_lab])
+            b_hat_lab = fast_rect(Y_hat_lab[idx_lab])
+            boots[start:stop] = b_unlab + (b_lab - b_hat_lab)
+            start = stop
+    else:
+        boots = np.empty(n_boot)
+        for b in range(n_boot):
+            idx_all = rng.integers(0, n_all, n_all)
+            idx_lab = rng.integers(0, n_lab, n_lab)
 
-        b_unlab   = _call(estimator_func, Y_hat_unlab[idx_all], Xa_b)
-        b_lab     = _call(_rect_fn,       Y_lab[idx_lab],       Xl_b)
-        b_hat_lab = _call(_rect_fn,       Y_hat_lab[idx_lab],   Xl_b)
+            Xa_b = X_unlab[idx_all] if X_unlab is not None else None
+            Xl_b = X_lab[idx_lab]   if X_lab   is not None else None
 
-        boots[b] = b_unlab + (b_lab - b_hat_lab)
+            b_unlab   = _call(estimator_func, Y_hat_unlab[idx_all], Xa_b)
+            b_lab     = _call(_rect_fn,       Y_lab[idx_lab],       Xl_b)
+            b_hat_lab = _call(_rect_fn,       Y_hat_lab[idx_lab],   Xl_b)
+
+            boots[b] = b_unlab + (b_lab - b_hat_lab)
 
     lo = float(np.percentile(boots, 100 * alpha / 2))
     hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))

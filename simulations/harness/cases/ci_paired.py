@@ -1467,7 +1467,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=1, statistic="mean", reps=1000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
@@ -1482,7 +1482,7 @@ def real_official_args(base_seed: int = 42) -> argparse.Namespace:
     return argparse.Namespace(
         data_source="real", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=1, statistic="mean", reps=1000, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
