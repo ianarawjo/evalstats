@@ -108,15 +108,15 @@ class TestResult:
 
     @staticmethod
     def _bold(text: str) -> str:
-        import sys
-        if sys.stdout.isatty():
+        from ..config import supports_ansi_color
+        if supports_ansi_color():
             return f"\033[1m{text}\033[0m"
         return text
 
     @staticmethod
     def _dim(text: str) -> str:
-        import sys
-        if sys.stdout.isatty():
+        from ..config import supports_ansi_color
+        if supports_ansi_color():
             return f"\033[2m{text}\033[0m"
         return text
 

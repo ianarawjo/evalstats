@@ -73,6 +73,7 @@ CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
 # ---------------------------------------------------------------------------
 NEWCOMBE = Method("newcombe_score", "#aec7e8")
 TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
+TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
 PAIRWISE_EXTRA_METHODS = [T_INTERVAL, LOGIT_T, NIG, EL]
@@ -220,7 +221,7 @@ PPI_TEST_METHODS = [
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
-    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO,
+    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED,
 ] + CONTINUOUS_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     CONTINUOUS_NESTED_METHODS + PAIR_DIFF_NESTED_METHODS

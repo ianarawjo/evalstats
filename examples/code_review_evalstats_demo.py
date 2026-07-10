@@ -49,19 +49,19 @@ def main() -> None:
     # pair -- the frequentist reporting a reviewer would expect.
     _banner("STEP 1 — Compare models, trusting the LLM judge metric as-is")
     result = es.compare(
-        evaldata, factors="model", metric="llm_judge_score",
+        evaldata, factors="model", metric="review_score",
         p_values=True, omnibus=True,
     )
     result.summary()
 
     # ── Step 2: question the judge ───────────────────────────────────────────
     _banner("STEP 2 — Sanity check: does the judge score track response length?")
-    r, p = pearsonr(df["response_length"], df["llm_judge_score"])
-    print(f"corr(response_length, llm_judge_score) = {r:.3f}  (p = {p:.2e})")
+    r, p = pearsonr(df["response_length"], df["review_score"])
+    print(f"corr(response_length, review_score) = {r:.3f}  (p = {p:.2e})")
     print("\nMean response length by model (longer != better review):")
     by_model = (
         df.groupby("model")
-        .agg(mean_judge_score=("llm_judge_score", "mean"),
+        .agg(mean_judge_score=("review_score", "mean"),
              mean_response_length=("response_length", "mean"))
         .sort_values("mean_judge_score", ascending=False)
     )
@@ -75,7 +75,7 @@ def main() -> None:
     _banner("STEP 3 — Validate the judge against the 30-item human gold set")
     alignment = es.validate_alignment(
         evaldata,
-        llm_metric="llm_judge_score",
+        llm_metric="review_score",
         human_groundtruth="human_score",
     )
     alignment.summary()
@@ -88,9 +88,9 @@ def main() -> None:
     result_corrected = es.compare(
         evaldata,
         factors="model",
-        metric="llm_judge_score",
+        metric="review_score",
         p_values=True, omnibus=True,
-        alignment={"llm_judge_score": alignment},
+        alignment={"review_score": alignment},
     )
     result_corrected.summary()
 

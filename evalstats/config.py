@@ -1,5 +1,7 @@
 """Global configuration for evalstats."""
 
+import os
+import sys
 from dataclasses import dataclass
 from typing import Literal, Optional
 
@@ -12,6 +14,24 @@ _alpha: float = 0.05
 # Alpha levels used to build the gradient CI bands in terminal plots.
 # Ordered narrowest→widest: 90%, 95%, 99%, 99.9% CI.
 GRADIENT_CI_ALPHAS: tuple[float, ...] = (0.32, 0.10, 0.05, 0.01)
+
+
+def supports_ansi_color() -> bool:
+    """Whether ANSI color escape codes should be emitted for console output.
+
+    True for a real terminal. ``sys.stdout.isatty()`` is False for
+    Jupyter's ipykernel output stream, but JupyterLab/Notebook still render
+    ANSI codes (converted to HTML) in the output cell, so it's detected
+    separately here rather than being treated like a plain redirected/piped
+    stream. Respects the NO_COLOR / FORCE_COLOR conventions.
+    """
+    if os.environ.get("NO_COLOR") is not None:
+        return False
+    if os.environ.get("FORCE_COLOR") is not None:
+        return True
+    if sys.stdout.isatty():
+        return True
+    return type(sys.stdout).__module__.startswith("ipykernel")
 
 
 # ---------------------------------------------------------------------------
@@ -37,9 +57,12 @@ DataKind = Literal["binary", "bounded_01", "continuous"]
 BOOTSTRAP_AUTO_MIN_N: int = 200
 
 # --- max-T simultaneous CI bootstrap variant --------------------------------
-# 'auto' always resolves to this variant for simultaneous (max-T) CIs, regardless
-# of sample size — max-T's studentization needs a stable per-replicate SE
-# estimate, which the studentized bootstrap provides more robustly at all N.
+# Bonferroni is the default simultaneous-CI construction (see
+# _simultaneous_cis_router in evalstats/core/paired.py); max-T is opt-in via
+# prefer="max_t". When max-T IS requested, 'auto' always resolves to this
+# variant regardless of sample size — max-T's studentization needs a stable
+# per-replicate SE estimate, which the studentized bootstrap provides more
+# robustly at all N.
 MAX_T_AUTO_METHOD: str = "bootstrap_t"
 
 
@@ -65,7 +88,7 @@ class AutoAnalyzeRule:
 # additionally depends on whether the benchmark is seeded (R >= 3 runs).
 AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     AutoAnalyzeRule(
-        data_kind="binary", max_n=50,
+        data_kind="binary", max_n=60,
         pairwise_method="bayes_binary",
         robustness_method_single_run="wilson",
         robustness_method_seeded="nig_nested",
@@ -73,7 +96,11 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
             "Real-data simulations show Tango under-covers in "
             "dominated/jointly-sparse pairs at small N, regardless of run "
             "count, so small-N binary data uses the Bayesian paired model "
-            "instead."
+            "instead. The cutoff is N=60 (not the round N=50 the reason "
+            "above alone would suggest): coverage/interval-score violin "
+            "plots across N=10..125 (simulations/harness/cases/ci_paired.py's "
+            "--violin-plot) showed Tango and bayes_paired_comp crossing over "
+            "there in practice."
         ),
     ),
     AutoAnalyzeRule(
@@ -81,7 +108,7 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
         pairwise_method="tango",
         robustness_method_single_run="wilson",
         robustness_method_seeded="nig_nested",
-        reason="N >= 50 binary data: Tango pairwise, Wilson/NIG-nested marginal.",
+        reason="N >= 60 binary data: Tango pairwise, Wilson/NIG-nested marginal.",
     ),
     AutoAnalyzeRule(
         data_kind="bounded_01", max_n=None,

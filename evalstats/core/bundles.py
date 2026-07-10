@@ -108,6 +108,17 @@ class AnalysisBundle:
     p_value_method: Optional[str] = None
     ppi_applied: bool = False
 
+    def summary(self, **kwargs) -> None:
+        """Print the console summary for this bundle.
+
+        Thin wrapper around :func:`evalstats.core.summary.print_analysis_summary`
+        so that ``analyze()`` results can be printed the same way as
+        :meth:`~evalstats.api.ComparisonResult.summary`. See that function
+        for accepted keyword arguments.
+        """
+        from .summary import print_analysis_summary
+        print_analysis_summary(self, **kwargs)
+
 
 @dataclass
 class MultiModelBundle:
@@ -153,6 +164,11 @@ class MultiModelBundle:
     template_level: AnalysisBundle
     cross_model: AnalysisBundle
     best_pair: tuple[str, str]
+
+    def summary(self, **kwargs) -> None:
+        """Print the console summary for this bundle (see :meth:`AnalysisBundle.summary`)."""
+        from .summary import print_analysis_summary
+        print_analysis_summary(self, **kwargs)
 
 
 # ---------------------------------------------------------------------------

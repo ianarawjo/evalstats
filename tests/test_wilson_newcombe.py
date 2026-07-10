@@ -27,6 +27,7 @@ from evalstats.core.resampling import (
     jeffreys_ci_1d,
     newcombe_paired_ci,
     tango_paired_ci,
+    tango_scc_paired_ci,
     tango_paired_ci_multirun_cluster,
     tango_paired_ci_multirun_moments,
 )
@@ -220,6 +221,33 @@ def test_tango_paired_ci_raises_for_shape_mismatch():
     b = np.array([1.0, 0.0])
     with pytest.raises(ValueError, match="equal shape"):
         tango_paired_ci(a, b, alpha=0.05)
+
+
+def test_tango_scc_paired_ci_raises_for_shape_mismatch():
+    a = np.array([1.0, 0.0, 1.0])
+    b = np.array([1.0, 0.0])
+    with pytest.raises(ValueError, match="equal shape"):
+        tango_scc_paired_ci(a, b, alpha=0.05)
+
+
+def test_tango_scc_paired_ci_brackets_point_estimate_and_widens_with_c():
+    # Lopsided discordant pairs (n10=15, n01=1 out of n=40) -- exactly the
+    # regime tango_paired_ci under-covers on (see simulations/harness/cases/
+    # ci_paired.py's binary-onesided-* scenarios).
+    a, b = _make_pairs_from_counts(n10=15, n01=1, n11=9, n00=15)
+    alpha = 0.05
+    d_hat = (15 - 1) / 40
+
+    lo_s, hi_s = tango_scc_paired_ci(a, b, alpha, c=0.125)
+    lo_m, hi_m = tango_scc_paired_ci(a, b, alpha, c=0.25)
+    lo_l, hi_l = tango_scc_paired_ci(a, b, alpha, c=0.5)
+
+    for lo, hi in ((lo_s, hi_s), (lo_m, hi_m), (lo_l, hi_l)):
+        assert lo <= d_hat <= hi
+        assert -1.0 <= lo <= hi <= 1.0
+
+    # SCC-S (c=0.125) < SCC-M (c=0.25) < SCC-L (c=0.5) in width, per the paper.
+    assert (hi_s - lo_s) < (hi_m - lo_m) < (hi_l - lo_l)
 
 
 def test_tango_multirun_reduces_to_single_run_tango():
@@ -486,10 +514,10 @@ def _make_benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
 
 
 def test_analyze_auto_detects_binary_and_uses_tango():
-    """For binary data, auto should use tango pairwise."""
+    """For binary data at the N=60 cutoff, auto should use tango pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 3
-    m_inputs = 50
+    m_inputs = 60
     scores = np.zeros((n_templates, m_inputs))
     for i in range(n_templates):
         scores[i] = rng.binomial(1, 0.5 + 0.1 * i, m_inputs)
@@ -737,6 +765,38 @@ def test_tango_paired_ci_empirical_coverage_is_reasonable():
     # Conservative acceptance region to avoid brittle Monte Carlo failures.
     assert 0.88 <= coverage <= 0.99, f"unexpected Tango coverage={coverage:.3f}"
     assert 0.0 < mean_width < 1.0
+
+
+def test_tango_scc_s_improves_on_tango_for_lopsided_discordant_pairs():
+    """Battle test: SCC-S should recover most of tango's under-coverage on
+    highly imbalanced discordant pairs (n10 >> n01), the failure mode
+    documented in tango_scc_paired_ci's docstring and in simulations/
+    harness/cases/ci_paired.py's binary-onesided-* scenarios."""
+    rng = np.random.default_rng(20260708)
+    alpha = 0.05
+    n_rep = 700
+    n_items = 35
+
+    p10, p01, p11 = 0.30, 0.02, 0.05  # highly imbalanced: n10 >> n01
+    true_diff = p10 - p01
+
+    covered_tango = 0
+    covered_scc = 0
+    for _ in range(n_rep):
+        a, b = _sample_paired_binary_from_cell_probs(n_items, p10, p01, p11, rng)
+        lo_t, hi_t = tango_paired_ci(a, b, alpha=alpha)
+        lo_s, hi_s = tango_scc_paired_ci(a, b, alpha=alpha, c=0.125)
+        covered_tango += int(lo_t <= true_diff <= hi_t)
+        covered_scc += int(lo_s <= true_diff <= hi_s)
+
+    cov_tango = covered_tango / n_rep
+    cov_scc = covered_scc / n_rep
+
+    # Plain tango under-covers noticeably below 95% in this regime; SCC-S
+    # should land closer to nominal.
+    assert cov_tango < 0.93, f"expected tango to under-cover here, got {cov_tango:.3f}"
+    assert cov_scc >= cov_tango, f"SCC-S ({cov_scc:.3f}) should not under-perform tango ({cov_tango:.3f})"
+    assert 0.90 <= cov_scc <= 1.0, f"unexpected SCC-S coverage={cov_scc:.3f}"
 
 
 def test_tango_multirun_moments_empirical_coverage_is_reasonable():

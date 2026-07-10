@@ -1,4 +1,4 @@
-model,item,llm_judge_score,response_length,human_score
+model,item,review_score,response_length,expert_score
 gemma-2-9b,item_1,3,140,
 gemma-2-9b,item_2,5,167,
 gemma-2-9b,item_3,3,180,

@@ -1054,6 +1054,116 @@ def tango_paired_ci(
     return (lo, hi)
 
 
+def _tango_scc_quartic_coeffs(n12: float, n21: float, N: float, z2: float, correction: float) -> list[float]:
+    """Quartic coefficients [a4..a0] for one branch (+c or -c) of the SCC interval.
+
+    Directly implements Chang et al. (2024) Eqs. 4-5's G, H, I and a4..a0,
+    with ``correction`` standing in for ``+c`` (upper-limit branch) or ``-c``
+    (lower-limit branch, per their instruction to replace c with -c in H/I).
+    """
+    z4 = z2 * z2
+    G = N * N + z2 * N
+    H = 0.5 * z2 * (2.0 * N - n12 + n21) - 2.0 * N * (n12 - n21 + correction) - z2 * N
+    I = (n12 - n21 + correction) ** 2 - 0.5 * z2 * (n12 + n21)
+
+    a4 = G * G
+    a3 = 2.0 * G * H
+    a2 = H * H + 2.0 * G * I - 0.25 * z4 * ((2.0 * N - n12 + n21) ** 2 - 8.0 * N * n21)
+    a1 = 2.0 * H * I - 0.25 * z4 * (8.0 * N * n21 - 2.0 * (n12 + n21) * (2.0 * N - n12 + n21))
+    a0 = I * I - 0.25 * z4 * (n12 + n21) ** 2
+    return [a4, a3, a2, a1, a0]
+
+
+def _tango_scc_real_roots_in_range(coeffs: list[float]) -> np.ndarray:
+    roots = np.roots(coeffs)
+    roots = roots[np.abs(roots.imag) < 1e-8].real
+    return np.sort(roots[(roots >= -1.0 - 1e-9) & (roots <= 1.0 + 1e-9)])
+
+
+def tango_scc_paired_ci(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+    c: float = 0.125,
+) -> tuple[float, float]:
+    """Continuity-corrected Tango score CI ("SCC" interval) for p(A=1) - p(B=1).
+
+    Implements the closed-form quartic solution from Chang, Liu, Hou, Yan &
+    Shan (2024), "Continuity corrected score confidence interval for the
+    difference in proportions in paired data" (J. Applied Statistics
+    51(1):139-152, Eqs. 4-5), which adds a continuity correction ``c`` to
+    Tango (1998)'s score test statistic and derives a non-iterative (Ferrari's
+    method) solution rather than the secant-method iteration Tango's own
+    interval traditionally uses.
+
+    ``n12``/``n21`` follow the paper's Table 1 convention (row=test A,
+    column=test B): ``n12`` = A-response/B-no-response (this function's
+    ``n10``), ``n21`` = A-no-response/B-response (``n01``). Note: despite the
+    paper's prose defining ``Delta = p21 - p12`` (i.e. ``p(B=1) - p(A=1)``),
+    their actual working equations (4)-(5) solve for ``Delta = p12 - p21``
+    (this function's ``p(A=1) - p(B=1)`` estimand) -- confirmed empirically
+    (the roots bracket the observed point estimate only under that reading,
+    never the stated one) rather than by further algebraic derivation, since
+    reproducing their Eq. 2 (the constrained-MLE quadratic feeding into this
+    quartic) from scratch turned out to disagree with what's printed and
+    produced a degenerate (divide-by-zero) statistic at the point estimate in
+    basic sanity checks. So this function's output needs no sign flip.
+
+    ``c=0.125`` is the paper's recommended "SCC-S" (small-correction)
+    variant -- found in their simulations to best balance coverage and width
+    against the plain (uncorrected) Tango score interval
+    (:func:`tango_paired_ci`, a separate, simpler large-sample approximation
+    that does not use this quartic's constrained-MLE derivation).
+    ``c=0.25`` and ``c=0.5`` are their "SCC-M"/"SCC-L" variants.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        1-D arrays of equal length. Values are thresholded at 0.5.
+    alpha : float
+        Significance level (1 - confidence level).
+    c : float
+        Continuity correction (default 0.125, the paper's SCC-S).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+
+    Raises
+    ------
+    ValueError
+        If inputs are not 1-D arrays of equal length.
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+    if values_a.ndim != 1 or values_b.ndim != 1:
+        raise ValueError("tango_scc_paired_ci expects 1-D input arrays.")
+    if values_a.shape != values_b.shape:
+        raise ValueError("tango_scc_paired_ci expects arrays with equal shape.")
+
+    n = int(len(values_a))
+    if n <= 0:
+        return (0.0, 0.0)
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    n12 = float(np.sum((a_bin == 1) & (b_bin == 0)))
+    n21 = float(np.sum((a_bin == 0) & (b_bin == 1)))
+    N = float(n)
+    d_hat = (n12 - n21) / N
+
+    z2 = float(stats.norm.ppf(1.0 - alpha / 2.0)) ** 2
+
+    upper_roots = _tango_scc_real_roots_in_range(_tango_scc_quartic_coeffs(n12, n21, N, z2, c))
+    lower_roots = _tango_scc_real_roots_in_range(_tango_scc_quartic_coeffs(n12, n21, N, z2, -c))
+
+    ci_high = float(upper_roots[-1]) if len(upper_roots) else d_hat
+    ci_low = float(lower_roots[0]) if len(lower_roots) else d_hat
+
+    return (max(-1.0, min(ci_low, ci_high)), min(1.0, max(ci_low, ci_high)))
+
+
 def tango_paired_ci_multirun_cluster(
     values_a: np.ndarray,
     values_b: np.ndarray,

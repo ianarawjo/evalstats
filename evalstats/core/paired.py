@@ -662,6 +662,7 @@ def pairwise_differences(
             values_b = flat[idx_b]
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
+
         if multirun:
             ci_low, ci_high = tango_paired_ci_multirun_moments(values_a_full, values_b_full, alpha_val)
             if multi_ci:
@@ -1575,15 +1576,36 @@ def _simultaneous_cis_router(
     n_bootstrap: int,
     rng: "np.random.Generator",
     statistic: str,
-) -> tuple[dict[tuple[str, str], tuple[float, float]], str]:
-    """Route simultaneous CI computation to the best available method.
+    *,
+    prefer: str = "bonferroni",
+) -> tuple[dict[tuple[str, str], tuple[float, float]], str, dict]:
+    """Route simultaneous CI computation to the requested construction.
 
-    Prefers the studentized bootstrap max-T method
-    (:func:`_max_stat_simultaneous_cis`) when the chosen test *method* is
-    bootstrap-compatible.  Falls back to Bonferroni t-intervals
-    (:func:`_bonferroni_simultaneous_cis`) for analytical methods such as
-    ``'newcombe'``, ``'tango'``, and ``'bayes_binary'``, and also
-    as a safety net if the bootstrap path returns an empty result.
+    Defaults to Bonferroni t-intervals (:func:`_bonferroni_simultaneous_cis`)
+    for every *method*, including bootstrap-compatible ones. This used to
+    default to the studentized bootstrap max-T method
+    (:func:`_max_stat_simultaneous_cis`) for bootstrap-compatible methods, on
+    the theory that accounting for correlation between comparisons would
+    make it less conservative than Bonferroni. Real-eval-data comparisons
+    (``simulations/harness/cases/pvalues.py``'s ``--mode simultaneous_ci``)
+    found that gain to be small and inconsistent in practice, while max-T's
+    ``bootstrap_t`` studentization has a documented instability at small N
+    combined with many simultaneous comparisons: resampling just N points to
+    re-estimate a per-replicate SE gets noisy, and taking a max over
+    k(k-1)/2 pairs multiplies the chances of hitting a near-zero denominator
+    on any one replicate. In that regime it becomes wildly wasteful (over-
+    covering at large width, not unsafe -- it never under-covers) rather
+    than the more powerful alternative it was meant to be. Bonferroni is
+    also a closed-form t-interval -- no bootstrap resampling at all -- so
+    it's cheaper and doesn't require the point-estimate method to be
+    bootstrap-compatible in the first place.
+
+    Pass ``prefer="max_t"`` to opt back into the studentized bootstrap
+    construction for bootstrap-compatible methods (falls back to Bonferroni
+    regardless if the bootstrap path returns an empty/degenerate result, or
+    if *method* isn't bootstrap-compatible to begin with -- analytical
+    methods such as ``'newcombe'``, ``'tango'``, ``'bayes_binary'`` always
+    use Bonferroni).
 
     Returns
     -------
@@ -1593,7 +1615,7 @@ def _simultaneous_cis_router(
         its max-T p-value when *method_used* is ``'max_t'``; empty dict
         otherwise.
     """
-    if method in _SIMULTANEOUS_CI_BOOTSTRAP_METHODS:
+    if prefer == "max_t" and method in _SIMULTANEOUS_CI_BOOTSTRAP_METHODS:
         cis, max_t_pvalues = _max_stat_simultaneous_cis(
             scores=scores,
             pairs=pairs,
@@ -1607,7 +1629,8 @@ def _simultaneous_cis_router(
         if cis:
             return cis, "max_t", max_t_pvalues
 
-    # Fallback: Bonferroni t-intervals work for any method.
+    # Default (and fallback if the bootstrap path above returned empty):
+    # Bonferroni t-intervals work for any method.
     cis = _bonferroni_simultaneous_cis(results=results, pairs=pairs, ci=ci)
     return cis, "bonferroni", {}
 
@@ -1651,21 +1674,27 @@ def all_pairwise(
         ``'mean'``.
     simultaneous_ci : bool
         When ``True``, replace individual pairwise CIs with simultaneous
-        (family-wise) CIs.  The method is chosen automatically:
+        (family-wise) CIs.  Defaults to Bonferroni t-intervals at the
+        ``1 − (1−α)/k`` level (computed from ``per_input_diffs``) for every
+        *method*, including bootstrap-compatible ones (``'bootstrap'``,
+        ``'bca'``, ``'bayes_bootstrap'``, ``'smooth_bootstrap'``,
+        ``'bootstrap_t'``, ``'permutation'``, ``'sign_test'``, ``'auto'``).
 
-        * **Bootstrap-compatible methods** (``'bootstrap'``, ``'bca'``,
-                    ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'bootstrap_t'``, ``'permutation'``,
-          ``'sign_test'``, ``'auto'``): studentized bootstrap max-T
-          (Romano–Wolf).  All pairs share the same bootstrap resamples so
-          the joint distribution of ``max_{(i,j)} |T_ij^b|`` accounts for
-          the correlation between comparisons.  Less conservative than
-          Bonferroni and widely used in genomics for situations with many correlated tests. 
-            * **Analytical methods** (``'newcombe'``, ``'tango'``,
-          ``'bayes_binary'``): Bonferroni t-intervals at the
-          ``1 − (1−α)/k`` level, computed from ``per_input_diffs``.
+        This used to default to the studentized bootstrap max-T method
+        (Romano-Wolf) for those bootstrap-compatible methods instead -- all
+        pairs share the same bootstrap resamples so the joint distribution
+        of ``max_{(i,j)} |T_ij^b|`` accounts for the correlation between
+        comparisons, in principle making it less conservative than
+        Bonferroni. Real-eval-data comparisons found that gain to be small
+        and inconsistent in practice, while its studentization has a
+        documented instability at small N combined with many simultaneous
+        comparisons (see :func:`_simultaneous_cis_router`'s docstring) --
+        so Bonferroni is now the default there too, and is also simpler and
+        cheaper (a closed-form t-interval, no bootstrap resampling at all).
 
         The method actually used is recorded in
-        :attr:`PairwiseMatrix.simultaneous_ci_method` (``'max_stat'`` or
+        :attr:`PairwiseMatrix.simultaneous_ci_method` (``'bonferroni'`` or
+        ``'max_t'``).
     omnibus : bool
         When ``True``, run the Friedman omnibus test (with Nemenyi post-hoc)
         alongside the pairwise comparisons.  Requires k ≥ 3.  Defaults to
@@ -1736,7 +1765,8 @@ def all_pairwise(
                 multi_ci=r.multi_ci,
             )
 
-    # Simultaneous CIs: bootstrap max-T when possible, Bonferroni otherwise.
+    # Simultaneous CIs: Bonferroni by default (see _simultaneous_cis_router's
+    # docstring for why max-T is no longer the default).
     applied_simultaneous_ci = False
     applied_simultaneous_ci_method: Optional[str] = None
     if simultaneous_ci and len(pairs) > 0:

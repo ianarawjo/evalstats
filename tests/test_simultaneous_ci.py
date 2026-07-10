@@ -433,8 +433,8 @@ def test_all_pairwise_simultaneous_ci_true_by_default():
 
 def test_all_pairwise_test_method_string_annotated():
     """PairwiseMatrix.simultaneous_ci_method should record the variant used
-    ('max_t' for bootstrap methods); the CI annotation is no longer baked into
-    each PairedDiffResult.test_method."""
+    ('bonferroni' by default, even for bootstrap methods); the CI annotation
+    is no longer baked into each PairedDiffResult.test_method."""
     scores = _rng(11).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
 
@@ -444,15 +444,13 @@ def test_all_pairwise_test_method_string_annotated():
         simultaneous_ci=True,
     )
 
-    assert mat.simultaneous_ci_method == "max_t"
+    assert mat.simultaneous_ci_method == "bonferroni"
 
 
-def test_all_pairwise_p_values_are_max_t_with_simultaneous_ci():
-    """When simultaneous_ci=True and bootstrap method, p_value is the max-T
-    bootstrap p-value (FWER-controlled), not the marginal FDR-corrected one.
-
-    Max-T p-values must be in [0, 1] and are generally more conservative
-    (larger) than marginal FDR-corrected p-values.
+def test_all_pairwise_p_values_valid_with_simultaneous_ci_bonferroni():
+    """When simultaneous_ci=True (the default construction is now Bonferroni),
+    p_value stays the original marginal p-value — Bonferroni here only adjusts
+    the CI bounds, not the p-values — and must still be a valid probability.
     """
     scores = _rng(12).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
@@ -463,10 +461,10 @@ def test_all_pairwise_p_values_are_max_t_with_simultaneous_ci():
         simultaneous_ci=True,
     )
 
-    assert mat_sim.simultaneous_ci_method == "max_t"
+    assert mat_sim.simultaneous_ci_method == "bonferroni"
     for a, b in [("a", "b"), ("a", "c"), ("b", "c")]:
         p = mat_sim.get(a, b).p_value
-        assert 0.0 <= p <= 1.0, f"max-T p_value {p} out of [0,1] for ({a},{b})"
+        assert 0.0 <= p <= 1.0, f"p_value {p} out of [0,1] for ({a},{b})"
 
 
 def test_compare_prompts_simultaneous_ci_propagates():
@@ -631,8 +629,9 @@ def test_bonferroni_degenerate_zero_variance():
 
 # --- Router tests ---
 
-def test_router_returns_max_stat_for_bootstrap():
-    """Router should choose 'max_t' for a bootstrap-compatible method."""
+def test_router_returns_bonferroni_by_default_for_bootstrap():
+    """Router should choose 'bonferroni' by default, even for a
+    bootstrap-compatible method (Bonferroni is the default construction)."""
     scores = _rng(70).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
@@ -640,6 +639,22 @@ def test_router_returns_max_stat_for_bootstrap():
         scores, results, pairs, labels,
         method="bootstrap", ci=0.95, n_bootstrap=300,
         rng=_rng(70), statistic="mean",
+    )
+    assert used == "bonferroni"
+    assert len(cis) == len(pairs)
+
+
+def test_router_returns_max_stat_for_bootstrap_when_preferred():
+    """Router should choose 'max_t' for a bootstrap-compatible method when
+    explicitly requested via prefer='max_t'."""
+    scores = _rng(70).normal(0, 1, (3, 40))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    cis, used, _ = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method="bootstrap", ci=0.95, n_bootstrap=300,
+        rng=_rng(70), statistic="mean",
+        prefer="max_t",
     )
     assert used == "max_t"
     assert len(cis) == len(pairs)
@@ -665,8 +680,9 @@ def test_router_falls_back_to_bonferroni_for_newcombe():
 
 @pytest.mark.parametrize("method", ["bootstrap", "bca", "smooth_bootstrap",
                                      "bayes_bootstrap", "permutation", "sign_test", "auto"])
-def test_router_max_stat_for_all_bootstrap_methods(method):
-    """All bootstrap-compatible methods should route to 'max_stat'."""
+def test_router_max_stat_for_all_bootstrap_methods_when_preferred(method):
+    """All bootstrap-compatible methods should route to 'max_t' when
+    explicitly requested via prefer='max_t'."""
     scores = _rng(72).normal(0, 1, (3, 35))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
@@ -674,12 +690,15 @@ def test_router_max_stat_for_all_bootstrap_methods(method):
         scores, results, pairs, labels,
         method=method, ci=0.95, n_bootstrap=200,
         rng=_rng(72), statistic="mean",
+        prefer="max_t",
     )
     assert used == "max_t", f"Expected max_t for method={method!r}, got {used!r}"
 
 
-def test_simultaneous_ci_method_field_max_t():
-    """PairwiseMatrix.simultaneous_ci_method is 'max_t' for bootstrap methods."""
+def test_simultaneous_ci_method_field_bonferroni_for_bootstrap():
+    """PairwiseMatrix.simultaneous_ci_method is 'bonferroni' by default, even
+    for bootstrap methods, since all_pairwise has no public prefer='max_t'
+    knob and Bonferroni is now the default construction."""
     scores = _rng(80).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
     mat = all_pairwise(
@@ -687,7 +706,7 @@ def test_simultaneous_ci_method_field_max_t():
         rng=_rng(80), simultaneous_ci=True, correction="none",
     )
     assert mat.simultaneous_ci is True
-    assert mat.simultaneous_ci_method == "max_t"
+    assert mat.simultaneous_ci_method == "bonferroni"
 
 
 def test_simultaneous_ci_method_field_bonferroni():

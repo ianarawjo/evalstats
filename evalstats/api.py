@@ -908,11 +908,17 @@ def _run_alignment_ppi(
     correction: str,
     method: str,
     rng,
+    prefer: str = "bonferroni",
 ) -> None:
     """Override CIs/p-values in ``cr._analysis`` in-place using Prediction-Powered
     Inference (PPI), by dispatching to the specific PPI-corrected implementation
     of whichever pairwise/robustness method applies (see
     ``_ppi_pairwise_dispatch``/``_ppi_robustness_dispatch`` above).
+
+    ``prefer`` mirrors ``_simultaneous_cis_router``'s knob of the same name:
+    Bonferroni is the default simultaneous-CI construction (faster, simpler,
+    and more robust at small N), and the joint bootstrap max-T correction is
+    only attempted when ``prefer="max_t"`` is passed explicitly.
 
     For ``method="auto"`` the PPI-specific auto table
     (``evalstats.config.resolve_ppi_auto_methods``) picks a method validated
@@ -1112,16 +1118,20 @@ def _run_alignment_ppi(
             pair_branch[(ea, eb)] = "skip"
             skipped_pairs.append((ea, eb))
 
-    # ── Simultaneous CIs: joint bootstrap max-T for bootstrap_t, Bonferroni
-    # otherwise ──────────────────────────────────────────────────────────────
-    # bootstrap_t is a resampling method, so (like all_pairwise()'s non-PPI
-    # bootstrap_t path) it gets the studentized bootstrap max-T correction —
-    # which uses the data's own joint null distribution and is more powerful
-    # than Bonferroni. Bonferroni (the pair_alpha=alpha/n_pairs adjustment
-    # below) remains the fallback for closed-form methods (tango/wilson) that
-    # have no bootstrap distribution to build a joint max-stat from, and for
-    # bootstrap_t itself when any pair fell back to the unpaired/skip path
-    # (those pairs don't share the paired item-resample structure max-T needs).
+    # ── Simultaneous CIs: Bonferroni by default, joint bootstrap max-T only
+    # when prefer="max_t" ──────────────────────────────────────────────────
+    # Bonferroni (the pair_alpha=alpha/n_pairs adjustment below) is the
+    # default simultaneous-CI construction here too, matching
+    # _simultaneous_cis_router's non-PPI default: it's faster, simpler, and
+    # more robust at small N. When prefer="max_t" is passed explicitly and
+    # pairwise_method is bootstrap_t (a resampling method), the studentized
+    # bootstrap max-T correction is used instead — it uses the data's own
+    # joint null distribution and can be more powerful than Bonferroni.
+    # max-T still falls back to Bonferroni for closed-form methods
+    # (tango/wilson) that have no bootstrap distribution to build a joint
+    # max-stat from, and for bootstrap_t itself when any pair fell back to
+    # the unpaired/skip path (those pairs don't share the paired
+    # item-resample structure max-T needs).
     # Computed up front (rather than after the per-pair loop below) so that,
     # when it succeeds, the per-pair loop can skip its redundant headline +
     # per-gradient-alpha dispatch calls entirely instead of computing them
@@ -1129,7 +1139,8 @@ def _run_alignment_ppi(
     used_max_t = False
     joint = None
     if (
-        pairwise_method == "bootstrap_t"
+        prefer == "max_t"
+        and pairwise_method == "bootstrap_t"
         and use_simultaneous
         and not fallback_pairs
         and not skipped_pairs

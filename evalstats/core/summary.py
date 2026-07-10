@@ -7,7 +7,6 @@ keeping the analysis router (router.py) free of display concerns.
 from __future__ import annotations
 
 import re
-import sys
 from typing import TYPE_CHECKING, Literal, Mapping, Optional, Union
 
 import numpy as np
@@ -15,7 +14,7 @@ import numpy as np
 from .bundles import AnalysisBundle, MultiModelBundle
 from .paired import PairedDiffResult, PairwiseMatrix
 from .variance import SeedVarianceResult
-from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci
+from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci, supports_ansi_color
 
 
 # Sentinel used as a default so callers can distinguish "not passed" from
@@ -23,10 +22,10 @@ from ..config import GRADIENT_CI_ALPHAS, get_alpha_ci
 _UNSET = object()
 
 # ---------------------------------------------------------------------------
-# ANSI color helpers (disabled when stdout is not a TTY)
+# ANSI color helpers (disabled when stdout is not a TTY or Jupyter kernel)
 # ---------------------------------------------------------------------------
 
-_ANSI = sys.stdout.isatty()
+_ANSI = supports_ansi_color()
 
 _RESET         = "\033[0m"  if _ANSI else ""
 _BOLD          = "\033[1m"  if _ANSI else ""

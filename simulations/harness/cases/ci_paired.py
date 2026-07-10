@@ -9,8 +9,31 @@ Methods compared
 -----------------
 bootstrap, bca, bayes_bootstrap, smooth_bootstrap, bootstrap_t (all eval
 types, statistic=mean or median); t_interval, logit_t, nig, el (non-binary,
-statistic=mean only); newcombe_score, tango_score, bayes_indep_comp,
-bayes_paired_comp (binary, statistic=mean only).
+statistic=mean only); newcombe_score, tango_score, tango_scc, bayes_indep_comp,
+bayes_paired_comp (binary, statistic=mean only). tango_scc is the
+continuity-corrected "SCC-S" (c=0.125) score interval from Chang et al.
+(2024, J. Applied Statistics 51(1):139-152) -- see
+evalstats.core.resampling.tango_scc_paired_ci's docstring for the closed-form
+quartic derivation (verified against R's PropCIs::scoreci.mp reference
+implementation) and a note on a sign-convention discrepancy found between
+the paper's prose and its working equations.
+
+Two variants were tried and abandoned after simulation, kept here as notes
+so the same dead ends aren't re-explored:
+- tango_hybrid: plain tango_score, switching to tango_scc only when the
+  observed discordant pairs looked imbalanced. Its worst-case coverage
+  barely improved on plain tango's, because the residual failures were
+  samples that *looked* balanced by chance despite a lopsided true
+  generating process -- unrescuable by any method conditioning on the
+  observed discordant split (confirmed bayes_paired_comp fails the same way
+  on that same subset).
+- wilson_discordant: treats the discordant count m=n10+n01 as the effective
+  sample size and puts a Wilson interval on the discordant split q=n10/m,
+  transformed back via d=m*(2q-1)/n. This under-covers catastrophically
+  (down to ~0.40-0.65) on exactly the lopsided-discordance scenarios it was
+  meant to fix, because it conditions on m without propagating m's own
+  binomial sampling variance -- worst exactly when q_hat sits near a
+  boundary (0 or 1), i.e. when discordance is sparse or lopsided.
 
 Known exceptions (see simulations/harness/README.md):
 - Real-data pairs (openeval/inspect/real) only support R=1 (flat, single
@@ -63,6 +86,7 @@ with warnings.catch_warnings():
         nig_ci_1d,
         el_ci_1d,
         tango_paired_ci,
+        tango_scc_paired_ci,
         newcombe_paired_ci,
         tango_paired_ci_flat,
         tango_paired_ci_multirun_cluster,
@@ -90,6 +114,7 @@ from ..methods import (
     EL,
     NEWCOMBE,
     TANGO,
+    TANGO_SCC,
     BAYES_PAIR_INDEP,
     BAYES_PAIR_PAIRED,
     PAIRWISE_EXTRA_METHODS,
@@ -273,25 +298,46 @@ def _pairwise_ci(
 
 def _run_cell(
     source_obj: CIPairSource, n: int, n_reps: int, n_bootstrap: int, bayes_n: int,
-    alpha: float, runs: int, statistic: str, seed,
+    alpha: float, runs: int, statistic: str, seed, method_names: frozenset[str] | None = None,
 ) -> list[SimResult]:
-    """Run all reps for one (source, n) cell -- pairwise estimand."""
+    """Run all reps for one (source, n) cell -- pairwise estimand.
+
+    ``method_names``, if given, restricts computation (not just reporting) to
+    methods whose ``.name`` is in the set -- e.g. ``{"tango_score",
+    "tango_scc", "bayes_paired_comp"}`` skips the bootstrap family, newcombe,
+    and bayes_indep_comp entirely, which matters because bayes_indep_comp/
+    bayes_paired_comp (importance sampling) are ~40-70x slower per call than
+    tango/tango_scc (closed-form/quartic) -- see interval-score comparisons
+    in this file's module docstring history. ``None`` (default) computes
+    every applicable method, matching prior behavior.
+    """
     rng = np.random.default_rng(seed)
 
-    add_newcombe = source_obj.eval_type == "binary" and statistic == "mean"
-    add_tango = source_obj.eval_type == "binary" and statistic == "mean"
-    add_bayes_binary = source_obj.eval_type == "binary" and statistic == "mean"
-    add_pairwise_extras = statistic == "mean" and source_obj.eval_type != "binary"
+    def _want(method_name: str) -> bool:
+        return method_names is None or method_name in method_names
 
-    active_methods = list(METHODS)
+    active_bootstrap_methods = [m for m in METHODS if _want(m.name)]
+    active_pairwise_extras = [m for m in PAIRWISE_EXTRA_METHODS if _want(m.name)]
+    add_pairwise_extras = statistic == "mean" and source_obj.eval_type != "binary" and bool(active_pairwise_extras)
+    add_newcombe = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE.name)
+    add_tango = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO.name)
+    add_tango_scc = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_SCC.name)
+    add_bayes_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_INDEP.name)
+    add_bayes_paired = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_PAIRED.name)
+
+    active_methods = list(active_bootstrap_methods)
     if add_pairwise_extras:
-        active_methods += PAIRWISE_EXTRA_METHODS
+        active_methods += active_pairwise_extras
     if add_newcombe:
         active_methods.append(NEWCOMBE)
     if add_tango:
         active_methods.append(TANGO)
-    if add_bayes_binary:
-        active_methods += [BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED]
+    if add_tango_scc:
+        active_methods.append(TANGO_SCC)
+    if add_bayes_indep:
+        active_methods.append(BAYES_PAIR_INDEP)
+    if add_bayes_paired:
+        active_methods.append(BAYES_PAIR_PAIRED)
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
@@ -309,7 +355,7 @@ def _run_cell(
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
 
-        for method in METHODS:
+        for method in active_bootstrap_methods:
             _t0 = time.perf_counter()
             try:
                 with warnings.catch_warnings():
@@ -338,7 +384,9 @@ def _run_cell(
             _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             diff_span = _scale_hi - _scale_lo
             diff_lo, diff_hi = -diff_span, diff_span
-            for method, fn in zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
+            _extra_fns = dict(zip(PAIRWISE_EXTRA_METHODS, (t_interval_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)))
+            for method in active_pairwise_extras:
+                fn = _extra_fns[method]
                 _t0 = time.perf_counter()
                 try:
                     if fn is nig_ci_1d or fn is logit_t_ci_1d:
@@ -374,7 +422,18 @@ def _run_cell(
             total_t_sq[TANGO] += _el * _el
             _record(TANGO, ci_low, ci_high)
 
-        if add_bayes_binary:
+        if add_tango_scc:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = tango_scc_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[TANGO_SCC] += _el
+            total_t_sq[TANGO_SCC] += _el * _el
+            _record(TANGO_SCC, ci_low, ci_high)
+
+        if add_bayes_indep:
             _t0 = time.perf_counter()
             try:
                 ci_low, ci_high = _bayes_indep_comp_ci(a[:, 0], b[:, 0], alpha, bayes_n, rng)
@@ -385,6 +444,7 @@ def _run_cell(
             total_t_sq[BAYES_PAIR_INDEP] += _el * _el
             _record(BAYES_PAIR_INDEP, ci_low, ci_high)
 
+        if add_bayes_paired:
             _t0 = time.perf_counter()
             try:
                 ci_low, ci_high = _bayes_paired_comp_ci(a[:, 0], b[:, 0], alpha, bayes_n, rng)
@@ -454,8 +514,8 @@ _NESTED_CELL_SOURCES: list = []  # fork-inherited worker state for run_nested_pa
 
 
 def _run_cell_worker(args: tuple) -> list[SimResult]:
-    sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed = args
-    return _run_cell(_CELL_SOURCES[sc_idx], n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed)
+    sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed, method_names = args
+    return _run_cell(_CELL_SOURCES[sc_idx], n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed, method_names)
 
 
 def _run_nested_cell_worker(args: tuple) -> list[SimResult]:
@@ -467,13 +527,14 @@ def run_simulation(
     sources: list[CIPairSource], sample_sizes: list[int], n_reps: int, n_bootstrap: int,
     bayes_n: int, alpha: float, runs: int, statistic: str,
     progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
+    method_names: frozenset[str] | None = None,
 ) -> list[SimResult]:
     global _CELL_SOURCES
     _CELL_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
     cells = [(i, n) for i, s in enumerate(sources) for n in sample_sizes if s.max_n is None or n < s.max_n]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
-    args_list = [(sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed)
+    args_list = [(sc_idx, n, n_reps, n_bootstrap, bayes_n, alpha, runs, statistic, seed, method_names)
                  for (sc_idx, n), seed in zip(cells, child_seeds)]
 
     skipped = [(s, n) for s in sources for n in sample_sizes if not (s.max_n is None or n < s.max_n)]
@@ -1232,6 +1293,129 @@ def save_reliability_violin_plot(*, results: list[SimResult], alpha: float, n_re
     return out_path
 
 
+def save_discordant_comparison_violin_plots(
+    *, results: list[SimResult], alpha: float, n_reps: int, out_dir: str, run_stem: str,
+) -> list[str]:
+    """Grouped violin plots of per-scenario coverage and interval score vs.
+    sample size, for a small set of binary-only paired methods -- built for
+    (but not limited to) comparing tango_score vs. tango_scc vs.
+    bayes_paired_comp across N (e.g. via ``--methods tango_score tango_scc
+    bayes_paired_comp --sizes 10 15 20 30 40 50 60 70 80 90 100 110 125
+    --violin-plot``, see ``add_arguments``'s ``--violin-plot`` help and
+    ``discordant_comparison_args`` below for the exact recommended
+    invocation).
+
+    One violin per method at each n (dodged side by side); each dot is one
+    scenario's (label) mean coverage/score at that n and method, with the
+    hand-picked extreme-discordance scenarios (scenarios/synthetic.py's
+    ``_ASYM_BINARY_SPECS``, labeled internally as "binary-onesided-*") marked
+    with a distinct black 'X' so they visually stand out from the regular
+    icc/cohens-d catalog. "Extreme discordance" names the general failure
+    family rather than just the lopsided case tested here (n10 >> n01 or
+    vice versa): the same discordant-count pathology also covers near-zero
+    total discordance (agreeing models), which isn't separately marked only
+    because the current catalog doesn't include a scenario for it yet. These
+    scenarios are responsible for tango_score's small-N coverage failures
+    (see tango_scc_paired_ci's docstring for the underlying mechanism and
+    its validation against R's PropCIs::scoreci.mp) -- this exists to make
+    that failure mode, and the resulting case for method choice as a
+    function of N, visible directly in a figure rather than only in a
+    results table.
+
+    Not part of --official-tests: this is meant to be run deliberately on
+    demand, since (a) it isn't a general-purpose calibration check like the
+    other plots in this file, and (b) it's cheapest with --methods scoped
+    down to just the 2-3 methods being compared (bayes_paired_comp's
+    importance sampling is ~40-70x slower per call than tango/tango_scc's
+    closed-form/quartic paths -- see ``--methods``' help).
+
+    Returns
+    -------
+    list[str]
+        Paths to the two saved PNGs (coverage, then score).
+    """
+    import matplotlib.lines as mlines
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    target = 1.0 - alpha
+    non_null = [r for r in results if not r.is_null and r.eval_type == "binary"]
+    present_methods = {r.method for r in non_null}
+    method_objs = order_present_methods(present_methods)
+    method_names = [m.name for m in method_objs]
+    palette = {m.name: m.color for m in method_objs}
+
+    df = pd.DataFrame([
+        {
+            "label": r.label, "method": r.method, "n": r.n,
+            "coverage": r.covered / r.n_reps, "score": r.total_score / r.n_reps,
+            "is_extreme_discordance": r.label.startswith("binary-onesided"),
+        }
+        for r in non_null
+    ])
+    df = df[df["method"].isin(method_names)]
+    if df.empty:
+        raise ValueError(
+            "save_discordant_comparison_violin_plots: no binary-eval-type results found for "
+            f"the requested methods {sorted(method_names)}. This plot only covers binary "
+            "paired methods (tango_score, tango_scc, bayes_paired_comp, bayes_indep_comp, "
+            "newcombe_score) -- check --eval-types includes 'binary' and --methods names a "
+            "binary method."
+        )
+
+    ns = sorted(df["n"].unique())
+    n_order = [str(n) for n in ns]
+    df["n_label"] = df["n"].astype(str)
+
+    discordant_marker = mlines.Line2D(
+        [], [], color="black", marker="X", linestyle="None", markersize=6,
+        markeredgecolor="white", markeredgewidth=0.4,
+        label="extreme discordance",
+    )
+
+    out_paths: list[str] = []
+    for metric, ylabel, fname_suffix in [
+        ("coverage", "Coverage per scenario", "coverage_violin"),
+        ("score", "Interval score per scenario", "score_violin"),
+    ]:
+        fig, ax = plt.subplots(figsize=(1.1 * len(ns) + 2.5, 5.5))
+        sns.violinplot(
+            data=df, x="n_label", y=metric, order=n_order, hue="method", hue_order=method_names,
+            palette=palette, cut=0, inner="quartile", linewidth=0.8, dodge=True, alpha=0.35, ax=ax,
+        )
+        strip_kwargs = dict(
+            x="n_label", y=metric, order=n_order, hue="method", hue_order=method_names,
+            dodge=True, jitter=0.15, linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+        )
+        sns.stripplot(data=df[~df["is_extreme_discordance"]], palette=palette, size=4, alpha=0.6, **strip_kwargs)
+        sns.stripplot(data=df[df["is_extreme_discordance"]], color="black", marker="X", size=6, alpha=0.9, **strip_kwargs)
+
+        if metric == "coverage":
+            ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+
+        handles, _ = ax.get_legend_handles_labels()
+        method_handles = handles[:len(method_names)]
+        ax.legend(
+            handles=method_handles + [discordant_marker], title="Method", fontsize=8, title_fontsize=9,
+            loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+        )
+
+        ax.set_xlabel("Sample size (n)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(f"{ylabel} vs. Sample Size\nci_paired | reps={n_reps} | alpha={alpha}")
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+            fig.tight_layout()
+
+        out_path = str(Path(out_dir) / f"{run_stem}_{fname_suffix}.png")
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        out_paths.append(out_path)
+
+    return out_paths
+
+
 def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_path: str) -> str:
     """Scatter plot: x = mean CI time (log ms), y = coverage; one subplot per eval type."""
     import matplotlib.pyplot as plt
@@ -1405,6 +1589,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="Synthetic scenario breadth (ignored for real data sources)")
     parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE")
+    parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
+                         help="Restrict to these CI methods only, by Method.name (e.g. tango_score "
+                              "tango_scc bayes_paired_comp). Skips *computing* (not just reporting) any "
+                              "method not listed -- the way to cut runtime when bayes_indep_comp/"
+                              "bayes_paired_comp (importance sampling, ~40-70x slower per call than "
+                              "tango/tango_scc's closed-form) aren't needed. Ignored in --nested-mode, "
+                              "which doesn't yet support per-method filtering. Default: compute every "
+                              "method applicable to each source's eval type.")
     parser.add_argument("--benchmarks", nargs="+", default=None, metavar="ID", help="Real-data: benchmark IDs to filter to")
     parser.add_argument("--models", nargs="+", default=None, metavar="NAME", help="Real-data: model names to filter to")
     parser.add_argument("--hf-token", default=None)
@@ -1433,6 +1625,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plots-dir", default=None)
     parser.add_argument("--latex", action="store_true", default=False,
                          help="Append a LaTeX booktabs overall-summary table to the saved summary .log file.")
+    parser.add_argument("--violin-plot", action="store_true", default=False,
+                         help="Also save grouped violin plots of per-scenario coverage and interval "
+                              "score vs. sample size (binary eval type only) -- one violin per method "
+                              "at each n, with extreme-discordance scenarios (lopsided or near-zero "
+                              "discordant split) marked with a distinct 'X' marker. Built for comparing tango_score vs. "
+                              "tango_scc vs. bayes_paired_comp across N (see "
+                              "discordant_comparison_args() for the recommended invocation); not part "
+                              "of --official-tests, and cheapest combined with --methods to skip the "
+                              "methods you aren't plotting. Ignored in --nested-mode.")
     parser.add_argument("--nested-mode", action="store_true", default=False,
                          help="Multi-run flat-vs-nested pairwise CI comparison (ported from "
                               "sim_compare_boot_nested.py), synthetic only, statistic=mean only.")
@@ -1566,6 +1767,42 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     )
 
 
+def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
+    """tango_score vs. tango_scc vs. bayes_paired_comp across N=10..125, for
+    the coverage/interval-score violin plots (--violin-plot). Not wired into
+    --official-tests (this exists to make a specific method-choice argument
+    visible in a figure, not as a general calibration check); invoke
+    manually:
+
+    python -m simulations.harness.cli ci_paired --data-source synthetic
+      --scenario-suite expanded --eval-types binary
+      --methods tango_score tango_scc bayes_paired_comp
+      --reps 300 --bootstrap-n 10000 --bayes-n 10000 --alpha 0.05
+      --sizes 10 15 20 30 40 50 60 70 80 90 100 110 125
+      --icc-values 0.05 0.20 0.40 0.60 0.80 --cohens-d-values 0.2 0.4
+      --include-null --seed 46 --violin-plot
+      --progress bar --save-results save --out-dir simulations/out --latex
+
+    --methods scopes computation to just the three methods being compared
+    (skipping the bootstrap family, newcombe, and bayes_indep_comp entirely
+    -- see --methods' help), which matters because bayes_paired_comp's
+    importance sampling is ~40-70x slower per call than tango/tango_scc's
+    closed-form/quartic paths.
+    """
+    return argparse.Namespace(
+        data_source="synthetic", scenario_suite="expanded", eval_types=["binary"],
+        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
+        runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 125],
+        methods=["tango_score", "tango_scc", "bayes_paired_comp"],
+        seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
+        progress="bar", plots="off", save_results="save", out_dir="simulations/out", plots_dir=None,
+        nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
+        pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1), violin_plot=True,
+    )
+
+
 def run(args: argparse.Namespace) -> CaseResult:
     t0 = time.time()
     try:
@@ -1685,12 +1922,15 @@ def run(args: argparse.Namespace) -> CaseResult:
         if not sources:
             raise ValueError("No CIPairSources left after filtering.")
 
-        print(f"  {len(sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}, runs={args.runs}")
+        method_names = frozenset(args.methods) if getattr(args, "methods", None) else None
+        print(f"  {len(sources)} sources, sizes={args.sizes}, reps={args.reps}, alpha={args.alpha}, runs={args.runs}"
+              + (f", methods={sorted(method_names)}" if method_names else ""))
 
         results = run_simulation(
             sources, sample_sizes=args.sizes, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
             bayes_n=args.bayes_n, alpha=args.alpha, runs=args.runs, statistic=args.statistic,
             progress_mode=args.progress, seed=args.seed, n_workers=getattr(args, "workers", 1),
+            method_names=method_names,
         )
         print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps, statistic=args.statistic)
 
@@ -1723,6 +1963,14 @@ def run(args: argparse.Namespace) -> CaseResult:
             )
             output_paths += [cov_path, width_path, cost_path, reliability_path]
             print(f"Saved plots: {cov_path}, {width_path}, {cost_path}, {reliability_path}")
+
+        if getattr(args, "violin_plot", False):
+            violin_paths = save_discordant_comparison_violin_plots(
+                results=results, alpha=args.alpha, n_reps=args.reps,
+                out_dir=plots_dir, run_stem=run_stem,
+            )
+            output_paths += violin_paths
+            print(f"Saved violin plots: {', '.join(violin_paths)}")
 
         non_null = [r for r in results if not r.is_null]
         overall_cov = float(np.mean([r.covered / r.n_reps for r in non_null])) if non_null else float("nan")

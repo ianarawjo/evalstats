@@ -286,8 +286,8 @@ def test_vs_baseline_bayes_binary_raises_for_non_binary():
 # ---------------------------------------------------------------------------
 
 def test_analyze_auto_binary_small_n_pairwise_uses_tango():
-    """Binary data → auto should use tango for pairwise comparisons."""
-    scores = _binary_scores(2, 50, [0.7, 0.5], seed=30)
+    """Binary data at the N=60 cutoff → auto should use tango for pairwise comparisons."""
+    scores = _binary_scores(2, 60, [0.7, 0.5], seed=30)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(30))
     pair = bundle.pairwise.get("A", "B")
@@ -331,8 +331,8 @@ def test_analyze_auto_non_binary_uses_t_interval():
 
 
 def test_analyze_auto_binary_resolved_method_is_tango():
-    """resolved_method on the bundle should be 'tango' for binary data."""
-    scores = _binary_scores(2, 50, [0.7, 0.5], seed=35)
+    """resolved_method on the bundle should be 'tango' for binary data at the N=60 cutoff."""
+    scores = _binary_scores(2, 60, [0.7, 0.5], seed=35)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(35))
     assert bundle.resolved_method == "tango"
@@ -419,11 +419,11 @@ def test_analyze_explicit_bayes_binary_three_way_all_pairs():
 # ---------------------------------------------------------------------------
 
 def test_compare_prompts_auto_binary_small_n_pairwise_tango():
-    """compare_prompts auto with binary data → pairwise uses tango."""
+    """compare_prompts auto with binary data at the N=60 cutoff → pairwise uses tango."""
     rng = np.random.default_rng(60)
     scores = {
-        "A": rng.binomial(1, 0.7, 50).astype(float).tolist(),
-        "B": rng.binomial(1, 0.4, 50).astype(float).tolist(),
+        "A": rng.binomial(1, 0.7, 60).astype(float).tolist(),
+        "B": rng.binomial(1, 0.4, 60).astype(float).tolist(),
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(60))
     pair = report.pairwise.get("A", "B")
@@ -524,11 +524,11 @@ def test_compare_prompts_auto_non_binary_uses_t_interval():
 # ---------------------------------------------------------------------------
 
 def test_compare_models_auto_binary_small_n_pairwise_tango():
-    """compare_models auto with binary data → pairwise uses tango."""
+    """compare_models auto with binary data at the N=60 cutoff → pairwise uses tango."""
     rng = np.random.default_rng(70)
     scores = {
-        "model_a": rng.binomial(1, 0.7, 50).astype(float).tolist(),
-        "model_b": rng.binomial(1, 0.4, 50).astype(float).tolist(),
+        "model_a": rng.binomial(1, 0.7, 60).astype(float).tolist(),
+        "model_b": rng.binomial(1, 0.4, 60).astype(float).tolist(),
     }
     report = es.compare_models(scores, method="auto", rng=_rng(70))
     pair = report.pairwise.get("model_a", "model_b")

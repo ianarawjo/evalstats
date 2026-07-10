@@ -98,7 +98,7 @@ def generate() -> pd.DataFrame:
             rows.append({
                 "model": name,
                 "item": it,
-                "llm_judge_score": judge_score,
+                "review_score": judge_score,
                 "response_length": int(round(length)),
                 "_true_score": true_score,
             })

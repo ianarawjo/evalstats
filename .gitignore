@@ -17,6 +17,11 @@ website/build/
 scripts/pypi_release_checks.sh
 simulations/plots/*
 simulations/out
+.agent-study-venv-full/
+.agent-study-venv-baseline/
+.agent-study-venv-runner/
+agent_study/runs
+agent_study/.env
 scripts/*
 TODO.md
 DESIGN.md

@@ -122,7 +122,7 @@ def analyze(
         Statistical method for CIs and p-values:
 
         * ``'auto'`` (default) — data-adaptive: for binary data, uses Bayesian
-          paired for N<50 (Tango under-covers at small N on real eval data),
+          paired for N<60 (Tango under-covers at small N on real eval data),
           Tango otherwise (multi-run path uses the mmnt moment-decomposition
           variant); marginal CIs use Wilson (single-run binary), NIG-nested
           (multi-run binary/continuous [0,1]), or NIG (single-run continuous
@@ -178,9 +178,10 @@ def analyze(
         ``'holm'``, ``'bonferroni'``, or ``'none'``.
     simultaneous_ci : bool
         When ``True``, pairwise CIs are simultaneous (family-wise) rather
-        than marginal. If a bootstrap method, this uses the studentized 
-        bootstrap max-T method, which is less conservative than Bonferroni,
-        For other methods like Newcombe, Bonferroni is used.
+        than marginal. Bonferroni correction is used by default for all
+        methods, since it is faster, simpler, and more robust at small N
+        than the studentized bootstrap max-T method (which remains
+        available internally but is no longer the default).
     spread_percentiles : tuple[float, float]
         Percentiles for the intrinsic variance band in the advantage plot
         (default ``(10, 90)``).

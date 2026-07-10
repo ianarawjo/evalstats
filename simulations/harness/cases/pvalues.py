@@ -185,6 +185,7 @@ from ..methods import (
     TANGO,
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
+    CORR_NONE,
     PPI_TEST_METHODS,
     TTEST,
     TTEST_WELCH,
@@ -211,6 +212,13 @@ RESULTS_MODES = ["save", "off"]
 ALPHA_DEFAULT = 0.05
 
 _BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name}
+
+# `none` stays in _run_simultaneous_ci_cell's data collection and in
+# print_simultaneous_ci_report's tables (it's the "why do you need any
+# correction at all" baseline there), but is dropped from every
+# simultaneous_ci *plot* -- it's so far below nominal coverage that it
+# squashes the Bonferroni-vs-max-T comparison those plots exist to show.
+SIMULTANEOUS_CI_PLOT_METHODS = [m for m in SIMULTANEOUS_CI_METHODS if m.name != CORR_NONE.name]
 
 
 class _ProgressReporter:
@@ -870,6 +878,7 @@ def _compute_multiarm_metrics(
                 _sim_cis, sim_method, sim_pvalues = _simultaneous_cis_router(
                     scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
                     method=method, ci=1.0 - alpha, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+                    prefer="max_t",
                 )
                 maxt_p = (
                     np.array([sim_pvalues[pair] for pair in pairs])
@@ -1447,19 +1456,29 @@ def _run_simultaneous_ci_cell(
                 none_cis = {pair: (matrix_raw.get(*pair).ci_low, matrix_raw.get(*pair).ci_high) for pair in pairs}
                 bonf_cis = _bonferroni_simultaneous_cis(results=matrix_raw.results, pairs=pairs, ci=ci)
 
-                # max-T: all_pairwise's router picks it automatically whenever
-                # `multiarm_method` is bootstrap-compatible (the harness's
-                # default multiarm methods all are); guard against the rare
-                # degenerate-data fallback so a silent Bonferroni substitution
-                # never gets miscounted as a max-T result.
+                # max-T: call _simultaneous_cis_router directly (the same
+                # function all_pairwise(simultaneous_ci=True) would call
+                # internally) instead of a second all_pairwise(...,
+                # simultaneous_ci=True) call. That second call would
+                # redundantly redo all k(k-1)/2 marginal pairwise_differences
+                # computations -- for bootstrap_t, each an independent nested
+                # double bootstrap -- purely to rebuild a `results` dict this
+                # router only reads for its rare Bonferroni-fallback safety
+                # net, when matrix_raw.results above already has exactly
+                # that. Skipping the duplicate roughly halves this mode's
+                # runtime with bootstrap_t (the expensive part is the k(k-1)/2
+                # independent nested marginal bootstraps, not the one shared
+                # max-T resample). Guard against that rare degenerate-data
+                # fallback so a silent Bonferroni substitution never gets
+                # miscounted as a max-T result.
                 maxt_cis: dict = {}
-                matrix_maxt = all_pairwise(
-                    scores=scores, labels=labels, method=multiarm_method, ci=ci,
-                    n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
-                    simultaneous_ci=True,
+                sim_cis, sim_method, _ = _simultaneous_cis_router(
+                    scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
+                    method=multiarm_method, ci=ci, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+                    prefer="max_t",
                 )
-                if matrix_maxt.simultaneous_ci_method == "max_t":
-                    maxt_cis = {pair: (matrix_maxt.get(*pair).ci_low, matrix_maxt.get(*pair).ci_high) for pair in pairs}
+                if sim_method == "max_t":
+                    maxt_cis = sim_cis
 
                 agg_time[condition] += time.perf_counter() - _t0
 
@@ -1596,14 +1615,35 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
                 cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
                 print(f"    {cm:<12} {cov_null:>10.3f} {w_null:>12.4f} {s_null:>12.4f} {cov_alt:>10.3f} {w_alt:>12.4f} {s_alt:>11.4f}")
 
+    _print_simultaneous_overall_summary_table(
+        "OVERALL SUMMARY (collapsed across eval types, sources, n, k)", results, ci_methods, target,
+    )
+    _print_simultaneous_overall_summary_table(
+        "OVERALL SUMMARY -- LOW N (n <= 30)", [r for r in results if r.n <= 30], ci_methods, target,
+    )
+    _print_simultaneous_overall_summary_table(
+        "OVERALL SUMMARY -- HIGH N (n >= 30)", [r for r in results if r.n >= 30], ci_methods, target,
+    )
+
+
+def _print_simultaneous_overall_summary_table(
+    title: str, results: list[SimultaneousCIResult], ci_methods: list[str], target: float,
+) -> None:
+    """One OVERALL SUMMARY table for print_simultaneous_ci_report, over
+    whatever subset of `results` the caller passes in (e.g. all of them, or
+    just the low-N / high-N slice -- see that function's low-N vs. high-N
+    split, which exists because max-T's bootstrap_t studentization is
+    well-behaved at large N but develops a random-denominator instability at
+    small N with many simultaneous pairs; pooling both regimes into one
+    table hides exactly that crossover)."""
+    ks_present = sorted({r.k for r in results})
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
-    ks_for_cols = ks_present
-    print(f"\n{'-'*72}\n  OVERALL SUMMARY (collapsed across eval types, sources, n, k)\n{'-'*72}")
+    print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"  MinCov = worst per-scenario family-wise coverage seen for that CI method (not\n"
           f"  an average) -- flags methods whose good mean coverage hides an unreliable\n"
           f"  scenario/n/k cell.")
     n_cols = "".join(f"  {'n='+str(n):>9}" for n in sizes_present)
-    k_cols = "".join(f"  {'k='+str(k):>8}" for k in ks_for_cols)
+    k_cols = "".join(f"  {'k='+str(k):>8}" for k in ks_present)
     print(f"\n  {'CI method':<12}  {'Cov(null)':>9}  {'MinCov':>7}  {'Band95':>13}  {'Width(null)':>11}  {'Score(null)':>12}  "
           f"{'Cov(alt)':>8}  {'Width(alt)':>10}  {'Score(alt)':>11}  {'Time(ms)':>14}{n_cols}{k_cols}")
     for cm in ci_methods:
@@ -1612,6 +1652,8 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
         alt_rows = [r for r in c_rows if r.condition == "alt"]
         t_null = sum(r.n_reps for r in null_rows)
         c_null = sum(r.all_covered for r in null_rows)
+        if t_null == 0:
+            continue
         w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
         s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
         t_alt = sum(r.n_reps for r in alt_rows)
@@ -1641,7 +1683,7 @@ def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: flo
             nf = nc / nt if nt > 0 else float("nan")
             n_cells += f"  {nf:>9.3f}" if np.isfinite(nf) else f"  {'  -':>9}"
         k_cells = ""
-        for k in ks_for_cols:
+        for k in ks_present:
             k_null = [r for r in null_rows if r.k == k]
             kc = sum(r.all_covered for r in k_null)
             kt = sum(r.n_reps for r in k_null)
@@ -1744,11 +1786,20 @@ def save_results_artifacts_simultaneous_ci(
 
 
 def save_simultaneous_ci_coverage_width_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
-    """Coverage vs. width, one point per CI method per eval type (null
-    condition) -- the direct visual case for max-T: `none` should sit well
-    below the nominal-coverage line (no simultaneous adjustment at all),
-    while Bonferroni and max-T should both sit near it, so between those two
-    the one further left (narrower average width) is the better default."""
+    """Coverage vs. width, one point per (scenario, CI method) per eval type
+    (null condition) -- deliberately NOT one pooled dot per method, since a
+    method's pooled-average width can look reasonable while individual
+    scenario/n/k cells sit far from it (see max-T's random-denominator
+    instability at small N + large k, evalstats.core.paired.
+    _max_stat_simultaneous_cis's bootstrap_t branch): a single dot per
+    method would average that away. Only plots Bonferroni and max-T
+    (SIMULTANEOUS_CI_PLOT_METHODS excludes `none`, which sits so far below
+    nominal coverage -- no simultaneous adjustment at all -- that it
+    squashes the Bonferroni-vs-max-T comparison this plot exists to show;
+    `none` is still in the printed/logged report tables and the CSV).
+    Whichever cloud sits further left (narrower width) at matching
+    coverage is the better default -- and stray points reveal exactly
+    which scenarios don't follow that pattern."""
     import matplotlib.pyplot as plt
 
     target = 1.0 - alpha
@@ -1756,27 +1807,58 @@ def save_simultaneous_ci_coverage_width_plot(*, results: list[SimultaneousCIResu
     nrows = max(len(eval_types_present), 1)
     fig, axes = plt.subplots(nrows=1, ncols=nrows, figsize=(5.0 * nrows, 5.0), squeeze=False)
 
+    plot_method_names = {m.name for m in SIMULTANEOUS_CI_PLOT_METHODS}
+    null_rows_all = [
+        r for r in results
+        if r.condition == "null" and r.n_reps > 0 and r.ci_method in plot_method_names
+    ]
+    df = pd.DataFrame([
+        {
+            "eval_type": r.eval_type, "label": r.label, "ci_method": r.ci_method,
+            "coverage": r.all_covered / r.n_reps, "width": r.total_width / r.n_reps,
+        }
+        for r in null_rows_all
+    ])
+    scenario_level = (
+        df.groupby(["eval_type", "label", "ci_method"], as_index=False).agg(
+            coverage=("coverage", "mean"), width=("width", "mean"),
+        )
+        if not df.empty else df
+    )
+
     for col_idx, et in enumerate(eval_types_present):
         ax = axes[0][col_idx]
-        et_rows = [r for r in results if r.eval_type == et]
         ax.axhline(target, color="black", linestyle="--", linewidth=1.0)
-        for m in SIMULTANEOUS_CI_METHODS:
-            c_rows = [r for r in et_rows if r.ci_method == m.name and r.condition == "null"]
-            t_tot = sum(r.n_reps for r in c_rows)
-            c_tot = sum(r.all_covered for r in c_rows)
-            w_tot = sum(r.total_width for r in c_rows)
-            if t_tot == 0:
+        et_df = scenario_level[scenario_level["eval_type"] == et] if not scenario_level.empty else scenario_level
+        for m in SIMULTANEOUS_CI_PLOT_METHODS:
+            m_df = et_df[et_df["ci_method"] == m.name] if not et_df.empty else et_df
+            if m_df.empty:
                 continue
-            cov = c_tot / t_tot
-            width = w_tot / t_tot
-            ax.scatter([width], [cov], color=m.color, s=60, label=m.name, edgecolors="white", linewidths=0.6)
+            ax.scatter(
+                m_df["width"], m_df["coverage"], color=m.color, s=34, label=m.name,
+                edgecolors="white", linewidths=0.5, alpha=0.75,
+            )
         ax.set_xlabel("Average per-comparison CI width (null)")
         ax.set_ylabel("Family-wise coverage (null)")
         ax.set_title(f"eval type: {et}")
-        ax.set_ylim(0.0, 1.02)
+        # Zoom to the actual coverage spread (plus the nominal line) rather
+        # than a fixed [0, 1] -- with `none` dropped from this plot, every
+        # remaining point usually clusters near nominal, and a full [0, 1]
+        # axis squashes that spread into an unreadable sliver at the top.
+        if not et_df.empty:
+            cov_vals = et_df["coverage"].tolist() + [target]
+            lo, hi = min(cov_vals), max(cov_vals)
+            pad = max(0.01, (hi - lo) * 0.15)
+            ax.set_ylim(max(0.0, lo - pad), min(1.02, hi + pad))
+        else:
+            ax.set_ylim(0.0, 1.02)
         ax.legend(fontsize=7, loc="lower right")
 
-    fig.suptitle("pvalues (simultaneous CI): coverage vs. width, none vs. Bonferroni vs. max-T", fontsize=12)
+    fig.suptitle(
+        "pvalues (simultaneous CI): coverage vs. width, Bonferroni vs. max-T\n"
+        "(one dot = one scenario, averaged across n and k)",
+        fontsize=12,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -1790,13 +1872,16 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
     """Family-wise coverage and average width as a function of k (number of
     arms), one curve per CI method, collapsed across eval types and sample
     sizes -- mirrors save_multiarm_fwer_vs_k_plot. This is the direct
-    picture of "pairwise comparisons grow as k(k-1)/2": `none`'s coverage
-    should fall further below nominal as k grows (more chances to miss),
-    and Bonferroni's width should grow faster than max-T's, since
-    Bonferroni's per-comparison budget (alpha/pairs) shrinks with the pair
-    count while max-T's joint bootstrap doesn't pay that same tax. Only
-    produced when more than one k value was swept; returns out_path
-    unchanged (without writing) if all results share the same k."""
+    picture of "pairwise comparisons grow as k(k-1)/2": Bonferroni's width
+    should grow faster than max-T's, since Bonferroni's per-comparison
+    budget (alpha/pairs) shrinks with the pair count while max-T's joint
+    bootstrap doesn't pay that same tax. Only plots Bonferroni and max-T
+    (SIMULTANEOUS_CI_PLOT_METHODS excludes `none`, whose coverage falling
+    further below nominal as k grows is a different, already-obvious story
+    that would squash this one on the same axes -- `none` is still in the
+    printed/logged report tables and the CSV). Only produced when more
+    than one k value was swept; returns out_path unchanged (without
+    writing) if all results share the same k."""
     import matplotlib.pyplot as plt
 
     target = 1.0 - alpha
@@ -1807,7 +1892,7 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
     fig, (ax_cov, ax_width) = plt.subplots(1, 2, figsize=(10.0, 4.5))
     ax_cov.axhline(target, color="black", linewidth=1.0, linestyle="--", label=f"nominal={target:.0%}")
 
-    for m in SIMULTANEOUS_CI_METHODS:
+    for m in SIMULTANEOUS_CI_PLOT_METHODS:
         c_rows = [r for r in results if r.ci_method == m.name]
         if not c_rows:
             continue
@@ -1857,14 +1942,18 @@ def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCI
     ci_paired's reliability violin (coverage + interval score, not width).
     Exposes the spread the OVERALL SUMMARY table's pooled coverage hides: a
     method with nominal family-wise coverage on average can still miss badly
-    on a specific scenario/k cell that pooling across labels masks."""
+    on a specific scenario/k cell that pooling across labels masks. Only
+    plots Bonferroni and max-T (`none` is dropped -- see
+    SIMULTANEOUS_CI_PLOT_METHODS -- since it's so far below nominal
+    coverage that it squashes the comparison this plot exists to show;
+    it's still in the printed/logged report tables and the CSV)."""
     import matplotlib.pyplot as plt
     import seaborn as sns
 
     target = 1.0 - alpha
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
-    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
-    palette = {m.name: m.color for m in SIMULTANEOUS_CI_METHODS}
+    ci_methods = [m.name for m in SIMULTANEOUS_CI_PLOT_METHODS if m.name in {r.ci_method for r in results}]
+    palette = {m.name: m.color for m in SIMULTANEOUS_CI_PLOT_METHODS}
 
     null_rows = [r for r in results if r.condition == "null" and r.n_reps > 0]
     df = pd.DataFrame([
@@ -1915,6 +2004,111 @@ def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCI
 
     fig.suptitle(
         f"Cross-Scenario Reliability (one dot = one scenario)\npvalues simultaneous CI | alpha={alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_simultaneous_ci_violin_vs_n_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
+    """Grouped violin plots of family-wise coverage and interval score vs.
+    sample size n (null condition), one violin per CI method at each n
+    (dodged side by side), faceted by eval type -- the Bonferroni/max-T
+    analogue of ci_paired.py's --violin-plot (tango_score vs. tango_scc vs.
+    bayes_paired_comp vs. N).
+
+    Each violin pools every (scenario, k) cell at that n rather than
+    averaging k away: the small-N/large-k interaction is exactly what
+    widens these violins and drags their tails at small n (max-T's
+    random-denominator instability in the studentized-bootstrap-t branch of
+    evalstats.core.paired._max_stat_simultaneous_cis -- resampling just n
+    points to re-estimate a per-replicate SE gets noisy at small n, and
+    taking a max over k(k-1)/2 simultaneous pairs multiplies the chances of
+    hitting a near-zero denominator on any given replicate), so collapsing
+    across k here would hide the very thing this plot exists to show.
+
+    Only plots Bonferroni and max-T (`none` is dropped -- see
+    SIMULTANEOUS_CI_PLOT_METHODS -- since it's so far below nominal
+    coverage that it squashes the comparison this plot exists to show;
+    it's still in the printed/logged report tables and the CSV).
+    """
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    target = 1.0 - alpha
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    ci_methods = [m.name for m in SIMULTANEOUS_CI_PLOT_METHODS if m.name in {r.ci_method for r in results}]
+    palette = {m.name: m.color for m in SIMULTANEOUS_CI_PLOT_METHODS}
+
+    null_rows = [r for r in results if r.condition == "null" and r.n_reps > 0]
+    df = pd.DataFrame([
+        {
+            "eval_type": r.eval_type, "label": r.label, "k": r.k, "n": r.n, "ci_method": r.ci_method,
+            "coverage": r.all_covered / r.n_reps, "score": r.total_score / r.n_reps,
+        }
+        for r in null_rows
+    ])
+
+    n_cols = max(len(eval_types_present), 1)
+    if df.empty:
+        fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+        for ax_row in axes:
+            for ax in ax_row:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return out_path
+
+    ns_present = sorted(df["n"].unique())
+    n_order = [str(n) for n in ns_present]
+    df["n_label"] = df["n"].astype(str)
+
+    col_width = 1.3 * len(ns_present) + 2.5
+    fig, axes = plt.subplots(2, n_cols, figsize=(col_width * n_cols, 9.0), squeeze=False)
+    legend_handles = [mpatches.Patch(facecolor=palette[m], alpha=0.5, label=m) for m in ci_methods]
+
+    for col_idx, et in enumerate(eval_types_present):
+        et_df = df[df["eval_type"] == et]
+        et_methods = [name for name in ci_methods if name in et_df["ci_method"].values]
+        for row_idx, (metric, ylabel, ref_line) in enumerate([
+            ("coverage", "Family-wise coverage", target),
+            ("score", "Interval score", None),
+        ]):
+            ax = axes[row_idx][col_idx]
+            if et_df.empty or not et_methods:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            sns.violinplot(
+                data=et_df, x="n_label", y=metric, order=n_order, hue="ci_method", hue_order=et_methods,
+                palette=palette, cut=0, inner="quartile", linewidth=0.7, dodge=True, alpha=0.35,
+                legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="n_label", y=metric, order=n_order, hue="ci_method", hue_order=et_methods,
+                palette=palette, size=3, alpha=0.5, jitter=0.2, dodge=True, linewidth=0.3,
+                edgecolor="white", legend=False, ax=ax,
+            )
+            if ref_line is not None:
+                ax.axhline(ref_line, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("n" if row_idx == 1 else "")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+
+    axes[0][-1].legend(
+        handles=legend_handles, title="CI method", fontsize=8, title_fontsize=9,
+        loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+    )
+
+    fig.suptitle(
+        "Coverage / Interval Score vs. Sample Size (null)\n"
+        f"pvalues simultaneous CI | alpha={alpha} | each violin pools all k and scenarios at that n",
         fontsize=12,
     )
     with warnings.catch_warnings():
@@ -3395,9 +3589,27 @@ def official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
     data). Split out from official_args() for the same reason as
     official_args_ppi -- lets --official-tests select/skip it independently
     of the faster pairwise/multiarm sweep, even though it shares those
-    modes' k-arm sources."""
+    modes' k-arm sources.
+
+    Overrides two of official_args()'s defaults:
+    - scenario_suite="standard" (not "expanded"): the effect this mode
+      exists to show -- max-T's bootstrap_t studentization developing a
+      random-denominator instability at small N combined with large k (see
+      print_simultaneous_ci_report's LOW N / HIGH N split, and the
+      coverage/width/violin plots) -- is consistent across scenario shapes
+      within an eval type, so the smaller "standard" catalog (23 shapes vs.
+      "expanded"'s 39) still demonstrates it clearly at a fraction of the
+      compute; this mode's per-cell cost (bootstrap_t's nested double
+      bootstrap, k(k-1)/2 marginal pairs plus the shared max-T resample) is
+      high enough that this matters much more here than in the
+      pairwise/multiarm modes official_args() also serves.
+    - sizes adds n=125 on top of the default sweep, extending the high-N
+      anchor a bit further past the ~30 crossover found in practice.
+    """
     args = official_args(base_seed)
     args.mode = "simultaneous_ci"
+    args.scenario_suite = "expanded"
+    args.sizes = [10, 20, 30, 50, 75, 100, 125]
     return args
 
 
@@ -3641,6 +3853,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                 )
                 output_paths.append(reliability_path)
                 print(f"Saved plot: {reliability_path}")
+                violin_vs_n_path = save_simultaneous_ci_violin_vs_n_plot(
+                    results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_violin_vs_n.png"),
+                )
+                output_paths.append(violin_vs_n_path)
+                print(f"Saved plot: {violin_vs_n_path}")
 
             for cm_name in ("none", "bonferroni", "max_t"):
                 cm_null_rows = [r for r in sci_results if r.ci_method == cm_name and r.condition == "null"]

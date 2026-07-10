@@ -27,7 +27,7 @@ the lessons hold regardless of implementation).
 
 ## Sample output
 
-Running `estats.analyze()` and then `estats.print_analysis_summary(analysis)` prints a full statistical report to the terminal, including confidence interval line plots, pairwise comparisons between prompt templates, and per-input stability across runs (how stable the model is across multiple runs for the same input). Below is example excerpt from an analysis of a 4-template sentiment-classification benchmark (GPT-4.1-nano, 27 inputs, 3 runs, 3 evaluators):
+Running `es.compare(evaldata, factors="prompt")` and then `result.summary()` prints a full statistical report to the terminal, including confidence interval line plots, pairwise comparisons between prompt templates, and per-input stability across runs (how stable the model is across multiple runs for the same input). Below is example excerpt from an analysis of a 4-template sentiment-classification benchmark (GPT-4.1-nano, 27 inputs, 3 runs, 3 evaluators):
 
 ![Example terminal output](docs/example-output.png)
 
@@ -45,7 +45,7 @@ You can also plot within notebook environments (although this feature is being a
 
 ## Statistics
 
-The specific statistical tests the `evalstats.analyze()` method runs are:
+The specific statistical tests that `evalstats.compare()` runs (via the lower-level `analyze()` engine underneath it) are:
 
 - **All pairwise prompt comparisons (paired by input)** via `all_pairwise(...)`:
     - Computes mean or median difference (mean by default), bootstrapped 95% confidence interval, and p-value for every prompt template pair.
@@ -90,13 +90,64 @@ From the command line, `evalstats` can read a CSV or Excel file directly and pri
 evalstats analyze results.csv
 ```
 
-The input file should have columns `template`, `input`, and `score` (run and evaluator columns are optional). Run `evalstats analyze --help` for the full list of options and supported column aliases.
+The input file should have a prompt/template column, an item/input column, and a score column (model, run, and evaluator columns are optional) — see the column alias table in the [Python API](#python-api) section below for recognized names. Run `evalstats analyze --help` for the full list of options and supported column aliases.
 
 For more complex statistical analysis with mixed effects models, use `method="lmm"`. The default `statsmodels` backend works out of the box; for the optional R-based backend, see below.
 
 ## Python API
 
-`evalstats` main use case is as a Python API, which provides a similar entry point, the `analyze()` function. Simply pass your benchmark data in the correct format, and pass it to `analyze` to get a battery of results:
+The main entry point is `load_from()` + `compare()`: parse your data once into an `EvalResults` object, then run comparisons against it.
+
+```python
+import pandas as pd
+import evalstats as es
+
+df = pd.read_csv("results.csv")  # columns: prompt, item, score (model optional)
+
+evaldata = es.load_from(df)
+evaldata.summary()  # inspect detected structure/column assignments before analyzing
+
+result = es.compare(evaldata, factors="prompt")
+result.summary()  # full terminal report: CIs, pairwise tests, rank probabilities
+```
+
+`evalstats` expects **long-format** data: one row per (item, score) observation, plus whichever axis you want to compare — `model`, `prompt`, or both — and optionally `run` for repeated runs. Only `item` and `score` are strictly required; you need at least one of `model`/`prompt` too, whichever you pass to `compare(factors=...)`. `load_from()` auto-detects each column's role by matching its name (case-insensitively) against this table:
+
+| Role     | Canonical name | Recognized aliases                    | Required?                                          |
+|----------|-----------------|----------------------------------------|------------------------------------------------------|
+| model    | `model`         | `model_label`, `model_name`            | Optional — needed to compare models (`factors="model"`) |
+| prompt   | `prompt`        | `template`, `prompt_template`          | Optional — needed to compare prompts (`factors="prompt"`) |
+| item     | `item`          | `input`, `example`, `id`, `input_label`| Yes                                                  |
+| score    | `score`         | `value`, `result`, `metric`            | Yes                                                  |
+| run      | `run`           | `seed`, `repeat`, `run_id`, `trial`    | Optional — add if you have repeated runs per (model/prompt, item) |
+
+For example, a minimal CSV comparing prompts:
+
+| prompt      | item | score |
+|-------------|------|-------|
+| Minimal     | q1   | 0.82  |
+| Instructive | q1   | 0.91  |
+| Minimal     | q2   | 0.75  |
+| Instructive | q2   | 0.88  |
+
+If your columns don't match any of the aliases above, remap them explicitly with `col_map`:
+
+```python
+evaldata = es.load_from(df, col_map={"llm": "model", "variant": "prompt", "q_id": "item"})
+```
+
+`compare()` also handles:
+
+- **Comparing models**: `factors="model"`
+- **Factorial designs** (model × prompt): `factors=["model", "prompt"]` (routes to an LMM backend)
+- **Filtering**: any keyword matching a column name acts as a row filter, e.g. `es.compare(evaldata, factors="model", split="test")`
+- **PPI-corrected inference** for noisy LLM-judge scores against a smaller human-labeled subset — see [PPI-Corrected Inference](#ppi-corrected-inference-means-cis-and-tests) below
+
+The returned `result` is a `ComparisonResult`. Besides `.summary()`, it has `.to_frame()` / `.to_dict()` for programmatic access, `.plot(method="bar" | "forest" | "cd")` for charts, and `.disagreements()` to surface the items entities disagree on most.
+
+### Advanced: raw score arrays (low-level engine)
+
+`compare()` is a wrapper around a lower-level engine, `analyze()`, which operates directly on `BenchmarkResult` / `MultiModelBenchmark` objects (numpy score arrays) rather than a DataFrame. Reach for this path only if you already have scores as arrays and don't want to build a DataFrame first — most use cases should use `compare()` above.
 
 ```python
 import numpy as np
@@ -123,10 +174,10 @@ result = estats.BenchmarkResult(
 )
 
 analysis = estats.analyze(result, reference="grand_mean", n_bootstrap=5_000)
-estats.print_analysis_summary(analysis)
+analysis.summary()  # same terminal report as ComparisonResult.summary()
 ```
 
-If your source data is already in a pandas DataFrame (possibly with noisy values), you can parse it directly and inspect a coercion report:
+If you want this lower-level path from a DataFrame (e.g. to inspect the raw `BenchmarkResult` object, or to fine-tune `strict_complete_design`), use `from_dataframe()` instead of `load_from()`. It returns the array-based `BenchmarkResult` / `MultiModelBenchmark` that `analyze()` expects, plus an optional `DataLoadReport` — a data-quality log of coercions/repairs made while parsing (not a statistical report):
 
 ```python
 import evalstats as estats
@@ -143,9 +194,10 @@ for line in load_report.to_lines():
     print(line)
 
 analysis = estats.analyze(benchmark)
+analysis.summary()
 ```
 
-To visualize absolute prompt performance with bootstrapped 95% confidence intervals:
+To visualize absolute prompt performance directly from a `BenchmarkResult`, bypassing `analyze()` (use `result.plot()` above instead if you're on the `compare()` path):
 
 ```python
 fig = estats.plot_point_estimates(result)
