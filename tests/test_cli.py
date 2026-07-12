@@ -176,8 +176,15 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
         analysis_call.update({"benchmark": benchmark, **kwargs})
         return {"ok": True}
 
-    def fake_print_summary(analysis, top_pairwise, style):
-        summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise, "style": style})
+    def fake_print_summary(analysis, top_pairwise, style, show_rank_probabilities=False):
+        summary_call.update(
+            {
+                "analysis": analysis,
+                "top_pairwise": top_pairwise,
+                "style": style,
+                "show_rank_probabilities": show_rank_probabilities,
+            }
+        )
 
     monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
     monkeypatch.setattr("evalstats.core.summary.print_analysis_summary", fake_print_summary)
@@ -215,7 +222,12 @@ def test_cmd_analyze_runs_from_disk_for_csv_and_xlsx(tmp_path, monkeypatch, suff
     assert analysis_call["simultaneous_ci"] is True
     assert analysis_call["omnibus"] is False
     assert analysis_call["ci_style"] == "line"
-    assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 7, "style": "line"}
+    assert summary_call == {
+        "analysis": {"ok": True},
+        "top_pairwise": 7,
+        "style": "line",
+        "show_rank_probabilities": False,
+    }
 
 
 def test_cmd_analyze_sets_global_alpha_from_ci(tmp_path, monkeypatch):
@@ -386,8 +398,15 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         analysis_call.update({"benchmark": benchmark, **kwargs})
         return {"ok": True}
 
-    def fake_print_summary(analysis, top_pairwise, style):
-        summary_call.update({"analysis": analysis, "top_pairwise": top_pairwise, "style": style})
+    def fake_print_summary(analysis, top_pairwise, style, show_rank_probabilities=False):
+        summary_call.update(
+            {
+                "analysis": analysis,
+                "top_pairwise": top_pairwise,
+                "style": style,
+                "show_rank_probabilities": show_rank_probabilities,
+            }
+        )
 
     monkeypatch.setattr("evalstats.io.from_dataframe", fake_from_dataframe)
     monkeypatch.setattr("evalstats.core.router.analyze", fake_analyze)
@@ -440,7 +459,12 @@ def test_cmd_analyze_routes_format_and_forwards_options(
         "p_values": False,
         "pairwise_test": "auto",
     }
-    assert summary_call == {"analysis": {"ok": True}, "top_pairwise": 11, "style": "line"}
+    assert summary_call == {
+        "analysis": {"ok": True},
+        "top_pairwise": 11,
+        "style": "line",
+        "show_rank_probabilities": False,
+    }
     assert "Running analysis ..." in out
 
 
