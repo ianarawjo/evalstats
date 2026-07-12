@@ -31,6 +31,7 @@ def score_run(workspace_dir: Path, ground_truth_path: Path) -> dict:
         return {
             **_base_row(ground_truth),
             "decision": None,
+            "certainty": None,
             "correct": False,
             "failure": "recommendation.json missing",
         }
@@ -38,10 +39,12 @@ def score_run(workspace_dir: Path, ground_truth_path: Path) -> dict:
     try:
         rec = json.loads(rec_path.read_text())
         decision = rec.get("decision")
+        certainty = rec.get("certainty")
     except (json.JSONDecodeError, AttributeError) as e:
         return {
             **_base_row(ground_truth),
             "decision": None,
+            "certainty": None,
             "correct": False,
             "failure": f"recommendation.json unparseable: {e}",
         }
@@ -50,6 +53,7 @@ def score_run(workspace_dir: Path, ground_truth_path: Path) -> dict:
         return {
             **_base_row(ground_truth),
             "decision": decision,
+            "certainty": certainty,
             "correct": False,
             "failure": f"decision not one of {valid_decisions}: {decision!r}",
         }
@@ -57,6 +61,7 @@ def score_run(workspace_dir: Path, ground_truth_path: Path) -> dict:
     return {
         **_base_row(ground_truth),
         "decision": decision,
+        "certainty": certainty,
         "correct": decision in ground_truth["correct_decisions"],
         "failure": None,
     }

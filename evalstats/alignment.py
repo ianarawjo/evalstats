@@ -144,28 +144,58 @@ class AlignmentResult:
 
         # Representativeness
         rep = self.representativeness
-        print("Representativeness check:")
+
+        def _print_check(title: str, val: dict) -> None:
+            icon = "✓" if val["passed"] else "⚠ "
+            print(f"  {title}: {icon}  {val['message']}")
+            what = val.get("what")
+            why = val.get("why")
+            interpretation = val.get("interpretation")
+            if what:
+                print(f"      -> What this checks: {what}")
+            if why:
+                print(f"      -> Why it was computed in this case: {why}")
+            if interpretation:
+                print(f"      -> How to interpret this result: {interpretation}")
+            print()
+
+        print("Representativeness diagnostics:")
         dist = rep.get("score_distribution")
         if dist:
-            icon = "✓" if dist["passed"] else "⚠ "
-            print(f"  Score distribution  : {icon}  {dist['message']}")
+            _print_check("Score distribution", dist)
         for key, val in rep.items():
             if key == "score_distribution":
                 continue
             if key.startswith("slice_"):
                 col = key[len("slice_"):]
-                icon = "✓" if val["passed"] else "⚠ "
-                print(f"  {col!r:<20}: {icon}  {val['message']}")
-        print()
+                _print_check(f"{col!r}", val)
 
         # Alignment metrics
+        score_type_note = _SCORE_TYPE_NOTES.get(
+            self.score_type, f"score type detected as {self.score_type!r}"
+        )
         print(f"Alignment metrics (score type: {self.score_type}):")
+        print(f"  ({score_type_note})")
+        print()
         for entry in self.alignment_metrics.values():
             label = entry.get("label", "")
             est = entry["estimate"]
             lo = entry["ci_low"]
             hi = entry["ci_high"]
             print(f"  {label:<24}: {est:.3f}  [{lo:.3f}, {hi:.3f}]")
+            what = entry.get("what")
+            why = entry.get("why")
+            interpretation = entry.get("interpretation")
+            example = entry.get("example")
+            if what:
+                print(f"      -> What this metric is: {what}")
+            if why:
+                print(f"      -> Why it was computed in this case: {why}")
+            if interpretation:
+                print(f"      -> How to interpret this result: {interpretation}")
+            if example:
+                print(f"      -> Example paper reporting: {example}")
+            print()
         print("─" * width)
 
     def __repr__(self) -> str:
@@ -251,6 +281,81 @@ def _fit_continuous(llm: np.ndarray, human: np.ndarray, score_type: str) -> dict
 # Alignment metrics
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Short justification for *why* a given score type gets the metric set it does —
+# printed in AlignmentResult.summary() so users can cite/justify the choice.
+_SCORE_TYPE_NOTES = {
+    "binary": (
+        "labels are 0/1, so metrics designed for nominal categorical data are used"
+    ),
+    "likert": (
+        "labels are ordered categories, so metrics designed for ordinal data are used"
+    ),
+    "continuous": (
+        "labels are on a continuous scale, so correlation metrics are used"
+    ),
+    "grade": (
+        "labels are numeric grades, so correlation metrics are used"
+    ),
+}
+
+
+def _interpret_kappa(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str]:
+    """Landis & Koch (1977) benchmarks for kappa-type statistics."""
+    if est < 0:
+        band = "poor"
+    elif est <= 0.20:
+        band = "slight"
+    elif est <= 0.40:
+        band = "fair"
+    elif est <= 0.60:
+        band = "moderate"
+    elif est <= 0.80:
+        band = "substantial"
+    else:
+        band = "almost perfect"
+    interpretation = f"{band} agreement (Landis & Koch, 1977 benchmarks)"
+    example = (
+        f'"{label} = {est:.2f}, 95% CI [{lo:.2f}, {hi:.2f}] (n={n}), indicating '
+        f'{band} agreement between the LLM judge and human raters, per the Landis '
+        f'& Koch (1977) benchmarks."'
+    )
+    return interpretation, example
+
+
+def _interpret_corr(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str]:
+    """Cohen (1988) conventions for correlation-coefficient magnitude."""
+    a = abs(est)
+    if a < 0.10:
+        band = "negligible"
+    elif a < 0.30:
+        band = "small"
+    elif a < 0.50:
+        band = "medium"
+    else:
+        band = "large"
+    direction = "positive" if est >= 0 else "negative"
+    interpretation = f"{band} {direction} correlation (Cohen, 1988 conventions)"
+    example = (
+        f'"{label} = {est:.2f}, 95% CI [{lo:.2f}, {hi:.2f}] (n={n}), a {band} '
+        f'{direction} correlation between the LLM judge and human scores (Cohen, '
+        f'1988 conventions)."'
+    )
+    return interpretation, example
+
+
+def _interpret_pct_agreement(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str]:
+    interpretation = (
+        "no universally-agreed threshold exists for raw percent agreement — read it "
+        "alongside Cohen's κ, since it does not correct for chance and can look high "
+        "purely from imbalanced label classes"
+    )
+    example = (
+        f'"the LLM judge matched human labels on {est * 100:.1f}% of items, 95% CI '
+        f'[{lo * 100:.1f}%, {hi * 100:.1f}%] (n={n})."'
+    )
+    return interpretation, example
+
+
 def _bootstrap_ci_2(
     fn,
     a: np.ndarray,
@@ -294,14 +399,38 @@ def _compute_alignment_metrics(
             return (p_o - p_e) / (1.0 - p_e) if p_e < 1.0 else 1.0
 
         est, lo, hi = _bootstrap_ci_2(agree, llm, human, alpha=alpha, rng=rng)
+        interp, example = _interpret_pct_agreement(est, lo, hi, len(llm), "Percent agreement")
         metrics["percent_agreement"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Percent agreement",
+            "what": (
+                "The fraction of items where the LLM judge's label exactly matches "
+                "the human label."
+            ),
+            "why": (
+                "Included as an intuitive baseline agreement measure alongside "
+                "Cohen's κ, since your judge produces binary (0/1) labels."
+            ),
+            "interpretation": interp,
+            "example": example,
         }
         est, lo, hi = _bootstrap_ci_2(kappa, llm, human, alpha=alpha, rng=rng)
+        interp, example = _interpret_kappa(est, lo, hi, len(llm), "Cohen's κ")
         metrics["cohens_kappa"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Cohen's κ",
+            "what": (
+                "Percent agreement adjusted for the rate of agreement expected from "
+                "two raters guessing at random, given the observed marginal label "
+                "rates (Cohen, 1960)."
+            ),
+            "why": (
+                "Your judge produces binary labels, so this nominal-data reliability "
+                "statistic is the standard choice for reporting judge-human "
+                "agreement in a paper."
+            ),
+            "interpretation": interp,
+            "example": example,
         }
 
     elif score_type == "likert":
@@ -328,14 +457,40 @@ def _compute_alignment_metrics(
 
         if k >= 2:
             est, lo, hi = _bootstrap_ci_2(wk, llm, human, alpha=alpha, rng=rng)
+            interp, example = _interpret_kappa(est, lo, hi, len(llm), "Weighted Cohen's κ")
             metrics["weighted_kappa"] = {
                 "estimate": est, "ci_low": lo, "ci_high": hi,
                 "label": "Weighted Cohen's κ",
+                "what": (
+                    "Cohen's κ extended so that disagreements receive larger penalties "
+                    "as ratings become farther apart on the ordinal scale (Cohen, 1968)."
+                ),
+                "why": (
+                    "Your judge produces ordered categorical (Likert) labels, so an "
+                    "ordinal-aware kappa is used instead of the unweighted version, "
+                    "which would penalize a near-miss (e.g. judge=4 vs human=5) as "
+                    "harshly as a large disagreement."
+                ),
+                "interpretation": interp,
+                "example": example,
             }
         est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
+        interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Spearman r",
+            "what": (
+                "Rank correlation between judge and human scores — checks whether "
+                "higher judge scores correspond to higher human scores, without "
+                "assuming the categories are equally spaced."
+            ),
+            "why": (
+                "Reported alongside weighted κ to show whether the judge preserves "
+                "relative ordering, which matters if judge scores are mainly used "
+                "to rank or compare outputs."
+            ),
+            "interpretation": interp,
+            "example": example,
         }
 
     else:  # continuous / grade
@@ -348,14 +503,31 @@ def _compute_alignment_metrics(
             return float(r)
 
         est, lo, hi = _bootstrap_ci_2(pe, llm, human, alpha=alpha, rng=rng)
+        interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
         metrics["pearson_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Pearson r",
+            "what": "Linear correlation coefficient between judge and human scores.",
+            "why": (
+                "Your judge produces continuous/numeric scores, so a correlation "
+                "coefficient is the standard way to summarize agreement."
+            ),
+            "interpretation": interp,
+            "example": example,
         }
         est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
+        interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Spearman r",
+            "what": "Rank correlation between judge and human scores.",
+            "why": (
+                "Reported alongside Pearson r to check whether agreement holds even "
+                "if the judge-human relationship is monotonic but non-linear (e.g. "
+                "the judge saturates at high scores)."
+            ),
+            "interpretation": interp,
+            "example": example,
         }
 
     return metrics
@@ -365,12 +537,40 @@ def _compute_alignment_metrics(
 # Representativeness checks
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Why representativeness is checked at all — shared across the score-distribution
+# and slice-column checks, since both exist to answer the same question.
+_REPRESENTATIVENESS_WHY = (
+    "The calibration model and alignment metrics above are fit only on the "
+    "labeled subset; if that subset isn't representative of the full item pool, "
+    "statistical inference may not generalize to "
+    "unlabeled items."
+)
+
+
+def _interpret_representativeness(passed: bool, subject: str) -> str:
+    if passed:
+        return (
+            f"no evidence (p ≥ 0.05) that {subject} differs between the labeled "
+            "subset and the full pool — alignment estimates should generalize "
+            "reasonably well"
+        )
+    return (
+        f"{subject} differs between the labeled subset and the full pool "
+        "(p < 0.05) — treat alignment estimates as potentially biased for "
+        "unlabeled items; consider expanding or re-sampling the alignment set"
+    )
+
+
 def _check_score_distribution(
     all_scores: np.ndarray,
     labeled_scores: np.ndarray,
     score_type: str,
 ) -> dict:
     if score_type == "binary":
+        what = (
+            "Chi-square test comparing the labeled subset's 0/1 score distribution "
+            "to the unlabeled pool's."
+        )
         labeled_0 = int((labeled_scores == 0).sum())
         labeled_1 = int((labeled_scores == 1).sum())
         all_0 = int((all_scores == 0).sum())
@@ -378,7 +578,15 @@ def _check_score_distribution(
         unlabeled_0 = all_0 - labeled_0
         unlabeled_1 = all_1 - labeled_1
         if unlabeled_0 + unlabeled_1 == 0:
-            return {"passed": True, "message": "all items are labeled", "p_value": None}
+            return {
+                "passed": True, "message": "all items are labeled", "p_value": None,
+                "what": what,
+                "why": _REPRESENTATIVENESS_WHY,
+                "interpretation": (
+                    "not applicable — every item already has a human label, so "
+                    "there is no unlabeled pool to generalize to"
+                ),
+            }
         contingency = [[labeled_0, labeled_1], [unlabeled_0, unlabeled_1]]
         try:
             _, p, _, _ = chi2_contingency(contingency)
@@ -390,15 +598,32 @@ def _check_score_distribution(
         if not passed:
             msg += " — labeled 0/1 distribution differs from unlabeled pool"
     else:
+        what = (
+            "Kolmogorov–Smirnov test comparing the labeled subset's score "
+            "distribution to the full item pool's."
+        )
         if len(np.unique(labeled_scores)) < 2:
-            return {"passed": True, "message": "insufficient labeled variation to test", "p_value": None}
+            return {
+                "passed": True, "message": "insufficient labeled variation to test", "p_value": None,
+                "what": what,
+                "why": _REPRESENTATIVENESS_WHY,
+                "interpretation": (
+                    "not applicable — the labeled scores don't vary enough to run "
+                    "this test"
+                ),
+            }
         _, p = ks_2samp(labeled_scores, all_scores)
         p = float(p)
         passed = p >= 0.05
         msg = f"KS p={p:.3f}"
         if not passed:
             msg += " — labeled subset appears non-representative of full score range"
-    return {"passed": passed, "message": msg, "p_value": p}
+    return {
+        "passed": passed, "message": msg, "p_value": p,
+        "what": what,
+        "why": _REPRESENTATIVENESS_WHY,
+        "interpretation": _interpret_representativeness(passed, "the score distribution"),
+    }
 
 
 def _check_slice_column(
@@ -406,10 +631,25 @@ def _check_slice_column(
     labeled_mask: pd.Series,
     col: str,
 ) -> dict:
+    what = (
+        f"Chi-square test comparing the distribution of {col!r} between labeled "
+        "and unlabeled items."
+    )
+    why = (
+        "Checks whether the alignment set is representative across this "
+        "categorical variable — important if judge accuracy might vary by "
+        "subgroup (e.g. domain, difficulty, model)."
+    )
     labeled = df.loc[labeled_mask, col].dropna()
     unlabeled = df.loc[~labeled_mask, col].dropna()
     if len(unlabeled) == 0:
-        return {"passed": True, "message": "no unlabeled items", "p_value": None}
+        return {
+            "passed": True, "message": "no unlabeled items", "p_value": None,
+            "what": what, "why": why,
+            "interpretation": (
+                "not applicable — there are no unlabeled items to compare against"
+            ),
+        }
     cats = sorted(df[col].dropna().unique())
     lab_counts = [(labeled == c).sum() for c in cats]
     unlab_counts = [(unlabeled == c).sum() for c in cats]
@@ -423,7 +663,11 @@ def _check_slice_column(
     msg = f"χ² p={p:.3f}"
     if not passed:
         msg += " — labeled subset is over/under-represented in some categories"
-    return {"passed": passed, "message": msg, "p_value": p}
+    return {
+        "passed": passed, "message": msg, "p_value": p,
+        "what": what, "why": why,
+        "interpretation": _interpret_representativeness(passed, f"{col!r}"),
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────────────

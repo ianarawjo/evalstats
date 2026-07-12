@@ -30,7 +30,7 @@ from scipy.stats import pearsonr
 
 import evalstats as es
 
-CSV_PATH = Path(__file__).parent / "code_review_judge_alignment_demo.csv"
+CSV_PATH = Path(__file__).parent / "code_review_evalstats_demo.csv"
 
 
 def _banner(title: str) -> None:
@@ -76,7 +76,7 @@ def main() -> None:
     alignment = es.validate_alignment(
         evaldata,
         llm_metric="review_score",
-        human_groundtruth="human_score",
+        human_groundtruth="expert_score",
     )
     alignment.summary()
 

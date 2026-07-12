@@ -16,11 +16,12 @@ _ANSWER_FOOTER = """
 When you're done, write your final recommendation to a file named
 `recommendation.json` in the current directory, in this exact format:
 
-{"decision": "deploy", "reasoning": "<one paragraph>"}
+{"reasoning": "<one paragraph>", "decision": "<deploy|do_not_deploy|inconclusive>", "certainty": "<low|medium|high>"}
 
 `decision` must be exactly one of "deploy", "do_not_deploy", or
-"inconclusive" (use "inconclusive" only if the evidence genuinely doesn't
-support a confident call either way).
+"inconclusive" (use "inconclusive" only if the evidence doesn't
+support a confident call either way). `certainty` is your own certainty
+in that decision.
 """
 
 
@@ -55,10 +56,11 @@ _MODEL_BENCHMARK_ANSWER_FOOTER_TEMPLATE = """
 When you're done, write your final recommendation to a file named
 `recommendation.json` in the current directory, in this exact format:
 
-{{"decision": "model_3", "reasoning": "<one paragraph>"}}
+{{"reasoning": "<one paragraph>", "decision": "...", "certainty": "<low|medium|high>"}}
 
 `decision` must be exactly one of {options} (use "inconclusive" only if the
 evidence genuinely doesn't support confidently naming a single best model).
+`certainty` is your own certainty in that decision.
 """
 
 _EVALSTATS_MENTION_MODEL_BENCHMARK = (
