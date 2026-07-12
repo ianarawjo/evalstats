@@ -136,10 +136,13 @@ def write_scenario(instance: ModelBenchmarkInstance, out_dir: Path) -> None:
         # No incumbent in this family's framing -- under a true null there's
         # no defensible named winner, only "inconclusive".
         correct_decisions = ["inconclusive"]
+        correct_clear_best = ["inconclusive"]
     elif instance.power >= POWER_THRESHOLD:
         correct_decisions = [instance.true_best_model]
+        correct_clear_best = [instance.true_best_model]
     else:
         correct_decisions = [instance.true_best_model, "inconclusive"]
+        correct_clear_best = [instance.true_best_model, "inconclusive"]
 
     ground_truth = {
         "scenario": instance.name,
@@ -151,7 +154,9 @@ def write_scenario(instance: ModelBenchmarkInstance, out_dir: Path) -> None:
         "power": instance.power,
         "true_best_model": instance.true_best_model,
         "correct_decisions": correct_decisions,
+        "correct_clear_best": correct_clear_best,
         "valid_decisions": MODEL_LABELS + ["inconclusive"],
+        "valid_clear_best": MODEL_LABELS + ["inconclusive"],
     }
     (out_dir / "ground_truth.json").write_text(json.dumps(ground_truth, indent=2))
 

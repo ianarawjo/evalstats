@@ -214,6 +214,7 @@ def print_analysis_summary(
     min_meaningful_diff: Optional[float] = None,
     item_singular: str = "template",
     item_plural: str = "templates",
+    show_rank_probabilities: bool = False,
 ) -> None:
     """Print a concise console summary of analyze() results.
 
@@ -226,6 +227,10 @@ def print_analysis_summary(
     p_value_method : str or None, optional
         Override the p-value method for display.  When ``_UNSET`` (default),
         reads from the bundle's stored ``p_value_method``.
+    show_rank_probabilities : bool
+        Print the bootstrap "Rank Probabilities" block (P(Best)/E[Rank] per
+        entity). Off by default -- see ``ComparisonResult.summary()``'s
+        docstring for why.
     """
     if isinstance(analysis, MultiModelBundle):
         _print_multi_model_summary(
@@ -235,6 +240,7 @@ def print_analysis_summary(
             pairwise_sort=pairwise_sort,
             style=style,
             min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
         )
         return
 
@@ -249,6 +255,7 @@ def print_analysis_summary(
             min_meaningful_diff=min_meaningful_diff,
             item_singular=item_singular,
             item_plural=item_plural,
+            show_rank_probabilities=show_rank_probabilities,
         )
         return
 
@@ -262,6 +269,7 @@ def print_analysis_summary(
                 pairwise_sort=pairwise_sort,
                 style=style,
                 min_meaningful_diff=min_meaningful_diff,
+                show_rank_probabilities=show_rank_probabilities,
             )
         else:
             _print_bundle_summary(
@@ -274,6 +282,7 @@ def print_analysis_summary(
                 min_meaningful_diff=min_meaningful_diff,
                 item_singular=item_singular,
                 item_plural=item_plural,
+                show_rank_probabilities=show_rank_probabilities,
             )
         print()
 
@@ -569,6 +578,7 @@ def _print_multi_model_summary(
     pairwise_sort: Literal["grouped", "significance"] = "grouped",
     style: Literal["line", "gradient"] = "gradient",
     min_meaningful_diff: Optional[float] = None,
+    show_rank_probabilities: bool = False,
 ) -> None:
     _print_loud_section("Multi-Model Analysis Summary")
     print(f"Shape: {bundle.shape}")
@@ -594,6 +604,7 @@ def _print_multi_model_summary(
         pairwise_sort=pairwise_sort,
         style=style,
         min_meaningful_diff=min_meaningful_diff,
+        show_rank_probabilities=show_rank_probabilities,
     )
 
     print()
@@ -607,6 +618,7 @@ def _print_multi_model_summary(
         pairwise_sort=pairwise_sort,
         style=style,
         min_meaningful_diff=min_meaningful_diff,
+        show_rank_probabilities=show_rank_probabilities,
     )
     best_idx = int(np.argmax(bundle.template_level.robustness.mean))
     best_template = bundle.template_level.benchmark.template_labels[best_idx]
@@ -632,44 +644,46 @@ def _print_multi_model_summary(
             pairwise_sort=pairwise_sort,
             style=style,
             guidance=False,
+            show_rank_probabilities=show_rank_probabilities,
         )
 
     print()
     _print_loud_section("Cross-Model Ranking (all model/template pairs)")
     _print_model_template_matrix(bundle)
-    p_best = bundle.cross_model.rank_dist.p_best
-    expected_ranks = bundle.cross_model.rank_dist.expected_ranks
-    rank_labels = bundle.cross_model.rank_dist.labels
-    rank_pairs = [_split_model_template_label(label) for label in rank_labels]
-    rank_bar_width = 14
-    n_ranked_items = len(rank_labels)
-    model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
-    template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
-    top_indices = np.argsort(-p_best)
-    n_show = len(top_indices)
-    _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
-    print(
-        f"  {'Model':<{model_col_width}s} "
-        f"{'Template':<{template_col_width}s} "
-        f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
-        f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
-    )
-    for idx in top_indices[:n_show]:
-        model_label, template_label = rank_pairs[idx]
-        model_label = _truncate_label(model_label, model_col_width)
-        template_label = _truncate_label(template_label, template_col_width)
-        p_best_i = float(p_best[idx])
-        expected_rank_i = float(expected_ranks[idx])
-        p_color = _p_best_color(p_best_i)
-        p_reset = _RESET if p_color else ""
-        p_str = f"{p_best_i:>8.1%} {_ratio_bar(p_best_i, width=rank_bar_width)}"
+    if show_rank_probabilities:
+        p_best = bundle.cross_model.rank_dist.p_best
+        expected_ranks = bundle.cross_model.rank_dist.expected_ranks
+        rank_labels = bundle.cross_model.rank_dist.labels
+        rank_pairs = [_split_model_template_label(label) for label in rank_labels]
+        rank_bar_width = 14
+        n_ranked_items = len(rank_labels)
+        model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
+        template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
+        top_indices = np.argsort(-p_best)
+        n_show = len(top_indices)
+        _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
         print(
-            f"  {model_label:<{model_col_width}s} "
-            f"{template_label:<{template_col_width}s} "
-            f"{p_color}{p_str}{p_reset} "
-            f"{expected_rank_i:>8.2f} "
-            f"{_rank_hump_lane(expected_rank_i, n_ranked_items, width=rank_bar_width)}"
+            f"  {'Model':<{model_col_width}s} "
+            f"{'Template':<{template_col_width}s} "
+            f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
+            f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
         )
+        for idx in top_indices[:n_show]:
+            model_label, template_label = rank_pairs[idx]
+            model_label = _truncate_label(model_label, model_col_width)
+            template_label = _truncate_label(template_label, template_col_width)
+            p_best_i = float(p_best[idx])
+            expected_rank_i = float(expected_ranks[idx])
+            p_color = _p_best_color(p_best_i)
+            p_reset = _RESET if p_color else ""
+            p_str = f"{p_best_i:>8.1%} {_ratio_bar(p_best_i, width=rank_bar_width)}"
+            print(
+                f"  {model_label:<{model_col_width}s} "
+                f"{template_label:<{template_col_width}s} "
+                f"{p_color}{p_str}{p_reset} "
+                f"{expected_rank_i:>8.2f} "
+                f"{_rank_hump_lane(expected_rank_i, n_ranked_items, width=rank_bar_width)}"
+            )
 
     cross_rob = bundle.cross_model.robustness
     stat_label = "Mean"
@@ -1354,6 +1368,7 @@ def _print_bundle_summary(
     style: Literal["line", "gradient"] = "gradient",
     guidance: bool = True,
     min_meaningful_diff: Optional[float] = None,
+    show_rank_probabilities: bool = False,
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
@@ -1376,30 +1391,31 @@ def _print_bundle_summary(
     print(_rob_df.to_string())
     print()
 
-    _print_subsection(f"--- Rank Probabilities ({_rank_method_label(bundle)}) ---")
-    max_rank_label_len = max((len(label) for label in bundle.rank_dist.labels), default=0)
-    rank_label_col_width = min(40, max(len(item_singular_title) + 1, max_rank_label_len + 2))
-    rank_bar_width = 14
-    n_ranked_items = len(bundle.rank_dist.labels)
-    print(
-        f"  {item_singular_title:<{rank_label_col_width}s} "
-        f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
-        f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
-    )
-    for i, label in enumerate(bundle.rank_dist.labels):
-        rank_label = _truncate_label(label, rank_label_col_width)
-        p_best = float(bundle.rank_dist.p_best[i])
-        expected_rank = float(bundle.rank_dist.expected_ranks[i])
-        p_color = _p_best_color(p_best)
-        p_reset = _RESET if p_color else ""
-        p_str = f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)}"
+    if show_rank_probabilities:
+        _print_subsection(f"--- Rank Probabilities ({_rank_method_label(bundle)}) ---")
+        max_rank_label_len = max((len(label) for label in bundle.rank_dist.labels), default=0)
+        rank_label_col_width = min(40, max(len(item_singular_title) + 1, max_rank_label_len + 2))
+        rank_bar_width = 14
+        n_ranked_items = len(bundle.rank_dist.labels)
         print(
-            f"  {rank_label:<{rank_label_col_width}s} "
-            f"{p_color}{p_str}{p_reset} "
-            f"{expected_rank:>8.2f} {_rank_hump_lane(expected_rank, n_ranked_items, width=rank_bar_width)}"
+            f"  {item_singular_title:<{rank_label_col_width}s} "
+            f"{'P(Best)':>9s} {'':<{rank_bar_width}s} "
+            f"{'E[Rank]':>9s} {'':<{rank_bar_width}s}"
         )
-    print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
-    print()
+        for i, label in enumerate(bundle.rank_dist.labels):
+            rank_label = _truncate_label(label, rank_label_col_width)
+            p_best = float(bundle.rank_dist.p_best[i])
+            expected_rank = float(bundle.rank_dist.expected_ranks[i])
+            p_color = _p_best_color(p_best)
+            p_reset = _RESET if p_color else ""
+            p_str = f"{p_best:>8.1%} {_ratio_bar(p_best, width=rank_bar_width)}"
+            print(
+                f"  {rank_label:<{rank_label_col_width}s} "
+                f"{p_color}{p_str}{p_reset} "
+                f"{expected_rank:>8.2f} {_rank_hump_lane(expected_rank, n_ranked_items, width=rank_bar_width)}"
+            )
+        print("  E[Rank] lane: left is better (#1); peak is sharper near integer ranks, softer near half-ranks")
+        print()
 
     _print_mean_advantage(
         bundle,

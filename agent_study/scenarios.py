@@ -116,19 +116,23 @@ def write_scenario(instance: ScenarioInstance, out_dir: Path) -> None:
     # in simulations/harness/scenarios/synthetic.py) -- negative means B is
     # better, so a negative true_diff is the "deploy candidate B" case.
     directional_decision = "deploy" if instance.true_diff < 0 else "do_not_deploy"
+    directional_clear_best = "prompt_b" if instance.true_diff < 0 else "prompt_a"
     if instance.is_null:
         # No true effect: declining to deploy and honestly saying the
         # evidence doesn't support a change are both correct.
         correct_decisions = ["do_not_deploy", "inconclusive"]
+        correct_clear_best = ["inconclusive"]
     elif instance.power >= POWER_THRESHOLD:
         # Well-powered: a properly analyzed sample should reach significance
         # in the true direction, so only the directional answer counts.
         correct_decisions = [directional_decision]
+        correct_clear_best = [directional_clear_best]
     else:
         # Underpowered: a well-calibrated agent will often correctly fail to
         # reach significance, so honestly flagging that is not a mistake --
         # only confidently claiming the wrong direction is.
         correct_decisions = [directional_decision, "inconclusive"]
+        correct_clear_best = [directional_clear_best, "inconclusive"]
     ground_truth = {
         "scenario": instance.name,
         "eval_type": instance.eval_type,
@@ -138,8 +142,11 @@ def write_scenario(instance: ScenarioInstance, out_dir: Path) -> None:
         "cohens_d": instance.cohens_d,
         "power": instance.power,
         "directional_decision": directional_decision,
+        "directional_clear_best": directional_clear_best,
         "correct_decisions": correct_decisions,
+        "correct_clear_best": correct_clear_best,
         "valid_decisions": ["deploy", "do_not_deploy", "inconclusive"],
+        "valid_clear_best": ["prompt_a", "prompt_b", "inconclusive"],
     }
     (out_dir / "ground_truth.json").write_text(json.dumps(ground_truth, indent=2))
 

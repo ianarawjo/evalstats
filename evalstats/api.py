@@ -52,6 +52,7 @@ class ComparisonResult:
         filtered_df: pd.DataFrame,
         _mmb_view: Literal["model_level", "template_level", "cross_model"] = "model_level",
         min_meaningful_diff: Optional[float] = None,
+        show_rank_probabilities: bool = False,
     ):
         self._analysis = analysis
         self._factors = factors
@@ -62,6 +63,16 @@ class ComparisonResult:
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
         self._min_meaningful_diff = min_meaningful_diff
         self._variance_components: Optional[dict] = None  # set by MC alignment loop
+        # Bootstrap P(Best)/E[Rank] output is opt-in, not opt-out: it reads as
+        # a confident, almost authoritative verdict (e.g. "63.6% probability
+        # of being best") even when the underlying CIs overlap heavily and the
+        # entities are statistically indistinguishable -- in practice this
+        # single number gets weighed far more than the wider, more honest CI
+        # picture sitting right next to it. Ranking is still computed
+        # (bootstrap_ranks() runs unconditionally in router.analyze()) so
+        # .rank_dist stays available for programmatic use either way; this
+        # flag only controls whether summary()/to_dict()/to_frame() surface it.
+        self._show_rank_probabilities = show_rank_probabilities
 
     # ── print methods ────────────────────────────────────────────────────────
 
@@ -74,6 +85,7 @@ class ComparisonResult:
         style: Literal["gradient", "line"] = "gradient",
         p_value_method=_UNSET,
         pairwise_sort: Literal["grouped", "significance"] = "grouped",
+        show_rank_probabilities: Optional[bool] = None,
     ) -> None:
         """Print the full terminal summary with gradient CI plots.
 
@@ -96,9 +108,15 @@ class ComparisonResult:
         pairwise_sort : {"grouped", "significance"}
             Pairwise row ordering. ``"grouped"`` (default) keeps related pairs
             together; ``"significance"`` sorts by p-value then effect size.
+        show_rank_probabilities : bool, optional
+            Print the bootstrap "Rank Probabilities" block (P(Best)/E[Rank]
+            per entity). Off by default (see ``compare(...,
+            show_rank_probabilities=)``) -- overrides that default for this
+            call only when passed explicitly.
         """
         # Map our sentinel to the summary module's _UNSET so it reads from bundle.
         pvm = _SUMMARY_UNSET if p_value_method is ComparisonResult._UNSET else p_value_method
+        show_rank = self._show_rank_probabilities if show_rank_probabilities is None else show_rank_probabilities
         item_singular, item_plural = _factor_item_labels(self._factors)
         print_analysis_summary(
             self._analysis,
@@ -106,6 +124,7 @@ class ComparisonResult:
             style=style,
             p_value_method=pvm,
             pairwise_sort=pairwise_sort,
+            show_rank_probabilities=show_rank,
             min_meaningful_diff=self._min_meaningful_diff,
             item_singular=item_singular,
             item_plural=item_plural,
@@ -334,7 +353,7 @@ class ComparisonResult:
 
     # ── data access ──────────────────────────────────────────────────────────
 
-    def to_dict(self) -> dict:
+    def to_dict(self, *, show_rank_probabilities: Optional[bool] = None) -> dict:
         """Return a JSON-friendly dict with CIs, p-values, and pairwise diffs.
 
         Returns a dict with structure::
@@ -348,7 +367,9 @@ class ComparisonResult:
                         "mean": float,
                         "ci_low": float,
                         "ci_high": float,
-                        "p_best": float,  # P(rank 1) from bootstrap
+                        "p_best": float,  # P(rank 1) from bootstrap -- only
+                                          # present when show_rank_probabilities
+                                          # resolves to True; see compare()
                     }
                 },
                 "pairwise": [
@@ -356,6 +377,13 @@ class ComparisonResult:
                      "ci_high": float, "p_value": float | None}
                 ],
             }
+
+        Parameters
+        ----------
+        show_rank_probabilities : bool, optional
+            Include each entity's ``p_best``. Off by default (see
+            ``compare(..., show_rank_probabilities=)``) -- overrides that
+            default for this call only when passed explicitly.
         """
         bundle = self._primary_bundle()
         if bundle is None:
@@ -365,6 +393,7 @@ class ComparisonResult:
                 "alpha": self._alpha,
                 "note": "Multi-bundle result; use to_frame() for structured access.",
             }
+        show_rank = self._show_rank_probabilities if show_rank_probabilities is None else show_rank_probabilities
 
         rob = bundle.robustness
         rank = bundle.rank_dist
@@ -378,7 +407,7 @@ class ComparisonResult:
                 "ci_low": float(rob.ci_low[i]) if rob.ci_low is not None else None,
                 "ci_high": float(rob.ci_high[i]) if rob.ci_high is not None else None,
             }
-            if rank is not None:
+            if rank is not None and show_rank:
                 entry["p_best"] = float(rank.p_best[i])
             entities[str(name)] = entry
 
@@ -406,20 +435,29 @@ class ComparisonResult:
             result["variance_components"] = self._variance_components
         return result
 
-    def to_frame(self) -> dict[str, pd.DataFrame]:
+    def to_frame(self, *, show_rank_probabilities: Optional[bool] = None) -> dict[str, pd.DataFrame]:
         """Return analysis results as a dict of DataFrames.
 
         Keys:
 
-        * ``"entities"`` — one row per entity with mean, CI bounds, P(best).
+        * ``"entities"`` — one row per entity with mean, CI bounds, and (when
+          ``show_rank_probabilities`` resolves to True) P(best).
         * ``"pairwise"`` — one row per pairwise comparison.
         * ``"raw"`` — the filtered input data that was analyzed.
+
+        Parameters
+        ----------
+        show_rank_probabilities : bool, optional
+            Include each entity's ``p_best``. Off by default (see
+            ``compare(..., show_rank_probabilities=)``) -- overrides that
+            default for this call only when passed explicitly.
         """
         bundle = self._primary_bundle()
         frames: dict[str, pd.DataFrame] = {"raw": self._df.copy()}
 
         if bundle is None:
             return frames
+        show_rank = self._show_rank_probabilities if show_rank_probabilities is None else show_rank_probabilities
 
         rob = bundle.robustness
         rank = bundle.rank_dist
@@ -434,7 +472,7 @@ class ComparisonResult:
                 "ci_low": float(rob.ci_low[i]) if rob.ci_low is not None else None,
                 "ci_high": float(rob.ci_high[i]) if rob.ci_high is not None else None,
             }
-            if rank is not None:
+            if rank is not None and show_rank:
                 row["p_best"] = float(rank.p_best[i])
             entity_rows.append(row)
         frames["entities"] = pd.DataFrame(entity_rows)
@@ -1433,6 +1471,7 @@ def compare(
     p_values: bool = False,
     omnibus: bool = False,
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
+    show_rank_probabilities: bool = False,
     **kwargs: Any,
 ) -> ComparisonResult:
     """Compare entities along one or more factor axes.
@@ -1478,6 +1517,16 @@ def compare(
         picks bootstrap, or Wilcoxon when ``omnibus=True``. ``"nemenyi"``
         requires ``omnibus=True`` and is not supported together with
         ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).
+    show_rank_probabilities : bool
+        When ``True``, include the bootstrap "Rank Probabilities" block
+        (P(Best)/E[Rank] per entity) in ``.summary()`` output and the
+        ``p_best`` field in ``.to_dict()``/``.to_frame()``. Off by default:
+        a P(Best) figure reads as a confident, near-authoritative verdict
+        even when entities are statistically indistinguishable once you
+        look at the CIs sitting next to it, so this output is opt-in rather
+        than opt-out. Ranking is still computed either way; this only
+        controls whether it's surfaced. Can be overridden per-call via the
+        same-named argument on ``.summary()``/``.to_dict()``/``.to_frame()``.
     **kwargs
         Two uses:
 
@@ -1677,6 +1726,7 @@ def compare(
             filtered_df=df,
             _mmb_view="model_level",
             min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
         )
         _run_judge_alignment_if_needed(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
@@ -1725,6 +1775,7 @@ def compare(
             filtered_df=df,
             _mmb_view="template_level",
             min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
         )
         _run_judge_alignment_if_needed(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
@@ -1756,6 +1807,7 @@ def compare(
             alpha=alpha,
             filtered_df=df,
             min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
         )
         _run_judge_alignment_if_needed(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
@@ -1804,6 +1856,7 @@ def compare(
             filtered_df=df,
             _mmb_view="model_level",
             min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
         )
 
     # ── path D: factorial (multiple factors → LMM) ────────────────────────────
@@ -1853,6 +1906,7 @@ def compare(
             alpha=alpha,
             filtered_df=df,
             min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
         )
 
     raise EvalLoadError(

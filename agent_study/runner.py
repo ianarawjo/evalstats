@@ -143,13 +143,24 @@ def main(argv=None) -> None:
 
 
 def _print_summary(rows: list[dict]) -> None:
-    by_condition: dict[str, list[bool]] = {}
+    by_condition_decision: dict[str, list[bool]] = {}
+    by_condition_clear_best: dict[str, list[bool]] = {}
     for r in rows:
-        by_condition.setdefault(r["condition"], []).append(bool(r["correct"]))
+        condition = r["condition"]
+        by_condition_decision.setdefault(condition, []).append(bool(r["correct"]))
+        if "clear_best_correct" in r:
+            by_condition_clear_best.setdefault(condition, []).append(bool(r["clear_best_correct"]))
+
     print("\nDecision accuracy by condition:")
-    for condition, results in by_condition.items():
+    for condition, results in by_condition_decision.items():
         acc = sum(results) / len(results) if results else float("nan")
         print(f"  {condition}: {sum(results)}/{len(results)} correct ({acc:.0%})")
+
+    if by_condition_clear_best:
+        print("\nClear-best accuracy by condition:")
+        for condition, results in by_condition_clear_best.items():
+            acc = sum(results) / len(results) if results else float("nan")
+            print(f"  {condition}: {sum(results)}/{len(results)} correct ({acc:.0%})")
 
     total_violations = sum(r.get("meta_n_containment_violations", 0) for r in rows)
     if total_violations:

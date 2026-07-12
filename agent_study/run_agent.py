@@ -182,7 +182,21 @@ async def _run_agent(workspace_dir: Path, condition: str, prompt: str, family: s
                 "stop_reason": msg.stop_reason,
             }
 
-    result_meta["used_evalstats"] = used_evalstats_tool or any("evalstats" in cmd for cmd in bash_commands)
+    # Real runs showed the naive `"evalstats" in cmd` check produces false
+    # positives: a Bash command can mention "evalstats" while merely failing
+    # to invoke it (a comment, a guessed CLI call, an attempted subprocess
+    # wrapper) without ever running real evalstats code. `_IMPORT_RE`-based
+    # matching (already used for the tool_summary's python-libs list) is a
+    # tighter signal: it only fires on an actual `import evalstats`/`from
+    # evalstats import ...` statement, which is at least a genuine attempt
+    # to execute evalstats code (still no guarantee it succeeded -- that
+    # would need parsing the tool_result for a traceback).
+    attempted_evalstats_import = any(
+        m.group(1) == "evalstats" for cmd in bash_commands for m in _IMPORT_RE.finditer(cmd)
+    )
+    result_meta["used_evalstats"] = used_evalstats_tool or attempted_evalstats_import
+    result_meta["used_evalstats_tool_call"] = used_evalstats_tool
+    result_meta["attempted_evalstats_import_in_bash"] = attempted_evalstats_import
     result_meta["n_bash_commands"] = len(bash_commands)
     result_meta["n_containment_violations"] = len(containment_violations)
     result_meta["tool_summary"] = _summarize_tool_use(transcript_events, bash_commands, result_meta["used_evalstats"])

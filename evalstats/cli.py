@@ -307,6 +307,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     analyze.add_argument(
+        "--show-rank-probabilities",
+        action="store_true",
+        default=False,
+        help=(
+            "Print the bootstrap 'Rank Probabilities' block (P(Best)/E[Rank] "
+            "per entity). Off by default: a P(Best) figure reads as a "
+            "confident, near-authoritative verdict even when entities are "
+            "statistically indistinguishable once you look at the CIs next "
+            "to it, so this is opt-in rather than opt-out."
+        ),
+    )
+    analyze.add_argument(
         "--top-pairwise",
         type=int,
         default=5,
@@ -457,6 +469,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
                 analysis,
                 top_pairwise=args.top_pairwise,
                 style=getattr(args, "ci_style", "gradient"),
+                show_rank_probabilities=getattr(args, "show_rank_probabilities", False),
             )
     summary_text = summary_buffer.getvalue()
     print(summary_text, end="")

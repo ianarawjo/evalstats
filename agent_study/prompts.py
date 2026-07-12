@@ -16,12 +16,12 @@ _ANSWER_FOOTER = """
 When you're done, write your final recommendation to a file named
 `recommendation.json` in the current directory, in this exact format:
 
-{"reasoning": "<one paragraph>", "decision": "<deploy|do_not_deploy|inconclusive>", "certainty": "<low|medium|high>"}
+{"reasoning": "<one paragraph>", "clear_best": "<prompt_a|prompt_b|inconclusive>", "certainty": "<low|medium|high>", "decision": "<deploy|do_not_deploy|inconclusive>"}
 
-`decision` must be exactly one of "deploy", "do_not_deploy", or
-"inconclusive" (use "inconclusive" only if the evidence doesn't
-support a confident call either way). `certainty` is your own certainty
-in that decision.
+`clear_best` is which prompt the evidence points to as the clear best,
+using "inconclusive" if nothing clearly stands out. `certainty` is your
+own certainty in that read. `decision` is your final recommendation --
+it may differ from `clear_best`.
 """
 
 
@@ -31,9 +31,18 @@ in that decision.
 # exists) without saying which method to use or that it must be used --
 # same as a developer mentioning "we have an internal stats helper" without
 # dictating the analysis.
+# The "if it's not in your tool list yet..." sentence is purely mechanical
+# tool-usage guidance (how to find/call a tool you have), not a hint about
+# which statistical method to use -- added after real runs showed agents
+# repeatedly mishandling this specific tool: trying to shell-exec its name,
+# guessing at a direct Python import with the wrong call signature, or
+# inventing a nonexistent CLI, instead of just calling it as a tool.
 _EVALSTATS_MENTION = (
     "\nYou have a `compare_prompts` tool (evalstats) available if it's useful "
-    "for this kind of analysis.\n"
+    "for this kind of analysis. If it's not in your tool list yet, use "
+    "ToolSearch to find it, then call it directly as a tool -- don't try to "
+    "run it via Bash, import it as a Python library, or invoke it as a CLI "
+    "command.\n"
 )
 
 
@@ -56,16 +65,21 @@ _MODEL_BENCHMARK_ANSWER_FOOTER_TEMPLATE = """
 When you're done, write your final recommendation to a file named
 `recommendation.json` in the current directory, in this exact format:
 
-{{"reasoning": "<one paragraph>", "decision": "...", "certainty": "<low|medium|high>"}}
+{{"reasoning": "<one paragraph>", "clear_best": "...", "certainty": "<low|medium|high>", "decision": "..."}}
 
-`decision` must be exactly one of {options} (use "inconclusive" only if the
-evidence genuinely doesn't support confidently naming a single best model).
-`certainty` is your own certainty in that decision.
+`clear_best` and `decision` must each be exactly one of {options}.
+`clear_best` is which model the evidence points to as the clear best, using
+"inconclusive" if nothing clearly stands out. `certainty` is your own
+certainty in that read. `decision` is your final recommendation -- it may
+differ from `clear_best`.
 """
 
 _EVALSTATS_MENTION_MODEL_BENCHMARK = (
     "\nYou have a `compare_models` tool (evalstats) available if it's useful "
-    "for this kind of analysis.\n"
+    "for this kind of analysis. If it's not in your tool list yet, use "
+    "ToolSearch to find it, then call it directly as a tool -- don't try to "
+    "run it via Bash, import it as a Python library, or invoke it as a CLI "
+    "command.\n"
 )
 
 
