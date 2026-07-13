@@ -22,6 +22,7 @@ simulations/out
 .agent-study-venv-runner/
 agent_study/runs
 agent_study/.env
+agent_study/sweep/benchmark_v1.json
 scripts/*
 TODO.md
 DESIGN.md

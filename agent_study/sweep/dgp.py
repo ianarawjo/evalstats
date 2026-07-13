@@ -1,4 +1,4 @@
-"""Maps (data_type, dgp_regime) to a concrete ShapeSpec + heteroscedastic flag
+"""Maps (data_type, dgp_regime) to a concrete ShapeSpec + icc_spread flag
 for simulations.harness.scenarios.synthetic.sample_group_truth.
 
 dgp_regime is the axis this sweep adds on top of the existing agent_study
@@ -33,11 +33,57 @@ DGP_REGIMES_BY_DATA_TYPE: dict[str, list[str]] = {
     "binary": ["clean"],
 }
 
+# data_type -> valid score range, for baseline-level shifting (below) and
+# for sizing that shift relative to each type's own scale.
+DATA_TYPE_RANGE: dict[str, tuple[float, float]] = {
+    "continuous": (0.0, 1.0),
+    "binary": (0.0, 1.0),
+    "likert": (1.0, 5.0),
+}
+
+# How far a cell's baseline can drift from a shape's own natural center, as a
+# fraction of the type's total range. Without this, every item sits at
+# whatever level its chosen shape happens to be centered at (~0.4-0.5 for our
+# continuous/binary "clean" shapes, ~3.0 for likert-mid) -- realistic eval
+# data spans the whole scale, and evalstats' bootstrap CI behavior isn't
+# guaranteed to be uniform across it (variance mechanically shrinks near a
+# bounded scale's edges), so a benchmark that only ever tests the middle
+# can't tell you anything about the edges.
+BASELINE_SHIFT_FRACTION = 0.4
+
+
+def sample_baseline_shift(data_type: str, rng: np.random.Generator) -> float:
+    lo, hi = DATA_TYPE_RANGE[data_type]
+    span = (hi - lo) * BASELINE_SHIFT_FRACTION
+    return float(rng.uniform(-span, span))
+
+
+# Range each arm's own icc (reliability) is drawn from independently when
+# icc_spread=True, giving genuine cross-arm variance heterogeneity -- see
+# sample_icc_per_arm's docstring for why this replaced sample_group_truth's
+# own heteroscedastic= flag for this purpose.
+ICC_SPREAD_RANGE = (0.1, 0.5)
+
+
+def sample_icc_per_arm(k: int, rng: np.random.Generator) -> list[float]:
+    """A different icc drawn independently for every arm -- unlike
+    sample_group_truth's heteroscedastic= flag (which scales noise by how
+    close an item's value sits to the scale's boundary, so arms only end up
+    with visibly different variance if they land at very different absolute
+    positions), this creates real, position-independent variance
+    differences between arms: verified empirically that heteroscedastic=True
+    alone left arms at ~0.35 std regardless, while independently-varied icc
+    produced std ranging 0.29-0.41 in a test. Drawn independently of
+    winner_idx, so the winning arm isn't systematically more or less
+    reliable than the rest -- only that arms genuinely differ from each
+    other, which is what "unequal variance" is supposed to mean."""
+    return rng.uniform(*ICC_SPREAD_RANGE, size=k).tolist()
+
 
 @dataclass
 class DGPConfig:
     shape: ShapeSpec
-    heteroscedastic: bool
+    icc_spread: bool = False
 
 
 def _shape(data_type: str, label: str) -> ShapeSpec:
@@ -86,5 +132,5 @@ def get_dgp_config(data_type: str, dgp_regime: str) -> DGPConfig:
             "clean": (_shape("binary", "p=0.50"), False),
         }
 
-    shape, heteroscedastic = mapping[dgp_regime]
-    return DGPConfig(shape=shape, heteroscedastic=heteroscedastic)
+    shape, icc_spread = mapping[dgp_regime]
+    return DGPConfig(shape=shape, icc_spread=icc_spread)
