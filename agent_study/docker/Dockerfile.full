@@ -1,0 +1,42 @@
+# "full" condition image for the openhands backend -- mirrors
+# .agent-study-venv-full (evalstats + full scientific stack). Build from
+# the repo root so the COPY paths below resolve:
+#
+#   docker build -f agent_study/docker/Dockerfile.full -t agent-study-openhands-full:latest .
+#
+# Base image tag, pip-as-non-root-user, and bind-mount-at-/workspace all
+# confirmed working live. platform is auto-detected by run_agent_openhands.py
+# to match this machine (see DOCKER_PLATFORM there) -- images built without
+# an explicit --platform flag are native-arch-only (arm64 on this Mac), and
+# DockerWorkspace's own default (linux/amd64) doesn't match that.
+FROM ghcr.io/openhands/agent-server:latest-python
+
+# Only the slice of the repo needed to build evalstats -- not the whole
+# checkout. Baseline's image must never see this content at all (not just
+# "not installed"); full's image has no reason to carry along agent_study/,
+# memory files, or anything else from the working repo either.
+WORKDIR /tmp/evalstats-src
+COPY pyproject.toml README.md ./
+COPY evalstats/ ./evalstats/
+# mcp (the Python MCP SDK) is not one of evalstats' own dependencies -- only
+# needed here to run the evalstats MCP server below.
+RUN pip install --no-cache-dir . mcp
+
+# The evalstats MCP server (agent_study/evalstats_mcp_server.py) is spawned
+# BY THIS CONTAINER, not by our host orchestrator process -- confirmed live:
+# Agent._initialize (where mcp_config-declared servers get connected) runs
+# wherever the Conversation actually executes, which for a DockerWorkspace-
+# backed RemoteConversation is server-side, same as tool resolution. A host
+# path in mcp_config's "command" (e.g. sys.executable) is meaningless inside
+# the container, which is what "MCP Connection Failure" turned out to mean
+# live. Copied as a single standalone file, not the whole agent_study
+# package -- it only needs evalstats/pandas/mcp, already installed above.
+COPY agent_study/evalstats_mcp_server.py /opt/evalstats_mcp_server.py
+
+# See entrypoint.sh's own comment: DockerWorkspace has no field to pass
+# extra agent-server CLI flags, and the alternative (client-side dynamic
+# tool_module_qualnames registration) is documented as racy and failed live.
+COPY --chmod=755 agent_study/docker/entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+
+WORKDIR /workspace

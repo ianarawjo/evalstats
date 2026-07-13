@@ -43,6 +43,19 @@ def venv_bin(condition: str) -> Path:
     return VENV_BY_CONDITION[condition] / "bin"
 
 
+# openhands backend's analogue of VENV_BY_CONDITION: a Docker image per
+# condition instead of a venv (the unit of environment selection for a
+# DockerWorkspace-backed run). Built from agent_study/docker/Dockerfile.*,
+# both FROM the published ghcr.io/openhands/agent-server base image. Same
+# rule as the venvs: baseline's image must not contain the evalstats source
+# at all, not just "not installed" -- see isolation.py's history for why
+# that distinction mattered in practice.
+DOCKER_IMAGE_BY_CONDITION = {
+    "full": "agent-study-openhands-full:latest",
+    "baseline": "agent-study-openhands-baseline:latest",
+}
+
+
 def build_workspace(instance: Any, condition: str, run_dir: Path, family: str = "prompt_ab") -> Path:
     """Writes data.csv + PROMPT.md into run_dir and returns run_dir (the
     agent's cwd). Does NOT write ground_truth.json here -- callers should

@@ -1,0 +1,24 @@
+# "baseline" condition image for the openhands backend -- mirrors
+# .agent-study-venv-baseline (numpy/scipy/pandas/statsmodels only, no
+# evalstats). Build from the repo root:
+#
+#   docker build -f agent_study/docker/Dockerfile.baseline -t agent-study-openhands-baseline:latest .
+#
+# evalstats source is never COPY'd into this image at all -- not just "not
+# installed". The Claude Agent SDK backend once leaked precisely because a
+# run found and used a *different* environment that had evalstats
+# installed; "genuinely absent from this image" is the property that
+# matters here, not just "absent from this image's site-packages by
+# omission." See isolation.py's module docstring for the incident.
+#
+FROM ghcr.io/openhands/agent-server:latest-python
+
+RUN pip install --no-cache-dir numpy scipy pandas statsmodels
+
+# See entrypoint.sh's own comment: DockerWorkspace has no field to pass
+# extra agent-server CLI flags, and the alternative (client-side dynamic
+# tool_module_qualnames registration) is documented as racy and failed live.
+COPY --chmod=755 agent_study/docker/entrypoint.sh /entrypoint.sh
+ENTRYPOINT ["/entrypoint.sh"]
+
+WORKDIR /workspace
