@@ -1697,12 +1697,18 @@ def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
     """Official-test preset for nested-mode real (inspect) data.
     Requires simulations/out/inspect_benchmarks.csv (produced by
     collect_inspect_benchmarks.py --runs 5 ...). Tests paired-diff CI
-    coverage using all three repeated runs per item collected during
-    the multi-run Inspect AI data collection phase."""
+    coverage using the collected per-item runs -- most items have all
+    five, but some have fewer (collection failures/timeouts); items with
+    fewer than `runs=5` requested get the missing columns bootstrap-
+    resampled from their own real runs (see
+    build_inspect_corpora_multirun). `runs` below is unused in
+    --nested-mode (runs_sweep takes precedence, see run()'s `runs_list =
+    args.runs_sweep if args.runs_sweep else [args.runs]`); set to 5 to
+    match runs_sweep for clarity rather than left dangling."""
     return argparse.Namespace(
         data_source="inspect", scenario_suite="expanded", eval_types=None,
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
-        runs=3, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
+        runs=5, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, icc_values=None, cohens_d_values=[0.2, 0.4], include_null=False,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,

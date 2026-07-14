@@ -62,7 +62,12 @@ with warnings.catch_warnings():
         bootstrap_t_ci_nested,
         wilson_nested_de,
         wilson_nested_od,
-        wilson_nested_bb,
+        wilson_nested_od_bc,
+        wilson_nested_od_t,
+        jeffreys_nested_od,
+        clopper_pearson_nested_od,
+        beta_binomial_bayes_nested,
+        beta_binomial_bayes_robust_nested,
         nig_ci_nested,
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
@@ -105,11 +110,17 @@ from ..methods import (
     BINARY_NESTED_METHODS,
     WILSON_DE,
     WILSON_OD,
-    BETA_BINOMIAL,
+    WILSON_OD_BC,
+    WILSON_OD_T,
+    JEFFREYS_OD,
+    CP_OD,
+    BB_BAYES,
+    BB_BAYES_ROBUST,
     CONTINUOUS_NESTED_METHODS,
     NIG_NESTED,
     get_method_color,
     order_present_methods,
+    METHODS_BY_NAME,
 )
 from . import CaseResult
 
@@ -166,7 +177,10 @@ def _bayes_indep_ci(values: np.ndarray, alpha: float) -> tuple[float, float]:
     return float(lo), float(hi)
 
 
-def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha: float, seed) -> list[SimResult]:
+def _run_cell(
+    source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha: float, seed,
+    methods_filter: frozenset[str] | None = None,
+) -> list[SimResult]:
     """Run all reps for one (source, n) cell."""
     rng = np.random.default_rng(seed)
     is_binary = source_obj.eval_type == "binary"
@@ -176,6 +190,9 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
         active_methods += BINARY_SINGLE_EXTRA_METHODS
     else:
         active_methods += CONTINUOUS_EXTRA_METHODS
+    if methods_filter is not None:
+        active_methods = [m for m in active_methods if m.name in methods_filter]
+    wanted = {m.name for m in active_methods}
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
@@ -195,6 +212,8 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
         obs_mean = float(np.mean(values))
 
         for method in METHODS:
+            if method.name not in wanted:
+                continue
             _t0 = time.perf_counter()
             try:
                 with warnings.catch_warnings():
@@ -209,15 +228,16 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             total_t_sq[method] += _el * _el
             _record(method, ci_low, ci_high)
 
-        _t0 = time.perf_counter()
-        try:
-            ci_low, ci_high = t_interval_ci_1d(values, alpha)
-        except Exception:
-            ci_low = ci_high = obs_mean
-        _el = time.perf_counter() - _t0
-        total_t[T_INTERVAL] += _el
-        total_t_sq[T_INTERVAL] += _el * _el
-        _record(T_INTERVAL, ci_low, ci_high)
+        if T_INTERVAL.name in wanted:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = t_interval_ci_1d(values, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[T_INTERVAL] += _el
+            total_t_sq[T_INTERVAL] += _el * _el
+            _record(T_INTERVAL, ci_low, ci_high)
 
         if not is_binary:
             # beta/logit_t/nig assume a [0, 1] scale (domain check or prior
@@ -226,6 +246,8 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
             # nonparametric (data-driven x_min/x_max) and needs no rescale.
             scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             for _method, _fn in zip(CONTINUOUS_EXTRA_METHODS, (beta_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
+                if _method.name not in wanted:
+                    continue
                 _t0 = time.perf_counter()
                 try:
                     if _fn is el_ci_1d:
@@ -242,49 +264,54 @@ def _run_cell(source_obj: CISource, n: int, n_reps: int, n_bootstrap: int, alpha
         if is_binary:
             successes = int(np.sum(values >= 0.5))
 
-            _t0 = time.perf_counter()
-            ci_low, ci_high = _wilson_ci(successes, n, alpha)
-            _el = time.perf_counter() - _t0
-            total_t[WILSON] += _el
-            total_t_sq[WILSON] += _el * _el
-            _record(WILSON, ci_low, ci_high)
+            if WILSON.name in wanted:
+                _t0 = time.perf_counter()
+                ci_low, ci_high = _wilson_ci(successes, n, alpha)
+                _el = time.perf_counter() - _t0
+                total_t[WILSON] += _el
+                total_t_sq[WILSON] += _el * _el
+                _record(WILSON, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = jeffreys_ci_1d(values, alpha)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[JEFFREYS] += _el
-            total_t_sq[JEFFREYS] += _el * _el
-            _record(JEFFREYS, ci_low, ci_high)
+            if JEFFREYS.name in wanted:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = jeffreys_ci_1d(values, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[JEFFREYS] += _el
+                total_t_sq[JEFFREYS] += _el * _el
+                _record(JEFFREYS, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            ci_low, ci_high = wald_ci_1d(values, alpha)
-            _el = time.perf_counter() - _t0
-            total_t[WALD] += _el
-            total_t_sq[WALD] += _el * _el
-            _record(WALD, ci_low, ci_high)
+            if WALD.name in wanted:
+                _t0 = time.perf_counter()
+                ci_low, ci_high = wald_ci_1d(values, alpha)
+                _el = time.perf_counter() - _t0
+                total_t[WALD] += _el
+                total_t_sq[WALD] += _el * _el
+                _record(WALD, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = clopper_pearson_ci_1d(values, alpha)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[CLOPPER_PEARSON] += _el
-            total_t_sq[CLOPPER_PEARSON] += _el * _el
-            _record(CLOPPER_PEARSON, ci_low, ci_high)
+            if CLOPPER_PEARSON.name in wanted:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = clopper_pearson_ci_1d(values, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[CLOPPER_PEARSON] += _el
+                total_t_sq[CLOPPER_PEARSON] += _el * _el
+                _record(CLOPPER_PEARSON, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = _bayes_indep_ci(values, alpha)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[BAYES_SINGLE] += _el
-            total_t_sq[BAYES_SINGLE] += _el * _el
-            _record(BAYES_SINGLE, ci_low, ci_high)
+            if BAYES_SINGLE.name in wanted:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = _bayes_indep_ci(values, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[BAYES_SINGLE] += _el
+                total_t_sq[BAYES_SINGLE] += _el * _el
+                _record(BAYES_SINGLE, ci_low, ci_high)
 
     return [
         SimResult(
@@ -344,13 +371,16 @@ _NESTED_CELL_SOURCES: list = []  # fork-inherited worker state for run_nested_si
 
 
 def _run_cell_worker(args: tuple) -> list[SimResult]:
-    sc_idx, n, n_reps, n_bootstrap, alpha, seed = args
-    return _run_cell(_CELL_SOURCES[sc_idx], n, n_reps, n_bootstrap, alpha, seed)
+    sc_idx, n, n_reps, n_bootstrap, alpha, seed, methods_filter = args
+    return _run_cell(_CELL_SOURCES[sc_idx], n, n_reps, n_bootstrap, alpha, seed, methods_filter)
 
 
 def _run_nested_cell_worker(args: tuple) -> list[SimResult]:
-    sc_idx, n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed = args
-    return _run_nested_cell(_NESTED_CELL_SOURCES[sc_idx], n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed)
+    sc_idx, n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed, methods_filter, skip_bootstrap_binary = args
+    return _run_nested_cell(
+        _NESTED_CELL_SOURCES[sc_idx], n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed,
+        methods_filter, skip_bootstrap_binary,
+    )
 
 
 def run_simulation(
@@ -362,13 +392,14 @@ def run_simulation(
     progress_mode: str = "bar",
     seed: int = 42,
     n_workers: int = 1,
+    methods_filter: frozenset[str] | None = None,
 ) -> list[SimResult]:
     global _CELL_SOURCES
     _CELL_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
     cells = [(i, n) for i, s in enumerate(sources) for n in sample_sizes if s.max_n is None or n < s.max_n]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
-    args_list = [(*cell, n_reps, n_bootstrap, alpha, seed) for cell, seed in zip(cells, child_seeds)]
+    args_list = [(*cell, n_reps, n_bootstrap, alpha, seed, methods_filter) for cell, seed in zip(cells, child_seeds)]
 
     skipped = [(s, n) for s in sources for n in sample_sizes if not (s.max_n is None or n < s.max_n)]
     for s, n in skipped:
@@ -401,23 +432,39 @@ _CONT_NESTED_FNS = {BETA: beta_ci_1d, LOGIT_T: logit_t_ci_1d, NIG: nig_ci_1d, EL
 
 def _run_nested_cell(
     source_obj: CISource, n: int, runs: int, n_reps: int, n_bootstrap: int, bayes_n: int, alpha: float, seed,
+    methods_filter: frozenset[str] | None = None,
+    skip_bootstrap_binary: bool = False,
 ) -> list[SimResult]:
     """Run all reps for one (source, n, runs) cell -- flat-vs-nested single-sample mean estimand."""
     rng = np.random.default_rng(seed)
     is_binary = source_obj.eval_type == "binary"
     is_continuous = source_obj.eval_type == "continuous"
     is_numeric = not is_binary  # continuous, likert, or grades
+
+    # skip_bootstrap_binary: the bootstrap family (flat cell-mean resampling
+    # and full-matrix nested resampling alike) underperforms the dedicated
+    # binary methods (wilson_*/jeffreys_od/cp_od/bb_bayes/nig) on binary data
+    # -- see METHODS.md's ci_single-nested section -- and including it there
+    # both wastes compute and (in the official-test LaTeX summary, which
+    # averages a method's Score/Width across every eval type it ran on)
+    # dilutes its numeric-only performance with its own binary underperformance.
+    run_bootstrap = not (skip_bootstrap_binary and is_binary)
     true_mean = source_obj.true_mean
 
     # CONTINUOUS_NESTED_METHODS (nig_ci_nested) now runs for every eval type
     # via rescale onto [0, 1] -- identity for binary/continuous, and via
     # EVAL_TYPE_SCALE_BOUNDS for likert/grades (see the nig_ci_nested block
     # below), matching CONTINUOUS_EXTRA_METHODS' scope.
-    active_methods = list(METHODS) + [T_INTERVAL] + NESTED_METHODS + CONTINUOUS_NESTED_METHODS
+    active_methods = [T_INTERVAL] + CONTINUOUS_NESTED_METHODS
+    if run_bootstrap:
+        active_methods += list(METHODS) + NESTED_METHODS
     if is_binary:
         active_methods += BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + [NIG]
     if is_numeric:
         active_methods += CONTINUOUS_EXTRA_METHODS
+    if methods_filter is not None:
+        active_methods = [m for m in active_methods if m.name in methods_filter]
+    wanted = {m.name for m in active_methods}
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
@@ -438,6 +485,8 @@ def _run_nested_cell(
 
         # -- Cell-means bootstrap family (flat) --
         for method in METHODS:
+            if method.name not in wanted:
+                continue
             n_draws = bayes_n if method is BAYES_BOOTSTRAP else n_bootstrap
             _t0 = time.perf_counter()
             try:
@@ -452,15 +501,16 @@ def _run_nested_cell(
             _record(method, ci_low, ci_high)
 
         # -- t-interval on cell means --
-        _t0 = time.perf_counter()
-        try:
-            ci_low, ci_high = t_interval_ci_1d(cell_means, alpha)
-        except Exception:
-            ci_low = ci_high = obs_mean
-        _el = time.perf_counter() - _t0
-        total_t[T_INTERVAL] += _el
-        total_t_sq[T_INTERVAL] += _el * _el
-        _record(T_INTERVAL, ci_low, ci_high)
+        if T_INTERVAL.name in wanted:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = t_interval_ci_1d(cell_means, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[T_INTERVAL] += _el
+            total_t_sq[T_INTERVAL] += _el * _el
+            _record(T_INTERVAL, ci_low, ci_high)
 
         # -- Nested bootstrap (full N x R matrix) --
         for method, fn in [
@@ -468,6 +518,8 @@ def _run_nested_cell(
             (BAYES_NESTED, bayes_bootstrap_means_nested),
             (SMOOTH_NESTED, smooth_bootstrap_means_nested),
         ]:
+            if method.name not in wanted:
+                continue
             n_draws = bayes_n if method is BAYES_NESTED else n_bootstrap
             _t0 = time.perf_counter()
             try:
@@ -488,69 +540,86 @@ def _run_nested_cell(
             _record(method, ci_low, ci_high)
 
         # -- BCa interval using nested bootstrap replicates --
-        _t0 = time.perf_counter()
-        try:
-            boot_stats = bootstrap_means_nested(scores, n_bootstrap, rng)
-            ci_low, ci_high = bca_interval_1d(cell_means, obs_mean, boot_stats, alpha)
-        except Exception:
-            ci_low = ci_high = obs_mean
-        _el = time.perf_counter() - _t0
-        total_t[BCA_NESTED] += _el
-        total_t_sq[BCA_NESTED] += _el * _el
-        _record(BCA_NESTED, ci_low, ci_high)
+        if BCA_NESTED.name in wanted:
+            _t0 = time.perf_counter()
+            try:
+                boot_stats = bootstrap_means_nested(scores, n_bootstrap, rng)
+                ci_low, ci_high = bca_interval_1d(cell_means, obs_mean, boot_stats, alpha)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[BCA_NESTED] += _el
+            total_t_sq[BCA_NESTED] += _el * _el
+            _record(BCA_NESTED, ci_low, ci_high)
 
         # -- Bootstrap-t via nested resampling --
-        _t0 = time.perf_counter()
-        try:
-            ci_low, ci_high = bootstrap_t_ci_nested(scores, obs_mean, n_bootstrap, alpha, rng)
-        except Exception:
-            ci_low = ci_high = obs_mean
-        _el = time.perf_counter() - _t0
-        total_t[BOOTSTRAP_T_NESTED] += _el
-        total_t_sq[BOOTSTRAP_T_NESTED] += _el * _el
-        _record(BOOTSTRAP_T_NESTED, ci_low, ci_high)
+        if BOOTSTRAP_T_NESTED.name in wanted:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = bootstrap_t_ci_nested(scores, obs_mean, n_bootstrap, alpha, rng)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[BOOTSTRAP_T_NESTED] += _el
+            total_t_sq[BOOTSTRAP_T_NESTED] += _el * _el
+            _record(BOOTSTRAP_T_NESTED, ci_low, ci_high)
 
         # -- Binary flat methods on cell means --
         if is_binary:
             succ_flat = int(np.round(np.sum(cell_means)))
             n_flat = len(cell_means)
 
-            _t0 = time.perf_counter()
-            ci_low, ci_high = _wilson_ci(succ_flat, n_flat, alpha)
-            _el = time.perf_counter() - _t0
-            total_t[WILSON_FLAT] += _el
-            total_t_sq[WILSON_FLAT] += _el * _el
-            _record(WILSON_FLAT, ci_low, ci_high)
+            if WILSON_FLAT.name in wanted:
+                _t0 = time.perf_counter()
+                ci_low, ci_high = _wilson_ci(succ_flat, n_flat, alpha)
+                _el = time.perf_counter() - _t0
+                total_t[WILSON_FLAT] += _el
+                total_t_sq[WILSON_FLAT] += _el * _el
+                _record(WILSON_FLAT, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            ci_low, ci_high = wald_ci_1d(cell_means, alpha)
-            _el = time.perf_counter() - _t0
-            total_t[WALD_FLAT] += _el
-            total_t_sq[WALD_FLAT] += _el * _el
-            _record(WALD_FLAT, ci_low, ci_high)
+            if WALD_FLAT.name in wanted:
+                _t0 = time.perf_counter()
+                ci_low, ci_high = wald_ci_1d(cell_means, alpha)
+                _el = time.perf_counter() - _t0
+                total_t[WALD_FLAT] += _el
+                total_t_sq[WALD_FLAT] += _el * _el
+                _record(WALD_FLAT, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = clopper_pearson_ci_1d(cell_means, alpha)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[CP_FLAT] += _el
-            total_t_sq[CP_FLAT] += _el * _el
-            _record(CP_FLAT, ci_low, ci_high)
+            if CP_FLAT.name in wanted:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = clopper_pearson_ci_1d(cell_means, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[CP_FLAT] += _el
+                total_t_sq[CP_FLAT] += _el * _el
+                _record(CP_FLAT, ci_low, ci_high)
 
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = _bayes_indep_ci(cell_means, alpha)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[BAYES_INDEP_FLAT] += _el
-            total_t_sq[BAYES_INDEP_FLAT] += _el * _el
-            _record(BAYES_INDEP_FLAT, ci_low, ci_high)
+            if BAYES_INDEP_FLAT.name in wanted:
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = _bayes_indep_ci(cell_means, alpha)
+                except Exception:
+                    ci_low = ci_high = obs_mean
+                _el = time.perf_counter() - _t0
+                total_t[BAYES_INDEP_FLAT] += _el
+                total_t_sq[BAYES_INDEP_FLAT] += _el * _el
+                _record(BAYES_INDEP_FLAT, ci_low, ci_high)
 
             # -- Clustered Wilson variants (nested, multi-run) --
-            for method, fn in [(WILSON_DE, wilson_nested_de), (WILSON_OD, wilson_nested_od), (BETA_BINOMIAL, wilson_nested_bb)]:
+            for method, fn in [
+                (WILSON_DE, wilson_nested_de),
+                (WILSON_OD, wilson_nested_od),
+                (WILSON_OD_BC, wilson_nested_od_bc),
+                (WILSON_OD_T, wilson_nested_od_t),
+                (JEFFREYS_OD, jeffreys_nested_od),
+                (CP_OD, clopper_pearson_nested_od),
+                (BB_BAYES, beta_binomial_bayes_nested),
+                (BB_BAYES_ROBUST, beta_binomial_bayes_robust_nested),
+            ]:
+                if method.name not in wanted:
+                    continue
                 _t0 = time.perf_counter()
                 try:
                     ci_low, ci_high = fn(scores, alpha)
@@ -565,19 +634,20 @@ def _run_nested_cell(
         # model assumes a [0, 1] scale like nig_ci_1d; binary/continuous are
         # already there (identity rescale), likert/grades go through
         # EVAL_TYPE_SCALE_BOUNDS first, matching CONTINUOUS_EXTRA_METHODS above.
-        _t0 = time.perf_counter()
-        try:
-            scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
-            ci_low, ci_high = rescaled_ci(nig_ci_nested, scores, alpha, scale_lo, scale_hi)
-        except Exception:
-            ci_low = ci_high = obs_mean
-        _el = time.perf_counter() - _t0
-        total_t[NIG_NESTED] += _el
-        total_t_sq[NIG_NESTED] += _el * _el
-        _record(NIG_NESTED, ci_low, ci_high)
+        if NIG_NESTED.name in wanted:
+            _t0 = time.perf_counter()
+            try:
+                scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
+                ci_low, ci_high = rescaled_ci(nig_ci_nested, scores, alpha, scale_lo, scale_hi)
+            except Exception:
+                ci_low = ci_high = obs_mean
+            _el = time.perf_counter() - _t0
+            total_t[NIG_NESTED] += _el
+            total_t_sq[NIG_NESTED] += _el * _el
+            _record(NIG_NESTED, ci_low, ci_high)
 
         # -- NIG on cell means (binary approximation) --
-        if is_binary:
+        if is_binary and NIG.name in wanted:
             _t0 = time.perf_counter()
             try:
                 ci_low, ci_high = nig_ci_1d(cell_means, alpha)
@@ -596,6 +666,8 @@ def _run_nested_cell(
         if is_numeric:
             scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             for _method, _fn in _CONT_NESTED_FNS.items():
+                if _method.name not in wanted:
+                    continue
                 _t0 = time.perf_counter()
                 try:
                     if _fn is el_ci_1d:
@@ -624,13 +696,18 @@ def _run_nested_cell(
 def run_nested_simulation(
     sources: list[CISource], sample_sizes: list[int], runs: int, n_reps: int, n_bootstrap: int,
     bayes_n: int, alpha: float, progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
+    methods_filter: frozenset[str] | None = None,
+    skip_bootstrap_binary: bool = False,
 ) -> list[SimResult]:
     global _NESTED_CELL_SOURCES
     _NESTED_CELL_SOURCES = list(sources)
     ss = np.random.SeedSequence(seed)
     cells = [(i, n) for i, s in enumerate(sources) for n in sample_sizes]
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
-    args_list = [(sc_idx, n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed) for (sc_idx, n), seed in zip(cells, child_seeds)]
+    args_list = [
+        (sc_idx, n, runs, n_reps, n_bootstrap, bayes_n, alpha, seed, methods_filter, skip_bootstrap_binary)
+        for (sc_idx, n), seed in zip(cells, child_seeds)
+    ]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label=f"ci_single-nested[runs={runs}]")
     results: list[SimResult] = []
@@ -1307,6 +1384,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="Synthetic scenario breadth (ignored for real data sources)")
     parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE")
+    parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
+                         help="Restrict to this exact set of CI methods (by name, e.g. wilson_od "
+                              "wilson_od_bc) instead of running the full battery. Skips computation "
+                              "(not just reporting) for excluded methods. Use --list-cases or check "
+                              "simulations/harness/methods.py for valid names.")
     parser.add_argument("--benchmarks", nargs="+", default=None, metavar="ID", help="Real-data: benchmark IDs to filter to")
     parser.add_argument("--models", nargs="+", default=None, metavar="NAME", help="Real-data: model names to filter to")
     parser.add_argument("--hf-token", default=None)
@@ -1342,6 +1424,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Append a LaTeX booktabs overall-summary table to the saved summary .log file.")
     parser.add_argument("--heteroscedastic", action="store_true", default=False,
                          help="Nested mode: run noise scales with input value (mimics real LLM eval variability)")
+    parser.add_argument("--no-bootstrap-binary", action="store_true", default=False,
+                         help="Nested mode: skip the bootstrap-family methods (bootstrap/bca/bayes_bootstrap/"
+                              "smooth_bootstrap/bootstrap_t, flat and nested) on binary data -- they underperform "
+                              "the dedicated binary methods there, and including them dilutes the bootstrap "
+                              "family's Score/Width average in the overall-summary and LaTeX output with their "
+                              "own binary underperformance.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
@@ -1357,13 +1445,14 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     official sweep's runtime for no real loss of coverage."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
+        benchmarks=None, models=None, methods=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=2000, bootstrap_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs=3, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT,
         icc_values=None, bayes_n=None, heteroscedastic=False, latex=True,
+        no_bootstrap_binary=False,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
@@ -1372,13 +1461,14 @@ def real_official_args(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for real data sources (requires network/HF access)."""
     return argparse.Namespace(
         data_source="real", scenario_suite="expanded", eval_types=None,
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
+        benchmarks=None, models=None, methods=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=2000, bootstrap_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs=1, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT,
         icc_values=None, bayes_n=None, heteroscedastic=False, latex=True,
+        no_bootstrap_binary=False,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
@@ -1386,17 +1476,21 @@ def real_official_args(base_seed: int = 42) -> argparse.Namespace:
 def nested_real_official_args(base_seed: int = 45) -> argparse.Namespace:
     """Official-test preset for nested-mode real (inspect) data.
     Requires simulations/out/inspect_benchmarks.csv (produced by
-    collect_inspect_benchmarks.py --runs 3 ...). Tests bootstrap CI
-    coverage using all three repeated runs per item collected during
-    the multi-run Inspect AI data collection phase."""
+    collect_inspect_benchmarks.py --runs 5 ...). Tests bootstrap CI
+    coverage using the collected per-item runs -- most items have all
+    five, but some have fewer (collection failures/timeouts); items with
+    fewer than `runs=5` requested get the missing columns bootstrap-
+    resampled from their own real runs (see
+    build_inspect_corpora_multirun)."""
     return argparse.Namespace(
         data_source="inspect", scenario_suite="expanded", eval_types=None,
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
+        benchmarks=None, models=None, methods=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=500, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
         nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.0],
         icc_values=None, bayes_n=10000, heteroscedastic=False, latex=True,
+        no_bootstrap_binary=True,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
@@ -1421,13 +1515,14 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
     real-data path doesn't go unexercised between --official-tests runs."""
     return argparse.Namespace(
         data_source=data_source, scenario_suite="standard", eval_types=None,
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
+        benchmarks=None, models=None, methods=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=3, bootstrap_n=200, alpha=0.05,
         sizes=[10, 30, 50],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs=3, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT,
         icc_values=None, bayes_n=None, heteroscedastic=False, latex=True,
+        no_bootstrap_binary=False,
         workers=1,
     )
 
@@ -1444,12 +1539,13 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     """
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
-        benchmarks=None, models=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
+        benchmarks=None, models=None, methods=None, hf_token=None, cache_dir=None, min_corpus_size=50, inspect_csv=None,
         reps=500, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
-        nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.1, 0.3, 0.5],
+        nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.01, 0.1, 0.3, 0.5],
         icc_values=[0.05, 0.30, 0.50], bayes_n=10000, heteroscedastic=True, latex=True,
+        no_bootstrap_binary=True,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
@@ -1459,6 +1555,18 @@ def run(args: argparse.Namespace) -> CaseResult:
     try:
         plots_dir = args.plots_dir or str(Path(args.out_dir) / "plots")
         nested_mode = getattr(args, "nested_mode", False)
+
+        methods_filter: frozenset[str] | None = None
+        requested_methods = getattr(args, "methods", None)
+        if requested_methods:
+            unknown = [m for m in requested_methods if m not in METHODS_BY_NAME]
+            if unknown:
+                raise ValueError(
+                    f"Unknown --methods name(s): {unknown}. "
+                    f"Check simulations/harness/methods.py for valid names."
+                )
+            methods_filter = frozenset(requested_methods)
+            print(f"  --methods filter active: {sorted(methods_filter)}")
 
         if nested_mode:
             if args.data_source not in ("synthetic", "inspect"):
@@ -1497,7 +1605,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                 results.extend(run_nested_simulation(
                     sources, sample_sizes=args.sizes, runs=r_val, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
                     bayes_n=bayes_n, alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
-                    n_workers=n_workers,
+                    n_workers=n_workers, methods_filter=methods_filter,
+                    skip_bootstrap_binary=getattr(args, "no_bootstrap_binary", False),
                 ))
             print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps)
 
@@ -1567,7 +1676,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         results = run_simulation(
             sources, sample_sizes=args.sizes, n_reps=args.reps, n_bootstrap=args.bootstrap_n,
             alpha=args.alpha, progress_mode=args.progress, seed=args.seed,
-            n_workers=getattr(args, "workers", 1),
+            n_workers=getattr(args, "workers", 1), methods_filter=methods_filter,
         )
         print_report(results, sample_sizes=args.sizes, alpha=args.alpha, n_reps=args.reps)
 

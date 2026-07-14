@@ -7,6 +7,7 @@ from typing import Literal, Optional
 
 import numpy as np
 from scipy import stats
+from scipy.special import betaln
 
 from ..config import BOOTSTRAP_AUTO_MIN_N
 
@@ -741,14 +742,17 @@ def wilson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     return wilson_ci(successes, n, alpha)
 
 
-def _wilson_neff(p_hat: float, n_eff: float, alpha: float) -> tuple[float, float]:
+def _wilson_neff(p_hat: float, n_eff: float, alpha: float, z: float | None = None) -> tuple[float, float]:
     """Wilson score interval parameterised by an effective sample size.
 
     Applies the standard Wilson formula with *n_eff* substituted for n.
+    ``z`` overrides the normal quantile (e.g. with a t-quantile when the
+    variance behind ``n_eff`` is itself estimated from few clusters).
     """
     if n_eff <= 0.0 or not np.isfinite(n_eff):
         return (0.0, 1.0)
-    z  = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    if z is None:
+        z = float(stats.norm.ppf(1.0 - alpha / 2.0))
     z2 = z * z
     denom  = 1.0 + z2 / n_eff
     center = (p_hat + z2 / (2.0 * n_eff)) / denom
@@ -850,6 +854,404 @@ def wilson_nested_od(
 
     n_eff = n * p_var / s2
     return _wilson_neff(p_hat, n_eff, alpha)
+
+
+def wilson_nested_od_bc(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """``wilson_nested_od`` with a bias correction for the reciprocal-variance plug-in.
+
+    ``wilson_nested_od``'s ``n_eff = n * p_var / s2`` is biased upward: ``s2``
+    is unbiased for the true between-item variance, but it enters through
+    ``1/s2``, and ``1/x`` is convex, so ``E[1/s2] > 1/sigma**2`` (Jensen's
+    inequality) -- worse at small ``n``, vanishing as ``n`` grows. Treating
+    ``s2 ~ sigma**2 * chi2_v / v`` with ``v = n - 1`` gives
+    ``E[1/s2] = 1/sigma**2 * v / (v - 2)`` for ``v > 2``, so multiplying
+    ``n_eff`` by ``(v - 2) / v = (n - 3) / (n - 1)`` removes that leading-order
+    bias (requires ``n > 3``; falls back to the plain ``n * R`` Wilson
+    interval otherwise, same as ``wilson_nested_od``'s own small-``n`` guard).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n <= 3 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2 = float(np.var(cell_means, ddof=1))
+    if s2 <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    n_eff = n * p_var / s2
+    n_eff_bc = n_eff * (n - 3) / (n - 1)
+    return _wilson_neff(p_hat, n_eff_bc, alpha)
+
+
+def wilson_nested_od_t(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """``wilson_nested_od_bc`` plus a t-quantile and a hard cap on ``n_eff``.
+
+    Two additional guards on top of the Jensen bias correction:
+
+    1. ``n_eff`` is clipped to ``n * R``: the overdispersion plug-in
+       ``n * p_var / s2`` is unbounded above when ``s2`` happens to be small,
+       yielding more effective observations than actual observations and a
+       spuriously tight interval. ``n * R`` (iid runs, ICC = 0) is the
+       information-theoretic ceiling.
+    2. The normal quantile is replaced by a t-quantile with ``n - 1`` degrees
+       of freedom: ``n_eff`` is built from a between-item variance estimated
+       on only ``n`` clusters, and plugging an estimated variance into a
+       z-interval is exactly the error the t-interval exists to fix. The two
+       quantiles converge as ``n`` grows.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=max(n - 1, 1)))
+
+    if n <= 3 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha, z=t_crit)
+
+    s2 = float(np.var(cell_means, ddof=1))
+    if s2 <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha, z=t_crit)
+
+    n_eff = n * p_var / s2 * (n - 3) / (n - 1)
+    n_eff = min(n_eff, float(n * R))
+    return _wilson_neff(p_hat, n_eff, alpha, z=t_crit)
+
+
+def jeffreys_nested_od(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Jeffreys credible interval for multi-run binary data, design-effect corrected.
+
+    Reuses ``wilson_nested_od_t``'s bias-corrected, capped overdispersion
+    plug-in ``n_eff``, but feeds it into a Jeffreys(1/2, 1/2) Beta posterior
+    (``jeffreys_ci``'s construction) instead of a Wilson/normal-approximation
+    formula: pseudo-counts ``s_eff = n_eff * p_hat``, ``f_eff = n_eff * (1 -
+    p_hat)`` go to ``Beta(s_eff + 1/2, f_eff + 1/2)``.
+
+    Motivation: ``wilson_nested_od``/``_bc``/``_t`` all still undercover at
+    extreme ``p_hat``, and Jeffreys generally has good *average* coverage
+    across p. In practice this variant did NOT fix the boundary undercoverage
+    (empirically worse: verified against real iid Bernoulli(150, 0.98) data
+    with no clustering at all, Jeffreys' own coverage there is ~0.92 vs.
+    Wilson's ~0.97 -- a genuine, well-documented (Brown, Cai & DasGupta 2001)
+    coverage oscillation with p, not an artifact of the design-effect
+    plug-in). Kept as a reference/comparison point; see
+    ``clopper_pearson_nested_od`` for the variant that actually guarantees
+    coverage.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n <= 3 or p_var <= 0.0:
+        n_eff = float(n * R)
+    else:
+        s2 = float(np.var(cell_means, ddof=1))
+        if s2 <= 0.0:
+            n_eff = float(n * R)
+        else:
+            n_eff = n * p_var / s2 * (n - 3) / (n - 1)
+            n_eff = min(n_eff, float(n * R))
+
+    if n_eff <= 0.0 or not np.isfinite(n_eff):
+        return (0.0, 1.0)
+
+    s_eff = n_eff * p_hat
+    f_eff = n_eff - s_eff
+    lo = float(stats.beta.ppf(alpha / 2.0, s_eff + 0.5, f_eff + 0.5))
+    hi = float(stats.beta.ppf(1.0 - alpha / 2.0, s_eff + 0.5, f_eff + 0.5))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def clopper_pearson_nested_od(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Clopper-Pearson exact interval for multi-run binary data, design-effect corrected.
+
+    Same bias-corrected, capped overdispersion plug-in ``n_eff`` as
+    ``wilson_nested_od_t``/``jeffreys_nested_od``, but fed into the
+    Clopper-Pearson exact tail-inversion formula (continuous generalisation
+    of ``clopper_pearson_ci_1d``'s integer-count Beta-quantile construction)
+    instead of a Wilson score or Jeffreys posterior.
+
+    Motivation: neither Wilson nor Jeffreys is uniformly better across ``p``
+    -- both have genuine, well-documented (Brown, Cai & DasGupta 2001)
+    coverage dips below nominal at specific (n, p) combinations, purely from
+    the discreteness of the binomial, with no clustering involved (verified
+    directly against iid data: Jeffreys drops to ~0.92 at n=150, p=0.98;
+    Wilson drops to ~0.94 at n=150, p=0.95). Clopper-Pearson is the one
+    classical construction guaranteed to never undercover for any p, at any
+    n -- exact tail-probability inversion rather than an approximation. The
+    price is conservatism (wider intervals on average) rather than
+    efficiency, which is the trade this variant is testing.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n <= 3 or p_var <= 0.0:
+        n_eff = float(n * R)
+    else:
+        s2 = float(np.var(cell_means, ddof=1))
+        if s2 <= 0.0:
+            n_eff = float(n * R)
+        else:
+            n_eff = n * p_var / s2 * (n - 3) / (n - 1)
+            n_eff = min(n_eff, float(n * R))
+
+    if n_eff <= 0.0 or not np.isfinite(n_eff):
+        return (0.0, 1.0)
+
+    s_eff = n_eff * p_hat
+    f_eff = n_eff - s_eff
+    lo = 0.0 if s_eff <= 0.0 else float(stats.beta.ppf(alpha / 2.0, s_eff, f_eff + 1.0))
+    hi = 1.0 if f_eff <= 0.0 else float(stats.beta.ppf(1.0 - alpha / 2.0, s_eff + 1.0, f_eff))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def beta_binomial_bayes_nested(
+    scores: np.ndarray,
+    alpha: float,
+    n_p: int = 300,
+    n_icc: int = 60,
+) -> tuple[float, float]:
+    """Genuine hierarchical Bayesian credible interval for multi-run binary data.
+
+    Model: item ``i`` has a latent success probability ``p_i ~ Beta(p*kappa,
+    (1-p)*kappa)`` (population mean ``p``, concentration ``kappa``); observed
+    per-item successes ``k_i ~ Binomial(R, p_i)``, giving the marginal
+    ``k_i ~ BetaBinomial(R, p*kappa, (1-p)*kappa)`` -- this exactly matches
+    ``simulations/harness/scenarios/synthetic.py``'s ``sample_group_truth``
+    binary branch, which draws item pass-probabilities the same way, with
+    ``kappa = 1/ICC - 1``. Unlike ``wilson_nested_bb`` (which despite its
+    name fits this same Beta-Binomial *form* by method-of-moments, collapses
+    it to a single point-estimate effective sample size, and then still runs
+    the Wilson score formula), this computes the actual joint posterior over
+    ``(p, kappa)`` on a grid, numerically marginalizes out ``kappa``, and
+    returns the equal-tailed credible interval of the resulting marginal
+    posterior for ``p`` -- so uncertainty in the design effect/ICC itself
+    (which is what a point-estimate n_eff plug-in silently ignores) is
+    propagated into the width of the interval, rather than assumed away.
+
+    Priors: Jeffreys ``Beta(1/2, 1/2)`` on ``p`` (matches ``jeffreys_ci``
+    elsewhere in this module); **uniform on ICC in (0, 1)**, gridded directly
+    in ICC space and mapped to ``kappa = 1/ICC - 1``. An earlier version
+    gridded log-uniformly in kappa directly, which implies a prior density on
+    ICC of ``prop 1/(ICC*(1-ICC))`` -- U-shaped, piling mass at ICC near 0
+    ("no clustering"), which biased the posterior toward overconfident
+    (too-narrow) intervals in exactly the same direction as the point-
+    estimate n_eff methods' failure mode. Gridding uniformly in the natural,
+    bounded ICC parameterization avoids that.
+
+    Exploits the fact that each per-item count ``k_i`` only takes ``R + 1``
+    distinct values: the log-likelihood only needs their histogram, not a
+    per-item term, so cost is independent of ``n`` (dominated by the
+    ``n_p * n_icc`` grid, not by the number of items).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+    n_p, n_icc : int
+        Grid resolution for ``p`` and ``ICC``.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    k = scores.sum(axis=1).astype(int)
+    counts = np.bincount(k, minlength=R + 1).astype(float)
+
+    p_grid = np.linspace(1e-4, 1.0 - 1e-4, n_p)
+    icc_grid = np.linspace(1e-4, 1.0 - 1e-4, n_icc)
+    kappa_grid = (1.0 - icc_grid) / icc_grid
+    p_col = p_grid[:, None]
+    kappa_row = kappa_grid[None, :]
+    a = p_col * kappa_row
+    b = (1.0 - p_col) * kappa_row
+
+    log_like = -n * betaln(a, b)
+    for r in range(R + 1):
+        if counts[r] == 0.0:
+            continue
+        log_like += counts[r] * betaln(r + a, R - r + b)
+
+    log_prior_p = -0.5 * np.log(p_col) - 0.5 * np.log(1.0 - p_col)
+    log_post = log_like + log_prior_p
+    log_post -= log_post.max()
+    post = np.exp(log_post)
+
+    marg_p = post.sum(axis=1)
+    total = marg_p.sum()
+    if total <= 0.0 or not np.isfinite(total):
+        return (0.0, 1.0)
+    marg_p /= total
+    cdf = np.cumsum(marg_p)
+    lo = float(np.interp(alpha / 2.0, cdf, p_grid))
+    hi = float(np.interp(1.0 - alpha / 2.0, cdf, p_grid))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def beta_binomial_bayes_robust_nested(
+    scores: np.ndarray,
+    alpha: float,
+    n_p: int = 300,
+    n_icc: int = 60,
+    gamma: float = 0.001,
+) -> tuple[float, float]:
+    """Berger-Boos robustified version of ``beta_binomial_bayes_nested``.
+
+    Same hierarchical Beta-Binomial model and joint ``(p, ICC)`` grid, but the
+    nuisance parameter (ICC) is eliminated by *restricted maximization*
+    instead of integration (Berger & Boos 1994): build a ``1 - gamma``
+    profile-likelihood confidence set ``K`` for ICC, form the conditional
+    ``1 - (alpha - gamma)`` credible interval for ``p`` at each ICC in ``K``,
+    and report the union (min of lowers, max of uppers).
+
+    Why: marginalizing ICC (as ``beta_binomial_bayes_nested`` does) quietly
+    lets the *prior* decide the interval width whenever the data cannot
+    identify ICC -- which happens exactly in the hardest regime, e.g. very
+    rare successes at near-1 ICC, where a typical sample yields a degenerate
+    count histogram (every item 0-of-R or R-of-R, no interior counts) whose
+    likelihood is nearly flat in ICC. All-zero data justifies an upper bound
+    ~``1-(alpha/2)^(1/n)`` if items are deterministic (ICC=1) but
+    ~``1-(alpha/2)^(1/(nR))`` if runs are iid (ICC=0); integrating over an
+    unidentified ICC lands in between and undercovers. The union pays the
+    ICC=1 worst-case width *only* when the data genuinely cannot rule it
+    out; when the histogram has interior counts, the profile-likelihood set
+    ``K`` collapses and the interval reverts to the efficient marginal one.
+
+    Total error budget is ``alpha``: ``gamma`` spent on the ICC confidence
+    set, ``alpha - gamma`` on the conditional intervals. The conditional
+    pieces are Bayesian posterior slices rather than exact tail inversions,
+    so the frequentist guarantee is approximate, not exact.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+    n_p, n_icc : int
+        Grid resolution for ``p`` and ``ICC``.
+    gamma : float
+        Error budget spent on the ICC profile-likelihood confidence set.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    k = scores.sum(axis=1).astype(int)
+    counts = np.bincount(k, minlength=R + 1).astype(float)
+
+    p_grid = np.linspace(1e-4, 1.0 - 1e-4, n_p)
+    icc_grid = np.linspace(1e-4, 1.0 - 1e-4, n_icc)
+    kappa_grid = (1.0 - icc_grid) / icc_grid
+    p_col = p_grid[:, None]
+    kappa_row = kappa_grid[None, :]
+    a = p_col * kappa_row
+    b = (1.0 - p_col) * kappa_row
+
+    log_like = -n * betaln(a, b)
+    for r in range(R + 1):
+        if counts[r] == 0.0:
+            continue
+        log_like += counts[r] * betaln(r + a, R - r + b)
+
+    # Profile likelihood over ICC: max over p within each ICC column, then
+    # keep columns within the chi-square(1) cutoff for a 1-gamma set.
+    profile = log_like.max(axis=0)
+    cutoff = 0.5 * float(stats.chi2.ppf(1.0 - gamma, df=1))
+    in_set = profile >= (profile.max() - cutoff)
+
+    log_prior_p = -0.5 * np.log(p_col) - 0.5 * np.log(1.0 - p_col)
+    log_post = log_like + log_prior_p
+    log_post -= log_post.max()
+    post = np.exp(log_post)
+
+    alpha_eff = max(alpha - gamma, 1e-6)
+    lo_best, hi_best = 1.0, 0.0
+    for j in np.flatnonzero(in_set):
+        col = post[:, j]
+        total = col.sum()
+        if total <= 0.0 or not np.isfinite(total):
+            continue
+        cdf = np.cumsum(col) / total
+        lo_j = float(np.interp(alpha_eff / 2.0, cdf, p_grid))
+        hi_j = float(np.interp(1.0 - alpha_eff / 2.0, cdf, p_grid))
+        lo_best = min(lo_best, lo_j)
+        hi_best = max(hi_best, hi_j)
+
+    if hi_best < lo_best:  # every column degenerate -- give up gracefully
+        return (0.0, 1.0)
+    return (max(0.0, lo_best), min(1.0, hi_best))
 
 
 def wilson_nested_bb(

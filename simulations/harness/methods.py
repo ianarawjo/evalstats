@@ -101,8 +101,13 @@ BINARY_FLAT_METHODS = [WILSON_FLAT, WALD_FLAT, CP_FLAT, BAYES_INDEP_FLAT]
 
 WILSON_DE = Method("wilson_de", "#a6761d")
 WILSON_OD = Method("wilson_od", "#666666")
-BETA_BINOMIAL = Method("beta_binomial", "#17becf")
-BINARY_NESTED_METHODS = [WILSON_DE, WILSON_OD, BETA_BINOMIAL]
+WILSON_OD_BC = Method("wilson_od_bc", "#e31a1c")
+WILSON_OD_T = Method("wilson_od_t", "#6a3d9a")
+JEFFREYS_OD = Method("jeffreys_od", "#b2df8a")
+CP_OD = Method("cp_od", "#fb9a99")
+BB_BAYES = Method("bb_bayes", "#33a02c")
+BB_BAYES_ROBUST = Method("bb_bayes_robust", "#ff7f00")
+BINARY_NESTED_METHODS = [WILSON_DE, WILSON_OD, WILSON_OD_BC, WILSON_OD_T, JEFFREYS_OD, CP_OD, BB_BAYES, BB_BAYES_ROBUST]
 
 NIG_NESTED = Method("nig_nested", "#f7b6d2")
 CONTINUOUS_NESTED_METHODS = [NIG_NESTED]
