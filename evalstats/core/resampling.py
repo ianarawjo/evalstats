@@ -270,6 +270,45 @@ def tango_paired_ci_flat(
     return tango_paired_ci(a, b, alpha)
 
 
+def tango_paired_ci_mean(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Heuristic Tango CI using per-item run means for multi-run inputs.
+
+    When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
+    each item is first reduced to its run mean (shape ``(N,)``), then
+    :func:`tango_paired_ci` is applied.
+
+    This is intentionally a pragmatic variant, not a strict Tango score
+    interval derivation: :func:`tango_paired_ci` was derived for paired
+    Bernoulli observations, while run means live in ``[0, 1]`` and are
+    thresholded at 0.5 inside :func:`tango_paired_ci`.
+
+    If 1-D arrays are passed the call is forwarded directly to
+    :func:`tango_paired_ci` unchanged.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Either 1-D arrays of length N, or 2-D arrays of shape (N, R).
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = np.mean(a, axis=1)
+    if b.ndim == 2:
+        b = np.mean(b, axis=1)
+    return tango_paired_ci(a, b, alpha)
+
+
 def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     """Clopper-Pearson CI for a 1-D binary (0/1) array."""
     n = len(values)
@@ -525,79 +564,42 @@ def nig_ci_nested(
     b0: float = 0.0625,
 ) -> tuple[float, float]:
     """
-    Hierarchical Normal-Inverse-Gamma CI for mean with run-level uncertainty.
+    Normal-Inverse-Gamma CI for the grand mean of multi-run data.
 
     Supports:
-      - (N,)    → falls back to standard NIG
-      - (N, R)  → hierarchical correction using run variance
+      - (N,)    -> falls back to standard NIG (``nig_ci_1d``)
+      - (N, R)  -> per-item means (NaN-robust, so unbalanced run counts are
+                   fine), then standard NIG on those means
 
     Model:
         X_ir ~ Normal(theta_i, sigma_run^2)
         theta_i ~ Normal(mu, sigma_item^2)
 
-    We approximate the marginal by inflating variance:
-        sigma_eff^2 = sigma_item^2 + sigma_run^2 / R
-
-    Then apply standard NIG on item means with corrected variance.
+    So ``Var(item_mean_i) = sigma_item^2 + sigma_run^2/R_i`` -- which is
+    exactly what the empirical variance of the *observed* item means already
+    estimates directly, no further correction needed. An earlier version
+    computed ``Var(item_means)`` as if it were an estimate of
+    ``sigma_item^2`` alone (calling it ``s2_item``) and then added
+    ``sigma_run^2/R`` back on top as an "inflation" -- silently double-
+    counting the run-noise contribution that ``Var(item_means)`` already
+    included. Verified empirically: constructing data with ``sigma_item^2 =
+    0`` by design (so the correct effective variance is exactly
+    ``sigma_run^2/R``), the old formula came out ~2x too large. Subtracting
+    then re-adding the same run-noise term is a no-op by construction, so
+    the correct effective variance is just ``Var(item_means)`` itself --
+    which also sidesteps the unbalanced-R case entirely, since it never
+    needs a single scalar R at all.
     """
     vals = np.asarray(values, dtype=float)
 
-    # ---- fallback: standard NIG ----
     if vals.ndim == 1:
         return nig_ci_1d(vals, alpha, m0, k0, a0, b0)
 
     if vals.ndim != 2:
         raise ValueError("values must be (N,) or (N, R)")
 
-    N, R = vals.shape
-
-    if N == 0:
-        scale = float(np.sqrt(b0 * (k0 + 1.0) / (a0 * k0)))
-        lo = float(stats.t.ppf(alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
-        hi = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
-        return (lo, hi)
-
-    # ---- per-item means ----
     item_means = np.nanmean(vals, axis=1)
-    x_bar = float(np.mean(item_means))
-
-    # ---- between-item variance ----
-    s2_item = float(np.var(item_means, ddof=1)) if N > 1 else 0.0
-
-    # ---- within-item (run) variance ----
-    if R > 1:
-        run_vars = np.nanvar(vals, axis=1, ddof=1)
-        s2_run = float(np.nanmean(run_vars))
-    else:
-        s2_run = 0.0
-
-    # ---- effective variance per item mean ----
-    s2_eff = s2_item + s2_run / max(R, 1)
-
-    # ---- reconstruct sum-of-squares for NIG ----
-    # We want something equivalent to:
-    # sum (x_i - x_bar)^2 but inflated by run variance
-    ss = s2_eff * (N - 1)
-
-    # ---- posterior updates (same form as 1D NIG) ----
-    kn = k0 + N
-    mn = (k0 * m0 + N * x_bar) / kn
-    an = a0 + N / 2.0
-
-    bn = (
-        b0
-        + 0.5 * ss
-        + (k0 * N) / (2.0 * kn) * (x_bar - m0) ** 2
-    )
-
-    scale = float(np.sqrt(bn / (an * kn)))
-
-    if scale <= 0.0 or not np.isfinite(scale):
-        return (mn, mn)
-
-    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * an))
-
-    return (mn - t_crit * scale, mn + t_crit * scale)
+    return nig_ci_1d(item_means, alpha, m0, k0, a0, b0)
 
 
 def el_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:

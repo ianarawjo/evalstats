@@ -76,8 +76,9 @@ TANGO = Method("tango_score")  # no color in the legacy palette; uses the defaul
 TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
+WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
 PAIRWISE_EXTRA_METHODS = [T_INTERVAL, LOGIT_T, NIG, EL]
-BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED]
+BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
 # ---------------------------------------------------------------------------
 # Nested-mode methods -- for ci_single.py's/ci_paired.py's --nested-mode,
@@ -99,7 +100,6 @@ CP_FLAT = Method("clopper_pearson_flat", "#e6ab02")
 BAYES_INDEP_FLAT = Method("bayes_indep_flat", "#1b9e77")
 BINARY_FLAT_METHODS = [WILSON_FLAT, WALD_FLAT, CP_FLAT, BAYES_INDEP_FLAT]
 
-WILSON_DE = Method("wilson_de", "#a6761d")
 WILSON_OD = Method("wilson_od", "#666666")
 WILSON_OD_BC = Method("wilson_od_bc", "#e31a1c")
 WILSON_OD_T = Method("wilson_od_t", "#6a3d9a")
@@ -107,10 +107,7 @@ JEFFREYS_OD = Method("jeffreys_od", "#b2df8a")
 CP_OD = Method("cp_od", "#fb9a99")
 BB_BAYES = Method("bb_bayes", "#33a02c")
 BB_BAYES_ROBUST = Method("bb_bayes_robust", "#ff7f00")
-BINARY_NESTED_METHODS = [WILSON_DE, WILSON_OD, WILSON_OD_BC, WILSON_OD_T, JEFFREYS_OD, CP_OD, BB_BAYES, BB_BAYES_ROBUST]
-
-NIG_NESTED = Method("nig_nested", "#f7b6d2")
-CONTINUOUS_NESTED_METHODS = [NIG_NESTED]
+BINARY_NESTED_METHODS = [WILSON_OD, WILSON_OD_BC, WILSON_OD_T, JEFFREYS_OD, CP_OD, BB_BAYES, BB_BAYES_ROBUST]
 
 BOOTSTRAP_DIFF_NESTED = Method("bootstrap_diff_nested", "#1b9e77")
 BAYES_DIFF_NESTED = Method("bayes_diff_nested", "#d95f02")
@@ -118,13 +115,13 @@ SMOOTH_DIFF_NESTED = Method("smooth_diff_nested", "#7570b3")
 PAIR_DIFF_NESTED_METHODS = [BOOTSTRAP_DIFF_NESTED, BAYES_DIFF_NESTED, SMOOTH_DIFF_NESTED]
 
 TANGO_FLAT = Method("tango_flat", "#e7298a")
+TANGO_MEAN = Method("tango_mean", "#8c564b")
 NEWCOMBE_FLAT = Method("newcombe_flat", "#66a61e")
-BINARY_PAIR_FLAT_METHODS = [TANGO_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED]
+BINARY_PAIR_FLAT_METHODS = [TANGO_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
-TANGO_MULTIRUN_CLUSTER = Method("tango_multirun_cluster", "#e6ab02")
 TANGO_MULTIRUN_EFFECTIVE = Method("tango_multirun_effective", "#a6761d")
 TANGO_MULTIRUN_MOMENTS = Method("tango_multirun_mmnt", "#1b9e77")
-BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_CLUSTER, TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
+BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- raw pairwise p-value/rejection procedures (non-PPI
@@ -227,9 +224,9 @@ PPI_TEST_METHODS = [
 # ---------------------------------------------------------------------------
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
-    WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED,
+    WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
 ] + CONTINUOUS_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
-    CONTINUOUS_NESTED_METHODS + PAIR_DIFF_NESTED_METHODS
+    PAIR_DIFF_NESTED_METHODS
     + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,

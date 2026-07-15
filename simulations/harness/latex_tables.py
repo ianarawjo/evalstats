@@ -15,6 +15,23 @@ def escape_latex(s: str) -> str:
     return str(s).replace("_", r"\_")
 
 
+def eval_type_group(et: str) -> str:
+    """Map a raw eval_type to its LaTeX-table reporting group.
+
+    'binary' or 'numeric' (continuous/likert/grades collapsed together,
+    matching NUMERIC_EVAL_TYPES) -- the coarser two-way split
+    latex_overall_summary uses to decide whether a method needs one row or
+    two. A method present in only one group gets a single row; a method
+    present in both gets two rows ("<method> (binary)"/"<method>
+    (numeric)"), each computed from only that group's data -- averaging
+    Cov/Width/Score across binary and numeric data mixes two different
+    scales/regimes into one number that isn't comparable to any group-pure
+    method's row, which is what an "all" Eval-types value used to paper
+    over.
+    """
+    return "numeric" if et in NUMERIC_EVAL_TYPES else "binary"
+
+
 def eval_type_label(covered: set[str], all_present: set[str]) -> str:
     """Summarize which eval types a row's data actually covers.
 

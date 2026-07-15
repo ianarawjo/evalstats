@@ -60,7 +60,6 @@ with warnings.catch_warnings():
         bayes_bootstrap_means_nested,
         smooth_bootstrap_means_nested,
         bootstrap_t_ci_nested,
-        wilson_nested_de,
         wilson_nested_od,
         wilson_nested_od_bc,
         wilson_nested_od_t,
@@ -68,11 +67,10 @@ with warnings.catch_warnings():
         clopper_pearson_nested_od,
         beta_binomial_bayes_nested,
         beta_binomial_bayes_robust_nested,
-        nig_ci_nested,
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, eval_type_label
+from ..latex_tables import booktabs_table, escape_latex, eval_type_label, eval_type_group
 from ..scenarios import CISource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -108,7 +106,6 @@ from ..methods import (
     CP_FLAT,
     BAYES_INDEP_FLAT,
     BINARY_NESTED_METHODS,
-    WILSON_DE,
     WILSON_OD,
     WILSON_OD_BC,
     WILSON_OD_T,
@@ -116,8 +113,6 @@ from ..methods import (
     CP_OD,
     BB_BAYES,
     BB_BAYES_ROBUST,
-    CONTINUOUS_NESTED_METHODS,
-    NIG_NESTED,
     get_method_color,
     order_present_methods,
     METHODS_BY_NAME,
@@ -451,11 +446,7 @@ def _run_nested_cell(
     run_bootstrap = not (skip_bootstrap_binary and is_binary)
     true_mean = source_obj.true_mean
 
-    # CONTINUOUS_NESTED_METHODS (nig_ci_nested) now runs for every eval type
-    # via rescale onto [0, 1] -- identity for binary/continuous, and via
-    # EVAL_TYPE_SCALE_BOUNDS for likert/grades (see the nig_ci_nested block
-    # below), matching CONTINUOUS_EXTRA_METHODS' scope.
-    active_methods = [T_INTERVAL] + CONTINUOUS_NESTED_METHODS
+    active_methods = [T_INTERVAL]
     if run_bootstrap:
         active_methods += list(METHODS) + NESTED_METHODS
     if is_binary:
@@ -609,7 +600,6 @@ def _run_nested_cell(
 
             # -- Clustered Wilson variants (nested, multi-run) --
             for method, fn in [
-                (WILSON_DE, wilson_nested_de),
                 (WILSON_OD, wilson_nested_od),
                 (WILSON_OD_BC, wilson_nested_od_bc),
                 (WILSON_OD_T, wilson_nested_od_t),
@@ -629,22 +619,6 @@ def _run_nested_cell(
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
                 _record(method, ci_low, ci_high)
-
-        # -- NIG nested on full matrix (all eval types) -- the hierarchical
-        # model assumes a [0, 1] scale like nig_ci_1d; binary/continuous are
-        # already there (identity rescale), likert/grades go through
-        # EVAL_TYPE_SCALE_BOUNDS first, matching CONTINUOUS_EXTRA_METHODS above.
-        if NIG_NESTED.name in wanted:
-            _t0 = time.perf_counter()
-            try:
-                scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
-                ci_low, ci_high = rescaled_ci(nig_ci_nested, scores, alpha, scale_lo, scale_hi)
-            except Exception:
-                ci_low = ci_high = obs_mean
-            _el = time.perf_counter() - _t0
-            total_t[NIG_NESTED] += _el
-            total_t_sq[NIG_NESTED] += _el * _el
-            _record(NIG_NESTED, ci_low, ci_high)
 
         # -- NIG on cell means (binary approximation) --
         if is_binary and NIG.name in wanted:
@@ -912,63 +886,90 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     """LaTeX booktabs version of print_report's OVERALL SUMMARY block, plus
     one coverage column per sample size actually swept, appended to the
     right -- the aggregate "Coverage" column collapses across n and can hide
-    miscalibration that only shows up at small or large sample sizes."""
+    miscalibration that only shows up at small or large sample sizes.
+
+    Methods that ran on both eval-type groups (binary and numeric) get two
+    rows -- "<method> (binary)" and "<method> (numeric)" -- each computed
+    from only that group's data, rather than one row averaging across both.
+    Averaging Cov/Width/Score across binary and numeric data mixes two
+    different scales/regimes into a number that isn't comparable to any
+    group-pure method's row; an "all" Eval-types value was a symptom of
+    exactly this, not a meaningful category of its own, so no row's Eval
+    types column is ever "all" here.
+    """
     target = 1.0 - alpha
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
     sizes_present = sorted({r.n for r in results})
 
+    # (group, method, n) -> list[(cov, width, score)] -- group ("binary"/"numeric")
+    # replaces raw eval_type as the aggregation key, so a method never gets
+    # averaged across both groups in one row.
     agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
+    method_group_types: dict[tuple[str, str], set[str]] = defaultdict(set)
     for r in results:
+        g = eval_type_group(r.eval_type)
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
-        c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
-        agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
+        agg[(g, r.method, r.n)].append((cov, width, score))
+        c_prev, t_prev = agg_counts[(g, r.method, r.n)]
+        agg_counts[(g, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
+        method_group_types[(r.method, g)].add(r.eval_type)
 
-    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
-    all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
-    method_eval_types: dict[str, set[str]] = defaultdict(set)
-    for (et, m, n), vals in agg.items():
-        per_n_vals[(m, n)].extend(vals)
-        method_eval_types[m].add(et)
-        c, t = agg_counts[(et, m, n)]
-        c_prev, t_prev = all_counts[m]
-        all_counts[m] = (c_prev + c, t_prev + t)
-        c_prev_n, t_prev_n = per_n_counts[(m, n)]
-        per_n_counts[(m, n)] = (c_prev_n + c, t_prev_n + t)
+    method_groups: dict[str, set[str]] = defaultdict(set)
+    for (g, m, _n) in agg:
+        method_groups[m].add(g)
 
     rows = []
     for m in method_labels:
-        mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
-        c_tot, t_tot = all_counts[m]
-        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
-        avg_ms, se_ms = _time_stats([r for r in results if r.method == m])
-        time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
-        et_label = eval_type_label(method_eval_types[m], eval_types_present)
-        row = [
-            escape_latex(m),
-            f"{mc:.3f}" if np.isfinite(mc) else "-",
-            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
-            f"{mw:.4f}" if np.isfinite(mw) else "-",
-            f"{ms:.4f}" if np.isfinite(ms) else "-",
-            time_str,
-            et_label,
-        ]
-        for n in sizes_present:
-            c_n, t_n = per_n_counts.get((m, n), (0, 0))
-            cov_n = c_n / t_n if t_n > 0 else float("nan")
-            row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
-        rows.append(row)
+        groups = sorted(method_groups[m])  # ["binary"], ["numeric"], or both
+        multi_group = len(groups) > 1
+        for g in groups:
+            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
+            all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
+            per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
+            for n in sizes_present:
+                vals = agg.get((g, m, n))
+                if vals:
+                    per_n_vals[(m, n)] = list(vals)
+                c, t = agg_counts.get((g, m, n), (0, 0))
+                c_prev, t_prev = all_counts[m]
+                all_counts[m] = (c_prev + c, t_prev + t)
+                per_n_counts[(m, n)] = (c, t)
+
+            mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
+            c_tot, t_tot = all_counts[m]
+            _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+            avg_ms, se_ms = _time_stats(
+                [r for r in results if r.method == m and eval_type_group(r.eval_type) == g]
+            )
+            time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
+            et_label = eval_type_label(method_group_types[(m, g)], eval_types_present)
+            label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
+            row = [
+                label,
+                f"{mc:.3f}" if np.isfinite(mc) else "-",
+                f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+                f"{mw:.4f}" if np.isfinite(mw) else "-",
+                f"{ms:.4f}" if np.isfinite(ms) else "-",
+                time_str,
+                et_label,
+            ]
+            for n in sizes_present:
+                c_n, t_n = per_n_counts.get((m, n), (0, 0))
+                cov_n = c_n / t_n if t_n > 0 else float("nan")
+                row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+            rows.append(row)
 
     return booktabs_table(
         caption=(
             f"ci\\_single: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
-            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better)."
+            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
+            "Methods tested on both binary and numeric data are reported as two rows, one per eval-type "
+            "group, so no row averages across incomparable scales."
         ),
         label="tab:ci_single_overall",
         columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
@@ -986,17 +987,21 @@ def save_results_artifacts(*, results: list[SimResult], alpha: float, sample_siz
         writer = csv.writer(handle)
         writer.writerow([
             "source", "model", "benchmark_id", "label", "eval_type", "n", "method", "n_reps",
-            "covered", "total_width", "coverage", "mean_width", "mcse", "band95_low", "band95_high",
+            "covered", "total_width", "coverage", "mean_width", "total_score", "mean_score",
+            "total_time", "total_time_sq", "mcse", "band95_low", "band95_high",
             "avg_time_ms", "se_time_ms", "corpus_size", "corpus_mean", "run_noise_frac", "runs",
         ])
         for r in results:
             coverage = r.covered / r.n_reps
             mean_width = r.total_width / r.n_reps
+            mean_score = r.total_score / r.n_reps
             _, mcse, lo, hi = _mc_proportion_stats(r.covered, r.n_reps)
             avg_ms, se_ms = _time_stats([r])
             writer.writerow([
                 r.source, r.model or "", r.benchmark_id or "", r.label, r.eval_type, r.n, r.method, r.n_reps,
                 r.covered, f"{r.total_width:.8f}", f"{coverage:.8f}", f"{mean_width:.8f}",
+                f"{r.total_score:.8f}", f"{mean_score:.8f}",
+                f"{r.total_time:.10f}", f"{r.total_time_sq:.10f}",
                 f"{mcse:.8f}", f"{lo:.8f}", f"{hi:.8f}",
                 f"{avg_ms:.6f}" if np.isfinite(avg_ms) else "",
                 f"{se_ms:.6f}" if np.isfinite(se_ms) else "",
@@ -1532,10 +1537,54 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
     --official-test (mean-estimand phase). Not wired into --official-tests (the harness
     runs one preset per case); invoke manually:
     python -m simulations.harness.cli ci_single --nested-mode --runs-sweep 5 --reps 200
-      --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded --icc-values 0.05 0.30 0.50
-      --run-noise-fracs 0.01 0.1 0.3 0.5 --heteroscedastic --sizes 10 20 30 50 75 100 --seed 44
+      --bootstrap-n 10000 --bayes-n 10000 --scenario-suite expanded
+      --icc-values 0.01 0.3 0.5 0.65 0.75 0.85 0.95
+      --heteroscedastic --sizes 10 20 30 50 75 100 --seed 44
 
     Excludes "grades" from eval_types -- see official_args()'s docstring.
+
+    icc_values reweighted 2026-07-13 to concentrate around real ICC rather than
+    sweep it uniformly, while still covering the moderate/low range. The
+    previous sweep (icc_values=[0.05, 0.30, 0.50] + run_noise_fracs=[0.01, 0.1,
+    0.3, 0.5], combining to ICC in {0.05, 0.3, 0.5, 0.7, 0.9, 0.99}) spread ~evenly
+    across the full [0, 1] ICC range. Measuring actual per-item ICC (same one-way
+    ANOVA estimator as wilson_nested_de) on all 48 (model, benchmark) corpora in
+    simulations/out/inspect_benchmarks.csv with complete 5-run data gave: mean
+    0.739, median 0.748, IQR [0.644, 0.873], min 0.047, max 0.978 -- i.e. in
+    *this* dataset, real LLM-eval run-to-run consistency is concentrated in the
+    upper half of the ICC range, not uniform across it. This matters for method
+    comparisons here: a ci_single-nested run on that same real data found the
+    simplest method (wilson_flat, which just assumes ICC=1 / full clustering and
+    never tries to estimate a design effect) beat every ICC-adaptive method
+    (wilson_od*, cp_od, bb_bayes*) on both interval score and worst-case
+    coverage -- the opposite of what the old, evenly-spread synthetic sweep
+    suggested. The old sweep was over-crediting ICC-adaptive cleverness by
+    giving equal weight to a low-ICC regime this dataset rarely visits, where
+    that cleverness is actually rewarded, and under-weighting the high-ICC
+    regime it mostly lives in, where it isn't. icc_values now cluster more
+    heavily around the real 25th/50th/75th percentiles and near-max (0.65,
+    0.75, 0.85, 0.95) so this synthetic sweep is more predictive of real-world
+    default-method performance.
+
+    0.3 and 0.5 are kept too (not just the 0.01 extreme), deliberately not
+    dropped to zero weight: inspect_benchmarks.csv only covers the specific
+    (model, benchmark) pairs collected so far, and other real domains
+    plausibly have genuinely higher run-to-run variance than what's sampled
+    here -- e.g. long chain-of-thought/agentic tasks, where many independent
+    decisions compound per rollout, could easily land ICC in the 0.3-0.5 band
+    even though none of the corpora checked here did. So the sweep is
+    reweighted, not narrowed: more mass on the empirically-common high-ICC
+    region, but the moderate region stays covered rather than being
+    extrapolated away based on one dataset.
+
+    The lowest case (0.01) remains an explicit extreme stress test, not a
+    claim of typicality: the single real corpus that did have near-zero ICC
+    (qwen3.5-35b-a3b on mmlu, ICC=0.047) was a model performing at
+    p_hat=0.319 on a 4-option benchmark -- essentially guessing at random
+    chance, where correctness genuinely isn't tied to item identity. That
+    failure mode does happen in practice (a weak model near chance on a hard
+    benchmark), just rarely -- so it stays in the sweep as a single stress
+    point rather than being weighted as if it were common.
     """
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
@@ -1543,8 +1592,8 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
         reps=500, bootstrap_n=10000, alpha=0.05, sizes=[10, 20, 30, 50, 75, 100],
         seed=base_seed, progress="bar", plots="save", save_results="save",
         out_dir="simulations/out", plots_dir=None,
-        nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[0.01, 0.1, 0.3, 0.5],
-        icc_values=[0.05, 0.30, 0.50], bayes_n=10000, heteroscedastic=True, latex=True,
+        nested_mode=True, runs=5, runs_sweep=[5], run_noise_fracs=[],
+        icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], bayes_n=10000, heteroscedastic=True, latex=True,
         no_bootstrap_binary=True,
         workers=max(1, (os.cpu_count() or 2) - 1),
     )

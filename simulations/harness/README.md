@@ -255,6 +255,92 @@ same way `evalstats.core.resampling` is.
 - `scenarios/synthetic.py`'s `"extreme"` suite is currently identical to
   `"expanded"` -- reserved for future stress-test scenarios as more cases
   are ported.
+- `--mode ppi`'s Type-I sweep (`build_judge_bias_sources`) never sets
+  `effect_size` above 0, so it can only show whether PPI correction controls
+  false positives, never whether it retains the power to detect a genuine
+  difference under that same bias -- a method could trivially "pass" Type-I
+  calibration by rejecting almost nothing, ever. Two checks close that gap,
+  both on by default (`--no-power-check` / `--no-comparison-check` to skip):
+  - **Power check** (`build_ppi_power_sources`, `print_ppi_power_report`/
+    `save_ppi_power_plot`): the SAME per-eval-type judge-bias severity as
+    `build_judge_bias_sources`' `eval_type.*` baseline, but swept across a
+    real `effect_size` grid (`PPI_POWER_EFFECT_FRACS`, expressed as a
+    fraction of each eval type's own scale span via `_jb_effect_magnitude`,
+    the effect-size analogue of `_jb_bias_magnitude`) instead of held at 0.
+    `es=0.00` doubles as a Type-I cross-check against the main sweep.
+    Binary is excluded: `effect_size` is an additive shift applied directly
+    to a 0/1 truth draw in `generate_judge_bias_cell`, which only stays
+    valid at `es=0`.
+  - **Estimator comparison** (`build_ppi_comparison_label_frac_sources` +
+    the power sources' effect_size grid, `PPIComparisonResult`/
+    `run_ppi_comparison_simulation`/`save_ppi_comparison_plot`): for ONE
+    representative paired-mean estimand (`paired_t`), rejection rate for
+    five ways of turning (sparse human labels + biased LLM-judge scores)
+    into a test -- `all_human` (oracle: classical test on the full, dense
+    ground truth), `human_subset` (classical test on ONLY the labeled
+    subset's truth -- the "why not just collect more human labels instead"
+    baseline), `llm_only` (uncorrected LLM judge scores), `llm_impute` (LLM
+    scores with labeled positions overwritten by the true label -- a naive
+    missing-data-imputation baseline with NO PPI rectifier, showing that
+    "filling in what you know" isn't the same as correcting for what you
+    don't), and `ppi` (PPI-corrected). Swept two ways: vs. `effect_size` at
+    fixed `label_frac` (reusing `build_ppi_power_sources`, tag `"power"`),
+    and vs. `label_frac` at a fixed moderate `effect_size`
+    (`build_ppi_comparison_label_frac_sources`, tag `"compare_label_frac"`)
+    -- the latter answers "how many human labels does PPI actually need to
+    approach all_human's power" directly, which the effect_size axis alone
+    cannot. `JudgeBiasCellData.truth_x`/`truth_y` (dense, unmasked ground
+    truth for the paired structure only) were added to
+    `generate_judge_bias_cell`'s return value to support the `all_human`/
+    `human_subset` arms; every other test structure's dense truth is
+    discarded as before. Sequential only (`run_ppi_comparison_simulation`)
+    -- the comparison grid (24 scenarios total) is small enough that
+    `run_ppi_simulation`'s parallel/progress-dict machinery would be pure
+    overhead.
+  - The power check's baseline (`build_ppi_power_sources`) only exercises
+    ONE bias configuration: `bias_type="differential"` with the fixed judge
+    bias always OPPOSING the injected real effect (see
+    `build_ppi_power_reinforcing_sources`' docstring for the sign
+    arithmetic) -- which produces the "cancellation dip" visible in the
+    uncorrected power curve as effect_size approaches the bias magnitude.
+    Two more variants close the resulting gaps, each with its own plot
+    rather than folded into the main one:
+    `build_ppi_power_reinforcing_sources` (bias_delta's sign flipped, so
+    bias and effect stack instead of fighting -- arguably the more
+    dangerous real case, since the uncorrected curve just climbs faster
+    with no visible anomaly to flag it) and `build_ppi_power_nobias_sources`
+    (`bias_type="none"` -- the "no free lunch" check: does PPI correction
+    cost power when there's nothing to correct for?). All three share the
+    same `"<prefix>.<eval_type>.es=<frac>"` name shape (see
+    `_PPI_POWER_NAME_RE`), so `print_ppi_power_report`/`save_ppi_power_plot`
+    are reused as-is for the reinforcing/no-bias variants (just with a
+    `header`/`title_suffix` override); only the opposing-vs-reinforcing
+    overlay (`save_ppi_power_direction_plot`) is a dedicated new function.
+  - Every check above (power, direction, no-bias, and the 5-way comparison)
+    fixes N (total items) at 100 and only varies N_lab through `label_frac`
+    -- so none of them can answer whether calibration/power depends on the
+    RATIO N_lab/N or the ABSOLUTE N_lab count. `PPI_COMPARISON_LABEL_FRACS`
+    was also fixed here: at N=100, `_JB_MIN_LAB`'s floor made label_frac=0.05
+    and 0.10 both resolve to the SAME N_lab=15, which the plot's x-axis
+    (nominal label_frac) hid -- `PPIComparisonResult.n_lab` now reports the
+    REALIZED count, and both the label_frac comparison row and its grid
+    (`PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)`) were chosen to
+    avoid collisions. `build_ppi_nlab_grid_sources(effect_frac)` crosses N
+    (`PPI_NLAB_GRID_N_VALUES`, 30-400) and N_lab (`PPI_NLAB_GRID_NLAB_VALUES`,
+    15-80) INDEPENDENTLY, back-solving `label_frac = n_lab / n` per cell so
+    the floor never binds; `effect_frac=0.0` is the calibration question
+    (Type-I ~ alpha across the whole plane), a nonzero `effect_frac` is the
+    power companion at the same grid. One representative eval type
+    (continuous) only, same "one estimand is the point" scoping as the 5-way
+    comparison's paired_t choice. `save_ppi_nlab_grid_plot` renders both as
+    heatmaps (diverging colormap centered on alpha for calibration,
+    sequential for power) so a reader can scan a ROW (N's effect at fixed
+    N_lab) vs. a COLUMN (N_lab's effect at fixed N) directly -- confirmed
+    empirically that power is much more sensitive to N_lab than to N at
+    small N_lab (e.g. N_lab=15 stays low across N=60..400), consistent with
+    PPI's two-term variance (`Var(unlabeled)/N + Var(rectifier)/N_lab`) --
+    the rectifier term dominates until N_lab is large enough, at which point
+    adding more N (cheap LLM-judged items) barely moves power further.
 - There is no separate `ppi_calibration` case: `sim_type_i_calibration.py`
   was folded into `cases/pvalues.py`'s `--mode ppi` instead of becoming a
   third file, since both halves of `pvalues` answer "is this statistical

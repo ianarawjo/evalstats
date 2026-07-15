@@ -1448,6 +1448,20 @@ def _jb_bias_magnitude(eval_type: str, frac: float = 0.30) -> float:
     return frac * (hi - lo)
 
 
+def _jb_effect_magnitude(eval_type: str, frac: float) -> float:
+    """`frac` of `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, as an
+    absolute JudgeBiasSource.effect_size value -- the same eval-type-relative
+    fractional convention _jb_bias_magnitude uses for bias_delta, so
+    "how big a real effect" and "how big a judge bias" are expressed on a
+    directly comparable scale. Binary is excluded for the same reason
+    build_ppi_power_sources doesn't sweep it: generate_judge_bias_cell adds
+    effect_size directly onto a 0/1 truth draw (``truth_b2 = _marginal(n2) +
+    es``), which only stays valid at es=0 -- any nonzero shift would push
+    binary truth values outside {0, 1}."""
+    lo, hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
+    return frac * (hi - lo)
+
+
 def build_judge_bias_sources() -> list[JudgeBiasSource]:
     """A curated, one-factor-at-a-time sweep of judge-bias scenarios. Every
     scenario starts from the same baseline (B, below) and changes exactly
@@ -1678,6 +1692,217 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     return S
 
 
+# Baseline settings shared by build_ppi_power_sources and
+# build_ppi_comparison_label_frac_sources -- the SAME per-eval-type judge-bias
+# severity build_judge_bias_sources' "eval_type.*" baseline uses (bias_delta=
+# _jb_bias_magnitude(eval_type), n=100, icc=0.20), so the power/comparison
+# checks below answer "under the exact bias severity that inflates Type-I
+# error in the calibration sweep, does a real effect still get detected" --
+# not some easier, less-biased strawman setting.
+_PPI_POWER_EVAL_TYPES = ("continuous", "likert", "grades")
+# Binary excluded: JudgeBiasSource.effect_size is an additive shift applied
+# directly to a 0/1 truth draw (generate_judge_bias_cell's `truth_b2 =
+# _marginal(n2) + es`), which only stays valid at es=0 -- see
+# _jb_effect_magnitude's docstring.
+PPI_POWER_EFFECT_FRACS = (0.0, 0.10, 0.20, 0.40)
+"""Effect-size grid for build_ppi_power_sources/build_ppi_comparison_*, as a
+fraction of each eval type's own scale span (same convention as
+_jb_bias_magnitude's bias_delta fractions). 0.0 is kept as a Type-I
+cross-check against build_judge_bias_sources' "eval_type.*" scenarios (same
+settings, same expected ~alpha rejection rate) rather than dropped, since it
+anchors the left edge of the power curve at the correct floor."""
+PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
+"""Label-fraction grid for build_ppi_comparison_label_frac_sources, at
+_ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
+"lab.*" grid (0.05/0.10/0.20/0.40): _JB_MIN_LAB=15 floors n_lab at 15
+regardless of label_frac, and at n=100 both 0.05 (round(5)) and 0.10
+(round(10)) floor to the SAME n_lab=15 -- the "lab.*" grid exists to check
+Type-I control at each NOMINAL fraction (where the floor collision doesn't
+matter, since every one of those scenarios is checked independently), but
+here the fractions are plotted against each other on one shared x-axis, so
+two of them silently mapping to an identical (n=100, n_lab=15) data-
+generating condition would be misleading. This grid's four fractions all
+resolve to distinct actual n_lab (15/20/30/40) at n=100 -- see
+PPIComparisonResult.n_lab, which reports the REALIZED count rather than
+the nominal fraction for exactly this reason."""
+PPI_COMPARISON_MODERATE_EFFECT_FRAC = 0.20
+
+
+def _ppi_power_baseline(eval_type: str) -> dict:
+    return dict(
+        eval_type=eval_type, icc=0.20, n=100, label_frac=0.20,
+        llm_noise=0.20, bias_type="differential", bias_delta=_jb_bias_magnitude(eval_type),
+    )
+
+
+def build_ppi_power_sources() -> list[JudgeBiasSource]:
+    """Effect-size sweep, one grid per non-binary eval type, at the SAME
+    judge-bias severity build_judge_bias_sources' "eval_type.*" baseline
+    uses. build_judge_bias_sources' entire catalog checks Type-I error
+    (effect_size=0.0 everywhere -- generate_judge_bias_cell's `es` parameter
+    is simply never set above 0 there); this is the complementary check that
+    was previously missing entirely: does PPI correction retain the power to
+    detect a REAL difference under that same bias, or does it just make
+    every test conservative everywhere (which would trivially "fix" Type-I
+    at the cost of never rejecting anything)? Tag "power" groups these in
+    run()'s reporting/plotting, parallel to build_judge_bias_sources'
+    tag-grouped scenarios."""
+    return [
+        JudgeBiasSource(
+            name=f"power.{et}.es={frac:.2f}", tag="power", effect_size=_jb_effect_magnitude(et, frac),
+            **_ppi_power_baseline(et),
+        )
+        for et in _PPI_POWER_EVAL_TYPES
+        for frac in PPI_POWER_EFFECT_FRACS
+    ]
+
+
+def build_ppi_power_reinforcing_sources() -> list[JudgeBiasSource]:
+    """Same effect_size x eval_type grid as build_ppi_power_sources, but with
+    bias_delta's SIGN FLIPPED so the fixed judge bias pushes the SAME
+    direction as the injected real effect, instead of the opposite
+    direction. build_ppi_power_sources (bias_type="differential") always
+    biases group A/x upward (see _jb_biases) while the real effect is always
+    injected onto group B/y (`truth_b2 = _marginal(n2) + es`); the observed
+    uncorrected difference is therefore approximately `effect_size -
+    bias_delta`, which shrinks toward 0 (then grows again) as effect_size
+    crosses bias_delta -- the "cancellation dip" visible in the uncorrected
+    power curve. Negating bias_delta instead makes the observed uncorrected
+    difference `effect_size + bias_delta`: bias and effect stack instead of
+    fighting, so the uncorrected line climbs even faster than the corrected
+    one, with no dip -- the more dangerous case in practice, since nothing
+    about the SHAPE of an inflated-but-monotonic power curve would flag it
+    as wrong the way a dip does. Tag "power_reinforcing"; see
+    cases/pvalues.py's save_ppi_power_direction_plot, which puts this side
+    by side with build_ppi_power_sources' "opposing" direction."""
+    def _kwargs(et: str) -> dict:
+        kw = _ppi_power_baseline(et)
+        kw["bias_delta"] = -_jb_bias_magnitude(et)
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"powerrf.{et}.es={frac:.2f}", tag="power_reinforcing", effect_size=_jb_effect_magnitude(et, frac),
+            **_kwargs(et),
+        )
+        for et in _PPI_POWER_EVAL_TYPES
+        for frac in PPI_POWER_EFFECT_FRACS
+    ]
+
+
+def build_ppi_power_nobias_sources() -> list[JudgeBiasSource]:
+    """Same effect_size x eval_type grid as build_ppi_power_sources, but with
+    bias_type="none" instead of "differential" -- the "no free lunch" check:
+    when there's genuinely no judge bias to correct for (the uncorrected
+    test is already valid), does PPI correction cost any power relative to
+    it? Some cost is expected in principle -- the PPI rectifier adds its own
+    bootstrap variance on top of the unlabeled-data estimate -- the question
+    this answers is how much. Tag "power_nobias"."""
+    def _kwargs(et: str) -> dict:
+        kw = _ppi_power_baseline(et)
+        kw["bias_type"] = "none"
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"powernb.{et}.es={frac:.2f}", tag="power_nobias", effect_size=_jb_effect_magnitude(et, frac),
+            **_kwargs(et),
+        )
+        for et in _PPI_POWER_EVAL_TYPES
+        for frac in PPI_POWER_EFFECT_FRACS
+    ]
+
+
+def build_ppi_comparison_label_frac_sources() -> list[JudgeBiasSource]:
+    """Label-fraction sweep, one grid per non-binary eval type, at a fixed
+    MODERATE real effect size (PPI_COMPARISON_MODERATE_EFFECT_FRAC) and the
+    same baseline bias severity as build_ppi_power_sources. Paired with
+    build_ppi_power_sources' effect_size grid (tag "power", reused as-is for
+    the comparison sweep's "vs effect size" axis) by
+    cases/pvalues.py's PPI estimator-comparison check: for a single
+    representative paired-mean estimand (paired_t), how do 5 ways of turning
+    (sparse human labels + biased LLM judge scores) into a test compare on
+    power -- all-human (oracle), human-labeled-subset-only, LLM-judge-only
+    (uncorrected), LLM-judge-with-labeled-items-overwritten-by-truth
+    (a naive missing-data-imputation baseline with NO PPI rectifier), and
+    PPI-corrected? This grid holds effect_size fixed and varies label_frac
+    instead, to show how each arm's power moves as the labeling BUDGET
+    changes -- the "how many human labels do you actually need" question
+    build_ppi_power_sources' fixed-label_frac=0.20 grid can't answer on its
+    own. Tag "compare_label_frac"."""
+    def _kwargs(et: str, frac: float) -> dict:
+        kw = _ppi_power_baseline(et)
+        kw["label_frac"] = frac
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"complab.{et}.lab={frac:.2f}", tag="compare_label_frac",
+            effect_size=_jb_effect_magnitude(et, PPI_COMPARISON_MODERATE_EFFECT_FRAC),
+            **_kwargs(et, frac),
+        )
+        for et in _PPI_POWER_EVAL_TYPES
+        for frac in PPI_COMPARISON_LABEL_FRACS
+    ]
+
+
+PPI_NLAB_GRID_N_VALUES = (30, 60, 100, 200, 400)
+"""Total-item (N) grid for build_ppi_nlab_grid_sources -- same anchor points
+as build_judge_bias_sources' "sample_size" tag (60/100/200/400), plus n=30
+to extend the small-N end (where PPI's rectifier-variance term is most
+likely to matter -- see build_ppi_comparison_label_frac_sources' README
+caveat about human_subset occasionally beating ppi at very small n_lab)."""
+PPI_NLAB_GRID_NLAB_VALUES = (15, 20, 30, 50, 80)
+"""Absolute labeled-item-count (N_lab) grid for build_ppi_nlab_grid_sources
+-- starts at _JB_MIN_LAB (15, the floor every n_lab config is subject to
+anyway) so every value in this grid is achievable exactly (see
+build_ppi_nlab_grid_sources' docstring for how label_frac is back-solved
+per cell to hit these counts precisely, independent of N)."""
+_PPI_NLAB_GRID_EVAL_TYPE = "continuous"
+
+
+def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSource]:
+    """N (total items) x N_lab (ABSOLUTE labeled-item count) grid, crossed
+    independently -- unlike build_ppi_comparison_label_frac_sources (which
+    only varies label_frac at a fixed N=100, coupling N and N_lab together),
+    this answers "does calibration/power depend on the RATIO N_lab/N, or on
+    the ABSOLUTE count N_lab" by letting either move while the other holds
+    still. label_frac is back-solved to `n_lab / n` per cell so that
+    `_jb_labels_independent`/`_jb_labels_shared`'s `n_lab = min(n, max(
+    _JB_MIN_LAB, round(n * label_frac)))` reduces to exactly the requested
+    n_lab (every value in PPI_NLAB_GRID_NLAB_VALUES is already >= the
+    _JB_MIN_LAB floor, so the floor never binds here). Cells where n_lab > n
+    are infeasible and skipped.
+
+    One representative eval type (continuous) only -- the same "one clear
+    estimand is the point, not exhaustive coverage" scoping
+    build_ppi_comparison_label_frac_sources already uses for paired_t; a
+    5x5 N x N_lab grid times 3 eval types would triple compute for a
+    robustness/diagnostic check, not a headline result.
+
+    ``effect_frac=0.0`` (the default) is the CALIBRATION question: is the
+    PPI-corrected Type-I error still ~alpha across the whole (N, N_lab)
+    plane, or does it break down in some region? Pass a nonzero
+    ``effect_frac`` (e.g. PPI_COMPARISON_MODERATE_EFFECT_FRAC) for the
+    POWER-side companion grid at the same (N, N_lab) cells. Tag
+    "nlab_grid" (calibration) or "nlab_grid_power" (power)."""
+    et = _PPI_NLAB_GRID_EVAL_TYPE
+    tag = "nlab_grid" if effect_frac <= 0.0 else "nlab_grid_power"
+    sources = []
+    for n in PPI_NLAB_GRID_N_VALUES:
+        for n_lab in PPI_NLAB_GRID_NLAB_VALUES:
+            if n_lab > n:
+                continue
+            kw = _ppi_power_baseline(et)
+            kw["n"] = n
+            kw["label_frac"] = n_lab / n
+            sources.append(JudgeBiasSource(
+                name=f"nlab.n={n}.nlab={n_lab}", tag=tag,
+                effect_size=_jb_effect_magnitude(et, effect_frac), **kw,
+            ))
+    return sources
+
+
 @dataclass
 class JudgeBiasCellData:
     """One replicate's worth of data from generate_judge_bias_cell: the
@@ -1694,6 +1919,16 @@ class JudgeBiasCellData:
     llm_y: np.ndarray
     lab_x: np.ndarray
     lab_y: np.ndarray
+    truth_x: np.ndarray
+    truth_y: np.ndarray
+    """Dense (unmasked) ground truth for the paired structure -- unlike
+    lab_x/lab_y (NaN outside the sparse labeled subset), these are the FULL
+    n1-length truth arrays with no missingness. Only populated for this one
+    structure (not a2/b2/a3/.../W-Z) -- it's the sole consumer needed by
+    cases/pvalues.py's PPI power/estimator-comparison sweep (all-human and
+    human-subset-only baselines for the paired_t estimand); see
+    build_ppi_power_sources' docstring for why paired_t is that sweep's one
+    representative estimand rather than extending this to every structure."""
     llm_a3: np.ndarray
     llm_b3: np.ndarray
     llm_c3: np.ndarray
@@ -1875,7 +2110,7 @@ def generate_judge_bias_cell(
 
     return JudgeBiasCellData(
         llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2,
-        llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y,
+        llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y, truth_x=truth_x, truth_y=truth_y,
         llm_a3=llm_a3, llm_b3=llm_b3, llm_c3=llm_c3, lab_a3=lab_a3, lab_b3=lab_b3, lab_c3=lab_c3,
         llm_A=llm_A, llm_B=llm_B, llm_C=llm_C, lab_A=lab_A, lab_B=lab_B, lab_C=lab_C,
         llm_W=llm_W, llm_X=llm_X, llm_Y=llm_Y, llm_Z=llm_Z, lab_W=lab_W, lab_X=lab_X, lab_Y=lab_Y, lab_Z=lab_Z,
