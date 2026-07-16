@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Callable, Literal, Optional
 
 import numpy as np
 from scipy.stats import rankdata, studentized_range
@@ -40,8 +40,9 @@ from .resampling import (
     resolve_resampling_method,
     newcombe_paired_ci,
     tango_paired_ci,
-    tango_paired_ci_multirun_moments,
+    tango_paired_ci_multirun_effective,
     t_interval_ci_1d,
+    logit_t_ci_1d,
     bayes_paired_diff_ci,
     is_binary_scores,
     _stat,
@@ -49,7 +50,7 @@ from .resampling import (
     _reduce_rows,
     _weighted_medians_rows,
 )
-from .stats_utils import correct_pvalues
+from .stats_utils import correct_pvalues, rescaled_ci
 from ..config import get_alpha_ci, GRADIENT_CI_ALPHAS, MAX_T_AUTO_METHOD
 
 
@@ -381,13 +382,14 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     multi_ci: bool = False,
     compute_wilcoxon: bool = True,
+    score_range: Optional[tuple[float, float]] = None,
 ) -> PairedDiffResult:
     """Compute paired differences between two templates.
 
@@ -648,10 +650,10 @@ def pairwise_differences(
     if method == "tango":
         multirun = scores.ndim == 3 and scores.shape[2] > 1
         if multirun:
-            # Multi-run: use the moment-decomposition variant (tango_multirun_mmnt),
-            # which accounts for within-item run variance and reduces exactly to the
-            # standard Tango CI when n_runs == 1. Better calibrated than the flat
-            # baseline (tango_paired_ci_flat) in simulation.
+            # Multi-run: use the effective-N variant (tango_multirun_effective,
+            # "ER-Tango" in the paper's decision tree / appendix), which estimates
+            # an effective number of runs to account for within-item correlation
+            # and reduces exactly to the standard Tango CI when n_runs == 1.
             values_a_full = scores[idx_a]   # (M, R)
             values_b_full = scores[idx_b]   # (M, R)
             values_a = values_a_full[:, 0]  # for _paired_stats / mcnemar (single-run view)
@@ -664,9 +666,9 @@ def pairwise_differences(
         alpha_val = 1.0 - ci
 
         if multirun:
-            ci_low, ci_high = tango_paired_ci_multirun_moments(values_a_full, values_b_full, alpha_val)
+            ci_low, ci_high = tango_paired_ci_multirun_effective(values_a_full, values_b_full, alpha_val)
             if multi_ci:
-                mci = {_a: tango_paired_ci_multirun_moments(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
+                mci = {_a: tango_paired_ci_multirun_effective(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
             else:
                 mci = None
         else:
@@ -751,6 +753,46 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name="paired t-interval",
+            values_a=values_a,
+            values_b=values_b,
+            multi_ci_dict=mci,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Paired logit-t path (bounded [0, 1] numeric data)                   #
+    # ------------------------------------------------------------------ #
+    if method == "logit_t":
+        # `flat` collapses the run axis to per-input cell means, so this is
+        # "logit-t on run mean differences" for seeded (R >= 3) benchmarks
+        # and plain logit-t for single-run ones -- no separate nested variant
+        # needed. A paired difference of two [lo, hi] scores spans
+        # [-(hi-lo), hi-lo], not [lo, hi] itself, so it's rescaled onto
+        # [0, 1] using the diff span (not score_range directly) before the
+        # logit transform -- rescaled_ci maps a zero diff to logit_t_ci_1d's
+        # own centre of 0.5. Defaults to a [0, 1] native scale (diff span
+        # [-1, 1]) when no score_range is given.
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
+        alpha_val = 1.0 - ci
+        diff_span = (score_range[1] - score_range[0]) if score_range is not None else 1.0
+        diff_lo, diff_hi = -diff_span, diff_span
+        ci_low, ci_high = rescaled_ci(logit_t_ci_1d, diffs, alpha_val, diff_lo, diff_hi)
+        t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
+        p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
+        mci = (
+            {_a: rescaled_ci(logit_t_ci_1d, diffs, _a, diff_lo, diff_hi) for _a in GRADIENT_CI_ALPHAS}
+            if multi_ci else None
+        )
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_name="paired logit-t",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
@@ -1559,6 +1601,169 @@ def _bonferroni_simultaneous_cis(
     return sim_cis
 
 
+def _sidak_simultaneous_cis(
+    results: dict[tuple[str, str], "PairedDiffResult"],
+    pairs: list[tuple[str, str]],
+    ci: float,
+    ci_func: "Callable[[np.ndarray, float], tuple[float, float]]",
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Sidak-adjusted simultaneous CIs built from an arbitrary alpha-
+    parameterized per-pair CI formula, instead of falling back to
+    :func:`_bonferroni_simultaneous_cis`'s generic paired t-interval.
+
+    This is agnostic to which CI construction it widens: *ci_func* is any
+    callable ``(diffs, alpha) -> (ci_low, ci_high)`` -- e.g.
+    :func:`~evalstats.core.resampling.tango_paired_ci_from_diffs` for binary
+    paired data, but equally ``newcombe_paired_ci``, ``t_interval_ci_1d``, or
+    any other closed-form interval that accepts a significance level.
+
+    Each pair's CI is *ci_func* evaluated at the Sidak-adjusted per-
+    comparison level ``alpha_adj = 1 - (1 - alpha)**(1/k)`` (where *k* =
+    number of pairs) -- slightly less conservative than Bonferroni's
+    ``alpha/k`` while remaining a closed-form, distribution-agnostic bound
+    (no independence assumption beyond what Sidak itself requires). Reuses
+    ``per_input_diffs`` already stored in each :class:`PairedDiffResult`, so
+    it works regardless of which *method* produced the raw pairwise matrix
+    (the caller is responsible for passing a *ci_func* that's actually valid
+    for that data -- e.g. a binary-only formula for genuinely binary
+    ``per_input_diffs``).
+
+    Returns
+    -------
+    dict[tuple[str, str], tuple[float, float]]
+        Maps each pair to its ``(ci_low, ci_high)`` simultaneous CI.
+        Returns an empty dict when *pairs* is empty.
+    """
+    k = len(pairs)
+    if k == 0:
+        return {}
+
+    alpha_fam = 1.0 - ci
+    alpha_adj = 1.0 - (1.0 - alpha_fam) ** (1.0 / k)  # Sidak-adjusted per-comparison alpha
+
+    return {pair: ci_func(results[pair].per_input_diffs, alpha_adj) for pair in pairs}
+
+
+def _joint_bootstrap_critical_value(
+    scores: np.ndarray,
+    pairs: list[tuple[str, str]],
+    labels: list[str],
+    ci: float,
+    n_bootstrap: int,
+    rng: "np.random.Generator",
+    *,
+    statistic: Literal["mean", "median"] = "mean",
+    batch_size: int = 128,
+) -> Optional[float]:
+    """Joint bootstrap critical value for scaling a marginal, alpha-
+    parameterized CI to hold simultaneously across *pairs*.
+
+    Resamples the M paired inputs (one shared draw of row indices per
+    replicate, applied to every pair at once) so the joint distribution of
+    the max standardized statistic accounts for correlation between
+    comparisons -- the same mechanism :func:`_max_stat_simultaneous_cis`
+    uses, but returning the raw critical value *c* instead of building a
+    symmetric Wald CI from it, so a caller can substitute *c* into any
+    alpha-parameterized closed-form CI formula instead (see
+    :func:`_joint_bootstrap_scaled_simultaneous_cis`). Not tied to any
+    particular estimand -- *statistic* controls whether each bootstrap
+    replicate's per-pair value is the mean or median of the (collapsed,
+    non-seeded) per-input differences, matching
+    :func:`_max_stat_simultaneous_cis`'s non-seeded path.
+
+    Returns ``None`` when there are no pairs or every pair is degenerate
+    (zero bootstrap variance).
+    """
+    k = len(pairs)
+    if k == 0:
+        return None
+
+    label_to_idx = {label: idx for idx, label in enumerate(labels)}
+    flat = scores.mean(axis=2) if scores.ndim == 3 else scores  # (N, M)
+
+    pair_indices = [(label_to_idx[a], label_to_idx[b]) for (a, b) in pairs]
+    diffs_mat = np.stack([flat[i] - flat[j] for (i, j) in pair_indices], axis=0)  # (k, M)
+    M = diffs_mat.shape[1]
+    point_ests = diffs_mat.mean(axis=1) if statistic == "mean" else np.median(diffs_mat, axis=1)  # (k,)
+
+    input_idx = rng.integers(0, M, size=(n_bootstrap, M))  # (B, M)
+    diffs_by_input = diffs_mat.T  # (M, k) -- cache-friendly row access per resample
+
+    boot_stats = np.empty((n_bootstrap, k))
+    for start in range(0, n_bootstrap, batch_size):
+        end = min(start + batch_size, n_bootstrap)
+        chunk = diffs_by_input[input_idx[start:end]]  # (batch, M, k)
+        boot_stats[start:end] = chunk.mean(axis=1) if statistic == "mean" else np.median(chunk, axis=1)
+
+    se = np.std(boot_stats, axis=0, ddof=1)
+    valid = se > 1e-12
+    if not np.any(valid):
+        return None
+
+    se_safe = np.where(valid, se, 1.0)
+    T = (boot_stats - point_ests[np.newaxis, :]) / se_safe[np.newaxis, :]
+    M_b = np.max(np.abs(T[:, valid]), axis=1)
+    return float(np.quantile(M_b, ci))
+
+
+def _joint_bootstrap_scaled_simultaneous_cis(
+    scores: np.ndarray,
+    results: dict[tuple[str, str], "PairedDiffResult"],
+    pairs: list[tuple[str, str]],
+    labels: list[str],
+    ci: float,
+    n_bootstrap: int,
+    rng: "np.random.Generator",
+    ci_func: "Callable[[np.ndarray, float], tuple[float, float]]",
+    *,
+    statistic: Literal["mean", "median"] = "mean",
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Simultaneous CIs built by scaling an arbitrary alpha-parameterized
+    per-pair CI formula with a joint bootstrap critical value, instead of
+    Sidak/Bonferroni's independence-assuming adjustment.
+
+    Like :func:`_sidak_simultaneous_cis`, this is agnostic to which CI
+    construction it widens -- *ci_func* is any callable
+    ``(diffs, alpha) -> (ci_low, ci_high)``. Bootstraps the paired dataset
+    to get the joint distribution of the standardized pairwise statistics
+    (:func:`_joint_bootstrap_critical_value`), takes the max over all
+    k(k-1)/2 pairs per replicate, and uses the resulting
+    ``(1-alpha)``-quantile critical value *c* in place of the marginal
+    normal quantile ``z_{alpha/2}`` inside *ci_func* (most closed-form score
+    intervals -- e.g. ``tango_paired_ci_from_diffs`` -- derive ``z`` from
+    ``alpha`` internally, so translating *c* back to an equivalent
+    ``alpha_eff = 2*(1 - Phi(c))`` and evaluating *ci_func* at that level is
+    equivalent to substituting *c* for *z* directly). This keeps the
+    resulting interval shaped like whatever *ci_func* produces (e.g. an
+    asymmetric score interval) rather than falling back to a symmetric Wald
+    interval around the point estimate, while still accounting for the
+    correlation between comparisons that Sidak/Bonferroni cannot.
+
+    Returns
+    -------
+    dict[tuple[str, str], tuple[float, float]]
+        Maps each pair to its ``(ci_low, ci_high)`` simultaneous CI.
+        Returns an empty dict when there are no pairs, or when the joint
+        bootstrap critical value is degenerate (all pairs zero-variance).
+    """
+    from scipy import stats as _scipy_stats
+
+    k = len(pairs)
+    if k == 0:
+        return {}
+
+    c = _joint_bootstrap_critical_value(
+        scores=scores, pairs=pairs, labels=labels, ci=ci, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
+    )
+    if c is None:
+        return {}
+
+    alpha_eff = float(2.0 * (1.0 - _scipy_stats.norm.cdf(c)))
+    alpha_eff = min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
+
+    return {pair: ci_func(results[pair].per_input_diffs, alpha_eff) for pair in pairs}
+
+
 # Methods for which _max_stat_simultaneous_cis can produce bootstrap CIs.
 _SIMULTANEOUS_CI_BOOTSTRAP_METHODS = {
     "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
@@ -1638,7 +1843,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
@@ -1648,6 +1853,7 @@ def all_pairwise(
     omnibus: bool = False,
     multi_ci: bool = False,
     compute_wilcoxon: bool = True,
+    score_range: Optional[tuple[float, float]] = None,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -1726,6 +1932,7 @@ def all_pairwise(
                 scores, i, j, labels[i], labels[j],
                 method=method, ci=ci, n_bootstrap=n_bootstrap, rng=rng,
                 statistic=statistic, multi_ci=multi_ci, compute_wilcoxon=compute_wilcoxon,
+                score_range=score_range,
             )
             results[(labels[i], labels[j])] = result
             pairs.append((labels[i], labels[j]))
@@ -1838,12 +2045,13 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
+    score_range: Optional[tuple[float, float]] = None,
 ) -> list[PairedDiffResult]:
     """Compare all templates against a designated baseline.
 
@@ -1878,7 +2086,7 @@ def vs_baseline(
         result = pairwise_differences(
             scores, i, baseline_idx, label, baseline,
             method=method, ci=ci, n_bootstrap=n_bootstrap, rng=rng,
-            statistic=statistic,
+            statistic=statistic, score_range=score_range,
         )
         results.append(result)
 

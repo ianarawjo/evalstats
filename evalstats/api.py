@@ -674,7 +674,7 @@ _ANALYZE_PARAMS = {
     "evaluator_mode", "reference", "method", "backend", "n_bootstrap",
     "correction", "spread_percentiles", "failure_threshold", "rng", "statistic",
     "template_model_collapse", "simultaneous_ci", "omnibus", "p_values",
-    "pairwise_test", "ci_style",
+    "pairwise_test", "ci_style", "score_range",
 }
 
 
@@ -1539,7 +1539,9 @@ def compare(
 
         2. **Analysis engine overrides** — any other keyword argument
            accepted by :func:`~evalstats.core.router.analyze` (e.g.
-           ``method="bca"``, ``n_bootstrap=5000``).
+           ``method="bca"``, ``n_bootstrap=5000``, ``score_range=(1, 5)``
+           for a Likert-scale metric — see ``analyze()``'s ``score_range``
+           parameter for when this matters).
 
     Returns
     -------

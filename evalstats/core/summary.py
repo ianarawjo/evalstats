@@ -1314,6 +1314,8 @@ def _print_mean_advantage(
         ci_note = "Wilson CIs"
     elif _ci_method == "nig":
         ci_note = "marginal NIG CIs"
+    elif _ci_method == "logit_t":
+        ci_note = "marginal logit-t CIs"
     elif _ci_method == "t_interval":
         ci_note = "marginal t CIs"
     elif _ci_method == "bootstrap_t":

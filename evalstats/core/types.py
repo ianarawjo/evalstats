@@ -20,6 +20,7 @@ CommonStatsMethods = Literal[
     "smooth_bootstrap",
     "bootstrap_t",
     "t_interval",
+    "logit_t",
     "auto",
     "bayes_binary",
     "wilson",

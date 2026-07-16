@@ -2,14 +2,25 @@
 
 Routing rules under test
 ------------------------
-* Binary (0/1) data, single-run → resolved_ci_method == "wilson"
-* Binary (0/1) data, multi-run  → resolved_ci_method == "wilson_od"
-* Continuous [0,1], any N       → resolved_ci_method == "nig"
-* Unbounded numeric, any N      → resolved_ci_method == "t_interval"
+* Binary (0/1) data, single-run     → resolved_ci_method == "wilson"
+* Binary (0/1) data, multi-run      → resolved_ci_method == "wilson" ("Wilson flat")
+* Numeric data already in [0,1]     → resolved_ci_method == "logit_t"
+                                       (exact bounds, but still warns since
+                                       it's an inference, not a declaration)
+* Numeric data outside [0,1],
+  score_range given                 → resolved_ci_method == "logit_t", no warning
+* Numeric data outside [0,1],
+  score_range NOT given             → resolved_ci_method == "t_interval"
+                                       (evalstats refuses to guess a [lo, hi]
+                                       range from the sample's own min/max),
+                                       with a UserWarning recommending
+                                       score_range be passed explicitly
 
 Each test also verifies that the returned CIs are finite, ordered (lo < hi),
 and bracket the sample mean at a reasonable confidence level.
 """
+
+import warnings
 
 import numpy as np
 import pytest
@@ -64,38 +75,61 @@ class TestAutoRouting:
         bundle = self._analyze(scores)
         assert bundle.resolved_ci_method == "wilson"
 
-    def test_continuous_01_routes_to_nig(self):
+    def test_continuous_01_routes_to_logit_t(self):
         # Scores sampled from Beta(2,5) — strictly in (0,1), not binary.
+        # Still warns: evalstats inferred the [0,1] range, wasn't told it.
         scores = np.random.default_rng(1).beta(2, 5, size=(2, 80))
-        bundle = self._analyze(scores)
-        assert bundle.resolved_ci_method == "nig"
+        with pytest.warns(UserWarning, match="auto-detected"):
+            bundle = self._analyze(scores)
+        assert bundle.resolved_ci_method == "logit_t"
+        assert bundle.resolved_score_range == (0.0, 1.0)
 
-    def test_continuous_01_boundary_values_route_to_nig(self):
+    def test_continuous_01_boundary_values_route_to_logit_t(self):
         # Data that touches exactly 0 and 1 but has interior values.
         rng = np.random.default_rng(2)
         scores = rng.beta(0.5, 0.5, size=(2, 80))
-        bundle = self._analyze(scores)
-        assert bundle.resolved_ci_method == "nig"
+        with pytest.warns(UserWarning, match="auto-detected"):
+            bundle = self._analyze(scores)
+        assert bundle.resolved_ci_method == "logit_t"
 
-    def test_unbounded_large_n_routes_to_t_interval(self):
-        # Scores can exceed 1 — triggers the "beyond [0,1]" path.
+    def test_unbounded_large_n_falls_back_to_t_interval_with_warning(self):
+        # Scores exceed [0, 1] and no score_range is declared -- evalstats
+        # refuses to guess a range from the sample's own min/max, so this
+        # falls back to t_interval with a UserWarning recommending
+        # score_range be passed explicitly.
         scores = np.random.default_rng(3).normal(5.0, 1.5, size=(2, 80))
-        bundle = self._analyze(scores)
+        with pytest.warns(UserWarning, match="score_range"):
+            bundle = self._analyze(scores)
         assert bundle.resolved_ci_method == "t_interval"
+        assert bundle.resolved_score_range is None
 
-    def test_unbounded_small_n_routes_to_t_interval(self):
+    def test_unbounded_small_n_falls_back_to_t_interval_with_warning(self):
         scores = np.random.default_rng(4).normal(5.0, 1.5, size=(2, 30))
-        bundle = self._analyze(scores)
+        with pytest.warns(UserWarning, match="score_range"):
+            bundle = self._analyze(scores)
         assert bundle.resolved_ci_method == "t_interval"
 
-    def test_boundary_n60_routes_to_t_interval(self):
+    def test_unbounded_with_explicit_score_range_routes_to_logit_t_no_warning(self):
+        # Declaring score_range routes to logit_t instead, with no warning.
         scores = np.random.default_rng(5).normal(3.0, 1.0, size=(2, 60))
-        bundle = self._analyze(scores)
-        assert bundle.resolved_ci_method == "t_interval"
+        result = _make_result(scores, n_templates=2)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")  # fail the test if anything warns
+            bundle = es.analyze(
+                result, n_bootstrap=500, rng=np.random.default_rng(0),
+                score_range=(-5.0, 11.0),
+            )
+        assert bundle.resolved_ci_method == "logit_t"
+        assert bundle.resolved_score_range == (-5.0, 11.0)
 
-    def test_boundary_n59_routes_to_t_interval(self):
-        scores = np.random.default_rng(6).normal(3.0, 1.0, size=(2, 59))
-        bundle = self._analyze(scores)
+    def test_degenerate_constant_data_falls_back_to_t_interval(self):
+        # Constant data isn't in [0,1] and no score_range is given, so this
+        # takes the same "outside [0,1], no score_range" path as any other
+        # unbounded data -- just confirming it doesn't crash on zero variance.
+        scores = np.full((2, 30), 3.0)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")  # zero-variance + score_range warnings, unrelated
+            bundle = self._analyze(scores)
         assert bundle.resolved_ci_method == "t_interval"
 
 
@@ -152,21 +186,44 @@ class TestCIQuality:
         _ci_valid(bundle)
         _ci_brackets_mean(bundle)
 
-    def test_nig_ci_quality(self):
+    def test_bounded_01_auto_ci_quality(self):
+        # Auto-detected [0, 1] data routes to logit_t (with a warning, since
+        # the range was inferred rather than declared).
         scores = np.random.default_rng(21).beta(3, 3, size=(3, 60))
-        bundle = self._bundle(scores)
+        with pytest.warns(UserWarning, match="auto-detected"):
+            bundle = self._bundle(scores)
+        assert bundle.resolved_ci_method == "logit_t"
         _ci_valid(bundle)
         _ci_brackets_mean(bundle)
 
-    def test_t_interval_ci_quality(self):
+    def test_unbounded_numeric_auto_ci_quality(self):
+        # Unbounded numeric data with no score_range auto-routes to
+        # t_interval (see TestAutoRouting) -- still produces valid,
+        # mean-bracketing CIs.
         scores = np.random.default_rng(22).normal(7.0, 2.0, size=(3, 80))
-        bundle = self._bundle(scores)
+        with pytest.warns(UserWarning, match="score_range"):
+            bundle = self._bundle(scores)
+        assert bundle.resolved_ci_method == "t_interval"
         _ci_valid(bundle)
         _ci_brackets_mean(bundle)
 
-    def test_bootstrap_t_ci_quality(self):
+    def test_unbounded_numeric_small_n_auto_ci_quality(self):
         scores = np.random.default_rng(23).normal(7.0, 2.0, size=(3, 30))
-        bundle = self._bundle(scores, n_bootstrap=400)
+        with pytest.warns(UserWarning, match="score_range"):
+            bundle = self._bundle(scores, n_bootstrap=400)
+        assert bundle.resolved_ci_method == "t_interval"
+        _ci_valid(bundle)
+        _ci_brackets_mean(bundle)
+
+    def test_explicit_t_interval_ci_quality(self):
+        # method='t_interval' is still available as an explicit choice,
+        # bypassing the score_range/logit_t auto-routing entirely.
+        scores = np.random.default_rng(24).normal(7.0, 2.0, size=(3, 80))
+        result = _make_result(scores, n_templates=3)
+        bundle = es.analyze(
+            result, method="t_interval", n_bootstrap=800, rng=np.random.default_rng(99),
+        )
+        assert bundle.resolved_ci_method == "t_interval"
         _ci_valid(bundle)
         _ci_brackets_mean(bundle)
 
@@ -195,3 +252,66 @@ class TestCIQuality:
             return float(np.mean(r.ci_high - r.ci_low))
 
         assert width(scores_small) > width(scores_large)
+
+
+# ---------------------------------------------------------------------------
+# score_range: explicit bounds for logit_t on non-[0,1] numeric scales
+# ---------------------------------------------------------------------------
+
+class TestScoreRange:
+    def _bundle(self, scores, n_bootstrap=500, **kwargs):
+        result = _make_result(scores, n_templates=scores.shape[0])
+        return es.analyze(result, n_bootstrap=n_bootstrap, rng=np.random.default_rng(0), **kwargs)
+
+    def test_likert_scale_with_score_range_no_warning(self):
+        rng = np.random.default_rng(40)
+        scores = rng.integers(1, 6, size=(2, 40)).astype(float)  # 1-5 Likert
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            bundle = self._bundle(scores, score_range=(1, 5))
+        assert bundle.resolved_ci_method == "logit_t"
+        assert bundle.resolved_score_range == (1.0, 5.0)
+        _ci_valid(bundle)
+        _ci_brackets_mean(bundle)
+
+    def test_percentage_grade_with_score_range_no_warning(self):
+        rng = np.random.default_rng(41)
+        scores = rng.uniform(0, 100, size=(2, 40))
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            bundle = self._bundle(scores, score_range=(0, 100))
+        assert bundle.resolved_ci_method == "logit_t"
+        assert bundle.resolved_score_range == (0.0, 100.0)
+        _ci_valid(bundle)
+        _ci_brackets_mean(bundle)
+
+    def test_pairwise_ci_uses_logit_t_with_score_range(self):
+        rng = np.random.default_rng(42)
+        scores = rng.integers(1, 6, size=(2, 40)).astype(float)
+        bundle = self._bundle(scores, score_range=(1, 5))
+        pair = bundle.pairwise.get("T0", "T1")
+        assert "logit-t" in pair.test_method.lower()
+        assert pair.ci_low <= pair.point_diff <= pair.ci_high
+
+    def test_score_range_violated_by_data_raises(self):
+        rng = np.random.default_rng(43)
+        scores = rng.uniform(0, 10, size=(2, 30))
+        with pytest.raises(ValueError, match="score_range"):
+            self._bundle(scores, score_range=(0, 1))
+
+    def test_score_range_lo_ge_hi_raises(self):
+        rng = np.random.default_rng(44)
+        scores = rng.uniform(1, 5, size=(2, 30))
+        with pytest.raises(ValueError, match="lo < hi"):
+            self._bundle(scores, score_range=(5, 1))
+
+    def test_binary_data_ignores_score_range(self):
+        # score_range is irrelevant for binary data -- it's routed to
+        # Wilson/Tango/Bayesian-paired before score_range is ever consulted.
+        rng = np.random.default_rng(45)
+        scores = rng.choice([0, 1], size=(2, 40)).astype(float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            bundle = self._bundle(scores, score_range=(1, 5))
+        assert bundle.resolved_ci_method == "wilson"
+        assert bundle.resolved_score_range is None

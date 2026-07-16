@@ -13,28 +13,39 @@ procedure is best calibrated?
   (the same paired-difference scenario library ``cases/ci_paired.py`` uses)
   as the null/weak-alt/full-alt conditions.
 - ``multiarm``: family-wise false-positive rate and best-arm selection power
-  across p-value correction strategies (holm/bonferroni/fdr_bh/
-  friedman_nemenyi), via ``scenarios.synthetic.build_multiarm_sources``,
-  sweeping the SAME shape catalog ``build_pair_sources`` uses, generalized
-  to k arms.
+  across p-value correction strategies (holm/bonferroni/fdr_bh/hochberg/
+  shaffer/friedman_nemenyi/max_t/romano_wolf/westfall_young), via
+  ``scenarios.synthetic.build_multiarm_sources``, sweeping the SAME shape
+  catalog ``build_pair_sources`` uses, generalized to k arms. hochberg/
+  shaffer are closed-form refinements of holm (see
+  ``evalstats.core.stats_utils.correct_pvalues``); romano_wolf/
+  westfall_young are step-down max-T procedures (see
+  ``_stepdown_max_t_pvalues``) that refine max_t's single-step joint
+  critical value by recomputing the max only over not-yet-rejected pairs at
+  each step -- all four exist to recover power lost to holm/bonferroni when
+  pairwise comparisons are positively correlated, which repeated-measures/
+  shared-item designs (the same participants or evaluation items
+  contributing to multiple comparisons) produce routinely.
 - ``simultaneous_ci``: family-wise CI coverage and average per-comparison
   width for the three simultaneous-CI constructions with a well-established
   dual to multiarm's p-value corrections -- ``none`` (naive per-pair CI, no
   simultaneous adjustment -- the "why do you need any correction?"
-  baseline), Bonferroni t-intervals, and max-T (studentized bootstrap,
-  Romano-Wolf, what ``evalstats.core.paired.all_pairwise`` uses by default)
+  baseline), Bonferroni t-intervals, and max-T (single-step studentized
+  bootstrap, what ``evalstats.core.paired.all_pairwise`` uses by default)
   -- forced side by side on the SAME draw with the SAME point-estimate
   method held fixed (bypassing ``all_pairwise``'s own automatic
   method-based routing for max-T/Bonferroni), on the identical k-arm
-  sources ``multiarm`` uses. multiarm's other three corrections
-  (holm/fdr_bh/friedman_nemenyi) have no such CI dual -- holm/fdr_bh are
-  p-value-only adjustments, and friedman_nemenyi operates on rank
-  differences rather than the raw mean-difference scale a CI needs. This is
-  the evidence for why max-T is the harness's default simultaneous-CI
-  method: it should hit nominal coverage same as Bonferroni (unlike
-  ``none``, which should visibly under-cover as k grows), so a narrower
-  average width at matching coverage is what actually distinguishes it from
-  Bonferroni.
+  sources ``multiarm`` uses. multiarm's other corrections (holm/fdr_bh/
+  hochberg/shaffer/friedman_nemenyi/romano_wolf/westfall_young) have no
+  such CI dual -- holm/fdr_bh/hochberg/shaffer are p-value-only
+  adjustments, friedman_nemenyi operates on rank differences rather than
+  the raw mean-difference scale a CI needs, and romano_wolf/westfall_young's
+  step-down critical value varies per rejection step rather than being one
+  fixed value a CI could be built from. This is the evidence for why max-T
+  is the harness's default simultaneous-CI method: it should hit nominal
+  coverage same as Bonferroni (unlike ``none``, which should visibly
+  under-cover as k grows), so a narrower average width at matching coverage
+  is what actually distinguishes it from Bonferroni.
 
 PPI-corrected path (ported from ``simulations/sim_type_i_calibration.py``)
 ---------------------------------------------------------------------------
@@ -132,9 +143,15 @@ import scipy.stats as scipy_stats
 
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
-    from evalstats.core.paired import pairwise_differences, all_pairwise, friedman_nemenyi, _bonferroni_simultaneous_cis, _simultaneous_cis_router
-    from evalstats.core.stats_utils import correct_pvalues
-    from evalstats.core.resampling import bayes_bootstrap_means_1d, tango_paired_ci_mean
+    from evalstats.core.paired import (
+        pairwise_differences, all_pairwise, friedman_nemenyi, PairedDiffResult,
+        _bonferroni_simultaneous_cis, _simultaneous_cis_router,
+        _sidak_simultaneous_cis, _joint_bootstrap_scaled_simultaneous_cis,
+    )
+    from evalstats.core.stats_utils import correct_pvalues, rescaled_ci
+    from evalstats.core.resampling import (
+        bayes_bootstrap_means_1d, tango_paired_ci_mean, tango_paired_ci_from_diffs, logit_t_ci_1d,
+    )
     from evalstats.tests import (
         _ppi_two_sample,
         _ppi_paired_arrays,
@@ -156,7 +173,7 @@ with warnings.catch_warnings():
     from evalstats.core.mixed_effects import _fit_lmm_general, _get_fe_vcov_sm
 
 from ..latex_tables import booktabs_table, escape_latex, eval_type_label
-from ..scenarios import CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES
+from ..scenarios import CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     build_pair_sources,
@@ -192,6 +209,9 @@ from ..methods import (
     TANGO,
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
+    CORR_SIDAK,
+    CORR_BOOT,
+    CANONICAL_SIMULTANEOUS_CI_METHODS,
     CORR_NONE,
     PPI_TEST_METHODS,
     TTEST,
@@ -220,12 +240,37 @@ ALPHA_DEFAULT = 0.05
 
 _BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name}
 
+# Multiarm analogue of SIMULTANEOUS_CI_PLOT_METHODS below: `none`'s FWER is
+# so far above nominal alpha (no correction at all) that plotting it on the
+# same linear axis as every other correction (which all cluster near alpha)
+# squashes the comparison save_multiarm_fwer_vs_k_plot /
+# save_multiarm_fwer_vs_n_plot exist to show; `none` is still in the
+# printed/logged report tables and the CSV.
+MULTIARM_PLOT_METHODS = [m for m in MULTIARM_CORRECTION_METHODS if m.name != CORR_NONE.name]
+
+# Every simultaneous-CI construction _run_simultaneous_ci_cell can produce:
+# `none`/`bonferroni`/`max_t` (see SIMULTANEOUS_CI_METHODS) plus `sidak`/
+# `boot` (see CANONICAL_SIMULTANEOUS_CI_METHODS' comment in methods.py).
+# `none`/`bonferroni`/`sidak`/`boot` are all built on the scenario's
+# eval-type-canonical CI method (Tango for binary, Logit-t for continuous/
+# likert -- see _canonical_ci_func below), NOT
+# --multiarm-method; `max_t` is the one exception, since it needs a
+# bootstrap-compatible method to resample from and keeps using
+# --multiarm-method (bootstrap_t by default) regardless of eval type. Report/
+# plot functions filter this down to whichever names are actually present in
+# a given results list, so a `grades`-only sweep (no canonical CI wired up --
+# see _canonical_ci_func) simply never shows `sidak`/`boot`.
+ALL_SIMULTANEOUS_CI_METHODS = SIMULTANEOUS_CI_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS
+
 # `none` stays in _run_simultaneous_ci_cell's data collection and in
 # print_simultaneous_ci_report's tables (it's the "why do you need any
 # correction at all" baseline there), but is dropped from every
-# simultaneous_ci *plot* -- it's so far below nominal coverage that it
-# squashes the Bonferroni-vs-max-T comparison those plots exist to show.
-SIMULTANEOUS_CI_PLOT_METHODS = [m for m in SIMULTANEOUS_CI_METHODS if m.name != CORR_NONE.name]
+# simultaneous_ci *plot* -- it's so far below nominal family-wise coverage
+# (even built on the canonical per-pair CI, which is well-calibrated
+# per-comparison but never adjusted for multiplicity) that it squashes the
+# Bonferroni-vs-max-T-vs-Sidak-vs-bootstrap comparison those plots exist to
+# show.
+SIMULTANEOUS_CI_PLOT_METHODS = [m for m in ALL_SIMULTANEOUS_CI_METHODS if m.name != CORR_NONE.name]
 
 
 class _ProgressReporter:
@@ -819,71 +864,244 @@ class MultiArmResult:
     n_reps: int
     any_reject: int
     best_selected: int
-    total_time: float = 0.0  # total wall-clock seconds for all n_reps of this condition
+    total_time: float = 0.0
+    """Total wall-clock seconds for THIS correction's own computation, summed
+    across all n_reps of this condition -- e.g. romano_wolf/westfall_young's
+    own step-down resampling, max_t's own router call, etc. Does NOT include
+    shared per-rep setup (score generation, Wilcoxon p-values) except for
+    `none`, which that setup is attributed to (see _run_multiarm_cell /
+    _compute_multiarm_metrics)."""
+
+
+def _stepdown_max_t_pvalues(
+    diffs_mat: np.ndarray, n_bootstrap: int, rng: np.random.Generator,
+    resample_mode: str, batch_size: int = 256,
+) -> np.ndarray:
+    """Step-down max-|T| FWER p-values: Romano & Wolf (2005)'s bootstrap
+    step-down, or its permutation analogue, Westfall & Young (1993)'s
+    step-down min-P/max-T.
+
+    Both share one algorithm operating on the studentized per-pair statistic
+    ``t_p = mean(diffs_p) / se(diffs_p)``; they differ only in how the joint
+    null resampling distribution of that statistic vector is generated:
+
+    - ``"bootstrap"`` (Romano-Wolf): resample items/participants (rows of
+      ``diffs_mat``, shared across pairs) with replacement, then studentize
+      and recenter each bootstrap draw at its own pair's *observed*
+      statistic -- the same nonparametric bootstrap-t null
+      ``_simultaneous_cis_router``'s ``max_t`` already uses for its
+      *single-step* critical value, reused here unchanged.
+    - ``"permutation"`` (Westfall-Young): independently sign-flip each
+      item/participant's row of differences (shared across pairs, so the
+      joint dependence structure between pairs is preserved), which is
+      already centered at zero under the null of no within-subject arm
+      effect by symmetry -- exact under exchangeability of the paired
+      design, rather than relying on bootstrap's asymptotic justification.
+
+    Unlike single-step max-T (this harness's `max_t`), which uses ONE joint
+    critical value for every pair, the step-down refinement here recomputes
+    the max only over pairs not yet rejected at each step (starting from the
+    pair with the largest observed |t|, working down), which strictly
+    dominates single-step max-T in power for the same strong FWER guarantee
+    -- exactly the "recover power lost to Holm/Bonferroni when comparisons
+    are positively correlated" case repeated-measures designs create, since
+    shared items/participants make every pair's diffs correlated.
+
+    Returns one FWER-adjusted p-value per row of ``diffs_mat`` (same pair
+    order), monotonized via a running max along the testing order (the same
+    reformulation Holm's own adjusted p-values use) so they are directly
+    comparable to alpha.
+    """
+    k_pairs, m = diffs_mat.shape
+    means = diffs_mat.mean(axis=1)
+    ses = diffs_mat.std(axis=1, ddof=1) / np.sqrt(m)
+    ses_safe = np.where(ses > 1e-12, ses, 1.0)
+    t_obs = np.abs(means) / ses_safe
+
+    t_abs_chunks: list[np.ndarray] = []
+    for start in range(0, n_bootstrap, batch_size):
+        end = min(start + batch_size, n_bootstrap)
+        b = end - start
+        if resample_mode == "bootstrap":
+            idx = rng.integers(0, m, size=(b, m))
+            resampled = diffs_mat[:, idx]  # (k_pairs, b, m)
+            b_means = resampled.mean(axis=2)
+            b_ses = resampled.std(axis=2, ddof=1) / np.sqrt(m)
+            b_ses_safe = np.where(b_ses > 1e-12, b_ses, 1.0)
+            t_vals = (b_means - means[:, None]) / b_ses_safe
+        else:  # "permutation" -- per-item sign-flip, shared across pairs
+            signs = rng.choice(np.array([-1.0, 1.0]), size=(b, m))
+            flipped = diffs_mat[:, None, :] * signs[None, :, :]  # (k_pairs, b, m)
+            b_means = flipped.mean(axis=2)
+            b_ses = flipped.std(axis=2, ddof=1) / np.sqrt(m)
+            b_ses_safe = np.where(b_ses > 1e-12, b_ses, 1.0)
+            t_vals = b_means / b_ses_safe
+        t_abs_chunks.append(np.abs(t_vals))
+    t_abs = np.concatenate(t_abs_chunks, axis=1)  # (k_pairs, n_bootstrap)
+
+    order = np.argsort(-t_obs)  # descending observed |t|: tested first
+    t_abs_sorted = t_abs[order]
+    # suffix_max[step] = max over pairs tested at or after `step` -- the
+    # step-down "remaining hypotheses" set, per bootstrap draw.
+    suffix_max = np.maximum.accumulate(t_abs_sorted[::-1], axis=0)[::-1]
+
+    raw_step_p = np.empty(k_pairs)
+    for step_pos, idx0 in enumerate(order):
+        extreme = int(np.sum(suffix_max[step_pos] >= t_obs[idx0]))
+        raw_step_p[idx0] = (extreme + 1) / (n_bootstrap + 1)
+
+    adjusted = np.empty(k_pairs)
+    running_max = 0.0
+    for idx0 in order:
+        running_max = max(running_max, raw_step_p[idx0])
+        adjusted[idx0] = min(running_max, 1.0)
+    return adjusted
 
 
 def _compute_multiarm_metrics(
     *, scores: np.ndarray, labels: list[str], method: str, corrections: list[str],
     n_bootstrap: int, alpha: float, statistic: str, rng: np.random.Generator,
-) -> dict[str, tuple[bool, bool]]:
+) -> tuple[dict[str, tuple[bool, bool]], dict[str, float]]:
     """Compute (any_reject, best_selected) for every correction strategy.
 
-    Holm/Bonferroni/FDR use truly raw (marginal) bootstrap p-values from a
-    call with simultaneous_ci=False.  The ``max_t`` entry reuses that SAME
-    call's per-pair results, feeding them into all_pairwise's own
-    simultaneous-CI router (_simultaneous_cis_router) directly rather than
-    making a second all_pairwise(..., simultaneous_ci=True) call -- the
-    latter would silently redo the entire k(k-1)/2-pair bootstrap loop from
-    scratch just to layer the simultaneous-CI step on top, since
-    all_pairwise always computes marginal results first regardless of
-    simultaneous_ci. The router only reads `results` as a Bonferroni
-    fallback (never as bootstrap input for max-T), so nothing here is
-    short-circuited or approximated relative to two separate calls.  For
-    bootstrap-compatible methods the resulting p-values are Romano-Wolf
-    max-T FWER-controlled p-values -- each is the min p-value commensurate
-    with the simultaneous CI that was reported to the user.  For
-    non-bootstrap methods (permutation) max_t falls back to the raw
-    (marginal) p-value, matching what all_pairwise itself does when its
-    router falls back to Bonferroni (it only widens the CI, not `.p_value`).
+    none/holm/bonferroni/fdr_bh/hochberg/shaffer correct the Wilcoxon
+    signed-rank p-value (evalstats' canonical, eval-type-agnostic paired
+    test -- unlike Tango/Logit-t in --mode simultaneous_ci, one test covers
+    binary/continuous/likert/grades alike, so no per-eval-type branching is
+    needed here) via _safe_wilcoxon_p on each pair's per_input_diffs, rather
+    than --multiarm-method's raw p-value (bootstrap_t by default).
+    per_input_diffs/point_diff are built directly from `scores` (a plain
+    per-input difference and its mean/median -- no resampling involved), not
+    via all_pairwise(method=method, ...): that used to run the *full*
+    method-specific bootstrap per pair (e.g. bootstrap_t's two independent
+    n_bootstrap-sized resamples, one for the CI and one for the p-value)
+    purely to obtain per_input_diffs/point_diff, which need no resampling at
+    all -- wasting O(pairs * n_bootstrap) draws every rep/condition/cell for
+    results this function never read. hochberg/shaffer are closed-form
+    reweightings of the same Wilcoxon p-values (see
+    evalstats.core.stats_utils.correct_pvalues; shaffer additionally needs
+    `n_groups=k`, the number of arms, to derive its all-pairwise divisor
+    sequence).
 
-    Also passes compute_wilcoxon=False to the raw all_pairwise call: the
-    Wilcoxon signed-rank p-value it would otherwise compute for every pair
-    is never read here (MULTIARM_CORRECTION_METHODS has no "wilcoxon"
-    entry), so skipping it avoids a pure-overhead scipy call per pair.
+    max_t/romano_wolf/westfall_young are the exception: they still need
+    genuine resampling, since Wilcoxon has no joint max-T analogue. `max_t`
+    resamples from `scores` directly via all_pairwise's own simultaneous-CI
+    router (_simultaneous_cis_router). The router only reads `results` as a
+    Bonferroni fallback (never as bootstrap input for max-T itself, which
+    always resamples straight from `scores`), so a lightweight
+    dict[pair, PairedDiffResult] built from the already-computed
+    per_input_diffs/point_diff (no bootstrap) stands in for that fallback
+    without needing a real all_pairwise call. For bootstrap-compatible
+    methods the resulting p-values are *single-step* max-T FWER-controlled
+    p-values -- each is the min p-value commensurate with the simultaneous
+    CI that was reported to the user. For non-bootstrap methods
+    (permutation) max_t falls back to the raw (marginal) p-value, matching
+    what all_pairwise itself does when its router falls back to Bonferroni
+    (it only widens the CI, not `.p_value`).
+
+    `romano_wolf`/`westfall_young` are the genuine *step-down* max-T
+    procedures (see _stepdown_max_t_pvalues) -- unlike max_t, they don't go
+    through all_pairwise/_simultaneous_cis_router at all, since step-down
+    needs the full per-bootstrap-draw statistic matrix (not just the single
+    joint critical value the router returns) to recompute the max over
+    shrinking "not yet rejected" subsets. They're built directly off the
+    same method-invariant per_input_diffs hochberg/shaffer/etc. use.
+
+    `friedman_nemenyi` is unaffected either way -- already its own
+    rank-based omnibus + post-hoc test, unrelated to `method`.
+
+    Returns
+    -------
+    tuple[dict[str, tuple[bool, bool]], dict[str, float]]
+        ``(results, timings)`` -- *timings* maps each correction to its own
+        wall-clock seconds (so e.g. romano_wolf/westfall_young's genuine
+        step-down resampling shows up as slower than none/holm/bonferroni's
+        closed-form reweighting in the report's Time(ms) column, instead of
+        every correction row displaying the same aggregate "whole call"
+        time). The one-time shared setup (diffs_by_pair/point_diff_by_pair/
+        raw_p, and stepdown_corrections' diffs_mat) is folded into `none`'s
+        and the first stepdown correction's timing respectively, since it's
+        not fairly attributable to any other single correction.
     """
     results: dict[str, tuple[bool, bool]] = {}
+    timings: dict[str, float] = {}
     k = len(labels)
     pairs = [(labels[i], labels[j]) for i in range(k) for j in range(i + 1, k)]
 
-    non_friedman_non_maxt = [c for c in corrections if c not in ("friedman_nemenyi", "max_t")]
+    _STEPDOWN_RESAMPLE_MODE = {"romano_wolf": "bootstrap", "westfall_young": "permutation"}
+    non_friedman_non_maxt = [
+        c for c in corrections
+        if c not in ("friedman_nemenyi", "max_t") and c not in _STEPDOWN_RESAMPLE_MODE
+    ]
     include_max_t = "max_t" in corrections
+    stepdown_corrections = [c for c in _STEPDOWN_RESAMPLE_MODE if c in corrections]
 
-    if non_friedman_non_maxt or include_max_t:
-        # Raw (marginal) p-values: no simultaneous-CI adjustment, no post-hoc correction.
-        matrix_raw = all_pairwise(
-            scores=scores, labels=labels, method=method, ci=1.0 - alpha,
-            n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
-            simultaneous_ci=False, compute_wilcoxon=False,
-        )
-        raw_p = np.array([matrix_raw.get(a, b).p_value for (a, b) in pairs])
+    if non_friedman_non_maxt or include_max_t or stepdown_corrections:
+        # Plain per-input differences and their mean/median -- no resampling
+        # needed, unlike the method-specific bootstrap all_pairwise(method=
+        # method, ...) used to run here just to throw away everything but
+        # these two quantities (see docstring above).
+        _t_setup0 = time.perf_counter()
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores  # (k_arms, n)
+        label_to_idx = {label: i for i, label in enumerate(labels)}
+        diffs_by_pair: dict[tuple[str, str], np.ndarray] = {}
+        point_diff_by_pair: dict[tuple[str, str], float] = {}
+        for pair in pairs:
+            a, b = pair
+            d = flat[label_to_idx[a]] - flat[label_to_idx[b]]
+            diffs_by_pair[pair] = d
+            point_diff_by_pair[pair] = float(d.mean()) if statistic == "mean" else float(np.median(d))
+
+        raw_p = np.array([_safe_wilcoxon_p(diffs_by_pair[pair]) for pair in pairs])
         pair_to_idx = {pair: idx for idx, pair in enumerate(pairs)}
+        _setup_elapsed = time.perf_counter() - _t_setup0
 
         for correction in non_friedman_non_maxt:
-            adj_p = raw_p if correction == "none" else correct_pvalues(raw_p, correction)
+            _t0 = time.perf_counter()
+            if correction == "none":
+                adj_p = raw_p
+            elif correction == "shaffer":
+                adj_p = correct_pvalues(raw_p, correction, n_groups=k)
+            else:
+                adj_p = correct_pvalues(raw_p, correction)
             has_any = bool(np.any(adj_p < alpha))
             best = labels[0]
             best_selected = True
             for other in labels[1:]:
                 pair_idx = pair_to_idx.get((best, other))
-                if pair_idx is None or not (adj_p[pair_idx] < alpha and matrix_raw.get(best, other).point_diff > 0.0):
+                if pair_idx is None or not (adj_p[pair_idx] < alpha and point_diff_by_pair[(best, other)] > 0.0):
                     best_selected = False
                     break
             results[correction] = (has_any, best_selected)
+            timings[correction] = time.perf_counter() - _t0
+        if "none" in timings:
+            # The one-time shared setup (diffs/point-diffs/Wilcoxon p-values)
+            # is attributed to `none`, mirroring _run_simultaneous_ci_cell's
+            # equivalent choice -- it's the row that most directly needs it,
+            # not fairly split across every other correction.
+            timings["none"] += _setup_elapsed
 
         if include_max_t:
+            _t0 = time.perf_counter()
             try:
+                # Lightweight stand-in for the Bonferroni-fallback `results`
+                # argument -- cheap dataclass construction, no bootstrap.
+                results_stub = {
+                    pair: PairedDiffResult(
+                        template_a=pair[0], template_b=pair[1],
+                        point_diff=point_diff_by_pair[pair],
+                        std_diff=(
+                            float(np.std(diffs_by_pair[pair], ddof=1))
+                            if len(diffs_by_pair[pair]) > 1 else 0.0
+                        ),
+                        ci_low=float("nan"), ci_high=float("nan"), p_value=1.0,
+                        test_method="", n_inputs=len(diffs_by_pair[pair]),
+                        per_input_diffs=diffs_by_pair[pair], statistic=statistic,
+                    )
+                    for pair in pairs
+                }
                 _sim_cis, sim_method, sim_pvalues = _simultaneous_cis_router(
-                    scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
+                    scores=scores, results=results_stub, pairs=pairs, labels=labels,
                     method=method, ci=1.0 - alpha, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
                     prefer="max_t",
                 )
@@ -897,14 +1115,45 @@ def _compute_multiarm_metrics(
                 best_selected = True
                 for other in labels[1:]:
                     pair_idx = pair_to_idx.get((best, other))
-                    if pair_idx is None or not (maxt_p[pair_idx] < alpha and matrix_raw.get(best, other).point_diff > 0.0):
+                    if pair_idx is None or not (maxt_p[pair_idx] < alpha and point_diff_by_pair[(best, other)] > 0.0):
                         best_selected = False
                         break
                 results["max_t"] = (has_any, best_selected)
             except Exception:
                 results["max_t"] = (False, False)
+            timings["max_t"] = time.perf_counter() - _t0
+
+        if stepdown_corrections:
+            _t_stack0 = time.perf_counter()
+            diffs_mat = np.stack([diffs_by_pair[pair] for pair in pairs], axis=0)
+            _stack_elapsed = time.perf_counter() - _t_stack0
+            for i, correction in enumerate(stepdown_corrections):
+                _t0 = time.perf_counter()
+                try:
+                    adj_p = _stepdown_max_t_pvalues(
+                        diffs_mat, n_bootstrap, rng, _STEPDOWN_RESAMPLE_MODE[correction],
+                    )
+                    has_any = bool(np.any(adj_p < alpha))
+                    best = labels[0]
+                    best_selected = True
+                    for other in labels[1:]:
+                        pair_idx = pair_to_idx.get((best, other))
+                        if pair_idx is None or not (adj_p[pair_idx] < alpha and point_diff_by_pair[(best, other)] > 0.0):
+                            best_selected = False
+                            break
+                    results[correction] = (has_any, best_selected)
+                except Exception:
+                    results[correction] = (False, False)
+                elapsed = time.perf_counter() - _t0
+                if i == 0:
+                    # np.stack's construction cost is shared setup for every
+                    # stepdown correction; attributed to the first one rather
+                    # than double-counted or arbitrarily split.
+                    elapsed += _stack_elapsed
+                timings[correction] = elapsed
 
     if "friedman_nemenyi" in corrections:
+        _t0 = time.perf_counter()
         try:
             fr = friedman_nemenyi(scores, labels)
             has_any = any(
@@ -923,8 +1172,9 @@ def _compute_multiarm_metrics(
             results["friedman_nemenyi"] = (has_any, best_selected)
         except Exception:
             results["friedman_nemenyi"] = (False, False)
+        timings["friedman_nemenyi"] = time.perf_counter() - _t0
 
-    return results
+    return results, timings
 
 
 def _run_multiarm_cell(
@@ -937,32 +1187,43 @@ def _run_multiarm_cell(
 
     agg_any: dict[tuple[str, str], int] = {(c, cond): 0 for c in corrections for cond in ("null", "alt")}
     agg_best: dict[tuple[str, str], int] = {(c, cond): 0 for c in corrections for cond in ("null", "alt")}
-    agg_time: dict[str, float] = {"null": 0.0, "alt": 0.0}
+    # Per-(correction, condition), not a single per-condition total -- each
+    # correction's own wall-clock cost, so e.g. romano_wolf/westfall_young's
+    # genuine step-down resampling shows up as slower than none/holm/
+    # bonferroni's closed-form reweighting in the report's Time(ms) column,
+    # instead of every correction row displaying the same aggregate "whole
+    # rep" time (see _compute_multiarm_metrics's per-correction timings).
+    agg_time: dict[tuple[str, str], float] = {(c, cond): 0.0 for c in corrections for cond in ("null", "alt")}
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         for _ in range(n_reps):
             for condition, delta in (("null", 0.0), ("alt", source.alt_delta)):
-                _t0 = time.perf_counter()
+                # Score generation is shared setup, attributed to `none` --
+                # not fairly attributable to any other single correction.
+                _t_none0 = time.perf_counter()
                 scores = source.generate_scores(rng, n, runs, k_arms, delta)
-                metrics = _compute_multiarm_metrics(
+                _scores_elapsed = time.perf_counter() - _t_none0
+                metrics, timings = _compute_multiarm_metrics(
                     scores=scores, labels=labels, method=multiarm_method, corrections=corrections,
                     n_bootstrap=n_bootstrap, alpha=alpha, statistic=statistic, rng=rng,
                 )
-                agg_time[condition] += time.perf_counter() - _t0
+                if "none" in timings:
+                    timings["none"] += _scores_elapsed
                 for correction in corrections:
                     any_reject, best_selected = metrics.get(correction, (False, False))
                     if any_reject:
                         agg_any[(correction, condition)] += 1
                     if best_selected:
                         agg_best[(correction, condition)] += 1
+                    agg_time[(correction, condition)] += timings.get(correction, 0.0)
 
     return [
         MultiArmResult(
             eval_type=source.eval_type, label=source.label, n=n, k=k_arms, correction=correction,
             condition=condition, n_reps=n_reps, any_reject=agg_any[(correction, condition)],
             best_selected=agg_best[(correction, condition)],
-            total_time=agg_time[condition],
+            total_time=agg_time[(correction, condition)],
         )
         for correction in corrections
         for condition in ("null", "alt")
@@ -1200,6 +1461,7 @@ def save_multiarm_fwer_power_plot(*, results: list[MultiArmResult], alpha: float
         ax = axes[0][col_idx]
         et_rows = [r for r in results if r.eval_type == et]
         ax.axvline(alpha, color="black", linestyle="--", linewidth=1.0)
+        powers: list[float] = []
         for m in MULTIARM_CORRECTION_METHODS:
             c_rows = [r for r in et_rows if r.correction == m.name]
             null_rows = [r for r in c_rows if r.condition == "null"]
@@ -1213,14 +1475,25 @@ def save_multiarm_fwer_power_plot(*, results: list[MultiArmResult], alpha: float
             fwer = c1 / t1
             power = c2 / t2
             ax.scatter([fwer], [power], color=m.color, s=60, label=m.name, edgecolors="white", linewidths=0.6)
+            powers.append(power)
         ax.set_xlabel("FWER (null)")
         ax.set_ylabel("Best-arm selection power (alt)")
         ax.set_title(f"eval type: {et}")
         ax.set_xlim(-0.02, max(0.3, alpha * 4))
-        ax.set_ylim(-0.02, 1.02)
+        # Zoom to the actual power spread (plus a 0.0 floor reference)
+        # rather than a fixed [0, 1] -- power is often uniformly low here
+        # (best-arm selection under a strict per-pair rejection requirement
+        # is hard), and a full [0, 1] axis squashes that spread into an
+        # unreadable sliver at the bottom.
+        if powers:
+            pow_lo, pow_hi = min(powers + [0.0]), max(powers + [0.0])
+            pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
+            ax.set_ylim(max(-0.02, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
+        else:
+            ax.set_ylim(-0.02, 1.02)
         ax.legend(fontsize=7, loc="lower right")
 
-    fig.suptitle("pvalues (multi-arm, non-PPI): FWER vs. best-arm power", fontsize=12)
+    fig.suptitle(f"Family-Wise Error Rate vs. Best-Arm Selection Power\nNominal alpha = {alpha}", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -1232,9 +1505,15 @@ def save_multiarm_fwer_power_plot(*, results: list[MultiArmResult], alpha: float
 
 def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
     """FWER and best-arm power as a function of k (number of arms), one curve per
-    correction method, collapsed across eval types and sample sizes.  Only
-    produced when more than one k value was swept; returns out_path unchanged
-    (without writing) if all results share the same k."""
+    correction method, collapsed across eval types and sample sizes -- the
+    multiarm analogue of save_simultaneous_ci_coverage_width_vs_k_plot (same
+    two-panel line-plot style: exact integer x-ticks pinned to the k values
+    actually swept, FWER y-axis zoomed to the actual spread rather than a
+    fixed [0, ...]). Only plots MULTIARM_PLOT_METHODS (every registered
+    correction except `none` -- see that list's comment for why; `none` is
+    still in the printed/logged report tables and the CSV).
+    Only produced when more than one k value was swept; returns out_path
+    unchanged (without writing) if all results share the same k."""
     import matplotlib.pyplot as plt
 
     ks_present = sorted({r.k for r in results})
@@ -1245,7 +1524,9 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
     ax_fwer.axhline(alpha, color="black", linewidth=1.0, linestyle="--", label=f"α={alpha}")
     ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
 
-    for m in MULTIARM_CORRECTION_METHODS:
+    all_fwer_vals: list[float] = [alpha]
+    all_pow_vals: list[float] = [0.0]
+    for m in MULTIARM_PLOT_METHODS:
         c_rows = [r for r in results if r.correction == m.name]
         if not c_rows:
             continue
@@ -1266,20 +1547,133 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
         if xs:
             ax_fwer.plot(xs, ys_fwer, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
             ax_pow.plot(xs, ys_pow, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            all_fwer_vals.extend(ys_fwer)
+            all_pow_vals.extend(ys_pow)
 
     ax_fwer.set_xlabel("k (number of arms)")
     ax_fwer.set_ylabel("FWER (null)")
     ax_fwer.set_title("FWER vs. number of arms")
-    ax_fwer.set_ylim(bottom=0.0)
+    # Zoom to the actual FWER spread (plus the nominal alpha line) rather
+    # than a fixed [0, ...] -- with `none` dropped from this plot
+    # (MULTIARM_PLOT_METHODS), every remaining curve usually clusters near
+    # alpha, and a floor of 0.0 squashes that spread into an unreadable
+    # sliver at the bottom (see save_simultaneous_ci_coverage_width_vs_k_plot's
+    # identical fix for coverage).
+    fwer_lo, fwer_hi = min(all_fwer_vals), max(all_fwer_vals)
+    fwer_pad = max(0.005, (fwer_hi - fwer_lo) * 0.15)
+    ax_fwer.set_ylim(max(0.0, fwer_lo - fwer_pad), fwer_hi + fwer_pad)
+    ax_fwer.set_xticks(ks_present)
     ax_fwer.legend(fontsize=7)
 
     ax_pow.set_xlabel("k (number of arms)")
     ax_pow.set_ylabel("Best-arm selection power (alt)")
     ax_pow.set_title("Power vs. number of arms")
-    ax_pow.set_ylim(0.0, 1.02)
+    # Zoom to the actual power spread (plus a 0.0 floor reference) rather
+    # than a fixed [0, 1] -- best-arm selection power is often uniformly low
+    # here, and a full [0, 1] axis squashes that spread the same way an
+    # unzoomed FWER axis would (see above).
+    pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
+    pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
+    ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
+    ax_pow.set_xticks(ks_present)
     ax_pow.legend(fontsize=7)
 
-    fig.suptitle("pvalues (multi-arm, non-PPI): FWER and power vs. k", fontsize=12)
+    fig.suptitle(
+        "Family-Wise Error Rate and Best-Arm Selection Power vs. Number of Systems Compared\n"
+        f"Nominal alpha = {alpha}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
+    """FWER and best-arm power as a function of n (sample size), one curve
+    per correction method, collapsed across eval types and k -- the
+    sample-size analogue of save_multiarm_fwer_vs_k_plot (same two-panel
+    line-plot style: FWER y-axis zoomed to the actual spread rather than a
+    fixed [0, ...]). X-axis is log-scaled, unlike the vs-k plot's linear
+    one: n sweeps span an order of magnitude or more, so a linear axis
+    crams the small-n tick labels into an unreadable overlapping cluster
+    (see save_simultaneous_ci_coverage_width_vs_n_plot's identical fix).
+    Only plots MULTIARM_PLOT_METHODS (every registered correction except
+    `none` -- see that list's comment for why; `none` is still in the
+    printed/logged report tables and the CSV).
+    Only produced when more than one n value was swept; returns out_path
+    unchanged (without writing) if all results share the same n."""
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    if len(sizes_present) < 2:
+        return out_path
+
+    fig, (ax_fwer, ax_pow) = plt.subplots(1, 2, figsize=(10.0, 4.5))
+    ax_fwer.axhline(alpha, color="black", linewidth=1.0, linestyle="--", label=f"α={alpha}")
+    ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
+
+    all_fwer_vals: list[float] = [alpha]
+    all_pow_vals: list[float] = [0.0]
+    for m in MULTIARM_PLOT_METHODS:
+        c_rows = [r for r in results if r.correction == m.name]
+        if not c_rows:
+            continue
+        xs, ys_fwer, ys_pow = [], [], []
+        for n in sizes_present:
+            n_rows = [r for r in c_rows if r.n == n]
+            null_rows = [r for r in n_rows if r.condition == "null"]
+            alt_rows = [r for r in n_rows if r.condition == "alt"]
+            fwer_t = sum(r.n_reps for r in null_rows)
+            fwer_c = sum(r.any_reject for r in null_rows)
+            power_t = sum(r.n_reps for r in alt_rows)
+            power_c = sum(r.best_selected for r in alt_rows)
+            if fwer_t == 0 or power_t == 0:
+                continue
+            xs.append(n)
+            ys_fwer.append(fwer_c / fwer_t)
+            ys_pow.append(power_c / power_t)
+        if xs:
+            ax_fwer.plot(xs, ys_fwer, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            ax_pow.plot(xs, ys_pow, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            all_fwer_vals.extend(ys_fwer)
+            all_pow_vals.extend(ys_pow)
+
+    ax_fwer.set_xlabel("n (sample size)")
+    ax_fwer.set_ylabel("FWER (null)")
+    ax_fwer.set_title("FWER vs. sample size")
+    fwer_lo, fwer_hi = min(all_fwer_vals), max(all_fwer_vals)
+    fwer_pad = max(0.005, (fwer_hi - fwer_lo) * 0.15)
+    ax_fwer.set_ylim(max(0.0, fwer_lo - fwer_pad), fwer_hi + fwer_pad)
+    ax_fwer.legend(fontsize=7)
+
+    ax_pow.set_xlabel("n (sample size)")
+    ax_pow.set_ylabel("Best-arm selection power (alt)")
+    ax_pow.set_title("Power vs. sample size")
+    # Zoom to the actual power spread -- see save_multiarm_fwer_vs_k_plot's
+    # identical fix.
+    pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
+    pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
+    ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
+    ax_pow.legend(fontsize=7)
+
+    # Log-scale x-axis (see docstring) with exact tick labels at the swept
+    # sizes instead of matplotlib's default log-scale power-of-ten ticks.
+    for ax in (ax_fwer, ax_pow):
+        ax.set_xscale("log")
+        ax.set_xticks(sizes_present)
+        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+
+    fig.suptitle(
+        "Family-Wise Error Rate and Best-Arm Selection Power vs. Sample Size\n"
+        f"Nominal alpha = {alpha}",
+        fontsize=12,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -1366,31 +1760,82 @@ def save_multiarm_reliability_violin_plot(*, results: list[MultiArmResult], alph
 
 
 # ---------------------------------------------------------------------------
-# Simultaneous-CI mode (non-PPI): calibration check for
-# evalstats.core.paired.all_pairwise's simultaneous (family-wise) confidence
-# intervals. Checks the three of multiarm's six p-value correction
-# strategies that have an established simultaneous-CI dual: `none` (naive
-# per-pair CI, no adjustment -- the uncorrected baseline), Bonferroni
-# t-intervals, and max-T (studentized bootstrap, Romano-Wolf) -- the two
-# non-naive constructions all_pairwise's own router (_simultaneous_cis_router)
-# picks between automatically based on whether `method` is
-# bootstrap-compatible. (holm/fdr_bh/friedman_nemenyi have no CI dual --
-# holm/fdr_bh are p-value-only adjustments, friedman_nemenyi is on the rank
-# scale -- so they're multiarm-only.) The router's auto-selection isn't
-# something a caller can independently override, so this mode reaches past
-# it (via the private _bonferroni_simultaneous_cis helper) to force all
-# three constructions on the exact same draw with the exact same
-# point-estimate `method` held fixed, which is the only way to get an
-# apples-to-apples "does max-T actually beat Bonferroni (and beat doing
-# nothing), all else equal" comparison instead of confounding the
-# CI-construction choice with a method-family choice too.
+# Simultaneous-CI mode (non-PPI): calibration check for simultaneous
+# (family-wise) confidence intervals, built two different ways:
 #
-# Reuses the SAME k-arm MultiArmSource scenarios (synthetic and real) that
-# --mode multiarm sweeps, since both questions ("which p-value correction"
-# and "which CI construction") share the identical underlying k-arm
-# generative model -- just a different measurement per rep (coverage +
-# width of the constructed simultaneous CI, instead of reject/best-arm).
+# 1. `none`/`bonferroni`/`max_t` (SIMULTANEOUS_CI_METHODS) -- the three of
+#    multiarm's six p-value correction strategies that have an established
+#    simultaneous-CI dual: `none` (naive per-pair CI, no adjustment -- the
+#    uncorrected baseline), Bonferroni t-intervals, and max-T (studentized
+#    bootstrap, Romano-Wolf) -- the two non-naive constructions
+#    all_pairwise's own router (_simultaneous_cis_router) picks between
+#    automatically based on whether `method` is bootstrap-compatible.
+#    (holm/fdr_bh/friedman_nemenyi have no CI dual -- holm/fdr_bh are
+#    p-value-only adjustments, friedman_nemenyi is on the rank scale -- so
+#    they're multiarm-only.) `none`/`bonferroni` are built on the scenario's
+#    eval-type-canonical CI method (see point 2); `max_t` is the exception,
+#    kept on --multiarm-method (bootstrap_t by default) since it needs a
+#    bootstrap-compatible method to resample from, and neither Tango nor
+#    Logit-t is one.
+#
+# 2. `sidak`/`boot` (CANONICAL_SIMULTANEOUS_CI_METHODS) -- does adjusting
+#    evalstats' actual production-default pairwise CI formula for
+#    multiplicity (rather than max-T/Bonferroni's generic bootstrap_t-based
+#    constructions) do better? _canonical_ci_func below maps
+#    each eval type to its evalstats.config.AUTO_ANALYZE_METHOD_TABLE
+#    default: Tango for binary (N>=50 row; small-N bayes_binary isn't
+#    alpha-parameterized the same way, so isn't modeled here), Logit-t for
+#    continuous/likert (both count as the "bounded_01" data_kind once this
+#    harness's own EVAL_TYPE_SCALE_BOUNDS supplies the range Logit-t needs).
+#    `grades` has no entry (out of scope -- not swept by default anyway; see
+#    official_args()'s eval_types). `sidak` (closed-form Sidak-adjusted
+#    per-comparison alpha) and `boot` (a joint bootstrap critical value
+#    substituted for the canonical CI's marginal normal quantile, which
+#    accounts for correlation between comparisons the way max-T does for a
+#    generic statistic) are the two ways of widening it to hold
+#    family-wise. Sidak/bootstrap-scaling themselves are NOT method-specific
+#    -- see evalstats.core.paired's _sidak_simultaneous_cis /
+#    _joint_bootstrap_scaled_simultaneous_cis, which take any
+#    alpha-parameterized per-pair CI as a `ci_func` argument; the canonical
+#    formula is just the ci_func passed in below.
+#
+# Both reuse the SAME k-arm MultiArmSource scenarios (synthetic and real)
+# that --mode multiarm sweeps, since all these questions ("which p-value
+# correction", "which CI construction", "does the canonical CI benefit from
+# multiplicity adjustment") share the identical underlying k-arm generative
+# model -- just a different measurement per rep (coverage + width of the
+# constructed simultaneous CI, instead of reject/best-arm).
 # ---------------------------------------------------------------------------
+
+
+def _canonical_ci_func(eval_type: str):
+    """The alpha-parameterized ci_func for evalstats' canonical pairwise CI
+    at this eval type, or ``None`` if there isn't one wired up here.
+
+    Mirrors evalstats.config.AUTO_ANALYZE_METHOD_TABLE's N>=50 binary row
+    (Tango) and "bounded_01" row (Logit-t, for continuous/likert -- both are
+    on a known bounded numeric scale via EVAL_TYPE_SCALE_BOUNDS, which is
+    exactly what makes a "bounded_01" data_kind determination valid).
+    `logit_t_ci_1d` assumes its input is a [0, 1]-scaled MEAN, not a signed
+    difference of two such means (which ranges over [-span, span], centred
+    at 0, not [0, 1]) -- rescaled_ci handles that remapping, matching
+    evalstats.core.paired's own "logit_t" pairwise-CI branch and
+    cases/ci_paired.py's PAIRWISE_EXTRA_METHODS treatment of the same
+    formula. Returns ``None`` for "grades" (and anything else) -- no
+    canonical default is modeled for it here.
+    """
+    if eval_type == "binary":
+        return tango_paired_ci_from_diffs
+    if eval_type in ("continuous", "likert"):
+        scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
+        diff_span = scale_hi - scale_lo
+        diff_lo, diff_hi = -diff_span, diff_span
+
+        def _logit_t_diff_ci(diffs: np.ndarray, alpha: float, _lo: float = diff_lo, _hi: float = diff_hi) -> tuple[float, float]:
+            return rescaled_ci(logit_t_ci_1d, diffs, alpha, _lo, _hi)
+
+        return _logit_t_diff_ci
+    return None
 
 
 @dataclass
@@ -1399,7 +1844,7 @@ class SimultaneousCIResult:
     label: str
     n: int
     k: int
-    ci_method: str  # "max_t" | "bonferroni"
+    ci_method: str  # "none" | "bonferroni" | "max_t" | "sidak" | "boot" ("sidak"/"boot" absent when _canonical_ci_func(eval_type) is None, e.g. "grades")
     condition: str  # "null" | "alt"
     n_reps: int
     all_covered: int
@@ -1421,7 +1866,13 @@ class SimultaneousCIResult:
     collapses, since each of its individual intervals is close to nominally
     calibrated on its own. Using the worst pair's miss distance ties the
     penalty to the same "did ANY pair miss" event that all_covered measures."""
-    total_time: float = 0.0  # total wall-clock seconds for all n_reps of this condition
+    total_time: float = 0.0
+    """Total wall-clock seconds for THIS method's own construction, summed
+    across all n_reps of this condition -- e.g. bonferroni's own
+    _bonferroni_simultaneous_cis() call, max_t's own _simultaneous_cis_router()
+    call (which includes its bootstrap resampling), etc. Does NOT include
+    shared per-rep setup (score generation, building matrix_raw) except for
+    `none`, which that setup is attributed to (see _run_simultaneous_ci_cell)."""
 
 
 def _run_simultaneous_ci_cell(
@@ -1433,51 +1884,104 @@ def _run_simultaneous_ci_cell(
     ci = 1.0 - alpha
     rng = np.random.default_rng(seed)
 
-    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS]
-    agg_covered: dict[tuple[str, str], int] = {(m, cond): 0 for m in ci_methods for cond in ("null", "alt")}
-    agg_width: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in ci_methods for cond in ("null", "alt")}
-    agg_score: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in ci_methods for cond in ("null", "alt")}
-    agg_time: dict[str, float] = {"null": 0.0, "alt": 0.0}
+    # ci_func is the eval-type-canonical CI formula (Tango for binary,
+    # Logit-t for continuous/likert; None for grades or anything else --
+    # see _canonical_ci_func). When present, it replaces --multiarm-method
+    # as the basis for `none` (and feeds `sidak`/`boot`, which don't exist
+    # without a canonical formula to widen); `bonferroni` is unaffected
+    # either way (_bonferroni_simultaneous_cis always builds its own
+    # generic t-interval from per_input_diffs, never a per-method formula,
+    # so it never depended on --multiarm-method to begin with); `max_t`
+    # keeps using --multiarm-method (bootstrap_t by default) always, since
+    # it needs a bootstrap-compatible method to resample from and neither
+    # Tango nor Logit-t is one.
+    ci_func = _canonical_ci_func(source.eval_type)
+    has_canonical = ci_func is not None
+    base_methods = [m.name for m in SIMULTANEOUS_CI_METHODS]
+    canonical_methods = [m.name for m in CANONICAL_SIMULTANEOUS_CI_METHODS] if has_canonical else []
+    all_methods = base_methods + canonical_methods
+    agg_covered: dict[tuple[str, str], int] = {(m, cond): 0 for m in all_methods for cond in ("null", "alt")}
+    agg_width: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
+    agg_score: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
+    # Per-(method, condition), not a single per-condition total -- each
+    # construction's own wall-clock cost, so e.g. `boot`'s extra joint
+    # bootstrap resampling actually shows up as slower than `sidak`'s
+    # closed-form widening in the report's Time(ms) column, instead of every
+    # method row displaying the same aggregate "whole rep" time.
+    agg_time: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", UserWarning)
         warnings.simplefilter("ignore", RuntimeWarning)
         for _ in range(n_reps):
             for condition, delta in (("null", 0.0), ("alt", source.alt_delta)):
-                _t0 = time.perf_counter()
+                # Score generation + matrix_raw + `none` share one timer,
+                # attributed to `none` -- matrix_raw is the shared
+                # prerequisite `none` (and, when there's no canonical
+                # ci_func, only `none`) actually needs to exist; it's not
+                # fairly attributable to any other single method.
+                _t_none0 = time.perf_counter()
                 scores = source.generate_scores(rng, n, runs, k_arms, delta)
                 true_means = source.true_means(k_arms, delta)
 
-                # Raw (unadjusted) per-pair results -- gives per_input_diffs
-                # for Bonferroni's t-interval formula, held for ALL THREE CI
-                # constructions so only the CI math differs, not the draw.
-                # The raw per-pair CI (matrix_raw.get(*pair).ci_low/.ci_high,
-                # at plain level `ci`, no simultaneous widening at all) IS
-                # the "none" construction -- multiarm's own "why do you need
-                # any correction?" baseline, on the CI side instead of p-values.
+                # Raw per-pair results, for per_input_diffs (method-invariant:
+                # always scores.mean(axis=2)[a] - scores.mean(axis=2)[b],
+                # identical bit-for-bit regardless of which method computes
+                # it -- verified against bootstrap_t's own seeded/non-seeded
+                # construction) feeding Bonferroni's t-interval formula and,
+                # when there's no canonical ci_func for this eval type,
+                # `none` too. When a canonical ci_func DOES exist, built with
+                # the cheapest closed-form method (t_interval -- no bootstrap
+                # resampling at all) rather than --multiarm-method (bootstrap_t
+                # by default): none/bonferroni/sidak/boot below never read
+                # this matrix's own .ci_low/.ci_high in that case (only
+                # per_input_diffs), and max_t's resampling reads `scores`
+                # directly (see below), so paying for --multiarm-method's
+                # expensive k(k-1)/2 independent nested double bootstrap here
+                # would be pure waste. Falls back to --multiarm-method when
+                # there's no canonical ci_func (e.g. "grades"), since `none`
+                # genuinely needs that method's own CI there.
                 matrix_raw = all_pairwise(
-                    scores=scores, labels=labels, method=multiarm_method, ci=ci,
+                    scores=scores, labels=labels, method=("t_interval" if has_canonical else multiarm_method), ci=ci,
                     n_bootstrap=n_bootstrap, correction="none", rng=rng, statistic=statistic,
                     simultaneous_ci=False,
                 )
-                none_cis = {pair: (matrix_raw.get(*pair).ci_low, matrix_raw.get(*pair).ci_high) for pair in pairs}
+                if has_canonical:
+                    # The canonical formula's own naive CI at the plain
+                    # (unadjusted) alpha IS the "none" construction here --
+                    # mathematically identical to what all_pairwise(method=
+                    # "tango"/"logit_t") would compute for .ci_low/.ci_high,
+                    # but derived directly from ci_func so continuous/likert
+                    # get this harness's own EVAL_TYPE_SCALE_BOUNDS-derived
+                    # diff span rather than all_pairwise's [0, 1]-diff-span
+                    # default (which would silently mis-scale likert's
+                    # [1, 5] range without an explicit score_range).
+                    none_cis = {
+                        pair: ci_func(matrix_raw.results[pair].per_input_diffs, alpha)
+                        for pair in pairs
+                    }
+                else:
+                    none_cis = {pair: (matrix_raw.get(*pair).ci_low, matrix_raw.get(*pair).ci_high) for pair in pairs}
+                agg_time[("none", condition)] += time.perf_counter() - _t_none0
+
+                _t0 = time.perf_counter()
                 bonf_cis = _bonferroni_simultaneous_cis(results=matrix_raw.results, pairs=pairs, ci=ci)
+                agg_time[("bonferroni", condition)] += time.perf_counter() - _t0
 
                 # max-T: call _simultaneous_cis_router directly (the same
                 # function all_pairwise(simultaneous_ci=True) would call
-                # internally) instead of a second all_pairwise(...,
-                # simultaneous_ci=True) call. That second call would
-                # redundantly redo all k(k-1)/2 marginal pairwise_differences
-                # computations -- for bootstrap_t, each an independent nested
-                # double bootstrap -- purely to rebuild a `results` dict this
-                # router only reads for its rare Bonferroni-fallback safety
-                # net, when matrix_raw.results above already has exactly
-                # that. Skipping the duplicate roughly halves this mode's
-                # runtime with bootstrap_t (the expensive part is the k(k-1)/2
-                # independent nested marginal bootstraps, not the one shared
-                # max-T resample). Guard against that rare degenerate-data
-                # fallback so a silent Bonferroni substitution never gets
-                # miscounted as a max-T result.
+                # internally). Its actual max-T computation
+                # (_max_stat_simultaneous_cis) resamples straight from
+                # `scores` under --multiarm-method and never reads `results`
+                # at all -- `results` is only consulted for the router's
+                # rare Bonferroni-fallback safety net on degenerate data,
+                # which matrix_raw.results above already supplies (cheaply,
+                # when has_canonical). This is --multiarm-method's (bootstrap_t
+                # by default) one remaining unavoidable cost in this cell:
+                # a single shared max-T resample, not the k(k-1)/2
+                # independent nested double bootstraps matrix_raw used to
+                # pay for before this cheap-when-canonical rework.
+                _t0 = time.perf_counter()
                 maxt_cis: dict = {}
                 sim_cis, sim_method, _ = _simultaneous_cis_router(
                     scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
@@ -1486,10 +1990,39 @@ def _run_simultaneous_ci_cell(
                 )
                 if sim_method == "max_t":
                     maxt_cis = sim_cis
+                agg_time[("max_t", condition)] += time.perf_counter() - _t0
 
-                agg_time[condition] += time.perf_counter() - _t0
+                # sidak/boot: widen the canonical formula (ci_func) itself
+                # for multiplicity, instead of Bonferroni/max-T's generic
+                # bootstrap_t-based constructions. The widening machinery
+                # (_sidak_simultaneous_cis / _joint_bootstrap_scaled_
+                # simultaneous_cis) has no idea what "Tango" or "Logit-t"
+                # is -- it's generic over any alpha-parameterized ci_func;
+                # ci_func is just whichever canonical formula this
+                # scenario's eval type resolves to. per_input_diffs is
+                # method-agnostic, so matrix_raw.results -- built above
+                # under multiarm_method -- is reused here rather than
+                # re-running all_pairwise a second time.
+                if has_canonical:
+                    _t0 = time.perf_counter()
+                    sidak_cis = _sidak_simultaneous_cis(
+                        results=matrix_raw.results, pairs=pairs, ci=ci, ci_func=ci_func,
+                    )
+                    agg_time[(CORR_SIDAK.name, condition)] += time.perf_counter() - _t0
 
-                for method_name, cis in (("none", none_cis), ("bonferroni", bonf_cis), ("max_t", maxt_cis)):
+                    _t0 = time.perf_counter()
+                    boot_cis = _joint_bootstrap_scaled_simultaneous_cis(
+                        scores=scores, results=matrix_raw.results, pairs=pairs, labels=labels,
+                        ci=ci, n_bootstrap=n_bootstrap, rng=rng, ci_func=ci_func, statistic=statistic,
+                    )
+                    agg_time[(CORR_BOOT.name, condition)] += time.perf_counter() - _t0
+                else:
+                    sidak_cis = boot_cis = {}
+
+                for method_name, cis in (
+                    ("none", none_cis), ("bonferroni", bonf_cis), ("max_t", maxt_cis),
+                    (CORR_SIDAK.name, sidak_cis), (CORR_BOOT.name, boot_cis),
+                ):
                     if not cis:
                         continue
                     widths: list[float] = []
@@ -1532,9 +2065,9 @@ def _run_simultaneous_ci_cell(
             eval_type=source.eval_type, label=source.label, n=n, k=k_arms, ci_method=method_name,
             condition=condition, n_reps=n_reps, all_covered=agg_covered[(method_name, condition)],
             total_width=agg_width[(method_name, condition)], total_score=agg_score[(method_name, condition)],
-            total_time=agg_time[condition],
+            total_time=agg_time[(method_name, condition)],
         )
-        for method_name in ci_methods
+        for method_name in all_methods
         for condition in ("null", "alt")
     ]
 
@@ -1593,9 +2126,9 @@ def _time_stats_simultaneous_ci(results: list[SimultaneousCIResult]) -> tuple[fl
 
 def print_simultaneous_ci_report(results: list[SimultaneousCIResult], alpha: float) -> None:
     target = 1.0 - alpha
-    print(f"\n{'='*78}\n  PVALUES (SIMULTANEOUS CI) -- none vs. BONFERRONI vs. max-T\n"
+    print(f"\n{'='*78}\n  PVALUES (SIMULTANEOUS CI) -- none vs. BONFERRONI vs. max-T vs. Tango variants\n"
           f"  Nominal family-wise coverage: {target:.0%}\n{'='*78}")
-    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
+    ci_methods = [m.name for m in ALL_SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
     ks_present = sorted({r.k for r in results})
 
@@ -1702,16 +2235,23 @@ def _print_simultaneous_overall_summary_table(
     print()
 
 
-def latex_simultaneous_ci_overall_summary(results: list[SimultaneousCIResult], alpha: float) -> str:
+def latex_simultaneous_ci_overall_summary(
+    results: list[SimultaneousCIResult], alpha: float, *,
+    label_suffix: str = "", caption_suffix: str = "",
+) -> str:
     """LaTeX booktabs overall summary: per-CI-method family-wise coverage
     (null, with its 95% MC band) + average width (null and alt), collapsed
     across eval types, plus one coverage column per sample size actually
-    swept -- the headline evidence for max-T over the alternatives: `none`
-    should visibly under-cover (no simultaneous adjustment at all), while
-    Bonferroni and max-T should both hit nominal coverage, so the tie-breaker
-    between those two is which one gets there with a narrower average CI."""
+    swept. `none` should visibly under-cover (no simultaneous adjustment at
+    all, even though it's already built on evalstats' canonical per-eval-type
+    CI -- see _canonical_ci_func); `bonferroni`/`max_t`/`sidak`/`boot` should
+    all hit nominal coverage, so the tie-breaker between them is which gets
+    there with a narrower average CI/interval score. *results* may be a
+    filtered subset (e.g. n<=30 / n>=30 -- see latex_simultaneous_ci_full_report)
+    with *label_suffix*/*caption_suffix* set so multiple calls in one
+    document don't collide on \\label{}."""
     target = 1.0 - alpha
-    ci_methods = [m.name for m in SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
+    ci_methods = [m.name for m in ALL_SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
 
@@ -1753,14 +2293,93 @@ def latex_simultaneous_ci_overall_summary(results: list[SimultaneousCIResult], a
 
     return booktabs_table(
         caption=f"pvalues (simultaneous CI): family-wise coverage, average per-comparison width, "
-                f"and average per-comparison interval score, none vs. Bonferroni vs. max-T "
+                f"and average per-comparison interval score -- none/bonferroni/max\\_t (generic, "
+                f"\\texttt{{--multiarm-method}}-based, bootstrap\\_t by default) vs. sidak/boot "
+                f"(Sidak- and joint-bootstrap-scaled widenings of evalstats' canonical per-eval-type "
+                f"CI: Tango for binary, Logit-t for continuous/likert){caption_suffix} "
                 f"(nominal coverage={target:.0%}).",
-        label="tab:pvalues_simultaneous_ci_overall",
+        label=f"tab:pvalues_simultaneous_ci_overall{label_suffix}",
         columns=["CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Score(null)",
                  "Cov(alt)", "Width(alt)", "Score(alt)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
     )
+
+
+def latex_simultaneous_ci_by_eval_type_summary(results: list[SimultaneousCIResult], alpha: float) -> str:
+    """LaTeX booktabs summary faceted by eval type instead of collapsed
+    across them: one row per (eval type, CI method), collapsed across n and
+    k. Complements latex_simultaneous_ci_overall_summary -- `sidak`/`boot`
+    widen a DIFFERENT canonical CI per eval type (Tango for binary, Logit-t
+    for continuous/likert; see _canonical_ci_func), so this is the table
+    that shows the effect holds for each formula separately rather than
+    only in a pooled average that could be dominated by whichever eval type
+    has the most scenarios/sizes swept."""
+    target = 1.0 - alpha
+    ci_methods = [m.name for m in ALL_SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+
+    rows = []
+    for et in eval_types_present:
+        et_results = [r for r in results if r.eval_type == et]
+        et_methods = [cm for cm in ci_methods if any(r.ci_method == cm for r in et_results)]
+        for cm in et_methods:
+            c_rows = [r for r in et_results if r.ci_method == cm]
+            null_rows = [r for r in c_rows if r.condition == "null"]
+            alt_rows = [r for r in c_rows if r.condition == "alt"]
+            t_null = sum(r.n_reps for r in null_rows)
+            c_null = sum(r.all_covered for r in null_rows)
+            w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+            s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
+            t_alt = sum(r.n_reps for r in alt_rows)
+            c_alt = sum(r.all_covered for r in alt_rows)
+            w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+            s_alt = sum(r.total_score for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+            cov_null = c_null / t_null if t_null > 0 else float("nan")
+            cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
+            _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
+            rows.append([
+                escape_latex(et), escape_latex(cm),
+                f"{cov_null:.3f}" if np.isfinite(cov_null) else "-",
+                f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+                f"{w_null:.4f}" if np.isfinite(w_null) else "-",
+                f"{s_null:.4f}" if np.isfinite(s_null) else "-",
+                f"{cov_alt:.3f}" if np.isfinite(cov_alt) else "-",
+                f"{w_alt:.4f}" if np.isfinite(w_alt) else "-",
+                f"{s_alt:.4f}" if np.isfinite(s_alt) else "-",
+            ])
+
+    return booktabs_table(
+        caption=f"pvalues (simultaneous CI): family-wise coverage, average per-comparison width, "
+                f"and average per-comparison interval score, faceted by eval type "
+                f"(nominal coverage={target:.0%}).",
+        label="tab:pvalues_simultaneous_ci_by_eval_type",
+        columns=["Eval type", "CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Score(null)",
+                 "Cov(alt)", "Width(alt)", "Score(alt)"],
+        rows=rows,
+    )
+
+
+def latex_simultaneous_ci_full_report(results: list[SimultaneousCIResult], alpha: float) -> str:
+    """All simultaneous_ci LaTeX tables for this run, concatenated and ready
+    to paste into a paper: the pooled overall summary, the same summary
+    split into low-N (n<=30) / high-N (n>=30) subsets (the mode's headline
+    max-T-crossover finding -- see print_simultaneous_ci_report's LOW N /
+    HIGH N split), and the by-eval-type facet (showing sidak/boot's effect
+    holds separately for Tango (binary) and Logit-t (continuous/likert), not
+    just in a pooled average)."""
+    return "\n\n".join([
+        latex_simultaneous_ci_overall_summary(results, alpha),
+        latex_simultaneous_ci_overall_summary(
+            [r for r in results if r.n <= 30], alpha,
+            label_suffix="_lown", caption_suffix=", low-N ($n \\le 30$) subset",
+        ),
+        latex_simultaneous_ci_overall_summary(
+            [r for r in results if r.n >= 30], alpha,
+            label_suffix="_highn", caption_suffix=", high-N ($n \\ge 30$) subset",
+        ),
+        latex_simultaneous_ci_by_eval_type_summary(results, alpha),
+    ])
 
 
 def save_results_artifacts_simultaneous_ci(
@@ -1785,7 +2404,7 @@ def save_results_artifacts_simultaneous_ci(
         print_simultaneous_ci_report(results, alpha=alpha)
     summary_text = buf.getvalue()
     if latex:
-        summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_simultaneous_ci_overall_summary(results, alpha=alpha)
+        summary_text += "\n% --- LaTeX tables (--latex): overall, low-N, high-N, by-eval-type ---\n" + latex_simultaneous_ci_full_report(results, alpha=alpha)
     summary_path.write_text(summary_text, encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -1862,8 +2481,8 @@ def save_simultaneous_ci_coverage_width_plot(*, results: list[SimultaneousCIResu
         ax.legend(fontsize=7, loc="lower right")
 
     fig.suptitle(
-        "pvalues (simultaneous CI): coverage vs. width, Bonferroni vs. max-T\n"
-        "(one dot = one scenario, averaged across n and k)",
+        "Simultaneous Confidence Interval Calibration: Coverage vs. Width\n"
+        f"One point per scenario, averaged across $n$ and $k$ (nominal coverage = {target:.0%})",
         fontsize=12,
     )
     with warnings.catch_warnings():
@@ -1899,6 +2518,7 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
     fig, (ax_cov, ax_width) = plt.subplots(1, 2, figsize=(10.0, 4.5))
     ax_cov.axhline(target, color="black", linewidth=1.0, linestyle="--", label=f"nominal={target:.0%}")
 
+    all_cov_vals: list[float] = [target]
     for m in SIMULTANEOUS_CI_PLOT_METHODS:
         c_rows = [r for r in results if r.ci_method == m.name]
         if not c_rows:
@@ -1918,20 +2538,127 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
         if xs:
             ax_cov.plot(xs, ys_cov, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
             ax_width.plot(xs, ys_width, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            all_cov_vals.extend(ys_cov)
 
     ax_cov.set_xlabel("k (number of arms)")
     ax_cov.set_ylabel("Family-wise coverage (null)")
     ax_cov.set_title("Coverage vs. number of arms")
-    ax_cov.set_ylim(0.0, 1.02)
+    # Zoom to the actual coverage spread (plus the nominal line) rather than
+    # a fixed [0, 1] -- with `none` dropped from this plot (SIMULTANEOUS_CI_
+    # PLOT_METHODS), every remaining curve usually clusters near nominal, and
+    # a full [0, 1] axis squashes that spread into an unreadable sliver at
+    # the top (see save_simultaneous_ci_coverage_width_plot's identical fix).
+    cov_lo, cov_hi = min(all_cov_vals), max(all_cov_vals)
+    cov_pad = max(0.01, (cov_hi - cov_lo) * 0.15)
+    ax_cov.set_ylim(max(0.0, cov_lo - cov_pad), min(1.02, cov_hi + cov_pad))
+    ax_cov.set_xticks(ks_present)
     ax_cov.legend(fontsize=7)
 
     ax_width.set_xlabel("k (number of arms)")
     ax_width.set_ylabel("Average per-comparison CI width (null)")
     ax_width.set_title("Width vs. number of arms")
     ax_width.set_ylim(bottom=0.0)
+    ax_width.set_xticks(ks_present)
     ax_width.legend(fontsize=7)
 
-    fig.suptitle("pvalues (simultaneous CI): coverage and width vs. k", fontsize=12)
+    fig.suptitle(
+        "Simultaneous Confidence Interval Calibration vs. Number of Systems Compared\n"
+        f"Nominal coverage = {target:.0%}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_simultaneous_ci_coverage_width_vs_n_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
+    """Family-wise coverage and average width as a function of n (sample
+    size), one curve per CI method, collapsed across eval types and k --
+    the sample-size analogue of save_simultaneous_ci_coverage_width_vs_k_plot
+    (same two-panel line-plot style: exact x-ticks pinned to the sizes
+    actually swept, coverage y-axis zoomed to the actual spread rather than
+    a fixed [0, 1]). X-axis is log-scaled, unlike the vs-k plot's linear one:
+    n sweeps span an order of magnitude or more (e.g. the official preset's
+    15..500), so a linear axis crams the small-n tick labels into an
+    unreadable overlapping cluster -- log-scale is the standard convention
+    for coverage-vs-sample-size plots for exactly this reason, and still
+    shows exact tick labels (via a ScalarFormatter override) rather than
+    scientific notation. Complements save_simultaneous_ci_violin_vs_n_plot
+    (full per-cell distribution, faceted by eval type) with the single
+    pooled-mean curve per method that's easier to read at a glance across
+    the whole n sweep. Only plots Bonferroni/max-T/sidak/boot
+    (SIMULTANEOUS_CI_PLOT_METHODS excludes `none` -- see that plot's
+    docstring for why; `none` is still in the printed/logged report tables
+    and the CSV). Only produced when more than one n value was swept;
+    returns out_path unchanged (without writing) if all results share the
+    same n."""
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as mticker
+
+    target = 1.0 - alpha
+    sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    if len(sizes_present) < 2:
+        return out_path
+
+    fig, (ax_cov, ax_width) = plt.subplots(1, 2, figsize=(10.0, 4.5))
+    ax_cov.axhline(target, color="black", linewidth=1.0, linestyle="--", label=f"nominal={target:.0%}")
+
+    all_cov_vals: list[float] = [target]
+    for m in SIMULTANEOUS_CI_PLOT_METHODS:
+        c_rows = [r for r in results if r.ci_method == m.name]
+        if not c_rows:
+            continue
+        xs, ys_cov, ys_width = [], [], []
+        for n in sizes_present:
+            n_rows = [r for r in c_rows if r.n == n]
+            null_rows = [r for r in n_rows if r.condition == "null"]
+            t_null = sum(r.n_reps for r in null_rows)
+            c_null = sum(r.all_covered for r in null_rows)
+            w_null = sum(r.total_width for r in null_rows)
+            if t_null == 0:
+                continue
+            xs.append(n)
+            ys_cov.append(c_null / t_null)
+            ys_width.append(w_null / t_null)
+        if xs:
+            ax_cov.plot(xs, ys_cov, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            ax_width.plot(xs, ys_width, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            all_cov_vals.extend(ys_cov)
+
+    ax_cov.set_xlabel("n (sample size)")
+    ax_cov.set_ylabel("Family-wise coverage (null)")
+    ax_cov.set_title("Coverage vs. sample size")
+    # Zoom to the actual coverage spread (plus the nominal line) rather than
+    # a fixed [0, 1] -- see save_simultaneous_ci_coverage_width_vs_k_plot's
+    # identical fix.
+    cov_lo, cov_hi = min(all_cov_vals), max(all_cov_vals)
+    cov_pad = max(0.01, (cov_hi - cov_lo) * 0.15)
+    ax_cov.set_ylim(max(0.0, cov_lo - cov_pad), min(1.02, cov_hi + cov_pad))
+    ax_cov.legend(fontsize=7)
+
+    ax_width.set_xlabel("n (sample size)")
+    ax_width.set_ylabel("Average per-comparison CI width (null)")
+    ax_width.set_title("Width vs. sample size")
+    ax_width.set_ylim(bottom=0.0)
+    ax_width.legend(fontsize=7)
+
+    # Log-scale x-axis (see docstring) with exact tick labels at the swept
+    # sizes instead of matplotlib's default log-scale power-of-ten ticks.
+    for ax in (ax_cov, ax_width):
+        ax.set_xscale("log")
+        ax.set_xticks(sizes_present)
+        ax.xaxis.set_major_formatter(mticker.ScalarFormatter())
+        ax.xaxis.set_minor_formatter(mticker.NullFormatter())
+
+    fig.suptitle(
+        "Simultaneous Confidence Interval Calibration vs. Sample Size\n"
+        f"Nominal coverage = {target:.0%}",
+        fontsize=12,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -1950,7 +2677,7 @@ def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCI
     Exposes the spread the OVERALL SUMMARY table's pooled coverage hides: a
     method with nominal family-wise coverage on average can still miss badly
     on a specific scenario/k cell that pooling across labels masks. Only
-    plots Bonferroni and max-T (`none` is dropped -- see
+    plots bonferroni/max_t/sidak/boot (`none` is dropped -- see
     SIMULTANEOUS_CI_PLOT_METHODS -- since it's so far below nominal
     coverage that it squashes the comparison this plot exists to show;
     it's still in the printed/logged report tables and the CSV)."""
@@ -2010,7 +2737,8 @@ def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCI
                 tick_label.set_ha("right")
 
     fig.suptitle(
-        f"Cross-Scenario Reliability (one dot = one scenario)\npvalues simultaneous CI | alpha={alpha}",
+        "Simultaneous Confidence Interval Reliability Across Evaluation Scenarios\n"
+        f"One point per scenario, nominal coverage = {target:.0%}",
         fontsize=12,
     )
     with warnings.catch_warnings():
@@ -2039,7 +2767,7 @@ def save_simultaneous_ci_violin_vs_n_plot(*, results: list[SimultaneousCIResult]
     hitting a near-zero denominator on any given replicate), so collapsing
     across k here would hide the very thing this plot exists to show.
 
-    Only plots Bonferroni and max-T (`none` is dropped -- see
+    Only plots bonferroni/max_t/sidak/boot (`none` is dropped -- see
     SIMULTANEOUS_CI_PLOT_METHODS -- since it's so far below nominal
     coverage that it squashes the comparison this plot exists to show;
     it's still in the printed/logged report tables and the CSV).
@@ -2109,13 +2837,13 @@ def save_simultaneous_ci_violin_vs_n_plot(*, results: list[SimultaneousCIResult]
             ax.set_title(et.upper() if row_idx == 0 else "")
 
     axes[0][-1].legend(
-        handles=legend_handles, title="CI method", fontsize=8, title_fontsize=9,
+        handles=legend_handles, title="Simult. CI method", fontsize=8, title_fontsize=9,
         loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
     )
 
     fig.suptitle(
-        "Coverage / Interval Score vs. Sample Size (null)\n"
-        f"pvalues simultaneous CI | alpha={alpha} | each violin pools all k and scenarios at that n",
+        "Simultaneous Confidence Interval Coverage and Interval Score vs. Sample Size\n"
+        f"Nominal coverage = {target:.0%}; each violin pools all $k$ and scenarios at that $n$",
         fontsize=12,
     )
     with warnings.catch_warnings():
@@ -4126,9 +4854,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                              "however many aligned real models a benchmark has; larger k values are skipped with a warning.")
     parser.add_argument("--multiarm-method", default=BOOTSTRAP_T.name, metavar="METHOD",
                          choices=[BOOTSTRAP.name, BCA.name, BAYES_BOOTSTRAP.name, SMOOTH_BOOTSTRAP.name, PERMUTATION.name, BOOTSTRAP_T.name],
-                         help="multiarm/simultaneous_ci modes: pairwise_differences-family method used to derive "
-                              "raw p-values (multiarm) / the point-estimate + bootstrap draws that both simultaneous-CI "
-                              "constructions share (simultaneous_ci) -- must be bootstrap-compatible for max-T to apply")
+                         help="multiarm mode: only affects max_t's point estimate + bootstrap draws (none/holm/"
+                              "bonferroni/fdr_bh correct the canonical Wilcoxon signed-rank p-value regardless) / "
+                              "simultaneous_ci mode: only affects max_t's construction (none/bonferroni/sidak/boot "
+                              "build on the canonical per-eval-type CI regardless) -- must be bootstrap-compatible "
+                              "for max-T to apply")
     parser.add_argument("--multiarm-icc", type=float, default=0.20, metavar="ICC",
                          help="multiarm/simultaneous_ci modes: ICC for build_multiarm_sources' shared truth/noise model "
                               "(same meaning as --icc-values in pairwise mode)")
@@ -4216,9 +4946,20 @@ def official_args_multiarm(base_seed: int = 42) -> argparse.Namespace:
     i.e. both pairwise and multiarm together) so the multiarm sweep alone
     can be re-run on its own -- e.g. after a multiarm-specific performance
     or correctness fix -- without paying for the separate (and unrelated)
-    pairwise sweep every time."""
+    pairwise sweep every time.
+
+    Overrides official_args()'s sizes with official_args_simultaneous_ci's
+    coarser 6-point n=15..500 sweep (rather than official_args()'s denser
+    6-point sweep stopping at 100): multiarm's resampling-based FWER
+    corrections (max_t/romano_wolf/westfall_young) are the direct p-value-
+    side analogue of simultaneous_ci's CI constructions (same bootstrap-t/
+    step-down machinery, same k-arm sources), so sweeping the same n range
+    makes the two modes' small-N-to-large-N comparisons directly comparable
+    instead of stopping multiarm's sweep short of the large-N regime
+    simultaneous_ci's sweep was chosen to cover."""
     args = official_args(base_seed)
     args.mode = "multiarm"
+    args.sizes = [15, 30, 50, 100, 200, 500]
     return args
 
 
@@ -4254,13 +4995,24 @@ def official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
       bootstrap, k(k-1)/2 marginal pairs plus the shared max-T resample) is
       high enough that this matters much more here than in the
       pairwise/multiarm modes official_args() also serves.
-    - sizes adds n=125 on top of the default sweep, extending the high-N
-      anchor a bit further past the ~30 crossover found in practice.
+    - sizes is a coarser 6-point sweep spanning n=15 to n=500 (rather than
+      official_args()'s denser 6-point sweep stopping at 100):
+      save_simultaneous_ci_violin_vs_n_plot's per-n grouped violins
+      (tango_naive/sidak/boot constructions alongside none/Bonferroni/
+      max-T) are most informative for deciding a real default when they
+      span the full small-N (where multiplicity eats the most power) to
+      large-N (where all constructions should converge) range a real
+      evaluation might have, not just the ~30 crossover this preset
+      historically anchored on -- kept to 6 points, not official_args()'s
+      density, since this mode's per-cell cost (bootstrap_t's nested double
+      bootstrap, k(k-1)/2 marginal pairs plus the shared max-T resample,
+      times the tango/sidak/boot rows on top for binary sources) is already
+      the most expensive of the pvalues sub-modes.
     """
     args = official_args(base_seed)
     args.mode = "simultaneous_ci"
     args.scenario_suite = "expanded"
-    args.sizes = [10, 20, 30, 50, 75, 100, 125]
+    args.sizes = [15, 30, 50, 100, 200, 500]
     return args
 
 
@@ -4473,6 +5225,10 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if Path(vs_k_path).exists():
                     output_paths.append(vs_k_path)
                     print(f"Saved plot: {vs_k_path}")
+                vs_n_path = save_multiarm_fwer_vs_n_plot(results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_fwer_vs_n.png"))
+                if Path(vs_n_path).exists():
+                    output_paths.append(vs_n_path)
+                    print(f"Saved plot: {vs_n_path}")
                 reliability_path = save_multiarm_reliability_violin_plot(
                     results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
                 )
@@ -4512,6 +5268,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if Path(vs_k_path).exists():
                     output_paths.append(vs_k_path)
                     print(f"Saved plot: {vs_k_path}")
+                vs_n_path = save_simultaneous_ci_coverage_width_vs_n_plot(
+                    results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_vs_n.png"),
+                )
+                if Path(vs_n_path).exists():
+                    output_paths.append(vs_n_path)
+                    print(f"Saved plot: {vs_n_path}")
                 reliability_path = save_simultaneous_ci_reliability_violin_plot(
                     results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
                 )
@@ -4523,7 +5285,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 output_paths.append(violin_vs_n_path)
                 print(f"Saved plot: {violin_vs_n_path}")
 
-            for cm_name in ("none", "bonferroni", "max_t"):
+            for cm_name in ("none", "bonferroni", "max_t", CORR_SIDAK.name, CORR_BOOT.name):
                 cm_null_rows = [r for r in sci_results if r.ci_method == cm_name and r.condition == "null"]
                 if not cm_null_rows:
                     continue

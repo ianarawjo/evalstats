@@ -161,6 +161,104 @@ def is_bounded_01_scores(scores: np.ndarray) -> bool:
     return bool(np.all(finite >= 0.0) and np.all(finite <= 1.0))
 
 
+def resolve_score_bounds(
+    scores: np.ndarray,
+    score_range: Optional[tuple[float, float]] = None,
+    *,
+    stacklevel: int = 2,
+) -> Optional[tuple[float, float]]:
+    """Resolve the ``[lo, hi]`` bounds used to rescale numeric data onto
+    ``[0, 1]`` for bounds-dependent methods (``logit_t``, ``nig``).
+
+    Only call this for data that has already been confirmed non-binary
+    (see :func:`is_binary_scores`) -- binary data has exact, unambiguous
+    bounds and never needs a ``score_range``.
+
+    Resolution order:
+
+    1. ``score_range`` explicit — used as-is, after checking every finite
+       value in *scores* actually falls within it (raises ``ValueError``
+       otherwise; a declared range that the data violates is a user error,
+       not something to silently paper over). No warning: this is an
+       informed, explicit choice.
+    2. All finite values already lie in ``[0, 1]`` (see
+       :func:`is_bounded_01_scores`) — returns ``(0.0, 1.0)`` exactly. This
+       is the common case (accuracy, ROUGE, similarity scores, ...) and
+       needs no approximation, but a ``UserWarning`` is still emitted
+       announcing the auto-detected range and the method it selects, since
+       it's still an inference from the data rather than something the
+       caller stated.
+    3. Otherwise — returns ``None``. There is no reliable way to infer a
+       finite range for data that falls outside ``[0, 1]`` without the
+       caller's input (the sample's own min/max is *not* a safe substitute
+       for the metric's true theoretical range -- e.g. a 1-5 Likert scale
+       sampled only between 2 and 4). Callers should fall back to a
+       bounds-agnostic method (e.g. ``t_interval``) in this case, and are
+       expected to emit their own ``UserWarning`` recommending an explicit
+       ``score_range`` (this function doesn't warn here itself, since the
+       right fallback method/message differs by call site -- ``auto``
+       routing silently downgrades, while an explicit ``method='logit_t'``
+       request should instead raise).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array, already known to be non-binary.
+    score_range : tuple[float, float], optional
+        User-declared ``(lo, hi)`` bounds for the eval metric, e.g.
+        ``(0, 1)`` for normalised accuracy or ``(1, 5)`` for a Likert scale.
+    stacklevel : int, optional
+        Passed through to ``warnings.warn`` so the auto-detection warning
+        points at the caller's caller (default assumes one intermediate
+        frame, e.g. ``_analyze_single``).
+
+    Returns
+    -------
+    (lo, hi) : tuple[float, float], or None
+        ``None`` when no reliable range could be established.
+
+    Raises
+    ------
+    ValueError
+        If ``score_range`` is given but some value in *scores* falls
+        outside it, or if ``score_range`` itself is degenerate (``lo >= hi``).
+    """
+    flat = scores.ravel()
+    finite = flat[np.isfinite(flat)]
+    if len(finite) == 0:
+        raise ValueError("resolve_score_bounds requires at least one finite value.")
+
+    if score_range is not None:
+        lo, hi = float(score_range[0]), float(score_range[1])
+        if lo >= hi:
+            raise ValueError(f"score_range must satisfy lo < hi; got {score_range!r}.")
+        if np.any(finite < lo) or np.any(finite > hi):
+            bad_lo = float(np.min(finite))
+            bad_hi = float(np.max(finite))
+            raise ValueError(
+                f"score_range={score_range!r} was given, but the data ranges "
+                f"from {bad_lo:g} to {bad_hi:g}, which falls outside it. Either "
+                "the declared range is wrong, or the data contains values "
+                "that shouldn't be there."
+            )
+        return lo, hi
+
+    if bool(np.all(finite >= 0.0) and np.all(finite <= 1.0)):
+        warnings.warn(
+            "Numeric evaluation data was auto-detected as [0, 1]-bounded "
+            "(e.g. normalised accuracy, ROUGE) with no explicit score_range "
+            "given, so evalstats is using method='logit_t' with score_range="
+            "(0, 1). If this metric's true range isn't actually [0, 1], pass "
+            "score_range=(true_min, true_max) explicitly to avoid a "
+            "miscalibrated CI.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+        return 0.0, 1.0
+
+    return None
+
+
 def wald_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     """Wald (normal-approximation) confidence interval for a binomial proportion.
 
@@ -1431,14 +1529,43 @@ def tango_paired_ci(
     if values_a.shape != values_b.shape:
         raise ValueError("tango_paired_ci expects arrays with equal shape.")
 
-    n = int(len(values_a))
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    return tango_paired_ci_from_diffs(a_bin - b_bin, alpha)
+
+
+def tango_paired_ci_from_diffs(diffs: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Tango score CI for the paired binary difference, from a-minus-b diffs.
+
+    Same closed-form score interval as :func:`tango_paired_ci`, but takes
+    the already-computed per-pair difference ``a_bin - b_bin`` (values in
+    ``{-1, 0, 1}``) directly instead of the two raw ``values_a``/``values_b``
+    arrays. Concordant pairs (``diff == 0``, whether both 1 or both 0) don't
+    distinguish ``n10``/``n01`` counts either way, so ``diffs`` alone is
+    sufficient -- this lets simultaneous-CI constructions (Sidak, joint-
+    bootstrap scaling) reuse a paired comparison's already-stored
+    ``per_input_diffs`` at an adjusted alpha without re-deriving the raw
+    binary arrays.
+
+    Parameters
+    ----------
+    diffs : np.ndarray
+        1-D array of per-pair differences in ``{-1, 0, 1}`` (``a_bin - b_bin``).
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    diffs = np.asarray(diffs)
+    n = int(len(diffs))
     if n <= 0:
         return (0.0, 0.0)
 
-    a_bin = (values_a >= 0.5).astype(int)
-    b_bin = (values_b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    n10 = int(np.sum(diffs > 0))
+    n01 = int(np.sum(diffs < 0))
 
     d_hat = float((n10 - n01) / n)
     z = float(stats.norm.ppf(1.0 - alpha / 2.0))
@@ -1642,6 +1769,11 @@ def tango_paired_ci_multirun_effective(
 ) -> tuple[float, float]:
     """Correlation-aware multirun Tango CI using effective sample size.
 
+    This is "ER-Tango" in the paper's CI decision-tree figure and appendix:
+    the multi-run pairwise-binary method for N >= 50 (``method='tango'``
+    dispatches here automatically when R >= 3 seeded runs are present -- see
+    :func:`pairwise_differences`).
+
     Adjusts within-item variance using an estimated effective number of runs
     to account for correlation between runs.
 
@@ -1721,6 +1853,12 @@ def tango_paired_ci_multirun_moments(
     alpha: float,
 ) -> tuple[float, float]:
     """Multi-run Tango-style CI using a cluster moments decomposition.
+
+    Not the method ``pairwise_differences(method='tango')`` dispatches to
+    for multi-run data -- that's :func:`tango_paired_ci_multirun_effective`
+    ("ER-Tango" in the paper). This variant remains available as an
+    alternative/comparison point (see ``simulations/harness``), not as a
+    routed default.
 
     This variant estimates the paired risk-difference uncertainty via
     item-level moments of paired run differences:

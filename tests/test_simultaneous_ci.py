@@ -15,8 +15,12 @@ from evalstats.core.paired import (
     _max_stat_simultaneous_cis,
     _bonferroni_simultaneous_cis,
     _simultaneous_cis_router,
+    _sidak_simultaneous_cis,
+    _joint_bootstrap_scaled_simultaneous_cis,
+    _joint_bootstrap_critical_value,
     all_pairwise,
 )
+from evalstats.core.resampling import tango_paired_ci, tango_paired_ci_from_diffs
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -739,3 +743,251 @@ def test_bonferroni_annotation_in_test_method():
         rng=_rng(83), simultaneous_ci=True, correction="none",
     )
     assert mat.simultaneous_ci_method == "bonferroni"
+
+
+# ---------------------------------------------------------------------------
+# Section 6 — Generic Sidak / joint-bootstrap-scaled simultaneous CIs.
+# These take an arbitrary alpha-parameterized `ci_func` -- Tango's
+# tango_paired_ci_from_diffs is exercised here as one concrete instantiation
+# (binary paired data), but _sidak_simultaneous_cis /
+# _joint_bootstrap_scaled_simultaneous_cis / _joint_bootstrap_critical_value
+# themselves have no Tango-specific logic; test_..._is_method_agnostic below
+# confirms a second, unrelated ci_func works identically.
+# ---------------------------------------------------------------------------
+
+def _binary_paired_scores(rng, k, M, p=0.5):
+    """(k, M) 0/1 matrix, one row per arm, independently Bernoulli(p)."""
+    return (rng.random((k, M)) < p).astype(float)
+
+
+def _make_binary_results(scores_2d, labels, **kw):
+    mat = all_pairwise(scores_2d, labels, method="tango", n_bootstrap=200, rng=_rng(0), **kw)
+    pairs = [(labels[i], labels[j]) for i in range(len(labels)) for j in range(i + 1, len(labels))]
+    return mat.results, pairs
+
+
+def test_tango_paired_ci_from_diffs_matches_tango_paired_ci():
+    """tango_paired_ci_from_diffs(a_bin - b_bin, alpha) must reproduce
+    tango_paired_ci(a, b, alpha) exactly -- it's a refactor of the same
+    closed-form math, not an independent implementation."""
+    rng = _rng(200)
+    a = (rng.random(80) < 0.6).astype(float)
+    b = (rng.random(80) < 0.4).astype(float)
+    for alpha in (0.01, 0.05, 0.2):
+        expected = tango_paired_ci(a, b, alpha)
+        actual = tango_paired_ci_from_diffs(a - b, alpha)
+        np.testing.assert_allclose(actual, expected, atol=1e-12)
+
+
+def test_tango_paired_ci_from_diffs_empty():
+    assert tango_paired_ci_from_diffs(np.array([]), 0.05) == (0.0, 0.0)
+
+
+def _t_interval_ci_func(diffs: np.ndarray, alpha: float) -> tuple[float, float]:
+    """A second, unrelated alpha-parameterized CI formula (paired t-interval)
+    used only to prove _sidak_simultaneous_cis /
+    _joint_bootstrap_scaled_simultaneous_cis don't hardcode Tango anywhere."""
+    from scipy import stats as scipy_stats
+    diffs = np.asarray(diffs)
+    M = len(diffs)
+    if M < 2:
+        return (float(diffs.mean()), float(diffs.mean()))
+    se = float(np.std(diffs, ddof=1)) / np.sqrt(M)
+    t_crit = float(scipy_stats.t.ppf(1.0 - alpha / 2.0, df=M - 1))
+    mean = float(diffs.mean())
+    return (mean - t_crit * se, mean + t_crit * se)
+
+
+def test_sidak_returns_all_pairs():
+    scores = _binary_paired_scores(_rng(90), 3, 60)
+    labels = ["a", "b", "c"]
+    results, pairs = _make_binary_results(scores, labels)
+    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    assert set(cis.keys()) == set(pairs)
+
+
+def test_sidak_bounds_finite_and_ordered():
+    scores = _binary_paired_scores(_rng(91), 4, 50)
+    labels = ["a", "b", "c", "d"]
+    results, pairs = _make_binary_results(scores, labels)
+    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    for pair, (lo, hi) in cis.items():
+        assert np.isfinite(lo) and np.isfinite(hi), f"{pair}: non-finite bounds"
+        assert lo <= hi, f"{pair}: lo > hi"
+        assert -1.0 <= lo and hi <= 1.0
+
+
+def test_sidak_wider_than_naive_ci_func():
+    """Sidak-adjusted intervals must be at least as wide as the naive
+    per-pair CI from the same ci_func (k > 1 always widens the
+    per-comparison alpha)."""
+    scores = _binary_paired_scores(_rng(92), 4, 80)
+    labels = ["a", "b", "c", "d"]
+    results, pairs = _make_binary_results(scores, labels)
+    cis_sidak = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    for pair in pairs:
+        r = results[pair]
+        naive_lo, naive_hi = tango_paired_ci_from_diffs(r.per_input_diffs, 0.05)
+        sidak_lo, sidak_hi = cis_sidak[pair]
+        assert (sidak_hi - sidak_lo) >= (naive_hi - naive_lo) - 1e-9, (
+            f"{pair}: Sidak width should be >= naive width"
+        )
+
+
+def test_sidak_single_pair_equals_naive_ci_func():
+    """With k=1, Sidak's adjustment (1 - (1-alpha)**(1/1) == alpha) is a
+    no-op, so the CI matches ci_func called directly at the same level."""
+    scores = _binary_paired_scores(_rng(93), 2, 60)
+    labels = ["a", "b"]
+    results, pairs = _make_binary_results(scores, labels)
+    assert len(pairs) == 1
+    cis = _sidak_simultaneous_cis(results, pairs, ci=0.95, ci_func=tango_paired_ci_from_diffs)
+    expected = tango_paired_ci_from_diffs(results[pairs[0]].per_input_diffs, 0.05)
+    np.testing.assert_allclose(cis[pairs[0]], expected, atol=1e-9)
+
+
+def test_sidak_empty_pairs_returns_empty():
+    assert _sidak_simultaneous_cis({}, [], ci=0.95, ci_func=tango_paired_ci_from_diffs) == {}
+
+
+def test_sidak_is_ci_func_agnostic():
+    """Swapping ci_func for an unrelated paired-t formula must change which
+    formula is called (not silently keep using Tango's), while the
+    Sidak-adjustment machinery itself stays identical."""
+    scores = _rng(103).normal(0, 1, (3, 50))  # continuous, NOT binary
+    labels = ["a", "b", "c"]
+    mat = all_pairwise(scores, labels, method="bootstrap", n_bootstrap=100, rng=_rng(0), correction="none")
+    pairs = [("a", "b"), ("a", "c"), ("b", "c")]
+    cis = _sidak_simultaneous_cis(mat.results, pairs, ci=0.95, ci_func=_t_interval_ci_func)
+    k = len(pairs)
+    alpha_adj = 1.0 - (1.0 - 0.05) ** (1.0 / k)
+    for pair in pairs:
+        expected = _t_interval_ci_func(mat.results[pair].per_input_diffs, alpha_adj)
+        np.testing.assert_allclose(cis[pair], expected, atol=1e-9)
+
+
+def test_joint_bootstrap_critical_value_returns_finite_positive():
+    scores = _binary_paired_scores(_rng(94), 4, 80)
+    labels = ["a", "b", "c", "d"]
+    pairs = [(labels[i], labels[j]) for i in range(4) for j in range(i + 1, 4)]
+    c = _joint_bootstrap_critical_value(
+        scores=scores, pairs=pairs, labels=labels, ci=0.95, n_bootstrap=500, rng=_rng(94),
+    )
+    assert c is not None
+    assert np.isfinite(c) and c > 0.0
+
+
+def test_joint_bootstrap_critical_value_empty_pairs():
+    scores = _binary_paired_scores(_rng(95), 2, 40)
+    labels = ["a", "b"]
+    c = _joint_bootstrap_critical_value(
+        scores=scores, pairs=[], labels=labels, ci=0.95, n_bootstrap=100, rng=_rng(95),
+    )
+    assert c is None
+
+
+def test_joint_bootstrap_scaled_returns_all_pairs_or_empty():
+    scores = _binary_paired_scores(_rng(96), 3, 70)
+    labels = ["a", "b", "c"]
+    results, pairs = _make_binary_results(scores, labels)
+    cis = _joint_bootstrap_scaled_simultaneous_cis(
+        scores=scores, results=results, pairs=pairs, labels=labels,
+        ci=0.95, n_bootstrap=500, rng=_rng(96), ci_func=tango_paired_ci_from_diffs,
+    )
+    # Degenerate (all-same-value) draws can legitimately return {}; a
+    # non-degenerate binary draw should return every requested pair.
+    assert cis == {} or set(cis.keys()) == set(pairs)
+
+
+def test_joint_bootstrap_scaled_bounds_finite_and_ordered():
+    scores = _binary_paired_scores(_rng(97), 4, 80)
+    labels = ["a", "b", "c", "d"]
+    results, pairs = _make_binary_results(scores, labels)
+    cis = _joint_bootstrap_scaled_simultaneous_cis(
+        scores=scores, results=results, pairs=pairs, labels=labels,
+        ci=0.95, n_bootstrap=500, rng=_rng(97), ci_func=tango_paired_ci_from_diffs,
+    )
+    for pair, (lo, hi) in cis.items():
+        assert np.isfinite(lo) and np.isfinite(hi), f"{pair}: non-finite bounds"
+        assert lo <= hi, f"{pair}: lo > hi"
+        assert -1.0 <= lo and hi <= 1.0
+
+
+def test_joint_bootstrap_scaled_empty_pairs_returns_empty():
+    scores = _binary_paired_scores(_rng(98), 2, 40)
+    labels = ["a", "b"]
+    assert _joint_bootstrap_scaled_simultaneous_cis(
+        scores=scores, results={}, pairs=[], labels=labels, ci=0.95, n_bootstrap=100, rng=_rng(98),
+        ci_func=tango_paired_ci_from_diffs,
+    ) == {}
+
+
+def test_joint_bootstrap_scaled_degenerate_all_identical_returns_empty():
+    """When every arm is constant (zero bootstrap variance for every pair),
+    the joint critical value is undefined and the function must return {}
+    rather than raising or dividing by zero."""
+    scores = np.ones((3, 30))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_binary_results(scores, labels)
+    cis = _joint_bootstrap_scaled_simultaneous_cis(
+        scores=scores, results=results, pairs=pairs, labels=labels,
+        ci=0.95, n_bootstrap=200, rng=_rng(99), ci_func=tango_paired_ci_from_diffs,
+    )
+    assert cis == {}
+
+
+def test_joint_bootstrap_scaled_is_ci_func_agnostic():
+    """Same ci_func-swap check as test_sidak_is_ci_func_agnostic, for the
+    joint-bootstrap-scaled construction."""
+    scores = _rng(104).normal(0, 1, (3, 50))
+    labels = ["a", "b", "c"]
+    mat = all_pairwise(scores, labels, method="bootstrap", n_bootstrap=100, rng=_rng(0), correction="none")
+    pairs = [("a", "b"), ("a", "c"), ("b", "c")]
+
+    from scipy import stats as scipy_stats
+
+    c = _joint_bootstrap_critical_value(
+        scores=scores, pairs=pairs, labels=labels, ci=0.95, n_bootstrap=300, rng=_rng(50),
+    )
+    assert c is not None
+    alpha_eff = float(2.0 * (1.0 - scipy_stats.norm.cdf(c)))
+
+    cis = _joint_bootstrap_scaled_simultaneous_cis(
+        scores=scores, results=mat.results, pairs=pairs, labels=labels,
+        ci=0.95, n_bootstrap=300, rng=_rng(50), ci_func=_t_interval_ci_func,
+    )
+    for pair in pairs:
+        expected = _t_interval_ci_func(mat.results[pair].per_input_diffs, alpha_eff)
+        np.testing.assert_allclose(cis[pair], expected, atol=1e-9)
+
+
+def test_sidak_simultaneous_coverage_near_nominal():
+    """Family-wise coverage (ALL pairs simultaneously cover a true diff of
+    0) should be at or above the nominal level -- Sidak assumes
+    independence between comparisons, so on real (positively correlated,
+    shared-reference-arm) data it should be conservative, not under-cover.
+    Exercised with ci_func=tango_paired_ci_from_diffs.
+
+    n_simulations=200, ci_level=0.95: SE ~= 0.015 under the null, so the
+    tolerance [0.85, 1.00] catches gross under-coverage while tolerating
+    simulation variance in a fast test."""
+    rng = _rng(101)
+    n_simulations = 200
+    M = 60
+    ci_level = 0.95
+    labels = ["m0", "m1", "m2", "m3"]
+    pairs = [("m0", "m1"), ("m0", "m2"), ("m0", "m3")]
+
+    hits = 0
+    for _ in range(n_simulations):
+        scores = _binary_paired_scores(rng, 4, M, p=0.5)  # all arms share p=0.5 -> true diff 0
+        results, _ = _make_binary_results(scores, labels)
+        cis = _sidak_simultaneous_cis(results, pairs, ci=ci_level, ci_func=tango_paired_ci_from_diffs)
+        if all(cis[p][0] <= 0.0 <= cis[p][1] for p in pairs):
+            hits += 1
+
+    coverage = hits / n_simulations
+    assert 0.85 <= coverage <= 1.00, (
+        f"Sidak(tango) simultaneous coverage {coverage:.3f} outside [0.85, 1.00]; "
+        f"expected >= {ci_level}."
+    )

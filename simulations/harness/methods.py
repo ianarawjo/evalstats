@@ -148,14 +148,51 @@ PAIRWISE_PVALUE_METHODS = [
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- multi-arm multiplicity-correction strategies (non-PPI
 # path), ported from sim_compare_pvalues.py's MULTIARM_CORRECTIONS.
+# NONE/HOLM/BONFERRONI/FDR_BH/HOCHBERG/SHAFFER correct the Wilcoxon
+# signed-rank p-value -- evalstats' canonical, eval-type-agnostic paired
+# test (unlike Tango/Logit-t in --mode simultaneous_ci's
+# CANONICAL_SIMULTANEOUS_CI_METHODS, one test covers binary/continuous/
+# likert/grades alike, so there's no per-eval-type split here) -- rather
+# than --multiarm-method's raw p-value; see cases/pvalues.py's
+# _compute_multiarm_metrics. HOCHBERG is a closed-form step-up refinement of
+# HOLM (never more conservative, valid under the non-negative dependence
+# repeated-measures/shared-item designs produce -- see
+# evalstats.core.stats_utils.correct_pvalues). SHAFFER is a closed-form
+# step-down refinement of HOLM specific to *all-pairwise* comparisons among
+# k arms, exploiting the transitivity of equality (if A=B and B=C then
+# A=C) to use a smaller, non-constant divisor sequence instead of HOLM's
+# plain (m, m-1, ..., 1) -- see
+# evalstats.core.stats_utils._shaffer_adjusted_pvalues.
+#
+# MAX_T/ROMANO_WOLF/WESTFALL_YOUNG are the resampling-based family: MAX_T is
+# *single-step* studentized-bootstrap max-T (one joint critical value for
+# every pair); ROMANO_WOLF is the *step-down* refinement of the same
+# bootstrap-t null (recomputing the max only over not-yet-rejected pairs at
+# each step, so it dominates MAX_T in power for the same FWER guarantee);
+# WESTFALL_YOUNG is the permutation-based (per-item sign-flip) analogue of
+# ROMANO_WOLF's step-down algorithm, exact under exchangeability of the
+# paired design rather than relying on the bootstrap's asymptotic
+# justification. All three need a bootstrap/permutation-compatible
+# resampling scheme (Wilcoxon has no joint max-T analogue), so they stay on
+# --multiarm-method (bootstrap_t by default) / per-item paired differences
+# regardless of eval type -- see cases/pvalues.py's
+# _stepdown_max_t_pvalues. FRIEDMAN_NEMENYI is unaffected either way --
+# already its own rank-based omnibus + post-hoc test.
 # ---------------------------------------------------------------------------
 CORR_NONE = Method("none", "#9c9ede")
 CORR_HOLM = Method("holm", "#cedb9c")
 CORR_BONFERRONI = Method("bonferroni", "#e7ba52")
 CORR_FDR_BH = Method("fdr_bh", "#ad494a")
+CORR_HOCHBERG = Method("hochberg", "#e6550d")
+CORR_SHAFFER = Method("shaffer", "#9e9ac8")
 CORR_FRIEDMAN_NEMENYI = Method("friedman_nemenyi", "#a55194")
 CORR_MAX_T = Method("max_t", "#5254a3")
-MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_FRIEDMAN_NEMENYI, CORR_MAX_T]
+CORR_ROMANO_WOLF = Method("romano_wolf", "#6baed6")
+CORR_WESTFALL_YOUNG = Method("westfall_young", "#74c476")
+MULTIARM_CORRECTION_METHODS = [
+    CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_HOCHBERG, CORR_SHAFFER,
+    CORR_FRIEDMAN_NEMENYI, CORR_MAX_T, CORR_ROMANO_WOLF, CORR_WESTFALL_YOUNG,
+]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- simultaneous-CI construction methods (non-PPI path),
@@ -171,6 +208,36 @@ MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_B
 # than the raw mean-difference scale a CI here would need.
 # ---------------------------------------------------------------------------
 SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
+
+# ---------------------------------------------------------------------------
+# cases/pvalues.py -- canonical-CI-based simultaneous-CI constructions
+# (non-PPI path), for --mode simultaneous_ci. `none`/`bonferroni` (built on
+# `matrix_raw.results`) and `sidak`/`boot` are all built on evalstats'
+# *canonical* pairwise CI method for the scenario's eval type -- Tango for
+# binary, Logit-t for continuous/likert (bounded [0, 1]/[lo, hi] numeric
+# data; see evalstats.config.AUTO_ANALYZE_METHOD_TABLE's "binary"/
+# "bounded_01" rows) -- rather than whatever --multiarm-method is in force.
+# max_t is the one exception: it needs a bootstrap-compatible method to
+# resample from (neither Tango nor Logit-t is), so it keeps using
+# --multiarm-method (bootstrap_t by default) regardless of eval type.
+# `grades` has no canonical default wired up here (deliberately out of
+# scope -- see cases/pvalues.py's _CANONICAL_CI_FUNC_BY_EVAL_TYPE), so these
+# rows are simply absent for grades scenarios.
+# SIDAK ("sidak") and BOOT ("boot") widen the canonical CI to hold
+# family-wise via evalstats.core.paired's generic (not method-specific)
+# _sidak_simultaneous_cis / _joint_bootstrap_scaled_simultaneous_cis, called
+# with whichever ci_func matches the scenario's eval type: Sidak's
+# closed-form per-comparison alpha adjustment, and a joint-bootstrap
+# critical value that accounts for correlation between comparisons and is
+# substituted for the canonical CI's marginal normal quantile -- the two
+# options a from-scratch multiplicity-correction analysis would reach for,
+# per Gemini's Sidak/bootstrap-scaling suggestion this mode's docstring
+# discusses. Named plain "sidak"/"boot" (not e.g. "tango_sidak") since which
+# base CI they widen is now scenario-dependent, not fixed to one method.
+# ---------------------------------------------------------------------------
+CORR_SIDAK = Method("sidak", "#31a354")
+CORR_BOOT = Method("boot", "#3182bd")
+CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- evalstats.tests wrapper names (PPI-corrected path),
@@ -230,7 +297,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
-] + MULTIARM_CORRECTION_METHODS + [
+] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
     TTEST, TTEST_WELCH, MW, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

@@ -86,43 +86,89 @@ class AutoAnalyzeRule:
 # resolve method="auto". Read as: for this data_kind, when N < max_n, use
 # this pairwise_method; the robustness (single-sample marginal CI) method
 # additionally depends on whether the benchmark is seeded (R >= 3 runs).
+#
+# This table is the code-level source of truth for the paper's CI
+# decision-tree figure (fig:ci-decision-tree) -- every row below should have
+# a matching leaf there. "Wilson flat" / "Logit-t on run means" in that
+# figure are not separate implementations: robustness_metrics() already
+# collapses (N, M, R) score arrays to per-input cell means before dispatching
+# on marginal_method, so plain "wilson" / "logit_t" applied to that
+# already-collapsed array *is* the flat/run-means variant. Same story for
+# "Logit-t on run mean differences" in all_pairwise()'s "logit_t" path. And
+# "ER-Tango" is not a separate method name either -- pairwise_method="tango"
+# internally detects R >= 3 seeded runs and switches to the effective-N
+# multirun variant (tango_paired_ci_multirun_effective), which *is* ER-Tango.
+# (tango_paired_ci_multirun_moments is a related but distinct variant --
+# still available in core/resampling.py, but not what "tango" routes to.)
+#
+# "bounded_01" (the data_kind label) no longer means the data is literally
+# valued in [0, 1] -- it means router.py._analyze_single could establish a
+# reliable [lo, hi] range for it via resolve_score_bounds() (core/
+# resampling.py): either the caller's explicit score_range, or an exact
+# [0, 1] match (still emits a UserWarning, since it's still an inference).
+# There is deliberately no third option that approximates a range from the
+# sample's own min/max -- that's not a safe substitute for a metric's true
+# theoretical bounds (e.g. a 1-5 Likert scale sampled only between 2 and 4
+# would silently produce a miscalibrated CI). Numeric data outside [0, 1]
+# with no score_range given falls through to the "continuous" row instead
+# (also with a UserWarning, recommending an explicit score_range).
 AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     AutoAnalyzeRule(
-        data_kind="binary", max_n=60,
+        data_kind="binary", max_n=50,
         pairwise_method="bayes_binary",
         robustness_method_single_run="wilson",
-        robustness_method_seeded="nig_nested",
+        robustness_method_seeded="wilson",
         reason=(
             "Real-data simulations show Tango under-covers in "
             "dominated/jointly-sparse pairs at small N, regardless of run "
             "count, so small-N binary data uses the Bayesian paired model "
-            "instead. The cutoff is N=60 (not the round N=50 the reason "
-            "above alone would suggest): coverage/interval-score violin "
-            "plots across N=10..125 (simulations/harness/cases/ci_paired.py's "
-            "--violin-plot) showed Tango and bayes_paired_comp crossing over "
-            "there in practice."
+            "(citet{dontusetheclt}) instead. Cutoff N=50, per "
+            "fig:ci-decision-tree. Marginal CIs use plain Wilson regardless "
+            "of seeding ('Wilson flat' in the figure) -- NIG-nested was "
+            "tried and dropped in favor of this simpler, better-calibrated "
+            "choice."
         ),
     ),
     AutoAnalyzeRule(
         data_kind="binary", max_n=None,
         pairwise_method="tango",
         robustness_method_single_run="wilson",
-        robustness_method_seeded="nig_nested",
-        reason="N >= 60 binary data: Tango pairwise, Wilson/NIG-nested marginal.",
+        robustness_method_seeded="wilson",
+        reason=(
+            "N >= 50 binary data: Tango pairwise (ER-Tango via the "
+            "effective-N multirun variant when seeded), Wilson-flat marginal."
+        ),
     ),
     AutoAnalyzeRule(
         data_kind="bounded_01", max_n=None,
-        pairwise_method="t_interval",
-        robustness_method_single_run="nig",
-        robustness_method_seeded="nig_nested",
-        reason="Continuous [0, 1]-bounded data (e.g. normalised accuracy, ROUGE).",
+        pairwise_method="logit_t",
+        robustness_method_single_run="logit_t",
+        robustness_method_seeded="logit_t",
+        reason=(
+            "Numeric data with a reliable [lo, hi] range (e.g. normalised "
+            "accuracy, ROUGE, or any scale declared via an explicit "
+            "score_range -- a Likert scale, a percentage grade): Logit-t "
+            "pairwise and marginal CIs, per fig:ci-decision-tree. The range "
+            "is either the caller's explicit score_range or an exact [0, 1] "
+            "match -- see resolve_score_bounds() in core/resampling.py. "
+            "Supersedes the earlier t_interval (pairwise) / nig, nig_nested "
+            "(marginal) defaults for data in this range."
+        ),
     ),
     AutoAnalyzeRule(
         data_kind="continuous", max_n=None,
         pairwise_method="t_interval",
         robustness_method_single_run="t_interval",
         robustness_method_seeded="t_interval",
-        reason="Arbitrary numeric data with no known bounds.",
+        reason=(
+            "Numeric data outside [0, 1] with no explicit score_range -- "
+            "evalstats deliberately does not guess a [lo, hi] range from the "
+            "sample's own min/max (unreliable; see resolve_score_bounds()), "
+            "so this falls back to a plain t-interval, with a UserWarning "
+            "recommending the caller pass score_range explicitly to get "
+            "Logit-t instead (not covered by fig:ci-decision-tree, which "
+            "assumes a known eval-metric range)."
+        ),
     ),
 )
 

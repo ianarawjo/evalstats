@@ -319,14 +319,14 @@ def test_analyze_auto_binary_large_n_advantage_uses_wilson():
     assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_non_binary_uses_t_interval():
-    """Non-binary data → paired t-interval pairwise."""
+def test_analyze_auto_non_binary_bounded_uses_logit_t():
+    """Non-binary [0, 1]-bounded data → paired logit-t pairwise."""
     rng = np.random.default_rng(34)
     scores = rng.uniform(0, 1, size=(2, 40))
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(34))
     pair = bundle.pairwise.get("A", "B")
-    assert "t-interval" in pair.test_method.lower()
+    assert "logit-t" in pair.test_method.lower()
     assert bundle.resolved_ci_method not in {"wilson", "newcombe", "bayes_binary"}
 
 
@@ -507,7 +507,7 @@ def test_compare_prompts_explicit_bayes_binary_raises_for_non_binary():
         es.compare_prompts(scores, method="bayes_binary", rng=_rng(66))
 
 
-def test_compare_prompts_auto_non_binary_uses_t_interval():
+def test_compare_prompts_auto_non_binary_bounded_uses_logit_t():
     rng = np.random.default_rng(67)
     scores = {
         "A": rng.uniform(0, 1, 30).tolist(),
@@ -515,7 +515,7 @@ def test_compare_prompts_auto_non_binary_uses_t_interval():
     }
     report = es.compare_prompts(scores, method="auto", n_bootstrap=300, rng=_rng(67))
     pair = report.pairwise.get("A", "B")
-    assert "t-interval" in pair.test_method.lower()
+    assert "logit-t" in pair.test_method.lower()
     assert report.full_analysis.resolved_ci_method not in {"wilson", "newcombe", "bayes_binary"}
 
 
