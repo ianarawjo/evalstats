@@ -2261,12 +2261,22 @@ def wilcoxon(
             f"got {len(x)} vs {len(y)}."
         )
 
+    diffs = x - y
+
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
+        # Deliberately left at scipy's default method="auto": "auto" does
+        # genuinely different (not just slower) work for small tied/discrete
+        # samples, running exhaustive permutation enumeration for a
+        # rigorously tie-corrected exact p-value rather than an
+        # approximation. That's legitimately expensive at small n, but it's
+        # the correct p-value, and this function's result is user-facing
+        # (es.tests.wilcoxon / PairedDiffResult.wilcoxon_p), so correctness
+        # takes priority over speed here (see
+        # simulations/harness/cases/pvalues.py's _safe_wilcoxon_p docstring
+        # for the full performance characterization).
         res = _scipy_stats.wilcoxon(x, y, alternative="two-sided")
     w_stat, p_val = float(res.statistic), float(res.pvalue)
-
-    diffs = x - y
     median_diff = float(np.median(diffs[diffs != 0])) if np.any(diffs != 0) else 0.0
     extra = {
         "_test": "wilcoxon",

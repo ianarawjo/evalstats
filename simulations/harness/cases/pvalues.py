@@ -144,8 +144,8 @@ import scipy.stats as scipy_stats
 with warnings.catch_warnings():
     warnings.simplefilter("ignore")
     from evalstats.core.paired import (
-        pairwise_differences, all_pairwise, friedman_nemenyi, PairedDiffResult,
-        _bonferroni_simultaneous_cis, _simultaneous_cis_router,
+        pairwise_differences, all_pairwise, friedman_nemenyi,
+        _bonferroni_simultaneous_cis, _simultaneous_cis_router, _max_stat_simultaneous_cis,
         _sidak_simultaneous_cis, _joint_bootstrap_scaled_simultaneous_cis,
     )
     from evalstats.core.stats_utils import correct_pvalues, rescaled_ci
@@ -345,6 +345,24 @@ class PairwiseResult:
 
 
 def _safe_wilcoxon_p(diffs: np.ndarray) -> float:
+    """Wilcoxon signed-rank p-value via scipy's default method="auto".
+
+    Deliberately does NOT override method= for speed. scipy's "auto" does
+    genuinely different (not just slower) work for small, tied/discrete-
+    valued samples (binary 0/1 diffs, Likert-scale integer diffs, etc.) at
+    roughly n<=13: it runs exhaustive permutation enumeration for a
+    rigorously tie-corrected exact p-value, which is legitimately expensive
+    (up to ~300ms/call at n=13 in scipy 1.17.x) but is the CORRECT p-value.
+    Forcing method="exact" instead is much faster, but per scipy's own docs
+    "method='exact' no longer calculates the exact p-value" once ties/zeros
+    are present -- empirically this shifted individual p-values by up to
+    0.125 and measurably changed small-n FWER calibration in this harness's
+    own null-hypothesis checks, not just decision-level noise that would
+    wash out. Given every pair/rep goes through this function as evalstats'
+    canonical raw p-value (see _compute_multiarm_metrics), correctness at
+    small n matters more than the wall-clock cost -- eat the cost rather
+    than risk silently drifting already-reported simulation results.
+    """
     if int(np.sum(diffs != 0)) < 1:
         return 1.0
     try:
@@ -873,25 +891,30 @@ class MultiArmResult:
     _compute_multiarm_metrics)."""
 
 
-def _stepdown_max_t_pvalues(
+def _bootstrap_t_matrix(
     diffs_mat: np.ndarray, n_bootstrap: int, rng: np.random.Generator,
     resample_mode: str, batch_size: int = 256,
     arm_scores: np.ndarray | None = None, pair_indices: list[tuple[int, int]] | None = None,
-) -> np.ndarray:
-    """Step-down max-|T| FWER p-values: Romano & Wolf (2005)'s bootstrap
-    step-down, or its permutation analogue, Westfall & Young (1993)'s
-    step-down min-P/max-T.
+) -> tuple[np.ndarray, np.ndarray]:
+    """Joint resampling core shared by _stepdown_max_t_pvalues (Romano-Wolf/
+    Westfall-Young step-down) and max_t's single-step critical value.
 
-    Both share one algorithm operating on the studentized per-pair statistic
-    ``t_p = mean(diffs_p) / se(diffs_p)``; they differ only in how the joint
-    null resampling distribution of that statistic vector is generated:
+    Draws n_bootstrap joint resamples of the studentized per-pair statistic
+    ``t_p = mean(diffs_p) / se(diffs_p)`` and returns ``(t_abs, t_obs)``:
+    ``t_abs`` is ``(k_pairs, n_bootstrap)`` -- ``|T|`` per pair per replicate
+    -- and ``t_obs`` is ``(k_pairs,)`` -- the observed ``|T|``. Two
+    resample_mode options generate the joint null distribution differently:
 
-    - ``"bootstrap"`` (Romano-Wolf): resample items/participants (rows of
-      ``diffs_mat``, shared across pairs) with replacement, then studentize
-      and recenter each bootstrap draw at its own pair's *observed*
-      statistic -- the same nonparametric bootstrap-t null
-      ``_simultaneous_cis_router``'s ``max_t`` already uses for its
-      *single-step* critical value, reused here unchanged.
+    - ``"bootstrap"`` (Romano-Wolf / max_t): resample items/participants
+      (rows of ``diffs_mat``, shared across pairs) with replacement, then
+      studentize and recenter each bootstrap draw at its own pair's
+      *observed* statistic -- the same nonparametric bootstrap-t null
+      evalstats.core.paired's ``_max_stat_simultaneous_cis`` uses for
+      max_t's single-step critical value (bootstrap_t branch): identical
+      formula, so max_t's critical value is exactly ``quantile(t_abs.max(
+      axis=0), ci)`` -- i.e. step 0 of the step-down procedure, before any
+      rejections -- computed from this SAME matrix. See
+      _compute_multiarm_metrics for where that sharing happens.
     - ``"permutation"`` (Westfall-Young): independently, per item/
       participant, draw a uniformly random relabeling of the ``k`` arms
       (``arm_scores``' rows) and recompute every pair's diff from the
@@ -906,20 +929,6 @@ def _stepdown_max_t_pvalues(
       correct one for any k. Requires ``arm_scores`` (k arms x m items) and
       ``pair_indices`` (row-index pairs into ``arm_scores``, parallel to
       ``diffs_mat``'s rows).
-
-    Unlike single-step max-T (this harness's `max_t`), which uses ONE joint
-    critical value for every pair, the step-down refinement here recomputes
-    the max only over pairs not yet rejected at each step (starting from the
-    pair with the largest observed |t|, working down), which strictly
-    dominates single-step max-T in power for the same strong FWER guarantee
-    -- exactly the "recover power lost to Holm/Bonferroni when comparisons
-    are positively correlated" case repeated-measures designs create, since
-    shared items/participants make every pair's diffs correlated.
-
-    Returns one FWER-adjusted p-value per row of ``diffs_mat`` (same pair
-    order), monotonized via a running max along the testing order (the same
-    reformulation Holm's own adjusted p-values use) so they are directly
-    comparable to alpha.
     """
     k_pairs, m = diffs_mat.shape
     means = diffs_mat.mean(axis=1)
@@ -962,6 +971,67 @@ def _stepdown_max_t_pvalues(
             t_vals = b_means / b_ses_safe
         t_abs_chunks.append(np.abs(t_vals))
     t_abs = np.concatenate(t_abs_chunks, axis=1)  # (k_pairs, n_bootstrap)
+    return t_abs, t_obs
+
+
+def _single_step_max_t_pvalues(t_abs: np.ndarray, t_obs: np.ndarray) -> np.ndarray:
+    """max_t's single-step FWER p-value per pair, from an already-computed
+    _bootstrap_t_matrix() draw -- the max-over-all-pairs-per-replicate
+    distribution (``t_abs.max(axis=0)``) IS max_t's joint null, identical to
+    what evalstats.core.paired._apply_max_t_cis derives independently from
+    its own separate resample. Letting _compute_multiarm_metrics reuse one
+    shared draw for both max_t and romano_wolf (whose step-down procedure
+    needs this same matrix anyway) avoids drawing and reducing a second
+    n_bootstrap x k_pairs resample just to recompute the same statistic."""
+    m_b = t_abs.max(axis=0)  # (n_bootstrap,) -- max over ALL pairs per replicate
+    b_total = t_abs.shape[1]
+    extreme = (m_b[np.newaxis, :] >= t_obs[:, np.newaxis]).sum(axis=1)  # (k_pairs,)
+    return (extreme + 1) / (b_total + 1)
+
+
+def _stepdown_max_t_pvalues(
+    diffs_mat: np.ndarray, n_bootstrap: int, rng: np.random.Generator,
+    resample_mode: str, batch_size: int = 256,
+    arm_scores: np.ndarray | None = None, pair_indices: list[tuple[int, int]] | None = None,
+    precomputed: tuple[np.ndarray, np.ndarray] | None = None,
+) -> np.ndarray:
+    """Step-down max-|T| FWER p-values: Romano & Wolf (2005)'s bootstrap
+    step-down, or its permutation analogue, Westfall & Young (1993)'s
+    step-down min-P/max-T.
+
+    Unlike single-step max-T (this harness's `max_t`), which uses ONE joint
+    critical value for every pair, the step-down refinement here recomputes
+    the max only over pairs not yet rejected at each step (starting from the
+    pair with the largest observed |t|, working down), which strictly
+    dominates single-step max-T in power for the same strong FWER guarantee
+    -- exactly the "recover power lost to Holm/Bonferroni when comparisons
+    are positively correlated" case repeated-measures designs create, since
+    shared items/participants make every pair's diffs correlated.
+
+    Returns one FWER-adjusted p-value per row of ``diffs_mat`` (same pair
+    order), monotonized via a running max along the testing order (the same
+    reformulation Holm's own adjusted p-values use) so they are directly
+    comparable to alpha.
+
+    Parameters
+    ----------
+    precomputed : tuple[np.ndarray, np.ndarray], optional
+        ``(t_abs, t_obs)`` already computed by _bootstrap_t_matrix -- pass
+        this to skip resampling entirely and reuse an existing draw (e.g.
+        shared with max_t's single-step p-value; see
+        _compute_multiarm_metrics). When ``None`` (default), resamples
+        fresh via _bootstrap_t_matrix exactly as before this parameter
+        existed -- passing nothing changes nothing.
+    """
+    if precomputed is not None:
+        t_abs, t_obs = precomputed
+        k_pairs = t_abs.shape[0]
+    else:
+        k_pairs = diffs_mat.shape[0]
+        t_abs, t_obs = _bootstrap_t_matrix(
+            diffs_mat, n_bootstrap, rng, resample_mode, batch_size, arm_scores, pair_indices,
+        )
+    b_total = t_abs.shape[1]
 
     order = np.argsort(-t_obs)  # descending observed |t|: tested first
     t_abs_sorted = t_abs[order]
@@ -972,7 +1042,7 @@ def _stepdown_max_t_pvalues(
     raw_step_p = np.empty(k_pairs)
     for step_pos, idx0 in enumerate(order):
         extreme = int(np.sum(suffix_max[step_pos] >= t_obs[idx0]))
-        raw_step_p[idx0] = (extreme + 1) / (n_bootstrap + 1)
+        raw_step_p[idx0] = (extreme + 1) / (b_total + 1)
 
     adjusted = np.empty(k_pairs)
     running_max = 0.0
@@ -1009,13 +1079,14 @@ def _compute_multiarm_metrics(
 
     max_t/romano_wolf/westfall_young are the exception: they still need
     genuine resampling, since Wilcoxon has no joint max-T analogue. `max_t`
-    resamples from `scores` directly via all_pairwise's own simultaneous-CI
-    router (_simultaneous_cis_router). The router only reads `results` as a
-    Bonferroni fallback (never as bootstrap input for max-T itself, which
-    always resamples straight from `scores`), so a lightweight
-    dict[pair, PairedDiffResult] built from the already-computed
-    per_input_diffs/point_diff (no bootstrap) stands in for that fallback
-    without needing a real all_pairwise call. For bootstrap-compatible
+    resamples from `scores` directly via evalstats.core.paired's
+    _max_stat_simultaneous_cis, called directly rather than through
+    _simultaneous_cis_router -- the router's only other job is falling back
+    to a Bonferroni CI on degenerate bootstrap results, but this harness
+    never reads that CI (only whether the max-T draw succeeded), so there's
+    nothing for the router's required `results` argument to feed; skipping
+    it avoids building an unused dict[pair, PairedDiffResult] stand-in on
+    every call just to satisfy that argument. For bootstrap-compatible
     methods the resulting p-values are *single-step* max-T FWER-controlled
     p-values -- each is the min p-value commensurate with the simultaneous
     CI that was reported to the user. For non-bootstrap methods
@@ -1029,7 +1100,11 @@ def _compute_multiarm_metrics(
     needs the full per-bootstrap-draw statistic matrix (not just the single
     joint critical value the router returns) to recompute the max over
     shrinking "not yet rejected" subsets. They're built directly off the
-    same method-invariant per_input_diffs hochberg/shaffer/etc. use.
+    same method-invariant per_input_diffs hochberg/shaffer/etc. use. When
+    `max_t` and `romano_wolf` are both requested under
+    method="bootstrap_t"/statistic="mean" (the defaults), they share ONE
+    bootstrap draw instead of two independent ones -- see
+    _bootstrap_t_matrix's docstring.
 
     `friedman_nemenyi` is unaffected either way -- already its own
     rank-based omnibus + post-hoc test, unrelated to `method`.
@@ -1105,35 +1180,61 @@ def _compute_multiarm_metrics(
             # not fairly split across every other correction.
             timings["none"] += _setup_elapsed
 
+        # max_t and romano_wolf compute the EXACT SAME studentized-bootstrap
+        # statistic (see _bootstrap_t_matrix's docstring: max_t's single-step
+        # critical value is literally step 0 of romano_wolf's step-down
+        # procedure -- the max-over-all-pairs distribution, before any
+        # rejections) whenever method="bootstrap_t" and statistic="mean"
+        # (the CLI defaults). When both are requested under those exact
+        # conditions, draw ONE shared n_bootstrap x k_pairs resample instead
+        # of two independent ones. Falls back to each computing its own
+        # resample exactly as before (unchanged behavior, just not shared)
+        # whenever conditions don't line up -- a different --multiarm-method,
+        # --statistic="median", or only one of the two corrections requested.
+        share_max_t_romano_wolf = (
+            include_max_t and "romano_wolf" in stepdown_corrections
+            and method == "bootstrap_t" and statistic == "mean"
+        )
+        diffs_mat = None
+        pair_indices = None
+        shared_t_abs = None
+        shared_t_obs = None
+        _shared_elapsed = 0.0
+        if stepdown_corrections:
+            _t_stack0 = time.perf_counter()
+            diffs_mat = np.stack([diffs_by_pair[pair] for pair in pairs], axis=0)
+            pair_indices = [(label_to_idx[a], label_to_idx[b]) for a, b in pairs]
+            _stack_elapsed = time.perf_counter() - _t_stack0
+            if share_max_t_romano_wolf:
+                _t_shared0 = time.perf_counter()
+                shared_t_abs, shared_t_obs = _bootstrap_t_matrix(diffs_mat, n_bootstrap, rng, "bootstrap")
+                _shared_elapsed = _stack_elapsed + (time.perf_counter() - _t_shared0)
+
         if include_max_t:
             _t0 = time.perf_counter()
             try:
-                # Lightweight stand-in for the Bonferroni-fallback `results`
-                # argument -- cheap dataclass construction, no bootstrap.
-                results_stub = {
-                    pair: PairedDiffResult(
-                        template_a=pair[0], template_b=pair[1],
-                        point_diff=point_diff_by_pair[pair],
-                        std_diff=(
-                            float(np.std(diffs_by_pair[pair], ddof=1))
-                            if len(diffs_by_pair[pair]) > 1 else 0.0
-                        ),
-                        ci_low=float("nan"), ci_high=float("nan"), p_value=1.0,
-                        test_method="", n_inputs=len(diffs_by_pair[pair]),
-                        per_input_diffs=diffs_by_pair[pair], statistic=statistic,
+                if share_max_t_romano_wolf:
+                    maxt_p = _single_step_max_t_pvalues(shared_t_abs, shared_t_obs)
+                else:
+                    # _max_stat_simultaneous_cis called directly (not via
+                    # _simultaneous_cis_router) -- the router's only other
+                    # job is falling back to _bonferroni_simultaneous_cis on
+                    # degenerate bootstrap results, but this harness never
+                    # reads the resulting CI values (`cis`), only whether
+                    # the max-T draw succeeded (`sim_pvalues`) -- so there's
+                    # nothing for a `results`/PairedDiffResult stand-in
+                    # (formerly `results_stub`, built eagerly here on every
+                    # call) to actually feed. Falling straight back to
+                    # `raw_p` (unadjusted Wilcoxon) when the bootstrap
+                    # returns empty matches what the router's own fallback
+                    # would have produced as far as this harness could tell
+                    # anyway (a safe placeholder, not a real Bonferroni CI
+                    # the code ever used).
+                    cis, max_t_pvalues = _max_stat_simultaneous_cis(
+                        scores=scores, pairs=pairs, labels=labels, method=method,
+                        ci=1.0 - alpha, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
                     )
-                    for pair in pairs
-                }
-                _sim_cis, sim_method, sim_pvalues = _simultaneous_cis_router(
-                    scores=scores, results=results_stub, pairs=pairs, labels=labels,
-                    method=method, ci=1.0 - alpha, n_bootstrap=n_bootstrap, rng=rng, statistic=statistic,
-                    prefer="max_t",
-                )
-                maxt_p = (
-                    np.array([sim_pvalues[pair] for pair in pairs])
-                    if sim_method == "max_t"
-                    else raw_p
-                )
+                    maxt_p = np.array([max_t_pvalues[pair] for pair in pairs]) if cis else raw_p
                 has_any = bool(np.any(maxt_p < alpha))
                 best = labels[0]
                 best_selected = True
@@ -1145,22 +1246,28 @@ def _compute_multiarm_metrics(
                 results["max_t"] = (has_any, best_selected)
             except Exception:
                 results["max_t"] = (False, False)
+            # When shared, max_t's own incremental cost on top of the
+            # already-computed matrix really is this small -- the resample
+            # itself is charged to romano_wolf below, the correction that
+            # intrinsically needs the full step-down matrix.
             timings["max_t"] = time.perf_counter() - _t0
 
         if stepdown_corrections:
-            _t_stack0 = time.perf_counter()
-            diffs_mat = np.stack([diffs_by_pair[pair] for pair in pairs], axis=0)
-            pair_indices = [(label_to_idx[a], label_to_idx[b]) for a, b in pairs]
-            _stack_elapsed = time.perf_counter() - _t_stack0
             for i, correction in enumerate(stepdown_corrections):
                 _t0 = time.perf_counter()
                 try:
                     resample_mode = _STEPDOWN_RESAMPLE_MODE[correction]
-                    adj_p = _stepdown_max_t_pvalues(
-                        diffs_mat, n_bootstrap, rng, resample_mode,
-                        arm_scores=flat if resample_mode == "permutation" else None,
-                        pair_indices=pair_indices if resample_mode == "permutation" else None,
-                    )
+                    if correction == "romano_wolf" and share_max_t_romano_wolf:
+                        adj_p = _stepdown_max_t_pvalues(
+                            diffs_mat, n_bootstrap, rng, resample_mode,
+                            precomputed=(shared_t_abs, shared_t_obs),
+                        )
+                    else:
+                        adj_p = _stepdown_max_t_pvalues(
+                            diffs_mat, n_bootstrap, rng, resample_mode,
+                            arm_scores=flat if resample_mode == "permutation" else None,
+                            pair_indices=pair_indices if resample_mode == "permutation" else None,
+                        )
                     has_any = bool(np.any(adj_p < alpha))
                     best = labels[0]
                     best_selected = True
@@ -1173,7 +1280,11 @@ def _compute_multiarm_metrics(
                 except Exception:
                     results[correction] = (False, False)
                 elapsed = time.perf_counter() - _t0
-                if i == 0:
+                if correction == "romano_wolf" and share_max_t_romano_wolf:
+                    # Includes the shared resample (see above) -- the one
+                    # place its real cost is now charged.
+                    elapsed += _shared_elapsed
+                elif i == 0:
                     # np.stack's construction cost is shared setup for every
                     # stepdown correction; attributed to the first one rather
                     # than double-counted or arbitrarily split.
@@ -1591,7 +1702,6 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
     fwer_pad = max(0.005, (fwer_hi - fwer_lo) * 0.15)
     ax_fwer.set_ylim(max(0.0, fwer_lo - fwer_pad), fwer_hi + fwer_pad)
     ax_fwer.set_xticks(ks_present)
-    ax_fwer.legend(fontsize=7)
 
     ax_pow.set_xlabel("k (number of arms)")
     ax_pow.set_ylabel("Best-arm selection power (alt)")
@@ -1604,7 +1714,12 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
     pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
     ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
     ax_pow.set_xticks(ks_present)
-    ax_pow.legend(fontsize=7)
+
+    # One shared legend for both panels (FWER's nominal-alpha line plus every
+    # method, which both panels plot identically) instead of a separate
+    # legend per panel, placed outside the axes to the right.
+    handles, labels = ax_fwer.get_legend_handles_labels()
+    ax_pow.legend(handles, labels, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=7)
 
     fig.suptitle(
         "Family-Wise Error Rate and Best-Arm Selection Power vs. Number of Systems Compared\n"
@@ -1677,7 +1792,6 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
     fwer_lo, fwer_hi = min(all_fwer_vals), max(all_fwer_vals)
     fwer_pad = max(0.005, (fwer_hi - fwer_lo) * 0.15)
     ax_fwer.set_ylim(max(0.0, fwer_lo - fwer_pad), fwer_hi + fwer_pad)
-    ax_fwer.legend(fontsize=7)
 
     ax_pow.set_xlabel("n (sample size)")
     ax_pow.set_ylabel("Best-arm selection power (alt)")
@@ -1687,7 +1801,11 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
     pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
     pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
     ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
-    ax_pow.legend(fontsize=7)
+
+    # One shared legend for both panels, placed outside the axes to the
+    # right -- see save_multiarm_fwer_vs_k_plot's identical fix.
+    handles, labels = ax_fwer.get_legend_handles_labels()
+    ax_pow.legend(handles, labels, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=7)
 
     # Log-scale x-axis (see docstring) with exact tick labels at the swept
     # sizes instead of matplotlib's default log-scale power-of-ten ticks.
@@ -1718,6 +1836,7 @@ def save_multiarm_reliability_violin_plot(*, results: list[MultiArmResult], alph
     table's pooled FWER hides: a correction with alpha-level FWER on average
     can still have scenario-specific inflation that pooling across labels
     masks, collapsed across n and k the same way the headline table is."""
+    import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
     import seaborn as sns
 
@@ -1773,6 +1892,19 @@ def save_multiarm_reliability_violin_plot(*, results: list[MultiArmResult], alph
             ax.tick_params(axis="x", rotation=45)
             for tick_label in ax.get_xticklabels():
                 tick_label.set_ha("right")
+
+    # x-tick labels already name each correction, but a color-key legend
+    # (matching the palette used across every other multiarm plot) makes it
+    # easy to cross-reference colors against those plots without having to
+    # read the rotated tick labels here. Built manually via mpatches (rather
+    # than pulled from the violin/strip plots, which are legend=False --
+    # seaborn's own hue legend duplicates each color once per subplot,
+    # which is redundant here since every subplot shares the same palette).
+    legend_handles = [mpatches.Patch(facecolor=palette[c], alpha=0.5, label=c) for c in corrections]
+    axes[0][-1].legend(
+        handles=legend_handles, title="Correction", fontsize=8, title_fontsize=9,
+        loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+    )
 
     fig.suptitle(
         f"Cross-Scenario Reliability (one dot = one scenario)\npvalues multi-arm | alpha={alpha}",
@@ -2580,14 +2712,18 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
     cov_pad = max(0.01, (cov_hi - cov_lo) * 0.15)
     ax_cov.set_ylim(max(0.0, cov_lo - cov_pad), min(1.02, cov_hi + cov_pad))
     ax_cov.set_xticks(ks_present)
-    ax_cov.legend(fontsize=7)
 
     ax_width.set_xlabel("k (number of arms)")
     ax_width.set_ylabel("Average per-comparison CI width (null)")
     ax_width.set_title("Width vs. number of arms")
     ax_width.set_ylim(bottom=0.0)
     ax_width.set_xticks(ks_present)
-    ax_width.legend(fontsize=7)
+
+    # One shared legend for both panels (coverage's nominal line plus every
+    # method, which both panels plot identically) instead of a separate
+    # legend per panel, placed outside the axes to the right.
+    handles, labels = ax_cov.get_legend_handles_labels()
+    ax_width.legend(handles, labels, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=7)
 
     fig.suptitle(
         "Simultaneous Confidence Interval Calibration vs. Number of Systems Compared\n"
@@ -2666,13 +2802,17 @@ def save_simultaneous_ci_coverage_width_vs_n_plot(*, results: list[SimultaneousC
     cov_lo, cov_hi = min(all_cov_vals), max(all_cov_vals)
     cov_pad = max(0.01, (cov_hi - cov_lo) * 0.15)
     ax_cov.set_ylim(max(0.0, cov_lo - cov_pad), min(1.02, cov_hi + cov_pad))
-    ax_cov.legend(fontsize=7)
 
     ax_width.set_xlabel("n (sample size)")
     ax_width.set_ylabel("Average per-comparison CI width (null)")
     ax_width.set_title("Width vs. sample size")
     ax_width.set_ylim(bottom=0.0)
-    ax_width.legend(fontsize=7)
+
+    # One shared legend for both panels, placed outside the axes to the
+    # right -- see save_simultaneous_ci_coverage_width_vs_k_plot's identical
+    # fix.
+    handles, labels = ax_cov.get_legend_handles_labels()
+    ax_width.legend(handles, labels, loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=7)
 
     # Log-scale x-axis (see docstring) with exact tick labels at the swept
     # sizes instead of matplotlib's default log-scale power-of-ten ticks.
@@ -2709,6 +2849,7 @@ def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCI
     SIMULTANEOUS_CI_PLOT_METHODS -- since it's so far below nominal
     coverage that it squashes the comparison this plot exists to show;
     it's still in the printed/logged report tables and the CSV)."""
+    import matplotlib.patches as mpatches
     import matplotlib.pyplot as plt
     import seaborn as sns
 
@@ -2763,6 +2904,15 @@ def save_simultaneous_ci_reliability_violin_plot(*, results: list[SimultaneousCI
             ax.tick_params(axis="x", rotation=45)
             for tick_label in ax.get_xticklabels():
                 tick_label.set_ha("right")
+
+    # x-tick labels already name each method, but a color-key legend (see
+    # save_multiarm_reliability_violin_plot's identical fix) makes it easy
+    # to cross-reference colors against the other simultaneous_ci plots.
+    legend_handles = [mpatches.Patch(facecolor=palette[m], alpha=0.5, label=m) for m in ci_methods]
+    axes[0][-1].legend(
+        handles=legend_handles, title="Simult. CI method", fontsize=8, title_fontsize=9,
+        loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+    )
 
     fig.suptitle(
         "Simultaneous Confidence Interval Reliability Across Evaluation Scenarios\n"
@@ -3144,6 +3294,11 @@ def _run_ppi_cell(
 
             if WILCOXON.name in active_tests:
                 try:
+                    # Deliberately left at scipy's default method="auto" --
+                    # see _safe_wilcoxon_p's docstring: it's slower for
+                    # small tied/discrete samples but computes a genuinely
+                    # different (rigorously tie-corrected exact), not just
+                    # slower, p-value than forcing method="exact" would.
                     p_u = float(scipy_stats.wilcoxon(cell.llm_x, cell.llm_y, alternative="two-sided").pvalue)
                     uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
                     r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
@@ -5072,6 +5227,19 @@ def real_official_args_pairwise(base_seed: int = 42) -> argparse.Namespace:
     return args
 
 
+def real_official_args_multiarm(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for multiarm-only calibration, real data. Split
+    out from real_official_args() (mode="pairwise_multiarm") the same way
+    real_official_args_pairwise is -- lets the (network/HF-dependent)
+    real-data multiarm sweep (FWER + best-arm power across
+    none/holm/bonferroni/fdr_bh/hochberg/shaffer/friedman_nemenyi/max_t/
+    romano_wolf/westfall_young -- see MULTIARM_CORRECTION_METHODS) be
+    re-run on its own without also paying for the real-data pairwise sweep."""
+    args = real_official_args(base_seed)
+    args.mode = "multiarm"
+    return args
+
+
 def real_official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for simultaneous-CI calibration only, real data
     (real multi-arm sources -- see build_real_multiarm_sources). Split out
@@ -5091,6 +5259,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
         ("real data (pairwise + multiarm)", real_official_args(base_seed)),
         ("real data (pairwise)", real_official_args_pairwise(base_seed)),
+        ("real data (multiarm)", real_official_args_multiarm(base_seed)),
         ("real data (simultaneous CI)", real_official_args_simultaneous_ci(base_seed)),
     ]
 
