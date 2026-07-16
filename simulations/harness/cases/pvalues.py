@@ -876,6 +876,7 @@ class MultiArmResult:
 def _stepdown_max_t_pvalues(
     diffs_mat: np.ndarray, n_bootstrap: int, rng: np.random.Generator,
     resample_mode: str, batch_size: int = 256,
+    arm_scores: np.ndarray | None = None, pair_indices: list[tuple[int, int]] | None = None,
 ) -> np.ndarray:
     """Step-down max-|T| FWER p-values: Romano & Wolf (2005)'s bootstrap
     step-down, or its permutation analogue, Westfall & Young (1993)'s
@@ -891,12 +892,20 @@ def _stepdown_max_t_pvalues(
       statistic -- the same nonparametric bootstrap-t null
       ``_simultaneous_cis_router``'s ``max_t`` already uses for its
       *single-step* critical value, reused here unchanged.
-    - ``"permutation"`` (Westfall-Young): independently sign-flip each
-      item/participant's row of differences (shared across pairs, so the
-      joint dependence structure between pairs is preserved), which is
-      already centered at zero under the null of no within-subject arm
-      effect by symmetry -- exact under exchangeability of the paired
-      design, rather than relying on bootstrap's asymptotic justification.
+    - ``"permutation"`` (Westfall-Young): independently, per item/
+      participant, draw a uniformly random relabeling of the ``k`` arms
+      (``arm_scores``' rows) and recompute every pair's diff from the
+      relabeled scores for that item -- the genuine label-permutation null,
+      not merely a sign flip of the diffs. This is exact under
+      exchangeability of the k arms for any number of arms: unlike sign-
+      flipping the diff vector (which only coincides with a real relabeling
+      when k=2, since the group of relabelings has k! elements but sign
+      flips only give 2), permuting the raw per-item scores and re-deriving
+      every pairwise diff is, by construction, always one of the k!
+      relabelings, so the joint null distribution it draws from is the
+      correct one for any k. Requires ``arm_scores`` (k arms x m items) and
+      ``pair_indices`` (row-index pairs into ``arm_scores``, parallel to
+      ``diffs_mat``'s rows).
 
     Unlike single-step max-T (this harness's `max_t`), which uses ONE joint
     critical value for every pair, the step-down refinement here recomputes
@@ -918,6 +927,14 @@ def _stepdown_max_t_pvalues(
     ses_safe = np.where(ses > 1e-12, ses, 1.0)
     t_obs = np.abs(means) / ses_safe
 
+    if resample_mode == "permutation":
+        if arm_scores is None or pair_indices is None:
+            raise ValueError("'permutation' resample_mode requires arm_scores and pair_indices")
+        k_arms = arm_scores.shape[0]
+        arm_scores_t = arm_scores.T  # (m, k_arms)
+        pair_i = np.array([p[0] for p in pair_indices])
+        pair_j = np.array([p[1] for p in pair_indices])
+
     t_abs_chunks: list[np.ndarray] = []
     for start in range(0, n_bootstrap, batch_size):
         end = min(start + batch_size, n_bootstrap)
@@ -929,9 +946,16 @@ def _stepdown_max_t_pvalues(
             b_ses = resampled.std(axis=2, ddof=1) / np.sqrt(m)
             b_ses_safe = np.where(b_ses > 1e-12, b_ses, 1.0)
             t_vals = (b_means - means[:, None]) / b_ses_safe
-        else:  # "permutation" -- per-item sign-flip, shared across pairs
-            signs = rng.choice(np.array([-1.0, 1.0]), size=(b, m))
-            flipped = diffs_mat[:, None, :] * signs[None, :, :]  # (k_pairs, b, m)
+        else:  # "permutation" -- per-item random relabeling of the k arms
+            # perm[b, j] is a uniformly random permutation of {0, ..., k_arms-1}
+            # for bootstrap draw b, item j (argsort of iid uniforms is the
+            # standard trick for batched random permutations).
+            perm = np.argsort(rng.random(size=(b, m, k_arms)), axis=2)
+            relabeled = np.take_along_axis(
+                np.broadcast_to(arm_scores_t[None, :, :], (b, m, k_arms)), perm, axis=2,
+            )  # (b, m, k_arms): item j's scores relabeled across arms
+            diff_perm = relabeled[:, :, pair_i] - relabeled[:, :, pair_j]  # (b, m, k_pairs)
+            flipped = np.moveaxis(diff_perm, -1, 0)  # (k_pairs, b, m)
             b_means = flipped.mean(axis=2)
             b_ses = flipped.std(axis=2, ddof=1) / np.sqrt(m)
             b_ses_safe = np.where(b_ses > 1e-12, b_ses, 1.0)
@@ -1126,12 +1150,16 @@ def _compute_multiarm_metrics(
         if stepdown_corrections:
             _t_stack0 = time.perf_counter()
             diffs_mat = np.stack([diffs_by_pair[pair] for pair in pairs], axis=0)
+            pair_indices = [(label_to_idx[a], label_to_idx[b]) for a, b in pairs]
             _stack_elapsed = time.perf_counter() - _t_stack0
             for i, correction in enumerate(stepdown_corrections):
                 _t0 = time.perf_counter()
                 try:
+                    resample_mode = _STEPDOWN_RESAMPLE_MODE[correction]
                     adj_p = _stepdown_max_t_pvalues(
-                        diffs_mat, n_bootstrap, rng, _STEPDOWN_RESAMPLE_MODE[correction],
+                        diffs_mat, n_bootstrap, rng, resample_mode,
+                        arm_scores=flat if resample_mode == "permutation" else None,
+                        pair_indices=pair_indices if resample_mode == "permutation" else None,
                     )
                     has_any = bool(np.any(adj_p < alpha))
                     best = labels[0]
