@@ -16,7 +16,8 @@ build/
 website/build/
 scripts/pypi_release_checks.sh
 simulations/plots/*
-simulations/out
+simulations/out/*
+!simulations/out/inspect_benchmarks.csv
 .agent-study-venv-full/
 .agent-study-venv-baseline/
 .agent-study-venv-runner/
