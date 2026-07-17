@@ -178,6 +178,23 @@ PAIRWISE_PVALUE_METHODS = [
 # regardless of eval type -- see cases/pvalues.py's
 # _stepdown_max_t_pvalues. FRIEDMAN_NEMENYI is unaffected either way --
 # already its own rank-based omnibus + post-hoc test.
+#
+# BOOT is the multiarm analogue of --mode simultaneous_ci's `boot` (see
+# CANONICAL_SIMULTANEOUS_CI_METHODS below, whose CORR_BOOT instance this
+# reuses as-is): it widens the canonical Wilcoxon p-value using a joint
+# bootstrap critical value (the same max-over-all-pairs studentized-mean
+# resample MAX_T/ROMANO_WOLF use -- see cases/pvalues.py's
+# _bootstrap_t_matrix) instead of a fixed, correlation-blind factor the way
+# HOLM/BONFERRONI/HOCHBERG/SHAFFER do -- rescaling raw_p by alpha/alpha_eff,
+# where alpha_eff is that joint critical value translated back to an
+# equivalent significance level (mirroring
+# evalstats.core.paired._joint_bootstrap_scaled_simultaneous_cis's z<->alpha
+# translation). Unlike MAX_T/ROMANO_WOLF/WESTFALL_YOUNG, BOOT is NOT tied to
+# --multiarm-method -- like NONE/HOLM/etc. it always operates on the
+# canonical Wilcoxon statistic, so it directly tests whether the small FWER
+# excess observed for MAX_T/ROMANO_WOLF at n=500-2000 is specific to their
+# studentized-mean bootstrap-t construction or a more general property of
+# bootstrap-based FWER correction.
 # ---------------------------------------------------------------------------
 CORR_NONE = Method("none", "#9c9ede")
 CORR_HOLM = Method("holm", "#cedb9c")
@@ -189,9 +206,10 @@ CORR_FRIEDMAN_NEMENYI = Method("friedman_nemenyi", "#a55194")
 CORR_MAX_T = Method("max_t", "#5254a3")
 CORR_ROMANO_WOLF = Method("romano_wolf", "#6baed6")
 CORR_WESTFALL_YOUNG = Method("westfall_young", "#74c476")
+CORR_BOOT = Method("boot", "#3182bd")
 MULTIARM_CORRECTION_METHODS = [
     CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_HOCHBERG, CORR_SHAFFER,
-    CORR_FRIEDMAN_NEMENYI, CORR_MAX_T, CORR_ROMANO_WOLF, CORR_WESTFALL_YOUNG,
+    CORR_FRIEDMAN_NEMENYI, CORR_MAX_T, CORR_ROMANO_WOLF, CORR_WESTFALL_YOUNG, CORR_BOOT,
 ]
 
 # ---------------------------------------------------------------------------
@@ -234,9 +252,10 @@ SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
 # per Gemini's Sidak/bootstrap-scaling suggestion this mode's docstring
 # discusses. Named plain "sidak"/"boot" (not e.g. "tango_sidak") since which
 # base CI they widen is now scenario-dependent, not fixed to one method.
+# CORR_BOOT (not CORR_SIDAK) is reused as-is by MULTIARM_CORRECTION_METHODS
+# above -- see its comment for the p-value-side analogue.
 # ---------------------------------------------------------------------------
 CORR_SIDAK = Method("sidak", "#31a354")
-CORR_BOOT = Method("boot", "#3182bd")
 CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 
 # ---------------------------------------------------------------------------

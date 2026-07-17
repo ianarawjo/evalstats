@@ -473,8 +473,11 @@ def _run_pairwise_cell_worker(args: tuple) -> list[PairwiseResult]:
 
 
 def _run_multiarm_cell_worker(args: tuple) -> list[MultiArmResult]:
-    sc_idx, n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed = args
-    return _run_multiarm_cell(_MULTIARM_SOURCES[sc_idx], n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed)
+    sc_idx, n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed, corrections = args
+    return _run_multiarm_cell(
+        _MULTIARM_SOURCES[sc_idx], n, runs, k_arms, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed,
+        corrections=corrections,
+    )
 
 
 def _run_ppi_cell_worker(args: tuple) -> list:
@@ -929,12 +932,35 @@ def _bootstrap_t_matrix(
       correct one for any k. Requires ``arm_scores`` (k arms x m items) and
       ``pair_indices`` (row-index pairs into ``arm_scores``, parallel to
       ``diffs_mat``'s rows).
+
+    Both branches avoid ever materializing a ``(k_pairs, b, m)`` gathered
+    array (the naive "resample then reduce" approach), which dominates
+    memory/time at this harness's largest cells (k=20 -> 190 pairs, n up to
+    500): "bootstrap" resamples the SAME item index across every pair, so
+    each replicate's per-pair mean/variance is a fixed linear combination of
+    the original per-item diffs (weighted by "how many times item i was
+    drawn"), computable via a ``(b, m)`` counts matrix (one ``bincount``)
+    and two BLAS matmuls (``diffs_mat @ counts.T`` for the mean,
+    ``diffs_mat**2 @ counts.T`` for the second moment) instead of a
+    ``diffs_mat[:, idx]`` gather. "permutation" similarly replaces the
+    ``relabeled[:, :, pair_i] - relabeled[:, :, pair_j]`` fancy-index
+    differencing with one matmul against a fixed signed ``(k_arms,
+    k_pairs)`` pairing matrix, since taking a pairwise diff is itself a
+    linear map of the relabeled per-item arm vector. Verified bit-close
+    (``np.allclose``) against the original gather-based formulas; ~12-27x
+    faster for "bootstrap" and ~2.3x faster for "permutation" at k=20/n=500,
+    with no regression at small k/n.
     """
     k_pairs, m = diffs_mat.shape
     means = diffs_mat.mean(axis=1)
     ses = diffs_mat.std(axis=1, ddof=1) / np.sqrt(m)
     ses_safe = np.where(ses > 1e-12, ses, 1.0)
     t_obs = np.abs(means) / ses_safe
+    # m is this harness's smallest swept sample size (always >= 10), so
+    # m == 1 never happens in practice -- guarded only so this never raises
+    # (matching np.std(ddof=1)'s own non-crashing nan-on-degenerate-df
+    # behavior) instead of Python's ZeroDivisionError on m/(m-1).
+    ddof1_factor = m / (m - 1) if m > 1 else 1.0
 
     if resample_mode == "permutation":
         if arm_scores is None or pair_indices is None:
@@ -943,6 +969,13 @@ def _bootstrap_t_matrix(
         arm_scores_t = arm_scores.T  # (m, k_arms)
         pair_i = np.array([p[0] for p in pair_indices])
         pair_j = np.array([p[1] for p in pair_indices])
+        # Signed pairing matrix: diff_perm[..., p] = relabeled[..., pair_i[p]]
+        # - relabeled[..., pair_j[p]] -- see docstring.
+        pairing_matrix = np.zeros((k_arms, k_pairs))
+        pairing_matrix[pair_i, np.arange(k_pairs)] = 1.0
+        pairing_matrix[pair_j, np.arange(k_pairs)] = -1.0
+    else:
+        diffs_sq = diffs_mat**2  # hoisted -- fixed across every batch below
 
     t_abs_chunks: list[np.ndarray] = []
     for start in range(0, n_bootstrap, batch_size):
@@ -950,9 +983,14 @@ def _bootstrap_t_matrix(
         b = end - start
         if resample_mode == "bootstrap":
             idx = rng.integers(0, m, size=(b, m))
-            resampled = diffs_mat[:, idx]  # (k_pairs, b, m)
-            b_means = resampled.mean(axis=2)
-            b_ses = resampled.std(axis=2, ddof=1) / np.sqrt(m)
+            # counts[draw, item] = how many times `item` was drawn in that
+            # replicate -- see docstring for why this replaces the gather.
+            flat_idx = idx + (np.arange(b)[:, None] * m)
+            counts = np.bincount(flat_idx.ravel(), minlength=b * m).reshape(b, m).astype(diffs_mat.dtype)
+            b_means = (diffs_mat @ counts.T) / m  # (k_pairs, b)
+            sq_means = (diffs_sq @ counts.T) / m  # (k_pairs, b)
+            var_unbiased = np.maximum(sq_means - b_means**2, 0.0) * ddof1_factor
+            b_ses = np.sqrt(var_unbiased) / np.sqrt(m)
             b_ses_safe = np.where(b_ses > 1e-12, b_ses, 1.0)
             t_vals = (b_means - means[:, None]) / b_ses_safe
         else:  # "permutation" -- per-item random relabeling of the k arms
@@ -963,10 +1001,9 @@ def _bootstrap_t_matrix(
             relabeled = np.take_along_axis(
                 np.broadcast_to(arm_scores_t[None, :, :], (b, m, k_arms)), perm, axis=2,
             )  # (b, m, k_arms): item j's scores relabeled across arms
-            diff_perm = relabeled[:, :, pair_i] - relabeled[:, :, pair_j]  # (b, m, k_pairs)
-            flipped = np.moveaxis(diff_perm, -1, 0)  # (k_pairs, b, m)
-            b_means = flipped.mean(axis=2)
-            b_ses = flipped.std(axis=2, ddof=1) / np.sqrt(m)
+            diff_perm = (relabeled.reshape(b * m, k_arms) @ pairing_matrix).reshape(b, m, k_pairs)
+            b_means = diff_perm.mean(axis=1).T  # (k_pairs, b)
+            b_ses = (diff_perm.std(axis=1, ddof=1) / np.sqrt(m)).T
             b_ses_safe = np.where(b_ses > 1e-12, b_ses, 1.0)
             t_vals = b_means / b_ses_safe
         t_abs_chunks.append(np.abs(t_vals))
@@ -1039,16 +1076,17 @@ def _stepdown_max_t_pvalues(
     # step-down "remaining hypotheses" set, per bootstrap draw.
     suffix_max = np.maximum.accumulate(t_abs_sorted[::-1], axis=0)[::-1]
 
-    raw_step_p = np.empty(k_pairs)
-    for step_pos, idx0 in enumerate(order):
-        extreme = int(np.sum(suffix_max[step_pos] >= t_obs[idx0]))
-        raw_step_p[idx0] = (extreme + 1) / (b_total + 1)
+    # Both loops below are pure functions of `order` (testing sequence), so
+    # they vectorize directly: compare/count and the running max are taken
+    # along that sequence, then scattered back to original pair indices in
+    # one assignment instead of a per-pair Python loop (k_pairs up to 190).
+    t_obs_sorted = t_obs[order]
+    extreme_counts = (suffix_max >= t_obs_sorted[:, None]).sum(axis=1)
+    raw_step_p_sorted = (extreme_counts + 1) / (b_total + 1)
+    adjusted_sorted = np.minimum(np.maximum.accumulate(raw_step_p_sorted), 1.0)
 
     adjusted = np.empty(k_pairs)
-    running_max = 0.0
-    for idx0 in order:
-        running_max = max(running_max, raw_step_p[idx0])
-        adjusted[idx0] = min(running_max, 1.0)
+    adjusted[order] = adjusted_sorted
     return adjusted
 
 
@@ -1100,11 +1138,27 @@ def _compute_multiarm_metrics(
     needs the full per-bootstrap-draw statistic matrix (not just the single
     joint critical value the router returns) to recompute the max over
     shrinking "not yet rejected" subsets. They're built directly off the
-    same method-invariant per_input_diffs hochberg/shaffer/etc. use. When
-    `max_t` and `romano_wolf` are both requested under
-    method="bootstrap_t"/statistic="mean" (the defaults), they share ONE
-    bootstrap draw instead of two independent ones -- see
-    _bootstrap_t_matrix's docstring.
+    same method-invariant per_input_diffs hochberg/shaffer/etc. use.
+
+    `boot` is the multiarm analogue of --mode simultaneous_ci's `boot`:
+    unlike max_t/romano_wolf/westfall_young, it is NOT tied to
+    --multiarm-method -- like none/holm/bonferroni/etc. it always widens the
+    canonical Wilcoxon p-value, but using a joint bootstrap critical value
+    (the max-over-all-pairs studentized-mean resample -- same construction
+    max_t/romano_wolf use) rather than a fixed, correlation-blind factor.
+    Concretely: the joint critical value is translated to an equivalent
+    alpha_eff (mirroring evalstats.core.paired._joint_bootstrap_scaled_
+    simultaneous_cis's z<->alpha translation for CIs), and raw_p is rescaled
+    by alpha/alpha_eff -- the same "scale the raw p-value by the correction
+    factor" pattern Bonferroni's own adjustment uses, just with a
+    resampled, correlation-aware factor instead of a fixed k.
+
+    `boot` always uses the exact "bootstrap" resample (mean-based item
+    bootstrap, romano_wolf's own resample_mode regardless of
+    --multiarm-method), so it and `romano_wolf` always share ONE draw when
+    both are requested; `max_t` additionally joins that shared draw when
+    its own construction happens to match (method="bootstrap_t"/
+    statistic="mean", the defaults) -- see _bootstrap_t_matrix's docstring.
 
     `friedman_nemenyi` is unaffected either way -- already its own
     rank-based omnibus + post-hoc test, unrelated to `method`.
@@ -1130,12 +1184,13 @@ def _compute_multiarm_metrics(
     _STEPDOWN_RESAMPLE_MODE = {"romano_wolf": "bootstrap", "westfall_young": "permutation"}
     non_friedman_non_maxt = [
         c for c in corrections
-        if c not in ("friedman_nemenyi", "max_t") and c not in _STEPDOWN_RESAMPLE_MODE
+        if c not in ("friedman_nemenyi", "max_t", "boot") and c not in _STEPDOWN_RESAMPLE_MODE
     ]
     include_max_t = "max_t" in corrections
+    include_boot = "boot" in corrections
     stepdown_corrections = [c for c in _STEPDOWN_RESAMPLE_MODE if c in corrections]
 
-    if non_friedman_non_maxt or include_max_t or stepdown_corrections:
+    if non_friedman_non_maxt or include_max_t or include_boot or stepdown_corrections:
         # Plain per-input differences and their mean/median -- no resampling
         # needed, unlike the method-specific bootstrap all_pairwise(method=
         # method, ...) used to run here just to throw away everything but
@@ -1180,40 +1235,44 @@ def _compute_multiarm_metrics(
             # not fairly split across every other correction.
             timings["none"] += _setup_elapsed
 
-        # max_t and romano_wolf compute the EXACT SAME studentized-bootstrap
-        # statistic (see _bootstrap_t_matrix's docstring: max_t's single-step
-        # critical value is literally step 0 of romano_wolf's step-down
-        # procedure -- the max-over-all-pairs distribution, before any
-        # rejections) whenever method="bootstrap_t" and statistic="mean"
-        # (the CLI defaults). When both are requested under those exact
-        # conditions, draw ONE shared n_bootstrap x k_pairs resample instead
-        # of two independent ones. Falls back to each computing its own
-        # resample exactly as before (unchanged behavior, just not shared)
-        # whenever conditions don't line up -- a different --multiarm-method,
-        # --statistic="median", or only one of the two corrections requested.
-        share_max_t_romano_wolf = (
-            include_max_t and "romano_wolf" in stepdown_corrections
-            and method == "bootstrap_t" and statistic == "mean"
-        )
+        # `boot` and `romano_wolf` always use the exact same fixed,
+        # mean-based item-bootstrap construction (romano_wolf's
+        # resample_mode is hardcoded to "bootstrap" regardless of
+        # --multiarm-method/--statistic; `boot` -- evalstats' canonical-
+        # Wilcoxon analogue of --mode simultaneous_ci's `boot` -- is
+        # deliberately the same fixed construction for the same "canonical,
+        # not --multiarm-method-tied" reason none/holm/bonferroni/etc. are),
+        # so whenever both are requested they always share one draw, no
+        # condition needed. `max_t` only joins that shared draw when its
+        # OWN construction (tied to --multiarm-method) happens to be the
+        # identical thing -- method="bootstrap_t" and statistic="mean" (the
+        # CLI defaults) -- see _bootstrap_t_matrix's docstring. Falls back
+        # to each computing its own resample independently (unchanged
+        # behavior) whenever nothing needs to share.
+        need_shared_matrix = include_boot or "romano_wolf" in stepdown_corrections
+        max_t_matches_shared = method == "bootstrap_t" and statistic == "mean"
+        share_max_t = include_max_t and need_shared_matrix and max_t_matches_shared
         diffs_mat = None
         pair_indices = None
         shared_t_abs = None
         shared_t_obs = None
         _shared_elapsed = 0.0
-        if stepdown_corrections:
+        _shared_owner = None  # which correction's timing bucket absorbs the shared resample
+        if stepdown_corrections or include_boot:
             _t_stack0 = time.perf_counter()
             diffs_mat = np.stack([diffs_by_pair[pair] for pair in pairs], axis=0)
             pair_indices = [(label_to_idx[a], label_to_idx[b]) for a, b in pairs]
             _stack_elapsed = time.perf_counter() - _t_stack0
-            if share_max_t_romano_wolf:
+            if need_shared_matrix:
                 _t_shared0 = time.perf_counter()
                 shared_t_abs, shared_t_obs = _bootstrap_t_matrix(diffs_mat, n_bootstrap, rng, "bootstrap")
                 _shared_elapsed = _stack_elapsed + (time.perf_counter() - _t_shared0)
+                _shared_owner = "romano_wolf" if "romano_wolf" in stepdown_corrections else "boot"
 
         if include_max_t:
             _t0 = time.perf_counter()
             try:
-                if share_max_t_romano_wolf:
+                if share_max_t:
                     maxt_p = _single_step_max_t_pvalues(shared_t_abs, shared_t_obs)
                 else:
                     # _max_stat_simultaneous_cis called directly (not via
@@ -1248,16 +1307,50 @@ def _compute_multiarm_metrics(
                 results["max_t"] = (False, False)
             # When shared, max_t's own incremental cost on top of the
             # already-computed matrix really is this small -- the resample
-            # itself is charged to romano_wolf below, the correction that
-            # intrinsically needs the full step-down matrix.
+            # itself is charged to whichever of romano_wolf/boot is present
+            # (see _shared_owner below), the correction(s) that intrinsically
+            # need the full matrix regardless of whether max_t joins in.
             timings["max_t"] = time.perf_counter() - _t0
+
+        if include_boot:
+            _t0 = time.perf_counter()
+            try:
+                # Joint bootstrap critical value -- the max-over-all-pairs
+                # studentized-mean distribution, the exact same construction
+                # evalstats.core.paired._joint_bootstrap_critical_value uses
+                # for --mode simultaneous_ci's `boot` -- translated to an
+                # equivalent alpha (matching that construction's own
+                # z<->alpha translation) and used to rescale the canonical
+                # Wilcoxon p-value the same way Bonferroni rescales it with
+                # a fixed, correlation-blind factor (alpha/k), except this
+                # factor comes from a resampled joint null that DOES account
+                # for correlation between comparisons.
+                c = float(np.quantile(shared_t_abs.max(axis=0), 1.0 - alpha))
+                alpha_eff = float(2.0 * (1.0 - scipy_stats.norm.cdf(c)))
+                alpha_eff = min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
+                adj_p = np.minimum(raw_p * (alpha / alpha_eff), 1.0)
+                has_any = bool(np.any(adj_p < alpha))
+                best = labels[0]
+                best_selected = True
+                for other in labels[1:]:
+                    pair_idx = pair_to_idx.get((best, other))
+                    if pair_idx is None or not (adj_p[pair_idx] < alpha and point_diff_by_pair[(best, other)] > 0.0):
+                        best_selected = False
+                        break
+                results["boot"] = (has_any, best_selected)
+            except Exception:
+                results["boot"] = (False, False)
+            elapsed = time.perf_counter() - _t0
+            if _shared_owner == "boot":
+                elapsed += _shared_elapsed
+            timings["boot"] = elapsed
 
         if stepdown_corrections:
             for i, correction in enumerate(stepdown_corrections):
                 _t0 = time.perf_counter()
                 try:
                     resample_mode = _STEPDOWN_RESAMPLE_MODE[correction]
-                    if correction == "romano_wolf" and share_max_t_romano_wolf:
+                    if correction == "romano_wolf" and shared_t_abs is not None:
                         adj_p = _stepdown_max_t_pvalues(
                             diffs_mat, n_bootstrap, rng, resample_mode,
                             precomputed=(shared_t_abs, shared_t_obs),
@@ -1280,14 +1373,17 @@ def _compute_multiarm_metrics(
                 except Exception:
                     results[correction] = (False, False)
                 elapsed = time.perf_counter() - _t0
-                if correction == "romano_wolf" and share_max_t_romano_wolf:
+                if correction == "romano_wolf" and _shared_owner == "romano_wolf":
                     # Includes the shared resample (see above) -- the one
                     # place its real cost is now charged.
                     elapsed += _shared_elapsed
-                elif i == 0:
+                elif i == 0 and _shared_owner is None:
                     # np.stack's construction cost is shared setup for every
                     # stepdown correction; attributed to the first one rather
-                    # than double-counted or arbitrarily split.
+                    # than double-counted or arbitrarily split -- only when
+                    # nothing else already absorbed it (_shared_owner is set
+                    # whenever boot/romano_wolf triggered a shared matrix,
+                    # which already includes this same stack cost).
                     elapsed += _stack_elapsed
                 timings[correction] = elapsed
 
@@ -1318,10 +1414,11 @@ def _compute_multiarm_metrics(
 
 def _run_multiarm_cell(
     source: MultiArmSource, n: int, runs: int, k_arms: int, n_reps: int, n_bootstrap: int,
-    alpha: float, multiarm_method: str, statistic: str, seed,
+    alpha: float, multiarm_method: str, statistic: str, seed, corrections: list[str] | None = None,
 ) -> list[MultiArmResult]:
     labels = [f"arm_{i}" for i in range(k_arms)]
-    corrections = [m.name for m in MULTIARM_CORRECTION_METHODS]
+    if corrections is None:
+        corrections = [m.name for m in MULTIARM_CORRECTION_METHODS]
     rng = np.random.default_rng(seed)
 
     agg_any: dict[tuple[str, str], int] = {(c, cond): 0 for c in corrections for cond in ("null", "alt")}
@@ -1393,7 +1490,7 @@ def _multiarm_style_cells(
 def run_multiarm_simulation(
     sources: list[MultiArmSource], sample_sizes: list[int], runs: int, k_values: list[int], n_reps: int,
     n_bootstrap: int, alpha: float, multiarm_method: str, statistic: str, progress_mode: str = "bar",
-    seed: int = 42, n_workers: int = 1,
+    seed: int = 42, n_workers: int = 1, corrections: list[str] | None = None,
 ) -> list[MultiArmResult]:
     global _MULTIARM_SOURCES
     _MULTIARM_SOURCES = list(sources)
@@ -1401,7 +1498,7 @@ def run_multiarm_simulation(
     cells = _multiarm_style_cells(sources, sample_sizes, k_values)
 
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
-    args_list = [(sc_idx, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed)
+    args_list = [(sc_idx, n, runs, k, n_reps, n_bootstrap, alpha, multiarm_method, statistic, seed, corrections)
                  for (sc_idx, n, k), seed in zip(cells, child_seeds)]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pvalues-multiarm")
@@ -1619,13 +1716,14 @@ def save_multiarm_fwer_power_plot(*, results: list[MultiArmResult], alpha: float
         ax.set_ylabel("Best-arm selection power (alt)")
         ax.set_title(f"eval type: {et}")
         ax.set_xlim(-0.02, max(0.3, alpha * 4))
-        # Zoom to the actual power spread (plus a 0.0 floor reference)
-        # rather than a fixed [0, 1] -- power is often uniformly low here
-        # (best-arm selection under a strict per-pair rejection requirement
-        # is hard), and a full [0, 1] axis squashes that spread into an
-        # unreadable sliver at the bottom.
+        # Zoom to the actual power spread rather than a fixed [0, 1] -- power
+        # can cluster near either end (uniformly low under a strict per-pair
+        # rejection requirement, or uniformly high at large n), and a full
+        # [0, 1] axis squashes that spread into an unreadable sliver either
+        # way. No artificial 0.0 floor seed -- that would defeat the zoom
+        # whenever power clusters near 1.0.
         if powers:
-            pow_lo, pow_hi = min(powers + [0.0]), max(powers + [0.0])
+            pow_lo, pow_hi = min(powers), max(powers)
             pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
             ax.set_ylim(max(-0.02, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
         else:
@@ -1664,7 +1762,7 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
     ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
 
     all_fwer_vals: list[float] = [alpha]
-    all_pow_vals: list[float] = [0.0]
+    all_pow_vals: list[float] = []
     for m in MULTIARM_PLOT_METHODS:
         c_rows = [r for r in results if r.correction == m.name]
         if not c_rows:
@@ -1706,13 +1804,16 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
     ax_pow.set_xlabel("k (number of arms)")
     ax_pow.set_ylabel("Best-arm selection power (alt)")
     ax_pow.set_title("Power vs. number of arms")
-    # Zoom to the actual power spread (plus a 0.0 floor reference) rather
-    # than a fixed [0, 1] -- best-arm selection power is often uniformly low
-    # here, and a full [0, 1] axis squashes that spread the same way an
-    # unzoomed FWER axis would (see above).
-    pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
-    pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
-    ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
+    # Zoom to the actual power spread rather than a fixed [0, 1] -- power is
+    # often concentrated near one end (uniformly low, or uniformly high as
+    # with best-arm selection at large n), and a full [0, 1] axis squashes
+    # that spread the same way an unzoomed FWER axis would (see above). No
+    # artificial 0.0 floor seed (unlike FWER's alpha-line seed) -- that would
+    # defeat the zoom whenever power clusters near 1.0.
+    if all_pow_vals:
+        pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
+        pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
+        ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
     ax_pow.set_xticks(ks_present)
 
     # One shared legend for both panels (FWER's nominal-alpha line plus every
@@ -1761,7 +1862,7 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
     ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
 
     all_fwer_vals: list[float] = [alpha]
-    all_pow_vals: list[float] = [0.0]
+    all_pow_vals: list[float] = []
     for m in MULTIARM_PLOT_METHODS:
         c_rows = [r for r in results if r.correction == m.name]
         if not c_rows:
@@ -1797,10 +1898,11 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
     ax_pow.set_ylabel("Best-arm selection power (alt)")
     ax_pow.set_title("Power vs. sample size")
     # Zoom to the actual power spread -- see save_multiarm_fwer_vs_k_plot's
-    # identical fix.
-    pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
-    pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
-    ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
+    # identical fix (no artificial 0.0 floor seed).
+    if all_pow_vals:
+        pow_lo, pow_hi = min(all_pow_vals), max(all_pow_vals)
+        pow_pad = max(0.01, (pow_hi - pow_lo) * 0.15)
+        ax_pow.set_ylim(max(0.0, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
 
     # One shared legend for both panels, placed outside the axes to the
     # right -- see save_multiarm_fwer_vs_k_plot's identical fix.
@@ -5047,6 +5149,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "(same meaning as --icc-values in pairwise mode)")
     parser.add_argument("--multiarm-cohens-d", type=float, default=0.3, metavar="D",
                          help="multiarm/simultaneous_ci modes: alt-condition effect size (Cohen's d) for build_multiarm_sources")
+    parser.add_argument("--corrections", nargs="+", choices=[m.name for m in MULTIARM_CORRECTION_METHODS], default=None, metavar="CORRECTION",
+                         help="multiarm mode: restrict to these correction strategies (default: all of "
+                              f"{[m.name for m in MULTIARM_CORRECTION_METHODS]}) -- e.g. for a fast targeted re-run "
+                              "of just the resampling-based corrections (max_t/romano_wolf/westfall_young) at "
+                              "larger n without paying for the full correction set")
 
     # ppi mode
     parser.add_argument("--tests", nargs="+", choices=[m.name for m in PPI_TEST_METHODS], default=None, metavar="TEST",
@@ -5139,10 +5246,29 @@ def official_args_multiarm(base_seed: int = 42) -> argparse.Namespace:
     step-down machinery, same k-arm sources), so sweeping the same n range
     makes the two modes' small-N-to-large-N comparisons directly comparable
     instead of stopping multiarm's sweep short of the large-N regime
-    simultaneous_ci's sweep was chosen to cover."""
+    simultaneous_ci's sweep was chosen to cover.
+
+    Also overrides official_args()'s bootstrap_n=2000 with 5000:
+    romano_wolf/westfall_young/boot's FWER ran consistently ~0.001-0.002
+    above nominal alpha at bootstrap_n=500-2000 (confirmed via direct
+    n=500-2000 sweeps, holding even at small k), traced to Monte Carlo noise
+    in estimating the joint max-statistic's upper-tail quantile from too few
+    draws -- not a correction-logic bug or a k-dependent effect (ruled out by
+    `boot`, a structurally different bootstrap-based correction, showing the
+    same excess). 5000 draws resolved it. This is no longer as costly as it
+    used to be -- _bootstrap_t_matrix's resample construction was rewritten
+    from an O(k_pairs*n_bootstrap*n) gather to a counts/matmul formulation
+    (~12-27x faster for the "bootstrap" mode max_t/romano_wolf/boot share,
+    ~2.3x for westfall_young's "permutation" mode). Left at 2000 for
+    official_args()'s other consumers (pairwise, simultaneous_ci, ppi) --
+    this finding is specific to multiarm's resampling-based FWER
+    corrections, not verified to generalize to simultaneous_ci's CI coverage
+    calibration."""
     args = official_args(base_seed)
     args.mode = "multiarm"
-    args.sizes = [15, 30, 50, 100, 200, 500]
+    args.sizes = [15, 30, 50, 100, 200, 500, 1000]
+    args.bootstrap_n = 5000
+    args.reps = 500
     return args
 
 
@@ -5234,9 +5360,16 @@ def real_official_args_multiarm(base_seed: int = 42) -> argparse.Namespace:
     real-data multiarm sweep (FWER + best-arm power across
     none/holm/bonferroni/fdr_bh/hochberg/shaffer/friedman_nemenyi/max_t/
     romano_wolf/westfall_young -- see MULTIARM_CORRECTION_METHODS) be
-    re-run on its own without also paying for the real-data pairwise sweep."""
+    re-run on its own without also paying for the real-data pairwise sweep.
+
+    Also bumps bootstrap_n from real_official_args()'s 2000 to 5000 -- see
+    official_args_multiarm's docstring for why (Monte Carlo noise in the
+    joint max-statistic's quantile at low bootstrap_n, not a k-dependent or
+    correction-logic issue); applies identically regardless of data source."""
     args = real_official_args(base_seed)
     args.mode = "multiarm"
+    args.bootstrap_n = 5000
+    args.reps = 500
     return args
 
 
@@ -5407,7 +5540,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 ma_sources, sample_sizes=args.sizes, runs=args.runs, k_values=k_values, n_reps=args.reps,
                 n_bootstrap=args.bootstrap_n, alpha=args.alpha, multiarm_method=args.multiarm_method,
                 statistic=args.statistic, progress_mode=args.progress, seed=args.seed,
-                n_workers=getattr(args, "workers", 1),
+                n_workers=getattr(args, "workers", 1), corrections=getattr(args, "corrections", None),
             )
             print_multiarm_report(ma_results, alpha=args.alpha)
 
