@@ -268,6 +268,23 @@ same way `evalstats.core.resampling` is.
     fraction of each eval type's own scale span via `_jb_effect_magnitude`,
     the effect-size analogue of `_jb_bias_magnitude`) instead of held at 0.
     `es=0.00` doubles as a Type-I cross-check against the main sweep.
+    `PPI_POWER_EFFECT_FRACS` has 7 points (0/0.05/0.10/0.15/0.20/0.30/0.40),
+    not the original 4 (0/0.10/0.20/0.40) -- the coarser grid's biggest gap
+    (0.20-0.40) spanned exactly where the "cancellation dip"/crossover
+    happens (see `save_ppi_power_direction_plot`), risking a smooth,
+    well-understood phenomenon reading as a kink or an artifact.
+    `save_ppi_power_plot` is two rows (top: corrected, bottom: uncorrected)
+    per eval-type column, not one set of axes with both overlaid -- with up
+    to 13 tests' solid+dashed lines sharing colors, superimposing them was
+    unreadable; uncorrected keeps its dashed linestyle in its own row. The
+    legend moved from an inside corner to outside the axes on the right,
+    since the two-row layout left no clean interior spot for 13+ entries.
+    (An earlier version of this plot also overlaid each test's no-bias
+    corrected rate as a dotted "ideal" reference line on the corrected row,
+    reusing `build_ppi_power_nobias_sources`' results -- removed again on
+    request as unneeded clutter; `run()` still computes the no-bias check
+    before the main power plot, since it also feeds its own standalone
+    `..._power_vs_effect_size_nobias.png` plot.)
     Binary is excluded: `effect_size` is an additive shift applied directly
     to a 0/1 truth draw in `generate_judge_bias_cell`, which only stays
     valid at `es=0`.

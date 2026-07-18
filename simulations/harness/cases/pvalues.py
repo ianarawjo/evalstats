@@ -5424,7 +5424,6 @@ def save_results_artifacts_ppi_power(*, results: list[PPIResult], alpha: float, 
 
 def save_ppi_power_plot(
     *, results: list[PPIResult], alpha: float, out_path: str, title_suffix: str = "",
-    ideal_results: list[PPIResult] | None = None,
 ) -> str:
     """Power curve (rejection rate vs. real effect_size) -- TWO rows (top:
     corrected, bottom: uncorrected), one column per eval type, rather than
@@ -5434,18 +5433,12 @@ def save_ppi_power_plot(
     dashed linestyle in its own row, consistent with save_ppi_typeI_plot/
     save_ppi_power_direction_plot's convention.
 
-    ``ideal_results`` (optional -- pass build_ppi_power_nobias_sources'
-    PPIResult list): overlaid as a thin dotted line, in the SAME per-test
-    color, on the CORRECTED row only. This is "what power would PPI-
-    corrected achieve if there were no judge bias to correct for at all" --
-    the ceiling to judge "how good a job is PPI actually doing" against.
-    There's no single closed-form analytical 'ideal' power curve that
-    would apply across all ~13 test families here (they target different
-    estimands -- independent-group means, paired means, between-group
-    variances, LMM Wald F-stats...), so rather than an arbitrary reference
-    that only fits one of them, this reuses a ceiling the harness already
-    computes, per test, at no extra simulation cost (build_ppi_power_
-    nobias_sources runs whenever the power check does)."""
+    (An earlier version of this function also accepted an ``ideal_results``
+    list -- build_ppi_power_nobias_sources' results, overlaid as a dotted
+    "ideal" reference line on the corrected row. Removed on request as
+    unneeded clutter; run() still computes the no-bias check before the
+    main power plot, since it also feeds its own standalone
+    ``..._power_vs_effect_size_nobias.png`` plot via a separate call.)"""
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
@@ -5455,7 +5448,6 @@ def save_ppi_power_plot(
     parsed = {r.name: _parse_ppi_power_name(r.name) for r in results}
     eval_types = sorted({et for et, _ in parsed.values()})
     es_values = sorted({es for _, es in parsed.values()})
-    ideal_parsed = {r.name: _parse_ppi_power_name(r.name) for r in ideal_results} if ideal_results else {}
 
     fig, axes = plt.subplots(2, len(eval_types), figsize=(4.6 * len(eval_types), 7.6), squeeze=False)
     for col, et in enumerate(eval_types):
@@ -5478,17 +5470,6 @@ def save_ppi_power_plot(
             ax_c.plot(es_values, ys_c, marker="o", color=color, linewidth=1.6, markersize=4, label=_pretty_test(t), zorder=2)
             ax_u.plot(es_values, ys_u, marker="x", color=color, linewidth=1.4, linestyle="--", markersize=4, zorder=2)
 
-            if ideal_results:
-                ideal_t_rows = [r for r in ideal_results if r.test == t]
-                ys_ideal = []
-                for es in es_values:
-                    cell_rows = [r for r in ideal_t_rows if ideal_parsed.get(r.name) == (et, es)]
-                    c_tot = sum(r.corrected_rejects for r in cell_rows)
-                    n_tot = sum(r.n_reps for r in cell_rows)
-                    ys_ideal.append(c_tot / n_tot if n_tot > 0 else float("nan"))
-                if any(np.isfinite(ys_ideal)):
-                    ax_c.plot(es_values, ys_ideal, color=color, linewidth=1.2, linestyle=":", alpha=0.6, zorder=1)
-
         ax_c.set_title(et.capitalize())
         ax_c.set_ylabel("Rejection rate\n(corrected)" if col == 0 else "")
         ax_c.set_ylim(-0.02, 1.02)
@@ -5499,9 +5480,6 @@ def save_ppi_power_plot(
         ax_u.set_ylim(-0.02, 1.02)
 
     handles, labels = axes[0][0].get_legend_handles_labels()
-    if ideal_results:
-        handles.append(Line2D([0], [0], color="#333333", linewidth=1.2, linestyle=":", alpha=0.8))
-        labels.append("Ideal (no judge bias)")
     handles.append(Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6))
     labels.append(f"Nominal {_alpha_label(alpha)}")
     fig.legend(handles, labels, fontsize=8, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
@@ -6572,7 +6550,6 @@ def run(args: argparse.Namespace) -> CaseResult:
                         power_plot_path = save_ppi_power_plot(
                             results=power_results, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{power_stem}_power_vs_effect_size.png"),
-                            ideal_results=nobias_results or None,
                         )
                         output_paths.append(power_plot_path)
                         print(f"Saved plot: {power_plot_path}")
