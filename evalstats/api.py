@@ -809,7 +809,6 @@ def _ppi_bootstrap_t_joint_stats(
         non-degenerate SE, ``M_b`` has shape ``(n_boot,)`` (the joint max
         statistic per bootstrap draw), and ``t_obs`` has shape ``(k,)``.
     """
-    n_items = scores_2d.shape[1]
     k = len(pair_keys)
 
     lab_masks = []
@@ -820,18 +819,25 @@ def _ppi_bootstrap_t_joint_stats(
     if not all(np.array_equal(m, first_mask) for m in lab_masks[1:]):
         return None
     lab_positions = np.where(first_mask)[0]
+    # unlab_positions must be DISJOINT from lab_positions -- obs_se/boot_se
+    # below assume the full-sample and rectifier terms are independent,
+    # which only holds for disjoint samples. See _ppi_two_sample and
+    # evalstats.ppi.correct's docstring.
+    unlab_positions = np.where(~first_mask)[0]
     n_lab = len(lab_positions)
+    n_unlab = len(unlab_positions)
     if n_lab < 15:
         return None
 
-    diffs_unlab = np.empty((k, n_items))
+    diffs_unlab = np.empty((k, n_unlab))
     rect_items = np.empty((k, n_lab))
     point_ests = np.empty(k)
     obs_se = np.empty(k)
     for p_idx, (ea, eb) in enumerate(pair_keys):
         ia, ib = entity_idx[ea], entity_idx[eb]
-        d_unlab = scores_2d[ia] - scores_2d[ib]
-        d_lab_llm = d_unlab[lab_positions]
+        d_all = scores_2d[ia] - scores_2d[ib]
+        d_unlab = d_all[unlab_positions]
+        d_lab_llm = d_all[lab_positions]
         d_lab_true = (lab_matrix[ia] - lab_matrix[ib])[lab_positions]
         rect = d_lab_true - d_lab_llm
         diffs_unlab[p_idx] = d_unlab
@@ -843,7 +849,7 @@ def _ppi_bootstrap_t_joint_stats(
 
         var_unlab = float(np.var(d_unlab, ddof=1))
         var_rect = float(np.var(rect, ddof=1)) if n_lab > 1 else 0.0
-        obs_se[p_idx] = np.sqrt(var_unlab / n_items + var_rect / n_lab)
+        obs_se[p_idx] = np.sqrt(var_unlab / n_unlab + var_rect / n_lab)
 
     boot_theta = np.empty((n_boot, k))
     boot_se = np.empty((n_boot, k))
@@ -852,13 +858,13 @@ def _ppi_bootstrap_t_joint_stats(
     while start < n_boot:
         stop = min(start + chunk_size, n_boot)
         m = stop - start
-        idx_all = rng.integers(0, n_items, size=(m, n_items))  # shared across pairs
+        idx_all = rng.integers(0, n_unlab, size=(m, n_unlab))  # shared across pairs
         idx_lab = rng.integers(0, n_lab, size=(m, n_lab))      # shared across pairs
-        unlab_samples = diffs_unlab[:, idx_all]  # (k, m, n_items)
+        unlab_samples = diffs_unlab[:, idx_all]  # (k, m, n_unlab)
         rect_samples = rect_items[:, idx_lab]    # (k, m, n_lab)
         boot_theta[start:stop] = unlab_samples.mean(axis=2).T + rect_samples.mean(axis=2).T
         boot_se[start:stop] = np.sqrt(
-            unlab_samples.var(axis=2, ddof=1).T / n_items
+            unlab_samples.var(axis=2, ddof=1).T / n_unlab
             + rect_samples.var(axis=2, ddof=1).T / n_lab
         )
         start = stop
@@ -920,8 +926,12 @@ def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, r
         mask = ~np.isnan(a_lab)
         if mask.sum() == 0:
             raise ValueError("No positions have human labels in a_lab.")
+        # Y_hat_unlab must be DISJOINT from the labeled positions -- correct()'s
+        # bootstrap independently resamples the two terms, which is only valid
+        # for genuinely separate samples. `a` is the full per-entity array (a[mask]
+        # are the same items as a_lab[mask]), so exclude them here.
         return _ppi_correct(
-            np.mean, Y_lab=a_lab[mask], Y_hat_lab=a[mask], Y_hat_unlab=a,
+            np.mean, Y_lab=a_lab[mask], Y_hat_lab=a[mask], Y_hat_unlab=a[~mask],
             alpha=alpha, n_boot=n_boot, rng=rng, compute_pvalue=False,
         )
     raise ValueError(
@@ -1019,7 +1029,11 @@ def _run_alignment_ppi(
         df, metric_col=metric_col, group_col=factor_col, alignment_result=alignment_result
     )
 
-    n_all = len(Y_hat_unlab)
+    # NOTE: resolve_arrays' Y_hat_unlab EXCLUDES the labeled rows (disjoint,
+    # as correct() requires) -- len(df) is the right "total dataset size"
+    # for the checks below, not len(Y_hat_unlab) (which undercounts by
+    # n_lab).
+    n_all = len(df)
     n_lab = len(Y_lab)
 
     # ── Minimum sample-size requirements ─────────────────────────────────────

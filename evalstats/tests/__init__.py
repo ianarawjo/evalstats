@@ -552,8 +552,12 @@ def _ppi_two_sample(
     if mask_a.sum() == 0 and mask_b.sum() == 0:
         raise ValueError("No labeled items found in a_lab or b_lab.")
 
-    Y_hat_unlab = np.concatenate([a, b])
-    X_unlab     = np.array([0] * len(a) + [1] * len(b), dtype=int)
+    # Y_hat_unlab/X_unlab must be DISJOINT from the labeled positions -- a/b
+    # are the full per-group arrays (a[mask_a] are the SAME items as
+    # a_lab[mask_a]), so exclude the labeled positions here. See
+    # evalstats.ppi.correct's docstring for why disjointness matters.
+    Y_hat_unlab = np.concatenate([a[~mask_a], b[~mask_b]])
+    X_unlab     = np.array([0] * int((~mask_a).sum()) + [1] * int((~mask_b).sum()), dtype=int)
     Y_lab       = np.concatenate([a_lab[mask_a], b_lab[mask_b]])
     Y_hat_lab   = np.concatenate([a[mask_a],     b[mask_b]])
     X_lab       = np.array([0] * int(mask_a.sum()) + [1] * int(mask_b.sum()), dtype=int)
@@ -738,9 +742,11 @@ def _ppi_kruskal_wallis(
     k = len(groups)
     masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
 
-    Y_hat_unlab = np.concatenate(groups)
+    # Y_hat_unlab/X_unlab must be DISJOINT from the labeled positions -- see
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    Y_hat_unlab = np.concatenate([g[~mask] for g, mask in zip(groups, masks)])
     X_unlab = np.concatenate([
-        np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups)
+        np.full(int((~mask).sum()), gid, dtype=int) for gid, mask in enumerate(masks)
     ])
     Y_lab = np.concatenate([
         lab_arr[mask] for lab_arr, mask in zip(groups_lab, masks)
@@ -810,24 +816,29 @@ def _ppi_kruskal_wallis_pairwise(
     k = len(groups)
     masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
 
+    # Groups_unlab must be DISJOINT from the labeled positions -- boot_unlab
+    # below is resampled independently of the labeled subset, which is only
+    # valid for disjoint samples. See _ppi_two_sample and
+    # evalstats.ppi.correct's docstring.
+    groups_unlab = [g[~m] for g, m in zip(groups, masks)]
     Y_lab_groups = [lab_arr[m] for lab_arr, m in zip(groups_lab, masks)]
     Yhat_lab_groups = [g[m] for g, m in zip(groups, masks)]
 
     pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
     n_pairs = len(pairs)
 
-    theta_unlab = _kw_pairwise_thetas(groups, pairs)
+    theta_unlab = _kw_pairwise_thetas(groups_unlab, pairs)
     theta_lab_human = _kw_pairwise_thetas(Y_lab_groups, pairs)
     theta_lab_llm = _kw_pairwise_thetas(Yhat_lab_groups, pairs)
     theta_hat = theta_unlab + (theta_lab_human - theta_lab_llm)
 
-    n_per_group = [len(g) for g in groups]
+    n_unlab_per_group = [len(g) for g in groups_unlab]
     n_lab_per_group = [len(y) for y in Y_lab_groups]
 
     boots = np.empty((n_boot, n_pairs))
     for bi in range(n_boot):
         boot_unlab = [
-            groups[j][rng.integers(0, n_per_group[j], n_per_group[j])]
+            groups_unlab[j][rng.integers(0, n_unlab_per_group[j], n_unlab_per_group[j])]
             for j in range(k)
         ]
         # One shared index per group for the labeled resample: the human and
@@ -908,7 +919,9 @@ def _ppi_paired_arrays(
             "No positions have human labels for both groups in a_lab and b_lab."
         )
 
-    Y_hat_unlab = a - b
+    # Y_hat_unlab must be DISJOINT from the labeled positions -- see
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    Y_hat_unlab = (a - b)[~mask]
     Y_hat_lab   = (a - b)[mask]
     Y_lab       = (a_lab - b_lab)[mask]
 
@@ -973,8 +986,13 @@ def _ppi_paired_bayes_bootstrap(
             "No positions have human labels for both groups in a_lab and b_lab."
         )
 
-    diffs_unlab = a - b
-    diffs_lab_llm = diffs_unlab[mask]
+    # diffs_unlab must be DISJOINT from the labeled positions -- boot_unlab
+    # and boot_rect below are resampled and summed independently, which is
+    # only valid for disjoint samples. See _ppi_two_sample and
+    # evalstats.ppi.correct's docstring.
+    all_diffs = a - b
+    diffs_unlab = all_diffs[~mask]
+    diffs_lab_llm = all_diffs[mask]
     diffs_lab_true = (a_lab - b_lab)[mask]
     rect_items = diffs_lab_true - diffs_lab_llm
 
@@ -1046,8 +1064,13 @@ def _ppi_paired_bootstrap_t(
             "No positions have human labels for both groups in a_lab and b_lab."
         )
 
-    diffs_unlab = a - b
-    diffs_lab_llm = diffs_unlab[mask]
+    # diffs_unlab must be DISJOINT from the labeled positions -- the
+    # two-term variance decomposition below assumes independence, which
+    # only holds for disjoint samples. See _ppi_two_sample and
+    # evalstats.ppi.correct's docstring.
+    all_diffs = a - b
+    diffs_unlab = all_diffs[~mask]
+    diffs_lab_llm = all_diffs[mask]
     diffs_lab_true = (a_lab - b_lab)[mask]
     rect_items = diffs_lab_true - diffs_lab_llm
 
@@ -1176,8 +1199,13 @@ def _ppi_paired_tango(
             "No positions have human labels for both groups in a_lab and b_lab."
         )
 
-    diffs_unlab = a - b
-    diffs_lab_llm = diffs_unlab[mask]
+    # diffs_unlab must be DISJOINT from the labeled positions -- the
+    # additive two-term variance formula below assumes independence, which
+    # only holds for disjoint samples. See _ppi_two_sample and
+    # evalstats.ppi.correct's docstring.
+    all_diffs = a - b
+    diffs_unlab = all_diffs[~mask]
+    diffs_lab_llm = all_diffs[mask]
     diffs_lab_true = (a_lab - b_lab)[mask]
     rect_items = diffs_lab_true - diffs_lab_llm
 
@@ -1196,7 +1224,7 @@ def _ppi_paired_tango(
         # used elsewhere in this module).
         return float(np.mean((x - np.mean(x)) ** 2)) if len(x) > 0 else 0.0
 
-    sigma2_f = _pvar(diffs_unlab)      # per-item variance, full LLM-judged sample
+    sigma2_f = _pvar(diffs_unlab)      # per-item variance, disjoint unlabeled sample
     sigma2_rect = _pvar(rect_items)    # per-item variance, rectifier residuals
     v_hat = sigma2_f / n_all + sigma2_rect / n_lab
 
@@ -1246,8 +1274,13 @@ def _ppi_single_bootstrap_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, n_bo
     if mask.sum() == 0:
         raise ValueError("No positions have human labels in a_lab.")
 
-    values_unlab = np.asarray(a, dtype=float)
-    values_lab_llm = values_unlab[mask]
+    # values_unlab must be DISJOINT from the labeled positions -- the
+    # variance formula below assumes the full-sample and rectifier terms
+    # are independent, which is only true for disjoint samples. See
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    all_values = np.asarray(a, dtype=float)
+    values_unlab = all_values[~mask]
+    values_lab_llm = all_values[mask]
     values_lab_true = np.asarray(a_lab, dtype=float)[mask]
     rect_items = values_lab_true - values_lab_llm
 
@@ -1345,8 +1378,13 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
     if mask.sum() == 0:
         raise ValueError("No positions have human labels in a_lab.")
 
-    values_unlab = np.asarray(a, dtype=float)
-    values_lab_llm = values_unlab[mask]
+    # values_unlab must be DISJOINT from the labeled positions -- the
+    # variance formula below assumes the full-sample and rectifier terms
+    # are independent, which is only true for disjoint samples. See
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    all_values = np.asarray(a, dtype=float)
+    values_unlab = all_values[~mask]
+    values_lab_llm = all_values[mask]
     values_lab_true = np.asarray(a_lab, dtype=float)[mask]
     rect_items = values_lab_true - values_lab_llm
 
@@ -1512,9 +1550,11 @@ def _ppi_anova_independent(
     k = len(groups)
     masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
 
-    Y_hat_unlab = np.concatenate(groups)
+    # Y_hat_unlab/X_unlab must be DISJOINT from the labeled positions -- see
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    Y_hat_unlab = np.concatenate([g[~mask] for g, mask in zip(groups, masks)])
     X_unlab = np.concatenate([
-        np.full(len(g), gid, dtype=int) for gid, g in enumerate(groups)
+        np.full(int((~mask).sum()), gid, dtype=int) for gid, mask in enumerate(masks)
     ])
 
     Y_lab = np.concatenate([
@@ -1564,8 +1604,11 @@ def _ppi_anova_repeated(
             "No subjects have labels in all conditions in groups_lab."
         )
 
-    Y_hat_unlab = np.column_stack(groups)
-    Y_hat_lab = Y_hat_unlab[overlap]
+    # Y_hat_unlab must be DISJOINT from the labeled subjects -- see
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    all_subjects = np.column_stack(groups)
+    Y_hat_unlab = all_subjects[~overlap]
+    Y_hat_lab = all_subjects[overlap]
     Y_lab = labels_mat[overlap]
 
     return correct(
@@ -1606,8 +1649,11 @@ def _ppi_friedman(
             "No subjects have labels in all conditions in groups_lab."
         )
 
-    Y_hat_unlab = np.column_stack(groups)
-    Y_hat_lab = Y_hat_unlab[overlap]
+    # Y_hat_unlab must be DISJOINT from the labeled subjects -- see
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
+    all_subjects = np.column_stack(groups)
+    Y_hat_unlab = all_subjects[~overlap]
+    Y_hat_lab = all_subjects[overlap]
     Y_lab = labels_mat[overlap]
 
     return correct(

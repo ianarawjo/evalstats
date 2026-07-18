@@ -98,12 +98,17 @@ def resolve_arrays(
     Returns
     -------
     tuple
-        ``(Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab)`` as numpy arrays.
+        ``(Y_hat_unlab, X_unlab, Y_lab, Y_hat_lab, X_lab)`` as numpy arrays,
+        ready to pass directly to :func:`correct`. ``Y_hat_unlab``/
+        ``X_unlab`` EXCLUDE the labeled rows (disjoint from ``Y_lab``/
+        ``Y_hat_lab``/``X_lab``) -- see :func:`correct`'s docstring for why
+        that disjointness is required for its bootstrap to be valid.
     """
     human_col = alignment_result.human_col
     labeled_mask = df[human_col].notna()
-    Y_hat_unlab = df[metric_col].to_numpy(dtype=float)
-    X_unlab     = df[group_col].to_numpy()
+    unlabeled = df.loc[~labeled_mask]
+    Y_hat_unlab = unlabeled[metric_col].to_numpy(dtype=float)
+    X_unlab     = unlabeled[group_col].to_numpy()
     Y_lab       = df.loc[labeled_mask, human_col].to_numpy(dtype=float)
     Y_hat_lab   = df.loc[labeled_mask, metric_col].to_numpy(dtype=float)
     X_lab       = df.loc[labeled_mask, group_col].to_numpy()
@@ -146,7 +151,25 @@ def correct(
 
     A percentile bootstrap CI is computed by independently resampling the
     unlabeled set (size N) and the labeled set (size n_lab) on each draw
-    and recomputing the PPI estimator.
+    and recomputing the PPI estimator. This independent resampling is only
+    valid because *Y_hat_unlab* and the labeled set are assumed to be
+    genuinely DISJOINT samples (the original prediction-powered inference
+    setup, Angelopoulos et al. 2023) — disjoint samples are independent by
+    construction, so bootstrapping them separately is exact.
+
+    **Callers must exclude the labeled items from *Y_hat_unlab*/*X_unlab*.**
+    A common mistake: if your data is one score column plus a sparse human-
+    label overlay (label human-reviewed a subset of everything you already
+    LLM-scored), *Y_hat_unlab* is NOT "every item's LLM score" — it's only
+    the LLM scores for the items that do NOT also appear in *Y_lab*. Passing
+    the full (overlapping) array instead silently breaks the independence
+    this function's bootstrap relies on: the two terms then share items, so
+    resampling them separately ignores their true covariance and produces a
+    CI/p-value that drifts from nominal coverage as a function of n_lab
+    (confirmed via simulation — see ``simulations/harness/cases/pvalues.py
+    --mode ppi``'s N x N_lab calibration grid). There is no parameter here
+    to opt into a "shared" mode; correctness depends entirely on the caller
+    constructing a genuinely disjoint *Y_hat_unlab* up front.
 
     Parameters
     ----------
@@ -159,7 +182,9 @@ def correct(
     Y_hat_lab : array-like, shape (n_lab,)
         LLM scores for the same items as *Y_lab* (paired, same order).
     Y_hat_unlab : array-like, shape (N,)
-        LLM scores for the full (unlabeled) dataset.
+        LLM scores for the UNLABELED dataset only — i.e. every item that
+        does NOT also appear in *Y_lab*/*Y_hat_lab*. Must be disjoint from
+        the labeled set; see the warning above.
     X_lab : array-like, shape (n_lab, ...), optional
         Covariates / condition labels for the labeled subset.
         When provided, passed as the second argument to *estimator_func*,
@@ -289,7 +314,12 @@ def correct(
     if len(Y_lab) == 0:
         raise ValueError("Y_lab and Y_hat_lab must be non-empty.")
     if len(Y_hat_unlab) == 0:
-        raise ValueError("Y_hat_unlab must be non-empty.")
+        raise ValueError(
+            "Y_hat_unlab must be non-empty. This usually means every item is "
+            "already labeled -- PPI has no unlabeled pool left to extrapolate "
+            "the correction to. With 100% human labels, just run a classical "
+            "test directly on Y_lab instead of PPI."
+        )
 
     if not np.all(np.isfinite(Y_lab)):
         raise ValueError("Y_lab contains non-finite values (NaN/inf).")
