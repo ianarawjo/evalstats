@@ -293,10 +293,44 @@ same way `evalstats.core.resampling` is.
     truth for the paired structure only) were added to
     `generate_judge_bias_cell`'s return value to support the `all_human`/
     `human_subset` arms; every other test structure's dense truth is
-    discarded as before. Sequential only (`run_ppi_comparison_simulation`)
-    -- the comparison grid (24 scenarios total) is small enough that
-    `run_ppi_simulation`'s parallel/progress-dict machinery would be pure
-    overhead.
+    discarded as before. Now runs in parallel via the same fork-pool-over-
+    sources pattern as `run_ppi_simulation`/`run_multiarm_simulation`
+    (originally sequential-only, reasonable at the comparison grid's
+    original 24 scenarios, but outgrown by `build_ppi_nlab_grid_sources`'
+    ~44 and `build_ppi_factorial_sources`' ~312).
+    `save_ppi_null_comparison_plot` is a companion bar chart isolating JUST
+    the `effect_size=0` (null) case from `save_ppi_comparison_plot`'s line
+    plot: one bar per estimator arm, one panel per eval type. Added because
+    the line plot's null point is easy to misread -- `llm_only`/
+    `llm_impute`'s high rejection rate at SMALL real effect sizes looks
+    like "more powerful than PPI" on a power-framed line plot, when it's
+    actually inflated false positives from `build_ppi_power_sources`'
+    fixed bias direction (which OPPOSES the injected effect -- see
+    `build_ppi_power_reinforcing_sources`' docstring for the sign
+    arithmetic), already present at `effect_size=0` before any real effect
+    exists. A plot with no effect_size axis at all removes that ambiguity:
+    every bar is a false-positive rate, by construction. Its bars are the
+    ONE `build_ppi_power_sources` scenario per eval type at `effect_size=0`
+    (n=100, label_frac=0.20 -> N_lab=20, "severe" bias, icc=0.20,
+    llm_noise=0.20 -- `_ppi_power_baseline`'s fixed baseline, not a sweep),
+    and every arm (including `ppi`) targets the SAME single estimand: the
+    paired-mean difference (`_run_ppi_comparison_cell` uses `np.mean` as
+    both the PPI estimator and its rectifier, i.e. the identical method
+    `paired_t`'s PPI correction uses elsewhere in this file) -- not an
+    average across `PPI_TEST_METHODS`. Error bars are each bar's 95% Wilson
+    score interval (`_ppi_wilson_interval`, same interval
+    `print_ppi_report`'s Type-I flagging already uses), added so MC noise
+    at low `--effect-reps` isn't mistaken for a real miscalibration finding.
+  - `--no-typeI-check` skips the base Type-I calibration sweep
+    (`build_judge_bias_sources`, by far the slowest single piece of `--mode
+    ppi`) -- the effect/power/comparison/factorial checks don't consume its
+    results, so `--no-typeI-check --no-effect-check --no-power-check
+    --no-comparison-check --factorial-check` runs JUST the factorial sweep.
+    `official_args_ppi_factorial` packages exactly that (at
+    `official_args_ppi`'s precision tier), registered in
+    `official_variants()` as its own selectable `--official-tests` menu
+    entry, the same "split out for independent selection" reasoning
+    `official_args_ppi` itself already uses relative to `official_args`.
   - The power check's baseline (`build_ppi_power_sources`) only exercises
     ONE bias configuration: `bias_type="differential"` with the fixed judge
     bias always OPPOSING the injected real effect (see
@@ -341,6 +375,60 @@ same way `evalstats.core.resampling` is.
     PPI's two-term variance (`Var(unlabeled)/N + Var(rectifier)/N_lab`) --
     the rectifier term dominates until N_lab is large enough, at which point
     adding more N (cheap LLM-judged items) barely moves power further.
+  - Efficiency: `generate_judge_bias_cell` draws SIX test structures every
+    call regardless of which are used -- fine for `_run_ppi_cell` (the
+    Type-I/power/effect-check sweeps), which deliberately keeps a FIXED
+    draw order across every call so a given scenario/seed's results for a
+    given test don't change depending on what else `--tests` includes (see
+    its docstring), but pure waste for the paired_t-only comparison/N x
+    N_lab/factorial checks above, which never touch the other five.
+    `generate_judge_bias_pair_cell` is a lean counterpart (paired structure
+    only) used exclusively by `_run_ppi_comparison_cell` -- measured ~7.8x
+    faster (0.08ms vs. 0.61ms/call) with no reproducibility tradeoff, since
+    every caller of `_run_ppi_comparison_cell` already has its own
+    independently-seeded rng stream and no legacy parity to preserve. The
+    underlying PPI bootstrap correction itself (`evalstats.ppi.correct`)
+    was already vectorized (a batched fast path for `np.mean`/`np.median`,
+    chunked to bound memory) -- confirmed via profiling, not changed.
+    `run_ppi_comparison_simulation` also gained the same fork-pool-over-
+    sources parallelism `run_ppi_simulation`/`run_multiarm_simulation`
+    already had (it was sequential-only, reasonably so at the original
+    ~24-scenario comparison grid, but the N x N_lab grid and factorial sweep
+    below outgrew that).
+  - `build_ppi_factorial_sources` (tag `"factorial"`, ~312 cells): a TRUE
+    full factorial (every main effect/interaction directly estimable, no
+    fractional-design confounding) crossing the six factors most likely to
+    compound in ways every one-factor-at-a-time check above can't reveal --
+    `bias_magnitude` (none/moderate/severe, matching `build_judge_bias_
+    sources`' `biasmag.*` labels) x `N` (60/200/400) x `N_lab` (15/30/80) x
+    `label_mechanism` (mcar/mnar_mild/mnar_strong) x `effect_size`
+    (null/moderate/large) x `bias_direction` (opposing/reinforcing).
+    Continuous/`paired_t` only (same scoping as the comparison/N x N_lab
+    checks). Two skips: `n_lab > n` (infeasible), and
+    `bias_direction="reinforcing"` when `bias_magnitude="none"` OR
+    `effect_size="null"` (redundant, not just lower-priority -- a two-sided
+    test's rejection rate depends only on the bias offset's MAGNITUDE, and
+    "opposing"/"reinforcing" are exact sign-flipped mirror images whenever
+    there's no bias, or no real effect, for the direction to matter against;
+    generating both would just waste compute on identical-in-distribution
+    cells). Made tractable by the efficiency work above -- see
+    `fit_ppi_factorial_model` (a pooled binomial GLM,
+    `_PPI_FACTORIAL_FORMULA`, on aggregate success/failure counts per cell)
+    and `save_ppi_factorial_heatmap_plot` (three flagship 2D slices) in
+    `cases/pvalues.py`. Opt-in via `--factorial-check` (default off, unlike
+    the smaller checks) given its larger scenario count, with its own
+    `--factorial-reps`/`--factorial-n-boot` (defaulting to a cheaper
+    "screening" tier than `--reps`/`--ppi-n-boot`, since a two-tier
+    screen-cheap/confirm-expensive workflow is the standard approach for a
+    factorial this size -- rerun just the cells the screening pass flags at
+    higher `--factorial-reps`/`--factorial-n-boot` for a publication-
+    precision confirmation). Caveat documented on `fit_ppi_factorial_model`:
+    strata where the corrected rate saturates to ~0/~1 for every level of
+    another factor (e.g. `effect_size="large"` crossed with
+    `bias_magnitude`) can show GLM quasi-complete-separation (huge
+    coefficients/standard errors) -- confirmed in testing, and it's the
+    correct signal that a saturated stratum carries no further information,
+    not a fitting bug.
 - There is no separate `ppi_calibration` case: `sim_type_i_calibration.py`
   was folded into `cases/pvalues.py`'s `--mode ppi` instead of becoming a
   third file, since both halves of `pvalues` answer "is this statistical

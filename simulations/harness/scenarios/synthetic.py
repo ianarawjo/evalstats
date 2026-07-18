@@ -1903,6 +1903,86 @@ def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSourc
     return sources
 
 
+PPI_FACTORIAL_BIAS_MAGNITUDES: dict[str, float] = {"none": 0.0, "moderate": 0.07, "severe": 0.30}
+"""bias_delta fractions -- "moderate"/"severe" match build_judge_bias_sources'
+biasmag.*.moderate/biasmag.*.severe labels exactly, so factorial results are
+comparable to the existing OFAT bias_magnitude sweep."""
+PPI_FACTORIAL_N_VALUES = (60, 200, 400)
+PPI_FACTORIAL_NLAB_VALUES = (15, 30, 80)
+PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
+    "mcar": dict(label_mnar=False, mnar_strength=0.0, mnar_mode="high"),
+    "mnar_mild": dict(label_mnar=True, mnar_strength=0.8, mnar_mode="high"),
+    "mnar_strong": dict(label_mnar=True, mnar_strength=1.6, mnar_mode="high"),
+}
+PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.20, "large": 0.40}
+PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
+_PPI_FACTORIAL_EVAL_TYPE = "continuous"
+
+
+def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
+    """Full factorial cross of the six factors most likely to compound in
+    ways this harness's one-factor-at-a-time sweeps (build_judge_bias_sources,
+    and this session's effect_size/bias_direction/N_lab additions -- each
+    checked one axis at a time against a fixed baseline) can't reveal:
+    bias_magnitude x N x N_lab x label_mechanism x effect_size x
+    bias_direction. One representative eval type (continuous) and estimand
+    (paired_t) -- same scoping as build_ppi_comparison_label_frac_sources/
+    build_ppi_nlab_grid_sources. Consumed via _run_ppi_comparison_cell/
+    run_ppi_comparison_simulation (unchanged -- this is just a new source
+    list, not a new execution path), analyzed via cases/pvalues.py's
+    fit_ppi_factorial_model (pooled binomial GLM) and a curated set of 2D
+    heatmap slices.
+
+    Two skips, one for infeasibility and one for redundancy:
+    - n_lab > n is infeasible (same as build_ppi_nlab_grid_sources).
+    - bias_direction="reinforcing" is SKIPPED (not just de-prioritized) when
+      bias_magnitude="none" OR effect_size="null": bias_direction only flips
+      the SIGN of the fixed judge-bias offset (see
+      build_ppi_power_reinforcing_sources), and every test here is
+      two-sided, so its rejection rate depends only on the offset's
+      MAGNITUDE -- "opposing" and "reinforcing" are exact mirror images
+      (statistically equivalent) whenever there's no bias to have a
+      direction, or no real effect for that direction to interact with.
+      Generating both would waste compute on literally redundant cells
+      instead of covering new ground -- ~312 cells survive both skips
+      (down from 432 before the redundancy skip, 3x3x3x3x3x2 minus
+      n_lab>n infeasibility).
+
+    Small enough, at continuous/paired_t, for a TRUE full factorial (every
+    main effect and interaction directly estimable, no confounding to
+    reason about) rather than a fractional design -- made tractable by
+    generate_judge_bias_pair_cell's ~7.8x lean-generator speedup over
+    generate_judge_bias_cell and the PPI bootstrap's existing vectorized
+    fast path (evalstats.ppi.correct); see the harness README's efficiency
+    note."""
+    et = _PPI_FACTORIAL_EVAL_TYPE
+    sources: list[JudgeBiasSource] = []
+    for bm_label, bm_frac in PPI_FACTORIAL_BIAS_MAGNITUDES.items():
+        for n in PPI_FACTORIAL_N_VALUES:
+            for n_lab in PPI_FACTORIAL_NLAB_VALUES:
+                if n_lab > n:
+                    continue
+                for lm_label, lm_kw in PPI_FACTORIAL_LABEL_MECHANISMS.items():
+                    for es_label, es_frac in PPI_FACTORIAL_EFFECT_FRACS.items():
+                        for bd_label in PPI_FACTORIAL_BIAS_DIRECTIONS:
+                            if bd_label == "reinforcing" and (bm_label == "none" or es_label == "null"):
+                                continue
+                            sign = -1.0 if bd_label == "reinforcing" else 1.0
+                            name = (
+                                f"fact.bm={bm_label}.n={n}.nlab={n_lab}.lm={lm_label}."
+                                f"es={es_label}.bd={bd_label}"
+                            )
+                            sources.append(JudgeBiasSource(
+                                name=name, tag="factorial", eval_type=et, icc=0.20, n=n,
+                                label_frac=n_lab / n, llm_noise=0.20,
+                                bias_type=("none" if bm_label == "none" else "differential"),
+                                bias_delta=sign * _jb_bias_magnitude(et, bm_frac),
+                                effect_size=_jb_effect_magnitude(et, es_frac),
+                                **lm_kw,
+                            ))
+    return sources
+
+
 @dataclass
 class JudgeBiasCellData:
     """One replicate's worth of data from generate_judge_bias_cell: the
@@ -1952,6 +2032,63 @@ class JudgeBiasCellData:
     llm_A_runs: np.ndarray
     llm_B_runs: np.ndarray
     llm_C_runs: np.ndarray
+
+
+def generate_judge_bias_pair_cell(
+    scenario: JudgeBiasSource, rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Lean counterpart to generate_judge_bias_cell: draws ONLY the paired
+    (x, y) structure -- truth_x, truth_y, llm_x, llm_y, lab_x, lab_y -- for
+    callers that exclusively need the paired_t estimand (cases/pvalues.py's
+    PPI estimator-comparison / N x N_lab grid checks, via
+    _run_ppi_comparison_cell). generate_judge_bias_cell draws SIX test
+    structures every call (indep-2, paired, indep-3, repeated-3,
+    2x2-factorial, nested-runs) regardless of which are actually consumed --
+    profiling showed ~80-90% of its ~0.6-0.8ms/call cost is spent on the
+    five structures this function's callers never touch, dominated by
+    sample_group_truth (called 8x per generate_judge_bias_cell call, only
+    1x needed here) and the nested-runs loop (JUDGE_BIAS_LMM_RUNS_R=3 extra
+    _jb_llm_repeated calls, needed only for the lmm_runs test).
+
+    Deliberately NOT a code path generate_judge_bias_cell itself takes
+    (e.g. via an opt-in ``structures=`` parameter): _run_ppi_cell (the
+    Type-I/power/effect-check sweeps) relies on generate_judge_bias_cell
+    drawing every structure in the SAME fixed order every call, specifically
+    so a given scenario/seed produces IDENTICAL results for a given test
+    regardless of what other tests are also requested via --tests (see
+    generate_judge_bias_cell's docstring: "a single rng stream feeds every
+    active test deterministically"). Skipping unused structures there would
+    shift the rng stream for whatever's drawn afterward, silently changing
+    results for --tests-restricted runs -- a real behavior change, not
+    obviously a pure win, so it's left as a deliberate choice for a human to
+    make rather than done implicitly here. This function has no such
+    legacy-parity contract to preserve: every caller of
+    _run_ppi_comparison_cell has only ever consumed the paired structure,
+    with its own independently-seeded rng stream."""
+    shape = _ppi_shape(scenario.eval_type, scenario.shape_label)
+    n1 = scenario.n
+    noise1 = scenario.llm_noise
+    noise2 = scenario.llm_noise2 if scenario.llm_noise2 is not None else scenario.llm_noise
+    anchor = _ppi_shape_anchor(shape)
+    (bias_a, bias_b, _bias_c), (slope_a, slope_b, _slope_c) = _jb_judge_params_3(scenario)
+    es = scenario.effect_size
+
+    truth_x, truth_y = sample_group_truth(shape, n1, 1, 2, scenario.icc, rng, effects=np.array([0.0, es]))[:, :, 0]
+    if scenario.eval_type == "binary":
+        llm_x, llm_y = _jb_llm_repeated_binary(
+            [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
+        )
+    else:
+        llm_x, llm_y = _jb_llm_repeated(
+            [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
+            rng, anchor=anchor, corr=scenario.repeated_corr,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+        )
+    lab_x, lab_y = _jb_labels_shared(
+        [truth_x, truth_y], scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
+    return llm_x, llm_y, lab_x, lab_y, truth_x, truth_y
 
 
 def generate_judge_bias_cell(
