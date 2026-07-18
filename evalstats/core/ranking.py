@@ -323,6 +323,20 @@ def ppi_bootstrap_ranks(
     labeled_item_mask = ~np.all(np.isnan(lab_matrix), axis=0)
     labeled_item_positions = np.where(labeled_item_mask)[0]
     n_lab_items = len(labeled_item_positions)
+    # unlabeled_item_positions must be DISJOINT from labeled_item_positions
+    # -- idx_all below is resampled independently of idx_lab, which is only
+    # valid for genuinely disjoint samples (see evalstats.ppi.correct's
+    # docstring for why resampling an overlapping "unlab" pool independently
+    # of the labeled subset silently miscalibrates the bootstrap).
+    unlabeled_item_positions = np.where(~labeled_item_mask)[0]
+    n_unlab_items = len(unlabeled_item_positions)
+    if n_unlab_items == 0:
+        raise ValueError(
+            "ppi_bootstrap_ranks: every item is labeled -- PPI has no "
+            "unlabeled pool left to extrapolate the correction to. With "
+            "100% human labels, rank entities directly on the human scores "
+            "instead of PPI."
+        )
 
     # Fallback for entities with zero human labels anywhere: keep them at
     # their uncorrected LLM-only mean on every draw (rectifier == 0).
@@ -332,7 +346,7 @@ def ppi_bootstrap_ranks(
 
     with np.errstate(invalid="ignore"):
         for _ in range(n_bootstrap):
-            idx_all = rng.integers(0, n_items, n_items)
+            idx_all = unlabeled_item_positions[rng.integers(0, n_unlab_items, n_unlab_items)]
             f_unlab = np.nanmean(scores_2d[:, idx_all], axis=1)
 
             agg = np.where(np.isnan(f_unlab), fallback_mean, f_unlab)
