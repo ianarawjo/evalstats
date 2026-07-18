@@ -377,14 +377,15 @@ same way `evalstats.core.resampling` is.
     (`build_ppi_power_sources`' `effect_size=0` point: n=100, label_frac=
     0.20 -> N_lab=20, "severe" bias, icc=0.20, llm_noise=0.20) -- defensible
     for a quick look, less so for a paper claim ("at this one arbitrarily
-    chosen N/N_lab..."). For the continuous eval type (where
+    chosen N/N_lab..."). For continuous and likert (where
     `build_ppi_nlab_grid_sources`' calibration grid is already computed as
     part of the same `--no-comparison-check` gate), the null bar chart now
-    pools a SECOND axis on top of the method-pooling above: every N x
-    N_lab cell in that grid, ~22 conditions, all at zero extra simulation
-    cost since the data already existed. likert/grades have no such sweep
-    available (`build_ppi_nlab_grid_sources` is continuous-only) and fall
-    back to the single scenario, still pooled across the 4 methods. Each
+    pools a SECOND axis on top of the method-pooling above, per eval type:
+    every N x N_lab cell in that eval type's slice of the grid, ~22
+    conditions, all at zero extra simulation cost since the data already
+    existed. grades has no such sweep available (`build_ppi_nlab_grid_
+    sources` deliberately excludes it as redundant with continuous) and
+    falls back to the single scenario, still pooled across the 4 methods. Each
     panel's subtitle states which pooling applies, and the docstring is
     explicit that the pooled Wilson CI is a standard-but-technically-
     optimistic simplification if there's real heterogeneity across the
@@ -434,12 +435,18 @@ same way `evalstats.core.resampling` is.
     15-80) INDEPENDENTLY, back-solving `label_frac = n_lab / n` per cell so
     the floor never binds; `effect_frac=0.0` is the calibration question
     (Type-I ~ alpha across the whole plane), a nonzero `effect_frac` is the
-    power companion at the same grid. One representative eval type
-    (continuous) only, same "one estimand is the point" scoping as the 5-way
-    comparison's paired_t choice. `save_ppi_nlab_grid_plot` renders both as
-    heatmaps (diverging colormap centered on alpha for calibration,
-    sequential for power) so a reader can scan a ROW (N's effect at fixed
-    N_lab) vs. a COLUMN (N_lab's effect at fixed N) directly -- confirmed
+    power companion at the same grid. Two eval types, continuous and likert
+    (likert being arguably the most common real-world LLM-as-judge output
+    format); grades is deliberately excluded as redundant with continuous
+    (it's continuous rescaled to a [0, 100] span). One representative
+    estimand (paired_t), same "one estimand is the point" scoping as the
+    5-way comparison's paired_t choice. Scenario names are
+    `nlab.<eval_type>.n=<n>.nlab=<n_lab>`. `save_ppi_nlab_grid_plot` renders
+    calibration/power as heatmaps (diverging colormap centered on alpha for
+    calibration, sequential for power), one ROW per eval type and one
+    COLUMN per panel, so a reader can scan a ROW WITHIN a panel (N's effect
+    at fixed N_lab) vs. a COLUMN (N_lab's effect at fixed N) directly --
+    `print_ppi_nlab_grid_report` facets by eval type the same way. Confirmed
     empirically that power is much more sensitive to N_lab than to N at
     small N_lab (e.g. N_lab=15 stays low across N=60..400), consistent with
     PPI's two-term variance (`Var(unlabeled)/N + Var(rectifier)/N_lab`) --
@@ -465,16 +472,25 @@ same way `evalstats.core.resampling` is.
     already had (it was sequential-only, reasonably so at the original
     ~24-scenario comparison grid, but the N x N_lab grid and factorial sweep
     below outgrew that).
-  - `build_ppi_factorial_sources` (tag `"factorial"`, ~312 cells): a TRUE
-    full factorial (every main effect/interaction directly estimable, no
-    fractional-design confounding) crossing the six factors most likely to
-    compound in ways every one-factor-at-a-time check above can't reveal --
-    `bias_magnitude` (none/moderate/severe, matching `build_judge_bias_
-    sources`' `biasmag.*` labels) x `N` (60/200/400) x `N_lab` (15/30/80) x
-    `label_mechanism` (mcar/mnar_mild/mnar_strong) x `effect_size`
-    (null/moderate/large) x `bias_direction` (opposing/reinforcing).
-    Continuous/`paired_t` only (same scoping as the comparison/N x N_lab
-    checks). Two skips: `n_lab > n` (infeasible), and
+  - `build_ppi_factorial_sources` (tag `"factorial"`, ~312 cells per eval
+    type, ~624 total): a TRUE full factorial (every main effect/interaction
+    directly estimable, no fractional-design confounding) crossing the six
+    factors most likely to compound in ways every one-factor-at-a-time
+    check above can't reveal -- `bias_magnitude` (none/moderate/severe,
+    matching `build_judge_bias_sources`' `biasmag.*` labels) x `N`
+    (60/200/400) x `N_lab` (15/30/80) x `label_mechanism` (mcar/mnar_mild/
+    mnar_strong) x `effect_size` (null/moderate/large) x `bias_direction`
+    (opposing/reinforcing) -- now ALSO crossed with `eval_type` (continuous,
+    likert; grades excluded as redundant with continuous), `paired_t` only.
+    An earlier version of this section (and these functions' docstrings)
+    described this as continuous-only "same scoping as the comparison/N x
+    N_lab checks" -- that was a documentation error: the 5-way comparison
+    sweep already covers all three non-binary eval types, so there was
+    never a real precedent for continuous-only here, and likert was added
+    since it's arguably the most common real-world LLM-as-judge output
+    format. Scenario names are `fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
+    lm=<lm>.es=<es>.bd=<bd>` (`_PPI_FACTORIAL_NAME_RE`/
+    `_parse_ppi_factorial_name`). Two skips: `n_lab > n` (infeasible), and
     `bias_direction="reinforcing"` when `bias_magnitude="none"` OR
     `effect_size="null"` (redundant, not just lower-priority -- a two-sided
     test's rejection rate depends only on the bias offset's MAGNITUDE, and
@@ -483,8 +499,11 @@ same way `evalstats.core.resampling` is.
     generating both would just waste compute on identical-in-distribution
     cells). Made tractable by the efficiency work above -- see
     `fit_ppi_factorial_model` (a pooled binomial GLM,
-    `_PPI_FACTORIAL_FORMULA`, on aggregate success/failure counts per cell)
-    and `save_ppi_factorial_heatmap_plot` (three flagship 2D slices) in
+    `_PPI_FACTORIAL_FORMULA`, on aggregate success/failure counts per cell,
+    with `eval_type` folded in as a Treatment-coded main effect -- not
+    crossed with the other six factors' interactions, since that would need
+    a fractional design to stay estimable) and `save_ppi_factorial_heatmap_
+    plot` (three flagship 2D slices, now one row per eval type) in
     `cases/pvalues.py`. Opt-in via `--factorial-check` (default off, unlike
     the smaller checks) given its larger scenario count, with its own
     `--factorial-reps`/`--factorial-n-boot` (defaulting to a cheaper

@@ -4062,8 +4062,8 @@ questions (multi-group omnibus effects, CI-based constructions), so
 folding them into the SAME "pooled false-positive rate" would blend
 apples with oranges rather than checking robustness across reasonable
 alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
-grid_sources' continuous-only, paired_t-only scoping was never meant to
-claim the OTHER PPI_TEST_METHODS behave identically."""
+grid_sources' paired_t-only scoping was never meant to claim the OTHER
+PPI_TEST_METHODS behave identically."""
 _COMPARISON_METHOD_STRUCTURE = {
     TTEST_WELCH.name: "group", MW.name: "group", PAIRED_T.name: "pair", WILCOXON.name: "pair",
 }
@@ -4499,17 +4499,19 @@ def save_ppi_null_comparison_plot(
     Every bar pools across _COMPARISON_METHODS (ttest_welch/paired_t/mw/
     wilcoxon -- `results`/`nlab_cal_results` are expected to already be
     pool_ppi_comparison_across_methods output, one row per scenario, not
-    the raw per-method rows). For the continuous eval type specifically,
+    the raw per-method rows). For continuous and likert specifically,
     passing `nlab_cal_results` (build_ppi_nlab_grid_sources' calibration
-    grid, ALSO pre-pooled across methods) pools a SECOND axis on top: every
-    N x N_lab cell in that grid, not just the single (N=100, N_lab=20)
-    baseline scenario `results` alone would give -- the "defensible for a
-    paper" version of this chart, an average over 4 tests x ~22 (N, N_lab)
-    conditions rather than one arbitrarily-chosen scenario. likert/grades
-    have no such sweep available (build_ppi_nlab_grid_sources is
-    continuous-only), so they fall back to `results`' single scenario --
-    still pooled across the 4 methods, just not across N/N_lab. Each
-    panel's subtitle states which pooling applies.
+    grid, ALSO pre-pooled across methods, now itself crossing continuous/
+    likert) pools a SECOND axis on top, per eval type: every N x N_lab cell
+    in that eval type's slice of the grid, not just the single (N=100,
+    N_lab=20) baseline scenario `results` alone would give -- the
+    "defensible for a paper" version of this chart, an average over 4 tests
+    x ~22 (N, N_lab) conditions rather than one arbitrarily-chosen scenario.
+    grades has no such sweep available (build_ppi_nlab_grid_sources
+    deliberately excludes it as redundant with continuous), so it falls
+    back to `results`' single scenario -- still pooled across the 4
+    methods, just not across N/N_lab. Each panel's subtitle states which
+    pooling applies.
 
     Error bars are the 95% Wilson score interval for each bar's underlying
     binomial proportion (_ppi_wilson_interval, the same interval
@@ -4528,16 +4530,19 @@ def save_ppi_null_comparison_plot(
     if not null_rows:
         raise ValueError("No null-effect (effect_size=0) comparison results to plot.")
     eval_types = sorted({r.eval_type for r in null_rows})
-    nlab_null_pool = None
+    nlab_null_pool_by_et: dict[str, PPIComparisonResult | None] = {}
     if nlab_cal_results:
-        nlab_null_pool = _pool_ppi_comparison_rows([r for r in nlab_cal_results if r.tag == "nlab_grid"])
+        for et in {r.eval_type for r in nlab_cal_results}:
+            nlab_null_pool_by_et[et] = _pool_ppi_comparison_rows(
+                [r for r in nlab_cal_results if r.tag == "nlab_grid" and r.eval_type == et]
+            )
 
     fig, axes = plt.subplots(1, len(eval_types), figsize=(3.4 * len(eval_types), 4.9), squeeze=False)
     x = np.arange(len(_PPI_NULL_COMPARISON_ORDER))
     for col, et in enumerate(eval_types):
         ax = axes[0][col]
-        if et == "continuous" and nlab_null_pool is not None:
-            r = nlab_null_pool
+        if nlab_null_pool_by_et.get(et) is not None:
+            r = nlab_null_pool_by_et[et]
             subtitle = f"pooled: 4 tests x N x N_lab\n(n_reps={r.n_reps})"
         else:
             r = next(r for r in null_rows if r.eval_type == et)
@@ -4594,29 +4599,39 @@ def print_ppi_nlab_grid_report(
     (fixed N, N_lab varying) isolates N_lab's effect -- directly separating
     "it's the ratio N_lab/N that matters" from "it's the absolute N_lab
     count that matters," which build_ppi_comparison_label_frac_sources'
-    N=100-only sweep can't do on its own."""
+    N=100-only sweep can't do on its own. One grid per eval type
+    (build_ppi_nlab_grid_sources now crosses continuous/likert): grouping
+    by `.eval_type` here isn't optional once more than one eval type is
+    present -- (N, N_lab) pairs collide across eval types (each combination
+    is generated for every eval type), so reading `results` without
+    grouping would silently pick whichever eval type's row happened to come
+    first for each cell."""
     if not results:
         print(f"\n  (no {header} results)")
         return
-    n_values = sorted({r.n for r in results})
-    nlab_values = sorted({r.n_lab for r in results})
+    eval_types = sorted({r.eval_type for r in results})
     print(f"\n{'='*88}\n  PVALUES (PPI-CORRECTED) -- {header}\n"
           f"  Rows = N_lab (labeled items), columns = N (total items); nominal alpha={alpha}\n{'='*88}")
-    for label, rejects_field in [
-        ("all_human", "rejects_all_human"), ("human_subset", "rejects_human_subset"), ("ppi", "rejects_ppi"),
-    ]:
-        print(f"\n  [{label}]")
-        print(f"    {'N_lab \\ N':<10}" + "".join(f"n={n}".rjust(9) for n in n_values))
-        for nlab in nlab_values:
-            row = f"    {nlab:<10}"
-            for n in n_values:
-                r = next((r for r in results if r.n == n and r.n_lab == nlab), None)
-                if r is None or r.n_reps == 0:
-                    row += f"{'-':>9}"
-                    continue
-                rate = getattr(r, rejects_field) / r.n_reps
-                row += f"{rate:>9.3f}"
-            print(row)
+    for et in eval_types:
+        et_results = [r for r in results if r.eval_type == et]
+        n_values = sorted({r.n for r in et_results})
+        nlab_values = sorted({r.n_lab for r in et_results})
+        print(f"\n  === {et.capitalize()} ===")
+        for label, rejects_field in [
+            ("all_human", "rejects_all_human"), ("human_subset", "rejects_human_subset"), ("ppi", "rejects_ppi"),
+        ]:
+            print(f"\n  [{label}]")
+            print(f"    {'N_lab \\ N':<10}" + "".join(f"n={n}".rjust(9) for n in n_values))
+            for nlab in nlab_values:
+                row = f"    {nlab:<10}"
+                for n in n_values:
+                    r = next((r for r in et_results if r.n == n and r.n_lab == nlab), None)
+                    if r is None or r.n_reps == 0:
+                        row += f"{'-':>9}"
+                        continue
+                    rate = getattr(r, rejects_field) / r.n_reps
+                    row += f"{rate:>9.3f}"
+                print(row)
     print()
 
 
@@ -4671,7 +4686,13 @@ def save_ppi_nlab_grid_plot(
     fixed N -- the line plots elsewhere in this module can't show this
     since they never vary N and N_lab independently (build_ppi_power_sources
     fixes N=100; build_ppi_comparison_label_frac_sources also fixes N=100
-    and only varies the ratio)."""
+    and only varies the ratio).
+
+    One ROW per eval type present across calibration_results/power_results
+    (build_ppi_nlab_grid_sources now crosses continuous/likert), one COLUMN
+    per panel (calibration and/or power) -- (N, N_lab) pairs collide across
+    eval types the same way they do in print_ppi_nlab_grid_report, so each
+    panel's grid is built from that eval type's rows only."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import TwoSlopeNorm
 
@@ -4682,41 +4703,46 @@ def save_ppi_nlab_grid_plot(
         panels.append(("Power\n(moderate real effect)", power_results, "viridis", None))
     if not panels:
         raise ValueError("No N x N_lab grid results to plot.")
+    eval_types = sorted({r.eval_type for _title, results, _cmap, _center in panels for r in results})
 
-    fig, axes = plt.subplots(1, len(panels), figsize=(6.0 * len(panels), 5.0), squeeze=False)
-    for col, (title, results, cmap, center) in enumerate(panels):
-        ax = axes[0][col]
-        n_values = sorted({r.n for r in results})
-        nlab_values = sorted({r.n_lab for r in results})
-        grid = np.full((len(nlab_values), len(n_values)), np.nan)
-        for r in results:
-            if r.n_reps == 0:
-                continue
-            grid[nlab_values.index(r.n_lab), n_values.index(r.n)] = r.rejects_ppi / r.n_reps
+    fig, axes = plt.subplots(
+        len(eval_types), len(panels), figsize=(6.0 * len(panels), 5.0 * len(eval_types)), squeeze=False,
+    )
+    for row, et in enumerate(eval_types):
+        for col, (title, results, cmap, center) in enumerate(panels):
+            ax = axes[row][col]
+            et_results = [r for r in results if r.eval_type == et]
+            n_values = sorted({r.n for r in et_results})
+            nlab_values = sorted({r.n_lab for r in et_results})
+            grid = np.full((len(nlab_values), len(n_values)), np.nan)
+            for r in et_results:
+                if r.n_reps == 0:
+                    continue
+                grid[nlab_values.index(r.n_lab), n_values.index(r.n)] = r.rejects_ppi / r.n_reps
 
-        if center is not None:
-            vmax = max(2.0 * center, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * center)
-            im = ax.imshow(grid, origin="lower", cmap=cmap, norm=TwoSlopeNorm(vmin=0.0, vcenter=center, vmax=vmax), aspect="auto")
-        else:
-            im = ax.imshow(grid, origin="lower", cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto")
-        for i in range(len(nlab_values)):
-            for j in range(len(n_values)):
-                val = grid[i, j]
-                if np.isfinite(val):
-                    ax.text(
-                        j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
-                        bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
-                    )
-        ax.set_xticks(range(len(n_values)))
-        ax.set_xticklabels([str(n) for n in n_values])
-        ax.set_yticks(range(len(nlab_values)))
-        ax.set_yticklabels([str(nl) for nl in nlab_values])
-        ax.set_xlabel("N (total items)")
-        ax.set_ylabel("N_lab (labeled items)")
-        ax.set_title(title, fontsize=10)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle(f"PPI-Corrected Rejection Rate over N × N_lab (nominal {_alpha_label(alpha)})", y=1.1, fontsize=12)
-    fig.text(0.5, 1.02, "Continuous eval type, paired-mean estimand", ha="center", fontsize=8, color="#555555")
+            if center is not None:
+                vmax = max(2.0 * center, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * center)
+                im = ax.imshow(grid, origin="lower", cmap=cmap, norm=TwoSlopeNorm(vmin=0.0, vcenter=center, vmax=vmax), aspect="auto")
+            else:
+                im = ax.imshow(grid, origin="lower", cmap=cmap, vmin=0.0, vmax=1.0, aspect="auto")
+            for i in range(len(nlab_values)):
+                for j in range(len(n_values)):
+                    val = grid[i, j]
+                    if np.isfinite(val):
+                        ax.text(
+                            j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
+                            bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
+                        )
+            ax.set_xticks(range(len(n_values)))
+            ax.set_xticklabels([str(n) for n in n_values])
+            ax.set_yticks(range(len(nlab_values)))
+            ax.set_yticklabels([str(nl) for nl in nlab_values])
+            ax.set_xlabel("N (total items)")
+            ax.set_ylabel("N_lab (labeled items)")
+            ax.set_title(f"[{et.capitalize()}] {title}", fontsize=10)
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(f"PPI-Corrected Rejection Rate over N × N_lab (nominal {_alpha_label(alpha)})", y=1.02, fontsize=12)
+    fig.text(0.5, -0.02, "Paired-mean estimand", ha="center", fontsize=8, color="#555555")
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -4738,7 +4764,7 @@ def save_ppi_nlab_grid_plot(
 # ---------------------------------------------------------------------------
 
 _PPI_FACTORIAL_NAME_RE = re.compile(
-    r"^fact\.bm=(?P<bm>[a-z]+)\.n=(?P<n>\d+)\.nlab=(?P<nlab>\d+)\.lm=(?P<lm>[a-z_]+)\.es=(?P<es>[a-z]+)\.bd=(?P<bd>[a-z]+)$"
+    r"^fact\.(?P<et>[a-z]+)\.bm=(?P<bm>[a-z]+)\.n=(?P<n>\d+)\.nlab=(?P<nlab>\d+)\.lm=(?P<lm>[a-z_]+)\.es=(?P<es>[a-z]+)\.bd=(?P<bd>[a-z]+)$"
 )
 
 
@@ -4769,28 +4795,35 @@ _PPI_FACTORIAL_FORMULA = (
     "rejects_ppi + fails_ppi ~ "
     "C(bm, Treatment('none')) + C(n) + C(nlab) + C(lm, Treatment('mcar')) "
     "+ C(es, Treatment('null')) + C(bd, Treatment('opposing')) "
+    "+ C(et, Treatment('continuous')) "
     "+ C(bm, Treatment('none')):C(es, Treatment('null')) "
     "+ C(bd, Treatment('opposing')):C(es, Treatment('null'))"
 )
 """Grouped-binomial GLM formula (statsmodels/patsy's "successes + failures ~
 ..." syntax, the standard encoding for aggregate count data -- equivalent to
 a per-replicate logistic regression here since there are no per-replicate
-covariates beyond the factors themselves). Main effects for all six
-factors, plus two theoretically-motivated 2-way interactions:
-bias_magnitude:effect_size (does bias severity change how power grows with
-effect size) and bias_direction:effect_size (does the opposing/reinforcing
-asymmetry itself depend on effect size). N:N_lab is deliberately NOT
-included as an interaction term here despite build_ppi_nlab_grid_sources'
-finding that N_lab matters far more than N at small N_lab -- that
-finding is a statement about MAGNITUDE (visible directly in the heatmap),
-not really a linear-interaction question, and the six main effects plus two
-interactions already leave only 295 residual df on ~312 cells; adding more
-interaction terms than the sample supports would just widen every
-coefficient's CI without adding information. bm/bd are Treatment-coded at
-their "no bias" reference level (bm) or the "opposing" baseline used
-throughout the rest of this file (bd) so every coefficient reads as "vs. no
-bias" / "vs. opposing," matching how the rest of the PPI mode's plots and
-reports are already framed."""
+covariates beyond the factors themselves). Main effects for all seven
+factors (the original six, plus eval_type now that build_ppi_factorial_
+sources crosses continuous/likert), plus two theoretically-motivated 2-way
+interactions: bias_magnitude:effect_size (does bias severity change how
+power grows with effect size) and bias_direction:effect_size (does the
+opposing/reinforcing asymmetry itself depend on effect size). N:N_lab is
+deliberately NOT included as an interaction term here despite
+build_ppi_nlab_grid_sources' finding that N_lab matters far more than N at
+small N_lab -- that finding is a statement about MAGNITUDE (visible
+directly in the heatmap), not really a linear-interaction question, and
+the seven main effects plus two interactions already leave ample residual
+df on ~624 cells (continuous+likert combined); adding more interaction
+terms than the sample supports would just widen every coefficient's CI
+without adding information. et is likewise a main effect only, not crossed
+with the other six factors -- this treats "does the whole 6-factor picture
+shift up/down for likert vs. continuous" as the question worth asking here,
+not "does every individual factor interact differently with eval_type,"
+which would need a fractional design to stay estimable. bm/bd/et are
+Treatment-coded at their "no bias"/"opposing"/"continuous" reference levels
+so every coefficient reads as "vs. no bias" / "vs. opposing" / "vs.
+continuous," matching how the rest of the PPI mode's plots and reports are
+already framed."""
 
 
 def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd.DataFrame]:
@@ -4826,23 +4859,24 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float)
         print("\n  (no PPI factorial results)")
         return
     summary_text, df = fit_ppi_factorial_model(results)
+    eval_types = sorted(df["et"].unique())
     print(f"\n{'='*96}\n  PVALUES (PPI-CORRECTED) -- FULL FACTORIAL "
-          f"(bias_magnitude x N x N_lab x label_mechanism x effect_size x bias_direction)\n"
-          f"  {len(results)} cells, continuous/paired_t; nominal alpha={alpha}\n{'='*96}\n")
+          f"(bias_magnitude x N x N_lab x label_mechanism x effect_size x bias_direction x eval_type)\n"
+          f"  {len(results)} cells, {'/'.join(eval_types)}/paired_t; nominal alpha={alpha}\n{'='*96}\n")
     print(summary_text)
 
     null_rows = df[df["es"] == "null"]
     if len(null_rows):
         worst = null_rows.loc[(null_rows["rate_ppi"] - alpha).abs().idxmax()]
         print(f"\n  Worst Type-I cell: rate={worst['rate_ppi']:.3f} (nominal alpha={alpha}) at "
-              f"bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} bd={worst['bd']}")
+              f"et={worst['et']} bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} bd={worst['bd']}")
 
     nonnull_rows = df[df["es"] != "null"].copy()
     if len(nonnull_rows):
         nonnull_rows["power_gap"] = (nonnull_rows["rejects_all_human"] - nonnull_rows["rejects_ppi"]) / nonnull_rows["n_reps"]
         worst_gap = nonnull_rows.loc[nonnull_rows["power_gap"].idxmax()]
         print(f"  Largest all_human-vs-ppi power gap: {worst_gap['power_gap']:.3f} at "
-              f"bm={worst_gap['bm']} n={worst_gap['n']} nlab={worst_gap['nlab']} "
+              f"et={worst_gap['et']} bm={worst_gap['bm']} n={worst_gap['n']} nlab={worst_gap['nlab']} "
               f"lm={worst_gap['lm']} es={worst_gap['es']} bd={worst_gap['bd']}")
     print()
 
@@ -4856,13 +4890,13 @@ def save_results_artifacts_ppi_factorial(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "name", "method", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
+            "name", "method", "et", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in results:
             d = _parse_ppi_factorial_name(r.name)
             writer.writerow([
-                r.name, r.method, d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
+                r.name, r.method, d["et"], d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -4887,7 +4921,10 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
     "severe" bias/moderate-effect severity used throughout the rest of
     this file's checks) so a reader can see two factors' effect on the
     PPI-corrected rate at a glance, the same way save_ppi_nlab_grid_plot
-    does for N x N_lab alone:
+    does for N x N_lab alone. One ROW per eval type (build_ppi_factorial_
+    sources now crosses continuous/likert), one COLUMN per slice, the same
+    row-per-facet/column-per-slice convention save_ppi_nlab_grid_plot uses
+    for its own eval-type faceting:
       1. N x N_lab (bm/lm/es/bd fixed) -- reproduces build_ppi_nlab_grid_
          sources' own heatmap as a consistency check, now inside the
          broader factorial's own data.
@@ -4905,6 +4942,7 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
     if not results:
         raise ValueError("No PPI factorial results to plot.")
     df = _ppi_factorial_dataframe(results)
+    eval_types = sorted(df["et"].unique())
 
     _CATEGORICAL_FACTORS = ("bm", "lm", "es", "bd")
     slices = [
@@ -4918,44 +4956,48 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
         "n": PPI_FACTORIAL_N_VALUES, "nlab": PPI_FACTORIAL_NLAB_VALUES,
     }
 
-    fig, axes = plt.subplots(1, len(slices), figsize=(6.0 * len(slices), 5.0), squeeze=False)
-    for col, (x_field, y_field, fixed) in enumerate(slices):
-        ax = axes[0][col]
-        sub = df
-        for k, v in fixed.items():
-            sub = sub[sub[k] == v]
-        x_values = [v for v in order[x_field] if v in set(sub[x_field])]
-        y_values = [v for v in order[y_field] if v in set(sub[y_field])]
-        grid = np.full((len(y_values), len(x_values)), np.nan)
-        for _, row in sub.iterrows():
-            if row["n_reps"] == 0 or row[x_field] not in x_values or row[y_field] not in y_values:
-                continue
-            grid[y_values.index(row[y_field]), x_values.index(row[x_field])] = row["rate_ppi"]
+    fig, axes = plt.subplots(
+        len(eval_types), len(slices), figsize=(6.0 * len(slices), 5.0 * len(eval_types)), squeeze=False,
+    )
+    for row, et in enumerate(eval_types):
+        et_df = df[df["et"] == et]
+        for col, (x_field, y_field, fixed) in enumerate(slices):
+            ax = axes[row][col]
+            sub = et_df
+            for k, v in fixed.items():
+                sub = sub[sub[k] == v]
+            x_values = [v for v in order[x_field] if v in set(sub[x_field])]
+            y_values = [v for v in order[y_field] if v in set(sub[y_field])]
+            grid = np.full((len(y_values), len(x_values)), np.nan)
+            for _, r in sub.iterrows():
+                if r["n_reps"] == 0 or r[x_field] not in x_values or r[y_field] not in y_values:
+                    continue
+                grid[y_values.index(r[y_field]), x_values.index(r[x_field])] = r["rate_ppi"]
 
-        vmax = max(2.0 * alpha, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * alpha)
-        im = ax.imshow(grid, origin="lower", cmap="RdBu_r", norm=TwoSlopeNorm(vmin=0.0, vcenter=alpha, vmax=vmax), aspect="auto")
-        for i in range(len(y_values)):
-            for j in range(len(x_values)):
-                val = grid[i, j]
-                if np.isfinite(val):
-                    ax.text(
-                        j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
-                        bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
-                    )
-        x_tick_labels = [_pretty_factorial_level(v) if x_field in _CATEGORICAL_FACTORS else str(v) for v in x_values]
-        y_tick_labels = [_pretty_factorial_level(v) if y_field in _CATEGORICAL_FACTORS else str(v) for v in y_values]
-        ax.set_xticks(range(len(x_values)))
-        ax.set_xticklabels(x_tick_labels, rotation=20 if x_field in _CATEGORICAL_FACTORS else 0)
-        ax.set_yticks(range(len(y_values)))
-        ax.set_yticklabels(y_tick_labels)
-        ax.set_xlabel(_PPI_FACTORIAL_FACTOR_LABELS.get(x_field, x_field))
-        ax.set_ylabel(_PPI_FACTORIAL_FACTOR_LABELS.get(y_field, y_field))
-        x_name = _PPI_FACTORIAL_FACTOR_LABELS.get(x_field, x_field)
-        y_name = _PPI_FACTORIAL_FACTOR_LABELS.get(y_field, y_field)
-        fixed_str = ", ".join(f"{k}={v}" for k, v in fixed.items())
-        ax.set_title(f"{x_name} × {y_name}\n({fixed_str})", fontsize=9)
-        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle(f"PPI-Corrected Rejection Rate: Full-Factorial Slices (nominal {_alpha_label(alpha)})", y=1.1, fontsize=12)
+            vmax = max(2.0 * alpha, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * alpha)
+            im = ax.imshow(grid, origin="lower", cmap="RdBu_r", norm=TwoSlopeNorm(vmin=0.0, vcenter=alpha, vmax=vmax), aspect="auto")
+            for i in range(len(y_values)):
+                for j in range(len(x_values)):
+                    val = grid[i, j]
+                    if np.isfinite(val):
+                        ax.text(
+                            j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
+                            bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
+                        )
+            x_tick_labels = [_pretty_factorial_level(v) if x_field in _CATEGORICAL_FACTORS else str(v) for v in x_values]
+            y_tick_labels = [_pretty_factorial_level(v) if y_field in _CATEGORICAL_FACTORS else str(v) for v in y_values]
+            ax.set_xticks(range(len(x_values)))
+            ax.set_xticklabels(x_tick_labels, rotation=20 if x_field in _CATEGORICAL_FACTORS else 0)
+            ax.set_yticks(range(len(y_values)))
+            ax.set_yticklabels(y_tick_labels)
+            ax.set_xlabel(_PPI_FACTORIAL_FACTOR_LABELS.get(x_field, x_field))
+            ax.set_ylabel(_PPI_FACTORIAL_FACTOR_LABELS.get(y_field, y_field))
+            x_name = _PPI_FACTORIAL_FACTOR_LABELS.get(x_field, x_field)
+            y_name = _PPI_FACTORIAL_FACTOR_LABELS.get(y_field, y_field)
+            fixed_str = ", ".join(f"{k}={v}" for k, v in fixed.items())
+            ax.set_title(f"[{et.capitalize()}] {x_name} × {y_name}\n({fixed_str})", fontsize=9)
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(f"PPI-Corrected Rejection Rate: Full-Factorial Slices (nominal {_alpha_label(alpha)})", y=1.02, fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -6652,12 +6694,16 @@ def run(args: argparse.Namespace) -> CaseResult:
 
                 # N x N_lab grid: does calibration/power depend on the RATIO
                 # N_lab/N or the ABSOLUTE N_lab count? build_ppi_nlab_grid_sources
-                # is continuous-only (see its docstring), so skip entirely if
-                # --eval-types excludes continuous.
+                # covers continuous and likert (see its docstring); filter
+                # per-source by eval_type against --eval-types rather than an
+                # all-or-nothing check, so e.g. --eval-types likert alone
+                # still produces likert cells.
                 nlab_cal_sources = build_ppi_nlab_grid_sources(effect_frac=0.0)
                 nlab_pow_sources = build_ppi_nlab_grid_sources(effect_frac=PPI_COMPARISON_MODERATE_EFFECT_FRAC)
-                if args.eval_types and "continuous" not in set(args.eval_types):
-                    nlab_cal_sources, nlab_pow_sources = [], []
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    nlab_cal_sources = [s for s in nlab_cal_sources if s.eval_type in requested]
+                    nlab_pow_sources = [s for s in nlab_pow_sources if s.eval_type in requested]
                 if nlab_cal_sources or nlab_pow_sources:
                     nlab_reps = getattr(args, "effect_reps", 200)
                     print(f"\npvalues simulation (PPI-corrected, N x N_lab grid) -- "
@@ -6720,8 +6766,9 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             if getattr(args, "factorial_check", False):
                 factorial_sources = build_ppi_factorial_sources()
-                if args.eval_types and "continuous" not in set(args.eval_types):
-                    factorial_sources = []
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    factorial_sources = [s for s in factorial_sources if s.eval_type in requested]
                 if factorial_sources:
                     factorial_reps = getattr(args, "factorial_reps", 100)
                     factorial_n_boot = getattr(args, "factorial_n_boot", 500)

@@ -1864,7 +1864,7 @@ PPI_NLAB_GRID_NLAB_VALUES = (15, 20, 30, 50, 80)
 anyway) so every value in this grid is achievable exactly (see
 build_ppi_nlab_grid_sources' docstring for how label_frac is back-solved
 per cell to hit these counts precisely, independent of N)."""
-_PPI_NLAB_GRID_EVAL_TYPE = "continuous"
+_PPI_NLAB_GRID_EVAL_TYPES = ("continuous", "likert")
 
 
 def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSource]:
@@ -1880,32 +1880,41 @@ def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSourc
     _JB_MIN_LAB floor, so the floor never binds here). Cells where n_lab > n
     are infeasible and skipped.
 
-    One representative eval type (continuous) only -- the same "one clear
-    estimand is the point, not exhaustive coverage" scoping
-    build_ppi_comparison_label_frac_sources already uses for paired_t; a
-    5x5 N x N_lab grid times 3 eval types would triple compute for a
-    robustness/diagnostic check, not a headline result.
+    Two eval types (continuous, likert) -- NOT the same scoping as
+    build_ppi_comparison_label_frac_sources (that function already sweeps
+    all three non-binary eval types; an earlier version of this docstring
+    claimed otherwise, which was a documentation error, not a considered
+    precedent). Likert is included because it's arguably the single most
+    common real-world LLM-as-judge output format, so a headline
+    calibration/power check silently skipping it was a real gap. Grades is
+    deliberately excluded: it's just continuous rescaled to a [0, 100]
+    span, so sweeping it here on top of continuous would be redundant, not
+    additional coverage. A 5x5 N x N_lab grid times 2 eval types roughly
+    doubles this check's compute relative to continuous-only, which is
+    accepted here as the cost of covering the dominant real-world format.
 
     ``effect_frac=0.0`` (the default) is the CALIBRATION question: is the
     PPI-corrected Type-I error still ~alpha across the whole (N, N_lab)
     plane, or does it break down in some region? Pass a nonzero
     ``effect_frac`` (e.g. PPI_COMPARISON_MODERATE_EFFECT_FRAC) for the
     POWER-side companion grid at the same (N, N_lab) cells. Tag
-    "nlab_grid" (calibration) or "nlab_grid_power" (power)."""
-    et = _PPI_NLAB_GRID_EVAL_TYPE
+    "nlab_grid" (calibration) or "nlab_grid_power" (power). Scenario names
+    are "nlab.<eval_type>.n=<n>.nlab=<n_lab>", the same "<prefix>.
+    <eval_type>.<field>=<value>" shape build_ppi_power_sources uses."""
     tag = "nlab_grid" if effect_frac <= 0.0 else "nlab_grid_power"
     sources = []
-    for n in PPI_NLAB_GRID_N_VALUES:
-        for n_lab in PPI_NLAB_GRID_NLAB_VALUES:
-            if n_lab > n:
-                continue
-            kw = _ppi_power_baseline(et)
-            kw["n"] = n
-            kw["label_frac"] = n_lab / n
-            sources.append(JudgeBiasSource(
-                name=f"nlab.n={n}.nlab={n_lab}", tag=tag,
-                effect_size=_jb_effect_magnitude(et, effect_frac), **kw,
-            ))
+    for et in _PPI_NLAB_GRID_EVAL_TYPES:
+        for n in PPI_NLAB_GRID_N_VALUES:
+            for n_lab in PPI_NLAB_GRID_NLAB_VALUES:
+                if n_lab > n:
+                    continue
+                kw = _ppi_power_baseline(et)
+                kw["n"] = n
+                kw["label_frac"] = n_lab / n
+                sources.append(JudgeBiasSource(
+                    name=f"nlab.{et}.n={n}.nlab={n_lab}", tag=tag,
+                    effect_size=_jb_effect_magnitude(et, effect_frac), **kw,
+                ))
     return sources
 
 
@@ -1922,7 +1931,7 @@ PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
 }
 PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.20, "large": 0.40}
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
-_PPI_FACTORIAL_EVAL_TYPE = "continuous"
+_PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
 
 
 def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
@@ -1931,9 +1940,18 @@ def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
     and this session's effect_size/bias_direction/N_lab additions -- each
     checked one axis at a time against a fixed baseline) can't reveal:
     bias_magnitude x N x N_lab x label_mechanism x effect_size x
-    bias_direction. One representative eval type (continuous) and estimand
-    (paired_t) -- same scoping as build_ppi_comparison_label_frac_sources/
-    build_ppi_nlab_grid_sources. Consumed via _run_ppi_comparison_cell/
+    bias_direction, now ALSO crossed with eval_type (continuous, likert).
+    Two eval types, not the same scoping build_ppi_comparison_label_frac_
+    sources/build_ppi_nlab_grid_sources use for label_frac/N_lab sweeps (an
+    earlier version of this docstring claimed "same scoping" as a
+    justification for continuous-only -- that was a documentation error:
+    build_ppi_comparison_label_frac_sources already sweeps all three
+    non-binary eval types, so there was never a real precedent for
+    continuous-only here). Likert is included because it's arguably the
+    most common real-world LLM-as-judge output format; grades is
+    deliberately excluded as redundant with continuous (grades is just
+    continuous rescaled to a [0, 100] span). One representative estimand
+    (paired_t). Consumed via _run_ppi_comparison_cell/
     run_ppi_comparison_simulation (unchanged -- this is just a new source
     list, not a new execution path), analyzed via cases/pvalues.py's
     fit_ppi_factorial_model (pooled binomial GLM) and a curated set of 2D
@@ -1950,42 +1968,47 @@ def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
       (statistically equivalent) whenever there's no bias to have a
       direction, or no real effect for that direction to interact with.
       Generating both would waste compute on literally redundant cells
-      instead of covering new ground -- ~312 cells survive both skips
-      (down from 432 before the redundancy skip, 3x3x3x3x3x2 minus
-      n_lab>n infeasibility).
+      instead of covering new ground -- ~312 cells per eval type survive
+      both skips (down from 432 before the redundancy skip,
+      3x3x3x3x3x2 minus n_lab>n infeasibility), ~624 total across both
+      eval types.
 
-    Small enough, at continuous/paired_t, for a TRUE full factorial (every
+    Small enough, per eval type/paired_t, for a TRUE full factorial (every
     main effect and interaction directly estimable, no confounding to
     reason about) rather than a fractional design -- made tractable by
     generate_judge_bias_pair_cell's ~7.8x lean-generator speedup over
     generate_judge_bias_cell and the PPI bootstrap's existing vectorized
     fast path (evalstats.ppi.correct); see the harness README's efficiency
-    note."""
-    et = _PPI_FACTORIAL_EVAL_TYPE
+    note. Scenario names are "fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
+    lm=<lm>.es=<es>.bd=<bd>", the same "<prefix>.<eval_type>.<field>=
+    <value>..." shape build_ppi_power_sources/build_ppi_nlab_grid_sources
+    use -- see cases/pvalues.py's _PPI_FACTORIAL_NAME_RE/
+    _parse_ppi_factorial_name for the corresponding parser."""
     sources: list[JudgeBiasSource] = []
-    for bm_label, bm_frac in PPI_FACTORIAL_BIAS_MAGNITUDES.items():
-        for n in PPI_FACTORIAL_N_VALUES:
-            for n_lab in PPI_FACTORIAL_NLAB_VALUES:
-                if n_lab > n:
-                    continue
-                for lm_label, lm_kw in PPI_FACTORIAL_LABEL_MECHANISMS.items():
-                    for es_label, es_frac in PPI_FACTORIAL_EFFECT_FRACS.items():
-                        for bd_label in PPI_FACTORIAL_BIAS_DIRECTIONS:
-                            if bd_label == "reinforcing" and (bm_label == "none" or es_label == "null"):
-                                continue
-                            sign = -1.0 if bd_label == "reinforcing" else 1.0
-                            name = (
-                                f"fact.bm={bm_label}.n={n}.nlab={n_lab}.lm={lm_label}."
-                                f"es={es_label}.bd={bd_label}"
-                            )
-                            sources.append(JudgeBiasSource(
-                                name=name, tag="factorial", eval_type=et, icc=0.20, n=n,
-                                label_frac=n_lab / n, llm_noise=0.20,
-                                bias_type=("none" if bm_label == "none" else "differential"),
-                                bias_delta=sign * _jb_bias_magnitude(et, bm_frac),
-                                effect_size=_jb_effect_magnitude(et, es_frac),
-                                **lm_kw,
-                            ))
+    for et in _PPI_FACTORIAL_EVAL_TYPES:
+        for bm_label, bm_frac in PPI_FACTORIAL_BIAS_MAGNITUDES.items():
+            for n in PPI_FACTORIAL_N_VALUES:
+                for n_lab in PPI_FACTORIAL_NLAB_VALUES:
+                    if n_lab > n:
+                        continue
+                    for lm_label, lm_kw in PPI_FACTORIAL_LABEL_MECHANISMS.items():
+                        for es_label, es_frac in PPI_FACTORIAL_EFFECT_FRACS.items():
+                            for bd_label in PPI_FACTORIAL_BIAS_DIRECTIONS:
+                                if bd_label == "reinforcing" and (bm_label == "none" or es_label == "null"):
+                                    continue
+                                sign = -1.0 if bd_label == "reinforcing" else 1.0
+                                name = (
+                                    f"fact.{et}.bm={bm_label}.n={n}.nlab={n_lab}.lm={lm_label}."
+                                    f"es={es_label}.bd={bd_label}"
+                                )
+                                sources.append(JudgeBiasSource(
+                                    name=name, tag="factorial", eval_type=et, icc=0.20, n=n,
+                                    label_frac=n_lab / n, llm_noise=0.20,
+                                    bias_type=("none" if bm_label == "none" else "differential"),
+                                    bias_delta=sign * _jb_bias_magnitude(et, bm_frac),
+                                    effect_size=_jb_effect_magnitude(et, es_frac),
+                                    **lm_kw,
+                                ))
     return sources
 
 
