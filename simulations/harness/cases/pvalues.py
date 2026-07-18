@@ -190,7 +190,7 @@ from ..scenarios.synthetic import (
     PPI_FACTORIAL_N_VALUES,
     PPI_FACTORIAL_NLAB_VALUES,
     generate_judge_bias_cell,
-    generate_judge_bias_pair_cell,
+    generate_judge_bias_group_pair_cell,
     estimate_judge_bias_gold_null_values,
     JUDGE_BIAS_LMM_FACTORIAL_FACTORS,
 )
@@ -3995,17 +3995,27 @@ class PPIComparisonResult:
     types; see _ppi_source_effect_frac."""
     label_frac: float
     n_lab: int
-    """REALIZED labeled-item count for the paired structure (measured off
-    the actual mask each replicate produces, not the nominal `n *
-    label_frac`) -- see _JB_MIN_LAB: label_frac alone can be misleading once
-    the floor binds (e.g. label_frac=0.05 and 0.10 both floor to n_lab=15 at
-    n=100), so this is the field to plot/group by, not label_frac, whenever
-    comparing across different n."""
-    rejects_all_human: int
-    rejects_human_subset: int
-    rejects_llm_only: int
-    rejects_llm_impute: int
-    rejects_ppi: int
+    """REALIZED labeled-item count (measured off the actual mask each
+    replicate produces, not the nominal `n * label_frac`) -- see
+    _JB_MIN_LAB: label_frac alone can be misleading once the floor binds
+    (e.g. label_frac=0.05 and 0.10 both floor to n_lab=15 at n=100), so this
+    is the field to plot/group by, not label_frac, whenever comparing
+    across different n. For "group"-structure methods (ttest_welch, mw)
+    this is group A's labeled count specifically -- see
+    _run_ppi_comparison_cell's docstring for why A and B are expected to
+    match under this harness's scenario construction."""
+    method: str = PAIRED_T.name
+    """Which classical test this result is for -- see _COMPARISON_METHODS.
+    Defaults to paired_t for backward compatibility; every
+    _run_ppi_comparison_cell call now sets this explicitly to one of
+    ttest_welch/paired_t/mw/wilcoxon (never a pooled "average" tag --
+    pooling across methods happens downstream, over a list of these, via
+    pool_ppi_comparison_across_methods)."""
+    rejects_all_human: int = 0
+    rejects_human_subset: int = 0
+    rejects_llm_only: int = 0
+    rejects_llm_impute: int = 0
+    rejects_ppi: int = 0
     n_failed: int = 0
 
 
@@ -4021,7 +4031,7 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     effect_size=0.20 instead of 0.0 in its CSV/log output, even though the
     underlying simulation itself used effect_size=0.0 correctly (this field
     is metadata only; JudgeBiasSource.effect_size, not this function, is
-    what generate_judge_bias_pair_cell actually reads)."""
+    what generate_judge_bias_group_pair_cell actually reads)."""
     if sc.tag == "power":
         return _parse_ppi_power_name(sc.name)[1]
     if sc.tag == "nlab_grid":
@@ -4036,47 +4046,160 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     raise ValueError(f"_ppi_source_effect_frac: unrecognized tag {sc.tag!r}")
 
 
-def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed) -> PPIComparisonResult:
+_COMPARISON_METHODS = (TTEST_WELCH.name, PAIRED_T.name, MW.name, WILCOXON.name)
+"""The four classical two-sample/paired tests the PPI estimator-comparison
+sweep (and everything downstream: N x N_lab grid, full factorial, the
+null-effect bar chart) runs and, by default, averages across -- rather than
+paired_t alone. ttest_welch/paired_t (mean-based) and mw/wilcoxon (rank-
+based) cover both the independent-two-group and paired structures, and all
+four test the SAME two-group mean/location-shift question via different
+classical machinery, so averaging their rejection rates is a coherent
+summary of "does this hold across reasonable test choices." Deliberately
+excludes the omnibus/multi-group tests (anova_ind/anova_rep/friedman/
+kruskal/lmm*) and the non-standard bootstrap-CI constructions
+(bayes_bootstrap/bootstrap_t/tango_score) -- those answer different
+questions (multi-group omnibus effects, CI-based constructions), so
+folding them into the SAME "pooled false-positive rate" would blend
+apples with oranges rather than checking robustness across reasonable
+alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
+grid_sources' continuous-only, paired_t-only scoping was never meant to
+claim the OTHER PPI_TEST_METHODS behave identically."""
+_COMPARISON_METHOD_STRUCTURE = {
+    TTEST_WELCH.name: "group", MW.name: "group", PAIRED_T.name: "pair", WILCOXON.name: "pair",
+}
+_COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mw/wilcoxon"
+POOLED_METHOD_LABEL = "mean_of_4"
+"""PPIComparisonResult.method value for a row produced by
+pool_ppi_comparison_across_methods -- distinguishes a pooled/averaged row
+from a genuine single-method one (never a value _run_ppi_comparison_cell
+itself produces)."""
+
+
+def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str) -> float:
+    """The SAME classical-test call _run_ppi_cell uses for this method
+    (ttest_ind/mannwhitneyu for "group", ttest_rel/wilcoxon for "pair"),
+    factored out here so it can be reused identically for all_human,
+    human_subset, llm_only, and llm_impute -- every arm of the comparison
+    for a given method uses the SAME test, just on different input arrays,
+    so the comparison is apples-to-apples per method (e.g. the "oracle"
+    all_human/human_subset arms run Mann-Whitney on truth for the "mw"
+    method-row, not always a t-test)."""
+    if structure == "group":
+        if method == TTEST_WELCH.name:
+            return float(scipy_stats.ttest_ind(a, b, equal_var=False).pvalue)
+        return float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
+    if method == PAIRED_T.name:
+        return float(scipy_stats.ttest_rel(a, b).pvalue)
+    return float(scipy_stats.wilcoxon(a, b, alternative="two-sided").pvalue)
+
+
+def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int) -> float:
+    """The SAME PPI-corrected call _run_ppi_cell uses for this method
+    (_ppi_two_sample for "group" methods, _ppi_paired_arrays for "pair"
+    methods -- see _run_ppi_cell's ttest_welch/mw/paired_t/wilcoxon blocks,
+    which this mirrors exactly)."""
+    if structure == "group":
+        if method == TTEST_WELCH.name:
+            estimator = lambda ya, yb: float(ya.mean() - yb.mean())  # noqa: E731
+        else:
+            estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
+        return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
+    statistic = np.mean if method == PAIRED_T.name else np.median
+    return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=np.mean).p_value
+
+
+def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed, method: str) -> PPIComparisonResult:
+    """Runs the 5-way comparison (all_human/human_subset/llm_only/
+    llm_impute/ppi) for ONE classical `method` (see _COMPARISON_METHODS).
+    Dispatches on _COMPARISON_METHOD_STRUCTURE[method]: "group" methods
+    (ttest_welch, mw) use generate_judge_bias_group_pair_cell's
+    independent-two-group (a2, b2) structure; "pair" methods (paired_t,
+    wilcoxon) use its paired (x, y) structure. Both structures are drawn
+    together every replicate (one rng stream, whichever structure this
+    call's method doesn't need is simply unused, not skipped -- keeps a
+    given scenario/seed's draws identical regardless of which method is
+    requested, the same reproducibility property generate_judge_bias_cell
+    itself maintains for --tests).
+
+    Each of the four arms is computed in its OWN try/except: a classical-
+    test failure (e.g. wilcoxon raising on an all-zero-difference sample)
+    just skips incrementing that arm for that replicate (same semantics as
+    before this function supported rank-based tests, which never failed);
+    only a PPI bootstrap-correction failure increments n_failed, preserving
+    that field's original meaning.
+
+    n_lab (the realized labeled-item count) is group A's count for "group"
+    methods -- since every JudgeBiasSource this comparison-sweep machinery
+    builds (build_ppi_power_sources et al.) leaves n2 unset (so n2==n) and
+    applies the SAME label_frac to both groups, A and B are expected to
+    match; this only reports one of them rather than both."""
     rng = np.random.default_rng(seed)
     rejects = {"all_human": 0, "human_subset": 0, "llm_only": 0, "llm_impute": 0, "ppi": 0}
     n_failed = 0
     n_lab_realized = 0
+    structure = _COMPARISON_METHOD_STRUCTURE[method]
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for _ in range(n_reps):
-            llm_x, llm_y, lab_x, lab_y, truth_x, truth_y = generate_judge_bias_pair_cell(sc, rng)
-            mask = ~np.isnan(lab_x) & ~np.isnan(lab_y)
-            n_lab_realized = int(mask.sum())
-
-            p_all_human = float(scipy_stats.ttest_rel(truth_x, truth_y).pvalue)
-            rejects["all_human"] += int(p_all_human < _ALPHA)
-
-            if n_lab_realized >= 2:
-                p_human_subset = float(scipy_stats.ttest_rel(truth_x[mask], truth_y[mask]).pvalue)
-                rejects["human_subset"] += int(p_human_subset < _ALPHA)
-
-            p_llm_only = float(scipy_stats.ttest_rel(llm_x, llm_y).pvalue)
-            rejects["llm_only"] += int(p_llm_only < _ALPHA)
-
-            filled_x, filled_y = llm_x.copy(), llm_y.copy()
-            filled_x[mask] = lab_x[mask]
-            filled_y[mask] = lab_y[mask]
-            p_llm_impute = float(scipy_stats.ttest_rel(filled_x, filled_y).pvalue)
-            rejects["llm_impute"] += int(p_llm_impute < _ALPHA)
+            cell = generate_judge_bias_group_pair_cell(sc, rng)
+            if structure == "group":
+                llm_a, llm_b, lab_a, lab_b = cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2
+                truth_a, truth_b = cell.truth_a2, cell.truth_b2
+                mask_a, mask_b = ~np.isnan(lab_a), ~np.isnan(lab_b)
+                n_lab_realized = int(mask_a.sum())
+                subset_ok = int(mask_a.sum()) >= 2 and int(mask_b.sum()) >= 2
+                truth_subset_a, truth_subset_b = truth_a[mask_a], truth_b[mask_b]
+                filled_a, filled_b = llm_a.copy(), llm_b.copy()
+                filled_a[mask_a] = lab_a[mask_a]
+                filled_b[mask_b] = lab_b[mask_b]
+            else:
+                llm_a, llm_b, lab_a, lab_b = cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y
+                truth_a, truth_b = cell.truth_x, cell.truth_y
+                mask = ~np.isnan(lab_a) & ~np.isnan(lab_b)
+                n_lab_realized = int(mask.sum())
+                subset_ok = int(mask.sum()) >= 2
+                truth_subset_a, truth_subset_b = truth_a[mask], truth_b[mask]
+                filled_a, filled_b = llm_a.copy(), llm_b.copy()
+                filled_a[mask] = lab_a[mask]
+                filled_b[mask] = lab_b[mask]
 
             try:
-                r = _ppi_paired_arrays(
-                    llm_x, llm_y, lab_x, lab_y, np.mean, _ALPHA, n_boot,
-                    int(rng.integers(0, 2 ** 31)), rectifier_func=np.mean,
+                p_all_human = _classical_pvalue(truth_a, truth_b, method, structure)
+                rejects["all_human"] += int(p_all_human < _ALPHA)
+            except Exception:
+                pass
+
+            try:
+                p_llm_only = _classical_pvalue(llm_a, llm_b, method, structure)
+                rejects["llm_only"] += int(p_llm_only < _ALPHA)
+            except Exception:
+                pass
+
+            try:
+                p_llm_impute = _classical_pvalue(filled_a, filled_b, method, structure)
+                rejects["llm_impute"] += int(p_llm_impute < _ALPHA)
+            except Exception:
+                pass
+
+            if subset_ok:
+                try:
+                    p_human_subset = _classical_pvalue(truth_subset_a, truth_subset_b, method, structure)
+                    rejects["human_subset"] += int(p_human_subset < _ALPHA)
+                except Exception:
+                    pass
+
+            try:
+                p_ppi = _ppi_comparison_pvalue(
+                    llm_a, llm_b, lab_a, lab_b, method, structure, n_boot, int(rng.integers(0, 2 ** 31)),
                 )
-                rejects["ppi"] += int(r.p_value < _ALPHA)
+                rejects["ppi"] += int(p_ppi < _ALPHA)
             except Exception:
                 n_failed += 1
 
     return PPIComparisonResult(
         name=sc.name, tag=sc.tag, eval_type=sc.eval_type, n=sc.n, n_reps=n_reps,
-        effect_size=_ppi_source_effect_frac(sc), label_frac=sc.label_frac, n_lab=n_lab_realized,
+        effect_size=_ppi_source_effect_frac(sc), label_frac=sc.label_frac, n_lab=n_lab_realized, method=method,
         rejects_all_human=rejects["all_human"], rejects_human_subset=rejects["human_subset"],
         rejects_llm_only=rejects["llm_only"], rejects_llm_impute=rejects["llm_impute"],
         rejects_ppi=rejects["ppi"], n_failed=n_failed,
@@ -4084,41 +4207,111 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
 
 
 def _run_ppi_comparison_cell_worker(args: tuple) -> PPIComparisonResult:
-    sc, n_reps, n_boot, seed = args
-    return _run_ppi_comparison_cell(sc, n_reps, n_boot, seed)
+    sc, n_reps, n_boot, seed, method = args
+    return _run_ppi_comparison_cell(sc, n_reps, n_boot, seed, method)
 
 
 def run_ppi_comparison_simulation(
     sources: list[JudgeBiasSource], n_reps: int, n_boot: int,
     progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
+    methods: tuple = _COMPARISON_METHODS,
 ) -> list[PPIComparisonResult]:
-    """n_workers=1 (the default) runs sequentially -- fine for the original
+    """Runs _run_ppi_comparison_cell for every (source, method) pair --
+    len(sources) x len(methods) cells total -- returning a FLAT list (each
+    PPIComparisonResult.method identifies which). Pool across methods with
+    pool_ppi_comparison_across_methods for a single averaged row per
+    scenario; group by .method for the per-method breakdown.
+
+    n_workers=1 (the default) runs sequentially -- fine for the original
     ~24-scenario comparison grid (build_ppi_power_sources +
     build_ppi_comparison_label_frac_sources), where forking a worker pool
     would be pure overhead relative to the work itself. build_ppi_nlab_grid_
-    sources (~44 scenarios) and any future factorial expansion push this
-    well past that point, so this now supports the same
-    fork-pool-over-sources pattern as run_ppi_simulation/run_multiarm_
-    simulation (no in-cell progress-dict machinery, unlike run_ppi_simulation
-    -- _run_ppi_comparison_cell is fast enough per scenario, seconds not
-    minutes, that per-cell granularity isn't needed)."""
+    sources (~44 scenarios), build_ppi_factorial_sources (~312), and now
+    the x4 method sweep push this well past that point, so this supports
+    the same fork-pool-over-sources pattern as run_ppi_simulation/
+    run_multiarm_simulation (no in-cell progress-dict machinery, unlike
+    run_ppi_simulation -- _run_ppi_comparison_cell is fast enough per
+    (source, method) cell, seconds not minutes, that per-cell granularity
+    isn't needed)."""
+    cells = [(sc, m) for sc in sources for m in methods]
     ss = np.random.SeedSequence(seed)
-    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(sources))]
-    reporter = _ProgressReporter(len(sources), mode=progress_mode, label="pvalues-ppi-compare")
+    child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
+    reporter = _ProgressReporter(len(cells), mode=progress_mode, label="pvalues-ppi-compare")
     results: list[PPIComparisonResult] = []
     if n_workers <= 1:
-        for i, (sc, child_seed) in enumerate(zip(sources, child_seeds)):
-            results.append(_run_ppi_comparison_cell(sc, n_reps, n_boot, child_seed))
-            reporter.update(i + 1, detail=sc.name)
+        for i, ((sc, m), child_seed) in enumerate(zip(cells, child_seeds)):
+            results.append(_run_ppi_comparison_cell(sc, n_reps, n_boot, child_seed, m))
+            reporter.update(i + 1, detail=f"{sc.name} [{m}]")
     else:
-        args_list = [(sc, n_reps, n_boot, child_seed) for sc, child_seed in zip(sources, child_seeds)]
+        args_list = [(sc, n_reps, n_boot, child_seed, m) for (sc, m), child_seed in zip(cells, child_seeds)]
         ctx = _mp.get_context("fork")
         with ctx.Pool(n_workers) as pool:
             for i, result in enumerate(pool.imap_unordered(_run_ppi_comparison_cell_worker, args_list)):
                 results.append(result)
                 reporter.update(i + 1)
-    reporter.update(len(sources), detail="done")
+    reporter.update(len(cells), detail="done")
     return results
+
+
+def pool_ppi_comparison_across_methods(results: list[PPIComparisonResult]) -> list[PPIComparisonResult]:
+    """Pool PPIComparisonResult rows across _COMPARISON_METHODS, one output
+    row per distinct scenario `name` (summing rejects/n_reps across
+    whichever methods are present for that name -- equivalent to averaging
+    each method's rate since every method shares the same n_reps per
+    scenario). Output rows carry method=POOLED_METHOD_LABEL. This is the
+    "average across ttest_welch/paired_t/mw/wilcoxon" pooling requested for
+    the headline figures (null-effect bar chart, 5-way comparison, N x
+    N_lab grid, factorial slices) -- the per-method rows in `results`
+    remain available (e.g. in the raw CSV) as the supplementary robustness
+    breakdown, so a reviewer can check the average isn't hiding one method
+    behaving badly."""
+    by_name: dict[str, list[PPIComparisonResult]] = defaultdict(list)
+    for r in results:
+        by_name[r.name].append(r)
+
+    pooled: list[PPIComparisonResult] = []
+    for name, rows in by_name.items():
+        r0 = rows[0]
+        pooled.append(PPIComparisonResult(
+            name=name, tag=r0.tag, eval_type=r0.eval_type, n=r0.n,
+            n_reps=sum(r.n_reps for r in rows),
+            effect_size=r0.effect_size, label_frac=r0.label_frac, n_lab=r0.n_lab,
+            method=POOLED_METHOD_LABEL,
+            rejects_all_human=sum(r.rejects_all_human for r in rows),
+            rejects_human_subset=sum(r.rejects_human_subset for r in rows),
+            rejects_llm_only=sum(r.rejects_llm_only for r in rows),
+            rejects_llm_impute=sum(r.rejects_llm_impute for r in rows),
+            rejects_ppi=sum(r.rejects_ppi for r in rows),
+            n_failed=sum(r.n_failed for r in rows),
+        ))
+    return pooled
+
+
+def _pool_ppi_comparison_rows(rows: list[PPIComparisonResult]) -> PPIComparisonResult | None:
+    """Pool an arbitrary list of PPIComparisonResult rows -- possibly
+    differing by method, N, N_lab, or anything else -- into ONE combined
+    row: sums rejects/n_reps (equivalent to an unweighted average of each
+    row's rate, since every row shares the same n_reps by construction in
+    this harness), keeps the first row's descriptive metadata (name/tag/
+    eval_type/n/n_lab/etc., which are display fields here, not recomputed
+    as an average across whatever heterogeneous scenarios were pooled).
+    Used for save_ppi_null_comparison_plot's continuous-eval-type panel,
+    which pools ACROSS THE N x N_lab GRID on top of pool_ppi_comparison_
+    across_methods' across-methods pooling -- two independent pooling
+    axes, scenario and method, both folded into a single number/CI."""
+    if not rows:
+        return None
+    r0 = rows[0]
+    return PPIComparisonResult(
+        name=r0.name, tag=r0.tag, eval_type=r0.eval_type, n=r0.n, n_reps=sum(r.n_reps for r in rows),
+        effect_size=r0.effect_size, label_frac=r0.label_frac, n_lab=r0.n_lab, method=POOLED_METHOD_LABEL,
+        rejects_all_human=sum(r.rejects_all_human for r in rows),
+        rejects_human_subset=sum(r.rejects_human_subset for r in rows),
+        rejects_llm_only=sum(r.rejects_llm_only for r in rows),
+        rejects_llm_impute=sum(r.rejects_llm_impute for r in rows),
+        rejects_ppi=sum(r.rejects_ppi for r in rows),
+        n_failed=sum(r.n_failed for r in rows),
+    )
 
 
 def print_ppi_comparison_report(results: list[PPIComparisonResult], alpha: float) -> None:
@@ -4159,18 +4352,24 @@ def print_ppi_comparison_report(results: list[PPIComparisonResult], alpha: float
 
 
 def save_results_artifacts_ppi_comparison(*, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str) -> list[str]:
+    """`results` may be raw (per-method, len(sources)*len(methods) rows) or
+    pooled (pool_ppi_comparison_across_methods, one row per scenario) --
+    either way, every row's `.method` field says which. Callers save the
+    RAW rows here (the per-method breakdown, for reviewers to check the
+    pooled average isn't hiding one method behaving badly) and pass the
+    POOLED rows to print_ppi_comparison_report/save_ppi_comparison_plot."""
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_comparison_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "name", "tag", "eval_type", "n", "n_reps", "effect_size", "label_frac", "n_lab",
+            "name", "tag", "eval_type", "method", "n", "n_reps", "effect_size", "label_frac", "n_lab",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in results:
             writer.writerow([
-                r.name, r.tag, r.eval_type, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
+                r.name, r.tag, r.eval_type, r.method, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -4277,7 +4476,10 @@ on the right -- the grouping itself is part of what makes the bar chart
 read at a glance."""
 
 
-def save_ppi_null_comparison_plot(*, results: list[PPIComparisonResult], alpha: float, out_path: str) -> str:
+def save_ppi_null_comparison_plot(
+    *, results: list[PPIComparisonResult], alpha: float, out_path: str,
+    nlab_cal_results: list[PPIComparisonResult] | None = None,
+) -> str:
     """Bar chart isolating JUST the null (no real effect) case from
     save_ppi_comparison_plot's line plot -- one bar per estimator arm, one
     panel per eval type. save_ppi_comparison_plot's effect_size=0 point
@@ -4294,26 +4496,52 @@ def save_ppi_null_comparison_plot(*, results: list[PPIComparisonResult], alpha: 
     that IS present). This plot has no effect_size axis to be misread
     against: every bar here is, by construction, a false-positive rate.
 
+    Every bar pools across _COMPARISON_METHODS (ttest_welch/paired_t/mw/
+    wilcoxon -- `results`/`nlab_cal_results` are expected to already be
+    pool_ppi_comparison_across_methods output, one row per scenario, not
+    the raw per-method rows). For the continuous eval type specifically,
+    passing `nlab_cal_results` (build_ppi_nlab_grid_sources' calibration
+    grid, ALSO pre-pooled across methods) pools a SECOND axis on top: every
+    N x N_lab cell in that grid, not just the single (N=100, N_lab=20)
+    baseline scenario `results` alone would give -- the "defensible for a
+    paper" version of this chart, an average over 4 tests x ~22 (N, N_lab)
+    conditions rather than one arbitrarily-chosen scenario. likert/grades
+    have no such sweep available (build_ppi_nlab_grid_sources is
+    continuous-only), so they fall back to `results`' single scenario --
+    still pooled across the 4 methods, just not across N/N_lab. Each
+    panel's subtitle states which pooling applies.
+
     Error bars are the 95% Wilson score interval for each bar's underlying
     binomial proportion (_ppi_wilson_interval, the same interval
-    print_ppi_report's Type-I flagging already uses) -- each bar is one
-    scenario's `rejects_X / n_reps`, so its own MC uncertainty depends on
-    n_reps (--effect-reps) the same way any simulated rate does, and a bar
-    chart with no uncertainty shown at all would let a reader mistake MC
-    noise (e.g. a 0.10 vs. a 0.05 nominal alpha at n_reps=30) for a real
-    miscalibration finding."""
+    print_ppi_report's Type-I flagging already uses), computed on the
+    POOLED rejects/n_reps -- i.e. treating every pooled replicate as one
+    more independent Bernoulli draw at the same rate. That's exact for
+    pooling across methods/conditions that are truly identically
+    calibrated, and a standard, if slightly optimistic, simplification
+    if there's real heterogeneity across the pooled methods/(N, N_lab)
+    cells (the same simplification this file's pooled Type-I metrics
+    already use, e.g. key_metrics["ppi_mean_corrected_type1"]) -- called
+    out here rather than presented as more rigorous than it is."""
     import matplotlib.pyplot as plt
 
     null_rows = [r for r in results if r.tag == "power" and abs(r.effect_size) < 1e-9]
     if not null_rows:
         raise ValueError("No null-effect (effect_size=0) comparison results to plot.")
     eval_types = sorted({r.eval_type for r in null_rows})
+    nlab_null_pool = None
+    if nlab_cal_results:
+        nlab_null_pool = _pool_ppi_comparison_rows([r for r in nlab_cal_results if r.tag == "nlab_grid"])
 
-    fig, axes = plt.subplots(1, len(eval_types), figsize=(3.4 * len(eval_types), 4.6), squeeze=False)
+    fig, axes = plt.subplots(1, len(eval_types), figsize=(3.4 * len(eval_types), 4.9), squeeze=False)
     x = np.arange(len(_PPI_NULL_COMPARISON_ORDER))
     for col, et in enumerate(eval_types):
         ax = axes[0][col]
-        r = next(r for r in null_rows if r.eval_type == et)
+        if et == "continuous" and nlab_null_pool is not None:
+            r = nlab_null_pool
+            subtitle = f"pooled: 4 tests x N x N_lab\n(n_reps={r.n_reps})"
+        else:
+            r = next(r for r in null_rows if r.eval_type == et)
+            subtitle = f"pooled: 4 tests\n(N={r.n}, N_lab={r.n_lab}, n_reps={r.n_reps})"
         rejects = [getattr(r, f"rejects_{key}") for key in _PPI_NULL_COMPARISON_ORDER]
         rates = [k / r.n_reps if r.n_reps else float("nan") for k in rejects]
         ci_lo_hi = [_ppi_wilson_interval(k, r.n_reps) for k in rejects]
@@ -4337,7 +4565,7 @@ def save_ppi_null_comparison_plot(*, results: list[PPIComparisonResult], alpha: 
             rotation=30, ha="right", fontsize=8,
         )
         ax.set_ylim(0.0, 1.08)
-        ax.set_title(et.capitalize())
+        ax.set_title(f"{et.capitalize()}\n{subtitle}", fontsize=10)
         ax.set_ylabel("False positive rate" if col == 0 else "")
         ax.grid(axis="y", alpha=0.25, lw=0.8, zorder=1)
         for xi, rate in zip(x, rates):
@@ -4406,12 +4634,12 @@ def save_results_artifacts_ppi_nlab_grid(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "name", "tag", "eval_type", "n", "n_lab", "n_reps", "effect_size",
+            "name", "tag", "eval_type", "method", "n", "n_lab", "n_reps", "effect_size",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in results:
             writer.writerow([
-                r.name, r.tag, r.eval_type, r.n, r.n_lab, r.n_reps, f"{r.effect_size:.4f}",
+                r.name, r.tag, r.eval_type, r.method, r.n, r.n_lab, r.n_reps, f"{r.effect_size:.4f}",
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -4628,13 +4856,13 @@ def save_results_artifacts_ppi_factorial(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "name", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
+            "name", "method", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in results:
             d = _parse_ppi_factorial_name(r.name)
             writer.writerow([
-                r.name, d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
+                r.name, r.method, d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -5194,16 +5422,32 @@ def save_results_artifacts_ppi_power(*, results: list[PPIResult], alpha: float, 
     return [str(csv_path), str(summary_path)]
 
 
-def save_ppi_power_plot(*, results: list[PPIResult], alpha: float, out_path: str, title_suffix: str = "") -> str:
-    """Power curve (rejection rate vs. real effect_size), corrected (solid,
-    marker='o') vs. uncorrected (dashed, marker='x'), one subplot per eval
-    type, one line per test -- the power-side complement to
-    save_ppi_typeI_plot's null-only Type-I scatter. A method that's well
-    calibrated (Type-I ~ alpha) but whose corrected line here stays flat
-    near alpha as effect_size grows would be a real finding: correction
-    fixing false positives by never rejecting anything, rather than by
-    properly separating signal from bias."""
+def save_ppi_power_plot(
+    *, results: list[PPIResult], alpha: float, out_path: str, title_suffix: str = "",
+    ideal_results: list[PPIResult] | None = None,
+) -> str:
+    """Power curve (rejection rate vs. real effect_size) -- TWO rows (top:
+    corrected, bottom: uncorrected), one column per eval type, rather than
+    overlaying both in one set of axes: with up to 13 tests' worth of
+    same-colored solid+dashed lines sharing one plot, superimposing
+    corrected and uncorrected became unreadable. Uncorrected keeps its
+    dashed linestyle in its own row, consistent with save_ppi_typeI_plot/
+    save_ppi_power_direction_plot's convention.
+
+    ``ideal_results`` (optional -- pass build_ppi_power_nobias_sources'
+    PPIResult list): overlaid as a thin dotted line, in the SAME per-test
+    color, on the CORRECTED row only. This is "what power would PPI-
+    corrected achieve if there were no judge bias to correct for at all" --
+    the ceiling to judge "how good a job is PPI actually doing" against.
+    There's no single closed-form analytical 'ideal' power curve that
+    would apply across all ~13 test families here (they target different
+    estimands -- independent-group means, paired means, between-group
+    variances, LMM Wald F-stats...), so rather than an arbitrary reference
+    that only fits one of them, this reuses a ceiling the harness already
+    computes, per test, at no extra simulation cost (build_ppi_power_
+    nobias_sources runs whenever the power check does)."""
     import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
 
     if not results:
         raise ValueError("No PPI power results to plot.")
@@ -5211,13 +5455,13 @@ def save_ppi_power_plot(*, results: list[PPIResult], alpha: float, out_path: str
     parsed = {r.name: _parse_ppi_power_name(r.name) for r in results}
     eval_types = sorted({et for et, _ in parsed.values()})
     es_values = sorted({es for _, es in parsed.values()})
+    ideal_parsed = {r.name: _parse_ppi_power_name(r.name) for r in ideal_results} if ideal_results else {}
 
-    from matplotlib.lines import Line2D
-
-    fig, axes = plt.subplots(1, len(eval_types), figsize=(5.2 * len(eval_types), 4.4), squeeze=False)
+    fig, axes = plt.subplots(2, len(eval_types), figsize=(4.6 * len(eval_types), 7.6), squeeze=False)
     for col, et in enumerate(eval_types):
-        ax = axes[0][col]
-        ax.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6)
+        ax_c, ax_u = axes[0][col], axes[1][col]
+        ax_c.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6)
+        ax_u.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6)
         for t in tests:
             t_rows = [r for r in results if r.test == t]
             ys_c, ys_u = [], []
@@ -5231,25 +5475,40 @@ def save_ppi_power_plot(*, results: list[PPIResult], alpha: float, out_path: str
             if not any(np.isfinite(ys_c)):
                 continue
             color = get_method_color(t)
-            ax.plot(es_values, ys_c, marker="o", color=color, linewidth=1.6, label=_pretty_test(t), zorder=2)
-            ax.plot(es_values, ys_u, marker="x", color=color, linewidth=1.0, linestyle="--", alpha=0.5, zorder=1)
-        ax.set_title(et.capitalize())
-        ax.set_xlabel("Effect size")
-        ax.set_ylabel("Rejection rate" if col == 0 else "")
-        ax.set_ylim(-0.02, 1.02)
+            ax_c.plot(es_values, ys_c, marker="o", color=color, linewidth=1.6, markersize=4, label=_pretty_test(t), zorder=2)
+            ax_u.plot(es_values, ys_u, marker="x", color=color, linewidth=1.4, linestyle="--", markersize=4, zorder=2)
+
+            if ideal_results:
+                ideal_t_rows = [r for r in ideal_results if r.test == t]
+                ys_ideal = []
+                for es in es_values:
+                    cell_rows = [r for r in ideal_t_rows if ideal_parsed.get(r.name) == (et, es)]
+                    c_tot = sum(r.corrected_rejects for r in cell_rows)
+                    n_tot = sum(r.n_reps for r in cell_rows)
+                    ys_ideal.append(c_tot / n_tot if n_tot > 0 else float("nan"))
+                if any(np.isfinite(ys_ideal)):
+                    ax_c.plot(es_values, ys_ideal, color=color, linewidth=1.2, linestyle=":", alpha=0.6, zorder=1)
+
+        ax_c.set_title(et.capitalize())
+        ax_c.set_ylabel("Rejection rate\n(corrected)" if col == 0 else "")
+        ax_c.set_ylim(-0.02, 1.02)
+        ax_c.set_xticklabels([])
+
+        ax_u.set_xlabel("Effect size")
+        ax_u.set_ylabel("Rejection rate\n(uncorrected)" if col == 0 else "")
+        ax_u.set_ylim(-0.02, 1.02)
 
     handles, labels = axes[0][0].get_legend_handles_labels()
-    handles += [
-        Line2D([0], [0], color="#333333", marker="o", linewidth=1.6, linestyle="-"),
-        Line2D([0], [0], color="#333333", marker="x", linewidth=1.0, linestyle="--", alpha=0.7),
-        Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6),
-    ]
-    labels += ["Corrected", "Uncorrected", f"Nominal {_alpha_label(alpha)}"]
-    axes[0][0].legend(handles, labels, fontsize=7, loc="lower right", ncol=2)
+    if ideal_results:
+        handles.append(Line2D([0], [0], color="#333333", linewidth=1.2, linestyle=":", alpha=0.8))
+        labels.append("Ideal (no judge bias)")
+    handles.append(Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6))
+    labels.append(f"Nominal {_alpha_label(alpha)}")
+    fig.legend(handles, labels, fontsize=8, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
     fig.suptitle(f"PPI-Corrected Power vs. Effect Size{title_suffix}", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0, 0.83, 1))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -6275,6 +6534,34 @@ def run(args: argparse.Namespace) -> CaseResult:
                 )
                 print_ppi_power_report(power_results, alpha=args.alpha)
 
+                # No-bias baseline computed BEFORE the main power plot (not
+                # after, as originally ordered) so its corrected rate can be
+                # overlaid there as an "ideal" reference line -- does PPI
+                # correction cost power for nothing when there's no judge
+                # bias to correct for, and how close does the biased-
+                # condition line above track that ceiling? See
+                # build_ppi_power_nobias_sources' docstring.
+                nobias_sources = build_ppi_power_nobias_sources()
+                if args.eval_types:
+                    nobias_sources = [s for s in nobias_sources if s.eval_type in requested]
+                nobias_results: list[PPIResult] = []
+                if nobias_sources:
+                    print(f"\npvalues simulation (PPI-corrected, power check -- no bias) -- "
+                          f"{len(nobias_sources)} scenarios")
+                    nobias_results = run_ppi_simulation(
+                        nobias_sources, active_tests=active_tests, n_reps=power_reps, n_boot=args.ppi_n_boot,
+                        progress_mode=args.progress, seed=args.seed + 5, n_workers=getattr(args, "workers", 1),
+                    )
+                    print_ppi_power_report(
+                        nobias_results, alpha=args.alpha, header="POWER, NO JUDGE BIAS (bias_type=none)",
+                    )
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_power(
+                            results=nobias_results, alpha=args.alpha, out_dir=args.out_dir,
+                            run_stem=f"pvalues_ppi_power_nobias_reps{power_reps}_{stamp}",
+                        )
+                    key_metrics["ppi_power_nobias_n_results"] = len(nobias_results)
+
                 power_stem = f"pvalues_ppi_power_reps{power_reps}_{stamp}"
                 if power_results:
                     if args.save_results == "save":
@@ -6285,9 +6572,18 @@ def run(args: argparse.Namespace) -> CaseResult:
                         power_plot_path = save_ppi_power_plot(
                             results=power_results, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{power_stem}_power_vs_effect_size.png"),
+                            ideal_results=nobias_results or None,
                         )
                         output_paths.append(power_plot_path)
                         print(f"Saved plot: {power_plot_path}")
+                        if nobias_results:
+                            nobias_plot_path = save_ppi_power_plot(
+                                results=nobias_results, alpha=args.alpha,
+                                out_path=str(Path(plots_dir) / f"{power_stem}_power_vs_effect_size_nobias.png"),
+                                title_suffix=" -- No Judge Bias",
+                            )
+                            output_paths.append(nobias_plot_path)
+                            print(f"Saved plot: {nobias_plot_path}")
 
                     key_metrics["ppi_power_n_results"] = len(power_results)
                     top_es = max({_parse_ppi_power_name(r.name)[1] for r in power_results}, default=0.0)
@@ -6331,37 +6627,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                         print(f"Saved plot: {direction_plot_path}")
                     key_metrics["ppi_power_reinforcing_n_results"] = len(reinforcing_results)
 
-                # No-bias baseline: does PPI correction cost power for
-                # nothing when there's no judge bias to correct for? See
-                # build_ppi_power_nobias_sources' docstring.
-                nobias_sources = build_ppi_power_nobias_sources()
-                if args.eval_types:
-                    nobias_sources = [s for s in nobias_sources if s.eval_type in requested]
-                if nobias_sources:
-                    print(f"\npvalues simulation (PPI-corrected, power check -- no bias) -- "
-                          f"{len(nobias_sources)} scenarios")
-                    nobias_results = run_ppi_simulation(
-                        nobias_sources, active_tests=active_tests, n_reps=power_reps, n_boot=args.ppi_n_boot,
-                        progress_mode=args.progress, seed=args.seed + 5, n_workers=getattr(args, "workers", 1),
-                    )
-                    print_ppi_power_report(
-                        nobias_results, alpha=args.alpha, header="POWER, NO JUDGE BIAS (bias_type=none)",
-                    )
-                    if args.save_results == "save":
-                        output_paths += save_results_artifacts_ppi_power(
-                            results=nobias_results, alpha=args.alpha, out_dir=args.out_dir,
-                            run_stem=f"pvalues_ppi_power_nobias_reps{power_reps}_{stamp}",
-                        )
-                    if args.plots == "save":
-                        nobias_plot_path = save_ppi_power_plot(
-                            results=nobias_results, alpha=args.alpha,
-                            out_path=str(Path(plots_dir) / f"{power_stem}_power_vs_effect_size_nobias.png"),
-                            title_suffix=" -- No Judge Bias",
-                        )
-                        output_paths.append(nobias_plot_path)
-                        print(f"Saved plot: {nobias_plot_path}")
-                    key_metrics["ppi_power_nobias_n_results"] = len(nobias_results)
-
+            comparison_results_pooled: list[PPIComparisonResult] = []
+            nlab_cal_pooled: list[PPIComparisonResult] = []
             if not getattr(args, "no_comparison_check", False):
                 comparison_sources = power_sources + build_ppi_comparison_label_frac_sources()
                 if args.eval_types:
@@ -6370,34 +6637,31 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if comparison_sources:
                     comparison_reps = getattr(args, "effect_reps", 200)
                     print(f"\npvalues simulation (PPI-corrected, estimator comparison) -- "
-                          f"{len(comparison_sources)} scenarios, reps={comparison_reps}, n_boot={args.ppi_n_boot}")
-                    comparison_results = run_ppi_comparison_simulation(
+                          f"{len(comparison_sources)} scenarios x {len(_COMPARISON_METHODS)} methods "
+                          f"({_COMPARISON_METHODS_LABEL}), reps={comparison_reps}, n_boot={args.ppi_n_boot}")
+                    comparison_results_raw = run_ppi_comparison_simulation(
                         comparison_sources, n_reps=comparison_reps, n_boot=args.ppi_n_boot,
                         progress_mode=args.progress, seed=args.seed + 3, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS,
                     )
-                    print_ppi_comparison_report(comparison_results, alpha=args.alpha)
+                    comparison_results_pooled = pool_ppi_comparison_across_methods(comparison_results_raw)
+                    print_ppi_comparison_report(comparison_results_pooled, alpha=args.alpha)
 
                     comparison_stem = f"pvalues_ppi_comparison_reps{comparison_reps}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_comparison(
-                            results=comparison_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_stem,
+                            results=comparison_results_raw, alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_stem,
                         )
                     if args.plots == "save":
                         comparison_plot_path = save_ppi_comparison_plot(
-                            results=comparison_results, alpha=args.alpha,
+                            results=comparison_results_pooled, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{comparison_stem}_five_way_comparison.png"),
                         )
                         output_paths.append(comparison_plot_path)
                         print(f"Saved plot: {comparison_plot_path}")
-                        null_comparison_plot_path = save_ppi_null_comparison_plot(
-                            results=comparison_results, alpha=args.alpha,
-                            out_path=str(Path(plots_dir) / f"{comparison_stem}_null_false_positive_rate.png"),
-                        )
-                        output_paths.append(null_comparison_plot_path)
-                        print(f"Saved plot: {null_comparison_plot_path}")
 
-                    key_metrics["ppi_comparison_n_results"] = len(comparison_results)
-                    max_es_rows = [r for r in comparison_results if r.tag == "power" and r.effect_size == max((r.effect_size for r in comparison_results if r.tag == "power"), default=0.0)]
+                    key_metrics["ppi_comparison_n_results"] = len(comparison_results_pooled)
+                    max_es_rows = [r for r in comparison_results_pooled if r.tag == "power" and r.effect_size == max((r.effect_size for r in comparison_results_pooled if r.tag == "power"), default=0.0)]
                     if max_es_rows:
                         key_metrics["ppi_comparison_power_all_human_at_max_es"] = float(
                             sum(r.rejects_all_human for r in max_es_rows) / sum(r.n_reps for r in max_es_rows)
@@ -6420,45 +6684,62 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if nlab_cal_sources or nlab_pow_sources:
                     nlab_reps = getattr(args, "effect_reps", 200)
                     print(f"\npvalues simulation (PPI-corrected, N x N_lab grid) -- "
-                          f"{len(nlab_cal_sources)} calibration + {len(nlab_pow_sources)} power scenarios, "
-                          f"reps={nlab_reps}, n_boot={args.ppi_n_boot}")
-                    nlab_cal_results = run_ppi_comparison_simulation(
+                          f"{len(nlab_cal_sources)} calibration + {len(nlab_pow_sources)} power scenarios "
+                          f"x {len(_COMPARISON_METHODS)} methods, reps={nlab_reps}, n_boot={args.ppi_n_boot}")
+                    nlab_cal_raw = run_ppi_comparison_simulation(
                         nlab_cal_sources, n_reps=nlab_reps, n_boot=args.ppi_n_boot,
                         progress_mode=args.progress, seed=args.seed + 6, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS,
                     ) if nlab_cal_sources else []
-                    nlab_pow_results = run_ppi_comparison_simulation(
+                    nlab_pow_raw = run_ppi_comparison_simulation(
                         nlab_pow_sources, n_reps=nlab_reps, n_boot=args.ppi_n_boot,
                         progress_mode=args.progress, seed=args.seed + 7, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS,
                     ) if nlab_pow_sources else []
+                    nlab_cal_pooled = pool_ppi_comparison_across_methods(nlab_cal_raw) if nlab_cal_raw else []
+                    nlab_pow_pooled = pool_ppi_comparison_across_methods(nlab_pow_raw) if nlab_pow_raw else []
                     print_ppi_nlab_grid_report(
-                        nlab_cal_results, alpha=args.alpha, header="N x N_LAB GRID (calibration, effect_size=0)",
+                        nlab_cal_pooled, alpha=args.alpha, header="N x N_LAB GRID (calibration, effect_size=0)",
                     )
                     print_ppi_nlab_grid_report(
-                        nlab_pow_results, alpha=args.alpha, header="N x N_LAB GRID (power, moderate effect_size)",
+                        nlab_pow_pooled, alpha=args.alpha, header="N x N_LAB GRID (power, moderate effect_size)",
                     )
 
                     nlab_stem = f"pvalues_ppi_nlab_grid_reps{nlab_reps}_{stamp}"
                     if args.save_results == "save":
-                        if nlab_cal_results:
+                        if nlab_cal_raw:
                             output_paths += save_results_artifacts_ppi_nlab_grid(
-                                results=nlab_cal_results, alpha=args.alpha, out_dir=args.out_dir,
+                                results=nlab_cal_raw, alpha=args.alpha, out_dir=args.out_dir,
                                 run_stem=f"{nlab_stem}_calibration", header="N x N_LAB GRID (calibration, effect_size=0)",
                             )
-                        if nlab_pow_results:
+                        if nlab_pow_raw:
                             output_paths += save_results_artifacts_ppi_nlab_grid(
-                                results=nlab_pow_results, alpha=args.alpha, out_dir=args.out_dir,
+                                results=nlab_pow_raw, alpha=args.alpha, out_dir=args.out_dir,
                                 run_stem=f"{nlab_stem}_power", header="N x N_LAB GRID (power, moderate effect_size)",
                             )
                     if args.plots == "save":
                         nlab_plot_path = save_ppi_nlab_grid_plot(
-                            calibration_results=nlab_cal_results or None, power_results=nlab_pow_results or None,
+                            calibration_results=nlab_cal_pooled or None, power_results=nlab_pow_pooled or None,
                             alpha=args.alpha, out_path=str(Path(plots_dir) / f"{nlab_stem}_heatmap.png"),
                         )
                         output_paths.append(nlab_plot_path)
                         print(f"Saved plot: {nlab_plot_path}")
 
-                    key_metrics["ppi_nlab_grid_n_calibration_results"] = len(nlab_cal_results)
-                    key_metrics["ppi_nlab_grid_n_power_results"] = len(nlab_pow_results)
+                    key_metrics["ppi_nlab_grid_n_calibration_results"] = len(nlab_cal_pooled)
+                    key_metrics["ppi_nlab_grid_n_power_results"] = len(nlab_pow_pooled)
+
+                # Null-effect 5-way bar chart: pools across BOTH _COMPARISON_METHODS
+                # (already done above) AND, for continuous, the N x N_lab grid just
+                # computed -- see save_ppi_null_comparison_plot's docstring for why
+                # this is more defensible than reading off a single scenario.
+                if args.plots == "save" and comparison_results_pooled:
+                    null_comparison_plot_path = save_ppi_null_comparison_plot(
+                        results=comparison_results_pooled, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_reps{getattr(args, 'effect_reps', 200)}_{stamp}_null_false_positive_rate.png"),
+                        nlab_cal_results=nlab_cal_pooled or None,
+                    )
+                    output_paths.append(null_comparison_plot_path)
+                    print(f"Saved plot: {null_comparison_plot_path}")
 
             if getattr(args, "factorial_check", False):
                 factorial_sources = build_ppi_factorial_sources()
@@ -6468,17 +6749,20 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_reps = getattr(args, "factorial_reps", 100)
                     factorial_n_boot = getattr(args, "factorial_n_boot", 500)
                     print(f"\npvalues simulation (PPI-corrected, full factorial) -- "
-                          f"{len(factorial_sources)} scenarios, reps={factorial_reps}, n_boot={factorial_n_boot}")
-                    factorial_results = run_ppi_comparison_simulation(
+                          f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods, "
+                          f"reps={factorial_reps}, n_boot={factorial_n_boot}")
+                    factorial_results_raw = run_ppi_comparison_simulation(
                         factorial_sources, n_reps=factorial_reps, n_boot=factorial_n_boot,
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS,
                     )
+                    factorial_results = pool_ppi_comparison_across_methods(factorial_results_raw)
                     print_ppi_factorial_report(factorial_results, alpha=args.alpha)
 
                     factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_factorial(
-                            results=factorial_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
+                            results=factorial_results_raw, alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                         )
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(

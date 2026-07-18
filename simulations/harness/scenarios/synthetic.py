@@ -1704,13 +1704,19 @@ _PPI_POWER_EVAL_TYPES = ("continuous", "likert", "grades")
 # directly to a 0/1 truth draw (generate_judge_bias_cell's `truth_b2 =
 # _marginal(n2) + es`), which only stays valid at es=0 -- see
 # _jb_effect_magnitude's docstring.
-PPI_POWER_EFFECT_FRACS = (0.0, 0.10, 0.20, 0.40)
+PPI_POWER_EFFECT_FRACS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40)
 """Effect-size grid for build_ppi_power_sources/build_ppi_comparison_*, as a
 fraction of each eval type's own scale span (same convention as
 _jb_bias_magnitude's bias_delta fractions). 0.0 is kept as a Type-I
 cross-check against build_judge_bias_sources' "eval_type.*" scenarios (same
 settings, same expected ~alpha rejection rate) rather than dropped, since it
-anchors the left edge of the power curve at the correct floor."""
+anchors the left edge of the power curve at the correct floor. 7 points
+(vs. the original 4: 0/0.10/0.20/0.40) to resolve the power curve's shape
+well enough to read visually -- the original grid's biggest gaps (0.20-0.40)
+spanned exactly the region where save_ppi_power_direction_plot's
+"cancellation dip" (opposing bias) or crossover (reinforcing bias) happens,
+so a coarse grid could make a smooth, well-understood phenomenon look like
+a kink or an artifact."""
 PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
 """Label-fraction grid for build_ppi_comparison_label_frac_sources, at
 _ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
@@ -2034,20 +2040,45 @@ class JudgeBiasCellData:
     llm_C_runs: np.ndarray
 
 
-def generate_judge_bias_pair_cell(
+@dataclass
+class JudgeBiasGroupPairCellData:
+    """Lean counterpart to JudgeBiasCellData: only the independent two-group
+    (a2, b2) and paired (x, y) structures, produced together by
+    generate_judge_bias_group_pair_cell -- the PPI estimator-comparison
+    sweep now compares across FOUR classical tests (ttest_welch/mw, which
+    need the independent-group structure; paired_t/wilcoxon, which need the
+    paired structure), not just paired_t alone, so both structures are
+    drawn together in one call rather than needing two separate ones."""
+
+    llm_a2: np.ndarray
+    llm_b2: np.ndarray
+    lab_a2: np.ndarray
+    lab_b2: np.ndarray
+    truth_a2: np.ndarray
+    truth_b2: np.ndarray
+    llm_x: np.ndarray
+    llm_y: np.ndarray
+    lab_x: np.ndarray
+    lab_y: np.ndarray
+    truth_x: np.ndarray
+    truth_y: np.ndarray
+
+
+def generate_judge_bias_group_pair_cell(
     scenario: JudgeBiasSource, rng: np.random.Generator,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Lean counterpart to generate_judge_bias_cell: draws ONLY the paired
-    (x, y) structure -- truth_x, truth_y, llm_x, llm_y, lab_x, lab_y -- for
-    callers that exclusively need the paired_t estimand (cases/pvalues.py's
-    PPI estimator-comparison / N x N_lab grid checks, via
+) -> JudgeBiasGroupPairCellData:
+    """Lean counterpart to generate_judge_bias_cell: draws ONLY the
+    independent two-group (a2, b2) and paired (x, y) structures -- for
+    callers that need the four classical two-sample/paired tests
+    (ttest_welch, mw, paired_t, wilcoxon) but not the 3-group/repeated/
+    2x2-factorial/nested-run structures (cases/pvalues.py's PPI estimator-
+    comparison / N x N_lab grid / factorial checks, via
     _run_ppi_comparison_cell). generate_judge_bias_cell draws SIX test
-    structures every call (indep-2, paired, indep-3, repeated-3,
-    2x2-factorial, nested-runs) regardless of which are actually consumed --
-    profiling showed ~80-90% of its ~0.6-0.8ms/call cost is spent on the
-    five structures this function's callers never touch, dominated by
+    structures every call regardless of which are actually consumed --
+    profiling showed ~80-90% of its ~0.6-0.8ms/call cost is spent on
+    structures this function's callers never touch, dominated by
     sample_group_truth (called 8x per generate_judge_bias_cell call, only
-    1x needed here) and the nested-runs loop (JUDGE_BIAS_LMM_RUNS_R=3 extra
+    2x needed here) and the nested-runs loop (JUDGE_BIAS_LMM_RUNS_R=3 extra
     _jb_llm_repeated calls, needed only for the lmm_runs test).
 
     Deliberately NOT a code path generate_judge_bias_cell itself takes
@@ -2063,16 +2094,45 @@ def generate_judge_bias_pair_cell(
     obviously a pure win, so it's left as a deliberate choice for a human to
     make rather than done implicitly here. This function has no such
     legacy-parity contract to preserve: every caller of
-    _run_ppi_comparison_cell has only ever consumed the paired structure,
-    with its own independently-seeded rng stream."""
+    _run_ppi_comparison_cell has only ever consumed its own,
+    independently-seeded rng stream."""
     shape = _ppi_shape(scenario.eval_type, scenario.shape_label)
     n1 = scenario.n
+    n2 = scenario.n2 if scenario.n2 is not None else scenario.n
     noise1 = scenario.llm_noise
     noise2 = scenario.llm_noise2 if scenario.llm_noise2 is not None else scenario.llm_noise
     anchor = _ppi_shape_anchor(shape)
     (bias_a, bias_b, _bias_c), (slope_a, slope_b, _slope_c) = _jb_judge_params_3(scenario)
     es = scenario.effect_size
 
+    def _marginal(n: int) -> np.ndarray:
+        return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
+
+    # -- Independent two-group data (ttest_welch, mw) --
+    truth_a2 = _marginal(n1)
+    truth_b2 = _marginal(n2) + es
+    if scenario.eval_type == "binary":
+        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng)
+        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng)
+    else:
+        llm_a2 = _jb_llm(
+            truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+        )
+        llm_b2 = _jb_llm(
+            truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor,
+            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
+        )
+    lab_a2 = _jb_labels_independent(
+        truth_a2, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
+    lab_b2 = _jb_labels_independent(
+        truth_b2, scenario.label_frac, rng,
+        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
+    )
+
+    # -- Paired data (paired_t, wilcoxon) --
     truth_x, truth_y = sample_group_truth(shape, n1, 1, 2, scenario.icc, rng, effects=np.array([0.0, es]))[:, :, 0]
     if scenario.eval_type == "binary":
         llm_x, llm_y = _jb_llm_repeated_binary(
@@ -2088,7 +2148,11 @@ def generate_judge_bias_pair_cell(
         [truth_x, truth_y], scenario.label_frac, rng,
         mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
     )
-    return llm_x, llm_y, lab_x, lab_y, truth_x, truth_y
+
+    return JudgeBiasGroupPairCellData(
+        llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2, truth_a2=truth_a2, truth_b2=truth_b2,
+        llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y, truth_x=truth_x, truth_y=truth_y,
+    )
 
 
 def generate_judge_bias_cell(

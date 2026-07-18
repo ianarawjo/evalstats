@@ -309,18 +309,71 @@ same way `evalstats.core.resampling` is.
     `build_ppi_power_reinforcing_sources`' docstring for the sign
     arithmetic), already present at `effect_size=0` before any real effect
     exists. A plot with no effect_size axis at all removes that ambiguity:
-    every bar is a false-positive rate, by construction. Its bars are the
-    ONE `build_ppi_power_sources` scenario per eval type at `effect_size=0`
-    (n=100, label_frac=0.20 -> N_lab=20, "severe" bias, icc=0.20,
-    llm_noise=0.20 -- `_ppi_power_baseline`'s fixed baseline, not a sweep),
-    and every arm (including `ppi`) targets the SAME single estimand: the
-    paired-mean difference (`_run_ppi_comparison_cell` uses `np.mean` as
-    both the PPI estimator and its rectifier, i.e. the identical method
-    `paired_t`'s PPI correction uses elsewhere in this file) -- not an
-    average across `PPI_TEST_METHODS`. Error bars are each bar's 95% Wilson
-    score interval (`_ppi_wilson_interval`, same interval
-    `print_ppi_report`'s Type-I flagging already uses), added so MC noise
-    at low `--effect-reps` isn't mistaken for a real miscalibration finding.
+    every bar is a false-positive rate, by construction. Error bars are
+    each bar's 95% Wilson score interval (`_ppi_wilson_interval`, same
+    interval `print_ppi_report`'s Type-I flagging already uses), added so
+    MC noise at low `--effect-reps` isn't mistaken for a real miscalibration
+    finding.
+  - **Method generalization** (`_COMPARISON_METHODS`,
+    `generate_judge_bias_group_pair_cell`, `pool_ppi_comparison_across_
+    methods`): the comparison/N x N_lab/factorial machinery originally
+    targeted ONE estimand -- the paired-mean difference, via `np.mean` as
+    both the PPI estimator and rectifier, identical to `paired_t`'s PPI
+    correction elsewhere in this file. For paper-defensibility this now
+    runs and averages across FOUR classical tests --
+    `TTEST_WELCH`/`PAIRED_T`/`MW`/`WILCOXON` (`_COMPARISON_METHODS`) --
+    covering both the independent-two-group structure (ttest_welch, mw)
+    and the paired structure (paired_t, wilcoxon).
+    `generate_judge_bias_group_pair_cell` draws both structures together
+    (a leaner superset of the old paired-only `generate_judge_bias_pair_
+    cell`, which it replaces as `_run_ppi_comparison_cell`'s data source).
+    `_run_ppi_comparison_cell` takes a `method` argument and dispatches via
+    `_COMPARISON_METHOD_STRUCTURE`; `_classical_pvalue`/
+    `_ppi_comparison_pvalue` factor out the per-method test/PPI-correction
+    calls (mirroring `_run_ppi_cell`'s own ttest_welch/mw/paired_t/wilcoxon
+    blocks exactly, including using the SAME test for the all_human/
+    human_subset oracle arms as for llm_only/llm_impute/ppi -- e.g. the
+    "mw" method-row runs Mann-Whitney on truth for its oracle arms too, not
+    always a t-test). Each of the 5 arms fails independently per replicate
+    (a wilcoxon/mannwhitneyu exception on one arm doesn't discard the
+    other 4); only a PPI bootstrap-correction failure increments
+    `n_failed`, preserving that field's original meaning.
+    `run_ppi_comparison_simulation` now runs every (source, method) cell
+    (a `methods` parameter, defaulting to `_COMPARISON_METHODS`) and
+    returns a FLAT list tagged by `PPIComparisonResult.method`.
+    `pool_ppi_comparison_across_methods` collapses that back to one
+    (averaged) row per scenario for the report/plot functions -- deliberately
+    EXCLUDES the omnibus/multi-group tests (anova_ind/anova_rep/friedman/
+    kruskal/lmm*) and the non-standard bootstrap-CI constructions
+    (bayes_bootstrap/bootstrap_t/tango_score): those answer different
+    questions, so folding them into the same pooled rate would blend
+    apples with oranges rather than checking robustness across reasonable
+    alternatives. `run()` now saves the RAW (per-method) rows to CSV --
+    the supplementary robustness breakdown a reviewer can check the pooled
+    average isn't hiding one method behaving badly -- and feeds the POOLED
+    rows to every report/plot function unchanged (none of them needed to
+    change: they only ever read `.name`/`.tag`/`.rejects_*`/etc., which
+    both raw and pooled rows carry identically).
+  - **Scenario pooling** (`_pool_ppi_comparison_rows`,
+    `save_ppi_null_comparison_plot`'s `nlab_cal_results` parameter): the
+    null-effect bar chart originally read off ONE fixed scenario
+    (`build_ppi_power_sources`' `effect_size=0` point: n=100, label_frac=
+    0.20 -> N_lab=20, "severe" bias, icc=0.20, llm_noise=0.20) -- defensible
+    for a quick look, less so for a paper claim ("at this one arbitrarily
+    chosen N/N_lab..."). For the continuous eval type (where
+    `build_ppi_nlab_grid_sources`' calibration grid is already computed as
+    part of the same `--no-comparison-check` gate), the null bar chart now
+    pools a SECOND axis on top of the method-pooling above: every N x
+    N_lab cell in that grid, ~22 conditions, all at zero extra simulation
+    cost since the data already existed. likert/grades have no such sweep
+    available (`build_ppi_nlab_grid_sources` is continuous-only) and fall
+    back to the single scenario, still pooled across the 4 methods. Each
+    panel's subtitle states which pooling applies, and the docstring is
+    explicit that the pooled Wilson CI is a standard-but-technically-
+    optimistic simplification if there's real heterogeneity across the
+    pooled conditions (the same simplification this file's other pooled
+    Type-I metrics, e.g. `key_metrics["ppi_mean_corrected_type1"]`, already
+    make) -- called out rather than presented as more rigorous than it is.
   - `--no-typeI-check` skips the base Type-I calibration sweep
     (`build_judge_bias_sources`, by far the slowest single piece of `--mode
     ppi`) -- the effect/power/comparison/factorial checks don't consume its
