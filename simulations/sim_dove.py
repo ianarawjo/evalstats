@@ -794,8 +794,11 @@ def list_openeval_models(
         "Scanning OpenEval response table for model names and benchmark coverage …"
     )
     print(msg)
+    # See build_openeval_corpora's load_dataset call: the repo's "all" split
+    # name collides with a reserved keyword in recent `datasets` versions, so
+    # we load via an explicit parquet glob instead.
     ds = load_dataset(
-        openeval_repo, "response", split="train",
+        openeval_repo, data_files="response/*.parquet", split="train",
         token=hf_token, cache_dir=cache_dir,
     )
     counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
@@ -830,8 +833,11 @@ def list_openeval_benchmarks(
         raise ImportError("pip install datasets")
 
     print("Scanning OpenEval response table for benchmark IDs …")
+    # See build_openeval_corpora's load_dataset call: the repo's "all" split
+    # name collides with a reserved keyword in recent `datasets` versions, so
+    # we load via an explicit parquet glob instead.
     ds = load_dataset(
-        openeval_repo, "response", split="train",
+        openeval_repo, data_files="response/*.parquet", split="train",
         token=hf_token, cache_dir=cache_dir,
     )
     counts: dict[str, int] = defaultdict(int)
@@ -888,8 +894,16 @@ def build_openeval_corpora(
 
     # ── Load + filter response table ──────────────────────────────────────
     print("Loading OpenEval response table (~6.4 GB; cached after first download) …")
+    # The repo's own dataset card declares a split literally named "all" for
+    # this config (a convenience "every benchmark" split) -- but recent
+    # `datasets` versions reserve "all" as a special keyword and refuse to
+    # build a DatasetDict containing a split by that name, raising a ValueError
+    # before we ever get to select "train". Loading via an explicit
+    # `data_files` glob bypasses the repo's YAML split definitions entirely
+    # (the library treats it as a one-off parquet load instead), which dodges
+    # the crash and gives the same combined row set the "all" split would have.
     response_ds = load_dataset(
-        openeval_repo, "response", split="train",
+        openeval_repo, data_files="response/*.parquet", split="train",
         token=hf_token, cache_dir=cache_dir,
     )
 
