@@ -318,23 +318,50 @@ MWU_CORR = Method("mwu_corr", "#9ecae1")
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
-KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
+# KRUSKAL_NAIVE/KRUSKAL_CORR: same MW_NAIVE/MWU_CORR story, one level up (k
+# independent groups instead of 2). KRUSKAL_NAIVE (formerly just "KRUSKAL")
+# is evalstats.tests._ppi_kruskal_wallis_pairwise's single GLOBAL rectifier
+# per pairwise dominance estimate theta_ab = theta_unlab + (theta_lab_human -
+# theta_lab_llm) -- the SAME global-rectifier pattern that broke mw_naive,
+# just extended from one pair to all C(k,2) pairs. Once the PPI factorial
+# sweep was extended to the omnibus tests (_COMPARISON_METHODS_OMNIBUS,
+# simulations/harness/cases/pvalues.py --factorial-omnibus), it turned up
+# the exact same combined-factor blowup mw_naive had (severe judge bias x
+# MNAR-like labeling x coarse/discrete scale x large N): Type-I 0.32-0.49 vs
+# nominal 0.05 in the worst identified cells (likert, severe bias, strong
+# such labeling, n=200-400). KRUSKAL_CORR (evalstats.tests.
+# _ppi_kruskal_wallis_pairwise_corrected) fixes this the same way MWU_CORR
+# does -- a per-group, per-score-bin LOCAL rectifier, generalized from 2
+# groups to k groups / all C(k,2) pairs jointly (see that function's
+# docstring for the full mechanism) -- reducing those same cells to ~0.09-0.11
+# (a real, if imperfect, fix: it inherits the same modest residual MWU_CORR
+# also has under strong MNAR labeling with NO judge bias present at certain
+# N/N_lab combinations, confirmed to be pre-existing in MWU_CORR too, not
+# introduced by this fix), with no power loss and no regression under MCAR
+# labeling (with or without judge bias) or continuous eval_type. Kept
+# alongside (not deleted) for direct comparison and reproducing pre-fix
+# results, selectable explicitly via --tests kruskal_naive. Same color
+# convention as MW_NAIVE/MWU_CORR: kruskal_corr inherits kruskal's original
+# shade (it now occupies that slot), kruskal_naive gets a lighter tint.
+KRUSKAL_NAIVE = Method("kruskal_naive", "#f2b6d4")  # lighter tint of kruskal's original pink
+KRUSKAL_CORR = Method("kruskal_corr", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
-    ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
+    ANOVA_REP, FRIEDMAN, KRUSKAL_NAIVE, KRUSKAL_CORR, LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 """Every PPI test method the harness knows how to run -- the full set
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
-PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m is not MW_NAIVE]
+PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m not in (MW_NAIVE, KRUSKAL_NAIVE)]
 """The default (--tests unset) active-test set for --mode ppi -- every
-PPI_TEST_METHODS entry except mw_naive, which simulation showed badly
-miscalibrated under MNAR-like labeling x real judge bias x coarse/discrete
-scales (see MW_NAIVE's comment above) and which mwu_corr now covers
-instead. mw_naive still runs if explicitly requested via --tests mw_naive."""
+PPI_TEST_METHODS entry except mw_naive/kruskal_naive, which simulation showed
+badly miscalibrated under MNAR-like labeling x real judge bias x
+coarse/discrete scales (see MW_NAIVE/KRUSKAL_NAIVE's comments above) and
+which mwu_corr/kruskal_corr now cover instead. mw_naive/kruskal_naive still
+run if explicitly requested via --tests mw_naive/kruskal_naive."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
@@ -348,7 +375,8 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
+    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL_NAIVE, KRUSKAL_CORR,
+    LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 
 METHODS_BY_NAME: dict[str, Method] = {m.name: m for m in REPORT_METHOD_ORDER}

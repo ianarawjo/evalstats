@@ -167,6 +167,7 @@ with warnings.catch_warnings():
         _ppi_anova_repeated,
         _ppi_friedman,
         _ppi_kruskal_wallis_pairwise,
+        _ppi_kruskal_wallis_pairwise_corrected,
         _ppi_lmm_p_value,
         _kw_pairwise_thetas,
         _mcnemar_p,
@@ -227,7 +228,8 @@ from ..methods import (
     ANOVA_IND,
     ANOVA_REP,
     FRIEDMAN,
-    KRUSKAL,
+    KRUSKAL_NAIVE,
+    KRUSKAL_CORR,
     LMM,
     LMM_FACTORIAL,
     LMM_RUNS,
@@ -3528,16 +3530,27 @@ def _run_ppi_cell(
                 except Exception:
                     failed[FRIEDMAN.name] += 1
 
-            if KRUSKAL.name in active_tests:
+            if KRUSKAL_NAIVE.name in active_tests:
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     p_u = _uncorrected_kruskal_p_value(groups_kw)
-                    uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
+                    uncorrected[KRUSKAL_NAIVE.name] += int(p_u < _ALPHA)
                     pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
-                    corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
+                    corrected[KRUSKAL_NAIVE.name] += int(pw["wald_p"] < _ALPHA)
                 except Exception:
-                    failed[KRUSKAL.name] += 1
+                    failed[KRUSKAL_NAIVE.name] += 1
+
+            if KRUSKAL_CORR.name in active_tests:
+                try:
+                    groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
+                    groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
+                    p_u = _uncorrected_kruskal_p_value(groups_kw)
+                    uncorrected[KRUSKAL_CORR.name] += int(p_u < _ALPHA)
+                    pw = _ppi_kruskal_wallis_pairwise_corrected(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    corrected[KRUSKAL_CORR.name] += int(pw["wald_p"] < _ALPHA)
+                except Exception:
+                    failed[KRUSKAL_CORR.name] += 1
 
             if LMM.name in active_tests:
                 try:
@@ -3708,7 +3721,7 @@ def run_ppi_simulation(
 
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MW_NAIVE.name, MWU_CORR.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
-    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
+    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL_NAIVE.name, KRUSKAL_CORR.name,
 )
 
 # bayes_bootstrap/bootstrap_t/tango_score are excluded from the main ppi
@@ -3852,13 +3865,26 @@ def _run_ppi_effect_cell(
                 except Exception:
                     pass
 
-            if KRUSKAL.name in active_tests:
+            if KRUSKAL_NAIVE.name in active_tests:
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     llm_theta = _kw_pairwise_thetas(groups_kw, pw["pairs"])
-                    out[KRUSKAL.name].append((
+                    out[KRUSKAL_NAIVE.name].append((
+                        float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
+                        float(np.mean(pw["ci_hi"])), float(np.mean(llm_theta)),
+                    ))
+                except Exception:
+                    pass
+
+            if KRUSKAL_CORR.name in active_tests:
+                try:
+                    groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
+                    groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
+                    pw = _ppi_kruskal_wallis_pairwise_corrected(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    llm_theta = _kw_pairwise_thetas(groups_kw, pw["pairs"])
+                    out[KRUSKAL_CORR.name].append((
                         float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
                         float(np.mean(pw["ci_hi"])), float(np.mean(llm_theta)),
                     ))
@@ -4088,7 +4114,7 @@ apples with oranges rather than checking robustness across reasonable
 alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
 grid_sources' paired_t-only scoping was never meant to claim the OTHER
 PPI_TEST_METHODS behave identically."""
-_COMPARISON_METHODS_OMNIBUS = (ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name)
+_COMPARISON_METHODS_OMNIBUS = (ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL_CORR.name)
 """The four omnibus/multi-group tests -- run alongside _COMPARISON_METHODS
 against the SAME factorial sources (build_ppi_factorial_sources), using the
 SAME 5-way (all_human/human_subset/llm_only/llm_impute/ppi) machinery, but
@@ -4096,9 +4122,18 @@ NEVER pooled together with _COMPARISON_METHODS into one averaged rate: these
 answer a genuinely different question (are the 3 groups/conditions
 different at all, vs. _COMPARISON_METHODS' specific two-group location-shift
 question) -- see _COMPARISON_METHODS' own docstring for why blending the two
-would be apples-with-oranges. anova_ind/kruskal use the independent-3-group
-structure (a3/b3/c3); anova_rep/friedman use the repeated-3-group structure
-(A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's "group3"/"pair3" entries.
+would be apples-with-oranges. anova_ind/kruskal_corr use the
+independent-3-group structure (a3/b3/c3); anova_rep/friedman use the
+repeated-3-group structure (A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's
+"group3"/"pair3" entries. Uses kruskal_corr (the per-group, per-score-bin
+locally-corrected Wald test -- evalstats.tests.
+_ppi_kruskal_wallis_pairwise_corrected), not kruskal_naive
+(single-global-rectifier) -- the latter was found badly miscalibrated under
+the same combined bias x MNAR-labeling x coarse-scale x large-N stress that
+broke mw_naive, once this factorial sweep was extended to the omnibus tests
+(see KRUSKAL_NAIVE/KRUSKAL_CORR's Method docstrings in methods.py), which is
+why it was replaced here rather than kept alongside it -- the same
+reasoning _COMPARISON_METHODS already applied to mwu_corr vs. mw_naive.
 Pool these among THEMSELVES (pool_ppi_comparison_across_methods, or a
 filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
 kept in its own report section/log rather than merged into the headline
@@ -4106,7 +4141,7 @@ _COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
     TTEST_WELCH.name: "group", MWU_CORR.name: "group", MW_NAIVE.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
-    ANOVA_IND.name: "group3", KRUSKAL.name: "group3",
+    ANOVA_IND.name: "group3", KRUSKAL_NAIVE.name: "group3", KRUSKAL_CORR.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
 }
 _COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu_corr/wilcoxon"
@@ -4172,7 +4207,7 @@ def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:
         return _uncorrected_anova_repeated_p_value(groups)
     if method == FRIEDMAN.name:
         return _uncorrected_friedman_p_value(groups)
-    return _uncorrected_kruskal_p_value(groups)  # KRUSKAL.name
+    return _uncorrected_kruskal_p_value(groups)  # KRUSKAL_NAIVE.name / KRUSKAL_CORR.name (same uncorrected test)
 
 
 def _ppi_comparison_pvalue_omnibus(
@@ -4192,8 +4227,11 @@ def _ppi_comparison_pvalue_omnibus(
         return _ppi_anova_repeated_p_value(groups, groups_lab, k=k)
     if method == FRIEDMAN.name:
         return _ppi_friedman_p_value(groups, groups_lab, k=k)
-    # KRUSKAL.name
-    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+    if method == KRUSKAL_NAIVE.name:
+        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+        return pw["wald_p"]
+    # KRUSKAL_CORR.name
+    pw = _ppi_kruskal_wallis_pairwise_corrected(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
     return pw["wald_p"]
 
 
@@ -5474,7 +5512,8 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     MW_NAIVE.name: "Simple MWU",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
-    ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman", KRUSKAL.name: "Kruskal-Wallis",
+    ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
+    KRUSKAL_CORR.name: "Kruskal-Wallis (corrected)", KRUSKAL_NAIVE.name: "Kruskal-Wallis (naive)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
 }
 

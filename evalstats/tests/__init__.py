@@ -1058,6 +1058,158 @@ def _ppi_kruskal_wallis_pairwise(
     }
 
 
+def _ppi_kruskal_wallis_pairwise_corrected(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    alpha: float,
+    n_boot: int,
+    rng,
+    n_strata: int = 2,
+    min_lab_per_bin: int = 5,
+) -> dict:
+    """Corrected counterpart to :func:`_ppi_kruskal_wallis_pairwise`, using a
+    per-group LOCAL (score-binned) rectifier instead of that function's
+    single GLOBAL one -- the exact same fix
+    :func:`_ppi_two_sample_midrank_corrected` applies to two-group
+    Mann-Whitney, generalized from 2 groups to k groups / all C(k,2) pairs
+    jointly.
+
+    **Why this exists.** :func:`_ppi_kruskal_wallis_pairwise` computes each
+    pairwise dominance estimate as
+    ``theta_unlab + (theta_lab_human - theta_lab_llm)`` -- a single rectifier
+    (the human-minus-LLM pairwise-dominance gap) estimated ONCE on the
+    (possibly MNAR-truncated) labeled subset, then added uniformly across the
+    full unlabeled population. That is exactly
+    :func:`_ppi_two_sample`'s global-rectifier pattern, which
+    :func:`_ppi_two_sample_midrank_corrected`'s docstring explains is
+    miscalibrated for rank/dominance estimands under labeling that's
+    non-uniform with respect to score, combined with real judge bias and a
+    coarse/discrete (Likert) scale -- confirmed via simulation
+    (``simulations/harness/cases/pvalues.py --mode ppi``'s factorial sweep,
+    tag "factorial", bm=severe x lm=mnar_strong x large N) to inflate this
+    function's Wald-test Type-I error up to ~8.6x nominal (0.43 vs 0.05) in
+    the worst identified cell -- the SAME failure mode as the old
+    ``mw_naive``/``mwu_corr`` story, just at the k-group pairwise level
+    instead of two groups.
+
+    **The fix.** For each group SEPARATELY (not per pair -- a group's
+    correction must be the same regardless of which other group it's being
+    compared against, so the joint pairwise vector stays internally
+    consistent): bin that group's own items (labeled + unlabeled) into
+    ``n_strata`` quantile bins of that group's OWN LLM score, and correct
+    each unlabeled item by the LOCAL (per-bin) mean human-minus-LLM
+    discrepancy among that group's OWN labeled items in the same bin --
+    falling back to that group's GLOBAL discrepancy when a bin has fewer
+    than ``min_lab_per_bin`` of that group's labeled items. Labeled items use
+    their known human value directly. Every pairwise theta_ab is then
+    computed from these per-group CORRECTED (labeled + corrected-unlabeled)
+    arrays -- never from a per-pair rectifier -- so all C(k,2) pairs sharing
+    a group stay consistent with each other, and the joint bootstrap
+    covariance the Wald test needs still comes from resampling every group
+    once per draw and recomputing the full pairwise vector, exactly as
+    :func:`_ppi_kruskal_wallis_pairwise` already does (that machinery -- the
+    Moore-Penrose pseudo-inverse, the Hotelling-style F reference -- is not
+    the bug; only the naive per-pair rectifier is, so it is reused unchanged
+    here).
+
+    Bin edges are fixed once per group from that group's full sample and
+    held fixed across the bootstrap, the same simplification
+    :func:`_ppi_two_sample_midrank_corrected` and
+    :func:`_ppi_kruskal_wallis_pairwise` both already make for quantities
+    derived from the full sample.
+    """
+    rng = np.random.default_rng(rng)
+    k = len(groups)
+    masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
+
+    groups_unlab = [g[~m] for g, m in zip(groups, masks)]
+    Y_lab_groups = [lab_arr[m] for lab_arr, m in zip(groups_lab, masks)]
+    Yhat_lab_groups = [g[m] for g, m in zip(groups, masks)]
+
+    def _bin_edges(llm_all: np.ndarray) -> np.ndarray:
+        if n_strata <= 1:
+            return np.array([])
+        qs = np.linspace(0, 100, n_strata + 1)[1:-1]
+        return np.percentile(llm_all, qs)
+
+    edges = [_bin_edges(g) for g in groups]
+    bin_unlab = [np.searchsorted(edges[j], groups_unlab[j], side="right") for j in range(k)]
+    bin_lab = [np.searchsorted(edges[j], Yhat_lab_groups[j], side="right") for j in range(k)]
+
+    def _correct_unlab(llm_unlab, bin_u, llm_lab, bin_l, truth_lab) -> np.ndarray:
+        global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
+        rects = np.full(max(n_strata, 1), global_rect)
+        for s in range(max(n_strata, 1)):
+            m = bin_l == s
+            if m.sum() >= min_lab_per_bin:
+                rects[s] = float(np.mean(truth_lab[m]) - np.mean(llm_lab[m]))
+        return llm_unlab + rects[bin_u]
+
+    def _corrected_groups(gu, bu, gl_llm, bl, gl_human) -> list[np.ndarray]:
+        return [
+            np.concatenate([gl_human[j], _correct_unlab(gu[j], bu[j], gl_llm[j], bl[j], gl_human[j])])
+            for j in range(k)
+        ]
+
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    n_pairs = len(pairs)
+
+    corrected = _corrected_groups(groups_unlab, bin_unlab, Yhat_lab_groups, bin_lab, Y_lab_groups)
+    theta_hat = _kw_pairwise_thetas(corrected, pairs)
+
+    n_unlab_per_group = [len(g) for g in groups_unlab]
+    n_lab_per_group = [len(y) for y in Y_lab_groups]
+
+    boots = np.empty((n_boot, n_pairs))
+    for bi in range(n_boot):
+        idx_u = [
+            rng.integers(0, n_unlab_per_group[j], n_unlab_per_group[j]) if n_unlab_per_group[j]
+            else np.empty(0, dtype=int)
+            for j in range(k)
+        ]
+        # One shared index per group for the labeled resample -- the human
+        # and LLM values at a given index are the same item's two
+        # measurements, so they must move together (see
+        # _ppi_kruskal_wallis_pairwise's identical choice).
+        idx_l = [
+            rng.integers(0, n_lab_per_group[j], n_lab_per_group[j]) if n_lab_per_group[j]
+            else np.empty(0, dtype=int)
+            for j in range(k)
+        ]
+        b_gu = [groups_unlab[j][idx_u[j]] for j in range(k)]
+        b_bu = [bin_unlab[j][idx_u[j]] for j in range(k)]
+        b_lab_llm = [Yhat_lab_groups[j][idx_l[j]] for j in range(k)]
+        b_bin_lab = [bin_lab[j][idx_l[j]] for j in range(k)]
+        b_lab_human = [Y_lab_groups[j][idx_l[j]] for j in range(k)]
+        b_corrected = _corrected_groups(b_gu, b_bu, b_lab_llm, b_bin_lab, b_lab_human)
+        boots[bi] = _kw_pairwise_thetas(b_corrected, pairs)
+
+    ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
+    ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
+
+    cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
+    diff = theta_hat - 0.5
+    cov_pinv = np.linalg.pinv(cov, rcond=1e-8)
+    wald_stat = float(diff @ cov_pinv @ diff)
+    df = k - 1
+
+    nu = sum(n_lab_per_group)
+    if nu > df:
+        f_stat = wald_stat * (nu - df + 1) / (nu * df)
+        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    else:
+        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+
+    return {
+        "pairs": pairs,
+        "theta_hat": theta_hat,
+        "ci_lo": ci_lo,
+        "ci_hi": ci_hi,
+        "wald_stat": wald_stat,
+        "wald_p": wald_p,
+    }
+
+
 def _ppi_paired_arrays(
     a: np.ndarray,
     b: np.ndarray,
@@ -2899,6 +3051,7 @@ def kruskalwallis(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
+    method: str = "corrected",
 ) -> TestResult:
     """Kruskal-Wallis test (independent-groups, rank-based one-way) with
     optional PPI correction.
@@ -2942,6 +3095,27 @@ def kruskalwallis(
     groups_lab : sequence[array-like], optional
         Sparse human labels aligned with each group. Must have one array per
         group, with ``NaN`` for unlabeled items.
+    method : {"corrected", "naive"}
+        Which PPI correction to use for the pairwise-dominance Wald test
+        (default ``"corrected"``). ``"naive"`` applies a single GLOBAL
+        rectifier per pair (:func:`_ppi_kruskal_wallis_pairwise`) -- simple,
+        but simulation showed it badly miscalibrated under labeling that's
+        non-uniform with respect to score combined with real judge bias and
+        coarse/discrete scales: Type-I error up to ~8.6x nominal in the
+        worst identified case (Likert, strong such labeling, severe bias) --
+        the same failure mode ``mannwhitney``'s ``"naive"`` option has, one
+        level up (k independent groups instead of 2). See
+        ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
+        ``kruskal_corr`` vs ``kruskal_naive``) for the calibration study.
+        ``"corrected"`` (:func:`_ppi_kruskal_wallis_pairwise_corrected`)
+        fixes this with a per-group, per-score-bin local rectifier instead
+        -- see that function's docstring for the full mechanism and
+        validation. Kept as an option (not deleted) for direct comparison
+        and for reproducing results computed under the old behavior. Only
+        affects ``corrected_p`` (the Wald test) -- ``corrected_estimate``
+        (the scalar effect size from :func:`_ppi_kruskal_wallis`) still uses
+        the single-global-rectifier estimator regardless of ``method``; that
+        estimand hasn't been through the same calibration study yet.
     print_result : bool
         Print a summary table to stdout (default True). Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -2952,6 +3126,8 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, print_result=False)          # silent
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
+    if method not in ("corrected", "naive"):
+        raise ValueError(f'method must be "corrected" or "naive"; got {method!r}.')
     if len(groups) < 3:
         raise ValueError(
             "kruskalwallis requires at least three groups (k >= 3); "
@@ -2980,6 +3156,7 @@ def kruskalwallis(
         "effect_size": effect_size_val,
         "effect_size_name": "Mean (P(a>b)−0.5)²",
         "n_boot": n_boot,
+        "ppi_method": method,
     }
     test_name = "Kruskal-Wallis test"
 
@@ -2999,7 +3176,10 @@ def kruskalwallis(
         ar = _run_alignment_report(llm_all, human_sparse)
 
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
-        pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
+        if method == "naive":
+            pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
+        else:
+            pw = _ppi_kruskal_wallis_pairwise_corrected(groups, groups_lab, alpha, n_boot, rng)
 
         corrected_estimate = ppi.estimate
         corrected_ci = (ppi.ci_low, ppi.ci_high)
