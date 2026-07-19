@@ -2036,11 +2036,14 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
 
     Small enough, per eval type/paired_t, for a TRUE full factorial (every
     main effect and interaction directly estimable, no confounding to
-    reason about) rather than a fractional design -- made tractable by
-    generate_judge_bias_pair_cell's ~7.8x lean-generator speedup over
-    generate_judge_bias_cell and the PPI bootstrap's existing vectorized
-    fast path (evalstats.ppi.correct); see the harness README's efficiency
-    note. Scenario names are "fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
+    reason about) rather than a fractional design -- made tractable by the
+    PPI bootstrap's existing vectorized fast path (evalstats.ppi.correct);
+    see the harness README's efficiency note. cases/pvalues.py's
+    _run_ppi_comparison_cell reads every scenario via generate_judge_bias_
+    cell (the full generator -- there's no longer a leaner variant; it was
+    retired once _COMPARISON_METHODS_OMNIBUS' 3-group tests needed the same
+    structures generate_judge_bias_cell already draws for _run_ppi_cell).
+    Scenario names are "fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
     lm=<lm>.es=<es>.bd=<bd>", the same "<prefix>.<eval_type>.<field>=
     <value>..." shape build_ppi_power_sources/build_ppi_nlab_grid_sources
     use -- see cases/pvalues.py's _PPI_FACTORIAL_NAME_RE/
@@ -2105,32 +2108,43 @@ class JudgeBiasCellData:
     llm_b2: np.ndarray
     lab_a2: np.ndarray
     lab_b2: np.ndarray
+    truth_a2: np.ndarray
+    truth_b2: np.ndarray
     llm_x: np.ndarray
     llm_y: np.ndarray
     lab_x: np.ndarray
     lab_y: np.ndarray
     truth_x: np.ndarray
     truth_y: np.ndarray
-    """Dense (unmasked) ground truth for the paired structure -- unlike
-    lab_x/lab_y (NaN outside the sparse labeled subset), these are the FULL
-    n1-length truth arrays with no missingness. Only populated for this one
-    structure (not a2/b2/a3/.../W-Z) -- it's the sole consumer needed by
-    cases/pvalues.py's PPI power/estimator-comparison sweep (all-human and
-    human-subset-only baselines for the paired_t estimand); see
-    build_ppi_power_sources' docstring for why paired_t is that sweep's one
-    representative estimand rather than extending this to every structure."""
+    """Dense (unmasked) ground truth for the independent-two-group and paired
+    structures -- unlike lab_a2/lab_b2/lab_x/lab_y (NaN outside the sparse
+    labeled subset), these are the FULL n1-length truth arrays with no
+    missingness. Consumed by cases/pvalues.py's PPI estimator-comparison
+    sweep (_run_ppi_comparison_cell) for its all_human/human_subset baseline
+    arms, across ttest_welch/mwu_corr (a2/b2) and paired_t/wilcoxon (x/y)."""
     llm_a3: np.ndarray
     llm_b3: np.ndarray
     llm_c3: np.ndarray
     lab_a3: np.ndarray
     lab_b3: np.ndarray
     lab_c3: np.ndarray
+    truth_a3: np.ndarray
+    truth_b3: np.ndarray
+    truth_c3: np.ndarray
     llm_A: np.ndarray
     llm_B: np.ndarray
     llm_C: np.ndarray
     lab_A: np.ndarray
     lab_B: np.ndarray
     lab_C: np.ndarray
+    truth_A: np.ndarray
+    truth_B: np.ndarray
+    truth_C: np.ndarray
+    """Dense (unmasked) ground truth for the independent-three-group
+    (a3/b3/c3) and repeated-three-group (A/B/C) structures -- same
+    all_human/human_subset role as truth_a2/truth_b2/truth_x/truth_y above,
+    for cases/pvalues.py's anova_ind/kruskal (a3/b3/c3) and anova_rep/
+    friedman (A/B/C) estimator-comparison arms."""
     llm_W: np.ndarray
     llm_X: np.ndarray
     llm_Y: np.ndarray
@@ -2142,125 +2156,6 @@ class JudgeBiasCellData:
     llm_A_runs: np.ndarray
     llm_B_runs: np.ndarray
     llm_C_runs: np.ndarray
-
-
-@dataclass
-class JudgeBiasGroupPairCellData:
-    """Lean counterpart to JudgeBiasCellData: only the independent two-group
-    (a2, b2) and paired (x, y) structures, produced together by
-    generate_judge_bias_group_pair_cell -- the PPI estimator-comparison
-    sweep now compares across FOUR classical tests (ttest_welch/mw, which
-    need the independent-group structure; paired_t/wilcoxon, which need the
-    paired structure), not just paired_t alone, so both structures are
-    drawn together in one call rather than needing two separate ones."""
-
-    llm_a2: np.ndarray
-    llm_b2: np.ndarray
-    lab_a2: np.ndarray
-    lab_b2: np.ndarray
-    truth_a2: np.ndarray
-    truth_b2: np.ndarray
-    llm_x: np.ndarray
-    llm_y: np.ndarray
-    lab_x: np.ndarray
-    lab_y: np.ndarray
-    truth_x: np.ndarray
-    truth_y: np.ndarray
-
-
-def generate_judge_bias_group_pair_cell(
-    scenario: JudgeBiasSource, rng: np.random.Generator,
-) -> JudgeBiasGroupPairCellData:
-    """Lean counterpart to generate_judge_bias_cell: draws ONLY the
-    independent two-group (a2, b2) and paired (x, y) structures -- for
-    callers that need the four classical two-sample/paired tests
-    (ttest_welch, mw, paired_t, wilcoxon) but not the 3-group/repeated/
-    2x2-factorial/nested-run structures (cases/pvalues.py's PPI estimator-
-    comparison / N x N_lab grid / factorial checks, via
-    _run_ppi_comparison_cell). generate_judge_bias_cell draws SIX test
-    structures every call regardless of which are actually consumed --
-    profiling showed ~80-90% of its ~0.6-0.8ms/call cost is spent on
-    structures this function's callers never touch, dominated by
-    sample_group_truth (called 8x per generate_judge_bias_cell call, only
-    2x needed here) and the nested-runs loop (JUDGE_BIAS_LMM_RUNS_R=3 extra
-    _jb_llm_repeated calls, needed only for the lmm_runs test).
-
-    Deliberately NOT a code path generate_judge_bias_cell itself takes
-    (e.g. via an opt-in ``structures=`` parameter): _run_ppi_cell (the
-    Type-I/power/effect-check sweeps) relies on generate_judge_bias_cell
-    drawing every structure in the SAME fixed order every call, specifically
-    so a given scenario/seed produces IDENTICAL results for a given test
-    regardless of what other tests are also requested via --tests (see
-    generate_judge_bias_cell's docstring: "a single rng stream feeds every
-    active test deterministically"). Skipping unused structures there would
-    shift the rng stream for whatever's drawn afterward, silently changing
-    results for --tests-restricted runs -- a real behavior change, not
-    obviously a pure win, so it's left as a deliberate choice for a human to
-    make rather than done implicitly here. This function has no such
-    legacy-parity contract to preserve: every caller of
-    _run_ppi_comparison_cell has only ever consumed its own,
-    independently-seeded rng stream."""
-    shape = _ppi_shape(scenario.eval_type, scenario.shape_label)
-    n1 = scenario.n
-    n2 = scenario.n2 if scenario.n2 is not None else scenario.n
-    noise1 = scenario.llm_noise
-    noise2 = scenario.llm_noise2 if scenario.llm_noise2 is not None else scenario.llm_noise
-    anchor = _ppi_shape_anchor(shape)
-    if scenario.eval_type == "likert":
-        anchor = _likert_rescale_point(anchor, scenario.likert_max)
-    (bias_a, bias_b, _bias_c), (slope_a, slope_b, _slope_c) = _jb_judge_params_3(scenario)
-    es = scenario.effect_size
-
-    def _marginal(n: int) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, 1, 1.0, rng, likert_max=scenario.likert_max)[0, :, 0]
-
-    # -- Independent two-group data (ttest_welch, mw) --
-    truth_a2 = _marginal(n1)
-    truth_b2 = _marginal(n2) + es
-    if scenario.eval_type == "binary":
-        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng)
-        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng)
-    else:
-        llm_a2 = _jb_llm(
-            truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
-            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
-        )
-        llm_b2 = _jb_llm(
-            truth_b2, bias_b, noise2, rng, slope=slope_b, anchor=anchor,
-            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
-        )
-    lab_a2 = _jb_labels_independent(
-        truth_a2, scenario.label_frac, rng,
-        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
-    )
-    lab_b2 = _jb_labels_independent(
-        truth_b2, scenario.label_frac, rng,
-        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
-    )
-
-    # -- Paired data (paired_t, wilcoxon) --
-    truth_x, truth_y = sample_group_truth(
-        shape, n1, 1, 2, scenario.icc, rng, effects=np.array([0.0, es]), likert_max=scenario.likert_max,
-    )[:, :, 0]
-    if scenario.eval_type == "binary":
-        llm_x, llm_y = _jb_llm_repeated_binary(
-            [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
-        )
-    else:
-        llm_x, llm_y = _jb_llm_repeated(
-            [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], [slope_a, slope_b],
-            rng, anchor=anchor, corr=scenario.repeated_corr,
-            noise_family=scenario.noise_family, contam_frac=scenario.contam_frac, contam_scale=scenario.contam_scale,
-        )
-    lab_x, lab_y = _jb_labels_shared(
-        [truth_x, truth_y], scenario.label_frac, rng,
-        mnar=scenario.label_mnar, mnar_strength=scenario.mnar_strength, mnar_mode=scenario.mnar_mode,
-    )
-
-    return JudgeBiasGroupPairCellData(
-        llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2, truth_a2=truth_a2, truth_b2=truth_b2,
-        llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y, truth_x=truth_x, truth_y=truth_y,
-    )
 
 
 def generate_judge_bias_cell(
@@ -2422,10 +2317,12 @@ def generate_judge_bias_cell(
     llm_C_runs = np.column_stack(c_cols)
 
     return JudgeBiasCellData(
-        llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2,
+        llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2, truth_a2=truth_a2, truth_b2=truth_b2,
         llm_x=llm_x, llm_y=llm_y, lab_x=lab_x, lab_y=lab_y, truth_x=truth_x, truth_y=truth_y,
         llm_a3=llm_a3, llm_b3=llm_b3, llm_c3=llm_c3, lab_a3=lab_a3, lab_b3=lab_b3, lab_c3=lab_c3,
+        truth_a3=truth_a3, truth_b3=truth_b3, truth_c3=truth_c3,
         llm_A=llm_A, llm_B=llm_B, llm_C=llm_C, lab_A=lab_A, lab_B=lab_B, lab_C=lab_C,
+        truth_A=truth_A, truth_B=truth_B, truth_C=truth_C,
         llm_W=llm_W, llm_X=llm_X, llm_Y=llm_Y, llm_Z=llm_Z, lab_W=lab_W, lab_X=lab_X, lab_Y=lab_Y, lab_Z=lab_Z,
         llm_A_runs=llm_A_runs, llm_B_runs=llm_B_runs, llm_C_runs=llm_C_runs,
     )

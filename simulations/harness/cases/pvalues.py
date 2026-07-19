@@ -191,7 +191,6 @@ from ..scenarios.synthetic import (
     PPI_FACTORIAL_N_VALUES,
     PPI_FACTORIAL_NLAB_VALUES,
     generate_judge_bias_cell,
-    generate_judge_bias_group_pair_cell,
     estimate_judge_bias_gold_null_values,
     JUDGE_BIAS_LMM_FACTORIAL_FACTORS,
 )
@@ -4019,10 +4018,11 @@ class PPIComparisonResult:
     _JB_MIN_LAB: label_frac alone can be misleading once the floor binds
     (e.g. label_frac=0.05 and 0.10 both floor to n_lab=15 at n=100), so this
     is the field to plot/group by, not label_frac, whenever comparing
-    across different n. For "group"-structure methods (ttest_welch, mwu_corr)
-    this is group A's labeled count specifically -- see
-    _run_ppi_comparison_cell's docstring for why A and B are expected to
-    match under this harness's scenario construction."""
+    across different n. For "independent"-mask structures (group/group3:
+    ttest_welch, mwu_corr, anova_ind, kruskal) this is the FIRST group's
+    labeled count specifically -- see _run_ppi_comparison_cell's docstring
+    for why every group is expected to match under this harness's scenario
+    construction."""
     method: str = PAIRED_T.name
     """Which classical test this result is for -- see _COMPARISON_METHODS.
     Defaults to paired_t for backward compatibility; every
@@ -4050,7 +4050,7 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     effect_size=0.20 instead of 0.0 in its CSV/log output, even though the
     underlying simulation itself used effect_size=0.0 correctly (this field
     is metadata only; JudgeBiasSource.effect_size, not this function, is
-    what generate_judge_bias_group_pair_cell actually reads)."""
+    what generate_judge_bias_cell actually reads)."""
     if sc.tag == "power":
         return _parse_ppi_power_name(sc.name)[1]
     if sc.tag == "nlab_grid":
@@ -4088,16 +4088,37 @@ apples with oranges rather than checking robustness across reasonable
 alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
 grid_sources' paired_t-only scoping was never meant to claim the OTHER
 PPI_TEST_METHODS behave identically."""
+_COMPARISON_METHODS_OMNIBUS = (ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name)
+"""The four omnibus/multi-group tests -- run alongside _COMPARISON_METHODS
+against the SAME factorial sources (build_ppi_factorial_sources), using the
+SAME 5-way (all_human/human_subset/llm_only/llm_impute/ppi) machinery, but
+NEVER pooled together with _COMPARISON_METHODS into one averaged rate: these
+answer a genuinely different question (are the 3 groups/conditions
+different at all, vs. _COMPARISON_METHODS' specific two-group location-shift
+question) -- see _COMPARISON_METHODS' own docstring for why blending the two
+would be apples-with-oranges. anova_ind/kruskal use the independent-3-group
+structure (a3/b3/c3); anova_rep/friedman use the repeated-3-group structure
+(A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's "group3"/"pair3" entries.
+Pool these among THEMSELVES (pool_ppi_comparison_across_methods, or a
+filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
+kept in its own report section/log rather than merged into the headline
+_COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
     TTEST_WELCH.name: "group", MWU_CORR.name: "group", MW_NAIVE.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
+    ANOVA_IND.name: "group3", KRUSKAL.name: "group3",
+    ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
 }
 _COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu_corr/wilcoxon"
+_COMPARISON_METHODS_OMNIBUS_LABEL = "anova_ind/anova_rep/friedman/kruskal"
 POOLED_METHOD_LABEL = "mean_of_4"
 """PPIComparisonResult.method value for a row produced by
 pool_ppi_comparison_across_methods -- distinguishes a pooled/averaged row
 from a genuine single-method one (never a value _run_ppi_comparison_cell
-itself produces)."""
+itself produces). Used for both the _COMPARISON_METHODS pool and the
+_COMPARISON_METHODS_OMNIBUS pool -- callers keep the two separate by never
+pooling a `results` list that mixes both method sets together (see
+_COMPARISON_METHODS_OMNIBUS' docstring)."""
 
 
 def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str) -> float:
@@ -4139,92 +4160,159 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=np.mean).p_value
 
 
+def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:
+    """Omnibus counterpart to _classical_pvalue, for the 3-group
+    _COMPARISON_METHODS_OMNIBUS methods -- the SAME uncorrected-p-value
+    calls _run_ppi_cell's anova_ind/anova_rep/friedman/kruskal blocks use
+    (_uncorrected_anova_independent_p_value etc.), reused identically here
+    for all_human/human_subset/llm_only/llm_impute."""
+    if method == ANOVA_IND.name:
+        return _uncorrected_anova_independent_p_value(groups)
+    if method == ANOVA_REP.name:
+        return _uncorrected_anova_repeated_p_value(groups)
+    if method == FRIEDMAN.name:
+        return _uncorrected_friedman_p_value(groups)
+    return _uncorrected_kruskal_p_value(groups)  # KRUSKAL.name
+
+
+def _ppi_comparison_pvalue_omnibus(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], method: str, n_boot: int, seed: int,
+) -> float | None:
+    """Omnibus counterpart to _ppi_comparison_pvalue -- the SAME
+    PPI-corrected calls _run_ppi_cell's anova_ind/anova_rep/friedman/kruskal
+    blocks use, reused identically here. May return None (anova_ind/
+    anova_rep/friedman's PPI-corrected p-value functions can return None on
+    a degenerate fit -- see their own docstrings); the caller must treat
+    that as "not rejected," matching _run_ppi_cell's `p is not None and p <
+    alpha` pattern."""
+    k = len(groups)
+    if method == ANOVA_IND.name:
+        return _ppi_anova_independent_p_value(groups, groups_lab, k=k)
+    if method == ANOVA_REP.name:
+        return _ppi_anova_repeated_p_value(groups, groups_lab, k=k)
+    if method == FRIEDMAN.name:
+        return _ppi_friedman_p_value(groups, groups_lab, k=k)
+    # KRUSKAL.name
+    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+    return pw["wald_p"]
+
+
+_COMPARISON_CELL_FIELDS = {
+    "group": (("llm_a2", "llm_b2"), ("lab_a2", "lab_b2"), ("truth_a2", "truth_b2"), "independent"),
+    "pair": (("llm_x", "llm_y"), ("lab_x", "lab_y"), ("truth_x", "truth_y"), "shared"),
+    "group3": (("llm_a3", "llm_b3", "llm_c3"), ("lab_a3", "lab_b3", "lab_c3"), ("truth_a3", "truth_b3", "truth_c3"), "independent"),
+    "pair3": (("llm_A", "llm_B", "llm_C"), ("lab_A", "lab_B", "lab_C"), ("truth_A", "truth_B", "truth_C"), "shared"),
+}
+"""Maps each _COMPARISON_METHOD_STRUCTURE value to the JudgeBiasCellData
+field names it reads, and whether its labeling mask is "independent" (each
+group masked separately, e.g. group/group3's _jb_labels_independent) or
+"shared" (one mask reused across every group, e.g. pair/pair3's
+_jb_labels_shared) -- see _run_ppi_comparison_cell."""
+
+
 def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed, method: str) -> PPIComparisonResult:
     """Runs the 5-way comparison (all_human/human_subset/llm_only/
-    llm_impute/ppi) for ONE classical `method` (see _COMPARISON_METHODS).
-    Dispatches on _COMPARISON_METHOD_STRUCTURE[method]: "group" methods
-    (ttest_welch, mw) use generate_judge_bias_group_pair_cell's
-    independent-two-group (a2, b2) structure; "pair" methods (paired_t,
-    wilcoxon) use its paired (x, y) structure. Both structures are drawn
-    together every replicate (one rng stream, whichever structure this
-    call's method doesn't need is simply unused, not skipped -- keeps a
+    llm_impute/ppi) for ONE classical `method` (see _COMPARISON_METHODS/
+    _COMPARISON_METHODS_OMNIBUS). Dispatches on
+    _COMPARISON_METHOD_STRUCTURE[method] via _COMPARISON_CELL_FIELDS:
+    "group"/"group3" methods (ttest_welch, mwu_corr, anova_ind, kruskal) use
+    generate_judge_bias_cell's independent-group structure (2 or 3 groups);
+    "pair"/"pair3" methods (paired_t, wilcoxon, anova_rep, friedman) use its
+    paired/repeated structure. generate_judge_bias_cell draws EVERY
+    structure every replicate regardless of which this call's method needs
+    (one rng stream, unused structures simply unused, not skipped -- keeps a
     given scenario/seed's draws identical regardless of which method is
-    requested, the same reproducibility property generate_judge_bias_cell
-    itself maintains for --tests).
+    requested, the same reproducibility property --tests relies on in
+    _run_ppi_cell).
 
     Each of the four arms is computed in its OWN try/except: a classical-
     test failure (e.g. wilcoxon raising on an all-zero-difference sample)
     just skips incrementing that arm for that replicate (same semantics as
     before this function supported rank-based tests, which never failed);
     only a PPI bootstrap-correction failure increments n_failed, preserving
-    that field's original meaning.
+    that field's original meaning. For "group3"/"pair3" methods, the
+    PPI-corrected p-value can also be None on a degenerate fit (anova_ind/
+    anova_rep/friedman -- see _ppi_comparison_pvalue_omnibus) -- treated as
+    "not rejected," not a failure, matching _run_ppi_cell.
 
-    n_lab (the realized labeled-item count) is group A's count for "group"
-    methods -- since every JudgeBiasSource this comparison-sweep machinery
-    builds (build_ppi_power_sources et al.) leaves n2 unset (so n2==n) and
-    applies the SAME label_frac to both groups, A and B are expected to
-    match; this only reports one of them rather than both."""
+    n_lab (the realized labeled-item count) is the FIRST group's count --
+    for "independent"-mask structures (group/group3) since every
+    JudgeBiasSource this comparison-sweep machinery builds leaves n2/n3
+    unset (so n2==n3==n) and applies the SAME label_frac to every group, so
+    all groups are expected to match; for "shared"-mask structures
+    (pair/pair3) every group shares one mask anyway, so the first group's
+    count IS the shared count."""
     rng = np.random.default_rng(seed)
     rejects = {"all_human": 0, "human_subset": 0, "llm_only": 0, "llm_impute": 0, "ppi": 0}
     n_failed = 0
     n_lab_realized = 0
     structure = _COMPARISON_METHOD_STRUCTURE[method]
+    llm_fields, lab_fields, truth_fields, mask_kind = _COMPARISON_CELL_FIELDS[structure]
+    is_omnibus = structure in ("group3", "pair3")
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         for _ in range(n_reps):
-            cell = generate_judge_bias_group_pair_cell(sc, rng)
-            if structure == "group":
-                llm_a, llm_b, lab_a, lab_b = cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2
-                truth_a, truth_b = cell.truth_a2, cell.truth_b2
-                mask_a, mask_b = ~np.isnan(lab_a), ~np.isnan(lab_b)
-                n_lab_realized = int(mask_a.sum())
-                subset_ok = int(mask_a.sum()) >= 2 and int(mask_b.sum()) >= 2
-                truth_subset_a, truth_subset_b = truth_a[mask_a], truth_b[mask_b]
-                filled_a, filled_b = llm_a.copy(), llm_b.copy()
-                filled_a[mask_a] = lab_a[mask_a]
-                filled_b[mask_b] = lab_b[mask_b]
+            cell = generate_judge_bias_cell(sc, rng)
+            llm_groups = [getattr(cell, f) for f in llm_fields]
+            lab_groups = [getattr(cell, f) for f in lab_fields]
+            truth_groups = [getattr(cell, f) for f in truth_fields]
+
+            if mask_kind == "independent":
+                masks = [~np.isnan(lab) for lab in lab_groups]
+                subset_ok = all(int(m.sum()) >= 2 for m in masks)
             else:
-                llm_a, llm_b, lab_a, lab_b = cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y
-                truth_a, truth_b = cell.truth_x, cell.truth_y
-                mask = ~np.isnan(lab_a) & ~np.isnan(lab_b)
-                n_lab_realized = int(mask.sum())
-                subset_ok = int(mask.sum()) >= 2
-                truth_subset_a, truth_subset_b = truth_a[mask], truth_b[mask]
-                filled_a, filled_b = llm_a.copy(), llm_b.copy()
-                filled_a[mask] = lab_a[mask]
-                filled_b[mask] = lab_b[mask]
+                shared_mask = np.logical_and.reduce([~np.isnan(lab) for lab in lab_groups])
+                masks = [shared_mask] * len(lab_groups)
+                subset_ok = int(shared_mask.sum()) >= 2
+            n_lab_realized = int(masks[0].sum())
+            truth_subset_groups = [t[m] for t, m in zip(truth_groups, masks)]
+            filled_groups = []
+            for llm, lab, m in zip(llm_groups, lab_groups, masks):
+                filled = llm.copy()
+                filled[m] = lab[m]
+                filled_groups.append(filled)
+
+            if is_omnibus:
+                classical = lambda groups: _classical_pvalue_omnibus(groups, method)  # noqa: E731
+            else:
+                classical = lambda groups: _classical_pvalue(groups[0], groups[1], method, structure)  # noqa: E731
 
             try:
-                p_all_human = _classical_pvalue(truth_a, truth_b, method, structure)
+                p_all_human = classical(truth_groups)
                 rejects["all_human"] += int(p_all_human < _ALPHA)
             except Exception:
                 pass
 
             try:
-                p_llm_only = _classical_pvalue(llm_a, llm_b, method, structure)
+                p_llm_only = classical(llm_groups)
                 rejects["llm_only"] += int(p_llm_only < _ALPHA)
             except Exception:
                 pass
 
             try:
-                p_llm_impute = _classical_pvalue(filled_a, filled_b, method, structure)
+                p_llm_impute = classical(filled_groups)
                 rejects["llm_impute"] += int(p_llm_impute < _ALPHA)
             except Exception:
                 pass
 
             if subset_ok:
                 try:
-                    p_human_subset = _classical_pvalue(truth_subset_a, truth_subset_b, method, structure)
+                    p_human_subset = classical(truth_subset_groups)
                     rejects["human_subset"] += int(p_human_subset < _ALPHA)
                 except Exception:
                     pass
 
             try:
-                p_ppi = _ppi_comparison_pvalue(
-                    llm_a, llm_b, lab_a, lab_b, method, structure, n_boot, int(rng.integers(0, 2 ** 31)),
-                )
-                rejects["ppi"] += int(p_ppi < _ALPHA)
+                ppi_seed = int(rng.integers(0, 2 ** 31))
+                if is_omnibus:
+                    p_ppi = _ppi_comparison_pvalue_omnibus(llm_groups, lab_groups, method, n_boot, ppi_seed)
+                    rejects["ppi"] += int(p_ppi is not None and p_ppi < _ALPHA)
+                else:
+                    p_ppi = _ppi_comparison_pvalue(
+                        llm_groups[0], llm_groups[1], lab_groups[0], lab_groups[1], method, structure, n_boot, ppi_seed,
+                    )
+                    rejects["ppi"] += int(p_ppi < _ALPHA)
             except Exception:
                 n_failed += 1
 
@@ -4910,13 +4998,20 @@ def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd
     return fit.summary().as_text(), df
 
 
-def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float) -> None:
+def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float, label: str = "paired_t") -> None:
     """Regression summary (fit_ppi_factorial_model) plus two quotable
     headline numbers: the worst observed Type-I inflation (among es="null"
     cells) and the largest all_human-vs-ppi power gap (among non-null
     cells) -- the single-number "worst case across N x N_lab" claims a
     paper would want, pulled directly from the factorial grid rather than
-    eyeballed off a table."""
+    eyeballed off a table.
+
+    `label` names the estimand(s) `results` was pooled across in the header
+    (default "paired_t", the original single-estimand factorial) -- pass
+    _COMPARISON_METHODS_LABEL/_COMPARISON_METHODS_OMNIBUS_LABEL for the
+    2-group/omnibus pooled reports respectively (see run()'s factorial_check
+    block); this function itself is agnostic to which methods `results` was
+    pooled across, it just needs a name for the header text."""
     if not results:
         print("\n  (no PPI factorial results)")
         return
@@ -4924,7 +5019,7 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float)
     eval_types = sorted(df["et"].unique())
     print(f"\n{'='*96}\n  PVALUES (PPI-CORRECTED) -- FULL FACTORIAL "
           f"(bias_magnitude x N x N_lab x label_mechanism x effect_size x bias_direction x eval_type)\n"
-          f"  {len(results)} cells, {'/'.join(eval_types)}/paired_t; nominal alpha={alpha}\n{'='*96}\n")
+          f"  {len(results)} cells, {'/'.join(eval_types)}/{label}; nominal alpha={alpha}\n{'='*96}\n")
     print(summary_text)
 
     null_rows = df[df["es"] == "null"]
@@ -4945,9 +5040,10 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float)
 
 def save_results_artifacts_ppi_factorial(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
-    pooled_results: list[PPIComparisonResult] | None = None,
+    pooled_results: list[PPIComparisonResult] | None = None, write_csv: bool = True, label: str = "paired_t",
 ) -> list[str]:
-    """`results` is the RAW (per-method) data, saved verbatim to the CSV.
+    """`results` is the RAW (per-method) data, saved verbatim to the CSV
+    (unless `write_csv=False` -- see below).
 
     `pooled_results` (falls back to pooling `results` if omitted) feeds
     the saved .log's GLM fit and headline numbers instead. The GLM
@@ -4962,37 +5058,48 @@ def save_results_artifacts_ppi_factorial(
     pooled figure for that same cell was 0.154, and a different "largest
     power gap" cell entirely (0.715 vs. the pooled 0.416). See
     save_results_artifacts_ppi_comparison's docstring for the same
-    raw-vs-pooled issue in the other two saved logs."""
+    raw-vs-pooled issue in the other two saved logs.
+
+    `write_csv=False` skips the CSV entirely, writing only the .log -- for a
+    SECOND call against the SAME `run_stem` that should append another
+    pooled summary (e.g. _COMPARISON_METHODS_OMNIBUS' own report) without
+    re-writing (or worse, silently truncating to a different method subset)
+    the CSV the first call already wrote for the combined raw data. `label`
+    is forwarded to print_ppi_factorial_report's header text -- see its
+    own docstring."""
     if pooled_results is None:
         pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_factorial_results.csv"
-    with csv_path.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.writer(handle)
-        writer.writerow([
-            "name", "method", "et", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
-            "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
-        ])
-        for r in results:
-            d = _parse_ppi_factorial_name(r.name)
+    if write_csv:
+        with csv_path.open("w", newline="", encoding="utf-8") as handle:
+            writer = csv.writer(handle)
             writer.writerow([
-                r.name, r.method, d["et"], d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
-                f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
-                f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
-                f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
-                f"{r.rejects_llm_impute / r.n_reps:.8f}" if r.n_reps else "",
-                f"{r.rejects_ppi / r.n_reps:.8f}" if r.n_reps else "",
-                r.n_failed,
+                "name", "method", "et", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
+                "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
             ])
+            for r in results:
+                d = _parse_ppi_factorial_name(r.name)
+                writer.writerow([
+                    r.name, r.method, d["et"], d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
+                    f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
+                    f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
+                    f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
+                    f"{r.rejects_llm_impute / r.n_reps:.8f}" if r.n_reps else "",
+                    f"{r.rejects_ppi / r.n_reps:.8f}" if r.n_reps else "",
+                    r.n_failed,
+                ])
+        print(f"Saved results: {csv_path}")
     summary_path = out_base / f"{run_stem}_ppi_factorial_summary.log"
+    write_mode = "w" if write_csv else "a"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_factorial_report(pooled_results, alpha=alpha)
-    summary_path.write_text(buf.getvalue(), encoding="utf-8")
-    print(f"Saved results: {csv_path}")
+        print_ppi_factorial_report(pooled_results, alpha=alpha, label=label)
+    with summary_path.open(write_mode, encoding="utf-8") as handle:
+        handle.write(buf.getvalue())
     print(f"Saved log: {summary_path}")
-    return [str(csv_path), str(summary_path)]
+    return [str(csv_path), str(summary_path)] if write_csv else [str(summary_path)]
 
 
 def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha: float, out_path: str) -> str:
@@ -6040,6 +6147,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "the SAME underlying distribution/bias/effect magnitudes onto a wider integer grid, "
                               "rather than generating a different one -- see scenarios.synthetic."
                               "build_ppi_factorial_sources' likert_max parameter. Ignored for continuous scenarios.")
+    parser.add_argument("--factorial-omnibus", action="store_true", default=False,
+                         help="ppi mode: also run the 4 omnibus/multi-group tests (anova_ind, anova_rep, friedman, "
+                              "kruskal -- _COMPARISON_METHODS_OMNIBUS) against --factorial-check's SAME sources, "
+                              "on top of the default 4 two-group tests (ttest_welch/paired_t/mwu_corr/wilcoxon). "
+                              "Opt-in: uses generate_judge_bias_cell (the full generator, needed for the 3-group "
+                              "structures anova_ind/kruskal and anova_rep/friedman read) for EVERY method now, not "
+                              "just these 4, so enabling this meaningfully increases --factorial-check's runtime. "
+                              "Reported and saved as its OWN pooled summary/log section (mean_of_4_omnibus), never "
+                              "blended into the two-group tests' pooled rate -- see _COMPARISON_METHODS_OMNIBUS' "
+                              "docstring for why (different hypothesis: 3-group omnibus vs. two-group location-shift).")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
@@ -6207,12 +6324,28 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     approximation of it. Disables every other --mode ppi check via
     --no-typeI-check/--no-effect-check/--no-power-check/
     --no-comparison-check (all opt-out; harmless to set even though
-    official_args_ppi doesn't set them, since their defaults already run)."""
+    official_args_ppi doesn't set them, since their defaults already run).
+
+    factorial_omnibus=True: also runs the 4 omnibus/multi-group tests
+    (anova_ind/anova_rep/friedman/kruskal -- _COMPARISON_METHODS_OMNIBUS)
+    against these same factorial sources, not just the original 4 two-group
+    tests -- added once the main OFAT sweep (build_judge_bias_sources) and
+    this factorial sweep's own two-group tests confirmed those 4 held up
+    reasonably well under the combined-factor stress test, making it worth
+    checking whether anova/friedman/kruskal (kruskal in particular already
+    flagged as a milder, more diffuse Type-I outlier in the OFAT sweep) also
+    hold up here, or blow up the way mw_naive did before mwu_corr replaced
+    it. NOT set on official_args_ppi/official_args_ppi_no_lmm (the "run
+    everything" presets, already by far the slowest --mode ppi variants) --
+    only this standalone factorial-only preset, so the extra cost (roughly
+    2x the method count, using the full generator now for every method) is
+    opt-in at the granularity where it's easiest to run/iterate on its own."""
     args = official_args_ppi(base_seed)
     args.no_typeI_check = True
     args.no_effect_check = True
     args.no_power_check = True
     args.no_comparison_check = True
+    args.factorial_omnibus = True
     return args
 
 
@@ -6911,6 +7044,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             if getattr(args, "factorial_check", False):
                 factorial_likert_max = getattr(args, "factorial_likert_max", 5)
+                factorial_omnibus = getattr(args, "factorial_omnibus", False)
                 factorial_sources = build_ppi_factorial_sources(likert_max=factorial_likert_max)
                 if args.eval_types:
                     requested = set(args.eval_types)
@@ -6919,16 +7053,29 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_reps = getattr(args, "factorial_reps", 100)
                     factorial_n_boot = getattr(args, "factorial_n_boot", 500)
                     likert_note = f", likert_max={factorial_likert_max}" if factorial_likert_max != 5 else ""
+                    factorial_methods = _COMPARISON_METHODS + (_COMPARISON_METHODS_OMNIBUS if factorial_omnibus else ())
+                    omnibus_note = f" + {len(_COMPARISON_METHODS_OMNIBUS)} omnibus tests" if factorial_omnibus else ""
                     print(f"\npvalues simulation (PPI-corrected, full factorial) -- "
-                          f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods, "
+                          f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods{omnibus_note}, "
                           f"reps={factorial_reps}, n_boot={factorial_n_boot}{likert_note}")
                     factorial_results_raw = run_ppi_comparison_simulation(
                         factorial_sources, n_reps=factorial_reps, n_boot=factorial_n_boot,
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
-                        methods=_COMPARISON_METHODS,
+                        methods=factorial_methods,
                     )
-                    factorial_results = pool_ppi_comparison_across_methods(factorial_results_raw)
-                    print_ppi_factorial_report(factorial_results, alpha=args.alpha)
+                    factorial_results = pool_ppi_comparison_across_methods(
+                        [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS]
+                    )
+                    print_ppi_factorial_report(factorial_results, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL)
+
+                    omnibus_results = None
+                    if factorial_omnibus:
+                        omnibus_results = pool_ppi_comparison_across_methods(
+                            [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS_OMNIBUS]
+                        )
+                        print_ppi_factorial_report(
+                            omnibus_results, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                        )
 
                     stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
                     factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}{stem_lmax_suffix}_{stamp}"
@@ -6936,7 +7083,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths += save_results_artifacts_ppi_factorial(
                             results=factorial_results_raw, pooled_results=factorial_results,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
+                            label=_COMPARISON_METHODS_LABEL,
                         )
+                        if omnibus_results is not None:
+                            output_paths += save_results_artifacts_ppi_factorial(
+                                results=factorial_results_raw, pooled_results=omnibus_results,
+                                alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
+                                write_csv=False, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                            )
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(
                             results=factorial_results, alpha=args.alpha,
@@ -6952,6 +7106,18 @@ def run(args: argparse.Namespace) -> CaseResult:
                         c_tot = sum(r.rejects_ppi for r in null_results)
                         n_tot = sum(r.n_reps for r in null_results)
                         key_metrics["ppi_factorial_mean_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
+
+                    if omnibus_results is not None:
+                        key_metrics["ppi_factorial_omnibus_n_results"] = len(omnibus_results)
+                        null_omnibus = [
+                            r for r in omnibus_results if _parse_ppi_factorial_name(r.name)["es"] == "null"
+                        ]
+                        if null_omnibus:
+                            c_tot_o = sum(r.rejects_ppi for r in null_omnibus)
+                            n_tot_o = sum(r.n_reps for r in null_omnibus)
+                            key_metrics["ppi_factorial_omnibus_mean_type1"] = (
+                                float(c_tot_o / n_tot_o) if n_tot_o else float("nan")
+                            )
 
         return CaseResult(
             case_name=CASE_NAME, status="ok", output_paths=output_paths,

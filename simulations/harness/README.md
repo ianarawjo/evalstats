@@ -332,7 +332,7 @@ same way `evalstats.core.resampling` is.
     MC noise at low `--effect-reps` isn't mistaken for a real miscalibration
     finding.
   - **Method generalization** (`_COMPARISON_METHODS`,
-    `generate_judge_bias_group_pair_cell`, `pool_ppi_comparison_across_
+    `generate_judge_bias_cell`, `pool_ppi_comparison_across_
     methods`): the comparison/N x N_lab/factorial machinery originally
     targeted ONE estimand -- the paired-mean difference, via `np.mean` as
     both the PPI estimator and rectifier, identical to `paired_t`'s PPI
@@ -340,33 +340,46 @@ same way `evalstats.core.resampling` is.
     runs and averages across FOUR classical tests --
     `TTEST_WELCH`/`PAIRED_T`/`MWU_CORR`/`WILCOXON` (`_COMPARISON_METHODS`) --
     covering both the independent-two-group structure (ttest_welch, mwu_corr)
-    and the paired structure (paired_t, wilcoxon).
-    `generate_judge_bias_group_pair_cell` draws both structures together
-    (a leaner superset of the old paired-only `generate_judge_bias_pair_
-    cell`, which it replaces as `_run_ppi_comparison_cell`'s data source).
-    `_run_ppi_comparison_cell` takes a `method` argument and dispatches via
-    `_COMPARISON_METHOD_STRUCTURE`; `_classical_pvalue`/
-    `_ppi_comparison_pvalue` factor out the per-method test/PPI-correction
-    calls (mirroring `_run_ppi_cell`'s own ttest_welch/mwu_corr/paired_t/
-    wilcoxon blocks exactly, including using the SAME test for the all_human/
-    human_subset oracle arms as for llm_only/llm_impute/ppi -- e.g. the
-    "mwu_corr" method-row runs Mann-Whitney on truth for its oracle arms too,
-    not always a t-test). Each of the 5 arms fails independently per replicate
+    and the paired structure (paired_t, wilcoxon), PLUS (opt-in, see
+    "Omnibus tests" below) four omnibus/multi-group tests --
+    `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` (`_COMPARISON_METHODS_
+    OMNIBUS`) -- covering the independent-three-group structure (anova_ind,
+    kruskal) and the repeated-three-group structure (anova_rep, friedman).
+    `generate_judge_bias_cell` (the FULL generator, every test structure
+    `_run_ppi_cell` itself uses -- there is no leaner variant anymore, see
+    "Omnibus tests" below) is `_run_ppi_comparison_cell`'s data source for
+    every method now. `_run_ppi_comparison_cell` takes a `method` argument
+    and dispatches via `_COMPARISON_METHOD_STRUCTURE`/`_COMPARISON_CELL_
+    FIELDS` ("group"/"pair" for the original four, "group3"/"pair3" for the
+    omnibus four); `_classical_pvalue`/`_ppi_comparison_pvalue` (two-array
+    methods) and `_classical_pvalue_omnibus`/`_ppi_comparison_pvalue_
+    omnibus` (list-of-groups methods) factor out the per-method test/PPI-
+    correction calls (mirroring `_run_ppi_cell`'s own per-test blocks
+    exactly, including using the SAME test for the all_human/human_subset
+    oracle arms as for llm_only/llm_impute/ppi -- e.g. the "mwu_corr"
+    method-row runs Mann-Whitney on truth for its oracle arms too, not
+    always a t-test). Each of the 5 arms fails independently per replicate
     (a wilcoxon/mannwhitneyu exception on one arm doesn't discard the
     other 4); only a PPI bootstrap-correction failure increments
-    `n_failed`, preserving that field's original meaning.
-    `run_ppi_comparison_simulation` now runs every (source, method) cell
+    `n_failed` (or, for the three omnibus methods whose PPI-corrected
+    p-value function can return `None` on a degenerate fit, that's treated
+    as "not rejected," matching `_run_ppi_cell`'s own `p is not None and p
+    < alpha` pattern -- not a failure either).
+    `run_ppi_comparison_simulation` runs every (source, method) cell
     (a `methods` parameter, defaulting to `_COMPARISON_METHODS`) and
     returns a FLAT list tagged by `PPIComparisonResult.method`.
-    `pool_ppi_comparison_across_methods` collapses that back to one
-    (averaged) row per scenario for the report/plot functions -- deliberately
-    EXCLUDES the omnibus/multi-group tests (anova_ind/anova_rep/friedman/
-    kruskal/lmm*) and the non-standard bootstrap-CI constructions
-    (bayes_bootstrap/bootstrap_t/tango_score): those answer different
-    questions, so folding them into the same pooled rate would blend
-    apples with oranges rather than checking robustness across reasonable
-    alternatives. `run()` now saves the RAW (per-method) rows to CSV --
-    the supplementary robustness breakdown a reviewer can check the pooled
+    `pool_ppi_comparison_across_methods` collapses a `results` list back to
+    one (averaged) row per scenario for the report/plot functions --
+    callers MUST filter `results` to one method-family before pooling
+    (`_COMPARISON_METHODS` xor `_COMPARISON_METHODS_OMNIBUS`, never both
+    together, and never the non-standard bootstrap-CI constructions
+    bayes_bootstrap/bootstrap_t/tango_score or lmm*): these answer
+    different questions (two-group location-shift vs. three-group omnibus),
+    so folding them into the same pooled rate would blend apples with
+    oranges rather than checking robustness across reasonable alternatives
+    within one question. `run()` now saves the RAW (per-method) rows to
+    CSV, ONE file covering every method run -- the supplementary robustness
+    breakdown a reviewer can check the pooled
     average isn't hiding one method behaving badly -- and feeds the POOLED
     rows to every report/plot function unchanged (none of them needed to
     change: they only ever read `.name`/`.tag`/`.rejects_*`/etc., which
@@ -457,21 +470,56 @@ same way `evalstats.core.resampling` is.
     Type-I/power/effect-check sweeps), which deliberately keeps a FIXED
     draw order across every call so a given scenario/seed's results for a
     given test don't change depending on what else `--tests` includes (see
-    its docstring), but pure waste for the paired_t-only comparison/N x
-    N_lab/factorial checks above, which never touch the other five.
-    `generate_judge_bias_pair_cell` is a lean counterpart (paired structure
-    only) used exclusively by `_run_ppi_comparison_cell` -- measured ~7.8x
-    faster (0.08ms vs. 0.61ms/call) with no reproducibility tradeoff, since
-    every caller of `_run_ppi_comparison_cell` already has its own
-    independently-seeded rng stream and no legacy parity to preserve. The
-    underlying PPI bootstrap correction itself (`evalstats.ppi.correct`)
-    was already vectorized (a batched fast path for `np.mean`/`np.median`,
-    chunked to bound memory) -- confirmed via profiling, not changed.
+    its docstring). `_run_ppi_comparison_cell` originally used a leaner,
+    two-structure-only counterpart (`generate_judge_bias_pair_cell`, later
+    `generate_judge_bias_group_pair_cell`) since the comparison/N x N_lab/
+    factorial checks only ever needed the paired and independent-two-group
+    structures -- measured ~7.8x faster (0.08ms vs. 0.61ms/call). That
+    generator was retired once `_COMPARISON_METHODS_OMNIBUS` (anova_ind/
+    anova_rep/friedman/kruskal) needed the independent-three-group and
+    repeated-three-group structures too -- rather than adding a THIRD,
+    even-leaner generator, `_run_ppi_comparison_cell` now reads every method
+    (both the original four and the four omnibus ones) off
+    `generate_judge_bias_cell`, the same full generator `_run_ppi_cell`
+    uses. This gives up the lean generator's per-cell speedup (the
+    comparison/N x N_lab/factorial checks are correspondingly slower now,
+    on top of the omnibus methods' own added cost), in exchange for one
+    generator instead of two/three to keep in sync. The underlying PPI
+    bootstrap correction itself (`evalstats.ppi.correct`) was already
+    vectorized (a batched fast path for `np.mean`/`np.median`, chunked to
+    bound memory) -- confirmed via profiling, not changed.
     `run_ppi_comparison_simulation` also gained the same fork-pool-over-
     sources parallelism `run_ppi_simulation`/`run_multiarm_simulation`
     already had (it was sequential-only, reasonably so at the original
     ~24-scenario comparison grid, but the N x N_lab grid and factorial sweep
     below outgrew that).
+  - **Omnibus tests in the factorial sweep** (`_COMPARISON_METHODS_OMNIBUS`,
+    `--factorial-omnibus`): after the main OFAT sweep and the factorial
+    sweep's original four two-group tests were confirmed reasonably
+    calibrated (including `mwu_corr`'s fix -- see its `Method` docstring in
+    `methods.py`), extended `build_ppi_factorial_sources`'s combined-factor
+    stress test to four omnibus/multi-group tests too --
+    `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` -- to check whether they
+    hold up under the SAME severe-bias x MNAR-labeling x large-N combination
+    that the OFAT sweep can't reach (kruskal in particular was already
+    flagged there as a milder, more diffusely elevated Type-I outlier, not
+    as severe as `mw_naive`'s but worth the same combined-factor check).
+    Opt-in via `--factorial-omnibus` (off by default on the bare
+    `--factorial-check` flag; ON by default in the standalone
+    `official_args_ppi_factorial`/`official_args_ppi_factorial_likert7`
+    presets, NOT in `official_args_ppi`/`official_args_ppi_no_lmm`, the
+    already-slowest "run everything" presets) since it roughly doubles the
+    method count on top of losing the lean generator's speedup above.
+    Reported and saved as its OWN pooled GLM/summary-log section
+    (`print_ppi_factorial_report`'s new `label` parameter,
+    `save_results_artifacts_ppi_factorial`'s new `write_csv=False` append
+    mode) -- never blended into the two-group tests' headline pooled rate,
+    per the apples-with-oranges reasoning in "Method generalization" above.
+    `JudgeBiasCellData` gained `truth_a2`/`truth_b2`/`truth_a3`/`truth_b3`/
+    `truth_c3`/`truth_A`/`truth_B`/`truth_C` (the dense, unmasked truth
+    arrays `generate_judge_bias_cell` already computed internally but
+    didn't expose) so the comparison sweep's all_human/human_subset oracle
+    arms work for every structure, not just the original paired one.
   - `build_ppi_factorial_sources` (tag `"factorial"`, ~312 cells per eval
     type, ~624 total): a TRUE full factorial (every main effect/interaction
     directly estimable, no fractional-design confounding) crossing the six
@@ -481,7 +529,21 @@ same way `evalstats.core.resampling` is.
     (60/200/400) x `N_lab` (15/30/80) x `label_mechanism` (mcar/mnar_mild/
     mnar_strong) x `effect_size` (null/moderate/large) x `bias_direction`
     (opposing/reinforcing) -- now ALSO crossed with `eval_type` (continuous,
-    likert; grades excluded as redundant with continuous), `paired_t` only.
+    likert; grades excluded as redundant with continuous). Runs
+    `_COMPARISON_METHODS` (ttest_welch/paired_t/mwu_corr/wilcoxon) by
+    default, plus `_COMPARISON_METHODS_OMNIBUS` (anova_ind/anova_rep/
+    friedman/kruskal) when `--factorial-omnibus` is set -- see "Omnibus
+    tests in the factorial sweep" above; not `paired_t` only anymore.
+    `likert_max` (default 5; `--factorial-likert-max`) rescales likert
+    scenarios' distribution/bias/effect magnitude onto a wider 1-`likert_max`
+    integer grid (same relative severity, more discrete levels) instead of
+    the standard 1-5 -- added to test whether Likert coarseness itself was
+    responsible for `mwu_corr`'s predecessor `mw_naive` breaking under
+    severe MNAR (see `sample_group_truth`'s `likert_max` parameter and
+    `_jb_bias_magnitude`/`_jb_effect_magnitude`'s `scale_bounds` override;
+    a real official 1-5 vs. 1-7 factorial comparison found the miscalibration
+    got WORSE at 1-7, not better, ruling that hypothesis out for `mw_naive`
+    specifically).
     An earlier version of this section (and these functions' docstrings)
     described this as continuous-only "same scoping as the comparison/N x
     N_lab checks" -- that was a documentation error: the 5-way comparison
