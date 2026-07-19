@@ -4351,13 +4351,32 @@ def print_ppi_comparison_report(results: list[PPIComparisonResult], alpha: float
     print()
 
 
-def save_results_artifacts_ppi_comparison(*, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str) -> list[str]:
-    """`results` may be raw (per-method, len(sources)*len(methods) rows) or
-    pooled (pool_ppi_comparison_across_methods, one row per scenario) --
-    either way, every row's `.method` field says which. Callers save the
-    RAW rows here (the per-method breakdown, for reviewers to check the
-    pooled average isn't hiding one method behaving badly) and pass the
-    POOLED rows to print_ppi_comparison_report/save_ppi_comparison_plot."""
+def save_results_artifacts_ppi_comparison(
+    *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
+    pooled_results: list[PPIComparisonResult] | None = None,
+) -> list[str]:
+    """`results` is the RAW (per-method, len(sources)*len(methods) rows) data
+    -- saved verbatim to the CSV (the per-method breakdown, for reviewers to
+    check the pooled average isn't hiding one method behaving badly).
+
+    The saved .log, however, must be built from POOLED data (one row per
+    scenario), matching what run()'s own console output already prints via
+    print_ppi_comparison_report(comparison_results_pooled, ...) -- pass that
+    same pooled list as `pooled_results`. Calling print_ppi_comparison_report
+    on the raw rows instead (as an earlier version of this function did) is
+    NOT just a cosmetic difference: it doesn't affect the GLM-based factorial
+    report's coefficients (grouped-binomial log-likelihood is additive over
+    rows sharing the same covariates, so pooled vs. unpooled fits are
+    numerically identical there), but THIS function's report picks single
+    rows via `next(...)` lookups keyed on eval_type/x_field alone -- fed raw
+    data, that silently returns whichever METHOD happens to appear first for
+    a given cell instead of the 4-method-averaged rate, discarding the other
+    3 methods' data entirely. `pooled_results=None` (the default) falls back
+    to pooling `results` internally so old call sites don't silently regress,
+    but new callers should pass the already-pooled list run() computes
+    anyway, rather than pay to re-derive it here."""
+    if pooled_results is None:
+        pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_comparison_results.csv"
@@ -4380,7 +4399,7 @@ def save_results_artifacts_ppi_comparison(*, results: list[PPIComparisonResult],
     summary_path = out_base / f"{run_stem}_ppi_comparison_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_comparison_report(results, alpha=alpha)
+        print_ppi_comparison_report(pooled_results, alpha=alpha)
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -4637,12 +4656,24 @@ def print_ppi_nlab_grid_report(
 
 def save_results_artifacts_ppi_nlab_grid(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str, header: str,
+    pooled_results: list[PPIComparisonResult] | None = None,
 ) -> list[str]:
     """Same CSV shape as save_results_artifacts_ppi_comparison, but logs via
     print_ppi_nlab_grid_report instead -- that function's tag-based grouping
     (tag "power" / "compare_label_frac") doesn't match this grid's tags
     ("nlab_grid" / "nlab_grid_power"), so reusing it directly would produce
-    an empty-looking log."""
+    an empty-looking log.
+
+    `results` is the RAW (per-method) data, saved verbatim to the CSV.
+    `pooled_results` (falls back to pooling `results` if omitted) feeds the
+    saved .log instead -- print_ppi_nlab_grid_report's `next((r for r in
+    et_results if r.n == n and r.n_lab == nlab), None)` cell lookup picks
+    the first matching row for each (N, N_lab) cell, so fed raw data it
+    silently reports whichever METHOD happens to appear first instead of
+    the 4-method-averaged rate. See save_results_artifacts_ppi_comparison's
+    docstring for the same issue there."""
+    if pooled_results is None:
+        pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_nlab_grid_results.csv"
@@ -4665,7 +4696,7 @@ def save_results_artifacts_ppi_nlab_grid(
     summary_path = out_base / f"{run_stem}_ppi_nlab_grid_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_nlab_grid_report(results, alpha=alpha, header=header)
+        print_ppi_nlab_grid_report(pooled_results, alpha=alpha, header=header)
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -4883,7 +4914,26 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float)
 
 def save_results_artifacts_ppi_factorial(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
+    pooled_results: list[PPIComparisonResult] | None = None,
 ) -> list[str]:
+    """`results` is the RAW (per-method) data, saved verbatim to the CSV.
+
+    `pooled_results` (falls back to pooling `results` if omitted) feeds
+    the saved .log's GLM fit and headline numbers instead. The GLM
+    coefficients themselves are numerically IDENTICAL either way (grouped-
+    binomial log-likelihood is additive over rows sharing the same
+    covariates), but print_ppi_factorial_report's two "worst cell" headline
+    numbers are NOT: they pick the single most extreme row via `idxmax()`,
+    and fed the raw per-method rows (4x as many, each nosier at 1/4 the
+    pooled n_reps) that max is mechanically more extreme than the properly
+    pooled one -- confirmed on a real official run: the raw-fed log claimed
+    a "worst Type-I cell" of 0.445 (nominal alpha=0.05) where the correctly
+    pooled figure for that same cell was 0.154, and a different "largest
+    power gap" cell entirely (0.715 vs. the pooled 0.416). See
+    save_results_artifacts_ppi_comparison's docstring for the same
+    raw-vs-pooled issue in the other two saved logs."""
+    if pooled_results is None:
+        pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_factorial_results.csv"
@@ -4907,7 +4957,7 @@ def save_results_artifacts_ppi_factorial(
     summary_path = out_base / f"{run_stem}_ppi_factorial_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_factorial_report(results, alpha=alpha)
+        print_ppi_factorial_report(pooled_results, alpha=alpha)
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -6669,7 +6719,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                     comparison_stem = f"pvalues_ppi_comparison_reps{comparison_reps}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_comparison(
-                            results=comparison_results_raw, alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_stem,
+                            results=comparison_results_raw, pooled_results=comparison_results_pooled,
+                            alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_stem,
                         )
                     if args.plots == "save":
                         comparison_plot_path = save_ppi_comparison_plot(
@@ -6732,12 +6783,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                     if args.save_results == "save":
                         if nlab_cal_raw:
                             output_paths += save_results_artifacts_ppi_nlab_grid(
-                                results=nlab_cal_raw, alpha=args.alpha, out_dir=args.out_dir,
+                                results=nlab_cal_raw, pooled_results=nlab_cal_pooled,
+                                alpha=args.alpha, out_dir=args.out_dir,
                                 run_stem=f"{nlab_stem}_calibration", header="N x N_LAB GRID (calibration, effect_size=0)",
                             )
                         if nlab_pow_raw:
                             output_paths += save_results_artifacts_ppi_nlab_grid(
-                                results=nlab_pow_raw, alpha=args.alpha, out_dir=args.out_dir,
+                                results=nlab_pow_raw, pooled_results=nlab_pow_pooled,
+                                alpha=args.alpha, out_dir=args.out_dir,
                                 run_stem=f"{nlab_stem}_power", header="N x N_LAB GRID (power, moderate effect_size)",
                             )
                     if args.plots == "save":
@@ -6786,7 +6839,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_factorial(
-                            results=factorial_results_raw, alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
+                            results=factorial_results_raw, pooled_results=factorial_results,
+                            alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                         )
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(
