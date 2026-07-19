@@ -1878,7 +1878,14 @@ def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSourc
     _JB_MIN_LAB, round(n * label_frac)))` reduces to exactly the requested
     n_lab (every value in PPI_NLAB_GRID_NLAB_VALUES is already >= the
     _JB_MIN_LAB floor, so the floor never binds here). Cells where n_lab > n
-    are infeasible and skipped.
+    are infeasible and skipped; n_lab == n (100% labeled) is ALSO skipped --
+    evalstats.ppi.correct requires Y_hat_unlab to be a genuinely disjoint,
+    non-empty complement of the labeled set (see its docstring), so a fully
+    labeled cell has no unlabeled pool left to correct and would raise
+    rather than silently reuse the labeled data as its own "unlabeled" set.
+    Only one (N, N_lab) pair in the current grids collides this way
+    (N=30, N_lab=30, since both PPI_NLAB_GRID_N_VALUES and
+    PPI_NLAB_GRID_NLAB_VALUES include 30) -- per eval type.
 
     Two eval types (continuous, likert) -- NOT the same scoping as
     build_ppi_comparison_label_frac_sources (that function already sweeps
@@ -1906,7 +1913,7 @@ def build_ppi_nlab_grid_sources(effect_frac: float = 0.0) -> list[JudgeBiasSourc
     for et in _PPI_NLAB_GRID_EVAL_TYPES:
         for n in PPI_NLAB_GRID_N_VALUES:
             for n_lab in PPI_NLAB_GRID_NLAB_VALUES:
-                if n_lab > n:
+                if n_lab >= n:
                     continue
                 kw = _ppi_power_baseline(et)
                 kw["n"] = n
@@ -1958,7 +1965,13 @@ def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
     heatmap slices.
 
     Two skips, one for infeasibility and one for redundancy:
-    - n_lab > n is infeasible (same as build_ppi_nlab_grid_sources).
+    - n_lab >= n is infeasible: n_lab > n can't be labeled at all, and
+      n_lab == n (100% labeled) leaves no unlabeled pool for
+      evalstats.ppi.correct to extrapolate to (same constraint as
+      build_ppi_nlab_grid_sources; PPI_FACTORIAL_NLAB_VALUES/
+      PPI_FACTORIAL_N_VALUES don't currently collide on an equal value, so
+      this skip is presently a no-op safety net rather than an active
+      exclusion, but keeps the grid correct if those value sets ever change).
     - bias_direction="reinforcing" is SKIPPED (not just de-prioritized) when
       bias_magnitude="none" OR effect_size="null": bias_direction only flips
       the SIGN of the fixed judge-bias offset (see
@@ -1989,7 +2002,7 @@ def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
         for bm_label, bm_frac in PPI_FACTORIAL_BIAS_MAGNITUDES.items():
             for n in PPI_FACTORIAL_N_VALUES:
                 for n_lab in PPI_FACTORIAL_NLAB_VALUES:
-                    if n_lab > n:
+                    if n_lab >= n:
                         continue
                     for lm_label, lm_kw in PPI_FACTORIAL_LABEL_MECHANISMS.items():
                         for es_label, es_frac in PPI_FACTORIAL_EFFECT_FRACS.items():
