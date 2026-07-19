@@ -466,10 +466,27 @@ def _equicorrelated_std_normal(rng: np.random.Generator, n: int, k: int, base_co
     return out
 
 
+def _likert_scale_factor(likert_max: int | None) -> float:
+    """Affine-rescale factor mapping the canonical 1-5 Likert latent scale
+    onto 1-likert_max, preserving the same RELATIVE shape/spread -- 1.0 (a
+    no-op) when likert_max is None or 5. Used by sample_group_truth (to
+    rescale a "param" shape's (mean, total_std)) and by judge-bias cell
+    generators (to rescale the judge-bias anchor point the same way)."""
+    if likert_max is None or likert_max == 5:
+        return 1.0
+    return (likert_max - 1.0) / 4.0
+
+
+def _likert_rescale_point(value: float, likert_max: int | None) -> float:
+    """Rescale one point on the canonical 1-5 Likert scale onto 1-likert_max,
+    same convention as _likert_scale_factor."""
+    return 1.0 + (value - 1.0) * _likert_scale_factor(likert_max)
+
+
 def sample_group_truth(
     shape: ShapeSpec, n: int, runs: int, k: int, icc: float | Sequence[float], rng: np.random.Generator,
     *, corr: float = 0.5, effects: np.ndarray | None = None,
-    heteroscedastic: bool = False, base_corr: float = 1.0,
+    heteroscedastic: bool = False, base_corr: float = 1.0, likert_max: int | None = None,
 ) -> np.ndarray:
     """Generate scores for one or more groups from a shape in the catalog
     above. This is the single function that every scenario in this file
@@ -542,6 +559,16 @@ def sample_group_truth(
     estimate of their variance (_custom_shape_var) instead of a textbook
     formula, and the table-based percentile lookup described above instead
     of a built-in one when base_corr < 1.0.
+
+    likert_max : int, optional
+        Only meaningful for eval_type=="likert" "param" shapes -- None (the
+        default) or 5 reproduces the standard 1-5 scale exactly. Any other
+        value affine-rescales the shape's (mean, total_std) latent
+        parameters onto 1-likert_max (see _likert_scale_factor), so the
+        SAME relative distribution just gets rounded onto a wider integer
+        grid, rather than generating a different one. Raises
+        NotImplementedError if combined with a "custom" Likert shape (e.g.
+        likert-bimodal), whose custom_sampler hardcodes the 1-5 range.
     """
     if effects is None:
         effects = np.zeros(k)
@@ -550,6 +577,13 @@ def sample_group_truth(
     if icc_arr.shape != (k,):
         raise ValueError(f"icc must be a scalar or a length-k sequence, got shape {icc_arr.shape} for k={k}")
     icc_scalar = bool(np.ndim(icc) == 0)
+
+    if et == "likert" and likert_max is not None and likert_max != 5 and shape.kind == "custom":
+        raise NotImplementedError(
+            f"likert_max={likert_max} is only supported for 'param' Likert shapes -- "
+            f"{shape.label!r} is a 'custom' shape whose custom_sampler hardcodes the "
+            "1-5 range and would need its own rescale logic."
+        )
 
     if shape.kind == "custom":
         # "custom" shapes have no closed-form mean/variance/percentile
@@ -638,7 +672,13 @@ def sample_group_truth(
         # is also the real correlation between groups' latent values (see
         # sample_group_truth's docstring).
         mu_lat, total_std = shape.params
-        lo, hi = (1.0, 5.0) if et == "likert" else (0.0, 100.0)
+        if et == "likert":
+            lo, hi = 1.0, float(likert_max) if likert_max is not None else 5.0
+            lscale = _likert_scale_factor(likert_max)
+            mu_lat = 1.0 + (mu_lat - 1.0) * lscale
+            total_std = total_std * lscale
+        else:
+            lo, hi = 0.0, 100.0
         round_to_int = et == "likert"
         if base_corr >= 1.0 - 1e-12 and icc_scalar:
             base_std = float(np.sqrt(float(icc))) * total_std
@@ -1424,7 +1464,7 @@ def _jb_labels_shared(
     return labs
 
 
-def _jb_bias_magnitude(eval_type: str, frac: float = 0.30) -> float:
+def _jb_bias_magnitude(eval_type: str, frac: float = 0.30, *, scale_bounds: tuple[float, float] | None = None) -> float:
     """`frac` of `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, as an
     absolute bias_delta value.
 
@@ -1443,12 +1483,18 @@ def _jb_bias_magnitude(eval_type: str, frac: float = 0.30) -> float:
     doesn't apply to it (its EVAL_TYPE_SCALE_BOUNDS span of 1.0 happens to
     match continuous's anyway, so its historical bias_delta=0.30 was
     already correctly scaled by coincidence).
+
+    scale_bounds : (lo, hi), optional
+        Overrides the EVAL_TYPE_SCALE_BOUNDS[eval_type] lookup -- e.g. pass
+        (1.0, 7.0) when building a JudgeBiasSource with likert_max=7, so
+        "frac" keeps meaning the same RELATIVE severity on the wider scale
+        instead of silently becoming a smaller fraction of it.
     """
-    lo, hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
+    lo, hi = scale_bounds if scale_bounds is not None else EVAL_TYPE_SCALE_BOUNDS[eval_type]
     return frac * (hi - lo)
 
 
-def _jb_effect_magnitude(eval_type: str, frac: float) -> float:
+def _jb_effect_magnitude(eval_type: str, frac: float, *, scale_bounds: tuple[float, float] | None = None) -> float:
     """`frac` of `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, as an
     absolute JudgeBiasSource.effect_size value -- the same eval-type-relative
     fractional convention _jb_bias_magnitude uses for bias_delta, so
@@ -1457,8 +1503,10 @@ def _jb_effect_magnitude(eval_type: str, frac: float) -> float:
     build_ppi_power_sources doesn't sweep it: generate_judge_bias_cell adds
     effect_size directly onto a 0/1 truth draw (``truth_b2 = _marginal(n2) +
     es``), which only stays valid at es=0 -- any nonzero shift would push
-    binary truth values outside {0, 1}."""
-    lo, hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
+    binary truth values outside {0, 1}.
+
+    scale_bounds : (lo, hi), optional -- see _jb_bias_magnitude's."""
+    lo, hi = scale_bounds if scale_bounds is not None else EVAL_TYPE_SCALE_BOUNDS[eval_type]
     return frac * (hi - lo)
 
 
@@ -1941,7 +1989,7 @@ PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
 
 
-def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
+def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
     """Full factorial cross of the six factors most likely to compound in
     ways this harness's one-factor-at-a-time sweeps (build_judge_bias_sources,
     and this session's effect_size/bias_direction/N_lab additions -- each
@@ -1996,9 +2044,29 @@ def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
     lm=<lm>.es=<es>.bd=<bd>", the same "<prefix>.<eval_type>.<field>=
     <value>..." shape build_ppi_power_sources/build_ppi_nlab_grid_sources
     use -- see cases/pvalues.py's _PPI_FACTORIAL_NAME_RE/
-    _parse_ppi_factorial_name for the corresponding parser."""
+    _parse_ppi_factorial_name for the corresponding parser.
+
+    likert_max : int, default 5
+        Forwarded to every likert JudgeBiasSource's own likert_max field
+        (continuous sources are unaffected) -- 5 (the default) reproduces
+        the standard scenarios exactly. A non-default value also widens the
+        (lo, hi) span _jb_bias_magnitude/_jb_effect_magnitude use for
+        likert's bias_delta/effect_size, so "moderate"/"severe" bias and
+        "moderate"/"large" effect keep meaning the same RELATIVE severity on
+        the wider scale rather than becoming a smaller fraction of it.
+        llm_noise (the judge's measurement-error SD, historically a flat 0.20
+        for every scenario here) is rescaled the same way -- by
+        _likert_scale_factor(likert_max) -- so the judge stays EQUALLY
+        reliable relative to the (also-rescaled) truth spread at any
+        likert_max, rather than becoming spuriously more reliable simply
+        because the score range got wider while the noise magnitude didn't.
+        Scenario names are unchanged (no likert_max marker) -- distinguish
+        likert_max=7 runs by their own --official-tests output directory/
+        manifest.json."""
     sources: list[JudgeBiasSource] = []
     for et in _PPI_FACTORIAL_EVAL_TYPES:
+        et_scale_bounds = (1.0, float(likert_max)) if et == "likert" else None
+        et_llm_noise = 0.20 * (_likert_scale_factor(likert_max) if et == "likert" else 1.0)
         for bm_label, bm_frac in PPI_FACTORIAL_BIAS_MAGNITUDES.items():
             for n in PPI_FACTORIAL_N_VALUES:
                 for n_lab in PPI_FACTORIAL_NLAB_VALUES:
@@ -2016,10 +2084,10 @@ def build_ppi_factorial_sources() -> list[JudgeBiasSource]:
                                 )
                                 sources.append(JudgeBiasSource(
                                     name=name, tag="factorial", eval_type=et, icc=0.20, n=n,
-                                    label_frac=n_lab / n, llm_noise=0.20,
+                                    label_frac=n_lab / n, llm_noise=et_llm_noise, likert_max=likert_max,
                                     bias_type=("none" if bm_label == "none" else "differential"),
-                                    bias_delta=sign * _jb_bias_magnitude(et, bm_frac),
-                                    effect_size=_jb_effect_magnitude(et, es_frac),
+                                    bias_delta=sign * _jb_bias_magnitude(et, bm_frac, scale_bounds=et_scale_bounds),
+                                    effect_size=_jb_effect_magnitude(et, es_frac, scale_bounds=et_scale_bounds),
                                     **lm_kw,
                                 ))
     return sources
@@ -2138,11 +2206,13 @@ def generate_judge_bias_group_pair_cell(
     noise1 = scenario.llm_noise
     noise2 = scenario.llm_noise2 if scenario.llm_noise2 is not None else scenario.llm_noise
     anchor = _ppi_shape_anchor(shape)
+    if scenario.eval_type == "likert":
+        anchor = _likert_rescale_point(anchor, scenario.likert_max)
     (bias_a, bias_b, _bias_c), (slope_a, slope_b, _slope_c) = _jb_judge_params_3(scenario)
     es = scenario.effect_size
 
     def _marginal(n: int) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
+        return sample_group_truth(shape, n, 1, 1, 1.0, rng, likert_max=scenario.likert_max)[0, :, 0]
 
     # -- Independent two-group data (ttest_welch, mw) --
     truth_a2 = _marginal(n1)
@@ -2169,7 +2239,9 @@ def generate_judge_bias_group_pair_cell(
     )
 
     # -- Paired data (paired_t, wilcoxon) --
-    truth_x, truth_y = sample_group_truth(shape, n1, 1, 2, scenario.icc, rng, effects=np.array([0.0, es]))[:, :, 0]
+    truth_x, truth_y = sample_group_truth(
+        shape, n1, 1, 2, scenario.icc, rng, effects=np.array([0.0, es]), likert_max=scenario.likert_max,
+    )[:, :, 0]
     if scenario.eval_type == "binary":
         llm_x, llm_y = _jb_llm_repeated_binary(
             [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
@@ -2219,14 +2291,18 @@ def generate_judge_bias_cell(
     noise2 = scenario.llm_noise2 if scenario.llm_noise2 is not None else scenario.llm_noise
     noise3 = scenario.llm_noise3 if scenario.llm_noise3 is not None else scenario.llm_noise
     anchor = _ppi_shape_anchor(shape)
+    if scenario.eval_type == "likert":
+        anchor = _likert_rescale_point(anchor, scenario.likert_max)
     (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _jb_judge_params_3(scenario)
     es = scenario.effect_size
 
     def _marginal(n: int) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
+        return sample_group_truth(shape, n, 1, 1, 1.0, rng, likert_max=scenario.likert_max)[0, :, 0]
 
     def _repeated(n: int, n_conditions: int, effects: np.ndarray) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, n_conditions, scenario.icc, rng, effects=effects)[:, :, 0]
+        return sample_group_truth(
+            shape, n, 1, n_conditions, scenario.icc, rng, effects=effects, likert_max=scenario.likert_max,
+        )[:, :, 0]
 
     # -- Independent two-group data (ttest, mannwhitney; ttest/ttest_welch
     # also validated on binary -- see _jb_llm_binary. `es` (effect_size) is
@@ -2383,10 +2459,10 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     n3 = scenario.n3 if scenario.n3 is not None else scenario.n
 
     def _marginal(n: int) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, 1, 1.0, rng)[0, :, 0]
+        return sample_group_truth(shape, n, 1, 1, 1.0, rng, likert_max=scenario.likert_max)[0, :, 0]
 
     def _repeated(n: int, n_conditions: int) -> np.ndarray:
-        return sample_group_truth(shape, n, 1, n_conditions, scenario.icc, rng)[:, :, 0]
+        return sample_group_truth(shape, n, 1, n_conditions, scenario.icc, rng, likert_max=scenario.likert_max)[:, :, 0]
 
     # For each test family, repeatedly draw pure-truth data and average the
     # test's raw statistic over n_mc draws, to estimate its true null value.

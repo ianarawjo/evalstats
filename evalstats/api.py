@@ -732,7 +732,7 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     """
     from evalstats.tests import (
         _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
-        _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
+        _ppi_paired_arrays, _ppi_two_sample_midrank_corrected,
     )
     if method == "tango":
         return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
@@ -745,11 +745,12 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     if method == "wilcoxon":
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.median, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "mannwhitney":
-        return _ppi_two_sample(
-            a, b, a_lab, b_lab,
-            lambda ya, yb: float(_p_x_gt_y_midrank(ya, yb) - 0.5),
-            alpha, n_boot, rng,
-        )
+        # Per-group, per-score-bin local rectifier -- NOT the single-global-
+        # rectifier _ppi_two_sample -- see _ppi_two_sample_midrank_corrected's
+        # docstring for why the naive global rectifier badly miscalibrates
+        # this rank estimand under score-correlated labeling + real judge
+        # bias (validated via simulations/harness --mode ppi).
+        return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
         f"method {method!r}. Supported pairwise methods: "

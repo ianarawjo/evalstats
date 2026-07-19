@@ -611,6 +611,171 @@ def _p_x_gt_y_midrank(x: np.ndarray, y: np.ndarray) -> float:
     return float((n_lt.sum() + 0.5 * (n_le - n_lt).sum()) / (len(x) * len(y)))
 
 
+def _midrank_theta(x: np.ndarray, y: np.ndarray) -> float:
+    """``_p_x_gt_y_midrank(x, y) - 0.5``, defined as 0.0 (rather than
+    raising) when one side is empty -- a bootstrap resample of a small
+    per-stratum labeled slice can legitimately draw zero items from one
+    group, and 0.0 ("no evidence either way") is the natural identity value
+    for this shifted, additive estimand."""
+    if len(x) == 0 or len(y) == 0:
+        return 0.0
+    return _p_x_gt_y_midrank(x, y) - 0.5
+
+
+def _ppi_two_sample_midrank_corrected(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+    n_strata: int = 2,
+    min_lab_per_bin: int = 5,
+) -> "PPIResult":
+    """PPI correction for the two-sample mid-rank estimand ``P_mid(A>B) - 0.5``,
+    using a per-group LOCAL (score-binned) rectifier instead of
+    :func:`_ppi_two_sample`'s single global one.
+
+    **Why this exists.** Feeding the mid-rank estimator into the generic
+    :func:`_ppi_two_sample` (``estimate = f(Ŷ_unlab) + [f(Y_lab) - f(Ŷ_hat_lab)]``)
+    is exact for a MEAN (linear, shift-invariant: a constant judge-bias offset
+    changes a group's mean by that same constant everywhere), but badly
+    miscalibrated for ``P_mid(X>Y)`` when the labeled subset is drawn
+    non-uniformly with respect to score (MNAR labeling correlated with the
+    true score, e.g. "double-check the highest-scoring items"). A rank
+    statistic's sensitivity to a fixed additive bias depends on the LOCAL
+    density of scores near the comparison -- which differs between a
+    score-truncated labeled slice and the full population, especially for
+    coarse/discrete (Likert) scales where the truncated slice is tie-heavy.
+    Computing ``f`` once on the truncated labeled slice and once on the full
+    unlabeled population, then adding the difference, extrapolates a
+    locally-estimated sensitivity across a region where it doesn't hold --
+    confirmed via simulation to inflate Type-I error to 3-9x nominal under
+    MNAR + Likert + real judge bias (see
+    ``simulations/harness/cases/pvalues.py --mode ppi``'s judge-bias sweep,
+    tag "label_mechanism" x "eval_type"). Two negative controls rule out
+    an implementation bug rather than a real statistical gap: the naive
+    estimator stays calibrated when either MNAR labeling OR the judge bias
+    itself is absent -- it's specifically their combination, amplified by
+    discreteness, that breaks it.
+
+    **The fix.** Never compute the rank statistic on the labeled slice on
+    its own. Instead, for each group SEPARATELY: bin that group's own items
+    (labeled + unlabeled) into ``n_strata`` quantile bins of that group's OWN
+    LLM score, and for each unlabeled item, correct its score by the LOCAL
+    (per-bin) mean human-minus-LLM discrepancy among that group's OWN
+    labeled items in the same bin -- falling back to that group's GLOBAL
+    discrepancy when a bin has fewer than ``min_lab_per_bin`` of that
+    group's labeled items (partial pooling; needed because n_lab is often
+    only 15-80 total, split across bins and groups). Labeled items use their
+    known human value directly. A SINGLE mid-rank comparison is then run
+    once, on the two full (corrected) groups -- unlike a stratified rank
+    TEST (e.g. van Elteren), this never splits the actual group-vs-group
+    comparison by score: that was tried first and made things far worse
+    (Type-I >0.9 even under MCAR with no MNAR at all), because LLM score is
+    not an independent covariate here -- it's exactly the variable the
+    group-specific judge bias shifts, so stratifying the comparison by it
+    conditions on a variable downstream of the very effect being tested (a
+    collider). Localizing only the CALIBRATION (per-group, per-item) avoids
+    that: it never restricts which items get compared to which.
+
+    Validated via simulation (``simulations/harness``, "fact.likert.bm=severe...
+    lm=mnar_strong" family of scenarios): reduces Type-I from 0.36-0.41 to
+    0.05-0.07 at the worst previously-identified (eval_type=likert,
+    mnar_strong, severe judge bias) cells, with no calibration regression
+    under MCAR, zero-bias, or continuous-eval_type controls, and no power
+    loss under matched (MCAR, no-bias-confound) conditions. n_strata=2 was
+    chosen over 1 (leaves most of the original problem in place) and 3
+    (bins get label-starved at n_lab=15-30, no consistent further gain).
+
+    Bin edges are fixed once per group from that group's full (labeled +
+    unlabeled) LLM-score sample and held fixed across the bootstrap -- the
+    same simplification standard stratified-bootstrap analyses use, and
+    consistent with :func:`_ppi_two_sample`'s own choice not to recompute
+    anything derived from the full sample inside the bootstrap loop.
+    """
+    from evalstats.ppi import PPIResult
+
+    rng = np.random.default_rng(rng)
+
+    mask_a = ~np.isnan(a_lab)
+    mask_b = ~np.isnan(b_lab)
+    if mask_a.sum() == 0 and mask_b.sum() == 0:
+        raise ValueError("No labeled items found in a_lab or b_lab.")
+
+    llm_unlab_a, llm_unlab_b = a[~mask_a], b[~mask_b]
+    llm_lab_a, llm_lab_b = a[mask_a], b[mask_b]
+    truth_lab_a, truth_lab_b = a_lab[mask_a], b_lab[mask_b]
+
+    def _bin_edges(llm_all: np.ndarray) -> np.ndarray:
+        if n_strata <= 1:
+            return np.array([])
+        qs = np.linspace(0, 100, n_strata + 1)[1:-1]
+        return np.percentile(llm_all, qs)
+
+    edges_a = _bin_edges(a)
+    edges_b = _bin_edges(b)
+    bin_unlab_a = np.searchsorted(edges_a, llm_unlab_a, side="right")
+    bin_unlab_b = np.searchsorted(edges_b, llm_unlab_b, side="right")
+    bin_lab_a = np.searchsorted(edges_a, llm_lab_a, side="right")
+    bin_lab_b = np.searchsorted(edges_b, llm_lab_b, side="right")
+
+    def _correct_unlab(llm_unlab, bin_unlab, llm_lab, bin_lab, truth_lab) -> np.ndarray:
+        global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
+        rects = np.full(max(n_strata, 1), global_rect)
+        for k in range(max(n_strata, 1)):
+            m = bin_lab == k
+            if m.sum() >= min_lab_per_bin:
+                rects[k] = float(np.mean(truth_lab[m]) - np.mean(llm_lab[m]))
+        return llm_unlab + rects[bin_unlab]
+
+    def _point_estimate(lu_a, bu_a, ll_a, bl_a, tl_a, lu_b, bu_b, ll_b, bl_b, tl_b) -> float:
+        corr_unlab_a = _correct_unlab(lu_a, bu_a, ll_a, bl_a, tl_a)
+        corr_unlab_b = _correct_unlab(lu_b, bu_b, ll_b, bl_b, tl_b)
+        combined_a = np.concatenate([tl_a, corr_unlab_a])
+        combined_b = np.concatenate([tl_b, corr_unlab_b])
+        return _midrank_theta(combined_a, combined_b)
+
+    estimate = _point_estimate(
+        llm_unlab_a, bin_unlab_a, llm_lab_a, bin_lab_a, truth_lab_a,
+        llm_unlab_b, bin_unlab_b, llm_lab_b, bin_lab_b, truth_lab_b,
+    )
+
+    # Informational-only global summaries (reported for PPIResult parity with
+    # _ppi_two_sample) -- NOT used to compute `estimate`/`ci_low`/`ci_high`/
+    # `p_value` above, which come from the per-group local correction.
+    f_unlab = _midrank_theta(llm_unlab_a, llm_unlab_b) if (len(llm_unlab_a) and len(llm_unlab_b)) else \
+        _midrank_theta(a[~mask_a], b[~mask_b])
+    f_lab = _midrank_theta(truth_lab_a, truth_lab_b)
+    f_hat_lab = _midrank_theta(llm_lab_a, llm_lab_b)
+
+    n_unlab_a, n_unlab_b = len(llm_unlab_a), len(llm_unlab_b)
+    n_lab_a, n_lab_b = len(llm_lab_a), len(llm_lab_b)
+
+    boots = np.empty(n_boot)
+    for i in range(n_boot):
+        idx_ua = rng.integers(0, n_unlab_a, n_unlab_a) if n_unlab_a else np.empty(0, dtype=int)
+        idx_ub = rng.integers(0, n_unlab_b, n_unlab_b) if n_unlab_b else np.empty(0, dtype=int)
+        idx_la = rng.integers(0, n_lab_a, n_lab_a) if n_lab_a else np.empty(0, dtype=int)
+        idx_lb = rng.integers(0, n_lab_b, n_lab_b) if n_lab_b else np.empty(0, dtype=int)
+        boots[i] = _point_estimate(
+            llm_unlab_a[idx_ua], bin_unlab_a[idx_ua], llm_lab_a[idx_la], bin_lab_a[idx_la], truth_lab_a[idx_la],
+            llm_unlab_b[idx_ub], bin_unlab_b[idx_ub], llm_lab_b[idx_lb], bin_lab_b[idx_lb], truth_lab_b[idx_lb],
+        )
+
+    lo = float(np.percentile(boots, 100 * alpha / 2))
+    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
+    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
+        llm_estimate=float(f_unlab), human_estimate=float(f_lab),
+        rectifier=float(f_lab - f_hat_lab), p_value=p_value,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Non-PPI paired/binary p-value helpers
 #
@@ -2152,6 +2317,7 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
+    method: str = "corrected",
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
 
@@ -2173,6 +2339,22 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
+    method : {"corrected", "naive"}
+        Which PPI correction to use for the mid-rank estimand (default
+        ``"corrected"``). ``"naive"`` applies a single GLOBAL rectifier
+        (:func:`_ppi_two_sample`) -- simple, and exactly correct for a MEAN,
+        but simulation showed it badly miscalibrated for this rank estimand
+        under labeling that's non-uniform with respect to score (e.g. "double-
+        check the highest-scoring items") combined with real judge bias and
+        coarse/discrete scales: Type-I error up to 3-9x nominal in the worst
+        identified case (Likert, strong such labeling, severe bias). See
+        ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
+        ``mwu_corr`` vs ``mw_naive``) for the calibration study.
+        ``"corrected"`` (:func:`_ppi_two_sample_midrank_corrected`) fixes this
+        with a per-group, per-score-bin local rectifier instead -- see that
+        function's docstring for the full mechanism and validation. Kept as
+        an option (not deleted) for direct comparison and for reproducing
+        results computed under the old behavior.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -2183,6 +2365,9 @@ def mannwhitney(
     >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
+    if method not in ("corrected", "naive"):
+        raise ValueError(f'method must be "corrected" or "naive"; got {method!r}.')
+
     x = _coerce(x)
     y = _coerce(y)
 
@@ -2198,6 +2383,7 @@ def mannwhitney(
         "p_x_gt_y": p_x_gt_y,
         "estimand": "P(X > Y)",
         "n_boot": n_boot,
+        "ppi_method": method,
     }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = None
@@ -2218,12 +2404,15 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
-        # any distribution (including discrete/Likert). Estimand θ = P_mid - 0.5 → 0.
-        def _auc_shifted(xa, ya):
-            return _p_x_gt_y_midrank(xa, ya) - 0.5
+        if method == "naive":
+            # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
+            # any distribution (including discrete/Likert). Estimand θ = P_mid - 0.5 → 0.
+            def _auc_shifted(xa, ya):
+                return _p_x_gt_y_midrank(xa, ya) - 0.5
 
-        ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng)
+            ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng)
+        else:
+            ppi = _ppi_two_sample_midrank_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
 
         corrected_estimate = ppi.estimate + 0.5       # report as P(X>Y)
         corrected_ci       = (ppi.ci_low + 0.5, ppi.ci_high + 0.5)

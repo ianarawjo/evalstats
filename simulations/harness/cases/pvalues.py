@@ -154,6 +154,7 @@ with warnings.catch_warnings():
     )
     from evalstats.tests import (
         _ppi_two_sample,
+        _ppi_two_sample_midrank_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -219,9 +220,11 @@ from ..methods import (
     CANONICAL_SIMULTANEOUS_CI_METHODS,
     CORR_NONE,
     PPI_TEST_METHODS,
+    PPI_OFFICIAL_TEST_METHODS,
     TTEST,
     TTEST_WELCH,
-    MW,
+    MW_NAIVE,
+    MWU_CORR,
     ANOVA_IND,
     ANOVA_REP,
     FRIEDMAN,
@@ -3425,14 +3428,23 @@ def _run_ppi_cell(
                 except Exception:
                     failed[TTEST_WELCH.name] += 1
 
-            if MW.name in active_tests:
+            if MW_NAIVE.name in active_tests:
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MW.name] += int(p_u < _ALPHA)
+                    uncorrected[MW_NAIVE.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
-                    corrected[MW.name] += int(r.p_value < _ALPHA)
+                    corrected[MW_NAIVE.name] += int(r.p_value < _ALPHA)
                 except Exception:
-                    failed[MW.name] += 1
+                    failed[MW_NAIVE.name] += 1
+
+            if MWU_CORR.name in active_tests:
+                try:
+                    p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
+                    uncorrected[MWU_CORR.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample_midrank_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
+                    corrected[MWU_CORR.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[MWU_CORR.name] += 1
 
             if WILCOXON.name in active_tests:
                 try:
@@ -3696,8 +3708,8 @@ def run_ppi_simulation(
 # ---------------------------------------------------------------------------
 
 _PPI_EFFECT_TESTS = (
-    TTEST.name, TTEST_WELCH.name, MW.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name,
-    TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
+    TTEST.name, TTEST_WELCH.name, MW_NAIVE.name, MWU_CORR.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
+    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name,
 )
 
 # bayes_bootstrap/bootstrap_t/tango_score are excluded from the main ppi
@@ -3736,7 +3748,7 @@ def _run_ppi_effect_cell(
     --effect-reps count) rather than piggybacking on run_ppi_simulation's
     Type-I sweep the way sim_type_i_calibration.py's _run_one does for its
     "free" tests -- this keeps _run_ppi_cell's Type-I return type/call site
-    completely unchanged, at the cost of redrawing ttest/ttest_welch/mw/
+    completely unchanged, at the cost of redrawing ttest/ttest_welch/mwu_corr/
     wilcoxon/kruskal's bootstrap a second time (cheap at the smaller
     effect-reps count this is meant to run at). anova_ind/anova_rep/friedman
     call the bootstrap-based SCALAR-estimate functions here (_ppi_anova_
@@ -3771,10 +3783,17 @@ def _run_ppi_effect_cell(
                 except Exception:
                     pass
 
-            if MW.name in active_tests:
+            if MW_NAIVE.name in active_tests:
                 try:
                     r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
-                    out[MW.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    out[MW_NAIVE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if MWU_CORR.name in active_tests:
+                try:
+                    r = _ppi_two_sample_midrank_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
+                    out[MWU_CORR.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -4000,7 +4019,7 @@ class PPIComparisonResult:
     _JB_MIN_LAB: label_frac alone can be misleading once the floor binds
     (e.g. label_frac=0.05 and 0.10 both floor to n_lab=15 at n=100), so this
     is the field to plot/group by, not label_frac, whenever comparing
-    across different n. For "group"-structure methods (ttest_welch, mw)
+    across different n. For "group"-structure methods (ttest_welch, mwu_corr)
     this is group A's labeled count specifically -- see
     _run_ppi_comparison_cell's docstring for why A and B are expected to
     match under this harness's scenario construction."""
@@ -4008,7 +4027,7 @@ class PPIComparisonResult:
     """Which classical test this result is for -- see _COMPARISON_METHODS.
     Defaults to paired_t for backward compatibility; every
     _run_ppi_comparison_cell call now sets this explicitly to one of
-    ttest_welch/paired_t/mw/wilcoxon (never a pooled "average" tag --
+    ttest_welch/paired_t/mwu_corr/wilcoxon (never a pooled "average" tag --
     pooling across methods happens downstream, over a list of these, via
     pool_ppi_comparison_across_methods)."""
     rejects_all_human: int = 0
@@ -4046,15 +4065,20 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     raise ValueError(f"_ppi_source_effect_frac: unrecognized tag {sc.tag!r}")
 
 
-_COMPARISON_METHODS = (TTEST_WELCH.name, PAIRED_T.name, MW.name, WILCOXON.name)
+_COMPARISON_METHODS = (TTEST_WELCH.name, PAIRED_T.name, MWU_CORR.name, WILCOXON.name)
 """The four classical two-sample/paired tests the PPI estimator-comparison
 sweep (and everything downstream: N x N_lab grid, full factorial, the
 null-effect bar chart) runs and, by default, averages across -- rather than
-paired_t alone. ttest_welch/paired_t (mean-based) and mw/wilcoxon (rank-
+paired_t alone. ttest_welch/paired_t (mean-based) and mwu_corr/wilcoxon (rank-
 based) cover both the independent-two-group and paired structures, and all
 four test the SAME two-group mean/location-shift question via different
 classical machinery, so averaging their rejection rates is a coherent
-summary of "does this hold across reasonable test choices." Deliberately
+summary of "does this hold across reasonable test choices." Uses mwu_corr
+(the per-group locally-calibrated PPI midrank correction), not mw_naive
+(single-global-rectifier) -- the latter was found badly miscalibrated under
+MNAR-like labeling x real judge bias x coarse/discrete scales specifically
+in this sweep (see mw_naive's Method docstring in methods.py), which is why
+it was replaced here rather than kept alongside it. Deliberately
 excludes the omnibus/multi-group tests (anova_ind/anova_rep/friedman/
 kruskal/lmm*) and the non-standard bootstrap-CI constructions
 (bayes_bootstrap/bootstrap_t/tango_score) -- those answer different
@@ -4065,9 +4089,10 @@ alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
 grid_sources' paired_t-only scoping was never meant to claim the OTHER
 PPI_TEST_METHODS behave identically."""
 _COMPARISON_METHOD_STRUCTURE = {
-    TTEST_WELCH.name: "group", MW.name: "group", PAIRED_T.name: "pair", WILCOXON.name: "pair",
+    TTEST_WELCH.name: "group", MWU_CORR.name: "group", MW_NAIVE.name: "group",
+    PAIRED_T.name: "pair", WILCOXON.name: "pair",
 }
-_COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mw/wilcoxon"
+_COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu_corr/wilcoxon"
 POOLED_METHOD_LABEL = "mean_of_4"
 """PPIComparisonResult.method value for a row produced by
 pool_ppi_comparison_across_methods -- distinguishes a pooled/averaged row
@@ -4082,8 +4107,8 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
     human_subset, llm_only, and llm_impute -- every arm of the comparison
     for a given method uses the SAME test, just on different input arrays,
     so the comparison is apples-to-apples per method (e.g. the "oracle"
-    all_human/human_subset arms run Mann-Whitney on truth for the "mw"
-    method-row, not always a t-test)."""
+    all_human/human_subset arms run Mann-Whitney on truth for the
+    "mwu_corr"/"mw_naive" method-rows, not always a t-test)."""
     if structure == "group":
         if method == TTEST_WELCH.name:
             return float(scipy_stats.ttest_ind(a, b, equal_var=False).pvalue)
@@ -4095,14 +4120,20 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
 
 def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int) -> float:
     """The SAME PPI-corrected call _run_ppi_cell uses for this method
-    (_ppi_two_sample for "group" methods, _ppi_paired_arrays for "pair"
-    methods -- see _run_ppi_cell's ttest_welch/mw/paired_t/wilcoxon blocks,
-    which this mirrors exactly)."""
+    (_ppi_two_sample / _ppi_two_sample_midrank_corrected for "group"
+    methods, _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
+    ttest_welch/mw_naive/mwu_corr/paired_t/wilcoxon blocks, which this
+    mirrors exactly)."""
     if structure == "group":
         if method == TTEST_WELCH.name:
             estimator = lambda ya, yb: float(ya.mean() - yb.mean())  # noqa: E731
-        else:
-            estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
+            return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
+        if method == MWU_CORR.name:
+            return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
+        # mw_naive: single-global-rectifier midrank correction -- kept for
+        # direct comparison against mwu_corr, not used by _COMPARISON_METHODS
+        # itself (see that constant's docstring for why it was replaced there).
+        estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
     statistic = np.mean if method == PAIRED_T.name else np.median
     return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=np.mean).p_value
@@ -4259,7 +4290,7 @@ def pool_ppi_comparison_across_methods(results: list[PPIComparisonResult]) -> li
     whichever methods are present for that name -- equivalent to averaging
     each method's rate since every method shares the same n_reps per
     scenario). Output rows carry method=POOLED_METHOD_LABEL. This is the
-    "average across ttest_welch/paired_t/mw/wilcoxon" pooling requested for
+    "average across ttest_welch/paired_t/mwu_corr/wilcoxon" pooling requested for
     the headline figures (null-effect bar chart, 5-way comparison, N x
     N_lab grid, factorial slices) -- the per-method rows in `results`
     remain available (e.g. in the raw CSV) as the supplementary robustness
@@ -4515,7 +4546,7 @@ def save_ppi_null_comparison_plot(
     that IS present). This plot has no effect_size axis to be misread
     against: every bar here is, by construction, a false-positive rate.
 
-    Every bar pools across _COMPARISON_METHODS (ttest_welch/paired_t/mw/
+    Every bar pools across _COMPARISON_METHODS (ttest_welch/paired_t/mwu_corr/
     wilcoxon -- `results`/`nlab_cal_results` are expected to already be
     pool_ppi_comparison_across_methods output, one row per scenario, not
     the raw per-method rows). For continuous and likert specifically,
@@ -5332,7 +5363,8 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
 # ---------------------------------------------------------------------------
 
 _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
-    TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MW.name: "Mann-Whitney U",
+    TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MWU_CORR.name: "Mann-Whitney U (corrected)",
+    MW_NAIVE.name: "Simple MWU",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman", KRUSKAL.name: "Kruskal-Wallis",
@@ -6002,6 +6034,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--factorial-n-boot", type=int, default=500, metavar="N",
                          help="ppi mode: PPI bootstrap resample count for --factorial-check (default 500, "
                               "screening-tier -- bump toward --ppi-n-boot for a confirmation pass)")
+    parser.add_argument("--factorial-likert-max", type=int, default=5, metavar="N",
+                         help="ppi mode: top of the Likert scale's integer range for --factorial-check's likert "
+                              "scenarios (default 5, the standard scale). A non-default value (e.g. 7) rescales "
+                              "the SAME underlying distribution/bias/effect magnitudes onto a wider integer grid, "
+                              "rather than generating a different one -- see scenarios.synthetic."
+                              "build_ppi_factorial_sources' likert_max parameter. Ignored for continuous scenarios.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
@@ -6152,6 +6190,29 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     return args
 
 
+def official_args_ppi_factorial_likert7(base_seed: int = 42) -> argparse.Namespace:
+    """Same as official_args_ppi_factorial, except likert scenarios are
+    generated on a 1-7 scale instead of the standard 1-5 (factorial_likert_max
+    = 7 -- see build_ppi_factorial_sources' likert_max parameter). Continuous
+    scenarios are unaffected (likert_max is a no-op for them).
+
+    Exists to test a specific hypothesis raised after the first factorial run
+    (see simulations/out/official_20260718_213255): PPI-corrected
+    Mann-Whitney's Type-I rate blew up specifically for likert scenarios
+    under severe MNAR labeling (up to 0.445 at et=likert/bm=severe/n=400/
+    nlab=80/lm=mnar_strong), while paired_t/wilcoxon/ttest_welch stayed
+    well-calibrated in that exact same scenario, AND mw itself stayed
+    well-calibrated on continuous (effectively tie-free) data under the same
+    severe MNAR mechanism -- pointing at Likert's coarse, heavily-tied 5-level
+    discretization (not MNAR alone, and not rank tests generally) as the
+    likely aggravating factor for mw's independent-groups midrank
+    construction specifically. Comparing this run's likert Type-I/power
+    numbers against the 1-5 run's is the intended follow-up analysis."""
+    args = official_args_ppi_factorial(base_seed)
+    args.factorial_likert_max = 7
+    return args
+
+
 def official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for simultaneous-CI calibration only (synthetic
     data). Split out from official_args() for the same reason as
@@ -6262,6 +6323,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (multiarm)", official_args_multiarm(base_seed)),
         ("synthetic (ppi)", official_args_ppi(base_seed)),
         ("synthetic (ppi factorial only)", official_args_ppi_factorial(base_seed)),
+        ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
         ("real data (pairwise + multiarm)", real_official_args(base_seed)),
         ("real data (pairwise)", real_official_args_pairwise(base_seed)),
@@ -6302,7 +6364,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=[TTEST.name, MW.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
+        tests=[TTEST.name, MW_NAIVE.name, MWU_CORR.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         factorial_check=True, factorial_reps=2, factorial_n_boot=50,
         workers=1,
@@ -6508,7 +6570,10 @@ def run(args: argparse.Namespace) -> CaseResult:
             key_metrics["simultaneous_ci_n_results"] = len(sci_results)
 
         if "ppi" in modes:
-            active_tests = args.tests if args.tests else [m.name for m in PPI_TEST_METHODS]
+            # Default (no --tests) runs the OFFICIAL subset -- excludes
+            # mw_naive (superseded by mwu_corr; see methods.py) but still
+            # selectable explicitly via --tests mw_naive for comparison.
+            active_tests = args.tests if args.tests else [m.name for m in PPI_OFFICIAL_TEST_METHODS]
             print(f"\npvalues simulation (PPI-corrected) -- tests={active_tests}")
             jb_sources = build_judge_bias_sources()
             if args.eval_types:
@@ -6818,16 +6883,18 @@ def run(args: argparse.Namespace) -> CaseResult:
                     print(f"Saved plot: {null_comparison_plot_path}")
 
             if getattr(args, "factorial_check", False):
-                factorial_sources = build_ppi_factorial_sources()
+                factorial_likert_max = getattr(args, "factorial_likert_max", 5)
+                factorial_sources = build_ppi_factorial_sources(likert_max=factorial_likert_max)
                 if args.eval_types:
                     requested = set(args.eval_types)
                     factorial_sources = [s for s in factorial_sources if s.eval_type in requested]
                 if factorial_sources:
                     factorial_reps = getattr(args, "factorial_reps", 100)
                     factorial_n_boot = getattr(args, "factorial_n_boot", 500)
+                    likert_note = f", likert_max={factorial_likert_max}" if factorial_likert_max != 5 else ""
                     print(f"\npvalues simulation (PPI-corrected, full factorial) -- "
                           f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods, "
-                          f"reps={factorial_reps}, n_boot={factorial_n_boot}")
+                          f"reps={factorial_reps}, n_boot={factorial_n_boot}{likert_note}")
                     factorial_results_raw = run_ppi_comparison_simulation(
                         factorial_sources, n_reps=factorial_reps, n_boot=factorial_n_boot,
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
@@ -6836,7 +6903,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_results = pool_ppi_comparison_across_methods(factorial_results_raw)
                     print_ppi_factorial_report(factorial_results, alpha=args.alpha)
 
-                    factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}_{stamp}"
+                    stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
+                    factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}{stem_lmax_suffix}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_factorial(
                             results=factorial_results_raw, pooled_results=factorial_results,
@@ -6851,6 +6919,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         print(f"Saved plot: {factorial_plot_path}")
 
                     key_metrics["ppi_factorial_n_results"] = len(factorial_results)
+                    key_metrics["ppi_factorial_likert_max"] = factorial_likert_max
                     null_results = [r for r in factorial_results if _parse_ppi_factorial_name(r.name)["es"] == "null"]
                     if null_results:
                         c_tot = sum(r.rejects_ppi for r in null_results)

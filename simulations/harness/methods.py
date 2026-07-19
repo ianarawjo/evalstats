@@ -292,7 +292,29 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#3182bd")
 TTEST_WELCH = Method("ttest_welch", "#6baed6")
-MW = Method("mw", "#9ecae1")
+# MW_NAIVE/MWU_CORR: two PPI corrections for the SAME classical test
+# (Mann-Whitney U / independent two-group mid-rank estimand P_mid(A>B)-0.5),
+# not two different classical tests. MW_NAIVE (formerly just "MW") applies
+# evalstats.tests._ppi_two_sample's single GLOBAL rectifier -- exactly
+# correct for a MEAN, but simulation (simulations/harness/cases/pvalues.py
+# --mode ppi, judge-bias sweep, tag "label_mechanism" x "eval_type") showed
+# it badly miscalibrated for this rank estimand specifically when labeling
+# is non-uniform with respect to score (e.g. "double-check the highest-
+# scoring items") combined with real judge bias and a coarse/discrete
+# (Likert) scale: Type-I error 3-9x nominal in the worst identified cell
+# (likert, severe bias, strong such labeling: 0.36-0.41 vs nominal 0.05).
+# MWU_CORR (evalstats.tests._ppi_two_sample_midrank_corrected) fixes this
+# with a per-group, per-score-bin LOCAL rectifier instead (see that
+# function's docstring for the full mechanism/validation) and is what the
+# official PPI test sweep now runs by default in mw_naive's old slot --
+# see PPI_OFFICIAL_TEST_METHODS below. MW_NAIVE is kept (not deleted) for
+# direct comparison and reproducing pre-fix results, selectable explicitly
+# via --tests mw_naive. Colors stay in the same Blues family as
+# ttest/ttest_welch (mwu_corr inherits mw's original shade, since it now
+# occupies that slot in the standard-tests plot; mw_naive gets a visually
+# lighter/secondary shade of the same family).
+MW_NAIVE = Method("mw_naive", "#c6dbef")
+MWU_CORR = Method("mwu_corr", "#9ecae1")
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
@@ -301,9 +323,18 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MW, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
-    LMM, LMM_FACTORIAL, LMM_RUNS,
+    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
+"""Every PPI test method the harness knows how to run -- the full set
+selectable via --tests. NOT what runs by default; see
+PPI_OFFICIAL_TEST_METHODS for that."""
+PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m is not MW_NAIVE]
+"""The default (--tests unset) active-test set for --mode ppi -- every
+PPI_TEST_METHODS entry except mw_naive, which simulation showed badly
+miscalibrated under MNAR-like labeling x real judge bias x coarse/discrete
+scales (see MW_NAIVE's comment above) and which mwu_corr now covers
+instead. mw_naive still runs if explicitly requested via --tests mw_naive."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
@@ -317,7 +348,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MW, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
+    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 
 METHODS_BY_NAME: dict[str, Method] = {m.name: m for m in REPORT_METHOD_ORDER}

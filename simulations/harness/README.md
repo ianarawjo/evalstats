@@ -338,8 +338,8 @@ same way `evalstats.core.resampling` is.
     both the PPI estimator and rectifier, identical to `paired_t`'s PPI
     correction elsewhere in this file. For paper-defensibility this now
     runs and averages across FOUR classical tests --
-    `TTEST_WELCH`/`PAIRED_T`/`MW`/`WILCOXON` (`_COMPARISON_METHODS`) --
-    covering both the independent-two-group structure (ttest_welch, mw)
+    `TTEST_WELCH`/`PAIRED_T`/`MWU_CORR`/`WILCOXON` (`_COMPARISON_METHODS`) --
+    covering both the independent-two-group structure (ttest_welch, mwu_corr)
     and the paired structure (paired_t, wilcoxon).
     `generate_judge_bias_group_pair_cell` draws both structures together
     (a leaner superset of the old paired-only `generate_judge_bias_pair_
@@ -347,11 +347,11 @@ same way `evalstats.core.resampling` is.
     `_run_ppi_comparison_cell` takes a `method` argument and dispatches via
     `_COMPARISON_METHOD_STRUCTURE`; `_classical_pvalue`/
     `_ppi_comparison_pvalue` factor out the per-method test/PPI-correction
-    calls (mirroring `_run_ppi_cell`'s own ttest_welch/mw/paired_t/wilcoxon
-    blocks exactly, including using the SAME test for the all_human/
+    calls (mirroring `_run_ppi_cell`'s own ttest_welch/mwu_corr/paired_t/
+    wilcoxon blocks exactly, including using the SAME test for the all_human/
     human_subset oracle arms as for llm_only/llm_impute/ppi -- e.g. the
-    "mw" method-row runs Mann-Whitney on truth for its oracle arms too, not
-    always a t-test). Each of the 5 arms fails independently per replicate
+    "mwu_corr" method-row runs Mann-Whitney on truth for its oracle arms too,
+    not always a t-test). Each of the 5 arms fails independently per replicate
     (a wilcoxon/mannwhitneyu exception on one arm doesn't discard the
     other 4); only a PPI bootstrap-correction failure increments
     `n_failed`, preserving that field's original meaning.

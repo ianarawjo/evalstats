@@ -149,6 +149,21 @@ class JudgeBiasSource:
     name: str
     tag: str
     eval_type: str = "continuous"  # "continuous" | "likert" | "grades" | "binary" (binary: mean-based tests only, see above)
+    likert_max: int = 5
+    """Top of the Likert scale's integer range (bottom is always fixed at 1)
+    -- only meaningful when eval_type=="likert", ignored otherwise. The
+    default (5) reproduces every existing Likert scenario exactly. Setting
+    this to e.g. 7 rescales the SAME underlying "param"-shape distribution
+    (same relative mean position, spread, judge bias, and effect size as the
+    1-5 version -- see scenarios.synthetic.sample_group_truth's likert_max
+    parameter and _jb_bias_magnitude/_jb_effect_magnitude's scale_bounds
+    override) onto a wider integer grid, rather than generating a different
+    distribution -- lets PPI judge-bias scenarios test whether a coarser
+    (fewer-level) Likert scale is itself responsible for a calibration
+    issue. Only "param" Likert shapes support this (sample_group_truth
+    raises if combined with a "custom" shape like likert-bimodal). Deliberately
+    NOT threaded through EVAL_TYPE_SCALE_BOUNDS -- that harness-wide constant
+    still assumes 1-5 for the pairwise/multiarm/CI code that also reads it."""
     icc: float = 0.20
     """Intraclass correlation for the paired/repeated test structures' truth
     model (same meaning as build_pair_sources'/build_multiarm_sources' icc:
