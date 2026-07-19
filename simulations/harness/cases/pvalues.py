@@ -6166,6 +6166,32 @@ def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
     return args
 
 
+def official_args_ppi_no_lmm(base_seed: int = 42) -> argparse.Namespace:
+    """Same as official_args_ppi (same checks, same scenarios, same reps/
+    n_boot), except --tests excludes the three LMM-based methods (lmm/
+    lmm_factorial/lmm_runs). LMM is profiled at ~70% of --mode ppi's total
+    runtime (its mixed-model fits dominate build_judge_bias_sources' Type-I
+    sweep and the power check, both of which iterate active_tests over
+    every scenario) -- see run_ppi_simulation/_run_ppi_cell's docstrings.
+    This preset exists purely for a faster quality-check pass (e.g. after a
+    change to one of the OTHER PPI tests, or before a merge) when LMM's own
+    calibration isn't what's being verified, at a fraction of the
+    wall-clock cost.
+
+    The factorial/N x N_lab comparison sweep (_COMPARISON_METHODS) never
+    ran LMM to begin with (it's ttest_welch/paired_t/mwu_corr/wilcoxon
+    only), so this only changes the main Type-I sweep and power check --
+    it does NOT skip factorial_check itself; pair with --no-factorial-check
+    (or official_args_ppi_factorial's already-LMM-free scope) if the
+    factorial sweep's own cost also needs trimming."""
+    args = official_args_ppi(base_seed)
+    args.tests = [
+        m.name for m in PPI_OFFICIAL_TEST_METHODS
+        if m.name not in (LMM.name, LMM_FACTORIAL.name, LMM_RUNS.name)
+    ]
+    return args
+
+
 def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for JUST the full 6-factor factorial sweep
     (build_ppi_factorial_sources), split out from official_args_ppi the
@@ -6322,6 +6348,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (pairwise)", official_args_pairwise(base_seed)),
         ("synthetic (multiarm)", official_args_multiarm(base_seed)),
         ("synthetic (ppi)", official_args_ppi(base_seed)),
+        ("synthetic (ppi, no LMM)", official_args_ppi_no_lmm(base_seed)),
         ("synthetic (ppi factorial only)", official_args_ppi_factorial(base_seed)),
         ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
