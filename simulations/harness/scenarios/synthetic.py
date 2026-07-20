@@ -2014,9 +2014,23 @@ sweep's actual point (subtle, hard-to-detect miscalibration), so their
 absence is a principled omission, not a coverage failure. See
 measure_judge_alignment/cases/pvalues.py's alignment-bucket plots for how
 this grid gets consumed once crossed into the factorial."""
+PPI_FACTORIAL_NOISE_LEVELS_FAST = PPI_FACTORIAL_NOISE_LEVELS[::2]
+"""Every other point of PPI_FACTORIAL_NOISE_LEVELS -- (0.025, 0.05, 0.10,
+0.20, 0.40, 0.80), 6 points instead of 11. Not a separately-tuned grid: since
+PPI_FACTORIAL_NOISE_LEVELS steps by a constant ratio (sqrt(2)), skipping
+every other point yields another clean geometric sequence, ratio 2, still
+anchored at the same 0.20 baseline -- so this stays exactly as justifiable
+as the full grid, just coarser (fewer alignment buckets get populated,
+about half as many null-effect cells to run). Passed as build_ppi_
+factorial_sources' noise_levels argument by cases/pvalues.py's
+--factorial-fast-noise / official_args_ppi_factorial_fast_noise, for a
+quicker factorial+alignment pass before committing to the full grid's
+longer runtime."""
 
 
-def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
+def build_ppi_factorial_sources(
+    likert_max: int = 5, noise_levels: Sequence[float] = PPI_FACTORIAL_NOISE_LEVELS,
+) -> list[JudgeBiasSource]:
     """Full factorial cross of the seven factors most likely to compound in
     ways this harness's one-factor-at-a-time sweeps (build_judge_bias_sources,
     and this session's effect_size/bias_direction/N_lab additions -- each
@@ -2126,7 +2140,15 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
         meaning the same RELATIVE severity on the wider scale rather than
         becoming a smaller fraction of it. Scenario names are unchanged (no
         likert_max marker) -- distinguish likert_max=7 runs by their own
-        --official-tests output directory/manifest.json."""
+        --official-tests output directory/manifest.json.
+
+    noise_levels : Sequence[float], default PPI_FACTORIAL_NOISE_LEVELS
+        The llm_noise fraction grid crossed into es="null" cells (see above)
+        -- pass PPI_FACTORIAL_NOISE_LEVELS_FAST (or any other geometric
+        subsequence) for a coarser, faster pass. Every value must still be
+        a valid frac-of-span fraction; 0.20 should stay in the grid if the
+        result will feed fit_ppi_factorial_model/save_ppi_factorial_
+        heatmap_plot, which filter down to that baseline level."""
     sources: list[JudgeBiasSource] = []
     for et in _PPI_FACTORIAL_EVAL_TYPES:
         et_scale_bounds = (1.0, float(likert_max)) if et == "likert" else None
@@ -2141,7 +2163,7 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
                                 if bd_label == "reinforcing" and (bm_label == "none" or es_label == "null"):
                                     continue
                                 sign = -1.0 if bd_label == "reinforcing" else 1.0
-                                noise_fracs = PPI_FACTORIAL_NOISE_LEVELS if es_label == "null" else (0.20,)
+                                noise_fracs = noise_levels if es_label == "null" else (0.20,)
                                 for noise_frac in noise_fracs:
                                     name = (
                                         f"fact.{et}.bm={bm_label}.n={n}.nlab={n_lab}.lm={lm_label}."

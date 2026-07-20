@@ -191,6 +191,8 @@ from ..scenarios.synthetic import (
     PPI_FACTORIAL_EFFECT_FRACS,
     PPI_FACTORIAL_N_VALUES,
     PPI_FACTORIAL_NLAB_VALUES,
+    PPI_FACTORIAL_NOISE_LEVELS,
+    PPI_FACTORIAL_NOISE_LEVELS_FAST,
     PPI_ALIGNMENT_HUMAN_NOISE_LEVELS,
     generate_judge_bias_cell,
     measure_judge_alignment,
@@ -6688,6 +6690,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "the SAME underlying distribution/bias/effect magnitudes onto a wider integer grid, "
                               "rather than generating a different one -- see scenarios.synthetic."
                               "build_ppi_factorial_sources' likert_max parameter. Ignored for continuous scenarios.")
+    parser.add_argument("--factorial-fast-noise", action="store_true", default=False,
+                         help="ppi mode: use PPI_FACTORIAL_NOISE_LEVELS_FAST (6 points, ratio 2, same 0.20 anchor) "
+                              "instead of the full PPI_FACTORIAL_NOISE_LEVELS (11 points, ratio sqrt(2)) for "
+                              "--factorial-check's es=\"null\" cells -- roughly halves the null-effect cell count "
+                              "(and so the alignment-bucketed view's coverage/precision) for a quicker pass; the "
+                              "noise=0.20 baseline GLM/heatmap outputs are unaffected either way. See "
+                              "official_args_ppi_factorial_fast_noise for a ready-made preset.")
     parser.add_argument("--factorial-omnibus", action="store_true", default=False,
                          help="ppi mode: also run the 4 omnibus/multi-group tests (anova_ind, anova_rep, friedman, "
                               "kruskal -- _COMPARISON_METHODS_OMNIBUS) against --factorial-check's SAME sources, "
@@ -6923,6 +6932,24 @@ def official_args_ppi_factorial_likert7(base_seed: int = 42) -> argparse.Namespa
     return args
 
 
+def official_args_ppi_factorial_fast_noise(base_seed: int = 42) -> argparse.Namespace:
+    """Same as official_args_ppi_factorial, except llm_noise sweeps
+    PPI_FACTORIAL_NOISE_LEVELS_FAST (6 points, ratio 2) instead of the full
+    PPI_FACTORIAL_NOISE_LEVELS (11 points, ratio sqrt(2)) on the es="null"
+    cells -- roughly halves that subset's cell count (and so the runtime of
+    the slowest part of the factorial run, since non-null cells are
+    unaffected either way). The noise=0.20 baseline GLM/heatmap outputs are
+    numerically identical to a full-grid run at the same seed (that baseline
+    slice doesn't depend on which OTHER noise levels were swept); only the
+    judge-human alignment-bucketed view gets coarser, with fewer buckets
+    populated. Meant as a faster check to run before committing to the full
+    grid's longer runtime, not a replacement for it -- see
+    PPI_FACTORIAL_NOISE_LEVELS_FAST's docstring."""
+    args = official_args_ppi_factorial(base_seed)
+    args.factorial_fast_noise = True
+    return args
+
+
 def official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
     """Official-test preset for simultaneous-CI calibration only (synthetic
     data). Split out from official_args() for the same reason as
@@ -7033,6 +7060,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (multiarm)", official_args_multiarm(base_seed)),
         ("synthetic (ppi)", official_args_ppi(base_seed)),
         ("synthetic (ppi, no LMM)", official_args_ppi_no_lmm(base_seed)),
+        ("synthetic (ppi factorial only, fast noise)", official_args_ppi_factorial_fast_noise(base_seed)),
         ("synthetic (ppi factorial only)", official_args_ppi_factorial(base_seed)),
         ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
@@ -7599,7 +7627,11 @@ def run(args: argparse.Namespace) -> CaseResult:
             if getattr(args, "factorial_check", False):
                 factorial_likert_max = getattr(args, "factorial_likert_max", 5)
                 factorial_omnibus = getattr(args, "factorial_omnibus", False)
-                factorial_sources = build_ppi_factorial_sources(likert_max=factorial_likert_max)
+                factorial_fast_noise = getattr(args, "factorial_fast_noise", False)
+                factorial_noise_levels = PPI_FACTORIAL_NOISE_LEVELS_FAST if factorial_fast_noise else PPI_FACTORIAL_NOISE_LEVELS
+                factorial_sources = build_ppi_factorial_sources(
+                    likert_max=factorial_likert_max, noise_levels=factorial_noise_levels,
+                )
                 if args.eval_types:
                     requested = set(args.eval_types)
                     factorial_sources = [s for s in factorial_sources if s.eval_type in requested]
@@ -7607,11 +7639,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_reps = getattr(args, "factorial_reps", 100)
                     factorial_n_boot = getattr(args, "factorial_n_boot", 500)
                     likert_note = f", likert_max={factorial_likert_max}" if factorial_likert_max != 5 else ""
+                    noise_note = f", noise_levels=fast({len(factorial_noise_levels)}pt)" if factorial_fast_noise else ""
                     factorial_methods = _COMPARISON_METHODS + (_COMPARISON_METHODS_OMNIBUS if factorial_omnibus else ())
                     omnibus_note = f" + {len(_COMPARISON_METHODS_OMNIBUS)} omnibus tests" if factorial_omnibus else ""
                     print(f"\npvalues simulation (PPI-corrected, full factorial) -- "
                           f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods{omnibus_note}, "
-                          f"reps={factorial_reps}, n_boot={factorial_n_boot}{likert_note}")
+                          f"reps={factorial_reps}, n_boot={factorial_n_boot}{likert_note}{noise_note}")
                     factorial_results_raw = run_ppi_comparison_simulation(
                         factorial_sources, n_reps=factorial_reps, n_boot=factorial_n_boot,
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
@@ -7647,7 +7680,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                         )
 
                     stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
-                    factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}{stem_lmax_suffix}_{stamp}"
+                    stem_noise_suffix = "_fastnoise" if factorial_fast_noise else ""
+                    factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}{stem_lmax_suffix}{stem_noise_suffix}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_factorial(
                             results=factorial_results_raw, pooled_results=factorial_results_baseline,
