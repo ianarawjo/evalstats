@@ -694,6 +694,41 @@ def _ppi_two_sample_midrank_corrected(
     same simplification standard stratified-bootstrap analyses use, and
     consistent with :func:`_ppi_two_sample`'s own choice not to recompute
     anything derived from the full sample inside the bootstrap loop.
+
+    **Collider fix (labeled items are binned by TRUTH, not by their own LLM
+    score).** The original version of this rectifier binned a labeled item
+    by ITS OWN (noisy) LLM score -- the same variable unlabeled items have to
+    be binned by, since their true value isn't known. That's fine under MCAR
+    labeling, but under MNAR labeling that selects items by their TRUE score
+    (the realistic case this whole rectifier exists for -- e.g. "double-check
+    the highest-scoring items"), it creates a collider: an item only lands in
+    a bin its true score wouldn't predict (e.g. a high-truth item landing in
+    the LOW LLM-score bin) if it also happened to draw an unusually extreme
+    noise value. Conditioning on both "selected via MNAR-on-truth" and
+    "landed in this LLM-score bin" at once selects specifically for those
+    extreme-noise items, contaminating that bin's sample rectifier even when
+    the judge has NO systematic bias at all -- confirmed by direct
+    simulation: with a genuinely unbiased judge, the sparsely-labeled bin's
+    sample rectifier averaged +0.48 (SE 0.0009) over 20,000 trials, a large,
+    purely mechanical artifact. Binning labeled items by their TRUE value
+    instead removes this collider (conditioning on truth, which is
+    independent of the judge's noise by construction, doesn't select for
+    extreme noise draws the way conditioning on the noisy LLM score does).
+
+    Validated via a factorial grid (eval_type x bias_level x label_mechanism
+    x (N, N_lab) regime, 500 reps/500 boot/cell, run against this exact
+    function): the fix is better than the pre-fix version in 27/36 grid
+    cells (worse in 8, unchanged in 1), cuts the mean Type-I rate roughly
+    from 0.071 to 0.061 and the count of cells statistically distinguishable
+    from nominal alpha from 16/36 to 8/36, with no power loss (power actually
+    ticks up slightly: mean 0.997 -> 0.998 across 16 power cells). It is NOT
+    a complete fix -- a residual concentrated specifically under MNAR
+    labeling (not bias magnitude, which the residual is roughly flat across)
+    remains in a minority of cells; see ``simulations/PPI_TESTBED_REVIEW.md``
+    for the full grid and open questions (most plausibly, remaining bootstrap-
+    covariance underestimation of the variance the per-bin correction itself
+    introduces). Kept as a strict improvement over the pre-fix behavior
+    pending further work on that residual, not presented as full calibration.
     """
     from evalstats.ppi import PPIResult
 
@@ -718,8 +753,12 @@ def _ppi_two_sample_midrank_corrected(
     edges_b = _bin_edges(b)
     bin_unlab_a = np.searchsorted(edges_a, llm_unlab_a, side="right")
     bin_unlab_b = np.searchsorted(edges_b, llm_unlab_b, side="right")
-    bin_lab_a = np.searchsorted(edges_a, llm_lab_a, side="right")
-    bin_lab_b = np.searchsorted(edges_b, llm_lab_b, side="right")
+    # Labeled items are binned by their TRUE (human) value, not their own
+    # noisy LLM score -- see this function's docstring, "Collider fix" below,
+    # for why binning them by LLM score instead is itself a source of
+    # Type-I inflation under MNAR labeling.
+    bin_lab_a = np.searchsorted(edges_a, truth_lab_a, side="right")
+    bin_lab_b = np.searchsorted(edges_b, truth_lab_b, side="right")
 
     def _correct_unlab(llm_unlab, bin_unlab, llm_lab, bin_lab, truth_lab) -> np.ndarray:
         global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
@@ -1117,6 +1156,39 @@ def _ppi_kruskal_wallis_pairwise_corrected(
     :func:`_ppi_two_sample_midrank_corrected` and
     :func:`_ppi_kruskal_wallis_pairwise` both already make for quantities
     derived from the full sample.
+
+    **Collider fix (labeled items are binned by TRUTH, not by their own LLM
+    score) -- same root-cause fix as** :func:`_ppi_two_sample_midrank_corrected`
+    **, generalized to k groups.** The original version of this rectifier
+    binned a labeled item by ITS OWN (noisy) LLM score, the same variable
+    unlabeled items have to be binned by (their true value isn't known).
+    That's fine under MCAR labeling, but under MNAR labeling that selects
+    items by their TRUE score (the realistic case this whole rectifier
+    exists for), it creates a collider: an item lands in a bin its true
+    score wouldn't predict only if it also drew an unusually extreme noise
+    value, so conditioning on both "MNAR-selected" and "landed in this bin"
+    together selects specifically for extreme-noise items -- contaminating
+    that bin's sample rectifier even with a genuinely unbiased judge
+    (confirmed directly: a sparsely-labeled bin's rectifier averaged +0.48,
+    SE 0.0009, over 20,000 trials with zero true bias). Binning labeled
+    items by their TRUE value instead removes the collider.
+
+    Validated via a factorial grid (eval_type x bias_level x label_mechanism
+    x (N, N_lab) regime, 500 reps/500 boot/cell, run against this exact
+    function): better than the pre-fix version in 34/36 grid cells (worse in
+    1, unchanged in 1), cuts the mean Type-I rate roughly from 0.109 to 0.080
+    and the count of cells statistically distinguishable from nominal alpha
+    from 35/36 to 23/36, with no power loss (power ticks up slightly: mean
+    0.997 -> 0.999 across 16 power cells). Like the two-group version, this
+    is NOT a complete fix -- kruskal's residual is larger and more persistent
+    than mwu's throughout the grid (plausibly because its 3-group joint Wald
+    test, via the pseudo-inverse covariance, has more room to compound
+    whatever approximation error remains than a single two-group bootstrap
+    p-value does), concentrated under MNAR labeling specifically rather than
+    bias magnitude. See ``simulations/PPI_TESTBED_REVIEW.md`` for the full
+    grid and open questions. Kept as a strict improvement over the pre-fix
+    behavior pending further work on that residual, not presented as full
+    calibration.
     """
     rng = np.random.default_rng(rng)
     k = len(groups)
@@ -1134,7 +1206,11 @@ def _ppi_kruskal_wallis_pairwise_corrected(
 
     edges = [_bin_edges(g) for g in groups]
     bin_unlab = [np.searchsorted(edges[j], groups_unlab[j], side="right") for j in range(k)]
-    bin_lab = [np.searchsorted(edges[j], Yhat_lab_groups[j], side="right") for j in range(k)]
+    # Labeled items are binned by their TRUE (human) value, not their own
+    # noisy LLM score -- see this function's docstring, "Collider fix" below,
+    # for why binning them by LLM score instead is itself a source of
+    # Type-I inflation under MNAR labeling.
+    bin_lab = [np.searchsorted(edges[j], Y_lab_groups[j], side="right") for j in range(k)]
 
     def _correct_unlab(llm_unlab, bin_u, llm_lab, bin_l, truth_lab) -> np.ndarray:
         global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
