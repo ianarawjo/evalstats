@@ -191,7 +191,10 @@ from ..scenarios.synthetic import (
     PPI_FACTORIAL_EFFECT_FRACS,
     PPI_FACTORIAL_N_VALUES,
     PPI_FACTORIAL_NLAB_VALUES,
+    PPI_ALIGNMENT_HUMAN_NOISE_LEVELS,
     generate_judge_bias_cell,
+    measure_judge_alignment,
+    measure_human_human_alignment,
     estimate_judge_bias_gold_null_values,
     JUDGE_BIAS_LMM_FACTORIAL_FACTORS,
 )
@@ -4941,18 +4944,23 @@ def save_ppi_nlab_grid_plot(
 
 
 # ---------------------------------------------------------------------------
-# PPI mode, full factorial: build_ppi_factorial_sources' 6-factor cross
+# PPI mode, full factorial: build_ppi_factorial_sources' 7-factor cross
 # (bias_magnitude x N x N_lab x label_mechanism x effect_size x
-# bias_direction), analyzed two ways -- a pooled binomial GLM (which
-# factors/interactions actually move the PPI-corrected rejection rate, with
-# real coefficients/p-values) and a curated set of 2D heatmap slices
-# (visual, for the paper's main figure). Reuses _run_ppi_comparison_cell/
-# run_ppi_comparison_simulation unchanged -- this section is entirely new
-# sources + new analysis, no new execution path.
+# bias_direction x llm_noise), analyzed three ways -- a pooled binomial GLM
+# (which factors/interactions actually move the PPI-corrected rejection
+# rate, with real coefficients/p-values, fit at the llm_noise=0.20 baseline
+# -- see _PPI_FACTORIAL_FORMULA's docstring for why noise isn't itself a GLM
+# term), a curated set of 2D heatmap slices (visual, for the paper's main
+# figure, also at the noise=0.20 baseline), and the judge-human alignment-
+# bucketed false-positive-rate view (build_ppi_alignment_results_from_
+# factorial/save_ppi_alignment_sweep_plot, further down this section), which
+# is the one place llm_noise's other 10 levels get used. Reuses
+# _run_ppi_comparison_cell/run_ppi_comparison_simulation unchanged -- this
+# section is entirely new sources + new analysis, no new execution path.
 # ---------------------------------------------------------------------------
 
 _PPI_FACTORIAL_NAME_RE = re.compile(
-    r"^fact\.(?P<et>[a-z]+)\.bm=(?P<bm>[a-z]+)\.n=(?P<n>\d+)\.nlab=(?P<nlab>\d+)\.lm=(?P<lm>[a-z_]+)\.es=(?P<es>[a-z]+)\.bd=(?P<bd>[a-z]+)$"
+    r"^fact\.(?P<et>[a-z]+)\.bm=(?P<bm>[a-z]+)\.n=(?P<n>\d+)\.nlab=(?P<nlab>\d+)\.lm=(?P<lm>[a-z_]+)\.es=(?P<es>[a-z]+)\.bd=(?P<bd>[a-z]+)\.noise=(?P<noise>[\d.]+)$"
 )
 
 
@@ -4963,6 +4971,7 @@ def _parse_ppi_factorial_name(name: str) -> dict:
     d = m.groupdict()
     d["n"] = int(d["n"])
     d["nlab"] = int(d["nlab"])
+    d["noise"] = float(d["noise"])
     return d
 
 
@@ -5011,7 +5020,21 @@ which would need a fractional design to stay estimable. bm/bd/et are
 Treatment-coded at their "no bias"/"opposing"/"continuous" reference levels
 so every coefficient reads as "vs. no bias" / "vs. opposing" / "vs.
 continuous," matching how the rest of the PPI mode's plots and reports are
-already framed."""
+already framed.
+
+llm_noise (build_ppi_factorial_sources' 7th factor) is deliberately NOT a
+term here, and `results` fed to this function should be pre-filtered to
+noise=0.20 (the baseline every non-alignment factorial output already used
+before llm_noise joined the source grid) -- adding it as an eighth main
+effect would run into a real confound, not just added complexity: llm_noise
+only varies away from 0.20 on es="null" cells (see build_ppi_factorial_
+sources' docstring), so any non-baseline noise level implies es="null" with
+perfect collinearity against the es term already in the formula, making the
+two effects statistically inseparable. The full noise-swept es="null"
+subset is exactly what feeds the separate alignment-bucketed view instead
+(build_ppi_alignment_results_from_factorial), which bypasses this GLM
+entirely and reports realized-alignment buckets directly rather than a
+fitted noise coefficient."""
 
 
 def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd.DataFrame]:
@@ -5227,6 +5250,481 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# PPI mode, alignment view: false-positive rate (uncorrected vs PPI-corrected)
+# as a function of REALIZED judge-human alignment -- derived from build_ppi_
+# factorial_sources' own es="null" cells (which cross llm_noise x
+# bias_magnitude, among the other factors) rather than a separate simulation
+# run -- see scenarios.synthetic's build_ppi_factorial_sources/
+# measure_judge_alignment for the design and the "percent aligned conflates
+# noise and bias" motivation.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class PPIAlignmentSweepResult:
+    name: str
+    eval_type: str
+    noise: float
+    bias_label: str
+    """One of PPI_FACTORIAL_BIAS_MAGNITUDES' keys (none/moderate/severe) --
+    "none" is this result's REGIME marker (see _alignment_regime): every
+    other label means real judge bias was present, regardless of
+    magnitude."""
+    alignment_metrics: dict[str, float]
+    """Raw (not rescaled) alignment metrics from measure_judge_alignment --
+    e.g. {"pearson_r": ..., "spearman_r": ...} for continuous, or
+    {"weighted_kappa": ..., "spearman_r": ..., "percent_agreement": ...} for
+    likert. Which one to bucket/plot by is a presentational choice made by
+    callers (see _ALIGNMENT_VIEWS), not baked in here -- e.g. likert gets
+    reported/plotted against BOTH weighted_kappa and spearman_r, since some
+    work recommends one over the other for Likert-scored judges."""
+    n_reps: int
+    rejects_llm_only: int
+    """Uncorrected false-positive count -- this sweep's es=0.0 throughout, so
+    rejects_llm_only/n_reps IS the uncorrected Type-I rate directly (no
+    effect-size framing needed the way _COMPARISON_METHODS' other consumers
+    have to guard against, e.g. save_ppi_null_comparison_plot's docstring)."""
+    rejects_ppi: int
+    n_failed: int
+
+
+def _alignment_regime(bias_label: str) -> str:
+    """The qualitative "why is this cell at this alignment level" split the
+    whole sweep is built to make visible: "no_bias" (bias_label == "none" --
+    whatever alignment level this cell landed at came purely from llm_noise)
+    vs. "bias_present" (any nonzero bias_delta, regardless of magnitude --
+    lumped into one regime rather than none/mild/moderate/severe/extreme
+    sub-bins, since the point is the qualitative presence of bias, not its
+    size, and finer sub-bins would fragment already-sparse per-bucket cell
+    counts further)."""
+    return "no_bias" if bias_label == "none" else "bias_present"
+
+
+_PPI_ALIGNMENT_REGIME_LABEL = {"no_bias": "no judge bias (noise only)", "bias_present": "judge bias present"}
+_PPI_ALIGNMENT_BUCKET_WIDTH = 10
+
+
+def _metric_pct(raw_value: float) -> float:
+    """Rescale a correlation-or-kappa-like alignment metric (nominally
+    -1..1, essentially always >= 0 for a judge at least weakly related to
+    truth) to a 0-100 bucketing percentage, clipping at 0 on the rare
+    below-chance/negative draw."""
+    return float(np.clip(raw_value, 0.0, 1.0) * 100.0)
+
+
+def _alignment_bucket(pct: float, width: int = _PPI_ALIGNMENT_BUCKET_WIDTH) -> tuple[int, str]:
+    """(bucket_lo, label) for a 0-100 alignment percentage, in `width`-point
+    buckets -- e.g. pct=73.2 -> (70, "70-80%") at width=10. Clamps into
+    [0, 100-width] first so a pct of exactly 100.0 lands in the last bucket
+    instead of spilling into a width-0 "100-110%" one."""
+    lo = int(pct // width) * width
+    lo = max(0, min(lo, 100 - width))
+    return lo, f"{lo}-{lo + width}%"
+
+
+def _kappa_band(x: float) -> str:
+    """Landis & Koch (1977) benchmarks for kappa-type statistics -- same
+    bands evalstats.alignment._interpret_kappa uses for the public alignment
+    report, reused here so a bucket's qualitative label matches what a user
+    would see calling validate_alignment() on the same kind of judge."""
+    if x < 0:
+        return "poor"
+    if x <= 0.20:
+        return "slight"
+    if x <= 0.40:
+        return "fair"
+    if x <= 0.60:
+        return "moderate"
+    if x <= 0.80:
+        return "substantial"
+    return "almost perfect"
+
+
+def _corr_band(x: float) -> str:
+    """Cohen (1988) conventions for correlation-coefficient magnitude -- same
+    bands evalstats.alignment._interpret_corr uses."""
+    a = abs(x)
+    if a < 0.10:
+        return "negligible"
+    if a < 0.30:
+        return "small"
+    if a < 0.50:
+        return "medium"
+    return "large"
+
+
+_ALIGNMENT_VIEWS = [
+    ("continuous", "pearson_r", "Pearson r", _corr_band, "Cohen, 1988", "r"),
+    ("likert", "weighted_kappa", "weighted κ", _kappa_band, "Landis & Koch, 1977", "κ"),
+    ("likert", "spearman_r", "Spearman r", _corr_band, "Cohen, 1988", "ρ"),
+]
+"""The three (eval_type, metric, display_label, qualitative-band function,
+citation, symbol) views the alignment sweep reports/plots -- one per
+eval_type for the metric most commonly reported for that data type in
+practice (Pearson r for continuous, weighted Cohen's kappa for likert),
+PLUS a second view of likert bucketed by Spearman r, since some work
+recommends rank correlation over weighted kappa for Likert-scored judges
+(it doesn't require picking a tie-weighting scheme -- though empirically,
+Spearman turned out MORE prone to masking a biased judge than weighted
+kappa is, not less: at "large"/"almost perfect" alignment, Spearman's
+bucket showed materially higher uncorrected false-positive rates than
+kappa's -- both being rank/order-based to some degree, but kappa's
+near-exact-match requirement is more bias-sensitive than pure rank
+preservation is). `symbol` is the conventional single-character notation
+used in bucket subplot titles (e.g. "κ=0.40-0.50"). Drives
+print_ppi_alignment_sweep_report/save_ppi_alignment_sweep_plot/the
+human-human companion uniformly -- one call per entry -- so all three stay
+in sync and none can silently drift out of step with the others."""
+
+
+def build_ppi_alignment_results_from_factorial(
+    factorial_sources: list[JudgeBiasSource], factorial_results: list[PPIComparisonResult],
+    n_align_mc: int, seed: int = 0,
+) -> list[PPIAlignmentSweepResult]:
+    """Derives the judge-human alignment-bucketed view (_ALIGNMENT_VIEWS) from
+    build_ppi_factorial_sources' own es="null" cells, rather than a separate
+    simulation run against a separate, narrower source grid -- `factorial_results`
+    should be the FULL pooled-across-_COMPARISON_METHODS factorial results,
+    covering every llm_noise level (not the noise=0.20-only subset fed to
+    fit_ppi_factorial_model/save_ppi_factorial_heatmap_plot -- see
+    _PPI_FACTORIAL_FORMULA's docstring for why those two views need disjoint
+    slices of the same data).
+
+    Realized alignment (measure_judge_alignment) depends only on
+    (eval_type, llm_noise, bias_delta, likert_max) -- not on N, N_lab,
+    label_mechanism, or bias_direction (bias_direction is moot here anyway:
+    build_ppi_factorial_sources skips bias_direction="reinforcing" whenever
+    es="null") -- so this memoizes that measurement across the handful of
+    distinct (eval_type, llm_noise, bias_delta, likert_max) combinations the
+    null-effect subset actually contains (2 eval types x 11 noise levels x 3
+    bias magnitudes = 66, at the default noise grid), instead of recomputing
+    an identical large-sample calibration draw once per factorial cell
+    (~1,584 of them at the default grid). This is also what gives each
+    alignment bucket its richer N/N_lab/label_mechanism spread versus the
+    original standalone sweep's one-baseline-value-each design: every
+    es="null" cell sharing a (eval_type, llm_noise, bias_delta, likert_max)
+    combo lands in the SAME bucket regardless of its own N/N_lab/
+    label_mechanism, so a bucket now pools rejection counts across whichever
+    of those combinations survive build_ppi_factorial_sources' n_lab>=n skip
+    at that noise/bias/eval_type slice."""
+    by_name = {sc.name: sc for sc in factorial_sources}
+    align_cache: dict[tuple, dict] = {}
+    results: list[PPIAlignmentSweepResult] = []
+    for r in factorial_results:
+        d = _parse_ppi_factorial_name(r.name)
+        if d["es"] != "null":
+            continue
+        sc = by_name[r.name]
+        key = (sc.eval_type, round(sc.llm_noise, 8), round(sc.bias_delta, 8), sc.likert_max)
+        if key not in align_cache:
+            align_cache[key] = measure_judge_alignment(sc, n_mc=n_align_mc, seed=seed + len(align_cache))
+        results.append(PPIAlignmentSweepResult(
+            name=r.name, eval_type=d["et"], noise=d["noise"], bias_label=d["bm"],
+            alignment_metrics=align_cache[key],
+            n_reps=r.n_reps, rejects_llm_only=r.rejects_llm_only, rejects_ppi=r.rejects_ppi,
+            n_failed=r.n_failed,
+        ))
+    return results
+
+
+def print_ppi_alignment_sweep_report(results: list[PPIAlignmentSweepResult], alpha: float) -> None:
+    """One table per _ALIGNMENT_VIEWS entry (uncorrected/PPI-corrected
+    false-positive rate by alignment bucket x regime) -- the console/log-file
+    counterpart to save_ppi_alignment_sweep_plot's bar charts, in text form.
+    Each bucket's row also prints that bucket's qualitative interpretation
+    band (Landis & Koch for kappa, Cohen for correlations), evaluated at the
+    bucket's midpoint."""
+    if not results:
+        print("\n  (no PPI alignment-sweep results)")
+        return
+    print(f"\n{'='*96}\n  PVALUES (PPI-CORRECTED) -- ALIGNMENT SWEEP "
+          f"(false-positive rate vs. realized judge-human alignment)\n"
+          f"  {len(results)} cells, {len({r.eval_type for r in results})} eval type(s); nominal alpha={alpha}\n{'='*96}\n\n"
+          f"  READ THE WITHIN-BUCKET COMPARISON, not the across-bucket trend: within the 'bias present' regime,\n"
+          f"  alignment here is driven almost entirely by judge NOISE, not bias (a pure additive bias barely\n"
+          f"  moves these metrics) -- so higher buckets mostly mean lower noise, and lower noise makes the SAME\n"
+          f"  fixed bias easier to detect, which is why 'bias present' rows can rise across buckets. That's not\n"
+          f"  alignment causing miscalibration -- see measure_judge_alignment's docstring for the full mechanism.")
+    for et, metric, display, band_fn, band_source, _symbol in _ALIGNMENT_VIEWS:
+        et_rows = [r for r in results if r.eval_type == et and metric in r.alignment_metrics]
+        if not et_rows:
+            continue
+        print(f"\n  [{et}, bucketed by {display} ({band_source} bands)]")
+        print(f"    {'bucket':<10} {'band':<16} {'regime':<22} {'n_cells':>7} {'uncorrected':>12} {'ppi-corrected':>14}")
+        buckets = sorted({_alignment_bucket(_metric_pct(r.alignment_metrics[metric])) for r in et_rows})
+        for lo, label in buckets:
+            band = band_fn((lo + _PPI_ALIGNMENT_BUCKET_WIDTH / 2) / 100.0)
+            for regime in ("no_bias", "bias_present"):
+                cells = [
+                    r for r in et_rows
+                    if _alignment_bucket(_metric_pct(r.alignment_metrics[metric])) == (lo, label)
+                    and _alignment_regime(r.bias_label) == regime
+                ]
+                if not cells:
+                    continue
+                n_reps_tot = sum(c.n_reps for c in cells)
+                unc_rate = sum(c.rejects_llm_only for c in cells) / n_reps_tot if n_reps_tot else float("nan")
+                ppi_rate = sum(c.rejects_ppi for c in cells) / n_reps_tot if n_reps_tot else float("nan")
+                print(f"    {label:<10} {band:<16} {_PPI_ALIGNMENT_REGIME_LABEL[regime]:<22} {len(cells):>7d} "
+                      f"{unc_rate:>12.3f} {ppi_rate:>14.3f}")
+    print()
+
+
+def save_results_artifacts_ppi_alignment_sweep(
+    *, results: list[PPIAlignmentSweepResult], alpha: float, out_dir: str, run_stem: str,
+    human_human_rows: list[dict] | None = None,
+) -> list[str]:
+    """`human_human_rows` (run_human_human_alignment_sweep's output), if
+    given, is appended as a trailer section to the SAME .log file -- see
+    print_human_human_alignment_report's docstring for why it isn't its own
+    section header. The CSV has one column per possible metric (blank where
+    an eval type doesn't compute it) rather than a single "primary" column,
+    so the raw data supports re-bucketing by any metric later without
+    rerunning the simulation."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "percent_agreement"]
+    csv_path = out_base / f"{run_stem}_ppi_alignment_sweep_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "name", "eval_type", "noise", "bias_label", "regime", *metric_cols,
+            "n_reps", "rate_llm_only", "rate_ppi", "n_failed",
+        ])
+        for r in results:
+            writer.writerow([
+                r.name, r.eval_type, f"{r.noise:.4f}", r.bias_label, _alignment_regime(r.bias_label),
+                *[f"{r.alignment_metrics[c]:.4f}" if c in r.alignment_metrics else "" for c in metric_cols],
+                r.n_reps,
+                f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_ppi / r.n_reps:.8f}" if r.n_reps else "",
+                r.n_failed,
+            ])
+    summary_path = out_base / f"{run_stem}_ppi_alignment_sweep_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_alignment_sweep_report(results, alpha=alpha)
+        if human_human_rows:
+            print_human_human_alignment_report(human_human_rows)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    output_paths = [str(csv_path), str(summary_path)]
+    if human_human_rows:
+        output_paths.append(save_human_human_alignment_csv(rows=human_human_rows, out_dir=out_dir, run_stem=run_stem))
+    return output_paths
+
+
+def save_ppi_alignment_sweep_plot(
+    *, results: list[PPIAlignmentSweepResult], eval_type: str, metric: str, display_label: str,
+    band_fn, band_source: str, symbol: str, alpha: float, out_path: str,
+) -> str:
+    """Array of bar charts for ONE (eval_type, metric) view from
+    _ALIGNMENT_VIEWS -- one COLUMN per alignment bucket present, each panel
+    ALWAYS showing both (no_bias, bias_present) regimes x (uncorrected,
+    PPI-corrected) arms (4 bars total), even when one regime has zero cells
+    in that bucket -- drawn as a zero-height bar with "(n=0)" in its tick
+    label, rather than omitted, so every panel has the SAME x-axis layout
+    and bar width instead of the layout stretching/shrinking per panel based
+    on which regimes happen to have data (visually misleading side by side).
+    Every panel also shares the same fixed y-axis (0-1.05) for the same
+    reason -- direct visual comparability across buckets AND across the
+    other _ALIGNMENT_VIEWS figures this is called for.
+
+    Each bucket's title is the metric's own notation over its range (e.g.
+    "κ=0.40-0.50"), with its qualitative interpretation band underneath
+    (band_fn, evaluated at the bucket midpoint -- e.g. "substantial" per
+    Landis & Koch, 1977) -- publication-style notation rather than a raw
+    percentage, so a reader isn't left to separately look up what the number
+    means for this metric.
+
+    Called once per _ALIGNMENT_VIEWS entry (see run()'s factorial_check
+    block) -- deliberately separate figures rather than one combined grid,
+    since continuous/likert use different metrics with different natural
+    ranges and interpretation bands, and likert gets shown against two
+    different metrics that deserve their own titles rather than sharing one.
+
+    Error bars are the 95% Wilson score interval on each bar's pooled
+    rejects/n_reps (same convention/caveat as save_ppi_null_comparison_plot:
+    exact for a truly homogeneous pool, a standard mild simplification if the
+    (noise, bias) cells landing in the same bucket/regime aren't perfectly
+    identically calibrated). The WITHIN-bucket-vs-across-bucket reading
+    caveat (see measure_judge_alignment's docstring) is deliberately left out
+    of the figure itself -- that belongs in the paper's caption/prose, not
+    baked into the image."""
+    import matplotlib.pyplot as plt
+
+    et_rows = [r for r in results if r.eval_type == eval_type and metric in r.alignment_metrics]
+    if not et_rows:
+        raise ValueError(f"No PPI alignment-sweep results for eval_type={eval_type!r}, metric={metric!r}.")
+    bar_width = 0.35
+    group_gap = 0.25
+    regimes = ("no_bias", "bias_present")
+    arm_colors = {"llm_only": "#e7298a", "ppi": "#FFD400"}
+    arm_edgecolors = {"llm_only": "none", "ppi": "#8a6d00"}
+    arm_labels = {"llm_only": "uncorrected", "ppi": "PPI-corrected"}
+
+    buckets = sorted({_alignment_bucket(_metric_pct(r.alignment_metrics[metric])) for r in et_rows})
+
+    fig, axes = plt.subplots(1, len(buckets), figsize=(2.9 * len(buckets), 4.3), squeeze=False, sharey=True)
+    for col, (lo, label) in enumerate(buckets):
+        ax = axes[0][col]
+        ax.axhline(
+            alpha, color="black", ls="--", lw=1.0, alpha=0.6, zorder=1,
+            label="nominal α" if col == 0 else None,
+        )
+        xticks, xticklabels = [], []
+        for gi, regime in enumerate(regimes):  # ALWAYS both, even if empty
+            cells = [
+                r for r in et_rows
+                if _alignment_bucket(_metric_pct(r.alignment_metrics[metric])) == (lo, label)
+                and _alignment_regime(r.bias_label) == regime
+            ]
+            n_reps_tot = sum(c.n_reps for c in cells)
+            for ai, arm in enumerate(("llm_only", "ppi")):
+                x = gi * (2 * bar_width + group_gap) + ai * bar_width
+                if n_reps_tot == 0:
+                    continue  # nothing to draw; tick/slot still allocated below
+                rejects_tot = sum(getattr(c, f"rejects_{arm}") for c in cells)
+                rate = rejects_tot / n_reps_tot
+                lo_ci, hi_ci = _ppi_wilson_interval(rejects_tot, n_reps_tot)
+                ax.bar(
+                    x, rate, width=bar_width, color=arm_colors[arm], edgecolor=arm_edgecolors[arm],
+                    linewidth=1.0, zorder=2,
+                    label=arm_labels[arm] if (col == 0 and gi == 0) else None,
+                )
+                ax.errorbar(
+                    x, rate, yerr=[[max(0.0, rate - lo_ci)], [max(0.0, hi_ci - rate)]],
+                    fmt="none", ecolor="black", elinewidth=1.0, capsize=3, zorder=4,
+                )
+            mid = gi * (2 * bar_width + group_gap) + bar_width / 2
+            xticks.append(mid)
+            xticklabels.append(f"{_PPI_ALIGNMENT_REGIME_LABEL[regime]}\n(n={len(cells)})")
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticklabels, fontsize=7)
+        ax.set_xlim(-0.3, (2 * bar_width + group_gap) * len(regimes) - group_gap + 0.05)
+        ax.set_ylim(0.0, 1.05)
+        band = band_fn((lo + _PPI_ALIGNMENT_BUCKET_WIDTH / 2) / 100.0)
+        ax.set_title(f"{symbol}={lo / 100:.2f}-{(lo + _PPI_ALIGNMENT_BUCKET_WIDTH) / 100:.2f}\n({band})", fontsize=10)
+        if col == 0:
+            ax.set_ylabel("False positive rate", fontsize=9)
+        ax.grid(axis="y", alpha=0.25, lw=0.8, zorder=0)
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=9, frameon=True)
+    fig.suptitle(f"{eval_type.capitalize()}: False-Positive Rate by Judge-Human Alignment ({display_label})", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def run_human_human_alignment_sweep(n_mc: int = 20_000, seed: int = 42) -> list[dict]:
+    """Companion measurement (not a hypothesis-test sweep -- see
+    scenarios.synthetic.measure_human_human_alignment's docstring): for each
+    eval_type x PPI_ALIGNMENT_HUMAN_NOISE_LEVELS combination, the realized
+    alignment (every metric measure_human_human_alignment computes) between
+    two independently-noisy synthetic human raters. Used as context alongside
+    the main alignment sweep's judge-vs-human buckets, not merged into the
+    same plot -- see save_human_human_alignment_plot."""
+    rows = []
+    for et in ("continuous", "likert"):
+        for i, hn in enumerate(PPI_ALIGNMENT_HUMAN_NOISE_LEVELS):
+            m = measure_human_human_alignment(et, hn, n_mc=n_mc, seed=seed + i)
+            rows.append({"eval_type": et, "human_noise": hn, "metrics": m})
+    return rows
+
+
+def print_human_human_alignment_report(rows: list[dict]) -> None:
+    """Text counterpart to save_human_human_alignment_plot -- printed as a
+    trailer to print_ppi_alignment_sweep_report's own log, not a separate
+    section header, since it's context for reading that report's buckets,
+    not an independent result. One line per _ALIGNMENT_VIEWS entry, matching
+    the main report's per-view breakdown."""
+    if not rows:
+        return
+    print("  -- Human-human alignment range (context, NOT a claimed ceiling) --")
+    for et, metric, display, _band_fn, _src, _symbol in _ALIGNMENT_VIEWS:
+        et_rows = sorted(
+            [r for r in rows if r["eval_type"] == et and metric in r["metrics"]], key=lambda r: r["human_noise"],
+        )
+        if not et_rows:
+            continue
+        vals = ", ".join(f"noise={r['human_noise']:.2f}: {_metric_pct(r['metrics'][metric]):.0f}%" for r in et_rows)
+        print(f"    [{et}, {display}] {vals}")
+    print()
+
+
+def save_human_human_alignment_csv(*, rows: list[dict], out_dir: str, run_stem: str) -> str:
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "percent_agreement"]
+    csv_path = out_base / f"{run_stem}_human_human_alignment.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["eval_type", "human_noise", *metric_cols])
+        for r in rows:
+            writer.writerow([
+                r["eval_type"], f"{r['human_noise']:.4f}",
+                *[f"{r['metrics'][c]:.4f}" if c in r["metrics"] else "" for c in metric_cols],
+            ])
+    print(f"Saved results: {csv_path}")
+    return str(csv_path)
+
+
+def save_human_human_alignment_plot(*, rows: list[dict], out_path: str) -> str:
+    """Small companion figure: realized human-human alignment (%) across
+    PPI_ALIGNMENT_HUMAN_NOISE_LEVELS, one panel per _ALIGNMENT_VIEWS entry
+    (matching the main sweep's three views) -- a rough benchmark range for
+    reading the main alignment sweep's buckets against (a judge landing well
+    below where two independent humans typically land with each other is a
+    materially different finding than one landing within that range).
+    Deliberately a RANGE across several human_noise values, not one
+    bar/number -- there's no canonical "true" human-human noise level to
+    assert here, and presenting a single anchored value would repeat the
+    same overfitting-to-one-number problem already avoided in the main
+    sweep's design."""
+    import matplotlib.pyplot as plt
+
+    if not rows:
+        raise ValueError("No human-human alignment rows to plot.")
+    views = [
+        (et, metric, display) for et, metric, display, _bf, _src, _symbol in _ALIGNMENT_VIEWS
+        if any(r["eval_type"] == et and metric in r["metrics"] for r in rows)
+    ]
+    fig, axes = plt.subplots(1, len(views), figsize=(3.6 * len(views), 3.6), squeeze=False)
+    for col, (et, metric, display) in enumerate(views):
+        ax = axes[0][col]
+        et_rows = sorted(
+            [r for r in rows if r["eval_type"] == et and metric in r["metrics"]], key=lambda r: r["human_noise"],
+        )
+        x = np.arange(len(et_rows))
+        pcts = [_metric_pct(r["metrics"][metric]) for r in et_rows]
+        ax.bar(x, pcts, width=0.6, color="#4d4d4d", zorder=2)
+        ax.set_xticks(x)
+        ax.set_xticklabels([f"noise={r['human_noise']:.2f}" for r in et_rows], fontsize=8)
+        ax.set_ylim(0, 105)
+        ax.set_title(f"{et.capitalize()} ({display})", fontsize=10)
+        ax.set_ylabel("Alignment %" if col == 0 else "")
+        ax.grid(axis="y", alpha=0.25, lw=0.8, zorder=0)
+        for xi, pct in zip(x, pcts):
+            ax.text(xi, pct + 1.5, f"{pct:.0f}%", ha="center", va="bottom", fontsize=8)
+    fig.suptitle(
+        "Human-Human Alignment Range (two independently-noisy synthetic raters)\n"
+        "context for the judge-alignment sweep's buckets -- not a claimed ceiling",
+        fontsize=11,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=(0, 0, 1, 0.88))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -6170,10 +6668,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="ppi mode: skip the 5-way estimator comparison (all_human/human_subset/llm_only/"
                               "llm_impute/ppi rejection rate vs. effect_size and label_frac, paired_t estimand)")
     parser.add_argument("--factorial-check", action="store_true", default=False,
-                         help="ppi mode: run the full 6-factor factorial (bias_magnitude x N x N_lab x "
-                              "label_mechanism x effect_size x bias_direction, ~312 cells, continuous/paired_t) "
+                         help="ppi mode: run the full 7-factor factorial (bias_magnitude x N x N_lab x "
+                              "label_mechanism x effect_size x bias_direction x llm_noise, continuous/paired_t) "
                               "-- opt-in (default off) since it's substantially more scenarios than the other "
-                              "checks; see build_ppi_factorial_sources")
+                              "checks; see build_ppi_factorial_sources. Also produces the judge-human ALIGNMENT-"
+                              "bucketed false-positive-rate view (weighted Cohen's kappa for likert, Pearson r for "
+                              "continuous), derived from this same run's es=\"null\" cells rather than a separate "
+                              "sweep -- see build_ppi_alignment_results_from_factorial/"
+                              "save_ppi_alignment_sweep_plot's docstrings.")
     parser.add_argument("--factorial-reps", type=int, default=100, metavar="N",
                          help="ppi mode: reps for --factorial-check (default 100, a screening-tier rep count -- "
                               "bump toward --reps for a publication-precision confirmation pass)")
@@ -6196,6 +6698,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "Reported and saved as its OWN pooled summary/log section (mean_of_4_omnibus), never "
                               "blended into the two-group tests' pooled rate -- see _COMPARISON_METHODS_OMNIBUS' "
                               "docstring for why (different hypothesis: 3-group omnibus vs. two-group location-shift).")
+    parser.add_argument("--factorial-alignment-mc", type=int, default=20000, metavar="N",
+                         help="ppi mode: Monte Carlo sample size for --factorial-check's alignment-bucketed view's "
+                              "per-(eval_type, llm_noise, bias_delta) alignment measurement (measure_judge_alignment "
+                              "-- a separate, large, effectively noise-free calibration draw, not the small "
+                              "labeled-subset the Type-I sweep itself uses; default 20000 keeps the realized "
+                              "alignment percentage stable to within ~1 point). Ignored unless --factorial-check "
+                              "produces es=\"null\" cells.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
@@ -6304,8 +6813,10 @@ def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
     over this harness's development: Type-I calibration, the bias/coverage
     effect-size check, the power-under-bias check (plus its bias-direction
     and no-bias companions), the 5-way estimator comparison, the N x N_lab
-    grid, and -- via factorial_check below -- the full 6-factor factorial
-    (build_ppi_factorial_sources). All of these except factorial_check are
+    grid, and -- via factorial_check below -- the full 7-factor factorial
+    (build_ppi_factorial_sources) plus the judge-human alignment-bucketed
+    view it now also produces (build_ppi_alignment_results_from_factorial).
+    All of these except factorial_check are
     already on by default in run() (--no-power-check/--no-comparison-check
     are opt-OUT), so this preset only needs to explicitly enable
     factorial_check (opt-IN by default, given its larger scenario count)
@@ -6349,18 +6860,19 @@ def official_args_ppi_no_lmm(base_seed: int = 42) -> argparse.Namespace:
 
 
 def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
-    """Official-test preset for JUST the full 6-factor factorial sweep
-    (build_ppi_factorial_sources), split out from official_args_ppi the
-    same way official_args_ppi itself is split from official_args -- lets
-    --official-tests run/skip it independently, e.g. to iterate on the
-    factorial analysis alone without re-paying for the base Type-I sweep
-    (build_judge_bias_sources' ~85+ scenarios x ~11 tests x reps -- by far
-    the slowest piece of --mode ppi). Safe to isolate this way because the
-    factorial sweep is fully self-contained: its own sources
-    (build_ppi_factorial_sources), its own run_ppi_comparison_simulation
-    call, no dependency on the Type-I/effect/power/comparison checks'
-    results -- this is a real subset of official_args_ppi's work, not an
-    approximation of it. Disables every other --mode ppi check via
+    """Official-test preset for JUST the full 7-factor factorial sweep
+    (build_ppi_factorial_sources, including its judge-human alignment-
+    bucketed view -- build_ppi_alignment_results_from_factorial), split out
+    from official_args_ppi the same way official_args_ppi itself is split
+    from official_args -- lets --official-tests run/skip it independently,
+    e.g. to iterate on the factorial analysis alone without re-paying for
+    the base Type-I sweep (build_judge_bias_sources' ~85+ scenarios x ~11
+    tests x reps -- by far the slowest piece of --mode ppi). Safe to isolate
+    this way because the factorial sweep is fully self-contained: its own
+    sources (build_ppi_factorial_sources), its own run_ppi_comparison_
+    simulation call, no dependency on the Type-I/effect/power/comparison
+    checks' results -- this is a real subset of official_args_ppi's work,
+    not an approximation of it. Disables every other --mode ppi check via
     --no-typeI-check/--no-effect-check/--no-power-check/
     --no-comparison-check (all opt-out; harmless to set even though
     official_args_ppi doesn't set them, since their defaults already run).
@@ -6553,7 +7065,10 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
     exercised here too -- it's opt-in in run() (unlike power_check/
     comparison_check, which are opt-OUT and so already covered by this
     preset's defaults), so a regression there would otherwise go completely
-    uncaught between --official-tests runs."""
+    uncaught between --official-tests runs. factorial_alignment_mc=200 (well
+    below the 20000 default) keeps the alignment-bucketed view's per-(eval_
+    type, noise, bias) calibration draws cheap here too -- this preset only
+    needs the code path exercised, not a precise alignment percentage."""
     eval_types = ["binary", "continuous"] if data_source == "synthetic" else ["binary"]
     return argparse.Namespace(
         mode="all", reps=3, alpha=0.05, seed=base_seed,
@@ -6565,7 +7080,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
         tests=[TTEST.name, MW_NAIVE.name, MWU_CORR.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
-        factorial_check=True, factorial_reps=2, factorial_n_boot=50,
+        factorial_check=True, factorial_reps=2, factorial_n_boot=50, factorial_alignment_mc=200,
         workers=1,
     )
 
@@ -7105,51 +7620,68 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_results = pool_ppi_comparison_across_methods(
                         [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS]
                     )
-                    print_ppi_factorial_report(factorial_results, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL)
+                    # GLM/heatmap/headline-report stay scoped to the llm_noise=0.20
+                    # baseline (the only noise level non-null cells even have) --
+                    # see _PPI_FACTORIAL_FORMULA's docstring for why llm_noise
+                    # can't safely join that model as an eighth term. The FULL
+                    # factorial_results (every noise level) is reserved for the
+                    # alignment-bucketed view below.
+                    factorial_results_baseline = [
+                        r for r in factorial_results if _parse_ppi_factorial_name(r.name)["noise"] == 0.20
+                    ]
+                    print_ppi_factorial_report(
+                        factorial_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL,
+                    )
 
                     omnibus_results = None
+                    omnibus_results_baseline = None
                     if factorial_omnibus:
                         omnibus_results = pool_ppi_comparison_across_methods(
                             [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS_OMNIBUS]
                         )
+                        omnibus_results_baseline = [
+                            r for r in omnibus_results if _parse_ppi_factorial_name(r.name)["noise"] == 0.20
+                        ]
                         print_ppi_factorial_report(
-                            omnibus_results, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                            omnibus_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
                         )
 
                     stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
                     factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}{stem_lmax_suffix}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_factorial(
-                            results=factorial_results_raw, pooled_results=factorial_results,
+                            results=factorial_results_raw, pooled_results=factorial_results_baseline,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                             label=_COMPARISON_METHODS_LABEL,
                         )
-                        if omnibus_results is not None:
+                        if omnibus_results_baseline is not None:
                             output_paths += save_results_artifacts_ppi_factorial(
-                                results=factorial_results_raw, pooled_results=omnibus_results,
+                                results=factorial_results_raw, pooled_results=omnibus_results_baseline,
                                 alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                                 write_csv=False, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
                             )
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(
-                            results=factorial_results, alpha=args.alpha,
+                            results=factorial_results_baseline, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{factorial_stem}_slices.png"),
                         )
                         output_paths.append(factorial_plot_path)
                         print(f"Saved plot: {factorial_plot_path}")
 
-                    key_metrics["ppi_factorial_n_results"] = len(factorial_results)
+                    key_metrics["ppi_factorial_n_results"] = len(factorial_results_baseline)
                     key_metrics["ppi_factorial_likert_max"] = factorial_likert_max
-                    null_results = [r for r in factorial_results if _parse_ppi_factorial_name(r.name)["es"] == "null"]
+                    null_results = [
+                        r for r in factorial_results_baseline if _parse_ppi_factorial_name(r.name)["es"] == "null"
+                    ]
                     if null_results:
                         c_tot = sum(r.rejects_ppi for r in null_results)
                         n_tot = sum(r.n_reps for r in null_results)
                         key_metrics["ppi_factorial_mean_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
 
-                    if omnibus_results is not None:
-                        key_metrics["ppi_factorial_omnibus_n_results"] = len(omnibus_results)
+                    if omnibus_results_baseline is not None:
+                        key_metrics["ppi_factorial_omnibus_n_results"] = len(omnibus_results_baseline)
                         null_omnibus = [
-                            r for r in omnibus_results if _parse_ppi_factorial_name(r.name)["es"] == "null"
+                            r for r in omnibus_results_baseline if _parse_ppi_factorial_name(r.name)["es"] == "null"
                         ]
                         if null_omnibus:
                             c_tot_o = sum(r.rejects_ppi for r in null_omnibus)
@@ -7157,6 +7689,45 @@ def run(args: argparse.Namespace) -> CaseResult:
                             key_metrics["ppi_factorial_omnibus_mean_type1"] = (
                                 float(c_tot_o / n_tot_o) if n_tot_o else float("nan")
                             )
+
+                    # Judge-human alignment-bucketed view, derived from this SAME
+                    # factorial run's es="null" cells (all llm_noise levels) --
+                    # see build_ppi_alignment_results_from_factorial's docstring.
+                    align_mc = getattr(args, "factorial_alignment_mc", 20000)
+                    alignment_results = build_ppi_alignment_results_from_factorial(
+                        factorial_sources, factorial_results, n_align_mc=align_mc, seed=args.seed + 9,
+                    )
+                    if alignment_results:
+                        print_ppi_alignment_sweep_report(alignment_results, alpha=args.alpha)
+
+                        hh_rows = run_human_human_alignment_sweep(n_mc=align_mc, seed=args.seed + 10)
+                        print_human_human_alignment_report(hh_rows)
+
+                        if args.save_results == "save":
+                            output_paths += save_results_artifacts_ppi_alignment_sweep(
+                                results=alignment_results, alpha=args.alpha, out_dir=args.out_dir,
+                                run_stem=f"{factorial_stem}_alignment", human_human_rows=hh_rows,
+                            )
+                        if args.plots == "save":
+                            for view_et, view_metric, view_label, view_band_fn, view_band_source, view_symbol in _ALIGNMENT_VIEWS:
+                                if not any(r.eval_type == view_et and view_metric in r.alignment_metrics for r in alignment_results):
+                                    continue
+                                align_plot_path = save_ppi_alignment_sweep_plot(
+                                    results=alignment_results, eval_type=view_et, metric=view_metric,
+                                    display_label=view_label, band_fn=view_band_fn, band_source=view_band_source,
+                                    symbol=view_symbol, alpha=args.alpha,
+                                    out_path=str(Path(plots_dir) / f"{factorial_stem}_alignment_{view_et}_{view_metric}.png"),
+                                )
+                                output_paths.append(align_plot_path)
+                                print(f"Saved plot: {align_plot_path}")
+
+                            hh_plot_path = save_human_human_alignment_plot(
+                                rows=hh_rows, out_path=str(Path(plots_dir) / f"{factorial_stem}_alignment_human_human.png"),
+                            )
+                            output_paths.append(hh_plot_path)
+                            print(f"Saved plot: {hh_plot_path}")
+
+                        key_metrics["ppi_alignment_sweep_n_results"] = len(alignment_results)
 
         return CaseResult(
             case_name=CASE_NAME, status="ok", output_paths=output_paths,

@@ -1987,15 +1987,56 @@ PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
 PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.20, "large": 0.40}
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
+PPI_FACTORIAL_NOISE_LEVELS = (0.025, 0.0354, 0.05, 0.0707, 0.10, 0.1414, 0.20, 0.2828, 0.40, 0.5657, 0.80)
+"""llm_noise FRACTIONS of the eval type's own EVAL_TYPE_SCALE_BOUNDS span
+(same frac-of-span convention _jb_bias_magnitude already applies to this
+function's bias_delta/effect_size -- see build_ppi_factorial_sources).
+A geometric sequence, ratio sqrt(2), anchored at 0.20 (the harness's
+pre-existing baseline llm_noise for build_judge_bias_sources), spanning 6
+steps down and 6 up and then CAPPED at frac=1.0 (dropping the top two
+points a symmetric span would otherwise include, ~1.13 and ~1.6): a noise
+SD can't meaningfully exceed its own scale's full span and still be read as
+"a fraction of the scale" -- past frac=1.0 the judge's typical error is
+already larger than the entire measurable range, which isn't a realistic
+measurement-error regime to model, just a numeral that happens to keep the
+geometric rule going. Every value from the rule is kept as-is (no
+per-value tuning): this is deliberately NOT the empirically-tuned 12-point
+grid an earlier version of this sweep used (which was constructed by
+testing candidate values until they populated every alignment bucket --
+defensible for exploration, but not for a design a reviewer might ask
+"why these specific numbers" about). Verified coverage (paired with
+PPI_FACTORIAL_BIAS_MAGNITUDES over es="null" cells, the same combination
+build_ppi_factorial_sources now generates): 9/10 of the 10-point alignment
+buckets for continuous's Pearson r (missing only 0-10%), 8/10 for likert's
+weighted kappa (missing 0-10%, 10-20%) -- the two lowest buckets, i.e. "the
+judge is essentially noise," are the least informative regime for this
+sweep's actual point (subtle, hard-to-detect miscalibration), so their
+absence is a principled omission, not a coverage failure. See
+measure_judge_alignment/cases/pvalues.py's alignment-bucket plots for how
+this grid gets consumed once crossed into the factorial."""
 
 
 def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
-    """Full factorial cross of the six factors most likely to compound in
+    """Full factorial cross of the seven factors most likely to compound in
     ways this harness's one-factor-at-a-time sweeps (build_judge_bias_sources,
     and this session's effect_size/bias_direction/N_lab additions -- each
     checked one axis at a time against a fixed baseline) can't reveal:
     bias_magnitude x N x N_lab x label_mechanism x effect_size x
-    bias_direction, now ALSO crossed with eval_type (continuous, likert).
+    bias_direction x llm_noise, ALSO crossed with eval_type (continuous,
+    likert). llm_noise joined the cross so this same grid can drive the
+    judge-human ALIGNMENT-bucketed plots (cases/pvalues.py's
+    build_ppi_alignment_results_from_factorial/save_ppi_alignment_sweep_plot)
+    directly off the factorial's own es="null" cells, instead of a separate,
+    narrower 2D noise x bias grid at one fixed (N, N_lab, label_mechanism)
+    baseline -- realized alignment (measure_judge_alignment) depends only on
+    (eval_type, llm_noise, bias_delta, likert_max), so every es="null" cell
+    at the SAME (eval_type, llm_noise, bias_magnitude) lands in the SAME
+    alignment bucket regardless of its N/N_lab/label_mechanism, meaning each
+    bucket in that plot now pools over many (N, N_lab, label_mechanism)
+    combinations instead of just one -- a strictly richer, still
+    apples-to-apples slice of the SAME data used for the rest of this
+    factorial's reporting, rather than a second simulation engine.
+
     Two eval types, not the same scoping build_ppi_comparison_label_frac_
     sources/build_ppi_nlab_grid_sources use for label_frac/N_lab sweeps (an
     earlier version of this docstring claimed "same scoping" as a
@@ -2010,9 +2051,11 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
     run_ppi_comparison_simulation (unchanged -- this is just a new source
     list, not a new execution path), analyzed via cases/pvalues.py's
     fit_ppi_factorial_model (pooled binomial GLM) and a curated set of 2D
-    heatmap slices.
+    heatmap slices (both of which fix llm_noise at its 0.20 baseline level,
+    same as before this factor was added, so those outputs stay comparable
+    to earlier runs -- llm_noise varies only in the alignment-bucketed view).
 
-    Two skips, one for infeasibility and one for redundancy:
+    Three skips, one for infeasibility and two for redundancy:
     - n_lab >= n is infeasible: n_lab > n can't be labeled at all, and
       n_lab == n (100% labeled) leaves no unlabeled pool for
       evalstats.ppi.correct to extrapolate to (same constraint as
@@ -2029,10 +2072,20 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
       (statistically equivalent) whenever there's no bias to have a
       direction, or no real effect for that direction to interact with.
       Generating both would waste compute on literally redundant cells
-      instead of covering new ground -- ~312 cells per eval type survive
-      both skips (down from 432 before the redundancy skip,
-      3x3x3x3x3x2 minus n_lab>n infeasibility), ~624 total across both
-      eval types.
+      instead of covering new ground.
+    - llm_noise is only swept across PPI_FACTORIAL_NOISE_LEVELS' full 11
+      points for es="null" cells (where the alignment-bucketed plots draw
+      their data); es != "null" cells (power, not the alignment view's
+      concern) hold llm_noise at its single 0.20 baseline, same as every
+      other non-alignment factorial output. Skipping the other 10 noise
+      levels there keeps the power-focused majority of the grid at its
+      original size instead of multiplying it 11x for no analytical benefit.
+      ~312 cells per eval type survive the direction-redundancy + n_lab>=n
+      skips at the 0.20 noise baseline (down from 432, 3x3x3x3x3x2 minus
+      n_lab>n infeasibility); the "null"-effect subset of those (72 per eval
+      type) additionally gets the other 10 noise levels, adding 72*10=720
+      more per eval type. Total: (312 + 720) * 2 eval types = 2,064 cells,
+      vs. 624 before llm_noise joined the cross.
 
     Small enough, per eval type/paired_t, for a TRUE full factorial (every
     main effect and interaction directly estimable, no confounding to
@@ -2044,32 +2097,39 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
     retired once _COMPARISON_METHODS_OMNIBUS' 3-group tests needed the same
     structures generate_judge_bias_cell already draws for _run_ppi_cell).
     Scenario names are "fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
-    lm=<lm>.es=<es>.bd=<bd>", the same "<prefix>.<eval_type>.<field>=
-    <value>..." shape build_ppi_power_sources/build_ppi_nlab_grid_sources
-    use -- see cases/pvalues.py's _PPI_FACTORIAL_NAME_RE/
-    _parse_ppi_factorial_name for the corresponding parser.
+    lm=<lm>.es=<es>.bd=<bd>.noise=<noise_frac>", the same "<prefix>.
+    <eval_type>.<field>=<value>..." shape build_ppi_power_sources/
+    build_ppi_nlab_grid_sources use -- see cases/pvalues.py's
+    _PPI_FACTORIAL_NAME_RE/_parse_ppi_factorial_name for the corresponding
+    parser.
+
+    llm_noise itself is now computed the SAME frac-of-span way bias_delta/
+    effect_size already are (_jb_bias_magnitude(et, noise_frac,
+    scale_bounds=et_scale_bounds)), not the flat raw 0.20 (rescaled only for
+    non-default likert_max, via _likert_scale_factor) this function used
+    before llm_noise became a swept factor -- that flat convention was
+    actually frac=0.20 on continuous's span but frac=0.05 on likert_max=5's
+    4x-wider span, an inconsistency PPI_FACTORIAL_NOISE_LEVELS' docstring
+    already flags and fixes. Switching the baseline (0.20-frac) cell's likert llm_noise from
+    raw 0.20 to raw 0.80 is a real, deliberate change to every non-swept
+    (es != "null") likert cell's noise level, made for that same
+    comparably-disruptive-across-eval-types reason -- not a side effect to
+    overlook when comparing against pre-this-change factorial runs.
 
     likert_max : int, default 5
         Forwarded to every likert JudgeBiasSource's own likert_max field
         (continuous sources are unaffected) -- 5 (the default) reproduces
         the standard scenarios exactly. A non-default value also widens the
-        (lo, hi) span _jb_bias_magnitude/_jb_effect_magnitude use for
-        likert's bias_delta/effect_size, so "moderate"/"severe" bias and
-        "moderate"/"large" effect keep meaning the same RELATIVE severity on
-        the wider scale rather than becoming a smaller fraction of it.
-        llm_noise (the judge's measurement-error SD, historically a flat 0.20
-        for every scenario here) is rescaled the same way -- by
-        _likert_scale_factor(likert_max) -- so the judge stays EQUALLY
-        reliable relative to the (also-rescaled) truth spread at any
-        likert_max, rather than becoming spuriously more reliable simply
-        because the score range got wider while the noise magnitude didn't.
-        Scenario names are unchanged (no likert_max marker) -- distinguish
-        likert_max=7 runs by their own --official-tests output directory/
-        manifest.json."""
+        (lo, hi) span _jb_bias_magnitude/_jb_effect_magnitude/llm_noise use
+        for likert's bias_delta/effect_size/noise, so "moderate"/"severe"
+        bias, "moderate"/"large" effect, and every llm_noise level keep
+        meaning the same RELATIVE severity on the wider scale rather than
+        becoming a smaller fraction of it. Scenario names are unchanged (no
+        likert_max marker) -- distinguish likert_max=7 runs by their own
+        --official-tests output directory/manifest.json."""
     sources: list[JudgeBiasSource] = []
     for et in _PPI_FACTORIAL_EVAL_TYPES:
         et_scale_bounds = (1.0, float(likert_max)) if et == "likert" else None
-        et_llm_noise = 0.20 * (_likert_scale_factor(likert_max) if et == "likert" else 1.0)
         for bm_label, bm_frac in PPI_FACTORIAL_BIAS_MAGNITUDES.items():
             for n in PPI_FACTORIAL_N_VALUES:
                 for n_lab in PPI_FACTORIAL_NLAB_VALUES:
@@ -2081,19 +2141,182 @@ def build_ppi_factorial_sources(likert_max: int = 5) -> list[JudgeBiasSource]:
                                 if bd_label == "reinforcing" and (bm_label == "none" or es_label == "null"):
                                     continue
                                 sign = -1.0 if bd_label == "reinforcing" else 1.0
-                                name = (
-                                    f"fact.{et}.bm={bm_label}.n={n}.nlab={n_lab}.lm={lm_label}."
-                                    f"es={es_label}.bd={bd_label}"
-                                )
-                                sources.append(JudgeBiasSource(
-                                    name=name, tag="factorial", eval_type=et, icc=0.20, n=n,
-                                    label_frac=n_lab / n, llm_noise=et_llm_noise, likert_max=likert_max,
-                                    bias_type=("none" if bm_label == "none" else "differential"),
-                                    bias_delta=sign * _jb_bias_magnitude(et, bm_frac, scale_bounds=et_scale_bounds),
-                                    effect_size=_jb_effect_magnitude(et, es_frac, scale_bounds=et_scale_bounds),
-                                    **lm_kw,
-                                ))
+                                noise_fracs = PPI_FACTORIAL_NOISE_LEVELS if es_label == "null" else (0.20,)
+                                for noise_frac in noise_fracs:
+                                    name = (
+                                        f"fact.{et}.bm={bm_label}.n={n}.nlab={n_lab}.lm={lm_label}."
+                                        f"es={es_label}.bd={bd_label}.noise={noise_frac:.4f}"
+                                    )
+                                    sources.append(JudgeBiasSource(
+                                        name=name, tag="factorial", eval_type=et, icc=0.20, n=n,
+                                        label_frac=n_lab / n,
+                                        llm_noise=_jb_bias_magnitude(et, noise_frac, scale_bounds=et_scale_bounds),
+                                        likert_max=likert_max,
+                                        bias_type=("none" if bm_label == "none" else "differential"),
+                                        bias_delta=sign * _jb_bias_magnitude(et, bm_frac, scale_bounds=et_scale_bounds),
+                                        effect_size=_jb_effect_magnitude(et, es_frac, scale_bounds=et_scale_bounds),
+                                        **lm_kw,
+                                    ))
     return sources
+
+
+# ---------------------------------------------------------------------------
+# PPI mode, alignment view: how does the FALSE POSITIVE RATE (uncorrected vs
+# PPI-corrected) vary with realized judge-human alignment (percent agreement/
+# weighted kappa for likert, Pearson r for continuous)? Motivated by papers
+# that report a judge as e.g. "85% aligned" with humans and run statistics on
+# the raw judge scores without further correction -- the question this view
+# is built to answer is whether that alignment number alone tells you
+# anything about whether correction is needed.
+#
+# The key methodological point this view is designed to surface: "percent
+# aligned" conflates two mechanisms with OPPOSITE implications for whether
+# p-value correction matters. A judge can land at the same alignment level
+# via pure random NOISE (unbiased -- a mean-based test on the full judged
+# sample stays roughly calibrated, just underpowered) or via systematic BIAS
+# (a judge that's off in a consistent direction -- this is exactly what
+# inflates uncorrected Type-I error, and exactly what PPI correction fixes).
+# Both are already independently crossed into build_ppi_factorial_sources
+# (bias_magnitude x llm_noise, the latter only over es="null" cells); this
+# section just measures REALIZED alignment (measure_judge_alignment) for that
+# same source list and buckets by it, rather than by the input knobs, which
+# is what lets two grid cells at the same alignment level but different
+# (noise, bias) mixes show up side by side with very different Type-I rates
+# -- see cases/pvalues.py's build_ppi_alignment_results_from_factorial/
+# save_ppi_alignment_sweep_plot for how this gets reported.
+# ---------------------------------------------------------------------------
+
+
+def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int = 0) -> dict:
+    """Large-sample (n_mc), FULLY-labeled point measurement of judge-human
+    alignment for one JudgeBiasSource's judge model -- deliberately separate
+    from the sparse-label PPI machinery (generate_judge_bias_cell's usual
+    lab_a2/lab_b2), since this wants the POPULATION-level judge-vs-truth
+    relationship at this scenario's (noise, bias) settings, not a small,
+    noisy point estimate off a ~15-30 item labeled subsample. Draws group A
+    (which carries the scenario's differential bias, if any) at n=n_mc via
+    generate_judge_bias_cell -- the SAME judge model
+    build_ppi_alignment_results_from_factorial's actual (sparse-label)
+    Type-I sweep exercises for this same JudgeBiasSource, so the alignment
+    number and the Type-I rate it gets bucketed against come from the same
+    judge.
+
+    Returns a dict of RAW (not rescaled) alignment metrics, keyed by name --
+    every metric this eval type has a defensible claim to, not just one
+    "primary" pick, since which one a caller wants to bucket/report by is a
+    presentational choice made downstream (see cases/pvalues.py's
+    _ALIGNMENT_METRIC_SPECS), not something baked into the measurement:
+      - likert: "weighted_kappa" (quadratic Cohen's kappa -- the standard
+        ordinal-data reliability statistic, and what most papers report for
+        Likert-type judge alignment), "spearman_r" (rank correlation --
+        some work recommends this instead for Likert judges, since it
+        doesn't require picking tie-weights the way weighted kappa does),
+        "percent_agreement" (raw exact-match % -- rarely reported alone,
+        kept as an intuitive companion number).
+      - continuous: "pearson_r" (still the most commonly reported single
+        number for numeric/continuous judge-vs-human agreement),
+        "spearman_r" (companion, robust to nonlinear-but-monotonic
+        judge miscalibration).
+    All are on their natural scale (roughly -1 to 1 for a correlation/kappa,
+    though never far below 0 for a judge that's at least weakly aligned with
+    truth) -- callers wanting a 0-100 bucketing axis apply their own
+    clip(x, 0, 1) * 100 (see cases/pvalues.py's _alignment_bucket).
+
+    IMPORTANT interpretive note (see cases/pvalues.py's save_ppi_alignment_
+    sweep_plot docstring for the full explanation): within the "bias
+    present" regime, EVERY one of these metrics is driven almost entirely by
+    llm_noise, NOT by bias_delta -- a pure additive bias barely moves
+    weighted kappa, Pearson r, or Spearman r (to varying degrees -- kappa
+    and Spearman are somewhat more bias-sensitive than Pearson r, which is
+    mathematically invariant to a pure location shift). So moving to a
+    HIGHER alignment bucket at fixed bias_delta mostly means LOWER noise,
+    and lower noise makes that SAME fixed bias statistically easier to
+    detect (better signal-to-noise ratio) -- so the uncorrected
+    false-positive rate tends to RISE across buckets for the bias-present
+    regime, most cleanly for Pearson r. That's not "higher alignment causes
+    miscalibration" -- it's "the alignment metric can't tell a real judge
+    from a lucky unbiased one at the SAME noise level," which is exactly why
+    the within-bucket (same alignment, bias present vs. not) comparison is
+    the one that matters, not the across-bucket trend.
+
+    likert's judge scores are rounded to the nearest integer (clipped to
+    [1, likert_max]) before comparison -- generate_judge_bias_cell's
+    additive noise/bias model never rounds the LLM's own prediction (only
+    the ground truth gets rounded -- see sample_group_truth), so an
+    unrounded judge score would almost never exactly equal an integer human
+    label. Rounding first matches what a real deployment would do to report
+    an "X% aligned"/kappa claim on a Likert-scored judge in the first place."""
+    from scipy.stats import pearsonr, spearmanr
+    from sklearn.metrics import cohen_kappa_score
+
+    rng = np.random.default_rng(seed)
+    cal_sc = replace(sc, n=n_mc)
+    cell = generate_judge_bias_cell(cal_sc, rng)
+    truth, llm = cell.truth_a2, cell.llm_a2
+
+    if sc.eval_type == "likert":
+        lo, hi = 1.0, float(sc.likert_max)
+        llm_rounded = np.clip(np.rint(llm), lo, hi)
+        kappa = float(cohen_kappa_score(truth.astype(int), llm_rounded.astype(int), weights="quadratic"))
+        pct_agree = float(np.mean(llm_rounded == truth) * 100.0)
+        rho, _ = spearmanr(truth, llm_rounded)
+        return {"weighted_kappa": kappa, "spearman_r": float(rho), "percent_agreement": pct_agree}
+    else:
+        r, _ = pearsonr(truth, llm)
+        rho, _ = spearmanr(truth, llm)
+        return {"pearson_r": float(r), "spearman_r": float(rho)}
+
+
+PPI_ALIGNMENT_HUMAN_NOISE_LEVELS = (0.05, 0.15, 0.30)
+"""A small range of plausible inter-annotator noise FRACTIONS (of the eval
+type's own span -- same frac-of-span convention as PPI_ALIGNMENT_NOISE_
+LEVELS, for the same reason: a raw noise value isn't comparably disruptive
+across continuous's 1.0 span and likert's 4.0 one) for measure_human_human_
+alignment's companion sweep -- deliberately a RANGE, not one anchored value,
+since there's no canonical "true" human-human noise level to assert (that
+would be the same overfitting-to-one-number problem as anchoring the main
+sweep to one paper's reported figures)."""
+
+
+def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc: int = 20_000, seed: int = 0) -> dict:
+    """Companion to measure_judge_alignment: measures alignment between TWO
+    INDEPENDENTLY noisy human raters (no LLM judge involved), as a rough
+    benchmark for what "alignment with humans" looks like even between two
+    humans -- context for reading the main judge-alignment sweep's buckets
+    (a judge landing in the same range two independent humans typically
+    land in is a materially different finding than a judge landing well
+    below it). Both raters see the SAME latent truth, each with independent
+    zero-mean noise at `human_noise_frac` of eval_type's own span (no bias
+    term -- inter-rater disagreement is modeled as pure noise here, not a
+    directional bias between two humans, since there's no principled way to
+    say which of two human raters is the "biased" one). Uses the same
+    shape/anchor machinery _jb_llm itself uses, and the same frac-of-span
+    scaling _jb_bias_magnitude applies to JudgeBiasSource.llm_noise via
+    build_ppi_factorial_sources' llm_noise factor, so results are directly
+    comparable to the main judge-alignment view."""
+    from scipy.stats import pearsonr, spearmanr
+    from sklearn.metrics import cohen_kappa_score
+
+    rng = np.random.default_rng(seed)
+    shape = _ppi_shape(eval_type)
+    anchor = _ppi_shape_anchor(shape)
+    human_noise = _jb_bias_magnitude(eval_type, human_noise_frac)
+    truth = sample_group_truth(shape, n_mc, 1, 1, 1.0, rng)[0, :, 0]
+    rater1 = _jb_llm(truth, bias=0.0, noise_sd=human_noise, rng=rng, slope=1.0, anchor=anchor)
+    rater2 = _jb_llm(truth, bias=0.0, noise_sd=human_noise, rng=rng, slope=1.0, anchor=anchor)
+
+    if eval_type == "likert":
+        lo, hi = 1.0, 5.0
+        r1 = np.clip(np.rint(rater1), lo, hi)
+        r2 = np.clip(np.rint(rater2), lo, hi)
+        kappa = float(cohen_kappa_score(r1.astype(int), r2.astype(int), weights="quadratic"))
+        pct_agree = float(np.mean(r1 == r2) * 100.0)
+        rho, _ = spearmanr(r1, r2)
+        return {"weighted_kappa": kappa, "spearman_r": float(rho), "percent_agreement": pct_agree}
+    else:
+        r, _ = pearsonr(rater1, rater2)
+        rho, _ = spearmanr(rater1, rater2)
+        return {"pearson_r": float(r), "spearman_r": float(rho)}
 
 
 @dataclass
