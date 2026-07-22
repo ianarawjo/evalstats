@@ -187,6 +187,15 @@ from ..scenarios.synthetic import (
     build_ppi_comparison_label_frac_sources,
     build_ppi_nlab_grid_sources,
     build_ppi_factorial_sources,
+    build_ppi_power_sources_binary,
+    build_ppi_power_reinforcing_sources_binary,
+    build_ppi_power_nobias_sources_binary,
+    build_ppi_comparison_label_frac_sources_binary,
+    build_ppi_nlab_grid_sources_binary,
+    build_ppi_factorial_sources_binary,
+    PPI_BINARY_BIAS_MAGNITUDES,
+    PPI_BINARY_NOISE_BASELINE,
+    PPI_BINARY_NOISE_LEVELS,
     PPI_COMPARISON_MODERATE_EFFECT_FRAC,
     PPI_FACTORIAL_EFFECT_FRACS,
     PPI_FACTORIAL_N_VALUES,
@@ -4082,13 +4091,13 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     underlying simulation itself used effect_size=0.0 correctly (this field
     is metadata only; JudgeBiasSource.effect_size, not this function, is
     what generate_judge_bias_cell actually reads)."""
-    if sc.tag == "power":
+    if sc.tag in ("power", "power_binary"):
         return _parse_ppi_power_name(sc.name)[1]
-    if sc.tag == "nlab_grid":
+    if sc.tag in ("nlab_grid", "nlab_grid_binary"):
         return 0.0
-    if sc.tag in ("compare_label_frac", "nlab_grid_power"):
+    if sc.tag in ("compare_label_frac", "nlab_grid_power", "complab_binary", "nlab_grid_power_binary"):
         return PPI_COMPARISON_MODERATE_EFFECT_FRAC
-    if sc.tag == "factorial":
+    if sc.tag in ("factorial", "factorial_binary"):
         m = re.search(r"\.es=([a-z]+)\.", sc.name)
         if not m:
             raise ValueError(f"_ppi_source_effect_frac: could not parse es label from {sc.name!r}")
@@ -4151,6 +4160,17 @@ _COMPARISON_METHOD_STRUCTURE = {
 }
 _COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu_corr/wilcoxon"
 _COMPARISON_METHODS_OMNIBUS_LABEL = "anova_ind/anova_rep/friedman/kruskal"
+_COMPARISON_METHODS_BINARY = (TTEST_WELCH.name, PAIRED_T.name)
+"""The 2 of _COMPARISON_METHODS' 4 pooled tests that are valid on binary's
+heavily-tied 0/1 data (mwu_corr/wilcoxon are rank-based and break down under
+that many ties -- the same reason build_judge_bias_sources' _PPI_BINARY_
+COMPATIBLE_TESTS excludes them). Run and pooled SEPARATELY from
+_COMPARISON_METHODS via its own run_ppi_comparison_simulation call (never
+blended into the same averaged rate -- pooling a 2-method and a 4-method
+rate under one "false positive/power rate" figure would be apples-to-
+oranges, and binary sources are never fed to a _COMPARISON_METHODS call in
+the first place)."""
+_COMPARISON_METHODS_BINARY_LABEL = "ttest_welch/paired_t"
 POOLED_METHOD_LABEL = "mean_of_4"
 """PPIComparisonResult.method value for a row produced by
 pool_ppi_comparison_across_methods -- distinguishes a pooled/averaged row
@@ -4476,19 +4496,29 @@ def _pool_ppi_comparison_rows(rows: list[PPIComparisonResult]) -> PPIComparisonR
     )
 
 
-def print_ppi_comparison_report(results: list[PPIComparisonResult], alpha: float) -> None:
-    """Five-way rejection-rate table (paired_t estimand): all_human /
-    human_subset / llm_only / llm_impute / ppi, grouped by tag (vs.
-    effect_size, tag="power"; vs. label_frac, tag="compare_label_frac") then
-    eval_type."""
+def print_ppi_comparison_report(
+    results: list[PPIComparisonResult], alpha: float,
+    tags: list[tuple[str, str, str, str]] | None = None, label: str = "paired_t",
+) -> None:
+    """Five-way rejection-rate table: all_human / human_subset / llm_only /
+    llm_impute / ppi, grouped by tag (vs. effect_size, tag="power"; vs.
+    label_frac, tag="compare_label_frac") then eval_type.
+
+    `tags` overrides the default (tag, x_field, x_label, x_fmt) list --
+    e.g. the binary comparison sweep passes its own "power_binary"/
+    "complab_binary" tags here, since binary sources are never tagged
+    "power"/"compare_label_frac" (see build_ppi_power_sources_binary/
+    build_ppi_comparison_label_frac_sources_binary). `label` names the
+    estimand(s) in the header text only (default "paired_t", the original
+    single-estimand comparison sweep)."""
     if not results:
         print("\n  (no PPI comparison results)")
         return
-    print(f"\n{'='*96}\n  PVALUES (PPI-CORRECTED) -- ESTIMATOR COMPARISON (paired_t)\n"
+    print(f"\n{'='*96}\n  PVALUES (PPI-CORRECTED) -- ESTIMATOR COMPARISON ({label})\n"
           f"  all_human=oracle full-N truth | human_subset=labeled-only truth | llm_only=uncorrected |\n"
           f"  llm_impute=LLM+label-overwrite, no PPI rectifier | ppi=PPI-corrected | alpha={alpha}\n{'='*96}")
 
-    for tag, x_field, x_label, x_fmt in [
+    for tag, x_field, x_label, x_fmt in tags or [
         ("power", "effect_size", "es", "{:.2f}"), ("compare_label_frac", "n_lab", "nlab", "{:d}"),
     ]:
         tag_rows = [r for r in results if r.tag == tag]
@@ -4516,6 +4546,7 @@ def print_ppi_comparison_report(results: list[PPIComparisonResult], alpha: float
 def save_results_artifacts_ppi_comparison(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
     pooled_results: list[PPIComparisonResult] | None = None,
+    tags: list[tuple[str, str, str, str]] | None = None, label: str = "paired_t",
 ) -> list[str]:
     """`results` is the RAW (per-method, len(sources)*len(methods) rows) data
     -- saved verbatim to the CSV (the per-method breakdown, for reviewers to
@@ -4561,7 +4592,7 @@ def save_results_artifacts_ppi_comparison(
     summary_path = out_base / f"{run_stem}_ppi_comparison_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_comparison_report(pooled_results, alpha=alpha)
+        print_ppi_comparison_report(pooled_results, alpha=alpha, tags=tags, label=label)
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -5365,8 +5396,9 @@ _ALIGNMENT_VIEWS = [
     ("continuous", "pearson_r", "Pearson r", _corr_band, "Cohen, 1988", "r"),
     ("likert", "weighted_kappa", "weighted κ", _kappa_band, "Landis & Koch, 1977", "κ"),
     ("likert", "spearman_r", "Spearman r", _corr_band, "Cohen, 1988", "ρ"),
+    ("binary", "kappa", "Cohen's κ", _kappa_band, "Landis & Koch, 1977", "κ"),
 ]
-"""The three (eval_type, metric, display_label, qualitative-band function,
+"""The (eval_type, metric, display_label, qualitative-band function,
 citation, symbol) views the alignment sweep reports/plots -- one per
 eval_type for the metric most commonly reported for that data type in
 practice (Pearson r for continuous, weighted Cohen's kappa for likert),
@@ -5378,11 +5410,20 @@ kappa is, not less: at "large"/"almost perfect" alignment, Spearman's
 bucket showed materially higher uncorrected false-positive rates than
 kappa's -- both being rank/order-based to some degree, but kappa's
 near-exact-match requirement is more bias-sensitive than pure rank
-preservation is). `symbol` is the conventional single-character notation
-used in bucket subplot titles (e.g. "κ=0.40-0.50"). Drives
-print_ppi_alignment_sweep_report/save_ppi_alignment_sweep_plot/the
-human-human companion uniformly -- one call per entry -- so all three stay
-in sync and none can silently drift out of step with the others."""
+preservation is). Binary gets (unweighted) Cohen's kappa only -- no second
+correlation-type view, since on 2x2 binary data Pearson/Spearman/Kendall's
+tau-b/phi/MCC are all essentially the same statistic (see measure_judge_
+alignment's binary branch), so adding one would be redundant, not a
+genuinely different lens the way Spearman is for likert. `symbol` is the
+conventional single-character notation used in bucket subplot titles (e.g.
+"κ=0.40-0.50"). Drives print_ppi_alignment_sweep_report/save_ppi_alignment_
+sweep_plot/the human-human companion uniformly -- one call per entry -- so
+all three stay in sync and none can silently drift out of step with the
+others. NOTE: the human-human companion (run_human_human_alignment_sweep)
+does not yet cover binary -- measure_human_human_alignment has no binary
+branch -- so binary's alignment plot has no human-human reference bars;
+this view still renders correctly (both consumer functions skip views with
+no matching rows), it's just a known gap, not a crash."""
 
 
 def build_ppi_alignment_results_from_factorial(
@@ -5731,6 +5772,251 @@ def save_human_human_alignment_plot(*, rows: list[dict], out_path: str) -> str:
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+# ---------------------------------------------------------------------------
+# PPI mode, binary factorial: build_ppi_factorial_sources_binary's 7-factor
+# cross (bias_magnitude x N x N_lab x label_mechanism x effect_size x
+# bias_direction x llm_noise), analyzed the same two ways the continuous/
+# likert factorial is (a pooled binomial GLM, a curated set of 2D heatmap
+# slices), plus the judge-human alignment-bucketed view -- see
+# build_ppi_factorial_sources_binary's docstring for why binary crosses
+# bias_magnitude/llm_noise as two independent factors (not one combined
+# "severity" scale) and its own name/parser.
+# ---------------------------------------------------------------------------
+
+_PPI_FACTORIAL_BINARY_NAME_RE = re.compile(
+    r"^fact\.binary\.bm=(?P<bm>[a-z]+)\.n=(?P<n>\d+)\.nlab=(?P<nlab>\d+)\.lm=(?P<lm>[a-z_]+)\.es=(?P<es>[a-z]+)\.bd=(?P<bd>[a-z]+)\.noise=(?P<noise>[\d.]+)$"
+)
+
+
+def _parse_ppi_factorial_binary_name(name: str) -> dict:
+    m = _PPI_FACTORIAL_BINARY_NAME_RE.match(name)
+    if not m:
+        raise ValueError(f"Unrecognized binary factorial scenario name: {name!r}")
+    d = m.groupdict()
+    d["n"] = int(d["n"])
+    d["nlab"] = int(d["nlab"])
+    d["noise"] = float(d["noise"])
+    return d
+
+
+def _ppi_factorial_binary_dataframe(results: list[PPIComparisonResult]) -> pd.DataFrame:
+    rows = []
+    for r in results:
+        d = _parse_ppi_factorial_binary_name(r.name)
+        rows.append({
+            **d, "n_reps": r.n_reps,
+            "rejects_ppi": r.rejects_ppi, "fails_ppi": r.n_reps - r.rejects_ppi,
+            "rate_ppi": r.rejects_ppi / r.n_reps if r.n_reps else float("nan"),
+            "rejects_all_human": r.rejects_all_human, "rejects_human_subset": r.rejects_human_subset,
+        })
+    return pd.DataFrame(rows)
+
+
+_PPI_FACTORIAL_BINARY_FORMULA = (
+    "rejects_ppi + fails_ppi ~ "
+    "C(bm, Treatment('none')) + C(n) + C(nlab) + C(lm, Treatment('mcar')) "
+    "+ C(es, Treatment('null')) + C(bd, Treatment('opposing')) "
+    "+ C(bm, Treatment('none')):C(es, Treatment('null')) "
+    "+ C(bd, Treatment('opposing')):C(es, Treatment('null'))"
+)
+"""Binary analogue of _PPI_FACTORIAL_FORMULA -- no `et` term, since
+build_ppi_factorial_sources_binary is always eval_type="binary" (nothing to
+estimate a main effect for). llm_noise is deliberately NOT a term here, for
+the exact same confound reason _PPI_FACTORIAL_FORMULA's docstring gives:
+llm_noise only varies away from PPI_BINARY_NOISE_BASELINE on es="null"
+cells, so any non-baseline noise level implies es="null" with perfect
+collinearity against the es term already in the formula. `results` fed to
+this function should be pre-filtered to noise=PPI_BINARY_NOISE_BASELINE
+(see run()'s factorial_check_binary block) -- the full noise-swept
+es="null" subset instead feeds build_ppi_alignment_results_from_factorial_
+binary, which bypasses this GLM entirely."""
+
+
+def fit_ppi_factorial_binary_model(results: list[PPIComparisonResult]) -> tuple[str, pd.DataFrame]:
+    """Binary analogue of fit_ppi_factorial_model -- same quasi-complete-
+    separation caveat at es="large" applies here (see that function's
+    docstring)."""
+    import statsmodels.api as sm
+    import statsmodels.formula.api as smf
+
+    df = _ppi_factorial_binary_dataframe(results)
+    fit = smf.glm(formula=_PPI_FACTORIAL_BINARY_FORMULA, data=df, family=sm.families.Binomial()).fit()
+    return fit.summary().as_text(), df
+
+
+def print_ppi_factorial_binary_report(
+    results: list[PPIComparisonResult], alpha: float, label: str = _COMPARISON_METHODS_BINARY_LABEL,
+) -> None:
+    """Binary analogue of print_ppi_factorial_report."""
+    if not results:
+        print("\n  (no PPI binary factorial results)")
+        return
+    summary_text, df = fit_ppi_factorial_binary_model(results)
+    print(f"\n{'='*96}\n  PVALUES (PPI-CORRECTED) -- BINARY FACTORIAL "
+          f"(bias_magnitude x N x N_lab x label_mechanism x effect_size x bias_direction)\n"
+          f"  {len(results)} cells, binary/{label}; nominal alpha={alpha}\n{'='*96}\n")
+    print(summary_text)
+
+    null_rows = df[df["es"] == "null"]
+    if len(null_rows):
+        worst = null_rows.loc[(null_rows["rate_ppi"] - alpha).abs().idxmax()]
+        print(f"\n  Worst Type-I cell: rate={worst['rate_ppi']:.3f} (nominal alpha={alpha}) at "
+              f"bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} bd={worst['bd']}")
+
+    nonnull_rows = df[df["es"] != "null"].copy()
+    if len(nonnull_rows):
+        nonnull_rows["power_gap"] = (nonnull_rows["rejects_all_human"] - nonnull_rows["rejects_ppi"]) / nonnull_rows["n_reps"]
+        worst_gap = nonnull_rows.loc[nonnull_rows["power_gap"].idxmax()]
+        print(f"  Largest all_human-vs-ppi power gap: {worst_gap['power_gap']:.3f} at "
+              f"bm={worst_gap['bm']} n={worst_gap['n']} nlab={worst_gap['nlab']} "
+              f"lm={worst_gap['lm']} es={worst_gap['es']} bd={worst_gap['bd']}")
+    print()
+
+
+def save_results_artifacts_ppi_factorial_binary(
+    *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
+    pooled_results: list[PPIComparisonResult] | None = None, label: str = _COMPARISON_METHODS_BINARY_LABEL,
+) -> list[str]:
+    """Binary analogue of save_results_artifacts_ppi_factorial."""
+    if pooled_results is None:
+        pooled_results = pool_ppi_comparison_across_methods(results)
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_ppi_factorial_binary_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "name", "method", "bm", "n", "nlab", "lm", "es", "bd", "noise", "n_reps",
+            "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
+        ])
+        for r in results:
+            d = _parse_ppi_factorial_binary_name(r.name)
+            writer.writerow([
+                r.name, r.method, d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], f"{d['noise']:.4f}", r.n_reps,
+                f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_llm_impute / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_ppi / r.n_reps:.8f}" if r.n_reps else "",
+                r.n_failed,
+            ])
+    print(f"Saved results: {csv_path}")
+    summary_path = out_base / f"{run_stem}_ppi_factorial_binary_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_factorial_binary_report(pooled_results, alpha=alpha, label=label)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_ppi_factorial_binary_heatmap_plot(*, results: list[PPIComparisonResult], alpha: float, out_path: str) -> str:
+    """Binary analogue of save_ppi_factorial_heatmap_plot -- one ROW (always
+    binary, no eval_type facet to cross), the same three slice idea: N x
+    N_lab, bias_magnitude x label_mechanism, effect_size x bias_direction.
+    `results` should be pre-filtered to noise=PPI_BINARY_NOISE_BASELINE (see
+    run()'s factorial_check_binary block), the same way the continuous
+    heatmap's caller filters to noise=0.20."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+
+    if not results:
+        raise ValueError("No PPI binary factorial results to plot.")
+    df = _ppi_factorial_binary_dataframe(results)
+
+    _CATEGORICAL_FACTORS = ("bm", "lm", "es", "bd")
+    slices = [
+        ("n", "nlab", dict(bm="severe", lm="mcar", es="moderate", bd="opposing")),
+        ("bm", "lm", dict(n=200, nlab=30, es="moderate", bd="opposing")),
+        ("es", "bd", dict(n=200, nlab=30, bm="severe", lm="mcar")),
+    ]
+    order = {
+        "bm": list(PPI_BINARY_BIAS_MAGNITUDES.keys()), "lm": ["mcar", "mnar_mild", "mnar_strong"],
+        "es": ["null", "moderate", "large"], "bd": ["opposing", "reinforcing"],
+        "n": PPI_FACTORIAL_N_VALUES, "nlab": PPI_FACTORIAL_NLAB_VALUES,
+    }
+
+    fig, axes = plt.subplots(1, len(slices), figsize=(6.0 * len(slices), 5.0), squeeze=False)
+    for col, (x_field, y_field, fixed) in enumerate(slices):
+        ax = axes[0][col]
+        sub = df
+        for k, v in fixed.items():
+            sub = sub[sub[k] == v]
+        x_values = [v for v in order[x_field] if v in set(sub[x_field])]
+        y_values = [v for v in order[y_field] if v in set(sub[y_field])]
+        grid = np.full((len(y_values), len(x_values)), np.nan)
+        for _, r in sub.iterrows():
+            if r["n_reps"] == 0 or r[x_field] not in x_values or r[y_field] not in y_values:
+                continue
+            grid[y_values.index(r[y_field]), x_values.index(r[x_field])] = r["rate_ppi"]
+
+        vmax = max(2.0 * alpha, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * alpha)
+        im = ax.imshow(grid, origin="lower", cmap="RdBu_r", norm=TwoSlopeNorm(vmin=0.0, vcenter=alpha, vmax=vmax), aspect="auto")
+        for i in range(len(y_values)):
+            for j in range(len(x_values)):
+                val = grid[i, j]
+                if np.isfinite(val):
+                    ax.text(
+                        j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
+                        bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
+                    )
+        x_tick_labels = [_pretty_factorial_level(v) if x_field in _CATEGORICAL_FACTORS else str(v) for v in x_values]
+        y_tick_labels = [_pretty_factorial_level(v) if y_field in _CATEGORICAL_FACTORS else str(v) for v in y_values]
+        ax.set_xticks(range(len(x_values)))
+        ax.set_xticklabels(x_tick_labels, rotation=20 if x_field in _CATEGORICAL_FACTORS else 0)
+        ax.set_yticks(range(len(y_values)))
+        ax.set_yticklabels(y_tick_labels)
+        ax.set_xlabel(_PPI_FACTORIAL_FACTOR_LABELS.get(x_field, x_field))
+        ax.set_ylabel(_PPI_FACTORIAL_FACTOR_LABELS.get(y_field, y_field))
+        x_name = _PPI_FACTORIAL_FACTOR_LABELS.get(x_field, x_field)
+        y_name = _PPI_FACTORIAL_FACTOR_LABELS.get(y_field, y_field)
+        fixed_str = ", ".join(f"{k}={v}" for k, v in fixed.items())
+        ax.set_title(f"[Binary] {x_name} × {y_name}\n({fixed_str})", fontsize=9)
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(f"PPI-Corrected Rejection Rate: Binary Factorial Slices (nominal {_alpha_label(alpha)})", y=1.02, fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def build_ppi_alignment_results_from_factorial_binary(
+    factorial_sources: list[JudgeBiasSource], factorial_results: list[PPIComparisonResult],
+    n_align_mc: int, seed: int = 0,
+) -> list[PPIAlignmentSweepResult]:
+    """Binary analogue of build_ppi_alignment_results_from_factorial --
+    derives the alignment-bucketed view from build_ppi_factorial_sources_
+    binary's own es="null" cells, which cross PPI_BINARY_NOISE_LEVELS x
+    PPI_BINARY_BIAS_MAGNITUDES the same way the continuous/likert version's
+    es="null" cells cross PPI_FACTORIAL_NOISE_LEVELS x PPI_FACTORIAL_BIAS_
+    MAGNITUDES. Keyed the same way (eval_type, llm_noise, bias_delta,
+    likert_max) for consistency, just with fewer distinct noise levels (9
+    vs. 11) and one fewer bias level (3 vs. bm's role here). `bias_label` is
+    the bias_magnitude label (none/moderate/severe) -- _alignment_regime
+    only checks for "none", so this reuses that function unchanged."""
+    by_name = {sc.name: sc for sc in factorial_sources}
+    align_cache: dict[tuple, dict] = {}
+    results: list[PPIAlignmentSweepResult] = []
+    for r in factorial_results:
+        d = _parse_ppi_factorial_binary_name(r.name)
+        if d["es"] != "null":
+            continue
+        sc = by_name[r.name]
+        key = (sc.eval_type, round(sc.llm_noise, 8), round(sc.bias_delta, 8), sc.likert_max)
+        if key not in align_cache:
+            align_cache[key] = measure_judge_alignment(sc, n_mc=n_align_mc, seed=seed + len(align_cache))
+        results.append(PPIAlignmentSweepResult(
+            name=r.name, eval_type="binary", noise=sc.llm_noise, bias_label=d["bm"],
+            alignment_metrics=align_cache[key],
+            n_reps=r.n_reps, rejects_llm_only=r.rejects_llm_only, rejects_ppi=r.rejects_ppi,
+            n_failed=r.n_failed,
+        ))
+    return results
 
 
 def _ppi_wilson_interval(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
@@ -6713,7 +6999,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "-- a separate, large, effectively noise-free calibration draw, not the small "
                               "labeled-subset the Type-I sweep itself uses; default 20000 keeps the realized "
                               "alignment percentage stable to within ~1 point). Ignored unless --factorial-check "
-                              "produces es=\"null\" cells.")
+                              "produces es=\"null\" cells. Also used by --factorial-check-binary's alignment view.")
+    parser.add_argument("--factorial-check-binary", action="store_true", default=False,
+                         help="ppi mode: run the binary analogue of --factorial-check (bias_magnitude x N x N_lab x "
+                              "label_mechanism x effect_size x bias_direction x llm_noise, ttest_welch/paired_t only "
+                              "-- see build_ppi_factorial_sources_binary/_COMPARISON_METHODS_BINARY). Separately "
+                              "opt-in from --factorial-check: different bias/noise magnitude convention "
+                              "(PPI_BINARY_BIAS_MAGNITUDES/PPI_BINARY_NOISE_LEVELS), different pooled test set, so "
+                              "kept as its own toggle rather than folded into the same flag. Reuses "
+                              "--factorial-reps/--factorial-n-boot/--factorial-alignment-mc.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
@@ -6833,12 +7127,22 @@ def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
     run at here -- effect_reps/ppi_n_boot (200/2000) -- rather than
     inventing a third reps/n_boot tier alongside --reps and
     --factorial-check's own screening-tier CLI default (100/500, meant for
-    fast interactive iteration, not a result worth citing)."""
+    fast interactive iteration, not a result worth citing).
+
+    Binary's power/comparison sweeps (build_ppi_power_sources_binary,
+    build_ppi_comparison_label_frac_sources_binary) already ride along here
+    for free -- official_args()'s eval_types already includes "binary", and
+    those checks are opt-OUT (--no-power-check/--no-comparison-check), the
+    same way continuous/likert/grades' versions are. factorial_check_binary
+    is the one genuinely new opt-in toggle (separate from factorial_check:
+    different bias/noise convention, different pooled test set -- see
+    _COMPARISON_METHODS_BINARY), enabled here at the same precision tier."""
     args = official_args(base_seed)
     args.mode = "ppi"
     args.factorial_check = True
     args.factorial_reps = args.effect_reps
     args.factorial_n_boot = args.ppi_n_boot
+    args.factorial_check_binary = True
     return args
 
 
@@ -6947,6 +7251,21 @@ def official_args_ppi_factorial_fast_noise(base_seed: int = 42) -> argparse.Name
     PPI_FACTORIAL_NOISE_LEVELS_FAST's docstring."""
     args = official_args_ppi_factorial(base_seed)
     args.factorial_fast_noise = True
+    return args
+
+
+def official_args_ppi_factorial_binary(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for JUST the binary factorial sweep
+    (build_ppi_factorial_sources_binary), split out the same way
+    official_args_ppi_factorial is split from official_args_ppi -- lets
+    --official-tests run/skip it independently. Self-contained (its own
+    sources, its own run_ppi_comparison_simulation call with
+    _COMPARISON_METHODS_BINARY), so isolating it costs nothing beyond not
+    re-running the base Type-I sweep. Runs at the SAME precision tier as
+    official_args_ppi_factorial (effect_reps/ppi_n_boot, 200/2000)."""
+    args = official_args_ppi_factorial(base_seed)
+    args.factorial_check = False
+    args.factorial_check_binary = True
     return args
 
 
@@ -7063,6 +7382,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (ppi factorial only, fast noise)", official_args_ppi_factorial_fast_noise(base_seed)),
         ("synthetic (ppi factorial only)", official_args_ppi_factorial(base_seed)),
         ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
+        ("synthetic (ppi factorial only, binary)", official_args_ppi_factorial_binary(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
         ("real data (pairwise + multiarm)", real_official_args(base_seed)),
         ("real data (pairwise)", real_official_args_pairwise(base_seed)),
@@ -7109,6 +7429,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         tests=[TTEST.name, MW_NAIVE.name, MWU_CORR.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         factorial_check=True, factorial_reps=2, factorial_n_boot=50, factorial_alignment_mc=200,
+        factorial_check_binary=True,
         workers=1,
     )
 
@@ -7397,16 +7718,19 @@ def run(args: argparse.Namespace) -> CaseResult:
                     key_metrics["ppi_effect_mean_coverage"] = float(np.mean(finite_cov)) if finite_cov else float("nan")
 
             power_sources = build_ppi_power_sources()
+            power_sources_binary = build_ppi_power_sources_binary()
             if args.eval_types:
                 requested = set(args.eval_types)
                 power_sources = [s for s in power_sources if s.eval_type in requested]
+                power_sources_binary = [s for s in power_sources_binary if s.eval_type in requested]
 
-            if not getattr(args, "no_power_check", False) and power_sources:
+            if not getattr(args, "no_power_check", False) and (power_sources or power_sources_binary):
                 power_reps = getattr(args, "effect_reps", 200)
-                print(f"\npvalues simulation (PPI-corrected, power check) -- {len(power_sources)} scenarios, "
+                power_all_sources = power_sources + power_sources_binary
+                print(f"\npvalues simulation (PPI-corrected, power check) -- {len(power_all_sources)} scenarios, "
                       f"reps={power_reps}, n_boot={args.ppi_n_boot}")
                 power_results = run_ppi_simulation(
-                    power_sources, active_tests=active_tests, n_reps=power_reps, n_boot=args.ppi_n_boot,
+                    power_all_sources, active_tests=active_tests, n_reps=power_reps, n_boot=args.ppi_n_boot,
                     progress_mode=args.progress, seed=args.seed + 2, n_workers=getattr(args, "workers", 1),
                 )
                 print_ppi_power_report(power_results, alpha=args.alpha)
@@ -7418,7 +7742,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 # bias to correct for, and how close does the biased-
                 # condition line above track that ceiling? See
                 # build_ppi_power_nobias_sources' docstring.
-                nobias_sources = build_ppi_power_nobias_sources()
+                nobias_sources = build_ppi_power_nobias_sources() + build_ppi_power_nobias_sources_binary()
                 if args.eval_types:
                     nobias_sources = [s for s in nobias_sources if s.eval_type in requested]
                 nobias_results: list[PPIResult] = []
@@ -7474,7 +7798,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 # uncorrected test would just quietly overstate the effect
                 # instead of showing a visible anomaly? See
                 # build_ppi_power_reinforcing_sources' docstring.
-                reinforcing_sources = build_ppi_power_reinforcing_sources()
+                reinforcing_sources = build_ppi_power_reinforcing_sources() + build_ppi_power_reinforcing_sources_binary()
                 if args.eval_types:
                     reinforcing_sources = [s for s in reinforcing_sources if s.eval_type in requested]
                 reinforcing_results: list[PPIResult] = []
@@ -7624,6 +7948,49 @@ def run(args: argparse.Namespace) -> CaseResult:
                     output_paths.append(null_comparison_plot_path)
                     print(f"Saved plot: {null_comparison_plot_path}")
 
+            if not getattr(args, "no_comparison_check", False):
+                # Binary's estimator-comparison sweep, kept entirely separate
+                # from comparison_sources/_COMPARISON_METHODS above: only 2 of
+                # that pool's 4 tests are valid on binary data (see
+                # _COMPARISON_METHODS_BINARY), so pooling would be apples-to-
+                # oranges. build_ppi_nlab_grid_sources_binary exists and is
+                # unit-tested but deliberately NOT wired in here yet -- its
+                # (N, N_lab) grid needs its own 2D heatmap-style report the
+                # way save_ppi_nlab_grid_plot gives the non-binary version,
+                # which print_ppi_comparison_report's single-x-axis table
+                # can't show correctly (a real follow-up, not an oversight).
+                comparison_sources_binary = power_sources_binary + build_ppi_comparison_label_frac_sources_binary()
+                if args.eval_types:
+                    comparison_sources_binary = [s for s in comparison_sources_binary if s.eval_type in requested]
+                if comparison_sources_binary:
+                    comparison_reps = getattr(args, "effect_reps", 200)
+                    print(f"\npvalues simulation (PPI-corrected, binary estimator comparison) -- "
+                          f"{len(comparison_sources_binary)} scenarios x {len(_COMPARISON_METHODS_BINARY)} methods "
+                          f"({_COMPARISON_METHODS_BINARY_LABEL}), reps={comparison_reps}, n_boot={args.ppi_n_boot}")
+                    comparison_binary_tags = [
+                        ("power_binary", "effect_size", "es", "{:.2f}"),
+                        ("complab_binary", "n_lab", "nlab", "{:d}"),
+                    ]
+                    comparison_results_binary_raw = run_ppi_comparison_simulation(
+                        comparison_sources_binary, n_reps=comparison_reps, n_boot=args.ppi_n_boot,
+                        progress_mode=args.progress, seed=args.seed + 11, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS_BINARY,
+                    )
+                    comparison_results_binary_pooled = pool_ppi_comparison_across_methods(comparison_results_binary_raw)
+                    print_ppi_comparison_report(
+                        comparison_results_binary_pooled, alpha=args.alpha,
+                        tags=comparison_binary_tags, label=_COMPARISON_METHODS_BINARY_LABEL,
+                    )
+
+                    comparison_binary_stem = f"pvalues_ppi_comparison_binary_reps{comparison_reps}_{stamp}"
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_comparison(
+                            results=comparison_results_binary_raw, pooled_results=comparison_results_binary_pooled,
+                            alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_binary_stem,
+                            tags=comparison_binary_tags, label=_COMPARISON_METHODS_BINARY_LABEL,
+                        )
+                    key_metrics["ppi_comparison_binary_n_results"] = len(comparison_results_binary_pooled)
+
             if getattr(args, "factorial_check", False):
                 factorial_likert_max = getattr(args, "factorial_likert_max", 5)
                 factorial_omnibus = getattr(args, "factorial_omnibus", False)
@@ -7762,6 +8129,98 @@ def run(args: argparse.Namespace) -> CaseResult:
                             print(f"Saved plot: {hh_plot_path}")
 
                         key_metrics["ppi_alignment_sweep_n_results"] = len(alignment_results)
+
+            if getattr(args, "factorial_check_binary", False):
+                factorial_sources_binary = build_ppi_factorial_sources_binary()
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    factorial_sources_binary = [s for s in factorial_sources_binary if s.eval_type in requested]
+                if factorial_sources_binary:
+                    factorial_reps = getattr(args, "factorial_reps", 100)
+                    factorial_n_boot = getattr(args, "factorial_n_boot", 500)
+                    print(f"\npvalues simulation (PPI-corrected, binary factorial) -- "
+                          f"{len(factorial_sources_binary)} scenarios x {len(_COMPARISON_METHODS_BINARY)} methods "
+                          f"({_COMPARISON_METHODS_BINARY_LABEL}), reps={factorial_reps}, n_boot={factorial_n_boot}")
+                    factorial_binary_results_raw = run_ppi_comparison_simulation(
+                        factorial_sources_binary, n_reps=factorial_reps, n_boot=factorial_n_boot,
+                        progress_mode=args.progress, seed=args.seed + 12, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS_BINARY,
+                    )
+                    factorial_binary_results = pool_ppi_comparison_across_methods(factorial_binary_results_raw)
+                    # GLM/heatmap/headline-report stay scoped to the
+                    # llm_noise=PPI_BINARY_NOISE_BASELINE baseline, the only
+                    # noise level non-null cells even have -- see
+                    # _PPI_FACTORIAL_BINARY_FORMULA's docstring for why
+                    # llm_noise can't safely join that model as a term. The
+                    # FULL factorial_binary_results (every noise level) is
+                    # reserved for the alignment-bucketed view below.
+                    factorial_binary_results_baseline = [
+                        r for r in factorial_binary_results
+                        if _parse_ppi_factorial_binary_name(r.name)["noise"] == PPI_BINARY_NOISE_BASELINE
+                    ]
+                    print_ppi_factorial_binary_report(
+                        factorial_binary_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_BINARY_LABEL,
+                    )
+
+                    factorial_binary_stem = f"pvalues_ppi_factorial_binary_reps{factorial_reps}_{stamp}"
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_factorial_binary(
+                            results=factorial_binary_results_raw, pooled_results=factorial_binary_results_baseline,
+                            alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_binary_stem,
+                            label=_COMPARISON_METHODS_BINARY_LABEL,
+                        )
+                    if args.plots == "save":
+                        factorial_binary_plot_path = save_ppi_factorial_binary_heatmap_plot(
+                            results=factorial_binary_results_baseline, alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{factorial_binary_stem}_slices.png"),
+                        )
+                        output_paths.append(factorial_binary_plot_path)
+                        print(f"Saved plot: {factorial_binary_plot_path}")
+
+                    key_metrics["ppi_factorial_binary_n_results"] = len(factorial_binary_results_baseline)
+                    null_results_binary = [
+                        r for r in factorial_binary_results_baseline
+                        if _parse_ppi_factorial_binary_name(r.name)["es"] == "null"
+                    ]
+                    if null_results_binary:
+                        c_tot = sum(r.rejects_ppi for r in null_results_binary)
+                        n_tot = sum(r.n_reps for r in null_results_binary)
+                        key_metrics["ppi_factorial_binary_mean_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
+
+                    # Judge-human alignment-bucketed view (Cohen's kappa),
+                    # derived from this SAME run's es="null" cells -- see
+                    # build_ppi_alignment_results_from_factorial_binary.
+                    # No human-human companion for binary yet -- measure_
+                    # human_human_alignment has no binary branch.
+                    align_mc = getattr(args, "factorial_alignment_mc", 20000)
+                    alignment_results_binary = build_ppi_alignment_results_from_factorial_binary(
+                        factorial_sources_binary, factorial_binary_results, n_align_mc=align_mc, seed=args.seed + 13,
+                    )
+                    if alignment_results_binary:
+                        print_ppi_alignment_sweep_report(alignment_results_binary, alpha=args.alpha)
+
+                        if args.save_results == "save":
+                            output_paths += save_results_artifacts_ppi_alignment_sweep(
+                                results=alignment_results_binary, alpha=args.alpha, out_dir=args.out_dir,
+                                run_stem=f"{factorial_binary_stem}_alignment",
+                            )
+                        if args.plots == "save":
+                            for view_et, view_metric, view_label, view_band_fn, view_band_source, view_symbol in _ALIGNMENT_VIEWS:
+                                if not any(
+                                    r.eval_type == view_et and view_metric in r.alignment_metrics
+                                    for r in alignment_results_binary
+                                ):
+                                    continue
+                                align_plot_path = save_ppi_alignment_sweep_plot(
+                                    results=alignment_results_binary, eval_type=view_et, metric=view_metric,
+                                    display_label=view_label, band_fn=view_band_fn, band_source=view_band_source,
+                                    symbol=view_symbol, alpha=args.alpha,
+                                    out_path=str(Path(plots_dir) / f"{factorial_binary_stem}_alignment_{view_et}_{view_metric}.png"),
+                                )
+                                output_paths.append(align_plot_path)
+                                print(f"Saved plot: {align_plot_path}")
+
+                        key_metrics["ppi_alignment_sweep_binary_n_results"] = len(alignment_results_binary)
 
         return CaseResult(
             case_name=CASE_NAME, status="ok", output_paths=output_paths,
