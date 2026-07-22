@@ -105,12 +105,36 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
 }
 
 DEFAULT_APPSTORE_APP_IDS = [
-    284882215,  # Facebook
-    389801252,  # Instagram
-    324684580,  # Spotify
-    310633997,  # WhatsApp Messenger
-    835599320,  # TikTok
+    284882215,   # Facebook
+    389801252,   # Instagram
+    324684580,   # Spotify
+    310633997,   # WhatsApp Messenger
+    835599320,   # TikTok
+    447188370,   # Snapchat
+    454638411,   # Messenger
+    297606951,   # Amazon
+    922103212,   # McDonald's
+    6446901002,  # Threads
+    1641486558,  # Temu
+    283646709,   # PayPal
+    585027354,   # Google Maps
+    429047995,   # Pinterest
+    546505307,   # Zoom Workplace
+    331177714,   # Starbucks
+    311548709,   # Wells Fargo
 ]
+# NOTE: Apple's customer-review RSS feed is an unofficial, unreliable
+# endpoint -- the same app_id can return 0 entries on one request and 50 on
+# the next (observed directly while building this list), and a burst of
+# many requests in a short window (e.g. testing many app_ids back to back)
+# appears to trigger a temporary all-empty state that outlasts a few
+# retries. fetch_appstore_items retries an empty first page a few times to
+# absorb ordinary flakiness, but can't fully compensate for a rate-limited
+# window. The list above is deliberately generous (17 apps, several
+# categories) so total volume stays reasonable even when several apps come
+# back empty on a given run -- and since collect-data is additive, simply
+# re-running the command later accumulates more items rather than
+# resetting.
 
 ITEMS_FIELDNAMES = ["item_id", "eval_type", "dataset", "human_label", "judge_input"]
 SCORES_FIELDNAMES = ["item_id", "judge_model", "run_idx", "judge_score", "raw_response", "collected_at"]
@@ -186,6 +210,11 @@ def _progress(iterable, **kwargs):
         print("  (pip install tqdm to see a progress bar here)")
         return iterable
     return tqdm(iterable, **kwargs)
+
+
+def _warn_if_short(reservoir: list, n_items: int, hint: str) -> None:
+    if len(reservoir) < n_items:
+        print(f"  NOTE: only got {len(reservoir)}/{n_items} requested -- {hint}")
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +316,8 @@ def fetch_arena_items(*, n_items: int, min_date: str | None, max_scan: int, seed
               f"-- set --arena-min-date within/near this range.")
     if min_date and seen == 0:
         print(f"  NOTE: 0 eligible rows -- --arena-min-date={min_date} is likely outside the "
-              f"range above (or --max-scan is too small to reach it).")
+              f"range above (or --arena-max-scan is too small to reach it).")
+    _warn_if_short(reservoir, n_items, "raise --arena-max-scan to scan further into the stream.")
     return reservoir
 
 
@@ -339,8 +369,11 @@ def fetch_wmt_da_items(*, n_items: int, min_year: int, max_scan: int, seed: int)
     print(f"  Scanned {scanned:,} rows, {seen:,} eligible (year >= {min_year}, has 'raw' score), "
           f"sampled {len(reservoir)}.")
     if seen == 0:
-        print(f"  NOTE: 0 eligible rows -- try a lower --wmt-min-year (this HF mirror's rows "
-          f"are ordered ascending by year; run with --max-scan higher or --wmt-min-year 2015).")
+        print(f"  NOTE: 0 eligible rows -- this HF mirror's ~1.29M rows are ordered ascending by "
+              f"year (2017 through ~2022), so a low --wmt-max-scan can finish before reaching "
+              f"{min_year}. Try a higher --wmt-max-scan (default already covers the whole "
+              f"dataset) or a lower --wmt-min-year.")
+    _warn_if_short(reservoir, n_items, "raise --wmt-max-scan (it may not have reached the end of the ascending-by-year stream yet).")
     return reservoir
 
 
@@ -351,6 +384,7 @@ def fetch_wmt_da_items(*, n_items: int, min_year: int, max_scan: int, seed: int)
 
 def fetch_appstore_items(
     *, app_ids: list[int], country: str, n_items: int, days_back: int, max_pages: int, seed: int,
+    empty_retries: int = 3, retry_sleep: float = 2.0,
 ) -> list[dict]:
     try:
         import requests
@@ -364,7 +398,9 @@ def fetch_appstore_items(
     pbar = _progress(app_ids, desc="appstore", unit="app")
     for app_id in pbar:
         n_app = 0
-        for page in range(1, max_pages + 1):
+        page = 1
+        retries_left = empty_retries
+        while page <= max_pages:
             url = (f"https://itunes.apple.com/{country}/rss/customerreviews/"
                    f"page={page}/id={app_id}/sortBy=mostRecent/json")
             try:
@@ -377,6 +413,15 @@ def fetch_appstore_items(
                 break
             entries = resp.json().get("feed", {}).get("entry", [])
             if not entries:
+                # Apple's feed is flaky per-call (observed: same app_id
+                # returns 0 entries one request, 50 the next, seconds
+                # apart) -- only retry the FIRST page, and only while this
+                # app hasn't yielded anything yet, since a later empty page
+                # legitimately just means end-of-feed.
+                if n_app == 0 and retries_left > 0:
+                    retries_left -= 1
+                    time.sleep(retry_sleep)
+                    continue
                 break
             for e in entries:
                 rating = e.get("im:rating", {}).get("label")
@@ -400,6 +445,7 @@ def fetch_appstore_items(
                 n_app += 1
             if hasattr(pbar, "set_postfix"):
                 pbar.set_postfix(app=app_id, collected=len(items))
+            page += 1
             time.sleep(0.3)
         msg = f"  app {app_id}: {n_app} reviews within {days_back}d."
         pbar.write(msg) if hasattr(pbar, "write") else print(msg)
@@ -409,6 +455,11 @@ def fetch_appstore_items(
     rng = random.Random(seed)
     rng.shuffle(items)
     print(f"  Total {len(items)} reviews collected, sampling {min(n_items, len(items))}.")
+    _warn_if_short(items, n_items, "Apple's RSS feed is unofficial and unreliable per-app/per-call "
+                   "-- collect-data is additive, so simply re-running this command later (when "
+                   "more apps' feeds happen to respond) will accumulate more items rather than "
+                   "starting over. You can also add more --appstore-app-ids or raise "
+                   "--appstore-days-back / --appstore-max-pages.")
     return items[:n_items]
 
 
@@ -444,18 +495,19 @@ def run_collect_data(args: argparse.Namespace) -> None:
         if spec.key == "arena":
             items = fetch_arena_items(
                 n_items=args.n_items, min_date=args.arena_min_date,
-                max_scan=args.max_scan, seed=args.seed,
+                max_scan=args.arena_max_scan, seed=args.seed,
             )
         elif spec.key == "wmt_da":
             items = fetch_wmt_da_items(
                 n_items=args.n_items, min_year=args.wmt_min_year,
-                max_scan=args.max_scan, seed=args.seed,
+                max_scan=args.wmt_max_scan, seed=args.seed,
             )
         elif spec.key == "appstore":
             items = fetch_appstore_items(
                 app_ids=args.appstore_app_ids, country=args.appstore_country,
                 n_items=args.n_items, days_back=args.appstore_days_back,
                 max_pages=args.appstore_max_pages, seed=args.seed,
+                empty_retries=args.appstore_empty_retries, retry_sleep=args.appstore_retry_sleep,
             )
         else:
             raise ValueError(spec.key)
@@ -678,10 +730,12 @@ def build_arg_parser() -> argparse.ArgumentParser:
     pd_ = sub.add_parser("collect-data", help="Fetch items + human labels (no LLM calls).")
     pd_.add_argument("--types", **common_types)
     pd_.add_argument("--out-dir", default="simulations/out")
-    pd_.add_argument("--n-items", type=int, default=300, help="Items to sample per dataset.")
+    pd_.add_argument("--n-items", type=int, default=1000,
+                      help="Items to sample per dataset (PPI regimes typically want >= ~1000).")
     pd_.add_argument("--seed", type=int, default=0)
-    pd_.add_argument("--max-scan", type=int, default=50_000,
-                      help="Cap on upstream rows scanned for arena/wmt_da streaming reservoir sampling.")
+    pd_.add_argument("--arena-max-scan", type=int, default=100_000,
+                      help="Cap on upstream rows scanned for arena streaming reservoir sampling "
+                           "(~72%% of rows are eligible, so this comfortably covers --n-items 1000+).")
     pd_.add_argument("--arena-min-date", default=None,
                       help="ISO date (YYYY-MM-DD); only keep arena battles at/after this date. "
                            "Default: no filter (this dataset is a fixed snapshot, not a live feed -- "
@@ -689,12 +743,24 @@ def build_arg_parser() -> argparse.ArgumentParser:
                            "postdates your judge model's training cutoff).")
     pd_.add_argument("--wmt-min-year", type=int, default=2020,
                       help="Only keep WMT DA rows with year >= this.")
+    pd_.add_argument("--wmt-max-scan", type=int, default=1_400_000,
+                      help="Cap on upstream rows scanned for WMT DA streaming reservoir sampling. "
+                           "This mirror's ~1.29M rows are ordered ASCENDING by year (2017 first) -- "
+                           "the default covers the whole dataset so a --wmt-min-year filter can "
+                           "actually be reached; a low cap here silently yields 0 eligible rows "
+                           "if it stops scanning before the requested year range.")
     pd_.add_argument("--appstore-app-ids", type=int, nargs="+", default=DEFAULT_APPSTORE_APP_IDS)
     pd_.add_argument("--appstore-country", default="us")
-    pd_.add_argument("--appstore-days-back", type=int, default=14,
+    pd_.add_argument("--appstore-days-back", type=int, default=45,
                       help="Only keep app-store reviews updated within this many days.")
-    pd_.add_argument("--appstore-max-pages", type=int, default=10,
+    pd_.add_argument("--appstore-max-pages", type=int, default=15,
                       help="RSS pages (~50 reviews each) to fetch per app.")
+    pd_.add_argument("--appstore-empty-retries", type=int, default=3,
+                      help="Apple's feed is flaky per-call (same app_id can return 0 entries one "
+                           "request and 50 the next); retry an app's empty first page this many "
+                           "times before concluding it truly has none in range.")
+    pd_.add_argument("--appstore-retry-sleep", type=float, default=2.0,
+                      help="Seconds to wait between empty-page retries.")
     pd_.set_defaults(func=run_collect_data)
 
     ps = sub.add_parser("collect-judge-scores", help="Prompt an LLM judge and cache its scores.")
