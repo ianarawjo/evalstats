@@ -23,6 +23,23 @@ corresponding score array.  Set elements to ``NaN`` (or ``None``) for
 items that have no human label.  At least one labeled item per group is
 required; ~20–30+ labeled items per group is recommended for stable PPI.
 
+**Which items get a human label must be chosen uniformly at random.** This
+is a hard requirement, not a tip: PPI's rectifier assumes the labeled subset
+is representative of the full population it's correcting. If labeling
+targets specific items instead — e.g. "double-check the borderline or
+highest-scoring responses," a common real-world review practice — that is
+missing-not-at-random (MNAR) selection on the outcome, and every PPI
+correction in this module can stay badly miscalibrated (30–65% false-
+positive rate at nominal 5%, in simulation) **no matter how many items you
+label**. Unlike ordinary small-sample noise, this does not shrink as
+n_lab grows — it was confirmed to persist from n_lab=15 up through n_lab=300
+out of N=400 (see ``simulations/harness/cases/pvalues.py --mode ppi``'s
+MNAR-labeling sweep). A stratified rectifier was prototyped as a mitigation
+and found to trade away calibration on the common (correctly random-sampled)
+case for a partial improvement here, so it was not adopted — random sampling
+of the labeled subset is the only fix. See :func:`evalstats.ppi.correct`'s
+docstring for the full analysis.
+
 Alignment report
 ----------------
 When human labels are supplied, ``validate_alignment()`` is called
@@ -486,6 +503,14 @@ def _sanitize_ppi_labels(
     Effective labels are counted as:
       - independent tests: non-NaN labels across both groups
       - paired tests: positions where both labels are non-NaN
+
+    This only checks COUNT, not how the labeled subset was chosen. Count
+    alone cannot catch the more serious failure mode: labels that were
+    selected non-randomly (e.g. always double-checking the borderline/
+    highest-scoring items) can leave PPI badly miscalibrated regardless of
+    n_lab -- see the module docstring's "Which items get a human label"
+    section and :func:`evalstats.ppi.correct`'s docstring for why this is a
+    hard requirement, not a count to satisfy.
     """
     a_name, b_name = label_names
 
@@ -505,7 +530,10 @@ def _sanitize_ppi_labels(
         )
         warn_msg = (
             "Only {n} overlapping human-labeled positions were supplied. "
-            "PPI bootstrap can undercover below 30 labels; consider labeling more items."
+            "PPI bootstrap can undercover below 30 labels; consider labeling more items. "
+            "This assumes those labels were chosen uniformly at random -- if labeling "
+            "targeted specific items (e.g. borderline/highest-scoring), more labels will "
+            "NOT fix miscalibration; see this module's docstring."
         )
     else:
         n_effective = int(np.sum(~np.isnan(a_lab)) + np.sum(~np.isnan(b_lab)))
@@ -515,7 +543,10 @@ def _sanitize_ppi_labels(
         )
         warn_msg = (
             "Only {n} human labels were supplied across both groups. "
-            "PPI bootstrap can undercover below 30 labels; consider labeling more items."
+            "PPI bootstrap can undercover below 30 labels; consider labeling more items. "
+            "This assumes those labels were chosen uniformly at random -- if labeling "
+            "targeted specific items (e.g. borderline/highest-scoring), more labels will "
+            "NOT fix miscalibration; see this module's docstring."
         )
 
     if n_effective < 15:
@@ -543,6 +574,11 @@ def _ppi_two_sample(
 
     Internally uses integer group labels (0 = A, 1 = B) so group identity
     survives bootstrap resampling without string comparison.
+
+    Delegates to :func:`evalstats.ppi.correct`'s single global rectifier --
+    see that docstring's random-sampling requirement. This function does NOT
+    guard against non-random label selection (MNAR); it assumes the caller's
+    a_lab/b_lab were chosen uniformly at random from a/b.
     """
     from evalstats.ppi import correct
 

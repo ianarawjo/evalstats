@@ -171,6 +171,30 @@ def correct(
     to opt into a "shared" mode; correctness depends entirely on the caller
     constructing a genuinely disjoint *Y_hat_unlab* up front.
 
+    **The labeled subset (*Y_lab*) must be selected independently of its own
+    outcome value — ideally a uniform random sample of the full dataset.**
+    The rectifier's validity relies on the labeled items being representative
+    of the population it's correcting; if which items get human-labeled is
+    itself influenced by the (true or LLM-judged) score — e.g. "always
+    double-check the borderline/highest-scoring responses" — this is
+    literally MNAR (missing-not-at-random) selection on the outcome, and the
+    correction can stay miscalibrated by a large, non-vanishing amount
+    regardless of how large *n_lab* is. This is not a small-sample artifact
+    that more labels fixes: confirmed via simulation to persist (30–65%
+    false-positive rate against a 5% nominal target) from n_lab=15 up through
+    n_lab=300 out of N=400, non-monotonically, under a labeling process that
+    preferentially selects high-scoring items (see
+    ``simulations/harness/cases/pvalues.py --mode ppi``'s MNAR-labeling
+    sweep). A stratified/local-rectifier mitigation was prototyped and does
+    reduce the worst cells substantially at large n_lab (≳80), but only at
+    the cost of measurably worse calibration on the common, correctly-random-
+    sampled case — not worth the trade given the fix that actually works for
+    free: sample which items to label uniformly at random. There is
+    currently no supported way to opt into a stratified/propensity-adjusted
+    rectifier for non-random labeling; random sampling of the labeled subset
+    is a hard requirement for this function's calibration guarantee, not a
+    recommendation to weigh against convenience.
+
     Parameters
     ----------
     estimator_func : callable

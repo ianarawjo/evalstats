@@ -216,6 +216,19 @@ would have gotten from a fully human-labeled study (Angelopoulos et al., 2023).
 Most PPI correction methods use PPIBoot (bootstrap variant of PPI; Zrnic, 2024).
 Implemented corrections have been battle-tested via simulations (see `simulations/sim_type_i_calibration.py`).
 
+> **Important: which items get a human label must be chosen uniformly at
+> random.** PPI correction assumes the labeled subset is representative of
+> the full dataset. If your labeling process instead targets specific items
+> — e.g. "always double-check the borderline or highest-scoring responses,"
+> a common real-world review habit — that's missing-not-at-random (MNAR)
+> selection on the outcome, and PPI correction can stay badly miscalibrated
+> **no matter how many items you label**. This isn't ordinary small-sample
+> noise that more labels fixes; it was confirmed in simulation to persist
+> from 15 up through 300 labeled items out of 400. See
+> `evalstats.ppi.correct`'s docstring for the full analysis. If you can't
+> guarantee random labeling, treat any PPI-corrected result here with
+> caution regardless of the reported CI/p-value.
+
 ### Example: Comparing models with corrected LLM judge evals via `compare(..., alignment=...)`
 
 ```python
