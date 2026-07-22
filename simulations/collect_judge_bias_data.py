@@ -38,7 +38,7 @@ this, or does it just remember the label" sanity check. The app-store feed
 in particular returns literally today's reviews.
 
 Install dependencies first (all present in the project's dev venv, .venv/):
-  pip install datasets huggingface_hub requests openai
+  pip install datasets huggingface_hub requests openai tqdm  # tqdm optional, for progress bars
 
 Usage:
   # Step 1: download/fetch the three real-data corpora (no LLM calls yet)
@@ -172,6 +172,23 @@ def _reservoir_add(reservoir: list, item: Any, seen: int, k: int, rng: random.Ra
 
 
 # ---------------------------------------------------------------------------
+# Progress bar helper -- tqdm is optional (not a hard dependency of this
+# script); falls back to the plain iterable with a one-time hint if it isn't
+# installed. Callers guard the tqdm-only methods (set_postfix/write/close)
+# with hasattr so they work identically either way.
+# ---------------------------------------------------------------------------
+
+
+def _progress(iterable, **kwargs):
+    try:
+        from tqdm import tqdm
+    except ImportError:
+        print("  (pip install tqdm to see a progress bar here)")
+        return iterable
+    return tqdm(iterable, **kwargs)
+
+
+# ---------------------------------------------------------------------------
 # collect-data: binary -- lmarena-ai/arena-human-preference-140k
 # ---------------------------------------------------------------------------
 
@@ -240,7 +257,8 @@ def fetch_arena_items(*, n_items: int, min_date: str | None, max_scan: int, seed
     seen = 0
     scanned = 0
     ts_min = ts_max = None
-    for row in ds:
+    pbar = _progress(ds, total=max_scan, desc="arena", unit="row")
+    for row in pbar:
         scanned += 1
         if scanned > max_scan:
             break
@@ -257,6 +275,10 @@ def fetch_arena_items(*, n_items: int, min_date: str | None, max_scan: int, seed
             continue
         seen += 1
         _reservoir_add(reservoir, item, seen, n_items, rng)
+        if hasattr(pbar, "set_postfix"):
+            pbar.set_postfix(eligible=seen, sampled=len(reservoir))
+    if hasattr(pbar, "close"):
+        pbar.close()
 
     print(f"  Scanned {scanned:,} rows, {seen:,} eligible (winner in model_a/model_b"
           f"{f', timestamp >= {min_date}' if min_date else ''}), sampled {len(reservoir)}.")
@@ -289,7 +311,8 @@ def fetch_wmt_da_items(*, n_items: int, min_year: int, max_scan: int, seed: int)
     reservoir: list[dict] = []
     seen = 0
     scanned = 0
-    for row in ds:
+    pbar = _progress(ds, total=max_scan, desc="wmt_da", unit="row")
+    for row in pbar:
         scanned += 1
         if scanned > max_scan:
             break
@@ -308,6 +331,10 @@ def fetch_wmt_da_items(*, n_items: int, min_year: int, max_scan: int, seed: int)
         }
         seen += 1
         _reservoir_add(reservoir, item, seen, n_items, rng)
+        if hasattr(pbar, "set_postfix"):
+            pbar.set_postfix(eligible=seen, sampled=len(reservoir))
+    if hasattr(pbar, "close"):
+        pbar.close()
 
     print(f"  Scanned {scanned:,} rows, {seen:,} eligible (year >= {min_year}, has 'raw' score), "
           f"sampled {len(reservoir)}.")
@@ -334,7 +361,8 @@ def fetch_appstore_items(
           f"(likert: human 1-5 star ratings, live/today's reviews) ...")
     cutoff = datetime.now(timezone.utc) - timedelta(days=days_back)
     items: list[dict] = []
-    for app_id in app_ids:
+    pbar = _progress(app_ids, desc="appstore", unit="app")
+    for app_id in pbar:
         n_app = 0
         for page in range(1, max_pages + 1):
             url = (f"https://itunes.apple.com/{country}/rss/customerreviews/"
@@ -342,7 +370,8 @@ def fetch_appstore_items(
             try:
                 resp = requests.get(url, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
             except requests.RequestException as e:
-                print(f"  {app_id} page {page}: request failed ({e}), stopping this app.")
+                msg = f"  {app_id} page {page}: request failed ({e}), stopping this app."
+                pbar.write(msg) if hasattr(pbar, "write") else print(msg)
                 break
             if resp.status_code != 200:
                 break
@@ -369,8 +398,13 @@ def fetch_appstore_items(
                     "judge_input": {"title": title, "text": text},
                 })
                 n_app += 1
+            if hasattr(pbar, "set_postfix"):
+                pbar.set_postfix(app=app_id, collected=len(items))
             time.sleep(0.3)
-        print(f"  app {app_id}: {n_app} reviews within {days_back}d.")
+        msg = f"  app {app_id}: {n_app} reviews within {days_back}d."
+        pbar.write(msg) if hasattr(pbar, "write") else print(msg)
+    if hasattr(pbar, "close"):
+        pbar.close()
 
     rng = random.Random(seed)
     rng.shuffle(items)
