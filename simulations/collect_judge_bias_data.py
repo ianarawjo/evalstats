@@ -638,7 +638,17 @@ def _call_judge(client, model: str, messages: list[dict], *, max_retries: int, s
     for attempt in range(max_retries):
         try:
             resp = client.chat.completions.create(
-                model=model, messages=messages, temperature=0.0, max_tokens=16,
+                # 2048, not something terse like 16 -- reasoning models (e.g.
+                # gpt-oss:20b) spend a chunk of the budget on a separate
+                # "reasoning" channel (Ollama splits it into
+                # message.reasoning, not message.content) BEFORE emitting the
+                # actual answer; a small cap hits finish_reason="length"
+                # mid-thought and returns empty content, which then fails to
+                # parse downstream. Confirmed empirically: a real arena item
+                # used 393 completion tokens end-to-end. Non-reasoning models
+                # just stop early (finish_reason="stop") well under this cap,
+                # so it costs them nothing.
+                model=model, messages=messages, temperature=0.0, max_tokens=2048,
             )
             time.sleep(sleep_s)
             return resp.choices[0].message.content or ""
