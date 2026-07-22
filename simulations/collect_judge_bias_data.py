@@ -676,13 +676,17 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
               f"{len(done_keys)} (item,model,run) combos already collected.")
 
         n_new = 0
-        for item in items:
+        n_skipped = 0
+        n_failed = 0
+        pbar = _progress(items, desc=f"{eval_type}-judge", unit="item")
+        for item in pbar:
             if args.limit is not None and n_new >= args.limit:
                 break
             ji = json.loads(item["judge_input"])
             for run_idx in range(args.runs):
                 key = (item["item_id"], args.model, str(run_idx))
                 if key in done_keys:
+                    n_skipped += 1
                     continue
                 if args.limit is not None and n_new >= args.limit:
                     break
@@ -690,7 +694,9 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
                 raw = _call_judge(client, args.model, messages, max_retries=args.max_retries, sleep_s=args.sleep)
                 score = None if raw is None else parse_response(raw)
                 if score is None:
-                    print(f"    could not parse judge response for {item['item_id']} run {run_idx}: {raw!r}")
+                    n_failed += 1
+                    msg = f"    could not parse judge response for {item['item_id']} run {run_idx}: {raw!r}"
+                    pbar.write(msg) if hasattr(pbar, "write") else print(msg)
                     continue
                 row = {
                     "item_id": item["item_id"], "judge_model": args.model, "run_idx": run_idx,
@@ -700,10 +706,13 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
                 _append_csv_row(paths["scores"], row, SCORES_FIELDNAMES)
                 done_keys.add(key)
                 n_new += 1
-                if n_new % 25 == 0:
-                    print(f"    ... {n_new} new judge scores collected")
+            if hasattr(pbar, "set_postfix"):
+                pbar.set_postfix(new=n_new, skipped=n_skipped, failed=n_failed)
+        if hasattr(pbar, "close"):
+            pbar.close()
 
-        print(f"  -> {n_new} new judge scores written to {paths['scores']}")
+        print(f"  -> {n_new} new judge scores written to {paths['scores']}"
+              f" ({n_skipped} already done, {n_failed} unparseable)")
         _write_merged_view(paths, spec)
 
 
