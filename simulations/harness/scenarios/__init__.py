@@ -144,6 +144,20 @@ class JudgeBiasSource:
     design, and nested LLM runs)
     in one call, in a fixed draw order, so a single ``rng`` stream feeds every
     active test deterministically.
+
+    ``bias_delta``/``bias_extra_*``/``slope_*`` model judge miscalibration as
+    an AFFINE function of the group's true score -- a single constant shift
+    plus a single constant stretch/compression, the same for every item in
+    a group. ``confound_weight``/``confound_truth_corr``/``confound_shift_*``
+    are a structurally different (not a replacement) bias mechanism: a
+    per-item nuisance covariate -- e.g. response length -- correlated with,
+    but distinct from, true quality, that can differ systematically between
+    compared groups for reasons that have nothing to do with quality. An
+    affine-in-truth model can only ever move a group as a whole; it can't
+    reproduce "this group's responses happen to be longer, and the judge
+    rewards length regardless of actual quality." See
+    ``scenarios.synthetic._confound_latent`` for the generative model and
+    ``build_judge_bias_sources``' ``"confound.*"`` scenarios for the sweep.
     """
 
     name: str
@@ -216,3 +230,34 @@ class JudgeBiasSource:
     """"contaminated" noise_family only: the catastrophic component's std is
     this multiple of the normal component's std (solved jointly with
     contam_frac so total variance stays fixed -- see _contaminated_noise_stds)."""
+    confound_weight: float = 0.0
+    """How strongly a per-item nuisance covariate (e.g. response length --
+    correlated with, but distinct from, true quality) drives the judge's
+    score, independent of bias_delta/slope_*. 0.0 (the default) disables
+    the mechanism entirely -- every pre-existing scenario is bit-for-bit
+    unaffected. See scenarios.synthetic._confound_latent for the generative
+    model and JudgeBiasSource's class docstring's "confound-driven bias"
+    note for why this is a structurally different stress test than
+    bias_delta/slope_* (those two can only stretch or shift a group as a
+    whole; this varies item-to-item)."""
+    confound_truth_corr: float = 0.0
+    """Gaussian-copula correlation between the confound and standardized
+    truth (0 = confound is pure nuisance, unrelated to quality; nonzero,
+    e.g. "longer answers tend to be a bit better too," makes the confound
+    harder to distinguish from ordinary judge bias). Linear/copula only --
+    see _confound_latent's docstring for why this harness doesn't attempt
+    non-monotonic (e.g. U-shaped) truth-confound relationships. Not
+    swept independently of confound_weight in build_judge_bias_sources'
+    "confound.*" scenarios -- see that group's comment."""
+    confound_shift_a: float = 0.0
+    confound_shift_b: float = 0.0
+    confound_shift_c: float = 0.0
+    confound_shift_d: float = 0.0
+    """Per-group mean shift in the confound itself -- same group-letter
+    convention bias_extra_a/b/c/d already uses. This is what turns the
+    confound from inert per-item noise (which averages out across N and
+    can't miscalibrate a mean-comparison test on its own) into a genuine
+    between-group nuisance difference: e.g. "group A's responses average
+    longer than group B's, for reasons unrelated to quality" -- something
+    an affine-in-truth bias_delta/slope model structurally cannot express,
+    since it only ever moves a group as a whole, uniformly."""
