@@ -5092,7 +5092,52 @@ def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd
     return fit.summary().as_text(), df
 
 
-def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float, label: str = "paired_t") -> None:
+def _print_ppi_factorial_lm_noise_table(null_rows: pd.DataFrame, alpha: float) -> None:
+    """(label_mechanism x llm_noise) Type-I calibration breakdown, printed
+    from the FULL noise-swept null-cell subset -- deliberately NOT the
+    single baseline noise level fit_ppi_factorial_model/save_ppi_factorial_
+    heatmap_plot are restricted to (see _PPI_FACTORIAL_FORMULA's docstring
+    for why THAT restriction is real: llm_noise is collinear with es="null"
+    once non-null cells, which only exist at the baseline noise, join the
+    regression). That confound has no bearing on a null-cells-only table
+    like this one, and confirmed via the saved official runs
+    (official_20260722_003107 binary, official_20260719_214931 fastnoise
+    continuous/likert) that restricting to baseline noise was hiding the
+    worst of the problem: mnar_strong looks mild to nonexistent at the
+    baseline noise level (binary: mean 8.7% at noise=0.10) but is far worse
+    at LOW noise -- i.e. a more accurate-looking judge (binary: mean 14.2%,
+    worst cell 43.5% at noise=0.025) -- because low noise makes the judge's
+    score track truth closely enough that MNAR-on-truth selection is
+    effectively selecting on the judge's own score too, maximizing the
+    rectifier's selection bias. mcar stays flat and near-nominal across the
+    whole noise range in both datasets. See the module docstring / PR
+    history around 2026-07-22 for the full writeup."""
+    if null_rows.empty:
+        return
+    lm_order = ["mcar", "mnar_mild", "mnar_strong"]
+    lms = [lm for lm in lm_order if lm in set(null_rows["lm"])]
+    noises = sorted(null_rows["noise"].unique())
+    print(f"\n  Null-cell (Type-I) rejection rate by label_mechanism x llm_noise "
+          f"(nominal alpha={alpha}; full noise sweep, NOT baseline-filtered):")
+    print(f"    {'lm':<12}" + "".join(f"{n:>9.4f}" for n in noises) + f"{'mean':>9}")
+    for lm in lms:
+        lm_rows = null_rows[null_rows["lm"] == lm]
+        cells = []
+        for n in noises:
+            sub = lm_rows[lm_rows["noise"] == n]
+            reps = int(sub["n_reps"].sum())
+            cells.append(int(sub["rejects_ppi"].sum()) / reps if reps else float("nan"))
+        tot_reps = int(lm_rows["n_reps"].sum())
+        row_mean = int(lm_rows["rejects_ppi"].sum()) / tot_reps if tot_reps else float("nan")
+        cell_str = "".join(f"{c:>9.3f}" if np.isfinite(c) else f"{'--':>9}" for c in cells)
+        print(f"    {lm:<12}{cell_str}{row_mean:>9.3f}")
+    print()
+
+
+def print_ppi_factorial_report(
+    results: list[PPIComparisonResult], alpha: float, label: str = "paired_t",
+    *, null_results_full: list[PPIComparisonResult] | None = None,
+) -> None:
     """Regression summary (fit_ppi_factorial_model) plus two quotable
     headline numbers: the worst observed Type-I inflation (among es="null"
     cells) and the largest all_human-vs-ppi power gap (among non-null
@@ -5105,7 +5150,17 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float,
     _COMPARISON_METHODS_LABEL/_COMPARISON_METHODS_OMNIBUS_LABEL for the
     2-group/omnibus pooled reports respectively (see run()'s factorial_check
     block); this function itself is agnostic to which methods `results` was
-    pooled across, it just needs a name for the header text."""
+    pooled across, it just needs a name for the header text.
+
+    `null_results_full`, if given, should be the FULL pooled factorial
+    results across every swept llm_noise level (unlike `results`, which
+    must stay restricted to the single baseline noise level the GLM's
+    identifiability depends on -- see fit_ppi_factorial_model's formula
+    docstring). When given, the worst-Type-I-cell scan and the new
+    label_mechanism x noise table below are computed from it instead of
+    from `results`, so they aren't silently confined to whichever single
+    noise level the GLM happens to require. Falls back to `results` (old
+    behavior, baseline-only) when omitted."""
     if not results:
         print("\n  (no PPI factorial results)")
         return
@@ -5116,11 +5171,14 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float,
           f"  {len(results)} cells, {'/'.join(eval_types)}/{label}; nominal alpha={alpha}\n{'='*96}\n")
     print(summary_text)
 
-    null_rows = df[df["es"] == "null"]
+    null_df = _ppi_factorial_dataframe(null_results_full) if null_results_full is not None else df
+    null_rows = null_df[null_df["es"] == "null"]
     if len(null_rows):
         worst = null_rows.loc[(null_rows["rate_ppi"] - alpha).abs().idxmax()]
         print(f"\n  Worst Type-I cell: rate={worst['rate_ppi']:.3f} (nominal alpha={alpha}) at "
-              f"et={worst['et']} bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} bd={worst['bd']}")
+              f"et={worst['et']} bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} "
+              f"bd={worst['bd']} noise={worst['noise']:.4f}")
+        _print_ppi_factorial_lm_noise_table(null_rows, alpha)
 
     nonnull_rows = df[df["es"] != "null"].copy()
     if len(nonnull_rows):
@@ -5135,6 +5193,7 @@ def print_ppi_factorial_report(results: list[PPIComparisonResult], alpha: float,
 def save_results_artifacts_ppi_factorial(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
     pooled_results: list[PPIComparisonResult] | None = None, write_csv: bool = True, label: str = "paired_t",
+    null_results_full: list[PPIComparisonResult] | None = None,
 ) -> list[str]:
     """`results` is the RAW (per-method) data, saved verbatim to the CSV
     (unless `write_csv=False` -- see below).
@@ -5160,7 +5219,13 @@ def save_results_artifacts_ppi_factorial(
     re-writing (or worse, silently truncating to a different method subset)
     the CSV the first call already wrote for the combined raw data. `label`
     is forwarded to print_ppi_factorial_report's header text -- see its
-    own docstring."""
+    own docstring.
+
+    `null_results_full`, if given, is forwarded to print_ppi_factorial_
+    report's own `null_results_full` -- pass the FULL (every noise level)
+    pooled results here, not the baseline-only `pooled_results`, so the
+    saved .log's worst-cell/label_mechanism-x-noise numbers aren't silently
+    confined to the GLM's single required noise level."""
     if pooled_results is None:
         pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
@@ -5170,13 +5235,14 @@ def save_results_artifacts_ppi_factorial(
         with csv_path.open("w", newline="", encoding="utf-8") as handle:
             writer = csv.writer(handle)
             writer.writerow([
-                "name", "method", "et", "bm", "n", "nlab", "lm", "es", "bd", "n_reps",
+                "name", "method", "et", "bm", "n", "nlab", "lm", "es", "bd", "noise", "n_reps",
                 "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
             ])
             for r in results:
                 d = _parse_ppi_factorial_name(r.name)
                 writer.writerow([
-                    r.name, r.method, d["et"], d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"], r.n_reps,
+                    r.name, r.method, d["et"], d["bm"], d["n"], d["nlab"], d["lm"], d["es"], d["bd"],
+                    f"{d['noise']:.4f}", r.n_reps,
                     f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                     f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                     f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -5189,14 +5255,16 @@ def save_results_artifacts_ppi_factorial(
     write_mode = "w" if write_csv else "a"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_factorial_report(pooled_results, alpha=alpha, label=label)
+        print_ppi_factorial_report(pooled_results, alpha=alpha, label=label, null_results_full=null_results_full)
     with summary_path.open(write_mode, encoding="utf-8") as handle:
         handle.write(buf.getvalue())
     print(f"Saved log: {summary_path}")
     return [str(csv_path), str(summary_path)] if write_csv else [str(summary_path)]
 
 
-def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha: float, out_path: str) -> str:
+def save_ppi_factorial_heatmap_plot(
+    *, results: list[PPIComparisonResult], alpha: float, out_path: str, lm_fixed: str = "mcar",
+) -> str:
     """Three flagship 2D heatmap slices through the 6D factorial cube, each
     fixing the other four factors at a moderate/representative level (bm=
     severe, n=200, nlab=30, lm=mcar, es=moderate, bd=opposing -- the same
@@ -5211,13 +5279,24 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
          sources' own heatmap as a consistency check, now inside the
          broader factorial's own data.
       2. bias_magnitude x label_mechanism (n/nlab/es/bd fixed) -- does a
-         biased labeling PROCESS compound with judge bias severity.
+         biased labeling PROCESS compound with judge bias severity. Always
+         shows every label_mechanism level on its own axis regardless of
+         `lm_fixed` -- this slice is the one place label_mechanism ISN'T
+         fixed to a single value, so it needs no MNAR companion.
       3. effect_size x bias_direction (n/nlab/bm/lm fixed) -- the
          opposing/reinforcing asymmetry (save_ppi_power_direction_plot) at
          a fixed, moderate bias/label setting instead of the cross-eval-type
          line-plot framing.
     The pooled GLM (fit_ppi_factorial_model) is the rigorous backing for
-    what these slices show; these are the visual/narrative complement."""
+    what these slices show; these are the visual/narrative complement.
+
+    `lm_fixed` sets which label_mechanism level slices 1 and 3 fix (default
+    "mcar", the expected-use-case/good-experimental-design view). Call this
+    a second time with lm_fixed="mnar_strong" (see run()'s factorial_check
+    block) for a separate companion figure showing the same two slices under
+    the worst-case labeling mechanism -- kept as a distinct file rather than
+    folded in, same rationale as the alignment sweep's MCAR/MNAR split (see
+    PPIAlignmentSweepResult.lm's docstring)."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import TwoSlopeNorm
 
@@ -5228,9 +5307,9 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
 
     _CATEGORICAL_FACTORS = ("bm", "lm", "es", "bd")
     slices = [
-        ("n", "nlab", dict(bm="severe", lm="mcar", es="moderate", bd="opposing")),
+        ("n", "nlab", dict(bm="severe", lm=lm_fixed, es="moderate", bd="opposing")),
         ("bm", "lm", dict(n=200, nlab=30, es="moderate", bd="opposing")),
-        ("es", "bd", dict(n=200, nlab=30, bm="severe", lm="mcar")),
+        ("es", "bd", dict(n=200, nlab=30, bm="severe", lm=lm_fixed)),
     ]
     order = {
         "bm": ["none", "moderate", "severe"], "lm": ["mcar", "mnar_mild", "mnar_strong"],
@@ -5279,7 +5358,11 @@ def save_ppi_factorial_heatmap_plot(*, results: list[PPIComparisonResult], alpha
             fixed_str = ", ".join(f"{k}={v}" for k, v in fixed.items())
             ax.set_title(f"[{et.capitalize()}] {x_name} × {y_name}\n({fixed_str})", fontsize=9)
             fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle(f"PPI-Corrected Rejection Rate: Full-Factorial Slices (nominal {_alpha_label(alpha)})", y=1.02, fontsize=12)
+    lm_suffix = "" if lm_fixed == "mcar" else f" [slices 1,3 at label_mechanism={lm_fixed}]"
+    fig.suptitle(
+        f"PPI-Corrected Rejection Rate: Full-Factorial Slices (nominal {_alpha_label(alpha)}){lm_suffix}",
+        y=1.02, fontsize=12,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -5309,6 +5392,16 @@ class PPIAlignmentSweepResult:
     "none" is this result's REGIME marker (see _alignment_regime): every
     other label means real judge bias was present, regardless of
     magnitude."""
+    lm: str
+    """One of PPI_FACTORIAL_LABEL_MECHANISMS' keys (mcar/mnar_mild/
+    mnar_strong) for the cell this alignment measurement was derived from.
+    Not used by the bucketing itself (measure_judge_alignment doesn't
+    depend on label_mechanism) -- carried through purely so callers can
+    split the sweep into separate MCAR-only/MNAR-only views (see run()'s
+    factorial_check block), since pooling every label_mechanism into one
+    plot was hiding that MNAR's false-positive rate at a GIVEN alignment
+    level can be much worse than MCAR's at that same level -- see this
+    module's docstring/PR history around 2026-07-22."""
     alignment_metrics: dict[str, float]
     """Raw (not rescaled) alignment metrics from measure_judge_alignment --
     e.g. {"pearson_r": ..., "spearman_r": ...} for continuous, or
@@ -5468,7 +5561,7 @@ def build_ppi_alignment_results_from_factorial(
         if key not in align_cache:
             align_cache[key] = measure_judge_alignment(sc, n_mc=n_align_mc, seed=seed + len(align_cache))
         results.append(PPIAlignmentSweepResult(
-            name=r.name, eval_type=d["et"], noise=d["noise"], bias_label=d["bm"],
+            name=r.name, eval_type=d["et"], noise=d["noise"], bias_label=d["bm"], lm=d["lm"],
             alignment_metrics=align_cache[key],
             n_reps=r.n_reps, rejects_llm_only=r.rejects_llm_only, rejects_ppi=r.rejects_ppi,
             n_failed=r.n_failed,
@@ -5537,12 +5630,12 @@ def save_results_artifacts_ppi_alignment_sweep(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "name", "eval_type", "noise", "bias_label", "regime", *metric_cols,
+            "name", "eval_type", "noise", "bias_label", "lm", "regime", *metric_cols,
             "n_reps", "rate_llm_only", "rate_ppi", "n_failed",
         ])
         for r in results:
             writer.writerow([
-                r.name, r.eval_type, f"{r.noise:.4f}", r.bias_label, _alignment_regime(r.bias_label),
+                r.name, r.eval_type, f"{r.noise:.4f}", r.bias_label, r.lm, _alignment_regime(r.bias_label),
                 *[f"{r.alignment_metrics[c]:.4f}" if c in r.alignment_metrics else "" for c in metric_cols],
                 r.n_reps,
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -5848,8 +5941,12 @@ def fit_ppi_factorial_binary_model(results: list[PPIComparisonResult]) -> tuple[
 
 def print_ppi_factorial_binary_report(
     results: list[PPIComparisonResult], alpha: float, label: str = _COMPARISON_METHODS_BINARY_LABEL,
+    *, null_results_full: list[PPIComparisonResult] | None = None,
 ) -> None:
-    """Binary analogue of print_ppi_factorial_report."""
+    """Binary analogue of print_ppi_factorial_report -- see its docstring
+    for what `null_results_full` does and why it's needed (the worst-cell/
+    label_mechanism-x-noise numbers should NOT be confined to the single
+    llm_noise=PPI_BINARY_NOISE_BASELINE level the GLM requires)."""
     if not results:
         print("\n  (no PPI binary factorial results)")
         return
@@ -5859,11 +5956,14 @@ def print_ppi_factorial_binary_report(
           f"  {len(results)} cells, binary/{label}; nominal alpha={alpha}\n{'='*96}\n")
     print(summary_text)
 
-    null_rows = df[df["es"] == "null"]
+    null_df = _ppi_factorial_binary_dataframe(null_results_full) if null_results_full is not None else df
+    null_rows = null_df[null_df["es"] == "null"]
     if len(null_rows):
         worst = null_rows.loc[(null_rows["rate_ppi"] - alpha).abs().idxmax()]
         print(f"\n  Worst Type-I cell: rate={worst['rate_ppi']:.3f} (nominal alpha={alpha}) at "
-              f"bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} bd={worst['bd']}")
+              f"bm={worst['bm']} n={worst['n']} nlab={worst['nlab']} lm={worst['lm']} bd={worst['bd']} "
+              f"noise={worst['noise']:.4f}")
+        _print_ppi_factorial_lm_noise_table(null_rows, alpha)
 
     nonnull_rows = df[df["es"] != "null"].copy()
     if len(nonnull_rows):
@@ -5878,8 +5978,10 @@ def print_ppi_factorial_binary_report(
 def save_results_artifacts_ppi_factorial_binary(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
     pooled_results: list[PPIComparisonResult] | None = None, label: str = _COMPARISON_METHODS_BINARY_LABEL,
+    null_results_full: list[PPIComparisonResult] | None = None,
 ) -> list[str]:
-    """Binary analogue of save_results_artifacts_ppi_factorial."""
+    """Binary analogue of save_results_artifacts_ppi_factorial (including
+    the `null_results_full` passthrough -- see that function's docstring)."""
     if pooled_results is None:
         pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
@@ -5906,19 +6008,26 @@ def save_results_artifacts_ppi_factorial_binary(
     summary_path = out_base / f"{run_stem}_ppi_factorial_binary_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_factorial_binary_report(pooled_results, alpha=alpha, label=label)
+        print_ppi_factorial_binary_report(
+            pooled_results, alpha=alpha, label=label, null_results_full=null_results_full,
+        )
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved log: {summary_path}")
     return [str(csv_path), str(summary_path)]
 
 
-def save_ppi_factorial_binary_heatmap_plot(*, results: list[PPIComparisonResult], alpha: float, out_path: str) -> str:
+def save_ppi_factorial_binary_heatmap_plot(
+    *, results: list[PPIComparisonResult], alpha: float, out_path: str, lm_fixed: str = "mcar",
+) -> str:
     """Binary analogue of save_ppi_factorial_heatmap_plot -- one ROW (always
     binary, no eval_type facet to cross), the same three slice idea: N x
     N_lab, bias_magnitude x label_mechanism, effect_size x bias_direction.
     `results` should be pre-filtered to noise=PPI_BINARY_NOISE_BASELINE (see
     run()'s factorial_check_binary block), the same way the continuous
-    heatmap's caller filters to noise=0.20."""
+    heatmap's caller filters to noise=0.20.
+
+    `lm_fixed` -- see save_ppi_factorial_heatmap_plot's docstring; same
+    "call twice, mcar then mnar_strong, separate files" pattern."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import TwoSlopeNorm
 
@@ -5928,9 +6037,9 @@ def save_ppi_factorial_binary_heatmap_plot(*, results: list[PPIComparisonResult]
 
     _CATEGORICAL_FACTORS = ("bm", "lm", "es", "bd")
     slices = [
-        ("n", "nlab", dict(bm="severe", lm="mcar", es="moderate", bd="opposing")),
+        ("n", "nlab", dict(bm="severe", lm=lm_fixed, es="moderate", bd="opposing")),
         ("bm", "lm", dict(n=200, nlab=30, es="moderate", bd="opposing")),
-        ("es", "bd", dict(n=200, nlab=30, bm="severe", lm="mcar")),
+        ("es", "bd", dict(n=200, nlab=30, bm="severe", lm=lm_fixed)),
     ]
     order = {
         "bm": list(PPI_BINARY_BIAS_MAGNITUDES.keys()), "lm": ["mcar", "mnar_mild", "mnar_strong"],
@@ -5975,7 +6084,11 @@ def save_ppi_factorial_binary_heatmap_plot(*, results: list[PPIComparisonResult]
         fixed_str = ", ".join(f"{k}={v}" for k, v in fixed.items())
         ax.set_title(f"[Binary] {x_name} × {y_name}\n({fixed_str})", fontsize=9)
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-    fig.suptitle(f"PPI-Corrected Rejection Rate: Binary Factorial Slices (nominal {_alpha_label(alpha)})", y=1.02, fontsize=12)
+    lm_suffix = "" if lm_fixed == "mcar" else f" [slices 1,3 at label_mechanism={lm_fixed}]"
+    fig.suptitle(
+        f"PPI-Corrected Rejection Rate: Binary Factorial Slices (nominal {_alpha_label(alpha)}){lm_suffix}",
+        y=1.02, fontsize=12,
+    )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -6011,7 +6124,7 @@ def build_ppi_alignment_results_from_factorial_binary(
         if key not in align_cache:
             align_cache[key] = measure_judge_alignment(sc, n_mc=n_align_mc, seed=seed + len(align_cache))
         results.append(PPIAlignmentSweepResult(
-            name=r.name, eval_type="binary", noise=sc.llm_noise, bias_label=d["bm"],
+            name=r.name, eval_type="binary", noise=sc.llm_noise, bias_label=d["bm"], lm=d["lm"],
             alignment_metrics=align_cache[key],
             n_reps=r.n_reps, rejects_llm_only=r.rejects_llm_only, rejects_ppi=r.rejects_ppi,
             n_failed=r.n_failed,
@@ -8031,6 +8144,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     ]
                     print_ppi_factorial_report(
                         factorial_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL,
+                        null_results_full=factorial_results,
                     )
 
                     omnibus_results = None
@@ -8044,6 +8158,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         ]
                         print_ppi_factorial_report(
                             omnibus_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                            null_results_full=omnibus_results,
                         )
 
                     stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
@@ -8053,13 +8168,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths += save_results_artifacts_ppi_factorial(
                             results=factorial_results_raw, pooled_results=factorial_results_baseline,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
-                            label=_COMPARISON_METHODS_LABEL,
+                            label=_COMPARISON_METHODS_LABEL, null_results_full=factorial_results,
                         )
                         if omnibus_results_baseline is not None:
                             output_paths += save_results_artifacts_ppi_factorial(
                                 results=factorial_results_raw, pooled_results=omnibus_results_baseline,
                                 alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                                 write_csv=False, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                                null_results_full=omnibus_results,
                             )
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(
@@ -8069,11 +8185,24 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths.append(factorial_plot_path)
                         print(f"Saved plot: {factorial_plot_path}")
 
+                        factorial_plot_path_mnar = save_ppi_factorial_heatmap_plot(
+                            results=factorial_results_baseline, alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{factorial_stem}_slices_mnar.png"),
+                            lm_fixed="mnar_strong",
+                        )
+                        output_paths.append(factorial_plot_path_mnar)
+                        print(f"Saved plot: {factorial_plot_path_mnar}")
+
                     key_metrics["ppi_factorial_n_results"] = len(factorial_results_baseline)
                     key_metrics["ppi_factorial_likert_max"] = factorial_likert_max
-                    null_results = [
-                        r for r in factorial_results_baseline if _parse_ppi_factorial_name(r.name)["es"] == "null"
-                    ]
+                    # Unfiltered across every swept noise level -- NOT
+                    # factorial_results_baseline -- since restricting the
+                    # calibration headline number to the single baseline
+                    # noise level (a restriction that only the GLM actually
+                    # needs) was hiding the worst MNAR miscalibration, which
+                    # concentrates at low noise. See print_ppi_factorial_
+                    # report's null_results_full docstring.
+                    null_results = [r for r in factorial_results if _parse_ppi_factorial_name(r.name)["es"] == "null"]
                     if null_results:
                         c_tot = sum(r.rejects_ppi for r in null_results)
                         n_tot = sum(r.n_reps for r in null_results)
@@ -8082,7 +8211,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     if omnibus_results_baseline is not None:
                         key_metrics["ppi_factorial_omnibus_n_results"] = len(omnibus_results_baseline)
                         null_omnibus = [
-                            r for r in omnibus_results_baseline if _parse_ppi_factorial_name(r.name)["es"] == "null"
+                            r for r in omnibus_results if _parse_ppi_factorial_name(r.name)["es"] == "null"
                         ]
                         if null_omnibus:
                             c_tot_o = sum(r.rejects_ppi for r in null_omnibus)
@@ -8099,35 +8228,59 @@ def run(args: argparse.Namespace) -> CaseResult:
                         factorial_sources, factorial_results, n_align_mc=align_mc, seed=args.seed + 9,
                     )
                     if alignment_results:
-                        print_ppi_alignment_sweep_report(alignment_results, alpha=args.alpha)
-
+                        # Split into MCAR-only (the expected-use-case, "good
+                        # experimental design" view) and MNAR-only (mild+
+                        # strong pooled -- the worst-case/robustness view) --
+                        # kept as separate reports/CSVs/plots rather than one
+                        # pooled-across-label_mechanism view, since pooling
+                        # was masking that MNAR's false-positive rate at a
+                        # GIVEN alignment level can be far worse than MCAR's
+                        # at that same level (see PPIAlignmentSweepResult.lm's
+                        # docstring). human_human_rows is lm-independent
+                        # (no labeling-mechanism concept applies to a pure
+                        # two-synthetic-raters comparison) so it's only
+                        # attached to the MCAR (primary) report, not repeated.
                         hh_rows = run_human_human_alignment_sweep(n_mc=align_mc, seed=args.seed + 10)
-                        print_human_human_alignment_report(hh_rows)
 
-                        if args.save_results == "save":
-                            output_paths += save_results_artifacts_ppi_alignment_sweep(
-                                results=alignment_results, alpha=args.alpha, out_dir=args.out_dir,
-                                run_stem=f"{factorial_stem}_alignment", human_human_rows=hh_rows,
-                            )
-                        if args.plots == "save":
-                            for view_et, view_metric, view_label, view_band_fn, view_band_source, view_symbol in _ALIGNMENT_VIEWS:
-                                if not any(r.eval_type == view_et and view_metric in r.alignment_metrics for r in alignment_results):
-                                    continue
-                                align_plot_path = save_ppi_alignment_sweep_plot(
-                                    results=alignment_results, eval_type=view_et, metric=view_metric,
-                                    display_label=view_label, band_fn=view_band_fn, band_source=view_band_source,
-                                    symbol=view_symbol, alpha=args.alpha,
-                                    out_path=str(Path(plots_dir) / f"{factorial_stem}_alignment_{view_et}_{view_metric}.png"),
+                        for lm_tag, lm_values, lm_hh_rows in (
+                            ("mcar", ("mcar",), hh_rows),
+                            ("mnar", ("mnar_mild", "mnar_strong"), None),
+                        ):
+                            lm_results = [r for r in alignment_results if r.lm in lm_values]
+                            if not lm_results:
+                                continue
+                            print(f"\n  [[label_mechanism = {lm_tag}]]")
+                            print_ppi_alignment_sweep_report(lm_results, alpha=args.alpha)
+                            if lm_hh_rows is not None:
+                                print_human_human_alignment_report(lm_hh_rows)
+
+                            if args.save_results == "save":
+                                output_paths += save_results_artifacts_ppi_alignment_sweep(
+                                    results=lm_results, alpha=args.alpha, out_dir=args.out_dir,
+                                    run_stem=f"{factorial_stem}_alignment_{lm_tag}", human_human_rows=lm_hh_rows,
                                 )
-                                output_paths.append(align_plot_path)
-                                print(f"Saved plot: {align_plot_path}")
+                            if args.plots == "save":
+                                for view_et, view_metric, view_label, view_band_fn, view_band_source, view_symbol in _ALIGNMENT_VIEWS:
+                                    if not any(r.eval_type == view_et and view_metric in r.alignment_metrics for r in lm_results):
+                                        continue
+                                    align_plot_path = save_ppi_alignment_sweep_plot(
+                                        results=lm_results, eval_type=view_et, metric=view_metric,
+                                        display_label=f"{view_label}, {lm_tag}", band_fn=view_band_fn,
+                                        band_source=view_band_source, symbol=view_symbol, alpha=args.alpha,
+                                        out_path=str(Path(plots_dir) / f"{factorial_stem}_alignment_{lm_tag}_{view_et}_{view_metric}.png"),
+                                    )
+                                    output_paths.append(align_plot_path)
+                                    print(f"Saved plot: {align_plot_path}")
 
-                            hh_plot_path = save_human_human_alignment_plot(
-                                rows=hh_rows, out_path=str(Path(plots_dir) / f"{factorial_stem}_alignment_human_human.png"),
-                            )
-                            output_paths.append(hh_plot_path)
-                            print(f"Saved plot: {hh_plot_path}")
+                                if lm_hh_rows is not None:
+                                    hh_plot_path = save_human_human_alignment_plot(
+                                        rows=lm_hh_rows,
+                                        out_path=str(Path(plots_dir) / f"{factorial_stem}_alignment_human_human.png"),
+                                    )
+                                    output_paths.append(hh_plot_path)
+                                    print(f"Saved plot: {hh_plot_path}")
 
+                            key_metrics[f"ppi_alignment_sweep_{lm_tag}_n_results"] = len(lm_results)
                         key_metrics["ppi_alignment_sweep_n_results"] = len(alignment_results)
 
             if getattr(args, "factorial_check_binary", False):
@@ -8160,6 +8313,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     ]
                     print_ppi_factorial_binary_report(
                         factorial_binary_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_BINARY_LABEL,
+                        null_results_full=factorial_binary_results,
                     )
 
                     factorial_binary_stem = f"pvalues_ppi_factorial_binary_reps{factorial_reps}_{stamp}"
@@ -8167,7 +8321,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths += save_results_artifacts_ppi_factorial_binary(
                             results=factorial_binary_results_raw, pooled_results=factorial_binary_results_baseline,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_binary_stem,
-                            label=_COMPARISON_METHODS_BINARY_LABEL,
+                            label=_COMPARISON_METHODS_BINARY_LABEL, null_results_full=factorial_binary_results,
                         )
                     if args.plots == "save":
                         factorial_binary_plot_path = save_ppi_factorial_binary_heatmap_plot(
@@ -8177,9 +8331,19 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths.append(factorial_binary_plot_path)
                         print(f"Saved plot: {factorial_binary_plot_path}")
 
+                        factorial_binary_plot_path_mnar = save_ppi_factorial_binary_heatmap_plot(
+                            results=factorial_binary_results_baseline, alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{factorial_binary_stem}_slices_mnar.png"),
+                            lm_fixed="mnar_strong",
+                        )
+                        output_paths.append(factorial_binary_plot_path_mnar)
+                        print(f"Saved plot: {factorial_binary_plot_path_mnar}")
+
                     key_metrics["ppi_factorial_binary_n_results"] = len(factorial_binary_results_baseline)
+                    # Unfiltered across every swept noise level -- see the
+                    # continuous/likert block's matching comment above.
                     null_results_binary = [
-                        r for r in factorial_binary_results_baseline
+                        r for r in factorial_binary_results
                         if _parse_ppi_factorial_binary_name(r.name)["es"] == "null"
                     ]
                     if null_results_binary:
@@ -8197,29 +8361,37 @@ def run(args: argparse.Namespace) -> CaseResult:
                         factorial_sources_binary, factorial_binary_results, n_align_mc=align_mc, seed=args.seed + 13,
                     )
                     if alignment_results_binary:
-                        print_ppi_alignment_sweep_report(alignment_results_binary, alpha=args.alpha)
+                        # Same MCAR/MNAR split as the continuous/likert block
+                        # above -- see that block's comment for why.
+                        for lm_tag, lm_values in (("mcar", ("mcar",)), ("mnar", ("mnar_mild", "mnar_strong"))):
+                            lm_results = [r for r in alignment_results_binary if r.lm in lm_values]
+                            if not lm_results:
+                                continue
+                            print(f"\n  [[label_mechanism = {lm_tag}]]")
+                            print_ppi_alignment_sweep_report(lm_results, alpha=args.alpha)
 
-                        if args.save_results == "save":
-                            output_paths += save_results_artifacts_ppi_alignment_sweep(
-                                results=alignment_results_binary, alpha=args.alpha, out_dir=args.out_dir,
-                                run_stem=f"{factorial_binary_stem}_alignment",
-                            )
-                        if args.plots == "save":
-                            for view_et, view_metric, view_label, view_band_fn, view_band_source, view_symbol in _ALIGNMENT_VIEWS:
-                                if not any(
-                                    r.eval_type == view_et and view_metric in r.alignment_metrics
-                                    for r in alignment_results_binary
-                                ):
-                                    continue
-                                align_plot_path = save_ppi_alignment_sweep_plot(
-                                    results=alignment_results_binary, eval_type=view_et, metric=view_metric,
-                                    display_label=view_label, band_fn=view_band_fn, band_source=view_band_source,
-                                    symbol=view_symbol, alpha=args.alpha,
-                                    out_path=str(Path(plots_dir) / f"{factorial_binary_stem}_alignment_{view_et}_{view_metric}.png"),
+                            if args.save_results == "save":
+                                output_paths += save_results_artifacts_ppi_alignment_sweep(
+                                    results=lm_results, alpha=args.alpha, out_dir=args.out_dir,
+                                    run_stem=f"{factorial_binary_stem}_alignment_{lm_tag}",
                                 )
-                                output_paths.append(align_plot_path)
-                                print(f"Saved plot: {align_plot_path}")
+                            if args.plots == "save":
+                                for view_et, view_metric, view_label, view_band_fn, view_band_source, view_symbol in _ALIGNMENT_VIEWS:
+                                    if not any(
+                                        r.eval_type == view_et and view_metric in r.alignment_metrics
+                                        for r in lm_results
+                                    ):
+                                        continue
+                                    align_plot_path = save_ppi_alignment_sweep_plot(
+                                        results=lm_results, eval_type=view_et, metric=view_metric,
+                                        display_label=f"{view_label}, {lm_tag}", band_fn=view_band_fn,
+                                        band_source=view_band_source, symbol=view_symbol, alpha=args.alpha,
+                                        out_path=str(Path(plots_dir) / f"{factorial_binary_stem}_alignment_{lm_tag}_{view_et}_{view_metric}.png"),
+                                    )
+                                    output_paths.append(align_plot_path)
+                                    print(f"Saved plot: {align_plot_path}")
 
+                            key_metrics[f"ppi_alignment_sweep_binary_{lm_tag}_n_results"] = len(lm_results)
                         key_metrics["ppi_alignment_sweep_binary_n_results"] = len(alignment_results_binary)
 
         return CaseResult(
