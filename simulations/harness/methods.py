@@ -73,6 +73,20 @@ CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
 # ---------------------------------------------------------------------------
 NEWCOMBE = Method("newcombe_score", "#aec7e8")
 TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
+PPI_WILSON = Method("ppi_wilson", "#c49c94")
+"""PPI-corrected single-sample Wilson score interval (evalstats.tests.
+_ppi_single_wilson) -- a binary-proportion analogue of TANGO's paired
+Wilson-style effective-n trick, for a single-sample (not two/paired-group)
+mean estimand. Deliberately NOT named "wilson" -- that name is already
+BINARY_SINGLE_EXTRA_METHODS' plain (non-PPI-corrected) Wilson CI for
+ci_single.py, a different statistical procedure that happens to share the
+same textbook name; reusing the same Method name here would have silently
+overwritten that entry (same module-level name, last assignment wins).
+Only exercised by cases/ppi_real.py's real-data single-sample bias/coverage
+check so far (pvalues.py's synthetic PPI sweep never runs a plain one-sample
+estimation check) -- registered here anyway so the shared report/plot
+functions (_ppi_tests_present etc., which filter by PPI_TEST_METHODS
+membership) recognize it instead of silently dropping it."""
 TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
@@ -350,18 +364,23 @@ LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
-    ANOVA_REP, FRIEDMAN, KRUSKAL_NAIVE, KRUSKAL_CORR, LMM, LMM_FACTORIAL, LMM_RUNS,
+    ANOVA_REP, FRIEDMAN, KRUSKAL_NAIVE, KRUSKAL_CORR, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
 ]
 """Every PPI test method the harness knows how to run -- the full set
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
-PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m not in (MW_NAIVE, KRUSKAL_NAIVE)]
+PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m not in (MW_NAIVE, KRUSKAL_NAIVE, PPI_WILSON)]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mw_naive/kruskal_naive, which simulation showed
 badly miscalibrated under MNAR-like labeling x real judge bias x
 coarse/discrete scales (see MW_NAIVE/KRUSKAL_NAIVE's comments above) and
-which mwu_corr/kruskal_corr now cover instead. mw_naive/kruskal_naive still
-run if explicitly requested via --tests mw_naive/kruskal_naive."""
+which mwu_corr/kruskal_corr now cover instead (mw_naive/kruskal_naive still
+run if explicitly requested via --tests mw_naive/kruskal_naive); and except
+ppi_wilson, excluded not because it's miscalibrated but because pvalues.py's
+synthetic PPI sweep has no single-sample scenario to run it against at all
+(see PPI_WILSON's docstring) -- only cases/ppi_real.py's real-data single-
+sample check uses it, selecting it explicitly rather than through this
+"default active set"."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
