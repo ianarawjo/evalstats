@@ -512,11 +512,26 @@ def run_collect_data(args: argparse.Namespace) -> None:
         else:
             raise ValueError(spec.key)
 
-        new_rows = [_item_to_row(it, spec) for it in items if it["item_id"] not in existing_ids]
+        # Dedup against previously-saved item_ids AND within this batch itself --
+        # arena/wmt_da can't produce internal duplicates (each source row is
+        # visited at most once per run by construction), but appstore's
+        # pagination combined with the feed's observed flakiness/reordering
+        # means the same review could in principle turn up twice in one fetch.
+        new_rows = []
+        seen_this_run: set[str] = set()
+        n_dupe = 0
+        for it in items:
+            iid = it["item_id"]
+            if iid in existing_ids or iid in seen_this_run:
+                n_dupe += 1
+                continue
+            seen_this_run.add(iid)
+            new_rows.append(_item_to_row(it, spec))
         all_rows = existing_rows + new_rows
         _write_csv(paths["items"], all_rows, ITEMS_FIELDNAMES)
+        dupe_note = f" ({n_dupe} duplicate item_id(s) skipped)" if n_dupe else ""
         print(f"  -> {paths['items']}: {len(existing_rows)} existing + {len(new_rows)} new "
-              f"= {len(all_rows)} items.\n")
+              f"= {len(all_rows)} items.{dupe_note}\n")
 
 
 # ---------------------------------------------------------------------------
