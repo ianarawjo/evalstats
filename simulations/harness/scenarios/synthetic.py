@@ -1388,7 +1388,10 @@ def _jb_llm_repeated(
     raise ValueError(f"Unknown noise_family: {noise_family!r}")
 
 
-def _jb_llm_binary(truth: np.ndarray, bias: float, noise_level: float, rng: np.random.Generator) -> np.ndarray:
+def _jb_llm_binary(
+    truth: np.ndarray, bias: float, noise_level: float, rng: np.random.Generator,
+    extra: np.ndarray | float = 0.0,
+) -> np.ndarray:
     """Binary analogue of _jb_llm: turn a 0/1 ground-truth array into a 0/1
     "LLM judge" array via a confusion-matrix (flip-probability) model,
     rather than additive noise -- adding continuous noise to a 0/1 value
@@ -1404,9 +1407,19 @@ def _jb_llm_binary(truth: np.ndarray, bias: float, noise_level: float, rng: np.r
     predicted scores upward in the continuous model. `slope` and
     `noise_family` have no analogue here (not yet meaningful for a plain
     flip-probability judge) and are simply not modeled.
+
+    `extra` (default 0.0, a no-op) is confound-driven bias's binary
+    analogue -- see _confound_latent / JudgeBiasSource.confound_weight.
+    `bias` pulls the two flip probabilities apart by the SAME amount for
+    every item in the group; `extra` sits inside that same term but can
+    vary item-to-item (a per-item array), so a nuisance covariate can push
+    individual items toward judge=1 or judge=0 rather than the whole group
+    uniformly -- the same distinction _jb_llm's `bias` (constant) vs.
+    `extra` (per-item) draws for the continuous/Likert/grades judge model.
     """
-    flip_neg = float(np.clip(noise_level - bias / 2.0, 0.0, 1.0))  # P(judge=0 | truth=1)
-    flip_pos = float(np.clip(noise_level + bias / 2.0, 0.0, 1.0))  # P(judge=1 | truth=0)
+    total_bias = bias + extra
+    flip_neg = np.clip(noise_level - total_bias / 2.0, 0.0, 1.0)  # P(judge=0 | truth=1)
+    flip_pos = np.clip(noise_level + total_bias / 2.0, 0.0, 1.0)  # P(judge=1 | truth=0)
     u = rng.random(len(truth))
     is_pos = truth >= 0.5
     return np.where(is_pos, (u >= flip_neg).astype(float), (u < flip_pos).astype(float))
@@ -1415,25 +1428,32 @@ def _jb_llm_binary(truth: np.ndarray, bias: float, noise_level: float, rng: np.r
 def _jb_llm_repeated_binary(
     truths: list[np.ndarray], biases: list[float], noise_levels: list[float],
     rng: np.random.Generator, corr: float,
+    extras: list[np.ndarray | float] | None = None,
 ) -> list[np.ndarray]:
     """Binary analogue of _jb_llm_repeated: correlated confusion-matrix
     judge decisions across several paired/repeated conditions, via a
     shared latent Gaussian (thresholded per item against each condition's
     own flip probabilities) instead of shared additive noise -- the same
     shared/individual blending idea _jb_llm_repeated uses, just with a
-    threshold instead of an addition as the last step."""
+    threshold instead of an addition as the last step.
+
+    `extras` (default None -> all-zero, a no-op) is the per-group list
+    version of _jb_llm_binary's `extra`."""
     if len(truths) == 0:
         return []
     n = len(truths[0])
+    if extras is None:
+        extras = [0.0] * len(truths)
     corr_clamped = min(max(corr, 0.0), 0.999)
     w_shared = float(np.sqrt(corr_clamped))
     w_ind = float(np.sqrt(1.0 - corr_clamped))
     shared = rng.normal(0.0, 1.0, n)
 
     out: list[np.ndarray] = []
-    for truth, bias, noise_level in zip(truths, biases, noise_levels):
-        flip_neg = float(np.clip(noise_level - bias / 2.0, 0.0, 1.0))
-        flip_pos = float(np.clip(noise_level + bias / 2.0, 0.0, 1.0))
+    for truth, bias, noise_level, extra in zip(truths, biases, noise_levels, extras):
+        total_bias = bias + extra
+        flip_neg = np.clip(noise_level - total_bias / 2.0, 0.0, 1.0)
+        flip_pos = np.clip(noise_level + total_bias / 2.0, 0.0, 1.0)
         z = w_shared * shared + w_ind * rng.normal(0.0, 1.0, n)
         u = norm.cdf(z)
         is_pos = truth >= 0.5
@@ -1803,6 +1823,39 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
         S.append(make_scenario(
             f"confound.magnitude.{label}", "confound", bias_type="none",
             confound_weight=_jb_bias_magnitude("continuous", frac), confound_truth_corr=0.0,
+            confound_shift_a=1.0, confound_shift_b=0.0,
+        ))
+
+    # Binary confound: same idea, but confound_weight sits inside
+    # _jb_llm_binary's bias/2 flip-probability-skew term (see that
+    # function's `extra` docstring), not an additive score -- so its
+    # magnitude uses PPI_BINARY_BIAS_MAGNITUDES' flip-probability scale
+    # (~0.10-0.30), NOT _jb_bias_magnitude's score-scale-fraction
+    # convention (which _jb_bias_magnitude's own docstring says binary
+    # isn't meant to be passed to). llm_noise fixed at PPI_BINARY_NOISE_
+    # BASELINE rather than B's generic default -- matching every other
+    # binary-scoped builder in this module. Values chosen the same
+    # empirically-verified way as the continuous/likert/grades group
+    # above (build_ppi_cell run directly, ttest_welch as the PPI-
+    # compatible probe): mild/moderate/severe land at roughly 13%/24%/36%
+    # uncorrected rejection, PPI-corrected stays at ~5-7% throughout.
+    S.append(make_scenario(
+        "confound.binary.pure_nuisance", "confound", eval_type="binary", bias_type="none",
+        llm_noise=PPI_BINARY_NOISE_BASELINE,
+        confound_weight=0.20, confound_truth_corr=0.0,
+        confound_shift_a=1.0, confound_shift_b=0.0,
+    ))
+    S.append(make_scenario(
+        "confound.binary.quality_correlated", "confound", eval_type="binary", bias_type="none",
+        llm_noise=PPI_BINARY_NOISE_BASELINE,
+        confound_weight=0.20, confound_truth_corr=0.5,
+        confound_shift_a=1.0, confound_shift_b=0.0,
+    ))
+    for label, w in [("mild", 0.10), ("moderate", 0.20), ("severe", 0.30)]:
+        S.append(make_scenario(
+            f"confound.magnitude.binary.{label}", "confound", eval_type="binary", bias_type="none",
+            llm_noise=PPI_BINARY_NOISE_BASELINE,
+            confound_weight=w, confound_truth_corr=0.0,
             confound_shift_a=1.0, confound_shift_b=0.0,
         ))
 
@@ -2811,11 +2864,15 @@ def generate_judge_bias_cell(
         # 0.0 (every pre-existing scenario, confound_weight defaults to 0)
         # is a fast-path no-op that also avoids consuming any rng draws --
         # keeps every existing scenario's rng stream bit-for-bit unchanged.
-        # See JudgeBiasSource.confound_weight/_confound_latent. Only called
-        # from the non-binary branches below (_jb_llm/_jb_llm_repeated) --
-        # binary's judge model (_jb_llm_binary/_jb_llm_repeated_binary)
-        # works via flip-probabilities on the affine bias/slope channel
-        # only, and doesn't take a confound term.
+        # See JudgeBiasSource.confound_weight/_confound_latent. Consumed by
+        # both the affine (_jb_llm/_jb_llm_repeated, as an additive score
+        # term) and binary (_jb_llm_binary/_jb_llm_repeated_binary, as a
+        # per-item perturbation to the bias/2 flip-probability-skew term)
+        # judge models -- confound_weight's appropriate MAGNITUDE differs
+        # between the two (score-scale-fraction for the former via
+        # _jb_bias_magnitude, flip-probability-scale directly for the
+        # latter, matching bias_delta's own convention split -- see
+        # build_judge_bias_sources' "confound.*" scenario group).
         return 0.0 if cw == 0.0 else cw * _confound_latent(rng, truth, scenario.confound_truth_corr, shift)
 
     def _marginal(n: int, effect: float = 0.0) -> np.ndarray:
@@ -2849,8 +2906,8 @@ def generate_judge_bias_cell(
     truth_a2 = _marginal(n1)
     truth_b2 = _marginal(n2, es)
     if scenario.eval_type == "binary":
-        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng)
-        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng)
+        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a))
+        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng, extra=_confound(truth_b2, scenario.confound_shift_b))
     else:
         llm_a2 = _jb_llm(
             truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,
@@ -2877,6 +2934,7 @@ def generate_judge_bias_cell(
     if scenario.eval_type == "binary":
         llm_x, llm_y = _jb_llm_repeated_binary(
             [truth_x, truth_y], [bias_a, bias_b], [noise1, noise2], rng, corr=scenario.repeated_corr,
+            extras=[_confound(truth_x, scenario.confound_shift_a), _confound(truth_y, scenario.confound_shift_b)],
         )
     else:
         llm_x, llm_y = _jb_llm_repeated(

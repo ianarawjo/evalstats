@@ -239,7 +239,13 @@ class JudgeBiasSource:
     model and JudgeBiasSource's class docstring's "confound-driven bias"
     note for why this is a structurally different stress test than
     bias_delta/slope_* (those two can only stretch or shift a group as a
-    whole; this varies item-to-item)."""
+    whole; this varies item-to-item). Units differ by eval_type, mirroring
+    bias_delta's own split: an additive score-scale term for continuous/
+    likert/grades (typically set via _jb_bias_magnitude, same convention
+    bias_delta uses), but for binary it sits inside _jb_llm_binary's
+    bias/2 flip-probability-skew term instead (see that function's `extra`
+    parameter) -- use PPI_BINARY_BIAS_MAGNITUDES' ~0.10-0.30 scale there,
+    not _jb_bias_magnitude."""
     confound_truth_corr: float = 0.0
     """Gaussian-copula correlation between the confound and standardized
     truth (0 = confound is pure nuisance, unrelated to quality; nonzero,
