@@ -3482,7 +3482,15 @@ def _run_ppi_cell(
                     # slower, p-value than forcing method="exact" would.
                     p_u = float(scipy_stats.wilcoxon(cell.llm_x, cell.llm_y, alternative="two-sided").pvalue)
                     uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
-                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    # rectifier_func MUST match the main statistic (median) -- a
+                    # mismatched mean-rectifier is only unbiased when the population
+                    # median equals the population mean of the paired diffs, and
+                    # otherwise introduces a FIXED bias that grows relative to the
+                    # shrinking SE as n/n_lab increase, driving Type-I error toward
+                    # 100% instead of alpha. Root-caused on real judge-pair data
+                    # (2026-07-23) -- see ppi_real.py's WILCOXON block for the full
+                    # derivation and verification.
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[WILCOXON.name] += 1
@@ -3842,7 +3850,10 @@ def _run_ppi_effect_cell(
 
             if WILCOXON.name in active_tests:
                 try:
-                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    # rectifier_func matches the estimator (median) -- see the
+                    # WILCOXON block in _run_ppi_cell above for why a mismatched
+                    # mean-rectifier is biased.
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
                     out[WILCOXON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
@@ -4281,7 +4292,10 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
     statistic = np.mean if method == PAIRED_T.name else np.median
-    return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=np.mean).p_value
+    # rectifier_func = statistic (not hardcoded np.mean) -- see the WILCOXON
+    # block in _run_ppi_cell for why a mismatched rectifier is biased; this
+    # dispatch previously forced np.mean even for the wilcoxon (median) path.
+    return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic).p_value
 
 
 def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:

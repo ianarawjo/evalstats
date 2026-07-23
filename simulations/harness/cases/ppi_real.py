@@ -242,7 +242,20 @@ def _run_real_paired_cell(
                 try:
                     p_u = float(scipy_stats.wilcoxon(llm_x, llm_y, alternative="two-sided").pvalue)
                     uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
-                    r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    # rectifier_func MUST match the main statistic (median here, not
+                    # mean) -- a mismatched rectifier is only unbiased when the
+                    # population median equals the population mean of the paired
+                    # judge-score diffs. When they diverge (common for real judge
+                    # pairs), it introduces a FIXED bias that doesn't shrink with n
+                    # while the SE does, so Type-I error climbs toward 100% as n/n_lab
+                    # grow instead of converging to alpha. Root-caused on real wmt_da
+                    # data (2026-07-23): |median-mean|/SD of the diffs predicted the
+                    # blowup almost monotonically across 6 judge pairs (0.006 -> 2.5%
+                    # Type-I, up to 0.26 -> 77.5%); matching rectifier_func=np.median
+                    # fixed every case tested (e.g. 78%->0%, 38%->0%), including
+                    # restoring the expected direction (calibration improving, not
+                    # degrading, as label_frac grows).
+                    r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
