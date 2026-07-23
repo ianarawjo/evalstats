@@ -88,6 +88,12 @@ class TestResult:
         Bias correction term δ = human_estimate − llm_estimate on the
         labeled subset.  Positive means the LLM under-estimated (human > LLM);
         negative means the LLM over-estimated (LLM > human).
+    lam : float or None
+        The PPI++ power-tuning weight λ actually used, when the test was
+        called with ``power_tune=True`` (see :func:`evalstats.ppi.correct`'s
+        ``power_tune`` parameter). ``None`` when ``power_tune=False`` (the
+        default -- λ is then implicitly 1.0) or when no human labels were
+        supplied at all.
     n_labeled : int or None
     n_total : int or None
     alpha : float
@@ -109,6 +115,7 @@ class TestResult:
     corrected_p_value: Optional[float] = None
     corrected_statistic: Optional[float] = None
     rectifier: Optional[float] = None
+    lam: Optional[float] = None
     n_labeled: Optional[int] = None
     n_total: Optional[int] = None
     alpha: float = 0.05
@@ -334,6 +341,8 @@ class TestResult:
             print(f"  Uncorrected:  {self._stat_line()}  (α = {self.alpha})")
             if self.rectifier is not None and abs(self.rectifier) > 1e-9:
                 print(f"  Estimated prediction bias:  δ = {self.rectifier:+.4f}")
+            if self.lam is not None:
+                print(f"  PPI++ power-tuning weight:  λ = {self.lam:.3f}")
             # ── PPI-corrected (last, with leading blank line) ────────
             if self.corrected_estimate is not None:
                 n_boot = ex.get("n_boot")
@@ -566,6 +575,7 @@ def _ppi_two_sample(
     alpha: float,
     n_boot: int,
     rng,
+    power_tune: bool = True,
 ):
     """PPI correction for a two-sample scalar estimand.
 
@@ -579,6 +589,11 @@ def _ppi_two_sample(
     see that docstring's random-sampling requirement. This function does NOT
     guard against non-random label selection (MNAR); it assumes the caller's
     a_lab/b_lab were chosen uniformly at random from a/b.
+
+    ``power_tune`` is forwarded to :func:`evalstats.ppi.correct` as-is (see
+    its docstring) -- defaults to True (PPI++ power-tuning) as of
+    2026-07-23; pass False to reproduce the original (2023) fixed-λ=1 PPI
+    estimator exactly.
     """
     from evalstats.ppi import correct
 
@@ -612,6 +627,7 @@ def _ppi_two_sample(
         n_boot=n_boot,
         rng=rng,
         compute_pvalue=True,
+        power_tune=power_tune,
     )
 
 
@@ -1045,6 +1061,19 @@ def _ppi_kruskal_wallis(
         n_boot=n_boot,
         rng=rng,
         compute_pvalue=False,
+        # Deliberately hardcoded, NOT inherited from correct()'s own
+        # default: kruskalwallis()'s corrected_p_value comes from
+        # _ppi_kruskal_wallis_pairwise's SEPARATE, bespoke joint bootstrap
+        # (not power-tuned -- see that function's docstring), which does
+        # not yet have a matching multivariate power-tuning derivation.
+        # Letting this estimate/CI silently pick up correct()'s bare
+        # default while the p-value stays vanilla would desync
+        # corrected_estimate/corrected_ci from corrected_p_value -- caught
+        # via a dry run of correct()'s default flip breaking
+        # test_corrected_estimate_equals_llm_plus_rectifier. Revisit once
+        # _ppi_kruskal_wallis_pairwise also gets power-tuning (see
+        # explore-ppi-plus-plus branch's follow-up list).
+        power_tune=False,
     )
 
 
@@ -1391,6 +1420,7 @@ def _ppi_paired_arrays(
     n_boot: int,
     rng,
     rectifier_func=None,
+    power_tune: bool = True,
 ):
     """PPI correction for a paired estimand ``statistic(a_i − b_i)``.
 
@@ -1398,6 +1428,11 @@ def _ppi_paired_arrays(
     exactly as in ``scipy.stats.ttest_rel`` and ``scipy.stats.wilcoxon``.
     A position is included in the labeled set only when *both*
     ``a_lab[i]`` and ``b_lab[i]`` are non-NaN.
+
+    ``power_tune`` is forwarded to :func:`evalstats.ppi.correct` as-is (see
+    its docstring) -- defaults to True (PPI++ power-tuning) as of
+    2026-07-23; pass False to reproduce the original (2023) fixed-λ=1 PPI
+    estimator exactly.
     """
     from evalstats.ppi import correct
 
@@ -1425,6 +1460,7 @@ def _ppi_paired_arrays(
         rng=rng,
         compute_pvalue=True,
         rectifier_func=rectifier_func,
+        power_tune=power_tune,
     )
 
 
@@ -2072,6 +2108,7 @@ def _ppi_anova_independent(
         n_boot=n_boot,
         rng=rng,
         compute_pvalue=False,
+        power_tune=False,  # hardcoded, not inherited -- see _ppi_kruskal_wallis's matching comment
     )
 
 
@@ -2110,6 +2147,7 @@ def _ppi_anova_repeated(
         n_boot=n_boot,
         rng=rng,
         compute_pvalue=False,
+        power_tune=False,  # hardcoded, not inherited -- see _ppi_kruskal_wallis's matching comment
     )
 
 
@@ -2155,6 +2193,7 @@ def _ppi_friedman(
         n_boot=n_boot,
         rng=rng,
         compute_pvalue=False,
+        power_tune=False,  # hardcoded, not inherited -- see _ppi_kruskal_wallis's matching comment
     )
 
 
@@ -2609,6 +2648,7 @@ def ttest(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
+    power_tune: bool = True,
 ) -> TestResult:
     """Independent-samples or paired t-test with optional PPI correction.
 
@@ -2650,6 +2690,16 @@ def ttest(
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
+    power_tune : bool
+        Use PPI++'s variance-minimizing power-tuning weight λ instead of
+        the original (2023) PPI estimator's fixed λ=1 (default True; see
+        :func:`evalstats.ppi.correct`'s ``power_tune`` parameter for the
+        full derivation, including validation status). λ never makes the
+        PPI-corrected estimator less efficient than the classical
+        (``a_lab``/``b_lab``-only) one; fixing λ=1 has no such guarantee.
+        Pass ``power_tune=False`` to reproduce the original PPI estimator
+        exactly. The value actually used is on the returned
+        ``TestResult.lam``.
 
     Examples
     --------
@@ -2720,7 +2770,7 @@ def ttest(
             "n_boot": n_boot,
         }
 
-    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    corrected_estimate = corrected_ci = corrected_p = rectifier = lam = None
     n_labeled = n_total = None
 
     if a_lab is not None or b_lab is not None:
@@ -2740,7 +2790,7 @@ def ttest(
                 a - b,
                 np.where(_pair_mask, a_lab - b_lab, np.nan),
             )
-            ppi = _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng)
+            ppi = _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng, power_tune=power_tune)
         else:
             ar = _run_alignment_report(
                 np.concatenate([a, b]),
@@ -2748,12 +2798,13 @@ def ttest(
             )
             def _indep(ya, yb):
                 return float(ya.mean() - yb.mean())
-            ppi = _ppi_two_sample(a, b, a_lab, b_lab, _indep, alpha, n_boot, rng)
+            ppi = _ppi_two_sample(a, b, a_lab, b_lab, _indep, alpha, n_boot, rng, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)
         corrected_p        = ppi.p_value
         rectifier          = ppi.rectifier
+        lam                = ppi.lam
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
@@ -2786,6 +2837,7 @@ def ttest(
         corrected_ci=corrected_ci,
         corrected_p_value=corrected_p,
         rectifier=rectifier,
+        lam=lam,
         n_labeled=n_labeled,
         n_total=n_total,
         alpha=alpha,
@@ -2811,6 +2863,7 @@ def mannwhitney(
     rng=None,
     print_result: bool = True,
     method: str = "global",
+    power_tune: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
 
@@ -2870,6 +2923,15 @@ def mannwhitney(
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
+    power_tune : bool
+        Use PPI++'s variance-minimizing power-tuning weight λ instead of
+        fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
+        ``power_tune`` parameter for validation status). Only applies to
+        ``method="global"``; ignored (has no effect) when
+        ``method="mnar_experimental"``, which uses a different, not-yet
+        power-tuned local-rectifier bootstrap. Pass ``power_tune=False`` to
+        reproduce the original PPI estimator exactly. The value actually
+        used is on the returned ``TestResult.lam``.
 
     Examples
     --------
@@ -2898,7 +2960,7 @@ def mannwhitney(
         "ppi_method": method,
     }
 
-    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    corrected_estimate = corrected_ci = corrected_p = rectifier = lam = None
     n_labeled = n_total = None
 
     if x_lab is not None or y_lab is not None:
@@ -2924,12 +2986,13 @@ def mannwhitney(
             def _auc_shifted(xa, ya):
                 return _p_x_gt_y_midrank(xa, ya) - 0.5
 
-            ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng)
+            ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate + 0.5       # report as P(X>Y)
         corrected_ci       = (ppi.ci_low + 0.5, ppi.ci_high + 0.5)
         corrected_p        = ppi.p_value
         rectifier          = ppi.rectifier
+        lam                = getattr(ppi, "lam", None)
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
@@ -2941,6 +3004,7 @@ def mannwhitney(
         corrected_ci=corrected_ci,
         corrected_p_value=corrected_p,
         rectifier=rectifier,
+        lam=lam,
         n_labeled=n_labeled,
         n_total=n_total,
         alpha=alpha,
@@ -2965,6 +3029,7 @@ def wilcoxon(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
+    power_tune: bool = True,
 ) -> TestResult:
     """Wilcoxon signed-rank test with optional PPI correction.
 
@@ -2992,6 +3057,13 @@ def wilcoxon(
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
+    power_tune : bool
+        Use PPI++'s variance-minimizing power-tuning weight λ instead of
+        fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
+        ``power_tune`` parameter for validation status). Pass
+        ``power_tune=False`` to reproduce the original PPI estimator
+        exactly. The value actually used is on the returned
+        ``TestResult.lam``.
 
     Examples
     --------
@@ -3032,7 +3104,7 @@ def wilcoxon(
         "n_boot": n_boot,
     }
 
-    corrected_estimate = corrected_ci = corrected_p = rectifier = None
+    corrected_estimate = corrected_ci = corrected_p = rectifier = lam = None
     n_labeled = n_total = None
 
     if x_lab is not None or y_lab is not None:
@@ -3058,12 +3130,13 @@ def wilcoxon(
         # the variance by ~2× for typical n_lab, causing conservative Type I errors.
         # Both estimands converge to 0 under H₀; the hybrid is asymptotically valid.
         ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng,
-                                 rectifier_func=np.mean)
+                                 rectifier_func=np.mean, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)
         corrected_p        = ppi.p_value
         rectifier          = ppi.rectifier
+        lam                = ppi.lam
         n_labeled          = ar.n_labeled
         n_total            = ar.n_total
 
@@ -3075,6 +3148,7 @@ def wilcoxon(
         corrected_ci=corrected_ci,
         corrected_p_value=corrected_p,
         rectifier=rectifier,
+        lam=lam,
         n_labeled=n_labeled,
         n_total=n_total,
         alpha=alpha,
