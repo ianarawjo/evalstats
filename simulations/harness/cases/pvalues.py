@@ -167,7 +167,7 @@ with warnings.catch_warnings():
         _ppi_anova_repeated,
         _ppi_friedman,
         _ppi_kruskal_wallis_pairwise,
-        _ppi_kruskal_wallis_pairwise_corrected,
+        _ppi_kruskal_wallis_pairwise_mnar_experimental,
         _ppi_lmm_p_value,
         _kw_pairwise_thetas,
         _mcnemar_p,
@@ -242,8 +242,8 @@ from ..methods import (
     ANOVA_IND,
     ANOVA_REP,
     FRIEDMAN,
-    KRUSKAL_NAIVE,
-    KRUSKAL_CORR,
+    KRUSKAL,
+    KRUSKAL_MNAR_EXPERIMENTAL,
     LMM,
     LMM_FACTORIAL,
     LMM_RUNS,
@@ -3544,27 +3544,27 @@ def _run_ppi_cell(
                 except Exception:
                     failed[FRIEDMAN.name] += 1
 
-            if KRUSKAL_NAIVE.name in active_tests:
+            if KRUSKAL.name in active_tests:
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     p_u = _uncorrected_kruskal_p_value(groups_kw)
-                    uncorrected[KRUSKAL_NAIVE.name] += int(p_u < _ALPHA)
+                    uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
                     pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
-                    corrected[KRUSKAL_NAIVE.name] += int(pw["wald_p"] < _ALPHA)
+                    corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
                 except Exception:
-                    failed[KRUSKAL_NAIVE.name] += 1
+                    failed[KRUSKAL.name] += 1
 
-            if KRUSKAL_CORR.name in active_tests:
+            if KRUSKAL_MNAR_EXPERIMENTAL.name in active_tests:
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     p_u = _uncorrected_kruskal_p_value(groups_kw)
-                    uncorrected[KRUSKAL_CORR.name] += int(p_u < _ALPHA)
-                    pw = _ppi_kruskal_wallis_pairwise_corrected(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
-                    corrected[KRUSKAL_CORR.name] += int(pw["wald_p"] < _ALPHA)
+                    uncorrected[KRUSKAL_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
+                    pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    corrected[KRUSKAL_MNAR_EXPERIMENTAL.name] += int(pw["wald_p"] < _ALPHA)
                 except Exception:
-                    failed[KRUSKAL_CORR.name] += 1
+                    failed[KRUSKAL_MNAR_EXPERIMENTAL.name] += 1
 
             if LMM.name in active_tests:
                 try:
@@ -3735,7 +3735,7 @@ def run_ppi_simulation(
 
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MW_NAIVE.name, MWU_CORR.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
-    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL_NAIVE.name, KRUSKAL_CORR.name,
+    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
 )
 
 # bayes_bootstrap/bootstrap_t/tango_score are excluded from the main ppi
@@ -3879,26 +3879,26 @@ def _run_ppi_effect_cell(
                 except Exception:
                     pass
 
-            if KRUSKAL_NAIVE.name in active_tests:
+            if KRUSKAL.name in active_tests:
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
                     pw = _ppi_kruskal_wallis_pairwise(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     llm_theta = _kw_pairwise_thetas(groups_kw, pw["pairs"])
-                    out[KRUSKAL_NAIVE.name].append((
+                    out[KRUSKAL.name].append((
                         float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
                         float(np.mean(pw["ci_hi"])), float(np.mean(llm_theta)),
                     ))
                 except Exception:
                     pass
 
-            if KRUSKAL_CORR.name in active_tests:
+            if KRUSKAL_MNAR_EXPERIMENTAL.name in active_tests:
                 try:
                     groups_kw = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
                     groups_kw_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
-                    pw = _ppi_kruskal_wallis_pairwise_corrected(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups_kw, groups_kw_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
                     llm_theta = _kw_pairwise_thetas(groups_kw, pw["pairs"])
-                    out[KRUSKAL_CORR.name].append((
+                    out[KRUSKAL_MNAR_EXPERIMENTAL.name].append((
                         float(np.mean(pw["theta_hat"])), float(np.mean(pw["ci_lo"])),
                         float(np.mean(pw["ci_hi"])), float(np.mean(llm_theta)),
                     ))
@@ -4128,7 +4128,7 @@ apples with oranges rather than checking robustness across reasonable
 alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
 grid_sources' paired_t-only scoping was never meant to claim the OTHER
 PPI_TEST_METHODS behave identically."""
-_COMPARISON_METHODS_OMNIBUS = (ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL_CORR.name)
+_COMPARISON_METHODS_OMNIBUS = (ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name)
 """The four omnibus/multi-group tests -- run alongside _COMPARISON_METHODS
 against the SAME factorial sources (build_ppi_factorial_sources), using the
 SAME 5-way (all_human/human_subset/llm_only/llm_impute/ppi) machinery, but
@@ -4136,18 +4136,30 @@ NEVER pooled together with _COMPARISON_METHODS into one averaged rate: these
 answer a genuinely different question (are the 3 groups/conditions
 different at all, vs. _COMPARISON_METHODS' specific two-group location-shift
 question) -- see _COMPARISON_METHODS' own docstring for why blending the two
-would be apples-with-oranges. anova_ind/kruskal_corr use the
+would be apples-with-oranges. anova_ind/kruskal use the
 independent-3-group structure (a3/b3/c3); anova_rep/friedman use the
 repeated-3-group structure (A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's
-"group3"/"pair3" entries. Uses kruskal_corr (the per-group, per-score-bin
-locally-corrected Wald test -- evalstats.tests.
-_ppi_kruskal_wallis_pairwise_corrected), not kruskal_naive
-(single-global-rectifier) -- the latter was found badly miscalibrated under
-the same combined bias x MNAR-labeling x coarse-scale x large-N stress that
-broke mw_naive, once this factorial sweep was extended to the omnibus tests
-(see KRUSKAL_NAIVE/KRUSKAL_CORR's Method docstrings in methods.py), which is
-why it was replaced here rather than kept alongside it -- the same
-reasoning _COMPARISON_METHODS already applied to mwu_corr vs. mw_naive.
+"group3"/"pair3" entries. Uses KRUSKAL (evalstats.tests.
+_ppi_kruskal_wallis_pairwise's single-global-rectifier Wald test), not
+KRUSKAL_MNAR_EXPERIMENTAL (evalstats.tests.
+_ppi_kruskal_wallis_pairwise_mnar_experimental's per-group, per-score-bin
+LOCAL rectifier) -- the OPPOSITE choice _COMPARISON_METHODS made for
+mwu_corr vs. mw_naive, and for a documented reason, not an oversight: the
+local rectifier fixes the same combined bias x MNAR-labeling x coarse-scale
+x large-N miscalibration mw_naive/kruskal's global rectifier both have, but
+was confirmed (2026-07-22) to cost real MCAR calibration doing so -- a
+regression it introduces, not one it inherits (worst found cell: 7.9% ->
+11.1% at small n_lab + high llm_noise, purely from switching rectifiers on
+matched draws). A shrinkage/partial-pooling variant meant to recover that
+MCAR cost without losing the MNAR fix made both worse instead. Given this
+project's stance that PPI requires MCAR labeling and treats MNAR as a
+documented, out-of-scope limitation rather than something to actively
+correct for, paying an MCAR cost for MNAR robustness users are already
+told not to rely on is the wrong trade -- see KRUSKAL/
+KRUSKAL_MNAR_EXPERIMENTAL's Method docstrings in methods.py for the full
+writeup. KRUSKAL_MNAR_EXPERIMENTAL remains selectable via --tests
+kruskal_mnar_experimental for anyone deliberately studying the MNAR
+question, just not part of this pooled/official comparison.
 Pool these among THEMSELVES (pool_ppi_comparison_across_methods, or a
 filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
 kept in its own report section/log rather than merged into the headline
@@ -4155,7 +4167,7 @@ _COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
     TTEST_WELCH.name: "group", MWU_CORR.name: "group", MW_NAIVE.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
-    ANOVA_IND.name: "group3", KRUSKAL_NAIVE.name: "group3", KRUSKAL_CORR.name: "group3",
+    ANOVA_IND.name: "group3", KRUSKAL.name: "group3", KRUSKAL_MNAR_EXPERIMENTAL.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
 }
 _COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu_corr/wilcoxon"
@@ -4232,7 +4244,7 @@ def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:
         return _uncorrected_anova_repeated_p_value(groups)
     if method == FRIEDMAN.name:
         return _uncorrected_friedman_p_value(groups)
-    return _uncorrected_kruskal_p_value(groups)  # KRUSKAL_NAIVE.name / KRUSKAL_CORR.name (same uncorrected test)
+    return _uncorrected_kruskal_p_value(groups)  # KRUSKAL.name / KRUSKAL_MNAR_EXPERIMENTAL.name (same uncorrected test)
 
 
 def _ppi_comparison_pvalue_omnibus(
@@ -4252,11 +4264,11 @@ def _ppi_comparison_pvalue_omnibus(
         return _ppi_anova_repeated_p_value(groups, groups_lab, k=k)
     if method == FRIEDMAN.name:
         return _ppi_friedman_p_value(groups, groups_lab, k=k)
-    if method == KRUSKAL_NAIVE.name:
+    if method == KRUSKAL.name:
         pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
         return pw["wald_p"]
-    # KRUSKAL_CORR.name
-    pw = _ppi_kruskal_wallis_pairwise_corrected(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+    # KRUSKAL_MNAR_EXPERIMENTAL.name
+    pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
     return pw["wald_p"]
 
 
@@ -5013,7 +5025,7 @@ def _ppi_factorial_dataframe(results: list[PPIComparisonResult]) -> pd.DataFrame
     for r in results:
         d = _parse_ppi_factorial_name(r.name)
         rows.append({
-            **d, "n_reps": r.n_reps,
+            **d, "method": r.method, "n_reps": r.n_reps,
             "rejects_ppi": r.rejects_ppi, "fails_ppi": r.n_reps - r.rejects_ppi,
             "rate_ppi": r.rejects_ppi / r.n_reps if r.n_reps else float("nan"),
             "rejects_all_human": r.rejects_all_human, "rejects_human_subset": r.rejects_human_subset,
@@ -5134,9 +5146,51 @@ def _print_ppi_factorial_lm_noise_table(null_rows: pd.DataFrame, alpha: float) -
     print()
 
 
+def _print_ppi_factorial_method_lm_table(null_rows_raw: pd.DataFrame, alpha: float) -> None:
+    """(method x label_mechanism) Type-I calibration breakdown, printed from
+    the RAW per-method null-cell rows (never the method-pooled `results`
+    the GLM/worst-cell scan use -- pool_ppi_comparison_across_methods
+    combines every method's rejects/n_reps into one row per scenario before
+    it ever reaches this report, so a per-method table is structurally
+    impossible to recover from that pooled data; callers must pass the
+    UNPOOLED per-method results separately -- see print_ppi_factorial_
+    report's `raw_results_full` docstring).
+
+    Exists because pooling methods together can hide the same way pooling
+    label_mechanism/noise did: confirmed directly on a screening run where
+    the omnibus family's pooled MCAR mean read 0.050 (looks perfectly
+    calibrated) while the local-rectifier Kruskal variant (kruskal_mnar_
+    experimental, at the time still the default under the name kruskal_corr)
+    ALONE, unpooled, read 0.066 mean / 0.18 worst cell under that same
+    MCAR-only slice -- anova_ind/anova_rep/friedman's good calibration was
+    silently absorbing its elevation in the pooled view. This finding is
+    what led to demoting that variant out of the default set (see KRUSKAL/
+    KRUSKAL_MNAR_EXPERIMENTAL in methods.py) -- this table exists so a
+    single miscalibrated method can't hide behind the rest again."""
+    if null_rows_raw.empty:
+        return
+    methods = [m for m in null_rows_raw["method"].unique()]
+    lm_order = ["mcar", "mnar_mild", "mnar_strong"]
+    lms = [lm for lm in lm_order if lm in set(null_rows_raw["lm"])]
+    print(f"\n  Null-cell (Type-I) rejection rate by method x label_mechanism "
+          f"(nominal alpha={alpha}; unpooled per-method, full noise sweep):")
+    print(f"    {'method':<16}" + "".join(f"{lm:>13}" for lm in lms))
+    for method in methods:
+        m_rows = null_rows_raw[null_rows_raw["method"] == method]
+        cells = []
+        for lm in lms:
+            sub = m_rows[m_rows["lm"] == lm]
+            reps = int(sub["n_reps"].sum())
+            cells.append(int(sub["rejects_ppi"].sum()) / reps if reps else float("nan"))
+        cell_str = "".join(f"{c:>13.3f}" if np.isfinite(c) else f"{'--':>13}" for c in cells)
+        print(f"    {method:<16}{cell_str}")
+    print()
+
+
 def print_ppi_factorial_report(
     results: list[PPIComparisonResult], alpha: float, label: str = "paired_t",
     *, null_results_full: list[PPIComparisonResult] | None = None,
+    raw_results_full: list[PPIComparisonResult] | None = None,
 ) -> None:
     """Regression summary (fit_ppi_factorial_model) plus two quotable
     headline numbers: the worst observed Type-I inflation (among es="null"
@@ -5160,7 +5214,19 @@ def print_ppi_factorial_report(
     label_mechanism x noise table below are computed from it instead of
     from `results`, so they aren't silently confined to whichever single
     noise level the GLM happens to require. Falls back to `results` (old
-    behavior, baseline-only) when omitted."""
+    behavior, baseline-only) when omitted.
+
+    `raw_results_full`, if given, should be the RAW (never method-pooled),
+    full-noise-range per-method results underlying `results`/
+    `null_results_full` -- e.g. `[r for r in factorial_results_raw if
+    r.method in _COMPARISON_METHODS]`, NOT `factorial_results`/
+    `factorial_results_baseline` (both already pool_ppi_comparison_across_
+    methods'd). When given, prints a (method x label_mechanism) table so a
+    single well-calibrated method can't hide a miscalibrated one the pooled
+    numbers above would otherwise average away -- see
+    _print_ppi_factorial_method_lm_table's docstring for why this matters
+    (confirmed to happen for real: kruskal_mnar_experimental vs. the rest of
+    the omnibus family)."""
     if not results:
         print("\n  (no PPI factorial results)")
         return
@@ -5180,6 +5246,11 @@ def print_ppi_factorial_report(
               f"bd={worst['bd']} noise={worst['noise']:.4f}")
         _print_ppi_factorial_lm_noise_table(null_rows, alpha)
 
+    if raw_results_full is not None:
+        raw_df = _ppi_factorial_dataframe(raw_results_full)
+        raw_null_rows = raw_df[raw_df["es"] == "null"]
+        _print_ppi_factorial_method_lm_table(raw_null_rows, alpha)
+
     nonnull_rows = df[df["es"] != "null"].copy()
     if len(nonnull_rows):
         nonnull_rows["power_gap"] = (nonnull_rows["rejects_all_human"] - nonnull_rows["rejects_ppi"]) / nonnull_rows["n_reps"]
@@ -5194,6 +5265,7 @@ def save_results_artifacts_ppi_factorial(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
     pooled_results: list[PPIComparisonResult] | None = None, write_csv: bool = True, label: str = "paired_t",
     null_results_full: list[PPIComparisonResult] | None = None,
+    raw_results_full: list[PPIComparisonResult] | None = None,
 ) -> list[str]:
     """`results` is the RAW (per-method) data, saved verbatim to the CSV
     (unless `write_csv=False` -- see below).
@@ -5225,7 +5297,15 @@ def save_results_artifacts_ppi_factorial(
     report's own `null_results_full` -- pass the FULL (every noise level)
     pooled results here, not the baseline-only `pooled_results`, so the
     saved .log's worst-cell/label_mechanism-x-noise numbers aren't silently
-    confined to the GLM's single required noise level."""
+    confined to the GLM's single required noise level.
+
+    `raw_results_full`, if given, is forwarded to print_ppi_factorial_
+    report's own `raw_results_full` -- pass the methods-appropriate subset
+    of `results` (RAW, never pool_ppi_comparison_across_methods'd) for
+    WHICHEVER label/method family this specific call's `pooled_results` is
+    scoped to (e.g. just the omnibus methods for the omnibus call), not the
+    full combined `results` -- otherwise the printed per-method table would
+    include methods this call isn't reporting on."""
     if pooled_results is None:
         pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
@@ -5255,7 +5335,10 @@ def save_results_artifacts_ppi_factorial(
     write_mode = "w" if write_csv else "a"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_factorial_report(pooled_results, alpha=alpha, label=label, null_results_full=null_results_full)
+        print_ppi_factorial_report(
+            pooled_results, alpha=alpha, label=label,
+            null_results_full=null_results_full, raw_results_full=raw_results_full,
+        )
     with summary_path.open(write_mode, encoding="utf-8") as handle:
         handle.write(buf.getvalue())
     print(f"Saved log: {summary_path}")
@@ -5899,7 +5982,7 @@ def _ppi_factorial_binary_dataframe(results: list[PPIComparisonResult]) -> pd.Da
     for r in results:
         d = _parse_ppi_factorial_binary_name(r.name)
         rows.append({
-            **d, "n_reps": r.n_reps,
+            **d, "method": r.method, "n_reps": r.n_reps,
             "rejects_ppi": r.rejects_ppi, "fails_ppi": r.n_reps - r.rejects_ppi,
             "rate_ppi": r.rejects_ppi / r.n_reps if r.n_reps else float("nan"),
             "rejects_all_human": r.rejects_all_human, "rejects_human_subset": r.rejects_human_subset,
@@ -5942,11 +6025,14 @@ def fit_ppi_factorial_binary_model(results: list[PPIComparisonResult]) -> tuple[
 def print_ppi_factorial_binary_report(
     results: list[PPIComparisonResult], alpha: float, label: str = _COMPARISON_METHODS_BINARY_LABEL,
     *, null_results_full: list[PPIComparisonResult] | None = None,
+    raw_results_full: list[PPIComparisonResult] | None = None,
 ) -> None:
     """Binary analogue of print_ppi_factorial_report -- see its docstring
-    for what `null_results_full` does and why it's needed (the worst-cell/
-    label_mechanism-x-noise numbers should NOT be confined to the single
-    llm_noise=PPI_BINARY_NOISE_BASELINE level the GLM requires)."""
+    for what `null_results_full`/`raw_results_full` do and why they're
+    needed (the worst-cell/label_mechanism-x-noise numbers should NOT be
+    confined to the single llm_noise=PPI_BINARY_NOISE_BASELINE level the
+    GLM requires; the per-method table needs the RAW, never method-pooled,
+    per-method rows)."""
     if not results:
         print("\n  (no PPI binary factorial results)")
         return
@@ -5965,6 +6051,11 @@ def print_ppi_factorial_binary_report(
               f"noise={worst['noise']:.4f}")
         _print_ppi_factorial_lm_noise_table(null_rows, alpha)
 
+    if raw_results_full is not None:
+        raw_df = _ppi_factorial_binary_dataframe(raw_results_full)
+        raw_null_rows = raw_df[raw_df["es"] == "null"]
+        _print_ppi_factorial_method_lm_table(raw_null_rows, alpha)
+
     nonnull_rows = df[df["es"] != "null"].copy()
     if len(nonnull_rows):
         nonnull_rows["power_gap"] = (nonnull_rows["rejects_all_human"] - nonnull_rows["rejects_ppi"]) / nonnull_rows["n_reps"]
@@ -5979,9 +6070,11 @@ def save_results_artifacts_ppi_factorial_binary(
     *, results: list[PPIComparisonResult], alpha: float, out_dir: str, run_stem: str,
     pooled_results: list[PPIComparisonResult] | None = None, label: str = _COMPARISON_METHODS_BINARY_LABEL,
     null_results_full: list[PPIComparisonResult] | None = None,
+    raw_results_full: list[PPIComparisonResult] | None = None,
 ) -> list[str]:
     """Binary analogue of save_results_artifacts_ppi_factorial (including
-    the `null_results_full` passthrough -- see that function's docstring)."""
+    the `null_results_full`/`raw_results_full` passthroughs -- see that
+    function's docstring)."""
     if pooled_results is None:
         pooled_results = pool_ppi_comparison_across_methods(results)
     out_base = Path(out_dir)
@@ -6009,7 +6102,8 @@ def save_results_artifacts_ppi_factorial_binary(
     buf = io.StringIO()
     with redirect_stdout(buf):
         print_ppi_factorial_binary_report(
-            pooled_results, alpha=alpha, label=label, null_results_full=null_results_full,
+            pooled_results, alpha=alpha, label=label,
+            null_results_full=null_results_full, raw_results_full=raw_results_full,
         )
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved log: {summary_path}")
@@ -6412,7 +6506,7 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
-    KRUSKAL_CORR.name: "Kruskal-Wallis (corrected)", KRUSKAL_NAIVE.name: "Kruskal-Wallis (naive)",
+    KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
 }
 
@@ -8130,9 +8224,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
                         methods=factorial_methods,
                     )
-                    factorial_results = pool_ppi_comparison_across_methods(
-                        [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS]
-                    )
+                    factorial_results_raw_2group = [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS]
+                    factorial_results = pool_ppi_comparison_across_methods(factorial_results_raw_2group)
                     # GLM/heatmap/headline-report stay scoped to the llm_noise=0.20
                     # baseline (the only noise level non-null cells even have) --
                     # see _PPI_FACTORIAL_FORMULA's docstring for why llm_noise
@@ -8144,21 +8237,23 @@ def run(args: argparse.Namespace) -> CaseResult:
                     ]
                     print_ppi_factorial_report(
                         factorial_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL,
-                        null_results_full=factorial_results,
+                        null_results_full=factorial_results, raw_results_full=factorial_results_raw_2group,
                     )
 
                     omnibus_results = None
                     omnibus_results_baseline = None
+                    factorial_results_raw_omnibus = None
                     if factorial_omnibus:
-                        omnibus_results = pool_ppi_comparison_across_methods(
-                            [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS_OMNIBUS]
-                        )
+                        factorial_results_raw_omnibus = [
+                            r for r in factorial_results_raw if r.method in _COMPARISON_METHODS_OMNIBUS
+                        ]
+                        omnibus_results = pool_ppi_comparison_across_methods(factorial_results_raw_omnibus)
                         omnibus_results_baseline = [
                             r for r in omnibus_results if _parse_ppi_factorial_name(r.name)["noise"] == 0.20
                         ]
                         print_ppi_factorial_report(
                             omnibus_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
-                            null_results_full=omnibus_results,
+                            null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
                         )
 
                     stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
@@ -8169,13 +8264,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                             results=factorial_results_raw, pooled_results=factorial_results_baseline,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                             label=_COMPARISON_METHODS_LABEL, null_results_full=factorial_results,
+                            raw_results_full=factorial_results_raw_2group,
                         )
                         if omnibus_results_baseline is not None:
                             output_paths += save_results_artifacts_ppi_factorial(
                                 results=factorial_results_raw, pooled_results=omnibus_results_baseline,
                                 alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_stem,
                                 write_csv=False, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
-                                null_results_full=omnibus_results,
+                                null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
                             )
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(
@@ -8313,7 +8409,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     ]
                     print_ppi_factorial_binary_report(
                         factorial_binary_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_BINARY_LABEL,
-                        null_results_full=factorial_binary_results,
+                        null_results_full=factorial_binary_results, raw_results_full=factorial_binary_results_raw,
                     )
 
                     factorial_binary_stem = f"pvalues_ppi_factorial_binary_reps{factorial_reps}_{stamp}"
@@ -8322,6 +8418,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             results=factorial_binary_results_raw, pooled_results=factorial_binary_results_baseline,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=factorial_binary_stem,
                             label=_COMPARISON_METHODS_BINARY_LABEL, null_results_full=factorial_binary_results,
+                            raw_results_full=factorial_binary_results_raw,
                         )
                     if args.plots == "save":
                         factorial_binary_plot_path = save_ppi_factorial_binary_heatmap_plot(

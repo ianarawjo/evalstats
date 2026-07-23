@@ -332,55 +332,67 @@ MWU_CORR = Method("mwu_corr", "#9ecae1")
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
-# KRUSKAL_NAIVE/KRUSKAL_CORR: same MW_NAIVE/MWU_CORR story, one level up (k
-# independent groups instead of 2). KRUSKAL_NAIVE (formerly just "KRUSKAL")
-# is evalstats.tests._ppi_kruskal_wallis_pairwise's single GLOBAL rectifier
-# per pairwise dominance estimate theta_ab = theta_unlab + (theta_lab_human -
-# theta_lab_llm) -- the SAME global-rectifier pattern that broke mw_naive,
-# just extended from one pair to all C(k,2) pairs. Once the PPI factorial
-# sweep was extended to the omnibus tests (_COMPARISON_METHODS_OMNIBUS,
-# simulations/harness/cases/pvalues.py --factorial-omnibus), it turned up
-# the exact same combined-factor blowup mw_naive had (severe judge bias x
-# MNAR-like labeling x coarse/discrete scale x large N): Type-I 0.32-0.49 vs
-# nominal 0.05 in the worst identified cells (likert, severe bias, strong
-# such labeling, n=200-400). KRUSKAL_CORR (evalstats.tests.
-# _ppi_kruskal_wallis_pairwise_corrected) fixes this the same way MWU_CORR
-# does -- a per-group, per-score-bin LOCAL rectifier, generalized from 2
-# groups to k groups / all C(k,2) pairs jointly (see that function's
-# docstring for the full mechanism) -- reducing those same cells to ~0.09-0.11
-# (a real, if imperfect, fix: it inherits the same modest residual MWU_CORR
-# also has under strong MNAR labeling with NO judge bias present at certain
-# N/N_lab combinations, confirmed to be pre-existing in MWU_CORR too, not
-# introduced by this fix), with no power loss and no regression under MCAR
-# labeling (with or without judge bias) or continuous eval_type. Kept
-# alongside (not deleted) for direct comparison and reproducing pre-fix
-# results, selectable explicitly via --tests kruskal_naive. Same color
-# convention as MW_NAIVE/MWU_CORR: kruskal_corr inherits kruskal's original
-# shade (it now occupies that slot), kruskal_naive gets a lighter tint.
-KRUSKAL_NAIVE = Method("kruskal_naive", "#f2b6d4")  # lighter tint of kruskal's original pink
-KRUSKAL_CORR = Method("kruskal_corr", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
+# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the SAME
+# omnibus test, generalizing the MW_NAIVE/MWU_CORR story one level up (k
+# independent groups instead of 2) -- but with the OPPOSITE conclusion.
+# KRUSKAL applies evalstats.tests._ppi_kruskal_wallis_pairwise's single
+# GLOBAL rectifier per pairwise dominance estimate theta_ab = theta_unlab +
+# (theta_lab_human - theta_lab_llm) -- the SAME global-rectifier pattern
+# that broke mw_naive, just extended from one pair to all C(k,2) pairs, and
+# genuinely miscalibrated the same way under severe judge bias x MNAR-like
+# labeling x coarse/discrete scale x large N (Type-I 0.32-0.49 vs nominal
+# 0.05 in the worst identified cells). A per-group, per-score-bin LOCAL
+# rectifier (evalstats.tests._ppi_kruskal_wallis_pairwise_mnar_experimental,
+# generalizing MWU_CORR's fix from 2 groups to k) was built and validated to
+# fix that MNAR regime (down to ~0.09-0.11 in the same cells) -- but UNLIKE
+# mwu_corr's equivalent fix, this one was confirmed (2026-07-22 screening +
+# a controlled naive-vs-corrected comparison on matched draws) to cost real
+# MCAR calibration in exchange: worst found cell went from 7.9% (global,
+# already-imperfect) to 11.1% (local) at small n_lab + high llm_noise, a
+# regression the fix itself introduces, not one it inherits. A shrinkage/
+# partial-pooling variant was prototyped to try to recover that MCAR cost
+# without losing the MNAR fix and made BOTH worse, not just MCAR (see
+# scratch prototypes in the ppi-welch-paired-t-calibration worktree).
+# Given the project's stance that PPI requires random (MCAR) label
+# sampling and treats MNAR as a documented, out-of-scope limitation rather
+# than something to actively correct for (see evalstats.ppi.correct's
+# docstring), paying an MCAR cost to partially fix a regime users are
+# already told not to rely on is the wrong trade -- so KRUSKAL (the global
+# rectifier) is the default/official method as of 2026-07-22, and the local
+# rectifier is demoted to KRUSKAL_MNAR_EXPERIMENTAL: kept for direct
+# comparison and for anyone deliberately studying the MNAR-robustness
+# question, selectable explicitly via --tests kruskal_mnar_experimental,
+# but not part of the official/validated result set. Same color convention
+# as MW_NAIVE/MWU_CORR (the default occupies the original primary shade,
+# the alternate gets a lighter tint) -- just with the default/alternate
+# roles swapped relative to that pair.
+KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
+KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
-    ANOVA_REP, FRIEDMAN, KRUSKAL_NAIVE, KRUSKAL_CORR, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
+    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
 ]
 """Every PPI test method the harness knows how to run -- the full set
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
-PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m not in (MW_NAIVE, KRUSKAL_NAIVE, PPI_WILSON)]
+PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m not in (MW_NAIVE, KRUSKAL_MNAR_EXPERIMENTAL, PPI_WILSON)]
 """The default (--tests unset) active-test set for --mode ppi -- every
-PPI_TEST_METHODS entry except mw_naive/kruskal_naive, which simulation showed
-badly miscalibrated under MNAR-like labeling x real judge bias x
-coarse/discrete scales (see MW_NAIVE/KRUSKAL_NAIVE's comments above) and
-which mwu_corr/kruskal_corr now cover instead (mw_naive/kruskal_naive still
-run if explicitly requested via --tests mw_naive/kruskal_naive); and except
-ppi_wilson, excluded not because it's miscalibrated but because pvalues.py's
-synthetic PPI sweep has no single-sample scenario to run it against at all
-(see PPI_WILSON's docstring) -- only cases/ppi_real.py's real-data single-
-sample check uses it, selecting it explicitly rather than through this
-"default active set"."""
+PPI_TEST_METHODS entry except mw_naive (badly miscalibrated under MNAR-like
+labeling x real judge bias x coarse/discrete scales, superseded by mwu_corr
+-- see MW_NAIVE's comment above) and kruskal_mnar_experimental (the OPPOSITE
+situation: fixes that same failure mode under MNAR but was found to cost
+real MCAR calibration doing so -- see KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's
+comment above for why kruskal keeps the global rectifier as default instead
+of following mwu_corr's precedent). Both non-default methods still run if
+explicitly requested via --tests mw_naive / --tests
+kruskal_mnar_experimental; and except ppi_wilson, excluded not because it's
+miscalibrated but because pvalues.py's synthetic PPI sweep has no single-
+sample scenario to run it against at all (see PPI_WILSON's docstring) --
+only cases/ppi_real.py's real-data single-sample check uses it, selecting
+it explicitly rather than through this "default active set"."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
@@ -394,7 +406,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL_NAIVE, KRUSKAL_CORR,
+    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

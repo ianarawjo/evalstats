@@ -1133,7 +1133,7 @@ def _ppi_kruskal_wallis_pairwise(
     }
 
 
-def _ppi_kruskal_wallis_pairwise_corrected(
+def _ppi_kruskal_wallis_pairwise_mnar_experimental(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     alpha: float,
@@ -1222,9 +1222,38 @@ def _ppi_kruskal_wallis_pairwise_corrected(
     whatever approximation error remains than a single two-group bootstrap
     p-value does), concentrated under MNAR labeling specifically rather than
     bias magnitude. See ``simulations/PPI_TESTBED_REVIEW.md`` for the full
-    grid and open questions. Kept as a strict improvement over the pre-fix
-    behavior pending further work on that residual, not presented as full
-    calibration.
+    grid and open questions.
+
+    **2026-07-22 update: this fix costs real MCAR calibration, and is no
+    longer the default.** The validation above measured net effect across a
+    grid mixing MCAR and MNAR cells. A follow-up controlled comparison
+    (this function vs. :func:`_ppi_kruskal_wallis_pairwise`, same generated
+    draws, MCAR-only) found the local rectifier makes calibration WORSE
+    specifically at small labeled-sample counts combined with high judge
+    noise -- worst found cell: 7.9% (global rectifier, already mildly
+    elevated) -> 11.1% (this function), a regression this function
+    introduces, not one it inherits. Mechanism: at high judge noise, a
+    group's own LLM score is a weak/near-random basis for bin assignment,
+    so under MCAR (nothing systematic to correct for) the stratification
+    adds pure variance with no offsetting benefit -- and at small n_lab
+    split across ``n_strata`` bins per group, most bins sit near the
+    ``min_lab_per_bin`` floor, so that added variance is large. A shrinkage/
+    partial-pooling variant (smooth blending instead of the hard
+    ``min_lab_per_bin`` cutoff) was prototyped to try to recover this
+    without losing the MNAR fix, and made BOTH worse -- the hard floor's
+    "exactly zero local weight below threshold" property turned out to be
+    load-bearing, not a crude approximation shrinkage could improve on.
+    Given this package's PPI correction generally assumes uniformly random
+    (MCAR) label sampling and treats MNAR as a documented, out-of-scope
+    limitation (see :func:`evalstats.ppi.correct`'s docstring) rather than
+    something to actively correct for, paying an MCAR cost for MNAR
+    robustness in a regime users are already told not to rely on is the
+    wrong trade for the default. :func:`evalstats.tests.kruskalwallis` now
+    defaults to :func:`_ppi_kruskal_wallis_pairwise` (``method="global"``)
+    instead; this function remains available via ``method="mnar_experimental"``
+    for anyone deliberately studying the MNAR-robustness question, or
+    reproducing results computed under the pre-2026-07-22 default. Not
+    presented as validated for general use.
     """
     rng = np.random.default_rng(rng)
     k = len(groups)
@@ -3163,7 +3192,7 @@ def kruskalwallis(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "corrected",
+    method: str = "global",
 ) -> TestResult:
     """Kruskal-Wallis test (independent-groups, rank-based one-way) with
     optional PPI correction.
@@ -3207,27 +3236,48 @@ def kruskalwallis(
     groups_lab : sequence[array-like], optional
         Sparse human labels aligned with each group. Must have one array per
         group, with ``NaN`` for unlabeled items.
-    method : {"corrected", "naive"}
+    method : {"global", "mnar_experimental"}
         Which PPI correction to use for the pairwise-dominance Wald test
-        (default ``"corrected"``). ``"naive"`` applies a single GLOBAL
-        rectifier per pair (:func:`_ppi_kruskal_wallis_pairwise`) -- simple,
-        but simulation showed it badly miscalibrated under labeling that's
-        non-uniform with respect to score combined with real judge bias and
-        coarse/discrete scales: Type-I error up to ~8.6x nominal in the
-        worst identified case (Likert, strong such labeling, severe bias) --
-        the same failure mode ``mannwhitney``'s ``"naive"`` option has, one
-        level up (k independent groups instead of 2). See
+        (default ``"global"``). This default is the OPPOSITE choice from
+        ``mannwhitney``'s equivalent option, and for a specific, documented
+        reason -- read this in full before overriding it.
+
+        ``"global"`` (:func:`_ppi_kruskal_wallis_pairwise`) applies a single
+        rectifier per pair. Under labeling that's non-uniform with respect
+        to score, combined with real judge bias and coarse/discrete scales,
+        this is genuinely miscalibrated: Type-I error up to ~8.6x nominal in
+        the worst identified case (Likert, strong such labeling, severe
+        bias) -- the same failure mode ``mannwhitney``'s ``"naive"`` option
+        has, one level up (k independent groups instead of 2).
+
+        ``"mnar_experimental"`` (:func:`_ppi_kruskal_wallis_pairwise_mnar_experimental`)
+        fixes that with a per-group, per-score-bin LOCAL rectifier instead
+        (see that function's docstring for the full mechanism). Unlike
+        ``mannwhitney``'s analogous fix, this one was confirmed (via a
+        controlled naive-vs-corrected comparison on matched draws) to cost
+        real calibration under ordinary, correctly-random (MCAR) labeling
+        in exchange for the MNAR fix -- worst found cell went from 7.9%
+        (global, already mildly elevated) to 11.1% (local) at small
+        label counts + high judge noise, a regression the local rectifier
+        introduces, not one it inherits. Since this package's PPI
+        correction generally assumes labels are sampled uniformly at random
+        (see :func:`evalstats.ppi.correct`'s docstring) and treats MNAR
+        labeling as an out-of-scope, documented limitation rather than
+        something to actively correct for, paying that MCAR cost for MNAR
+        robustness is the wrong trade for the default -- so unlike
+        Mann-Whitney, Kruskal-Wallis's default stays on the global
+        rectifier. ``"mnar_experimental"`` remains available for anyone
+        deliberately studying the MNAR-robustness question, or reproducing
+        results computed under the old default (this option was named/
+        defaulted differently -- as ``"corrected"``, and was the default --
+        before 2026-07-22; see
         ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
-        ``kruskal_corr`` vs ``kruskal_naive``) for the calibration study.
-        ``"corrected"`` (:func:`_ppi_kruskal_wallis_pairwise_corrected`)
-        fixes this with a per-group, per-score-bin local rectifier instead
-        -- see that function's docstring for the full mechanism and
-        validation. Kept as an option (not deleted) for direct comparison
-        and for reproducing results computed under the old behavior. Only
-        affects ``corrected_p`` (the Wald test) -- ``corrected_estimate``
-        (the scalar effect size from :func:`_ppi_kruskal_wallis`) still uses
-        the single-global-rectifier estimator regardless of ``method``; that
-        estimand hasn't been through the same calibration study yet.
+        ``kruskal`` vs ``kruskal_mnar_experimental``) for the calibration
+        study behind this change). Only affects ``corrected_p`` (the Wald
+        test) -- ``corrected_estimate`` (the scalar effect size from
+        :func:`_ppi_kruskal_wallis`) still uses the single-global-rectifier
+        estimator regardless of ``method``; that estimand hasn't been
+        through the same calibration study yet.
     print_result : bool
         Print a summary table to stdout (default True). Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -3238,8 +3288,8 @@ def kruskalwallis(
     >>> result = es.tests.kruskalwallis(g1, g2, g3, print_result=False)          # silent
     >>> result = es.tests.kruskalwallis(g1, g2, g3, groups_lab=[l1, l2, l3])     # PPI
     """
-    if method not in ("corrected", "naive"):
-        raise ValueError(f'method must be "corrected" or "naive"; got {method!r}.')
+    if method not in ("global", "mnar_experimental"):
+        raise ValueError(f'method must be "global" or "mnar_experimental"; got {method!r}.')
     if len(groups) < 3:
         raise ValueError(
             "kruskalwallis requires at least three groups (k >= 3); "
@@ -3288,10 +3338,10 @@ def kruskalwallis(
         ar = _run_alignment_report(llm_all, human_sparse)
 
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
-        if method == "naive":
-            pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
+        if method == "mnar_experimental":
+            pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
         else:
-            pw = _ppi_kruskal_wallis_pairwise_corrected(groups, groups_lab, alpha, n_boot, rng)
+            pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
 
         corrected_estimate = ppi.estimate
         corrected_ci = (ppi.ci_low, ppi.ci_high)
