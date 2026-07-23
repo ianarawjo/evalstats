@@ -12,7 +12,7 @@ calibration sets for the PPI judge-bias simulations
               ratings -- fetched live, so always as fresh as "today".
 
 This is deliberately NOT part of simulations/harness/ -- it is a one-off
-data-collection tool, not simulation code the harness imports. It has two
+data-collection tool, not simulation code the harness imports. It has three
 subcommands:
 
   collect-data
@@ -21,14 +21,21 @@ subcommands:
       re-run: existing item_ids are left alone, only new ones are added.
 
   collect-judge-scores
-      For each item collected above, prompt an LLM judge (OpenRouter or a
-      local Ollama server) for its own score on the SAME scale as the human
-      label -- withholding the human label from the prompt -- and append
-      the result to simulations/out/judge_bias_<key>_scores.csv. Resumable:
+      For each item collected above, prompt one or more LLM judges
+      (OpenRouter or a local Ollama server), run in sequence, for their own
+      score on the SAME scale as the human label -- withholding the human
+      label from the prompt -- and append the result to
+      simulations/out/judge_bias_<key>_scores.csv. Resumable:
       already-collected (item_id, judge_model, run_idx) triples are skipped.
       Also (re)writes a convenience merged view,
       simulations/out/judge_bias_<key>.csv, joining items + scores into one
       file with both a human_label and a judge_score column per row.
+
+  delete-model-scores
+      Remove every row for one or more judge models from the scores CSV(s)
+      and regenerate the merged view to match -- e.g. to re-collect from
+      scratch after a bad run or a prompt change. Leaves _items.csv (the
+      human-labeled items) untouched.
 
 Why these three datasets: all three are either continuously updated
 (arena, app-store reviews) or carry an explicit year/date field you can
@@ -844,6 +851,48 @@ def _write_merged_view(paths: dict[str, Path], spec: DatasetSpec) -> None:
     print(f"  -> {paths['merged']}: {len(merged)} merged (item, judge_model, run) rows.")
 
 
+def run_delete_model_scores(args: argparse.Namespace) -> None:
+    """Remove every row belonging to the given judge model(s) from
+    judge_bias_<key>_scores.csv (and regenerate the merged view to match)
+    -- e.g. to re-collect from scratch after a bad run, a prompt change, or
+    a model that turned out to be misconfigured. Leaves _items.csv (the
+    human-labeled items themselves) untouched -- those aren't tied to any
+    judge model."""
+    out_dir = Path(args.out_dir)
+    types = args.types or list(DATASET_SPECS.keys())
+    models_to_delete = set(args.models)
+
+    total_removed = 0
+    for eval_type in types:
+        spec = DATASET_SPECS[eval_type]
+        paths = _out_paths(out_dir, spec)
+        if not paths["scores"].exists():
+            print(f"[{eval_type}] no scores file at {paths['scores']} -- skipping.")
+            continue
+
+        rows = _read_csv(paths["scores"])
+        keep = [r for r in rows if r["judge_model"] not in models_to_delete]
+        removed = len(rows) - len(keep)
+        if removed == 0:
+            print(f"[{eval_type}] no rows found for {sorted(models_to_delete)} -- nothing to delete.")
+            continue
+
+        verb = "Would remove" if args.dry_run else "Removing"
+        print(f"[{eval_type}] {verb} {removed} row(s) for model(s) {sorted(models_to_delete)} "
+              f"(out of {len(rows)} total in {paths['scores']}).")
+        total_removed += removed
+        if not args.dry_run:
+            _write_csv(paths["scores"], keep, SCORES_FIELDNAMES)
+            _write_merged_view(paths, spec)
+
+    if args.dry_run:
+        print(f"\nDry run: {total_removed} row(s) would be deleted across {len(types)} dataset(s). "
+              f"Re-run without --dry-run to actually delete.")
+    else:
+        print(f"\nDeleted {total_removed} row(s) across {len(types)} dataset(s) "
+              f"for model(s) {sorted(models_to_delete)}.")
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -922,6 +971,19 @@ def build_arg_parser() -> argparse.ArgumentParser:
                           "throughput is roughly N/sleep requests/sec, not a strict global rate limit.")
     ps.add_argument("--max-retries", type=int, default=3)
     ps.set_defaults(func=run_collect_judge_scores)
+
+    pdel = sub.add_parser("delete-model-scores", help="Delete all collected judge scores for one or more models.")
+    pdel.add_argument("--types", **common_types)
+    pdel.add_argument("--out-dir", default="simulations/out")
+    pdel.add_argument("--models", nargs="+", required=True,
+                       help="Judge model name(s) to delete -- every row in judge_bias_<key>_scores.csv "
+                            "with this judge_model is removed, and the merged view is regenerated to "
+                            "match. Does NOT touch _items.csv (the human-labeled items aren't tied to "
+                            "any judge model). Use to re-collect from scratch after a bad run, a prompt "
+                            "change, or a misconfigured model.")
+    pdel.add_argument("--dry-run", action="store_true",
+                       help="Print what would be deleted without modifying any files.")
+    pdel.set_defaults(func=run_delete_model_scores)
 
     return p
 
