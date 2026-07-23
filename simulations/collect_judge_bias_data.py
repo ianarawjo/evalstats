@@ -86,7 +86,9 @@ import os
 import random
 import re
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -713,9 +715,31 @@ def _call_judge(
 # ---------------------------------------------------------------------------
 
 
+def _judge_one(
+    client, model: str, backend: str, build_prompt, parse_response, max_retries: int, sleep_s: float,
+    item: dict, run_idx: int,
+) -> tuple[dict, int, str | None, float | None]:
+    """One (item, run_idx) unit of work -- the function each thread-pool
+    worker runs. Returns (item, run_idx, raw_response, score); score is
+    None on an unparseable/failed response."""
+    ji = json.loads(item["judge_input"])
+    messages = build_prompt(ji)
+    raw = _call_judge(client, model, messages, backend=backend, max_retries=max_retries, sleep_s=sleep_s)
+    score = None if raw is None else parse_response(raw)
+    return item, run_idx, raw, score
+
+
 def run_collect_judge_scores(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir)
     client = _make_client(args.backend)
+    # The openai SDK's sync client is just a thread-safe HTTP wrapper, so
+    # concurrent judge calls can safely share ONE client -- but concurrent
+    # writers to the SAME scores CSV need a lock: csv.writer.writerow can
+    # issue more than one underlying write() call, so without this,
+    # interleaved rows from different threads could corrupt a line rather
+    # than just landing in a nondeterministic ORDER (which would be fine).
+    write_lock = threading.Lock()
+    concurrency = max(1, args.concurrency)
 
     n_models = len(args.models)
     for model_i, model in enumerate(args.models, start=1):
@@ -740,27 +764,44 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
             build_prompt = PROMPT_BUILDERS[spec.key]
             parse_response = RESPONSE_PARSERS[spec.key]
 
-            print(f"[{eval_type}] {len(items)} items, model={model!r}, runs={args.runs}, "
-                  f"{len(done_keys)} (item,model,run) combos already collected.")
-
-            n_new = 0
+            # Precompute the (item, run_idx) work list up front -- lets
+            # --limit cap it cleanly before any calls go out, rather than
+            # threads racing each other to be the ones that hit the cap.
+            work_items: list[tuple[dict, int]] = []
             n_skipped = 0
-            n_failed = 0
-            pbar = _progress(items, desc=f"{eval_type}-{model}", unit="item")
-            for item in pbar:
-                if args.limit is not None and n_new >= args.limit:
-                    break
-                ji = json.loads(item["judge_input"])
+            for item in items:
                 for run_idx in range(args.runs):
                     key = (item["item_id"], model, str(run_idx))
                     if key in done_keys:
                         n_skipped += 1
                         continue
-                    if args.limit is not None and n_new >= args.limit:
-                        break
-                    messages = build_prompt(ji)
-                    raw = _call_judge(client, model, messages, backend=args.backend, max_retries=args.max_retries, sleep_s=args.sleep)
-                    score = None if raw is None else parse_response(raw)
+                    work_items.append((item, run_idx))
+            if args.limit is not None:
+                work_items = work_items[:args.limit]
+
+            print(f"[{eval_type}] {len(items)} items, model={model!r}, runs={args.runs}, "
+                  f"{n_skipped} combos already done, {len(work_items)} to collect, "
+                  f"concurrency={concurrency}.")
+
+            n_new = 0
+            n_failed = 0
+            with ThreadPoolExecutor(max_workers=concurrency) as pool:
+                futures = [
+                    pool.submit(
+                        _judge_one, client, model, args.backend, build_prompt, parse_response,
+                        args.max_retries, args.sleep, item, run_idx,
+                    )
+                    for item, run_idx in work_items
+                ]
+                pbar = _progress(as_completed(futures), total=len(futures), desc=f"{eval_type}-{model}", unit="call")
+                for fut in pbar:
+                    try:
+                        item, run_idx, raw, score = fut.result()
+                    except Exception as e:  # noqa: BLE001 -- one bad item must not abort an unattended run
+                        n_failed += 1
+                        msg = f"    worker error (skipped): {e}"
+                        pbar.write(msg) if hasattr(pbar, "write") else print(msg)
+                        continue
                     if score is None:
                         n_failed += 1
                         msg = f"    could not parse judge response for {item['item_id']} run {run_idx}: {raw!r}"
@@ -771,13 +812,13 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
                         "judge_score": score, "raw_response": raw,
                         "collected_at": datetime.now(timezone.utc).isoformat(),
                     }
-                    _append_csv_row(paths["scores"], row, SCORES_FIELDNAMES)
-                    done_keys.add(key)
+                    with write_lock:
+                        _append_csv_row(paths["scores"], row, SCORES_FIELDNAMES)
                     n_new += 1
-                if hasattr(pbar, "set_postfix"):
-                    pbar.set_postfix(new=n_new, skipped=n_skipped, failed=n_failed)
-            if hasattr(pbar, "close"):
-                pbar.close()
+                    if hasattr(pbar, "set_postfix"):
+                        pbar.set_postfix(new=n_new, failed=n_failed)
+                if hasattr(pbar, "close"):
+                    pbar.close()
 
             print(f"  -> {n_new} new judge scores written to {paths['scores']}"
                   f" ({n_skipped} already done, {n_failed} unparseable)")
@@ -869,7 +910,16 @@ def build_arg_parser() -> argparse.ArgumentParser:
                           "burning through every item's retries).")
     ps.add_argument("--runs", type=int, default=1, help="Independent judge replicates per item.")
     ps.add_argument("--limit", type=int, default=None, help="Cap on NEW judge calls per model, per type, this invocation.")
-    ps.add_argument("--sleep", type=float, default=0.2, help="Seconds to sleep between judge calls.")
+    ps.add_argument("--concurrency", type=int, default=1,
+                     help="Max in-flight judge calls at once (per model, per type) -- bounded/throttled "
+                          "parallelism via a thread pool, not a true async batch API (OpenRouter doesn't "
+                          "have one; this just replaces one-call-then-wait with N concurrent calls). "
+                          "Default 1 = current sequential behavior. OpenRouter can typically take "
+                          "8-20+ safely; for Ollama it depends on your hardware and OLLAMA_NUM_PARALLEL "
+                          "-- start low (2-4) and watch for queuing/errors before going higher.")
+    ps.add_argument("--sleep", type=float, default=0.2,
+                     help="Seconds each worker sleeps after its own call. With --concurrency N, "
+                          "throughput is roughly N/sleep requests/sec, not a strict global rate limit.")
     ps.add_argument("--max-retries", type=int, default=3)
     ps.set_defaults(func=run_collect_judge_scores)
 
