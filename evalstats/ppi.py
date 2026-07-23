@@ -5,10 +5,19 @@ Access via ``import evalstats as es; es.ppi.correct(...)``.
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
+from scipy.stats import t as _t_dist
+
+_MIN_LAB_RECOMMENDED = 30
+"""Below this many labeled items, the percentile bootstrap this module
+otherwise always used is known to undercover (see correct()'s docstring
+and the "backend" parameter below) -- this is the SAME threshold
+evalstats/api.py's PPI-alignment warning and evalstats/alignment.py
+already use, not a new number invented for this module."""
 
 _POWER_TUNE_SHRINKAGE_C = 20.0
 """Pseudo-count for shrinking correct()'s power-tuning weight lambda back
@@ -94,6 +103,102 @@ def _call(func: Callable, Y: np.ndarray, X: Optional[np.ndarray]) -> float:
     return float(func(Y, X))
 
 
+def _analytic_mean_correct(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
+    alpha: float, power_tune: bool,
+) -> "PPIResult":
+    """Closed-form (delta-method) PPI correction for estimator_func=np.mean --
+    no bootstrap resampling at all. See correct()'s ``backend`` parameter
+    for when this replaces the percentile bootstrap.
+
+    Root-caused via real judge-pair data (2026-07-23): the percentile
+    bootstrap needs roughly n_lab >= 50 on noisy/discrete real data before
+    Type-I error settles near nominal alpha; this closed-form path reaches
+    the same target by n_lab ~= 25-30, since it doesn't need to
+    approximate a sampling distribution from a small empirical resample --
+    it plugs sample variances directly into a known distributional form
+    (Student's t, df = n_lab - 1, since the labeled-subset term is the
+    bottleneck).
+
+    Point estimate is identical to the bootstrap path's (same f_unlab/
+    f_lab/f_hat_lab/rectifier definitions); only the variance/CI/p-value
+    construction differs.
+
+    power_tune's lambda* has a closed form here too (the ORIGINAL PPI++
+    derivation for a mean/OLS-type estimand -- Angelopoulos/Duchi/Zrnic
+    2023's own result, not an approximation of it): minimizing
+    Var(F_lab + lambda*(F_unlab - F_hat_lab)) over lambda, where F_unlab is
+    independent of (F_lab, F_hat_lab) by the disjointness requirement,
+    gives
+
+        lambda* = Cov(F_lab, F_hat_lab) / [Var(F_unlab) + Var(F_hat_lab)]
+
+    with F_lab/F_hat_lab/F_unlab the SAMPLE MEANS (not raw items) -- i.e.
+    Var(F_hat_lab) = var(Y_hat_lab, ddof=1)/n_lab, Cov(F_lab, F_hat_lab) =
+    cov(Y_lab, Y_hat_lab, ddof=1)/n_lab (paired at the item level, cross-
+    item covariance is 0 under i.i.d. sampling), Var(F_unlab) =
+    var(Y_hat_unlab, ddof=1)/n_all. correct()'s bootstrap path estimates
+    this SAME quantity by resampling, as a general-purpose stand-in that
+    works for arbitrary estimator_func; for the mean specifically this
+    closed form is exact, not an approximation, and needs no extra
+    bootstrap pass to get it. No small-n_lab shrinkage is applied (unlike
+    the bootstrap path's _POWER_TUNE_SHRINKAGE_C) -- that shrinkage exists
+    specifically to compensate for the bootstrap's own small-sample
+    weakness, which this path doesn't have.
+    """
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+
+    f_unlab = float(np.mean(Y_hat_unlab))
+    f_lab = float(np.mean(Y_lab))
+    f_hat_lab = float(np.mean(Y_hat_lab))
+    rectifier = f_lab - f_hat_lab
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    lam = 1.0
+    if power_tune:
+        denom = var_unlab + var_hat_lab
+        if denom > 1e-12:
+            lam = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        # else: degenerate variance -- fall back to lam=1, matching the bootstrap path.
+        # Same n_lab-dependent shrinkage toward 1 as correct()'s bootstrap path
+        # (_POWER_TUNE_SHRINKAGE_C) -- NOT just to compensate for bootstrap's
+        # own small-sample weakness (this path doesn't have that one), but
+        # because a raw lambda* computed from only n_lab points is ITSELF a
+        # noisy estimate of the true population lambda, regardless of whether
+        # it's computed via resampling or directly from sample statistics.
+        # Without this, a raw lambda*=0 (e.g. when Y_lab happens to have ~0
+        # sample variance at small n_lab) collapses the estimate to f_lab with
+        # se=0 exactly -- a real bug hit during testing (2026-07-23): a
+        # same-inputs comparison against backend="bootstrap" showed the
+        # bootstrap path did NOT degenerate on the identical data, entirely
+        # because of this shrinkage step, which this path had omitted.
+        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+
+    estimate = f_lab + lam * (f_unlab - f_hat_lab)
+    var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    se = float(np.sqrt(var_estimate))
+    df = max(n_lab - 1, 1)
+
+    if se <= 0.0:
+        ci_low = ci_high = estimate
+        p_value = 1.0 if abs(estimate) < 1e-12 else 0.0
+    else:
+        t_crit = float(_t_dist.ppf(1.0 - alpha / 2.0, df))
+        ci_low, ci_high = estimate - t_crit * se, estimate + t_crit * se
+        p_value = min(max(float(2.0 * (1.0 - _t_dist.cdf(abs(estimate) / se, df))), 0.0), 1.0)
+
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
+        p_value=p_value, lam=(lam if power_tune else None),
+    )
+
+
 def resolve_arrays(
     df,
     *,
@@ -150,6 +255,7 @@ def correct(
     compute_pvalue: bool = True,
     rectifier_func: Optional[Callable] = None,
     power_tune: bool = True,
+    backend: str = "auto",
 ) -> PPIResult:
     """Correct any scalar estimator for LLM judge measurement error using PPI.
 
@@ -314,6 +420,26 @@ def correct(
         scalar mean's is -- see ``simulations/harness/README.md``'s "PPI++
         power-tuning" bullet for the full finding and the ~19% vs ~4%
         Type-I inflation this produced when tried).
+    backend : {"auto", "bootstrap", "analytic"}
+        How to build the CI/p-value. "bootstrap" is the percentile-
+        resampling method described above, unconditionally. "analytic" is
+        a closed-form (delta-method) alternative for ``estimator_func is
+        np.mean`` with no covariates (``X_lab``/``X_unlab`` both None) --
+        see :func:`_analytic_mean_correct`; raises ``ValueError`` if
+        requested for anything else. "auto" (the default) uses "analytic"
+        when it's applicable AND ``n_lab < 30`` (below which the
+        percentile bootstrap is known to undercover -- see the
+        power_tune docstring above), otherwise falls back to "bootstrap"
+        and, if ``n_lab < 30`` there too (i.e. analytic wasn't
+        applicable for this estimator_func), emits a ``UserWarning``
+        instead of silently returning an under-covering interval.
+        Root-caused via real judge-pair data (2026-07-23): on noisy/
+        discrete real data, the bootstrap needed n_lab >~ 50 before
+        Type-I error settled near nominal alpha, while the analytic path
+        reached the same target by n_lab ~= 25-30 -- it doesn't need to
+        approximate a sampling distribution from a small empirical
+        resample, since it plugs sample variances directly into a known
+        (Student's t) distributional form instead.
 
     Returns
     -------
@@ -440,6 +566,33 @@ def correct(
     n_all = len(Y_hat_unlab)
 
     _rect_fn = rectifier_func if rectifier_func is not None else estimator_func
+
+    # ── backend dispatch (auto/bootstrap/analytic) ────────────────────────────
+    if backend not in ("auto", "bootstrap", "analytic"):
+        raise ValueError(f"backend must be 'auto', 'bootstrap', or 'analytic'; got {backend!r}.")
+    _analytic_available = (
+        estimator_func is np.mean and _rect_fn is np.mean and X_lab is None and X_unlab is None
+    )
+    if backend == "analytic" and not _analytic_available:
+        raise ValueError(
+            "backend='analytic' requires estimator_func=np.mean (and rectifier_func=np.mean or "
+            f"None) with no covariates; got estimator_func={estimator_func!r}, "
+            f"rectifier_func={rectifier_func!r}, X_lab={'given' if X_lab is not None else None}."
+        )
+    use_analytic = backend == "analytic" or (
+        backend == "auto" and _analytic_available and n_lab < _MIN_LAB_RECOMMENDED
+    )
+    if not use_analytic and n_lab < _MIN_LAB_RECOMMENDED:
+        warnings.warn(
+            f"PPI bootstrap CI/p-value with only {n_lab} labeled items (recommend >= "
+            f"{_MIN_LAB_RECOMMENDED}) is known to undercover -- Type-I error above nominal "
+            "alpha should be expected."
+            + ("" if _analytic_available else " No closed-form 'analytic' backend is available "
+               "for this estimator_func; consider collecting more labels."),
+            UserWarning, stacklevel=2,
+        )
+    if use_analytic:
+        return _analytic_mean_correct(Y_lab, Y_hat_lab, Y_hat_unlab, alpha, power_tune)
 
     # ── Point estimate (lambda=1 terms; combined into `estimate` below) ──────
     f_unlab   = _call(estimator_func, Y_hat_unlab, X_unlab)

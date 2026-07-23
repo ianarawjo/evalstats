@@ -1511,7 +1511,7 @@ def _ppi_paired_bayes_bootstrap(
     to ``correct()``, since the whole point of this function is the
     Dirichlet-weighted resampling ``correct()`` doesn't support.
     """
-    from evalstats.ppi import PPIResult, _POWER_TUNE_SHRINKAGE_C
+    from evalstats.ppi import PPIResult, _POWER_TUNE_SHRINKAGE_C, _analytic_mean_correct, _MIN_LAB_RECOMMENDED
 
     rng = np.random.default_rng(rng)
 
@@ -1527,6 +1527,16 @@ def _ppi_paired_bayes_bootstrap(
     diffs_unlab = all_diffs[~mask]
     diffs_lab_llm = all_diffs[mask]
     diffs_lab_true = (a_lab - b_lab)[mask]
+
+    # Below _MIN_LAB_RECOMMENDED, Dirichlet-weighted resampling has the SAME
+    # small-n_lab undercoverage as classical/bootstrap-t resampling (root-
+    # caused via real judge-pair data, 2026-07-23 -- confirmed empirically
+    # identical to _ppi_paired_bootstrap_t at n_lab=15, since the limitation
+    # is "not enough real information in n_lab points", not which resampling
+    # scheme reads that information). This is a mean estimand (paired
+    # diffs), so correct()'s closed-form analytic path applies directly.
+    if len(diffs_lab_true) < _MIN_LAB_RECOMMENDED:
+        return _analytic_mean_correct(diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=power_tune)
 
     f_unlab = float(np.mean(diffs_unlab))
     f_lab = float(np.mean(diffs_lab_true))
@@ -1611,7 +1621,7 @@ def _ppi_paired_bootstrap_t(
     position is included in the labeled set only when *both* ``a_lab[i]``
     and ``b_lab[i]`` are non-NaN.
     """
-    from evalstats.ppi import PPIResult
+    from evalstats.ppi import PPIResult, _analytic_mean_correct, _MIN_LAB_RECOMMENDED
 
     rng = np.random.default_rng(rng)
 
@@ -1633,6 +1643,17 @@ def _ppi_paired_bootstrap_t(
 
     n_all = len(diffs_unlab)
     n_lab = len(rect_items)
+
+    # Below _MIN_LAB_RECOMMENDED, this function's own bootstrap-t is subject
+    # to the SAME small-n_lab undercoverage as evalstats.ppi.correct's
+    # percentile bootstrap (root-caused via real judge-pair data,
+    # 2026-07-23 -- Dirichlet/bootstrap-t resampling doesn't fix it, since
+    # the limitation is "not enough real information in n_lab points", not
+    # which resampling scheme reads that information). This function is a
+    # mean estimand (paired diffs), so the SAME closed-form analytic path
+    # correct() uses applies directly -- delegate instead of duplicating it.
+    if n_lab < _MIN_LAB_RECOMMENDED:
+        return _analytic_mean_correct(diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=False)
 
     f_unlab = float(np.mean(diffs_unlab))
     f_lab = float(np.mean(diffs_lab_true))
