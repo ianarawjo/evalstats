@@ -306,7 +306,14 @@ def correct(
         experimental rectifiers do NOT go through this function (bespoke
         bootstrap/closed-form code of their own) and are UNAFFECTED by this
         default -- they remain on their original, non-power-tuned
-        estimators pending their own follow-up validation.
+        estimators. For kruskal/anova/friedman specifically this is
+        deliberate, not just "not yet done": a real attempt found power-
+        tuning fundamentally does not transfer to their variance-like,
+        quadratic-form estimand (their weight=0 endpoint is the RAW,
+        judge-biased estimate, not a safe classical fallback the way a
+        scalar mean's is -- see ``simulations/harness/README.md``'s "PPI++
+        power-tuning" bullet for the full finding and the ~19% vs ~4%
+        Type-I inflation this produced when tried).
 
     Returns
     -------

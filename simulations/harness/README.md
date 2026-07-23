@@ -646,6 +646,39 @@ same way `evalstats.core.resampling` is.
   `_jb_llm_binary`/`_jb_llm_repeated_binary`, a confusion-matrix
   (flip-probability) model used only for the two-group-independent and
   paired structures.
+- **PPI++ power-tuning** (`evalstats.ppi.correct`'s `power_tune` parameter,
+  Angelopoulos/Duchi/Zrnic 2023 -- generalizes the original, fixed-λ=1 PPI
+  estimator with a variance-minimizing weight λ, estimated here via a
+  bootstrap-plug-in since this codebase's estimators are arbitrary, not
+  just the paper's own OLS/logistic/quantile-regression closed forms) is
+  the default (as of 2026-07-23) for every test that routes through
+  `correct()` directly -- `ttest`/`ttest_welch`/`mwu` (global rectifier)/
+  `wilcoxon`/`paired_t`, plus `bayes_bootstrap` (reimplemented locally
+  with the same two-bootstrap-draws-plus-shrinkage construction, since
+  Dirichlet-weighted resampling isn't `correct()`'s classical resampling).
+  Validated against the harness's full 139-scenario judge-bias catalog:
+  Type-I error matches the original estimator's own baseline calibration
+  (within ~0.1-0.4 percentage points), while CI width is consistently
+  narrower -- i.e. no measured drawback for these specific tests.
+  **Explicitly NOT extended to `friedman`/`kruskal`/`anova_oneway`
+  (independent or repeated)**, despite a real attempt: unlike a scalar
+  mean, these tests' estimand is a variance-like quadratic form over
+  several corrected group/condition means, and shrinking the weight
+  toward 0 does NOT fall back to a safe classical estimator the way it
+  does for a mean -- it falls back to the RAW, uncorrected, judge-biased
+  estimate PPI exists to fix in the first place. A bootstrap-variance-
+  minimizing weight search (mirroring the scalar case, adapted for the
+  quadratic estimand) confirmed this empirically: Type-I error INFLATED to
+  ~19% (vs. the original estimator's own ~4% at the same nominal 5%)
+  across the same 139-scenario sweep, because minimizing variance doesn't
+  penalize bias, and a variance-minimizer happily reintroduces judge bias
+  whenever doing so shrinks the (bounded-below-at-zero) estimate toward 0.
+  This is a genuine open problem, not a tuning-constant fix (the scalar
+  case's analogous small-n_lab issue WAS fixable this way, via
+  `_POWER_TUNE_SHRINKAGE_C` -- this one isn't the same kind of problem).
+  These four tests keep their original, fixed-weight PPI correction
+  (already validated, no known drawback of its own) rather than an
+  unvalidated power-tuned version.
 - `judge_bias.py` (planned, for `alignment`) will keep
   `sim_alignment_methods.py`'s agreement-rate proxy-noise model as its own
   named generator, separate from `scenarios/synthetic.py`'s
