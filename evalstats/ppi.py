@@ -103,6 +103,49 @@ def _call(func: Callable, Y: np.ndarray, X: Optional[np.ndarray]) -> float:
     return float(func(Y, X))
 
 
+_MEDIAN_TIE_JITTER_DIVISOR = 20.0
+"""correct()'s smoothed-bootstrap jitter std is (min positive gap between
+distinct values in the data) / this divisor. 20 keeps the jitter well
+below the data's real tie resolution (so it only breaks EXACT ties,
+without perturbing genuine order structure at any coarser scale) while
+still being large enough to stop bootstrap resamples from repeatedly
+landing on the identical median -- see _tie_jitter_scale's docstring for
+the failure mode this fixes."""
+
+
+def _tie_jitter_scale(arr: np.ndarray) -> float:
+    """Std-dev of the Gaussian jitter correct() adds before each bootstrap
+    resample's median, when estimator_func/rectifier_func is np.median.
+
+    Percentile-bootstrapping a MEDIAN on data with substantial exact ties
+    is a known-bad combination (the "smoothed bootstrap" literature, e.g.
+    Efron; Hall & DiCiccio-Romano on bootstrapping non-smooth statistics):
+    with enough repeated values, most resamples' median lands on the SAME
+    repeated value, so the bootstrap distribution collapses toward a
+    near-constant, and the resulting CI/p-value is severely (not just
+    mildly) too conservative -- confirmed directly on real wmt_da judge-
+    score-diff data (2026-07-23): 92.6% of bootstrap replicate differences
+    collapsed to exactly 0, driving a paired Wilcoxon PPI check's Type-I
+    error to ~0 (vs. nominal 0.05) and NOT improving with n/n_lab (flat up
+    to n_lab=400), since tie density is a property of the score scale, not
+    sample size. Adding noise far below the data's real resolution before
+    each resample's median restores a non-degenerate bootstrap distribution
+    without perturbing genuine order structure.
+
+    Returns 0.0 (no jitter) when the array has fewer than 2 distinct
+    values, or when every gap between consecutive distinct values is
+    effectively zero (already degenerate; jittering wouldn't help).
+    """
+    uniq = np.unique(arr)
+    if len(uniq) < 2:
+        return 0.0
+    gaps = np.diff(uniq)
+    positive_gaps = gaps[gaps > 1e-15]
+    if positive_gaps.size == 0:
+        return 0.0
+    return float(np.min(positive_gaps)) / _MEDIAN_TIE_JITTER_DIVISOR
+
+
 def _analytic_mean_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool,
@@ -616,6 +659,17 @@ def correct(
     fast_est = _fast_batch.get(id(estimator_func)) if X_unlab is None else None
     fast_rect = _fast_batch.get(id(_rect_fn)) if X_lab is None else None
 
+    # Smoothed-bootstrap jitter (see _tie_jitter_scale) -- only when the
+    # estimator/rectifier is np.median specifically (mean's bootstrap
+    # distribution doesn't degenerate under ties; jittering it would just
+    # add pointless noise). 0.0 disables jitter (np.random.normal(0, 0, ...)
+    # is exactly a no-op, so this is safe to add unconditionally below).
+    _jitter_unlab = _tie_jitter_scale(Y_hat_unlab) if fast_est is not None and estimator_func is np.median else 0.0
+    _jitter_labpair = (
+        _tie_jitter_scale(np.concatenate([Y_lab, Y_hat_lab]))
+        if fast_rect is not None and _rect_fn is np.median else 0.0
+    )
+
     def _draw_replicates() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         b_unlab_arr = np.empty(n_boot)
         b_lab_arr = np.empty(n_boot)
@@ -628,9 +682,17 @@ def correct(
                 m = stop - start
                 idx_all = rng.integers(0, n_all, size=(m, n_all))
                 idx_lab = rng.integers(0, n_lab, size=(m, n_lab))
-                b_unlab_arr[start:stop]   = fast_est(Y_hat_unlab[idx_all])
-                b_lab_arr[start:stop]     = fast_rect(Y_lab[idx_lab])
-                b_hat_lab_arr[start:stop] = fast_rect(Y_hat_lab[idx_lab])
+                resampled_unlab = Y_hat_unlab[idx_all]
+                resampled_lab = Y_lab[idx_lab]
+                resampled_hat_lab = Y_hat_lab[idx_lab]
+                if _jitter_unlab > 0.0:
+                    resampled_unlab = resampled_unlab + rng.normal(0.0, _jitter_unlab, size=resampled_unlab.shape)
+                if _jitter_labpair > 0.0:
+                    resampled_lab = resampled_lab + rng.normal(0.0, _jitter_labpair, size=resampled_lab.shape)
+                    resampled_hat_lab = resampled_hat_lab + rng.normal(0.0, _jitter_labpair, size=resampled_hat_lab.shape)
+                b_unlab_arr[start:stop]   = fast_est(resampled_unlab)
+                b_lab_arr[start:stop]     = fast_rect(resampled_lab)
+                b_hat_lab_arr[start:stop] = fast_rect(resampled_hat_lab)
                 start = stop
         else:
             for b in range(n_boot):
@@ -638,9 +700,17 @@ def correct(
                 idx_lab = rng.integers(0, n_lab, n_lab)
                 Xa_b = X_unlab[idx_all] if X_unlab is not None else None
                 Xl_b = X_lab[idx_lab]   if X_lab   is not None else None
-                b_unlab_arr[b]   = _call(estimator_func, Y_hat_unlab[idx_all], Xa_b)
-                b_lab_arr[b]     = _call(_rect_fn,       Y_lab[idx_lab],       Xl_b)
-                b_hat_lab_arr[b] = _call(_rect_fn,       Y_hat_lab[idx_lab],   Xl_b)
+                Yl = Y_hat_unlab[idx_all]
+                Ya = Y_lab[idx_lab]
+                Yb = Y_hat_lab[idx_lab]
+                if _jitter_unlab > 0.0:
+                    Yl = Yl + rng.normal(0.0, _jitter_unlab, size=Yl.shape)
+                if _jitter_labpair > 0.0:
+                    Ya = Ya + rng.normal(0.0, _jitter_labpair, size=Ya.shape)
+                    Yb = Yb + rng.normal(0.0, _jitter_labpair, size=Yb.shape)
+                b_unlab_arr[b]   = _call(estimator_func, Yl, Xa_b)
+                b_lab_arr[b]     = _call(_rect_fn,       Ya, Xl_b)
+                b_hat_lab_arr[b] = _call(_rect_fn,       Yb, Xl_b)
         return b_unlab_arr, b_lab_arr, b_hat_lab_arr
 
     # ── Power tuning (PPI++, Angelopoulos/Duchi/Zrnic 2023) ──────────────────

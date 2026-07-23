@@ -251,10 +251,21 @@ def _run_real_paired_cell(
                     # grow instead of converging to alpha. Root-caused on real wmt_da
                     # data (2026-07-23): |median-mean|/SD of the diffs predicted the
                     # blowup almost monotonically across 6 judge pairs (0.006 -> 2.5%
-                    # Type-I, up to 0.26 -> 77.5%); matching rectifier_func=np.median
-                    # fixed every case tested (e.g. 78%->0%, 38%->0%), including
-                    # restoring the expected direction (calibration improving, not
-                    # degrading, as label_frac grows).
+                    # Type-I, up to 0.26 -> 77.5%).
+                    #
+                    # Matching rectifier_func=np.median alone (same day) traded that
+                    # for a WORSE problem on this same real data: percentile-
+                    # bootstrapping a MEDIAN degenerates under real ties (92.6% of
+                    # bootstrap replicate differences collapsed to exactly 0 on
+                    # wmt_da), driving Type-I to ~0 (near-zero power) across the full
+                    # sweep and NOT improving with n/n_lab (flat up to n_lab=400),
+                    # since tie density is a property of the score scale, not sample
+                    # size. evalstats.ppi.correct() now smooths the bootstrap with
+                    # tiny sub-resolution jitter before each resample's median (see
+                    # _tie_jitter_scale in evalstats/ppi.py) specifically to fix that
+                    # degeneracy, which is what makes rectifier_func=np.median usable
+                    # here -- re-verified via this same wmt_da paired check that both
+                    # failure modes (bias AND degeneracy) are gone together.
                     r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
