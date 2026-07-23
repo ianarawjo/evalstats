@@ -306,93 +306,112 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#3182bd")
 TTEST_WELCH = Method("ttest_welch", "#6baed6")
-# MW_NAIVE/MWU_CORR: two PPI corrections for the SAME classical test
+# MWU/MWU_MNAR_EXPERIMENTAL: two PPI corrections for the SAME classical test
 # (Mann-Whitney U / independent two-group mid-rank estimand P_mid(A>B)-0.5),
-# not two different classical tests. MW_NAIVE (formerly just "MW") applies
-# evalstats.tests._ppi_two_sample's single GLOBAL rectifier -- exactly
-# correct for a MEAN, but simulation (simulations/harness/cases/pvalues.py
-# --mode ppi, judge-bias sweep, tag "label_mechanism" x "eval_type") showed
-# it badly miscalibrated for this rank estimand specifically when labeling
-# is non-uniform with respect to score (e.g. "double-check the highest-
+# not two different classical tests. MWU applies evalstats.tests.
+# _ppi_two_sample's single GLOBAL rectifier -- exactly correct for a MEAN,
+# but simulation (simulations/harness/cases/pvalues.py --mode ppi,
+# judge-bias sweep, tag "label_mechanism" x "eval_type") showed it badly
+# miscalibrated for this rank estimand specifically when labeling is
+# non-uniform with respect to score (e.g. "double-check the highest-
 # scoring items") combined with real judge bias and a coarse/discrete
 # (Likert) scale: Type-I error 3-9x nominal in the worst identified cell
 # (likert, severe bias, strong such labeling: 0.36-0.41 vs nominal 0.05).
-# MWU_CORR (evalstats.tests._ppi_two_sample_midrank_corrected) fixes this
-# with a per-group, per-score-bin LOCAL rectifier instead (see that
-# function's docstring for the full mechanism/validation) and is what the
-# official PPI test sweep now runs by default in mw_naive's old slot --
-# see PPI_OFFICIAL_TEST_METHODS below. MW_NAIVE is kept (not deleted) for
-# direct comparison and reproducing pre-fix results, selectable explicitly
-# via --tests mw_naive. Colors stay in the same Blues family as
-# ttest/ttest_welch (mwu_corr inherits mw's original shade, since it now
-# occupies that slot in the standard-tests plot; mw_naive gets a visually
-# lighter/secondary shade of the same family).
-MW_NAIVE = Method("mw_naive", "#c6dbef")
-MWU_CORR = Method("mwu_corr", "#9ecae1")
+# MWU_MNAR_EXPERIMENTAL (evalstats.tests._ppi_two_sample_midrank_corrected)
+# fixes this with a per-group, per-score-bin LOCAL rectifier instead (see
+# that function's docstring for the full mechanism/validation) -- and WAS
+# the official PPI test sweep's default (as "mwu_corr") until 2026-07-22,
+# when a controlled naive-vs-corrected comparison on matched draws (the
+# same methodology that caught kruskal_corr's analogous regression -- see
+# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL below) found the SAME failure mode here
+# at a smaller magnitude: under MCAR labeling with real judge bias present
+# and a small labeled sample, Type-I climbed from ~3.6-5.6% (global) to
+# ~5.4-7.2% (local) -- worst cells showing a clean 2x multiplier (e.g. 3.6%
+# -> 7.2% at n_lab=15, severe bias, noise=0.025), replicated across two
+# noise levels with the same n_lab/bias combination (not sampling noise:
+# ~5 SEs at n_reps=1000). Given this project's stance that PPI requires
+# MCAR labeling and treats MNAR as a documented, out-of-scope limitation
+# (see evalstats.ppi.correct's docstring) rather than something to actively
+# correct for, paying an MCAR cost for MNAR robustness in a regime users
+# are already told not to rely on is the wrong trade -- so MWU (the global
+# rectifier) is the default/official method again, and MWU_MNAR_EXPERIMENTAL
+# is kept (not deleted) for direct comparison, reproducing pre-2026-07-22
+# results, or anyone deliberately studying MNAR robustness, selectable
+# explicitly via --tests mwu_mnar_experimental. Colors stay in the same
+# Blues family as ttest/ttest_welch -- MWU keeps the original primary shade
+# (the default occupies that slot regardless of which algorithm currently
+# fills it), MWU_MNAR_EXPERIMENTAL gets the lighter/secondary tint.
+MWU = Method("mwu", "#9ecae1")
+MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#c6dbef")
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
 # KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the SAME
-# omnibus test, generalizing the MW_NAIVE/MWU_CORR story one level up (k
-# independent groups instead of 2) -- but with the OPPOSITE conclusion.
-# KRUSKAL applies evalstats.tests._ppi_kruskal_wallis_pairwise's single
-# GLOBAL rectifier per pairwise dominance estimate theta_ab = theta_unlab +
-# (theta_lab_human - theta_lab_llm) -- the SAME global-rectifier pattern
-# that broke mw_naive, just extended from one pair to all C(k,2) pairs, and
-# genuinely miscalibrated the same way under severe judge bias x MNAR-like
-# labeling x coarse/discrete scale x large N (Type-I 0.32-0.49 vs nominal
-# 0.05 in the worst identified cells). A per-group, per-score-bin LOCAL
-# rectifier (evalstats.tests._ppi_kruskal_wallis_pairwise_mnar_experimental,
-# generalizing MWU_CORR's fix from 2 groups to k) was built and validated to
-# fix that MNAR regime (down to ~0.09-0.11 in the same cells) -- but UNLIKE
-# mwu_corr's equivalent fix, this one was confirmed (2026-07-22 screening +
-# a controlled naive-vs-corrected comparison on matched draws) to cost real
-# MCAR calibration in exchange: worst found cell went from 7.9% (global,
-# already-imperfect) to 11.1% (local) at small n_lab + high llm_noise, a
-# regression the fix itself introduces, not one it inherits. A shrinkage/
-# partial-pooling variant was prototyped to try to recover that MCAR cost
-# without losing the MNAR fix and made BOTH worse, not just MCAR (see
-# scratch prototypes in the ppi-welch-paired-t-calibration worktree).
-# Given the project's stance that PPI requires random (MCAR) label
-# sampling and treats MNAR as a documented, out-of-scope limitation rather
-# than something to actively correct for (see evalstats.ppi.correct's
-# docstring), paying an MCAR cost to partially fix a regime users are
-# already told not to rely on is the wrong trade -- so KRUSKAL (the global
-# rectifier) is the default/official method as of 2026-07-22, and the local
-# rectifier is demoted to KRUSKAL_MNAR_EXPERIMENTAL: kept for direct
-# comparison and for anyone deliberately studying the MNAR-robustness
-# question, selectable explicitly via --tests kruskal_mnar_experimental,
-# but not part of the official/validated result set. Same color convention
-# as MW_NAIVE/MWU_CORR (the default occupies the original primary shade,
-# the alternate gets a lighter tint) -- just with the default/alternate
-# roles swapped relative to that pair.
+# omnibus test, generalizing the MWU/MWU_MNAR_EXPERIMENTAL story one level up (k
+# independent groups instead of 2) -- and, as of 2026-07-22, the SAME
+# conclusion. KRUSKAL applies evalstats.tests._ppi_kruskal_wallis_pairwise's
+# single GLOBAL rectifier per pairwise dominance estimate theta_ab =
+# theta_unlab + (theta_lab_human - theta_lab_llm) -- the SAME global-
+# rectifier pattern that broke MWU, just extended from one pair to all
+# C(k,2) pairs, and genuinely miscalibrated the same way under severe judge
+# bias x MNAR-like labeling x coarse/discrete scale x large N (Type-I
+# 0.32-0.49 vs nominal 0.05 in the worst identified cells). A per-group,
+# per-score-bin LOCAL rectifier (evalstats.tests.
+# _ppi_kruskal_wallis_pairwise_mnar_experimental, generalizing MW_MNAR_
+# EXPERIMENTAL's fix from 2 groups to k) was built and validated to fix
+# that MNAR regime (down to ~0.09-0.11 in the same cells) -- but was
+# confirmed (2026-07-22 screening + a controlled naive-vs-corrected
+# comparison on matched draws) to cost real MCAR calibration in exchange:
+# worst found cell went from 7.9% (global, already-imperfect) to 11.1%
+# (local) at small n_lab + high llm_noise, a regression the fix itself
+# introduces, not one it inherits. A shrinkage/partial-pooling variant was
+# prototyped to try to recover that MCAR cost without losing the MNAR fix
+# and made BOTH worse, not just MCAR (see scratch prototypes in the
+# ppi-welch-paired-t-calibration worktree). The SAME controlled comparison
+# run against MWU/MWU_MNAR_EXPERIMENTAL (same day) found the identical
+# failure mode at a smaller magnitude (~2x multiplier in the worst cells,
+# e.g. 3.6% -> 7.2%, vs. kruskal's ~1.4x) -- see MWU/MWU_MNAR_EXPERIMENTAL's
+# comment above for that data. Given this project's stance that PPI
+# requires random (MCAR) label sampling and treats MNAR as a documented,
+# out-of-scope limitation rather than something to actively correct for
+# (see evalstats.ppi.correct's docstring), paying an MCAR cost to partially
+# fix a regime users are already told not to rely on is the wrong trade for
+# either -- so KRUSKAL (the global rectifier) is the default/official
+# method as of 2026-07-22, and the local rectifier is demoted to
+# KRUSKAL_MNAR_EXPERIMENTAL: kept for direct comparison and for anyone
+# deliberately studying the MNAR-robustness question, selectable explicitly
+# via --tests kruskal_mnar_experimental, but not part of the official/
+# validated result set. Same color convention as MWU/MWU_MNAR_EXPERIMENTAL:
+# the default occupies the original primary shade, the alternate gets a
+# lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
 ]
 """Every PPI test method the harness knows how to run -- the full set
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
-PPI_OFFICIAL_TEST_METHODS = [m for m in PPI_TEST_METHODS if m not in (MW_NAIVE, KRUSKAL_MNAR_EXPERIMENTAL, PPI_WILSON)]
+PPI_OFFICIAL_TEST_METHODS = [
+    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, KRUSKAL_MNAR_EXPERIMENTAL, PPI_WILSON)
+]
 """The default (--tests unset) active-test set for --mode ppi -- every
-PPI_TEST_METHODS entry except mw_naive (badly miscalibrated under MNAR-like
-labeling x real judge bias x coarse/discrete scales, superseded by mwu_corr
--- see MW_NAIVE's comment above) and kruskal_mnar_experimental (the OPPOSITE
-situation: fixes that same failure mode under MNAR but was found to cost
-real MCAR calibration doing so -- see KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's
-comment above for why kruskal keeps the global rectifier as default instead
-of following mwu_corr's precedent). Both non-default methods still run if
-explicitly requested via --tests mw_naive / --tests
-kruskal_mnar_experimental; and except ppi_wilson, excluded not because it's
-miscalibrated but because pvalues.py's synthetic PPI sweep has no single-
-sample scenario to run it against at all (see PPI_WILSON's docstring) --
-only cases/ppi_real.py's real-data single-sample check uses it, selecting
-it explicitly rather than through this "default active set"."""
+PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
+(both fix real MNAR-labeling miscalibration in their global-rectifier
+sibling, but were found to cost real MCAR calibration doing so -- see
+MWU/MWU_MNAR_EXPERIMENTAL's and KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's comments
+above). Both remain selectable via --tests mwu_mnar_experimental / --tests
+kruskal_mnar_experimental for direct comparison, reproducing pre-2026-07-22
+results, or studying MNAR robustness deliberately; and except ppi_wilson,
+excluded not because it's miscalibrated but because pvalues.py's synthetic
+PPI sweep has no single-sample scenario to run it against at all (see
+PPI_WILSON's docstring) -- only cases/ppi_real.py's real-data single-sample
+check uses it, selecting it explicitly rather than through this "default
+active set"."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
@@ -406,7 +425,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

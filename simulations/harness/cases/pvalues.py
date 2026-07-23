@@ -108,7 +108,7 @@ Known exceptions (see simulations/harness/README.md):
   discordant-pair counts, and a PPI-corrected numerator is generally
   non-integer, breaking that exactness -- left as future work pending a
   firmer statistical basis rather than shipping an ad-hoc adaptation. The
-  rank-based family (``mw``/``wilcoxon``/``friedman``/``kruskal``) and
+  rank-based family (``mwu``/``wilcoxon``/``friedman``/``kruskal``) and
   ANOVA/LMM remain continuous/likert/grades-only: they assume a scale that
   doesn't hold up under binary's massive ties, and the judge-bias noise
   model used for those structures doesn't have a binary-compatible variant
@@ -237,8 +237,8 @@ from ..methods import (
     PPI_OFFICIAL_TEST_METHODS,
     TTEST,
     TTEST_WELCH,
-    MW_NAIVE,
-    MWU_CORR,
+    MWU,
+    MWU_MNAR_EXPERIMENTAL,
     ANOVA_IND,
     ANOVA_REP,
     FRIEDMAN,
@@ -3368,7 +3368,7 @@ _ALPHA = ALPHA_DEFAULT
 # Binary judge-bias data only supports the mean-based tests (a proportion is
 # just the mean of a 0/1 variable, so PPI's rectifier applies unchanged --
 # see scenarios.synthetic's binary judge-bias comment). The rank-based
-# family (mw/wilcoxon/friedman/kruskal) and ANOVA/LMM assume a scale that
+# family (mwu/wilcoxon/friedman/kruskal) and ANOVA/LMM assume a scale that
 # doesn't hold up under binary's massive ties, and generate_judge_bias_cell
 # doesn't extend its additive noise/bias/slope judge model to a 0/1
 # judgment for those structures either.
@@ -3443,23 +3443,23 @@ def _run_ppi_cell(
                 except Exception:
                     failed[TTEST_WELCH.name] += 1
 
-            if MW_NAIVE.name in active_tests:
+            if MWU.name in active_tests:
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MW_NAIVE.name] += int(p_u < _ALPHA)
+                    uncorrected[MWU.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
-                    corrected[MW_NAIVE.name] += int(r.p_value < _ALPHA)
+                    corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
-                    failed[MW_NAIVE.name] += 1
+                    failed[MWU.name] += 1
 
-            if MWU_CORR.name in active_tests:
+            if MWU_MNAR_EXPERIMENTAL.name in active_tests:
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MWU_CORR.name] += int(p_u < _ALPHA)
+                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample_midrank_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_CORR.name] += int(r.p_value < _ALPHA)
+                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
                 except Exception:
-                    failed[MWU_CORR.name] += 1
+                    failed[MWU_MNAR_EXPERIMENTAL.name] += 1
 
             if WILCOXON.name in active_tests:
                 try:
@@ -3734,7 +3734,7 @@ def run_ppi_simulation(
 # ---------------------------------------------------------------------------
 
 _PPI_EFFECT_TESTS = (
-    TTEST.name, TTEST_WELCH.name, MW_NAIVE.name, MWU_CORR.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
+    TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
 )
 
@@ -3774,7 +3774,7 @@ def _run_ppi_effect_cell(
     --effect-reps count) rather than piggybacking on run_ppi_simulation's
     Type-I sweep the way sim_type_i_calibration.py's _run_one does for its
     "free" tests -- this keeps _run_ppi_cell's Type-I return type/call site
-    completely unchanged, at the cost of redrawing ttest/ttest_welch/mwu_corr/
+    completely unchanged, at the cost of redrawing ttest/ttest_welch/mwu/
     wilcoxon/kruskal's bootstrap a second time (cheap at the smaller
     effect-reps count this is meant to run at). anova_ind/anova_rep/friedman
     call the bootstrap-based SCALAR-estimate functions here (_ppi_anova_
@@ -3809,17 +3809,17 @@ def _run_ppi_effect_cell(
                 except Exception:
                     pass
 
-            if MW_NAIVE.name in active_tests:
+            if MWU.name in active_tests:
                 try:
                     r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
-                    out[MW_NAIVE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    out[MWU.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
-            if MWU_CORR.name in active_tests:
+            if MWU_MNAR_EXPERIMENTAL.name in active_tests:
                 try:
                     r = _ppi_two_sample_midrank_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    out[MWU_CORR.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    out[MWU_MNAR_EXPERIMENTAL.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -4059,7 +4059,7 @@ class PPIComparisonResult:
     (e.g. label_frac=0.05 and 0.10 both floor to n_lab=15 at n=100), so this
     is the field to plot/group by, not label_frac, whenever comparing
     across different n. For "independent"-mask structures (group/group3:
-    ttest_welch, mwu_corr, anova_ind, kruskal) this is the FIRST group's
+    ttest_welch, mwu, anova_ind, kruskal) this is the FIRST group's
     labeled count specifically -- see _run_ppi_comparison_cell's docstring
     for why every group is expected to match under this harness's scenario
     construction."""
@@ -4067,7 +4067,7 @@ class PPIComparisonResult:
     """Which classical test this result is for -- see _COMPARISON_METHODS.
     Defaults to paired_t for backward compatibility; every
     _run_ppi_comparison_cell call now sets this explicitly to one of
-    ttest_welch/paired_t/mwu_corr/wilcoxon (never a pooled "average" tag --
+    ttest_welch/paired_t/mwu/wilcoxon (never a pooled "average" tag --
     pooling across methods happens downstream, over a list of these, via
     pool_ppi_comparison_across_methods)."""
     rejects_all_human: int = 0
@@ -4105,20 +4105,28 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
     raise ValueError(f"_ppi_source_effect_frac: unrecognized tag {sc.tag!r}")
 
 
-_COMPARISON_METHODS = (TTEST_WELCH.name, PAIRED_T.name, MWU_CORR.name, WILCOXON.name)
+_COMPARISON_METHODS = (TTEST_WELCH.name, PAIRED_T.name, MWU.name, WILCOXON.name)
 """The four classical two-sample/paired tests the PPI estimator-comparison
 sweep (and everything downstream: N x N_lab grid, full factorial, the
 null-effect bar chart) runs and, by default, averages across -- rather than
-paired_t alone. ttest_welch/paired_t (mean-based) and mwu_corr/wilcoxon (rank-
+paired_t alone. ttest_welch/paired_t (mean-based) and mwu/wilcoxon (rank-
 based) cover both the independent-two-group and paired structures, and all
 four test the SAME two-group mean/location-shift question via different
 classical machinery, so averaging their rejection rates is a coherent
-summary of "does this hold across reasonable test choices." Uses mwu_corr
-(the per-group locally-calibrated PPI midrank correction), not mw_naive
-(single-global-rectifier) -- the latter was found badly miscalibrated under
-MNAR-like labeling x real judge bias x coarse/discrete scales specifically
-in this sweep (see mw_naive's Method docstring in methods.py), which is why
-it was replaced here rather than kept alongside it. Deliberately
+summary of "does this hold across reasonable test choices." Uses MWU
+(evalstats.tests._ppi_two_sample's single-global-rectifier midrank
+correction), not MWU_MNAR_EXPERIMENTAL (evalstats.tests.
+_ppi_two_sample_midrank_corrected's per-group, per-score-bin LOCAL
+rectifier) -- the local rectifier fixes real MNAR-labeling miscalibration
+MWU has, but was confirmed (2026-07-22, controlled naive-vs-corrected
+comparison on matched draws) to cost real MCAR calibration doing so: worst
+found cells show a ~2x multiplier (e.g. 3.6% -> 7.2% at small n_lab, real
+bias present, MCAR labeling) -- see MWU/MWU_MNAR_EXPERIMENTAL's Method
+docstring in methods.py for the full writeup. Given this project's stance
+that PPI requires MCAR labeling and treats MNAR as a documented,
+out-of-scope limitation, paying that MCAR cost for MNAR robustness is the
+wrong trade here too -- same reasoning _COMPARISON_METHODS_OMNIBUS already
+applies to kruskal vs. kruskal_mnar_experimental. Deliberately
 excludes the omnibus/multi-group tests (anova_ind/anova_rep/friedman/
 kruskal/lmm*) and the non-standard bootstrap-CI constructions
 (bayes_bootstrap/bootstrap_t/tango_score) -- those answer different
@@ -4143,15 +4151,17 @@ repeated-3-group structure (A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's
 _ppi_kruskal_wallis_pairwise's single-global-rectifier Wald test), not
 KRUSKAL_MNAR_EXPERIMENTAL (evalstats.tests.
 _ppi_kruskal_wallis_pairwise_mnar_experimental's per-group, per-score-bin
-LOCAL rectifier) -- the OPPOSITE choice _COMPARISON_METHODS made for
-mwu_corr vs. mw_naive, and for a documented reason, not an oversight: the
+LOCAL rectifier) -- the SAME choice _COMPARISON_METHODS makes for MWU vs.
+MWU_MNAR_EXPERIMENTAL, and for a documented reason, not an oversight: the
 local rectifier fixes the same combined bias x MNAR-labeling x coarse-scale
-x large-N miscalibration mw_naive/kruskal's global rectifier both have, but
-was confirmed (2026-07-22) to cost real MCAR calibration doing so -- a
-regression it introduces, not one it inherits (worst found cell: 7.9% ->
-11.1% at small n_lab + high llm_noise, purely from switching rectifiers on
-matched draws). A shrinkage/partial-pooling variant meant to recover that
-MCAR cost without losing the MNAR fix made both worse instead. Given this
+x large-N miscalibration MWU/kruskal's global rectifier both have, but was
+confirmed (2026-07-22) to cost real MCAR calibration doing so in both cases
+-- a regression it introduces, not one it inherits (kruskal's worst found
+cell: 7.9% -> 11.1% at small n_lab + high llm_noise; MWU's worst found cell:
+3.6% -> 7.2% at small n_lab + real bias present, a smaller absolute jump
+but the same ~2x multiplier, purely from switching rectifiers on matched
+draws). A shrinkage/partial-pooling variant meant to recover kruskal's MCAR
+cost without losing the MNAR fix made both worse instead. Given this
 project's stance that PPI requires MCAR labeling and treats MNAR as a
 documented, out-of-scope limitation rather than something to actively
 correct for, paying an MCAR cost for MNAR robustness users are already
@@ -4165,16 +4175,16 @@ filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
 kept in its own report section/log rather than merged into the headline
 _COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
-    TTEST_WELCH.name: "group", MWU_CORR.name: "group", MW_NAIVE.name: "group",
+    TTEST_WELCH.name: "group", MWU_MNAR_EXPERIMENTAL.name: "group", MWU.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
     ANOVA_IND.name: "group3", KRUSKAL.name: "group3", KRUSKAL_MNAR_EXPERIMENTAL.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
 }
-_COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu_corr/wilcoxon"
+_COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu/wilcoxon"
 _COMPARISON_METHODS_OMNIBUS_LABEL = "anova_ind/anova_rep/friedman/kruskal"
 _COMPARISON_METHODS_BINARY = (TTEST_WELCH.name, PAIRED_T.name)
 """The 2 of _COMPARISON_METHODS' 4 pooled tests that are valid on binary's
-heavily-tied 0/1 data (mwu_corr/wilcoxon are rank-based and break down under
+heavily-tied 0/1 data (mwu/wilcoxon are rank-based and break down under
 that many ties -- the same reason build_judge_bias_sources' _PPI_BINARY_
 COMPATIBLE_TESTS excludes them). Run and pooled SEPARATELY from
 _COMPARISON_METHODS via its own run_ppi_comparison_simulation call (never
@@ -4201,7 +4211,7 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
     for a given method uses the SAME test, just on different input arrays,
     so the comparison is apples-to-apples per method (e.g. the "oracle"
     all_human/human_subset arms run Mann-Whitney on truth for the
-    "mwu_corr"/"mw_naive" method-rows, not always a t-test)."""
+    "mwu"/"mwu_mnar_experimental" method-rows, not always a t-test)."""
     if structure == "group":
         if method == TTEST_WELCH.name:
             return float(scipy_stats.ttest_ind(a, b, equal_var=False).pvalue)
@@ -4215,17 +4225,17 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     """The SAME PPI-corrected call _run_ppi_cell uses for this method
     (_ppi_two_sample / _ppi_two_sample_midrank_corrected for "group"
     methods, _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
-    ttest_welch/mw_naive/mwu_corr/paired_t/wilcoxon blocks, which this
+    ttest_welch/mwu/mwu_mnar_experimental/paired_t/wilcoxon blocks, which this
     mirrors exactly)."""
     if structure == "group":
         if method == TTEST_WELCH.name:
             estimator = lambda ya, yb: float(ya.mean() - yb.mean())  # noqa: E731
             return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
-        if method == MWU_CORR.name:
+        if method == MWU_MNAR_EXPERIMENTAL.name:
             return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
-        # mw_naive: single-global-rectifier midrank correction -- kept for
-        # direct comparison against mwu_corr, not used by _COMPARISON_METHODS
-        # itself (see that constant's docstring for why it was replaced there).
+        # MWU (global rectifier): what _COMPARISON_METHODS actually uses --
+        # see that constant's docstring for why it's the default over
+        # mwu_mnar_experimental's local rectifier as of 2026-07-22.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
     statistic = np.mean if method == PAIRED_T.name else np.median
@@ -4290,7 +4300,7 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
     llm_impute/ppi) for ONE classical `method` (see _COMPARISON_METHODS/
     _COMPARISON_METHODS_OMNIBUS). Dispatches on
     _COMPARISON_METHOD_STRUCTURE[method] via _COMPARISON_CELL_FIELDS:
-    "group"/"group3" methods (ttest_welch, mwu_corr, anova_ind, kruskal) use
+    "group"/"group3" methods (ttest_welch, mwu, anova_ind, kruskal) use
     generate_judge_bias_cell's independent-group structure (2 or 3 groups);
     "pair"/"pair3" methods (paired_t, wilcoxon, anova_rep, friedman) use its
     paired/repeated structure. generate_judge_bias_cell draws EVERY
@@ -4453,7 +4463,7 @@ def pool_ppi_comparison_across_methods(results: list[PPIComparisonResult]) -> li
     whichever methods are present for that name -- equivalent to averaging
     each method's rate since every method shares the same n_reps per
     scenario). Output rows carry method=POOLED_METHOD_LABEL. This is the
-    "average across ttest_welch/paired_t/mwu_corr/wilcoxon" pooling requested for
+    "average across ttest_welch/paired_t/mwu/wilcoxon" pooling requested for
     the headline figures (null-effect bar chart, 5-way comparison, N x
     N_lab grid, factorial slices) -- the per-method rows in `results`
     remain available (e.g. in the raw CSV) as the supplementary robustness
@@ -4720,7 +4730,7 @@ def save_ppi_null_comparison_plot(
     that IS present). This plot has no effect_size axis to be misread
     against: every bar here is, by construction, a false-positive rate.
 
-    Every bar pools across _COMPARISON_METHODS (ttest_welch/paired_t/mwu_corr/
+    Every bar pools across _COMPARISON_METHODS (ttest_welch/paired_t/mwu/
     wilcoxon -- `results`/`nlab_cal_results` are expected to already be
     pool_ppi_comparison_across_methods output, one row per scenario, not
     the raw per-method rows). For continuous and likert specifically,
@@ -6501,8 +6511,8 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
 # ---------------------------------------------------------------------------
 
 _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
-    TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MWU_CORR.name: "Mann-Whitney U (corrected)",
-    MW_NAIVE.name: "Simple MWU",
+    TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MWU_MNAR_EXPERIMENTAL.name: "Mann-Whitney U (corrected)",
+    MWU.name: "Simple MWU",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
@@ -7193,7 +7203,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--factorial-omnibus", action="store_true", default=False,
                          help="ppi mode: also run the 4 omnibus/multi-group tests (anova_ind, anova_rep, friedman, "
                               "kruskal -- _COMPARISON_METHODS_OMNIBUS) against --factorial-check's SAME sources, "
-                              "on top of the default 4 two-group tests (ttest_welch/paired_t/mwu_corr/wilcoxon). "
+                              "on top of the default 4 two-group tests (ttest_welch/paired_t/mwu/wilcoxon). "
                               "Opt-in: uses generate_judge_bias_cell (the full generator, needed for the 3-group "
                               "structures anova_ind/kruskal and anova_rep/friedman read) for EVERY method now, not "
                               "just these 4, so enabling this meaningfully increases --factorial-check's runtime. "
@@ -7366,7 +7376,7 @@ def official_args_ppi_no_lmm(base_seed: int = 42) -> argparse.Namespace:
     wall-clock cost.
 
     The factorial/N x N_lab comparison sweep (_COMPARISON_METHODS) never
-    ran LMM to begin with (it's ttest_welch/paired_t/mwu_corr/wilcoxon
+    ran LMM to begin with (it's ttest_welch/paired_t/mwu/wilcoxon
     only), so this only changes the main Type-I sweep and power check --
     it does NOT skip factorial_check itself; pair with --no-factorial-check
     (or official_args_ppi_factorial's already-LMM-free scope) if the
@@ -7405,8 +7415,10 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     reasonably well under the combined-factor stress test, making it worth
     checking whether anova/friedman/kruskal (kruskal in particular already
     flagged as a milder, more diffuse Type-I outlier in the OFAT sweep) also
-    hold up here, or blow up the way mw_naive did before mwu_corr replaced
-    it. NOT set on official_args_ppi/official_args_ppi_no_lmm (the "run
+    hold up here, or blow up the way MWU's global rectifier did before the
+    (since-reverted, see MWU/MWU_MNAR_EXPERIMENTAL in methods.py) local-
+    rectifier fix temporarily replaced it. NOT set on official_args_ppi/
+    official_args_ppi_no_lmm (the "run
     everything" presets, already by far the slowest --mode ppi variants) --
     only this standalone factorial-only preset, so the extra cost (roughly
     2x the method count, using the full generator now for every method) is
@@ -7431,11 +7443,11 @@ def official_args_ppi_factorial_likert7(base_seed: int = 42) -> argparse.Namespa
     Mann-Whitney's Type-I rate blew up specifically for likert scenarios
     under severe MNAR labeling (up to 0.445 at et=likert/bm=severe/n=400/
     nlab=80/lm=mnar_strong), while paired_t/wilcoxon/ttest_welch stayed
-    well-calibrated in that exact same scenario, AND mw itself stayed
+    well-calibrated in that exact same scenario, AND mwu itself stayed
     well-calibrated on continuous (effectively tie-free) data under the same
     severe MNAR mechanism -- pointing at Likert's coarse, heavily-tied 5-level
     discretization (not MNAR alone, and not rank tests generally) as the
-    likely aggravating factor for mw's independent-groups midrank
+    likely aggravating factor for mwu's independent-groups midrank
     construction specifically. Comparing this run's likert Type-I/power
     numbers against the 1-5 run's is the intended follow-up analysis."""
     args = official_args_ppi_factorial(base_seed)
@@ -7633,7 +7645,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=[TTEST.name, MW_NAIVE.name, MWU_CORR.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
+        tests=[TTEST.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         factorial_check=True, factorial_reps=2, factorial_n_boot=50, factorial_alignment_mc=200,
         factorial_check_binary=True,
@@ -7841,8 +7853,9 @@ def run(args: argparse.Namespace) -> CaseResult:
 
         if "ppi" in modes:
             # Default (no --tests) runs the OFFICIAL subset -- excludes
-            # mw_naive (superseded by mwu_corr; see methods.py) but still
-            # selectable explicitly via --tests mw_naive for comparison.
+            # mwu_mnar_experimental/kruskal_mnar_experimental (their local
+            # rectifiers cost real MCAR calibration; see methods.py) but
+            # both stay selectable explicitly via --tests for comparison.
             active_tests = args.tests if args.tests else [m.name for m in PPI_OFFICIAL_TEST_METHODS]
             print(f"\npvalues simulation (PPI-corrected) -- tests={active_tests}")
             jb_sources = build_judge_bias_sources()

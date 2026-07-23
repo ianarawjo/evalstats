@@ -719,11 +719,13 @@ def _ppi_two_sample_midrank_corrected(
     Validated via simulation (``simulations/harness``, "fact.likert.bm=severe...
     lm=mnar_strong" family of scenarios): reduces Type-I from 0.36-0.41 to
     0.05-0.07 at the worst previously-identified (eval_type=likert,
-    mnar_strong, severe judge bias) cells, with no calibration regression
-    under MCAR, zero-bias, or continuous-eval_type controls, and no power
-    loss under matched (MCAR, no-bias-confound) conditions. n_strata=2 was
-    chosen over 1 (leaves most of the original problem in place) and 3
-    (bins get label-starved at n_lab=15-30, no consistent further gain).
+    mnar_strong, severe judge bias) cells, with no power loss under matched
+    (MCAR, no-bias-confound) conditions. The "no calibration regression
+    under MCAR" claim this validation originally made here does NOT hold at
+    the finer-grained corners a later, more targeted check found -- see the
+    2026-07-22 update at the end of this docstring. n_strata=2 was chosen
+    over 1 (leaves most of the original problem in place) and 3 (bins get
+    label-starved at n_lab=15-30, no consistent further gain).
 
     Bin edges are fixed once per group from that group's full (labeled +
     unlabeled) LLM-score sample and held fixed across the bootstrap -- the
@@ -765,6 +767,34 @@ def _ppi_two_sample_midrank_corrected(
     covariance underestimation of the variance the per-bin correction itself
     introduces). Kept as a strict improvement over the pre-fix behavior
     pending further work on that residual, not presented as full calibration.
+
+    **2026-07-22 update: this fix costs real MCAR calibration, and is no
+    longer the default.** The validations above measured net effect across
+    grids mixing MCAR and MNAR cells, and reported "no calibration
+    regression under MCAR" as a coarse pass/fail check, not something
+    probed corner-by-corner. A follow-up controlled comparison (this
+    function vs. :func:`_ppi_two_sample` with the plain mid-rank estimator,
+    same generated draws, MCAR-only, swept across noise/n_lab/bias_magnitude)
+    found this function DOES make calibration worse under MCAR at a small
+    labeled sample combined with real judge bias present: worst found cells
+    show a ~2x multiplier (e.g. 3.6% -> 7.2% at n_lab=15, severe bias,
+    noise=0.025), replicated across two noise levels with the same n_lab/
+    bias combination -- a regression this function introduces, not one it
+    inherits (not just Monte Carlo noise: ~5 SEs at n_reps=1000). This is
+    the SAME failure mode a parallel investigation found in
+    :func:`_ppi_kruskal_wallis_pairwise_mnar_experimental` (that function's
+    k-group analogue), at a smaller magnitude here. Given this package's
+    PPI correction generally assumes uniformly random (MCAR) label sampling
+    and treats MNAR as a documented, out-of-scope limitation (see
+    :func:`evalstats.ppi.correct`'s docstring) rather than something to
+    actively correct for, paying an MCAR cost for MNAR robustness in a
+    regime users are already told not to rely on is the wrong trade for the
+    default. :func:`evalstats.tests.mannwhitney` now defaults to
+    :func:`_ppi_two_sample` (``method="global"``) instead; this function
+    remains available via ``method="mnar_experimental"`` for anyone
+    deliberately studying the MNAR-robustness question, or reproducing
+    results computed under the pre-2026-07-22 default. Not presented as
+    validated for general use.
     """
     from evalstats.ppi import PPIResult
 
@@ -2610,7 +2640,7 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "corrected",
+    method: str = "global",
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
 
@@ -2632,22 +2662,41 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
-    method : {"corrected", "naive"}
+    method : {"global", "mnar_experimental"}
         Which PPI correction to use for the mid-rank estimand (default
-        ``"corrected"``). ``"naive"`` applies a single GLOBAL rectifier
-        (:func:`_ppi_two_sample`) -- simple, and exactly correct for a MEAN,
-        but simulation showed it badly miscalibrated for this rank estimand
-        under labeling that's non-uniform with respect to score (e.g. "double-
-        check the highest-scoring items") combined with real judge bias and
-        coarse/discrete scales: Type-I error up to 3-9x nominal in the worst
-        identified case (Likert, strong such labeling, severe bias). See
-        ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
-        ``mwu_corr`` vs ``mw_naive``) for the calibration study.
-        ``"corrected"`` (:func:`_ppi_two_sample_midrank_corrected`) fixes this
-        with a per-group, per-score-bin local rectifier instead -- see that
-        function's docstring for the full mechanism and validation. Kept as
-        an option (not deleted) for direct comparison and for reproducing
-        results computed under the old behavior.
+        ``"global"``). This default changed on 2026-07-22 -- read this in
+        full before overriding it.
+
+        ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier --
+        simple, and exactly correct for a MEAN, but under labeling that's
+        non-uniform with respect to score (e.g. "double-check the highest-
+        scoring items") combined with real judge bias and coarse/discrete
+        scales, this rank estimand is genuinely miscalibrated: Type-I error
+        up to 3-9x nominal in the worst identified case (Likert, strong such
+        labeling, severe bias).
+
+        ``"mnar_experimental"`` (:func:`_ppi_two_sample_midrank_corrected`)
+        fixes that with a per-group, per-score-bin LOCAL rectifier instead
+        (see that function's docstring for the full mechanism). This option
+        was the default (as ``"corrected"``) until 2026-07-22, when a
+        controlled naive-vs-corrected comparison on matched draws (the same
+        methodology that caught an analogous, larger regression in
+        ``kruskalwallis``'s equivalent option) found it costs real
+        calibration under ordinary, correctly-random (MCAR) labeling in
+        exchange for the MNAR fix: worst found cells show a ~2x multiplier
+        (e.g. 3.6% -> 7.2% at a small labeled sample with real judge bias
+        present, MCAR labeling), replicated across two noise levels with the
+        same n_lab/bias combination. Since this package's PPI correction
+        generally assumes labels are sampled uniformly at random (see
+        :func:`evalstats.ppi.correct`'s docstring) and treats MNAR labeling
+        as an out-of-scope, documented limitation rather than something to
+        actively correct for, paying that MCAR cost for MNAR robustness is
+        the wrong trade for the default. ``"mnar_experimental"`` remains
+        available for anyone deliberately studying the MNAR-robustness
+        question, or reproducing results computed under the pre-2026-07-22
+        default -- see ``simulations/harness/cases/pvalues.py --mode ppi``
+        (methods ``mwu`` vs ``mwu_mnar_experimental``) for the calibration
+        study behind this change.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -2658,8 +2707,8 @@ def mannwhitney(
     >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
-    if method not in ("corrected", "naive"):
-        raise ValueError(f'method must be "corrected" or "naive"; got {method!r}.')
+    if method not in ("global", "mnar_experimental"):
+        raise ValueError(f'method must be "global" or "mnar_experimental"; got {method!r}.')
 
     x = _coerce(x)
     y = _coerce(y)
@@ -2697,15 +2746,15 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        if method == "naive":
+        if method == "mnar_experimental":
+            ppi = _ppi_two_sample_midrank_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
+        else:
             # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
             # any distribution (including discrete/Likert). Estimand θ = P_mid - 0.5 → 0.
             def _auc_shifted(xa, ya):
                 return _p_x_gt_y_midrank(xa, ya) - 0.5
 
             ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng)
-        else:
-            ppi = _ppi_two_sample_midrank_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
 
         corrected_estimate = ppi.estimate + 0.5       # report as P(X>Y)
         corrected_ci       = (ppi.ci_low + 0.5, ppi.ci_high + 0.5)
@@ -3238,46 +3287,46 @@ def kruskalwallis(
         group, with ``NaN`` for unlabeled items.
     method : {"global", "mnar_experimental"}
         Which PPI correction to use for the pairwise-dominance Wald test
-        (default ``"global"``). This default is the OPPOSITE choice from
-        ``mannwhitney``'s equivalent option, and for a specific, documented
-        reason -- read this in full before overriding it.
+        (default ``"global"``). Same default and same reasoning as
+        ``mannwhitney``'s equivalent option -- read this in full before
+        overriding it.
 
         ``"global"`` (:func:`_ppi_kruskal_wallis_pairwise`) applies a single
         rectifier per pair. Under labeling that's non-uniform with respect
         to score, combined with real judge bias and coarse/discrete scales,
         this is genuinely miscalibrated: Type-I error up to ~8.6x nominal in
         the worst identified case (Likert, strong such labeling, severe
-        bias) -- the same failure mode ``mannwhitney``'s ``"naive"`` option
+        bias) -- the same failure mode ``mannwhitney``'s ``"global"`` option
         has, one level up (k independent groups instead of 2).
 
         ``"mnar_experimental"`` (:func:`_ppi_kruskal_wallis_pairwise_mnar_experimental`)
         fixes that with a per-group, per-score-bin LOCAL rectifier instead
-        (see that function's docstring for the full mechanism). Unlike
+        (see that function's docstring for the full mechanism). Like
         ``mannwhitney``'s analogous fix, this one was confirmed (via a
         controlled naive-vs-corrected comparison on matched draws) to cost
         real calibration under ordinary, correctly-random (MCAR) labeling
         in exchange for the MNAR fix -- worst found cell went from 7.9%
         (global, already mildly elevated) to 11.1% (local) at small
         label counts + high judge noise, a regression the local rectifier
-        introduces, not one it inherits. Since this package's PPI
-        correction generally assumes labels are sampled uniformly at random
-        (see :func:`evalstats.ppi.correct`'s docstring) and treats MNAR
-        labeling as an out-of-scope, documented limitation rather than
-        something to actively correct for, paying that MCAR cost for MNAR
-        robustness is the wrong trade for the default -- so unlike
-        Mann-Whitney, Kruskal-Wallis's default stays on the global
-        rectifier. ``"mnar_experimental"`` remains available for anyone
-        deliberately studying the MNAR-robustness question, or reproducing
-        results computed under the old default (this option was named/
-        defaulted differently -- as ``"corrected"``, and was the default --
-        before 2026-07-22; see
-        ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
-        ``kruskal`` vs ``kruskal_mnar_experimental``) for the calibration
-        study behind this change). Only affects ``corrected_p`` (the Wald
-        test) -- ``corrected_estimate`` (the scalar effect size from
-        :func:`_ppi_kruskal_wallis`) still uses the single-global-rectifier
-        estimator regardless of ``method``; that estimand hasn't been
-        through the same calibration study yet.
+        introduces, not one it inherits (mannwhitney's equivalent regression
+        is smaller in magnitude but the same shape -- see that function's
+        docstring). Since this package's PPI correction generally assumes
+        labels are sampled uniformly at random (see
+        :func:`evalstats.ppi.correct`'s docstring) and treats MNAR labeling
+        as an out-of-scope, documented limitation rather than something to
+        actively correct for, paying that MCAR cost for MNAR robustness is
+        the wrong trade for the default, here as with Mann-Whitney.
+        ``"mnar_experimental"`` remains available for anyone deliberately
+        studying the MNAR-robustness question, or reproducing results
+        computed under the old default (this option was named/defaulted
+        differently -- as ``"corrected"``, and was the default -- before
+        2026-07-22; see ``simulations/harness/cases/pvalues.py --mode ppi``
+        (methods ``kruskal`` vs ``kruskal_mnar_experimental``) for the
+        calibration study behind this change). Only affects ``corrected_p``
+        (the Wald test) -- ``corrected_estimate`` (the scalar effect size
+        from :func:`_ppi_kruskal_wallis`) still uses the single-global-
+        rectifier estimator regardless of ``method``; that estimand hasn't
+        been through the same calibration study yet.
     print_result : bool
         Print a summary table to stdout (default True). Pass ``False`` to
         suppress output when calling from automated pipelines.
