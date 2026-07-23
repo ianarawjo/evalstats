@@ -2053,6 +2053,141 @@ def build_ppi_comparison_label_frac_sources() -> list[JudgeBiasSource]:
     ]
 
 
+PPI_LABEL_EFF_EVAL_TYPES = ("continuous", "likert")
+"""Eval types for build_ppi_label_efficiency_sources -- grades excluded as
+redundant with continuous (same convention _PPI_NLAB_GRID_EVAL_TYPES
+already uses); binary gets its own _binary builder/grid instead of being
+folded in here, since it's restricted to _COMPARISON_METHODS_BINARY."""
+PPI_LABEL_EFF_NOISE_LEVELS = (0.05, 0.20, 0.40)
+"""Three llm_noise tiers ("good"/"baseline"/"poor" judge informativeness)
+for build_ppi_label_efficiency_sources' judge-quality axis -- picked from
+PPI_FACTORIAL_NOISE_LEVELS' existing, already-vetted grid rather than
+introducing new magnitudes. 0.20 matches _ppi_power_baseline's own default,
+so the middle tier reproduces build_ppi_comparison_label_frac_sources'
+judge severity exactly; the other two bracket it at roughly 4x apart."""
+PPI_LABEL_EFF_NOISE_LEVELS_BINARY = (0.025, 0.10, 0.40)
+"""Binary analogue of PPI_LABEL_EFF_NOISE_LEVELS -- 0.10 matches
+PPI_BINARY_NOISE_BASELINE (the existing default), the other two are
+PPI_BINARY_NOISE_LEVELS' low/high ends."""
+PPI_LABEL_EFF_EFFECT_FRAC = 0.08
+"""Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
+than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.20) deliberately: at 0.20,
+continuous's classical (human-only) test already exceeds 90% power at
+n_lab=15-40, so both PPI's and the reference curve's power saturate near
+1.0 at the good-judge noise tier -- inverting a power that's AT a flat
+curve's plateau is ill-posed and previously produced a spurious "500
+labels" (cases/pvalues.py's n_grid cap) equivalent-N for those cells,
+blowing up save_ppi_label_efficiency_plot's shared per-panel axis scale.
+Confirmed empirically (2026-07-23) that 0.08 keeps pooled power comfortably
+inside ~0.13-0.64 across every (eval_type, judge_noise) cell this sweep
+covers -- enough headroom for a stable inversion without floor/ceiling
+effects at either end. See LabelEfficiencyPoint.saturated in
+cases/pvalues.py for the defensive check that still applies regardless
+(a sufficiently good judge could saturate power at ANY fixed effect size)."""
+PPI_LABEL_EFF_N = 400
+"""Total item count (N) for build_ppi_label_efficiency_sources -- NOT 100
+(the ORIGINAL choice, inherited from _ppi_power_baseline's default without
+reconsidering it for this specific check): the whole motivation for using
+an LLM judge at all is that judge-scored items are cheap and plentiful while
+human labels are the expensive, scarce resource, so a realistic label-
+efficiency comparison should hold N_lab at a small ABSOLUTE count (still
+just a few dozen real labels) while N -- the pool of additional judge-only
+data PPI gets to lean on -- is large, not the other way around. 400 matches
+PPI_NLAB_GRID_N_VALUES' own largest anchor (an already-vetted point
+elsewhere in the harness) rather than introducing a new, unvetted magnitude.
+See PPI_LABEL_EFF_NLAB_TARGETS -- label_frac is back-solved from these
+ABSOLUTE N_lab targets at this N, the same pattern build_ppi_nlab_grid_
+sources already uses, rather than reusing PPI_COMPARISON_LABEL_FRACS
+(tuned for N=100 -- the SAME label_frac values at N=400 would scale N_lab
+up to 60-160, a much bigger absolute labeling budget, not the "same few
+dozen labels, more judge data around them" comparison this check is for)."""
+PPI_LABEL_EFF_NLAB_TARGETS = (15, 20, 30, 40)
+"""Absolute labeled-item-count targets for build_ppi_label_efficiency_
+sources -- the SAME small "a few dozen real human labels" range the
+original (N=100) version used, kept unchanged since realistic label
+scarcity is what this axis is meant to represent; only N (PPI_LABEL_EFF_N)
+changed. 15 sits exactly at _JB_MIN_LAB's floor, so label_frac=15/400
+hits it exactly (no floor-rounding distortion) -- confirmed for all four
+targets at N=400."""
+
+
+def build_ppi_label_efficiency_sources(
+    noise_by_eval_type: dict[str, tuple[float, ...]] | None = None,
+) -> list[JudgeBiasSource]:
+    """Label-fraction x judge-quality grid for the label-efficiency /
+    effective-sample-size check (cases/pvalues.py's save_ppi_label_
+    efficiency_plot): same label_frac grid and fixed moderate effect size as
+    build_ppi_comparison_label_frac_sources, but crossed with judge quality
+    instead of holding llm_noise fixed at the baseline severity -- answers
+    "how much does the label-savings benefit depend on how good the judge
+    is," on top of "how many labels does PPI need" that the label_frac axis
+    alone already answers. Tag "label_eff".
+
+    `noise_by_eval_type` overrides PPI_LABEL_EFF_NOISE_LEVELS PER eval type
+    (default: the same tuple for both continuous and likert) -- callers
+    wanting the judge-quality axis calibrated to hit target ALIGNMENT levels
+    (e.g. Pearson r / weighted kappa ~= 0.8/0.5/0.2) rather than an
+    arbitrary shared noise grid must pass eval-type-specific values here,
+    since the same llm_noise maps to very different alignment metrics
+    across eval types (see cases/pvalues.py's _calibrate_noise_for_alignment
+    and measure_judge_alignment's docstring).
+
+    label_frac is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=
+    PPI_LABEL_EFF_N (400, not _ppi_power_baseline's default 100 -- see
+    that constant's docstring for why), the same "hit an ABSOLUTE N_lab
+    exactly, independent of N" pattern build_ppi_nlab_grid_sources already
+    uses -- NOT PPI_COMPARISON_LABEL_FRACS, which was tuned for N=100 and
+    would scale N_lab up to 60-160 at N=400 instead of holding it fixed."""
+    noise_by_eval_type = noise_by_eval_type or {et: PPI_LABEL_EFF_NOISE_LEVELS for et in PPI_LABEL_EFF_EVAL_TYPES}
+
+    def _kwargs(et: str, n_lab_target: int, noise: float) -> dict:
+        kw = _ppi_power_baseline(et)
+        kw["n"] = PPI_LABEL_EFF_N
+        kw["label_frac"] = n_lab_target / PPI_LABEL_EFF_N
+        kw["llm_noise"] = noise
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"labeleff.{et}.noise={noise:.4f}.lab={n_lab_target}", tag="label_eff",
+            effect_size=_jb_effect_magnitude(et, PPI_LABEL_EFF_EFFECT_FRAC),
+            **_kwargs(et, n_lab_target, noise),
+        )
+        for et in PPI_LABEL_EFF_EVAL_TYPES
+        for noise in noise_by_eval_type[et]
+        for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
+    ]
+
+
+def build_ppi_label_efficiency_sources_binary(
+    noise_levels: tuple[float, ...] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+) -> list[JudgeBiasSource]:
+    """Binary analogue of build_ppi_label_efficiency_sources, restricted to
+    _COMPARISON_METHODS_BINARY (ttest_welch/paired_t -- see that constant's
+    docstring for why mwu/wilcoxon are excluded on 0/1 data). Tag
+    "label_eff_binary". `noise_levels` overrides PPI_LABEL_EFF_NOISE_LEVELS_
+    BINARY -- see build_ppi_label_efficiency_sources' docstring for why a
+    caller would want alignment-calibrated values here instead. label_frac
+    is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=PPI_LABEL_EFF_N,
+    same as the non-binary builder -- see its docstring for why."""
+    def _kwargs(n_lab_target: int, noise: float) -> dict:
+        kw = _ppi_power_baseline_binary()
+        kw["n"] = PPI_LABEL_EFF_N
+        kw["label_frac"] = n_lab_target / PPI_LABEL_EFF_N
+        kw["llm_noise"] = noise
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"labeleff.binary.noise={noise:.4f}.lab={n_lab_target}", tag="label_eff_binary",
+            effect_size=_jb_effect_magnitude_binary(PPI_LABEL_EFF_EFFECT_FRAC),
+            **_kwargs(n_lab_target, noise),
+        )
+        for noise in noise_levels
+        for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
+    ]
+
+
 PPI_NLAB_GRID_N_VALUES = (30, 60, 100, 200, 400)
 """Total-item (N) grid for build_ppi_nlab_grid_sources -- same anchor points
 as build_judge_bias_sources' "sample_size" tag (60/100/200/400), plus n=30

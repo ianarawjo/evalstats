@@ -190,6 +190,15 @@ from ..scenarios.synthetic import (
     build_ppi_comparison_label_frac_sources,
     build_ppi_nlab_grid_sources,
     build_ppi_factorial_sources,
+    build_ppi_label_efficiency_sources,
+    build_ppi_label_efficiency_sources_binary,
+    PPI_LABEL_EFF_NOISE_LEVELS,
+    PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    PPI_LABEL_EFF_EFFECT_FRAC,
+    PPI_LABEL_EFF_N,
+    _ppi_power_baseline,
+    _ppi_power_baseline_binary,
+    _JB_MIN_LAB,
     build_ppi_power_sources_binary,
     build_ppi_power_reinforcing_sources_binary,
     build_ppi_power_nobias_sources_binary,
@@ -4128,6 +4137,8 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
         return 0.0
     if sc.tag in ("compare_label_frac", "nlab_grid_power", "complab_binary", "nlab_grid_power_binary"):
         return PPI_COMPARISON_MODERATE_EFFECT_FRAC
+    if sc.tag in ("label_eff", "label_eff_binary"):
+        return PPI_LABEL_EFF_EFFECT_FRAC
     if sc.tag in ("factorial", "factorial_binary"):
         m = re.search(r"\.es=([a-z]+)\.", sc.name)
         if not m:
@@ -4846,6 +4857,504 @@ def save_ppi_null_comparison_plot(
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+
+# ---------------------------------------------------------------------------
+# Label-efficiency ("effective sample size") check: for a fixed labeling
+# budget, how many labels would a HUMAN-ONLY test need to match PPI's power?
+# Reported as an "equivalent N_lab" curve against a y=x "no benefit from the
+# judge" reference -- the label-efficiency multiplier is the vertical (or
+# horizontal) gap between the two, directly in units a reviewer cares about
+# ("this many labels saved"), rather than a CI-width or rejection-rate
+# comparison they'd have to translate themselves. Crossed with judge quality
+# (build_ppi_label_efficiency_sources' llm_noise tiers) so the SAME figure
+# also answers "does this benefit survive a worse judge."
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class LabelEfficiencyPoint:
+    eval_type: str
+    judge_noise: float
+    """The calibrated llm_noise value actually simulated -- kept for
+    traceability/debugging, but NOT what the plot labels lines by (see
+    alignment_value): the same noise means very different judge quality
+    across eval types (continuous's Pearson r and likert's weighted kappa
+    respond to noise very differently), so noise alone isn't a fair axis to
+    compare eval-type panels against each other on."""
+    alignment_metric: str
+    """Which alignment metric this eval type is calibrated/labeled by --
+    "pearson_r" (continuous), "weighted_kappa" (likert), "kappa" (binary) --
+    see _LABEL_EFF_ALIGNMENT_METRIC and measure_judge_alignment."""
+    alignment_target: float
+    """The target alignment value _calibrate_noise_for_alignment's bisection
+    aimed `judge_noise` at (e.g. 0.8/0.5/0.2) -- a round, reviewer-legible
+    number chosen independent of eval type, unlike judge_noise itself."""
+    alignment_value: float
+    """The ACTUALLY achieved alignment metric at `judge_noise`, from a
+    separate large-sample (measure_judge_alignment) measurement -- won't
+    exactly equal alignment_target (MC noise in that measurement, plus
+    bisection tolerance), so plots/tables should label by this, not the
+    target, to avoid implying more precision than the calibration has."""
+    n_lab: int
+    """Realized N_lab (see PPIComparisonResult.n_lab's docstring) PPI actually
+    used to achieve `ppi_power`."""
+    ppi_power: float
+    equiv_n_lab: float
+    """The N_lab a human-only classical test (pooled across the SAME method
+    family PPI's `ppi_power` was pooled across -- _COMPARISON_METHODS or
+    _COMPARISON_METHODS_BINARY) would need to reach the SAME power, per
+    _classical_pooled_power_curve/_equivalent_n_lab. Meaningless when
+    `saturated` is True -- see that field's docstring; callers must check it
+    rather than plotting/averaging equiv_n_lab unconditionally."""
+    n_reps: int
+    saturated: bool = False
+    """True when `ppi_power` is at or above the classical reference curve's
+    OWN ceiling (power_grid.max(), reached once the sample size is large
+    enough that adding more barely moves power further -- inevitable for an
+    "easy" eval type/effect-size combination, e.g. continuous's classical
+    test already exceeding 90% power at n=15). Inverting a power that's
+    at-or-past a flat curve's plateau is ill-posed: np.interp silently
+    clamps to n_grid's own upper edge instead of raising, which previously
+    produced e.g. "500 labels" (n_grid's cap) for a handful of low-noise
+    continuous cells -- a single such point then blew up save_ppi_label_
+    efficiency_plot's shared per-panel axis scale, squashing every real,
+    non-saturated point into an unreadable sliver near the origin (caught
+    from a screenshot: the continuous panel's axis ran to 500 while
+    likert/binary's ran to ~50-60). Saturated points are still shown (as a
+    lower-bound marker, not a real equivalent-N), but excluded from axis-
+    limit computation."""
+
+
+def _classical_pooled_power_curve(
+    eval_type: str, es: float, methods: tuple, n_values: np.ndarray, n_mc: int, seed: int,
+) -> np.ndarray:
+    """Pooled (mean-across-`methods`) classical-test power at effect size
+    `es`, evaluated at every sample size in `n_values` -- the "how many
+    labels alone would you need" reference curve LabelEfficiencyPoint's
+    equiv_n_lab is read off of.
+
+    Draws ONLY ground truth (generate_judge_bias_cell's truth_* fields),
+    never LLM-judge scores: this reference is judge-quality-independent by
+    construction, matching _run_ppi_comparison_cell's human_subset arm (a
+    classical test on the labeled subset's TRUE ground truth) -- under MCAR
+    labeling (this project's documented PPI scope, see MWU/KRUSKAL's Method
+    docstrings in methods.py), a random n_lab-sized labeled subset of an iid
+    truth pool is distributionally identical to an independent n_lab-sized
+    draw, so a throwaway JudgeBiasSource built directly at n=n_lab (rather
+    than reusing one of the label_frac sweep's own n=100 replicates and
+    subsetting it) gives the exact same reference at ANY n, not just the
+    handful the label_frac sweep happens to simulate -- avoiding any
+    extrapolation risk in _equivalent_n_lab's inversion.
+
+    One cell per rep feeds every method in `methods` (matching
+    _run_ppi_comparison_cell's own "one draw, every arm" pattern) rather than
+    redrawing per method. np.maximum.accumulate enforces monotonicity in n
+    against MC noise -- power is monotonically non-decreasing in sample size
+    by construction; without this, np.interp's inversion in _equivalent_n_lab
+    could pick a slightly-too-small n at a local noise dip."""
+    rng = np.random.default_rng(seed)
+    powers = np.zeros(len(n_values))
+    for i, n in enumerate(n_values):
+        # generate_judge_bias_cell unconditionally requires n >= _JB_MIN_LAB
+        # (it always draws a labeled subset internally, even though only
+        # truth_* is read here) -- floor to that rather than n_grid's own
+        # minimum, so a caller passing a smaller n_grid value still gets a
+        # valid (if slightly right-shifted) reference point instead of a
+        # crash.
+        n_int = max(_JB_MIN_LAB, int(round(n)))
+        sc = JudgeBiasSource(name="_labeleff_ref", tag="_ref", eval_type=eval_type, n=n_int, effect_size=es)
+        rejects = {m: 0 for m in methods}
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            for _ in range(n_mc):
+                cell = generate_judge_bias_cell(sc, rng)
+                for method in methods:
+                    structure = _COMPARISON_METHOD_STRUCTURE[method]
+                    a, b = (cell.truth_a2, cell.truth_b2) if structure == "group" else (cell.truth_x, cell.truth_y)
+                    try:
+                        p = _classical_pvalue(a, b, method, structure)
+                        rejects[method] += int(p < _ALPHA)
+                    except Exception:
+                        pass
+        powers[i] = float(np.mean([rejects[m] / n_mc for m in methods]))
+    return np.maximum.accumulate(powers)
+
+
+def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.ndarray) -> float:
+    """Invert the classical reference curve (n_grid, power_grid; power_grid
+    assumed non-decreasing, see _classical_pooled_power_curve) to find the
+    sample size a human-only test would need to reach `target_power`.
+    np.interp CLAMPS to n_grid's own endpoints rather than extrapolating --
+    if `target_power` falls above power_grid.max() (PPI more powerful than
+    ANY n this reference curve was evaluated at), the result silently
+    saturates at n_grid.max() instead of reporting the true, larger
+    equivalent count. Callers should size n_grid generously enough that
+    this doesn't bind for the power levels actually observed -- flagged via
+    LabelEfficiencyPoint.equiv_n_lab's own docstring rather than raising,
+    since a saturated point is still informative (a lower bound on the
+    label-efficiency gain) if plotted as-is."""
+    return float(np.interp(target_power, power_grid, n_grid))
+
+
+_LABEL_EFF_ALIGNMENT_TARGETS = (0.8, 0.7, 0.6, 0.5, 0.3)
+"""Round, reviewer-legible judge-quality targets the label-efficiency
+check's noise axis is CALIBRATED to hit, per eval type -- five points
+spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
+(1977) kappa scale (also read loosely against Cohen 1988's "large"/"medium"/
+"small" correlation bands for continuous's Pearson r -- see _kappa_band/
+_corr_band). Widened from an earlier 3-point (0.8/0.5/0.2) version for a
+more complete picture of how the label-efficiency curve moves across the
+alignment range -- 0.2 dropped in favor of 0.3 (a small step below "fair"
+was judged less informative than one more point in the 0.5-0.8 range where
+the curve moves the most). Chosen so a reader can ask "how would this look
+with a kappa=0.8 judge" and get a direct answer, rather than an
+uninterpretable llm_noise dial that means something different in every
+eval type."""
+_LABEL_EFF_ALIGNMENT_METRIC = {
+    "continuous": ("pearson_r", "r"),
+    "likert": ("weighted_kappa", "κ"),
+    "binary": ("kappa", "κ"),
+}
+"""Which alignment metric (metric_name, display_symbol) each eval type's
+judge-quality axis is calibrated/labeled by -- the SAME primary-metric
+choice _ALIGNMENT_VIEWS makes for the (separate) alignment sweep, so a
+reader who has seen that sweep recognizes the same metric here."""
+
+
+def _calibrate_noise_for_alignment(
+    eval_type: str, target: float, metric_name: str, base_kwargs: dict,
+    n_mc: int = 20_000, seed: int = 0, lo: float = 0.005, hi: float = 10.0, iters: int = 16,
+) -> tuple[float, float]:
+    """Bisect llm_noise to hit a target alignment metric value (see
+    measure_judge_alignment) for one eval type's judge model, holding every
+    other JudgeBiasSource field in `base_kwargs` fixed (bias_type/bias_delta/
+    icc/etc -- everything _ppi_power_baseline(_binary) sets except
+    llm_noise, overridden each bisection step). `effect_size` is fixed at
+    0.0 for the calibration draw regardless of what the real sweep uses --
+    measure_judge_alignment always reads group A (see its docstring), which
+    NEVER carries generate_judge_bias_cell's injected effect (only group B
+    does), so alignment is effect-size-independent by construction and
+    calibrating against the real es would be redundant work, not more
+    accurate.
+
+    Alignment is monotonically DECREASING in llm_noise (a noisier judge
+    agrees with truth less), so bisection over [lo, hi] is well-posed as
+    long as the target is actually reachable in that range -- not asserted
+    here; a target outside [measure(hi), measure(lo)] just converges to
+    whichever endpoint is closer, which callers should read as "unreachable
+    at this bias severity," not a precise calibration. Confirmed
+    (2026-07-23) this genuinely happens, not just a too-narrow [lo, hi]:
+    likert's target=0.8 caps out around weighted_kappa~=0.71 even at
+    noise->0, because _ppi_power_baseline's SEVERE bias_delta alone (a
+    purely systematic, non-noise miscalibration) already costs kappa more
+    than a "target 0.8" judge could have -- quadratic-weighted kappa
+    penalizes a large systematic offset harder than Pearson r does (r is
+    shift-invariant; kappa isn't). Callers must label by the ACHIEVED value
+    (see below), never silently claim the nominal target was hit.
+
+    Returns (calibrated_noise, achieved_metric_value) -- the achieved value
+    is a FRESH measurement at the final calibrated noise, not interpolated
+    from the bisection steps, since callers should label plots/tables by
+    what was actually achieved (MC noise in any single n_mc-sample
+    measurement means it won't land exactly on `target`), not the nominal
+    target."""
+    def _measure(noise: float) -> float:
+        kw = dict(base_kwargs)
+        kw["llm_noise"] = noise
+        kw["eval_type"] = eval_type
+        sc = JudgeBiasSource(name="_align_cal", tag="_ref", effect_size=0.0, **kw)
+        return float(measure_judge_alignment(sc, n_mc=n_mc, seed=seed)[metric_name])
+
+    for _ in range(iters):
+        mid = (lo + hi) / 2.0
+        if _measure(mid) > target:
+            lo = mid
+        else:
+            hi = mid
+    final_noise = (lo + hi) / 2.0
+    return final_noise, _measure(final_noise)
+
+
+def run_ppi_label_efficiency_check(
+    n_reps: int, n_boot: int, ref_n_mc: int = 3000, align_n_mc: int = 20_000, seed: int = 71,
+    n_workers: int = 1, progress_mode: str = "bar",
+) -> list[LabelEfficiencyPoint]:
+    """Runs the label-efficiency comparison sweep (continuous/likert via
+    build_ppi_label_efficiency_sources + _COMPARISON_METHODS, binary via
+    build_ppi_label_efficiency_sources_binary + _COMPARISON_METHODS_BINARY),
+    pools each judge-quality tier's PPI rejection rate across its method
+    family, and inverts it against that eval type's own classical reference
+    curve (_classical_pooled_power_curve, built ONCE per eval type -- it does
+    not depend on judge quality, see that function's docstring) to get
+    equiv_n_lab.
+
+    The judge-quality axis is expressed as ALIGNMENT (Pearson r / weighted
+    kappa / kappa, per _LABEL_EFF_ALIGNMENT_METRIC), not raw llm_noise: the
+    same noise value means very different judge quality across eval types,
+    so noise alone isn't a fair axis to compare panels against. Before the
+    comparison sweep runs, llm_noise is CALIBRATED per eval type
+    (_calibrate_noise_for_alignment) to hit _LABEL_EFF_ALIGNMENT_TARGETS
+    (0.8/0.5/0.2) -- this directly answers "how would this look with a
+    kappa=0.8 judge" instead of leaving the reader to guess what a given
+    noise value means.
+
+    N is fixed at 100 throughout (via _ppi_power_baseline(_binary), inherited
+    unchanged) -- see save_ppi_label_efficiency_plot, which states this
+    explicitly so the figure doesn't leave N_lab's denominator implicit.
+
+    Returns one LabelEfficiencyPoint per (eval_type, alignment_target,
+    n_lab) cell -- the save_ppi_label_efficiency_plot input."""
+    results: list[LabelEfficiencyPoint] = []
+
+    cont_likert_baselines = {et: _ppi_power_baseline(et) for et in ("continuous", "likert")}
+    binary_baseline = _ppi_power_baseline_binary()
+
+    # Calibrate llm_noise -> target alignment level, per eval type, BEFORE
+    # building the comparison-sweep sources (which need the calibrated
+    # noise values as input, not the other way around).
+    noise_by_eval_type: dict[str, tuple[float, ...]] = {}
+    calib_info: dict[str, dict[float, tuple[float, float]]] = {}  # eval_type -> {calibrated_noise: (target, achieved)}
+    for et, baseline in cont_likert_baselines.items():
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        noises, info = [], {}
+        for target in _LABEL_EFF_ALIGNMENT_TARGETS:
+            noise, achieved = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
+            noises.append(noise)
+            info[noise] = (target, achieved)
+        noise_by_eval_type[et] = tuple(noises)
+        calib_info[et] = info
+
+    metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
+    bin_noises, bin_info = [], {}
+    for target in _LABEL_EFF_ALIGNMENT_TARGETS:
+        noise, achieved = _calibrate_noise_for_alignment(
+            "binary", target, metric_name_bin, binary_baseline, n_mc=align_n_mc, seed=seed,
+        )
+        bin_noises.append(noise)
+        bin_info[noise] = (target, achieved)
+    calib_info["binary"] = bin_info
+
+    cont_likert_sources = build_ppi_label_efficiency_sources(noise_by_eval_type=noise_by_eval_type)
+    groups = [
+        ("continuous", [s for s in cont_likert_sources if s.eval_type == "continuous"],
+         _COMPARISON_METHODS, r"labeleff\.continuous\.noise=([\d.]+)\.lab=[\d.]+"),
+        ("likert", [s for s in cont_likert_sources if s.eval_type == "likert"],
+         _COMPARISON_METHODS, r"labeleff\.likert\.noise=([\d.]+)\.lab=[\d.]+"),
+        ("binary", build_ppi_label_efficiency_sources_binary(noise_levels=tuple(bin_noises)),
+         _COMPARISON_METHODS_BINARY, r"labeleff\.binary\.noise=([\d.]+)\.lab=[\d.]+"),
+    ]
+    for eval_type, sources, methods, name_re in groups:
+        if not sources:
+            continue
+        es = sources[0].effect_size
+        n_grid = np.geomspace(float(_JB_MIN_LAB), 500.0, 28)
+        power_grid = _classical_pooled_power_curve(eval_type, es, methods, n_grid, ref_n_mc, seed)
+        raw = run_ppi_comparison_simulation(
+            sources, n_reps, n_boot, methods=methods, seed=seed, n_workers=n_workers,
+            progress_mode=progress_mode,
+        )
+        pooled = pool_ppi_comparison_across_methods(raw)
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
+        for r in pooled:
+            m = re.match(name_re, r.name)
+            if not m:
+                raise ValueError(f"run_ppi_label_efficiency_check: could not parse noise from {r.name!r}")
+            noise = float(m.group(1))
+            # The scenario name round-trips the calibrated noise through a
+            # %.4f format, so an exact dict lookup can miss on precision --
+            # match to the closest calibrated value instead.
+            closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
+            target, achieved = calib_info[eval_type][closest_noise]
+            ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
+            equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
+            saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
+            results.append(LabelEfficiencyPoint(
+                eval_type=eval_type, judge_noise=noise, alignment_metric=metric_name,
+                alignment_target=target, alignment_value=achieved,
+                n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps, saturated=saturated,
+            ))
+    return results
+
+
+def print_ppi_label_efficiency_report(results: list[LabelEfficiencyPoint]) -> None:
+    """N_lab / PPI power / equivalent human-only N_lab / multiplier table,
+    grouped by eval_type then alignment_target -- the console/console-log
+    counterpart of save_ppi_label_efficiency_plot. N is fixed at 100
+    throughout (see run_ppi_label_efficiency_check's docstring)."""
+    if not results:
+        print("\n  (no label-efficiency results)")
+        return
+    print(
+        f"\n{'='*88}\n  PVALUES (PPI-CORRECTED) -- LABEL EFFICIENCY (effective sample size)\n"
+        f"  N={PPI_LABEL_EFF_N} total items throughout; only N_lab (and its share of N) varies\n{'='*88}"
+    )
+    for et in sorted({r.eval_type for r in results}):
+        print(f"\n  [{et}]")
+        for target in sorted({r.alignment_target for r in results if r.eval_type == et}, reverse=True):
+            rows = sorted(
+                (r for r in results if r.eval_type == et and r.alignment_target == target),
+                key=lambda r: r.n_lab,
+            )
+            metric = rows[0].alignment_metric
+            achieved_vals = {r.alignment_value for r in rows}
+            achieved_str = f"{sum(achieved_vals) / len(achieved_vals):.3f}" if achieved_vals else "n/a"
+            print(f"    target {metric}={target:.2f}  (achieved ~{achieved_str}, noise={rows[0].judge_noise:.4f})")
+            print(f"      {'N_lab':>8} {'ppi_power':>10} {'equiv_N_lab':>12} {'multiplier':>11}")
+            for r in rows:
+                mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
+                flag = "  (saturated, lower bound)" if r.saturated else ""
+                print(f"      {r.n_lab:>8} {r.ppi_power:>10.3f} {r.equiv_n_lab:>12.1f} {mult:>10.2f}x{flag}")
+    print()
+
+
+def save_results_artifacts_ppi_label_efficiency(
+    *, results: list[LabelEfficiencyPoint], out_dir: str, run_stem: str,
+) -> list[str]:
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_ppi_label_efficiency_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "eval_type", "alignment_metric", "alignment_target", "alignment_value", "judge_noise",
+            "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier", "saturated",
+        ])
+        for r in results:
+            mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
+            writer.writerow([
+                r.eval_type, r.alignment_metric, f"{r.alignment_target:.2f}", f"{r.alignment_value:.4f}",
+                f"{r.judge_noise:.4f}", r.n_lab, r.n_reps,
+                f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}", r.saturated,
+            ])
+    summary_path = out_base / f"{run_stem}_ppi_label_efficiency_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_label_efficiency_report(results)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str) -> str:
+    """The flagship label-efficiency figure: one panel per eval type
+    (continuous, likert, binary), x=actual N_lab, y=equivalent human-only
+    N_lab, one line per judge-QUALITY tier (calibrated to hit a target
+    alignment level -- Pearson r for continuous, weighted kappa for likert,
+    kappa for binary -- see _LABEL_EFF_ALIGNMENT_METRIC/_calibrate_noise_
+    for_alignment), plus a y=x "no benefit from the judge" reference. Lines
+    are labeled by alignment, not raw llm_noise, since the same noise value
+    means very different judge quality across eval types -- alignment is
+    the one axis a reader can compare panels against directly (a "kappa=0.8
+    judge" means the same thing in every panel; a "noise=0.2 judge" does
+    not). The shaded region between the MIDDLE (target=0.5, "moderate"
+    alignment) tier's curve and the diagonal is the headline "labels saved"
+    story; the other tiers show how that benefit moves with judge quality
+    on the SAME axes. N=400 (fixed throughout, see run_ppi_label_efficiency_
+    check and PPI_LABEL_EFF_N's docstring for why 400, not the original
+    100) is stated explicitly in the suptitle -- the figure previously
+    showed only N_lab, leaving its denominator (how much unlabeled,
+    judge-only data N_lab sits inside) implicit."""
+    import matplotlib.pyplot as plt
+
+    if not results:
+        raise ValueError("No label-efficiency results to plot.")
+    eval_types = [et for et in ("continuous", "likert", "binary") if any(r.eval_type == et for r in results)]
+    fig, axes = plt.subplots(1, len(eval_types), figsize=(4.6 * len(eval_types), 4.4), squeeze=False)
+    axes = axes[0]
+    cmap = plt.cm.viridis
+
+    for col, et in enumerate(eval_types):
+        ax = axes[col]
+        et_rows = [r for r in results if r.eval_type == et]
+        # Descending: highest alignment (best judge) plotted first/darkest.
+        targets = sorted({r.alignment_target for r in et_rows}, reverse=True)
+        # 0.7 is the visual "baseline" (fill + annotation) regardless of how
+        # many OTHER targets surround it or where it sits in the sorted
+        # list -- a deliberate, fixed choice (not derived from picking the
+        # middle LIST POSITION, which silently drifted onto 0.6 when the
+        # target set widened from 3 to 5 points, caught before it shipped).
+        baseline_target = min(targets, key=lambda t: abs(t - 0.7))
+        metric_symbol = _LABEL_EFF_ALIGNMENT_METRIC[et][1]
+
+        # Axis scale comes from NON-saturated points only -- a single
+        # saturated cell's clamped-to-n_grid.max() equiv_n_lab must never be
+        # allowed to dictate the shared panel scale (see
+        # LabelEfficiencyPoint.saturated's docstring for the bug this
+        # previously caused: one continuous cell's "500 labels" artifact
+        # squashed every real point in that panel into an unreadable sliver).
+        # Falls back to using every row's n_lab (never equiv_n_lab) if a
+        # panel is saturated everywhere, which no current eval_type is.
+        unsaturated = [r for r in et_rows if not r.saturated]
+        if unsaturated:
+            max_val = max(max(r.n_lab for r in unsaturated), max(r.equiv_n_lab for r in unsaturated)) * 1.15
+        else:
+            max_val = max(r.n_lab for r in et_rows) * 3.0
+
+        ax.plot(
+            [0, max_val], [0, max_val], color="black", ls="--", lw=1.2, alpha=0.6,
+            label="No benefit (y = x)" if col == 0 else None, zorder=2,
+        )
+
+        annotated = False
+        for i, target in enumerate(targets):
+            rows = sorted((r for r in et_rows if r.alignment_target == target), key=lambda r: r.n_lab)
+            xs = [r.n_lab for r in rows]
+            # Saturated points are plotted as a lower-bound marker clipped
+            # just inside the axis ceiling, never at their raw (meaningless)
+            # equiv_n_lab value -- see LabelEfficiencyPoint.saturated.
+            ys = [min(r.equiv_n_lab, max_val * 0.97) if r.saturated else r.equiv_n_lab for r in rows]
+            color = cmap(0.15 + 0.7 * i / max(1, len(targets) - 1))
+            is_baseline = target == baseline_target
+            achieved = float(np.mean([r.alignment_value for r in rows]))
+            ax.plot(
+                xs, ys, color=color, marker="o", markersize=5, linewidth=2.0 if is_baseline else 1.4,
+                label=f"{metric_symbol}~={achieved:.2f} (target {target:.1f})" + (" [baseline]" if is_baseline else ""),
+                zorder=4,
+            )
+            sat_xs = [x for x, r in zip(xs, rows) if r.saturated]
+            sat_ys = [y for y, r in zip(ys, rows) if r.saturated]
+            if sat_xs:
+                ax.plot(
+                    sat_xs, sat_ys, color=color, marker="^", markersize=7, linestyle="none",
+                    label="power saturated (lower bound)" if col == 0 and i == 0 else None, zorder=5,
+                )
+            if is_baseline:
+                ax.fill_between(xs, xs, ys, color=color, alpha=0.15, zorder=1)
+                unsat_rows = [(x, y, r) for x, y, r in zip(xs, ys, rows) if not r.saturated]
+                if unsat_rows and not annotated:
+                    mx, my, mid = unsat_rows[len(unsat_rows) // 2]
+                    mult = mid.equiv_n_lab / mid.n_lab if mid.n_lab else float("nan")
+                    ax.annotate(
+                        f"N_lab={mid.n_lab} -> {mid.equiv_n_lab:.0f}\n({mult:.2f}x)",
+                        xy=(mx, my), xytext=(8, 10), textcoords="offset points",
+                        fontsize=8, color=color,
+                        arrowprops=dict(arrowstyle="->", color=color, lw=1.0),
+                    )
+                    annotated = True
+
+        ax.set_xlim(0, max_val)
+        ax.set_ylim(0, max_val)
+        ax.set_xlabel("Actual N_lab (human labels used)")
+        ax.set_ylabel("Equivalent N_lab (human-only test)" if col == 0 else "")
+        ax.set_title(et.capitalize())
+        ax.set_aspect("equal", adjustable="box")
+
+    axes[0].legend(loc="upper left", fontsize=7.5)
+    fig.suptitle(
+        "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power\n"
+        f"(N = {PPI_LABEL_EFF_N} total items, fixed; only N_lab -- and the judge's alignment with truth -- varies)",
+        fontsize=11,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
