@@ -338,8 +338,8 @@ same way `evalstats.core.resampling` is.
     both the PPI estimator and rectifier, identical to `paired_t`'s PPI
     correction elsewhere in this file. For paper-defensibility this now
     runs and averages across FOUR classical tests --
-    `TTEST_WELCH`/`PAIRED_T`/`MWU_CORR`/`WILCOXON` (`_COMPARISON_METHODS`) --
-    covering both the independent-two-group structure (ttest_welch, mwu_corr)
+    `TTEST_WELCH`/`PAIRED_T`/`MWU`/`WILCOXON` (`_COMPARISON_METHODS`) --
+    covering both the independent-two-group structure (ttest_welch, mwu)
     and the paired structure (paired_t, wilcoxon), PLUS (opt-in, see
     "Omnibus tests" below) four omnibus/multi-group tests --
     `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` (`_COMPARISON_METHODS_
@@ -356,7 +356,7 @@ same way `evalstats.core.resampling` is.
     omnibus` (list-of-groups methods) factor out the per-method test/PPI-
     correction calls (mirroring `_run_ppi_cell`'s own per-test blocks
     exactly, including using the SAME test for the all_human/human_subset
-    oracle arms as for llm_only/llm_impute/ppi -- e.g. the "mwu_corr"
+    oracle arms as for llm_only/llm_impute/ppi -- e.g. the "mwu"
     method-row runs Mann-Whitney on truth for its oracle arms too, not
     always a t-test). Each of the 5 arms fails independently per replicate
     (a wilcoxon/mannwhitneyu exception on one arm doesn't discard the
@@ -496,8 +496,10 @@ same way `evalstats.core.resampling` is.
   - **Omnibus tests in the factorial sweep** (`_COMPARISON_METHODS_OMNIBUS`,
     `--factorial-omnibus`): after the main OFAT sweep and the factorial
     sweep's original four two-group tests were confirmed reasonably
-    calibrated (including `mwu_corr`'s fix -- see its `Method` docstring in
-    `methods.py`), extended `build_ppi_factorial_sources`'s combined-factor
+    calibrated (at the time including `mwu_corr`'s local-rectifier fix,
+    since reverted -- see `MWU`/`MWU_MNAR_EXPERIMENTAL`'s `Method` docstring
+    in `methods.py` for the current status and why), extended
+    `build_ppi_factorial_sources`'s combined-factor
     stress test to four omnibus/multi-group tests too --
     `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` -- to check whether they
     hold up under the SAME severe-bias x MNAR-labeling x large-N combination

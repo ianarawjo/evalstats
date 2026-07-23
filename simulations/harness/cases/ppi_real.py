@@ -27,8 +27,8 @@ Three checks:
       Per judge model: bisect the corpus into two disjoint random
       subsamples -- a valid null by construction (both are random draws
       from the identical population, so their true means are equal) -- and
-      run the independent-samples tests (ttest/ttest_welch/mw_naive/
-      mwu_corr) PPI correction is supposed to keep calibrated, with real
+      run the independent-samples tests (ttest/ttest_welch/mwu/
+      mwu_mnar_experimental) PPI correction is supposed to keep calibrated, with real
       noise/skew/judge-bias characteristics instead of synthetic ones.
 
   paired Type-I null (cross-judge)
@@ -79,7 +79,7 @@ with warnings.catch_warnings():
         _p_x_gt_y_midrank,
     )
 
-from ..methods import TTEST, TTEST_WELCH, MW_NAIVE, MWU_CORR, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO
+from ..methods import TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO
 from ..scenarios.real_judge_bias import (
     REAL_JUDGE_BIAS_DATASETS,
     DEFAULT_DATA_DIR,
@@ -164,7 +164,7 @@ def _run_real_twogroup_cell(
 ) -> tuple[dict[str, int], dict[str, int]]:
     """n_reps replicates of the two-group Type-I null check (random-split
     real data), mirroring pvalues.py's _run_ppi_cell independent-groups
-    branches (ttest/ttest_welch/mw_naive/mwu_corr only -- see
+    branches (ttest/ttest_welch/mwu/mwu_mnar_experimental only -- see
     _run_real_paired_cell for the paired-samples family)."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
@@ -196,21 +196,21 @@ def _run_real_twogroup_cell(
                 except Exception:
                     pass
 
-            if MW_NAIVE.name in methods:
+            if MWU.name in methods:
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MW_NAIVE.name] += int(p_u < _ALPHA)
+                    uncorrected[MWU.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample(a, b, lab_a, lab_b, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
-                    corrected[MW_NAIVE.name] += int(r.p_value < _ALPHA)
+                    corrected[MWU.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
-            if MWU_CORR.name in methods:
+            if MWU_MNAR_EXPERIMENTAL.name in methods:
                 try:
                     p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_CORR.name] += int(p_u < _ALPHA)
+                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample_midrank_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_CORR.name] += int(r.p_value < _ALPHA)
+                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -291,11 +291,11 @@ def _single_methods_for(eval_type: str) -> list[str]:
 
 
 def _twogroup_methods_for(eval_type: str) -> list[str]:
-    # MW_NAIVE/MWU_CORR (rank-based) aren't in pvalues.py's
+    # MWU/MWU_MNAR_EXPERIMENTAL (rank-based) aren't in pvalues.py's
     # _PPI_BINARY_COMPATIBLE_TESTS -- binary's massive ties break the
     # rank-based judge-bias noise model there, same restriction applies here.
     base = [TTEST.name, TTEST_WELCH.name]
-    return base if eval_type == "binary" else base + [MW_NAIVE.name, MWU_CORR.name]
+    return base if eval_type == "binary" else base + [MWU.name, MWU_MNAR_EXPERIMENTAL.name]
 
 
 def _has_standard_test(results: list) -> bool:
