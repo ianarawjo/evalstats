@@ -2158,24 +2158,66 @@ def _ppi_friedman(
     )
 
 
-def _ppi_anova_independent_p_value(
-    groups: list[np.ndarray],
-    groups_lab: list[np.ndarray],
-    k: int,
-) -> Optional[float]:
-    """Corrected p-value for independent ANOVA via per-group PPI mean corrections.
+def _noncentral_f_ci_lambda(f_obs: float, dfn: float, dfd: float, alpha: float) -> tuple[float, float]:
+    """Equal-tailed confidence interval for the noncentrality parameter λ of
+    a noncentral-F distribution, via test inversion (Steiger & Fouladi,
+    1997 -- the standard construction for ANOVA effect-size CIs, also used
+    by e.g. R's ``MBESS::conf.limits.ncf``).
 
-    The standard PPI bootstrap p-value is anti-conservative for the between-group
-    variance estimand because it's bounded below by zero.  Instead, we apply PPI
-    corrections at the level of group means (which ARE a valid, symmetric PPI
-    estimand), compute a corrected F-statistic, and use the F-distribution.
+    λ_L solves ``P(F ≥ f_obs | ncf(dfn, dfd, λ_L)) = α/2`` (f_obs sits at
+    the UPPER tail of ncf(λ_L) -- λ_L is the smallest noncentrality still
+    barely consistent with an observation this large). λ_U solves
+    ``P(F ≥ f_obs | ncf(dfn, dfd, λ_U)) = 1 − α/2`` (f_obs sits at the LOWER
+    tail of ncf(λ_U) -- λ_U is the largest noncentrality still barely
+    consistent with an observation this small). Both floored at 0 (a
+    noncentrality parameter can't be negative) when even λ=0 doesn't reach
+    the target tail probability -- this is the correct, not a degenerate,
+    outcome: it means the data are so weak (or so strong) that the interval
+    collapses against the boundary on that side.
 
-    Var[μ̂ᵢ_PPI] = σ²/nᵢ + σ_llm² × (1/n_lab_i − 1/nᵢ)
-    where σ² is the true within-group variance and σ_llm² is LLM noise variance.
-    Both are estimated from the labeled residuals (llm − human within each group).
-    The inflation factor Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM] scales the F denominator so
-    the test is calibrated regardless of how noisy the LLM judge is.
-    """
+    Exists because the naive percentile-bootstrap CI these three ANOVA-
+    family PPI corrections' p-values already replaced (see e.g.
+    :func:`_ppi_anova_independent_p_value`'s docstring) is anti-conservative
+    for a variance-like, bounded-below-by-zero estimand -- the p-value was
+    fixed via this same noncentral-F approach; the CI wasn't, until this
+    function existed. Confirmed via ``tests/test_ppi_corrections.py``: the
+    old CI and the corrected p-value could disagree outright on the
+    reject/don't-reject decision (e.g. p=1.9e-10 while the old CI still
+    contained the null) -- a test-inversion CI on the SAME F-statistic the
+    p-value already uses is guaranteed consistent with it by construction."""
+    from scipy import optimize
+    from scipy.stats import ncf as _ncf, f as _f
+
+    def sf(lam: float) -> float:
+        if lam <= 1e-10:
+            return float(_f.sf(f_obs, dfn, dfd))
+        return float(_ncf.sf(f_obs, dfn, dfd, lam))
+
+    def _solve(target: float) -> float:
+        if sf(0.0) >= target:
+            return 0.0
+        hi = 1.0
+        while sf(hi) < target and hi < 1e9:
+            hi *= 2.0
+        if sf(hi) < target:
+            return hi  # didn't converge within range; return the (huge) bound rather than raise
+        return float(optimize.brentq(lambda lam: sf(lam) - target, 0.0, hi))
+
+    lam_L = _solve(alpha / 2.0)
+    lam_U = _solve(1.0 - alpha / 2.0)
+    return lam_L, lam_U
+
+
+def _ppi_anova_independent_f_stat(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
+) -> Optional[dict]:
+    """Shared F-statistic computation for independent-groups ANOVA's PPI
+    correction -- factored out so the p-value and the (test-inversion) CI
+    are guaranteed to agree, since both are derived from this exact same
+    ``f_corr``/``dfn``/``dfd``/``denom`` rather than two separately-computed
+    pipelines. Returns None under the same degenerate condition the old
+    ``_ppi_anova_independent_p_value`` returned None for (a group with zero
+    labels)."""
     masks = [~np.isnan(g_lab) for g_lab in groups_lab]
     n_lab_arr = np.array([int(m.sum()) for m in masks], dtype=float)
 
@@ -2216,22 +2258,71 @@ def _ppi_anova_independent_p_value(
     inflation = float(np.dot(w, inflation_per_group))
     inflation = max(inflation, 1e-6)
 
-    f_corr = (ss_between / (k - 1)) / (ms_within * inflation)
-    if f_corr <= 0.0:
-        return 1.0
-    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=N - k))
+    denom = ms_within * inflation
+    f_corr = (ss_between / (k - 1)) / denom
+    # theta (between-group variance, _anova_between_variance_from_labeled's
+    # own scale) relates to the F-statistic's noncentrality lambda via
+    # E[ss_between/(k-1)] = denom*(1 + lambda/(k-1)) and, by the classical
+    # ANOVA identity, E[ss_between] = (k-1)*denom + N*theta -- combining:
+    # lambda = N*theta/denom, i.e. theta = lambda*denom/N.
+    return {"f_corr": f_corr, "dfn": k - 1, "dfd": N - k, "denom": denom, "scale": float(N)}
 
 
-def _ppi_anova_repeated_p_value(
+def _ppi_anova_independent_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
 ) -> Optional[float]:
-    """Corrected p-value for repeated-measures ANOVA via per-condition PPI corrections.
+    """Corrected p-value for independent ANOVA via per-group PPI mean corrections.
 
-    Mirror of _ppi_anova_independent_p_value for the within-subjects design.
-    Corrections are applied to condition means after removing each subject's
-    mean (matching the repeated-measures F-test).
+    The standard PPI bootstrap p-value is anti-conservative for the between-group
+    variance estimand because it's bounded below by zero.  Instead, we apply PPI
+    corrections at the level of group means (which ARE a valid, symmetric PPI
+    estimand), compute a corrected F-statistic, and use the F-distribution.
+
+    Var[μ̂ᵢ_PPI] = σ²/nᵢ + σ_llm² × (1/n_lab_i − 1/nᵢ)
+    where σ² is the true within-group variance and σ_llm² is LLM noise variance.
+    Both are estimated from the labeled residuals (llm − human within each group).
+    The inflation factor Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM] scales the F denominator so
+    the test is calibrated regardless of how noisy the LLM judge is.
+
+    See :func:`_ppi_anova_independent_ci` for the CI derived from this same
+    F-statistic (guaranteed consistent with this p-value by construction)."""
+    stat = _ppi_anova_independent_f_stat(groups, groups_lab, k)
+    if stat is None:
+        return None
+    if stat["f_corr"] <= 0.0:
+        return 1.0
+    return float(_scipy_stats.f.sf(stat["f_corr"], dfn=stat["dfn"], dfd=stat["dfd"]))
+
+
+def _ppi_anova_independent_ci(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
+) -> Optional[tuple[float, float, float]]:
+    """(estimate, ci_low, ci_high) for independent ANOVA's between-group
+    variance, via test-inversion on the SAME F-statistic
+    :func:`_ppi_anova_independent_p_value` uses -- see
+    :func:`_noncentral_f_ci_lambda`. Returns None under the same degenerate
+    condition the p-value function does."""
+    stat = _ppi_anova_independent_f_stat(groups, groups_lab, k)
+    if stat is None:
+        return None
+    f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
+    if f_corr <= 0.0 or not np.isfinite(f_corr):
+        return 0.0, 0.0, 0.0
+    # theta_hat = num_ms*(k-1)/N = f_corr*denom*dfn/scale (see
+    # _ppi_anova_independent_f_stat's comment for the lambda<->theta relation).
+    estimate = f_corr * denom * dfn / scale
+    lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
+    return estimate, lam_L * denom / scale, lam_U * denom / scale
+
+
+def _ppi_anova_repeated_f_stat(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
+) -> Optional[dict]:
+    """Shared F-statistic computation for repeated-measures ANOVA's PPI
+    correction -- see :func:`_ppi_anova_independent_f_stat`'s docstring for
+    why this is factored out (p-value/CI consistency by construction).
 
         The inflation factor accounts for rectifier uncertainty.
 
@@ -2306,26 +2397,67 @@ def _ppi_anova_repeated_p_value(
         inflation = 1.0
     inflation = max(inflation, 1e-6)
 
-    f_corr = (ss_condition_corr / (k - 1)) / (ms_residual * inflation)
-    if f_corr <= 0.0:
-        return 1.0
+    denom = ms_residual * inflation
+    f_corr = (ss_condition_corr / (k - 1)) / denom
 
     # Finite labeled overlap adds estimation uncertainty to the rectifier.
     # Use a conservative effective denominator df capped by labeled contrasts.
     # This improves Type I calibration in sparse-label repeated settings.
     df_residual_eff = min(df_residual, max((n_lab - 1) * (k - 1), 1))
-    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual_eff))
+    # theta (_repeated_condition_variance's own scale, mean over k of
+    # squared condition-mean deviations) relates to lambda the same way
+    # friedman's does -- see _ppi_friedman_f_stat's comment: theta =
+    # lambda*denom/(n_subjects*k).
+    return {"f_corr": f_corr, "dfn": k - 1, "dfd": df_residual_eff, "denom": denom, "scale": float(n_subjects * k)}
 
 
-def _ppi_friedman_p_value(
+def _ppi_anova_repeated_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
 ) -> Optional[float]:
-    """Corrected p-value for the Friedman test via per-condition PPI corrections
-    applied to within-subject ranks.
+    """Corrected p-value for repeated-measures ANOVA via per-condition PPI corrections.
 
-    NOT a literal mirror of ``_ppi_anova_repeated_p_value``, despite the
+    Mirror of _ppi_anova_independent_p_value for the within-subjects design.
+    Corrections are applied to condition means after removing each subject's
+    mean (matching the repeated-measures F-test). See
+    :func:`_ppi_anova_repeated_f_stat` for the full derivation and
+    :func:`_ppi_anova_repeated_ci` for the CI derived from this same
+    F-statistic (guaranteed consistent with this p-value by construction)."""
+    stat = _ppi_anova_repeated_f_stat(groups, groups_lab, k)
+    if stat is None:
+        return None
+    if stat["f_corr"] <= 0.0:
+        return 1.0
+    return float(_scipy_stats.f.sf(stat["f_corr"], dfn=stat["dfn"], dfd=stat["dfd"]))
+
+
+def _ppi_anova_repeated_ci(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
+) -> Optional[tuple[float, float, float]]:
+    """(estimate, ci_low, ci_high) for repeated-measures ANOVA's condition
+    variance, via test-inversion on the SAME F-statistic
+    :func:`_ppi_anova_repeated_p_value` uses -- see
+    :func:`_noncentral_f_ci_lambda`."""
+    stat = _ppi_anova_repeated_f_stat(groups, groups_lab, k)
+    if stat is None:
+        return None
+    f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
+    if f_corr <= 0.0 or not np.isfinite(f_corr):
+        return 0.0, 0.0, 0.0
+    estimate = f_corr * denom * dfn / scale
+    lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
+    return estimate, lam_L * denom / scale, lam_U * denom / scale
+
+
+def _ppi_friedman_f_stat(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
+) -> Optional[dict]:
+    """Shared F-statistic computation for Friedman's PPI correction -- see
+    :func:`_ppi_anova_independent_f_stat`'s docstring for why this is
+    factored out (p-value/CI consistency by construction).
+
+    NOT a literal mirror of ``_ppi_anova_repeated_f_stat``, despite the
     similar structure. That function estimates its null/residual variance
     via the ANOVA sum-of-squares decomposition ``SS_residual = SS_total −
     SS_subjects − SS_condition``, then *subtracts off* the LLM-noise
@@ -2412,15 +2544,53 @@ def _ppi_friedman_p_value(
     denom = max(denom, 1e-6)
 
     f_corr = (ss_condition_corr / (k - 1)) / denom
-    if f_corr <= 0.0:
-        return 1.0
 
     # ms_null carries (almost) no estimation uncertainty of its own (it's a
     # known combinatorial constant, tie-adjusted from the full sample), so
     # the reference distribution's denominator df is driven entirely by how
     # well sigma_llm_sq is estimated from the n_lab labeled subjects.
     df_residual_eff = max((n_lab - 1) * (k - 1), 1)
-    return float(_scipy_stats.f.sf(f_corr, dfn=k - 1, dfd=df_residual_eff))
+    # theta (_friedman_rank_variance's own scale, mean over k of squared
+    # condition-mean-RANK deviations) relates to lambda the same way
+    # repeated ANOVA's does: E[ss_condition_corr] = (k-1)*denom +
+    # n_subjects*k*theta (since theta = Σ(true effect)²/k here too) ->
+    # theta = lambda*denom/(n_subjects*k).
+    return {"f_corr": f_corr, "dfn": k - 1, "dfd": df_residual_eff, "denom": denom, "scale": float(n_subjects * k)}
+
+
+def _ppi_friedman_p_value(
+    groups: list[np.ndarray],
+    groups_lab: list[np.ndarray],
+    k: int,
+) -> Optional[float]:
+    """Corrected p-value for the Friedman test via per-condition PPI
+    corrections applied to within-subject ranks -- see
+    :func:`_ppi_friedman_f_stat` for the full derivation and
+    :func:`_ppi_friedman_ci` for the CI derived from this same F-statistic
+    (guaranteed consistent with this p-value by construction)."""
+    stat = _ppi_friedman_f_stat(groups, groups_lab, k)
+    if stat is None:
+        return None
+    if stat["f_corr"] <= 0.0:
+        return 1.0
+    return float(_scipy_stats.f.sf(stat["f_corr"], dfn=stat["dfn"], dfd=stat["dfd"]))
+
+
+def _ppi_friedman_ci(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
+) -> Optional[tuple[float, float, float]]:
+    """(estimate, ci_low, ci_high) for Friedman's within-subject-rank
+    condition variance, via test-inversion on the SAME F-statistic
+    :func:`_ppi_friedman_p_value` uses -- see :func:`_noncentral_f_ci_lambda`."""
+    stat = _ppi_friedman_f_stat(groups, groups_lab, k)
+    if stat is None:
+        return None
+    f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
+    if f_corr <= 0.0 or not np.isfinite(f_corr):
+        return 0.0, 0.0, 0.0
+    estimate = f_corr * denom * dfn / scale
+    lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
+    return estimate, lam_L * denom / scale, lam_U * denom / scale
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3059,16 +3229,35 @@ def anova_oneway(
         human_sparse = np.concatenate(groups_lab)
         ar = _run_alignment_report(llm_all, human_sparse)
 
+        # corrected_estimate/corrected_ci/corrected_p all come from the SAME
+        # closed-form F-statistic pipeline (_ppi_anova_repeated_ci/
+        # _ppi_anova_independent_ci compute the p-value's own noncentral-F
+        # test-inversion CI, not a separately-bootstrapped one) -- see
+        # _noncentral_f_ci_lambda's docstring for why the two used to be
+        # able to disagree outright before this fix.
         if repeated:
-            ppi = _ppi_anova_repeated(groups, groups_lab, alpha, n_boot, rng)
+            ci_result = _ppi_anova_repeated_ci(groups, groups_lab, k, alpha)
             corrected_p = _ppi_anova_repeated_p_value(groups, groups_lab, k)
         else:
-            ppi = _ppi_anova_independent(groups, groups_lab, alpha, n_boot, rng)
+            ci_result = _ppi_anova_independent_ci(groups, groups_lab, k, alpha)
             corrected_p = _ppi_anova_independent_p_value(groups, groups_lab, k)
 
-        corrected_estimate = ppi.estimate
-        corrected_ci = (ppi.ci_low, ppi.ci_high)
-        rectifier = ppi.rectifier
+        if ci_result is not None:
+            corrected_estimate, ci_low, ci_high = ci_result
+            corrected_ci = (ci_low, ci_high)
+            # Disjoint unlabeled-only complement, matching evalstats.ppi.
+            # correct's convention (Y_hat_unlab excludes labeled positions)
+            # that every other "llm-only" baseline in this module uses.
+            if repeated:
+                labels_mat = np.column_stack(groups_lab)
+                overlap = np.all(~np.isnan(labels_mat), axis=1)
+                llm_unlab_matrix = np.column_stack(groups)[~overlap]
+                uncorrected_variance = _repeated_condition_variance(llm_unlab_matrix)
+            else:
+                masks = [~np.isnan(g_lab) for g_lab in groups_lab]
+                groups_unlab = [g[~m] for g, m in zip(groups, masks)]
+                uncorrected_variance = _anova_between_variance_from_groups(groups_unlab)
+            rectifier = corrected_estimate - uncorrected_variance
         n_labeled = ar.n_labeled
         n_total = ar.n_total
 
@@ -3196,12 +3385,21 @@ def friedman(
         human_sparse = np.concatenate(groups_lab)
         ar = _run_alignment_report(llm_all, human_sparse)
 
-        ppi = _ppi_friedman(groups, groups_lab, alpha, n_boot, rng)
+        # corrected_estimate/corrected_ci/corrected_p all come from the SAME
+        # closed-form F-statistic pipeline -- see anova_oneway's matching
+        # comment and _noncentral_f_ci_lambda's docstring.
+        ci_result = _ppi_friedman_ci(groups, groups_lab, k, alpha)
         corrected_p = _ppi_friedman_p_value(groups, groups_lab, k)
 
-        corrected_estimate = ppi.estimate
-        corrected_ci = (ppi.ci_low, ppi.ci_high)
-        rectifier = ppi.rectifier
+        if ci_result is not None:
+            corrected_estimate, ci_low, ci_high = ci_result
+            corrected_ci = (ci_low, ci_high)
+            # Disjoint unlabeled-only complement -- see anova_oneway's
+            # matching comment for why.
+            labels_mat = np.column_stack(groups_lab)
+            overlap = np.all(~np.isnan(labels_mat), axis=1)
+            llm_unlab_matrix = np.column_stack(groups)[~overlap]
+            rectifier = corrected_estimate - _friedman_rank_variance(llm_unlab_matrix)
         n_labeled = ar.n_labeled
         n_total = ar.n_total
 

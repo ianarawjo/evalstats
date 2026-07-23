@@ -1524,11 +1524,19 @@ class TestAnovaOnewayPPIFieldStructure:
         p_rejects = r.corrected_p_value < alpha
         assert p_rejects == ci_rejects
 
-    def test_fully_labeled_raises_informatively_independent(self):
-        """All items labeled -> no unlabeled pool left to extrapolate the
-        correction to (Y_hat_unlab must be DISJOINT from the labeled
-        positions -- see evalstats.ppi.correct's docstring), so this now
-        raises a clear, actionable error."""
+    def test_fully_labeled_handled_gracefully_independent(self):
+        """All items labeled -> corrected_estimate/ci/p_value no longer need
+        an unlabeled pool (2026-07-22: corrected_estimate/ci/p_value were
+        unified onto _ppi_anova_independent_ci/_p_value's closed-form
+        F-statistic pipeline, which corrects each group's OWN full-sample
+        mean via a labeled-subset rectifier -- g.mean() + (g_lab.mean() -
+        g[mask].mean()) -- rather than evalstats.ppi.correct's disjoint-
+        unlabeled-pool convention the old bootstrap-based estimator needed.
+        At 100% labeling this reduces cleanly to just using the human
+        labels directly, no unlabeled extrapolation required). `rectifier`
+        alone (the llm-only baseline, evaluated on the now-empty unlabeled
+        complement) degrades to comparing against 0.0, so it equals
+        corrected_estimate exactly -- see anova_oneway's rectifier comment."""
         rng = np.random.default_rng(521)
         groups, groups_lab = _multigroup(
             rng,
@@ -1539,11 +1547,15 @@ class TestAnovaOnewayPPIFieldStructure:
             biases=[0.9, -0.3, 0.5],
             n_lab=180,
         )
-        with pytest.raises(ValueError, match="unlabeled pool"):
-            anova_oneway(*groups, groups_lab=groups_lab, n_boot=250, rng=521)
+        r = anova_oneway(*groups, groups_lab=groups_lab, n_boot=250, rng=521, print_result=False)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        lo, hi = r.corrected_ci
+        assert lo <= r.corrected_estimate <= hi
+        assert r.corrected_estimate == pytest.approx(r.rectifier, abs=1e-10)
 
-    def test_fully_labeled_raises_informatively_repeated(self):
-        """Same as test_fully_labeled_raises_informatively_independent, for
+    def test_fully_labeled_handled_gracefully_repeated(self):
+        """Same as test_fully_labeled_handled_gracefully_independent, for
         the repeated-measures path."""
         pytest.importorskip("statsmodels")
         rng = np.random.default_rng(522)
@@ -1556,8 +1568,12 @@ class TestAnovaOnewayPPIFieldStructure:
             biases=[0.9, -0.3, 0.5],
             n_lab=180,
         )
-        with pytest.raises(ValueError, match="unlabeled pool"):
-            anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=250, rng=522)
+        r = anova_oneway(*groups, repeated=True, groups_lab=groups_lab, n_boot=250, rng=522, print_result=False)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        lo, hi = r.corrected_ci
+        assert lo <= r.corrected_estimate <= hi
+        assert r.corrected_estimate == pytest.approx(r.rectifier, abs=1e-10)
 
     def test_raises_when_fewer_than_15_labels_independent(self):
         rng = np.random.default_rng(523)
@@ -2059,18 +2075,23 @@ class TestFriedmanPPIFieldStructure:
         llm_est = _friedman_rank_variance(np.column_stack(groups)[~overlap])
         assert r.corrected_estimate == pytest.approx(llm_est + r.rectifier, abs=1e-10)
 
-    def test_fully_labeled_raises_informatively(self):
-        """All items labeled -> no unlabeled pool left to extrapolate the
-        correction to (Y_hat_unlab must be DISJOINT from the labeled
-        subjects -- see evalstats.ppi.correct's docstring), so this now
-        raises a clear, actionable error."""
+    def test_fully_labeled_handled_gracefully(self):
+        """All items labeled -> corrected_estimate/ci/p_value no longer need
+        an unlabeled pool -- see TestAnovaOnewayPPIFieldStructure.
+        test_fully_labeled_handled_gracefully_independent's docstring for
+        why (same 2026-07-22 closed-form-pipeline unification, here via
+        _ppi_friedman_ci/_ppi_friedman_p_value)."""
         rng = np.random.default_rng(917)
         groups, groups_lab = _multigroup_repeated(
             rng, k=3, n=180, mus=[3.1, 3.8, 2.9], sigma=0.8,
             biases=[0.9, -0.3, 0.5], n_lab=180,
         )
-        with pytest.raises(ValueError, match="unlabeled pool"):
-            friedman(*groups, groups_lab=groups_lab, n_boot=250, rng=917)
+        r = friedman(*groups, groups_lab=groups_lab, n_boot=250, rng=917, print_result=False)
+        assert r.corrected_estimate is not None
+        assert r.corrected_ci is not None
+        lo, hi = r.corrected_ci
+        assert lo <= r.corrected_estimate <= hi
+        assert r.corrected_estimate == pytest.approx(r.rectifier, abs=1e-10)
 
     def test_corrected_effect_size_matches_kendalls_w_rescaling(self):
         rng = np.random.default_rng(918)
