@@ -47,17 +47,23 @@ Usage:
   # Step 2a: score with a cheap OpenRouter model
   export OPENROUTER_API_KEY=...
   python simulations/collect_judge_bias_data.py collect-judge-scores \\
-      --backend openrouter --model openai/gpt-4o-mini
+      --backend openrouter --models openai/gpt-4o-mini
 
   # Step 2b: score locally with Ollama instead (cheaper, no API key) --
-  # --model must match a tag you've already pulled (see `ollama list`)
+  # --models must match tags you've already pulled (see `ollama list`)
   ollama pull llama3.1:8b
   python simulations/collect_judge_bias_data.py collect-judge-scores \\
-      --backend ollama --model llama3.1:8b
+      --backend ollama --models llama3.1:8b
+
+  # Multiple local judges in one unattended run (e.g. overnight) -- each
+  # runs to completion in sequence before the next starts; a bad/unpulled
+  # model name is skipped (with a warning) rather than aborting the run
+  python simulations/collect_judge_bias_data.py collect-judge-scores \\
+      --backend ollama --models gemma3:1b gemma3:4b qwen3:4b gpt-oss:20b
 
   # Only one data type, small trial run
   python simulations/collect_judge_bias_data.py collect-judge-scores \\
-      --types likert --backend ollama --model gemma3:4b --limit 20
+      --types likert --backend ollama --models gemma3:4b --limit 20
 
 Output CSV columns (simulations/out/judge_bias_<key>.csv, the merged view):
   item_id      stable per-item ID (str)
@@ -633,6 +639,21 @@ def _make_client(backend: str):
     raise ValueError(f"Unknown backend: {backend!r}")
 
 
+def _check_model_available(client, model: str) -> str | None:
+    """One quick, no-retry call to fail fast on a bad/unpulled model name --
+    returns None if the model responded, else a short error string. Without
+    this, an overnight multi-model run would burn through max_retries'
+    exponential backoff on EVERY single item for a model that was never
+    going to work (e.g. a typo, or `ollama pull` never run for it)."""
+    try:
+        client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": "ping"}], max_tokens=1,
+        )
+        return None
+    except Exception as e:  # noqa: BLE001 -- any failure here means "skip this model"
+        return str(e)
+
+
 def _call_judge(client, model: str, messages: list[dict], *, max_retries: int, sleep_s: float) -> str | None:
     last_err = None
     for attempt in range(max_retries):
@@ -668,62 +689,73 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
     out_dir = Path(args.out_dir)
     client = _make_client(args.backend)
 
-    for eval_type in args.types:
-        spec = DATASET_SPECS[eval_type]
-        paths = _out_paths(out_dir, spec)
-        items = _read_csv(paths["items"])
-        if not items:
-            print(f"[{eval_type}] no items in {paths['items']} -- run collect-data first. Skipping.")
+    n_models = len(args.models)
+    for model_i, model in enumerate(args.models, start=1):
+        print(f"\n{'=' * 72}\n[{model_i}/{n_models}] model={model!r}\n{'=' * 72}")
+
+        err = _check_model_available(client, model)
+        if err is not None:
+            print(f"  SKIPPING {model!r} -- not reachable: {err}")
             continue
 
-        existing_scores = _read_csv(paths["scores"])
-        done_keys = {(r["item_id"], r["judge_model"], r["run_idx"]) for r in existing_scores}
+        for eval_type in args.types:
+            spec = DATASET_SPECS[eval_type]
+            paths = _out_paths(out_dir, spec)
+            items = _read_csv(paths["items"])
+            if not items:
+                print(f"[{eval_type}] no items in {paths['items']} -- run collect-data first. Skipping.")
+                continue
 
-        build_prompt = PROMPT_BUILDERS[spec.key]
-        parse_response = RESPONSE_PARSERS[spec.key]
+            existing_scores = _read_csv(paths["scores"])
+            done_keys = {(r["item_id"], r["judge_model"], r["run_idx"]) for r in existing_scores}
 
-        print(f"[{eval_type}] {len(items)} items, model={args.model!r}, runs={args.runs}, "
-              f"{len(done_keys)} (item,model,run) combos already collected.")
+            build_prompt = PROMPT_BUILDERS[spec.key]
+            parse_response = RESPONSE_PARSERS[spec.key]
 
-        n_new = 0
-        n_skipped = 0
-        n_failed = 0
-        pbar = _progress(items, desc=f"{eval_type}-judge", unit="item")
-        for item in pbar:
-            if args.limit is not None and n_new >= args.limit:
-                break
-            ji = json.loads(item["judge_input"])
-            for run_idx in range(args.runs):
-                key = (item["item_id"], args.model, str(run_idx))
-                if key in done_keys:
-                    n_skipped += 1
-                    continue
+            print(f"[{eval_type}] {len(items)} items, model={model!r}, runs={args.runs}, "
+                  f"{len(done_keys)} (item,model,run) combos already collected.")
+
+            n_new = 0
+            n_skipped = 0
+            n_failed = 0
+            pbar = _progress(items, desc=f"{eval_type}-{model}", unit="item")
+            for item in pbar:
                 if args.limit is not None and n_new >= args.limit:
                     break
-                messages = build_prompt(ji)
-                raw = _call_judge(client, args.model, messages, max_retries=args.max_retries, sleep_s=args.sleep)
-                score = None if raw is None else parse_response(raw)
-                if score is None:
-                    n_failed += 1
-                    msg = f"    could not parse judge response for {item['item_id']} run {run_idx}: {raw!r}"
-                    pbar.write(msg) if hasattr(pbar, "write") else print(msg)
-                    continue
-                row = {
-                    "item_id": item["item_id"], "judge_model": args.model, "run_idx": run_idx,
-                    "judge_score": score, "raw_response": raw,
-                    "collected_at": datetime.now(timezone.utc).isoformat(),
-                }
-                _append_csv_row(paths["scores"], row, SCORES_FIELDNAMES)
-                done_keys.add(key)
-                n_new += 1
-            if hasattr(pbar, "set_postfix"):
-                pbar.set_postfix(new=n_new, skipped=n_skipped, failed=n_failed)
-        if hasattr(pbar, "close"):
-            pbar.close()
+                ji = json.loads(item["judge_input"])
+                for run_idx in range(args.runs):
+                    key = (item["item_id"], model, str(run_idx))
+                    if key in done_keys:
+                        n_skipped += 1
+                        continue
+                    if args.limit is not None and n_new >= args.limit:
+                        break
+                    messages = build_prompt(ji)
+                    raw = _call_judge(client, model, messages, max_retries=args.max_retries, sleep_s=args.sleep)
+                    score = None if raw is None else parse_response(raw)
+                    if score is None:
+                        n_failed += 1
+                        msg = f"    could not parse judge response for {item['item_id']} run {run_idx}: {raw!r}"
+                        pbar.write(msg) if hasattr(pbar, "write") else print(msg)
+                        continue
+                    row = {
+                        "item_id": item["item_id"], "judge_model": model, "run_idx": run_idx,
+                        "judge_score": score, "raw_response": raw,
+                        "collected_at": datetime.now(timezone.utc).isoformat(),
+                    }
+                    _append_csv_row(paths["scores"], row, SCORES_FIELDNAMES)
+                    done_keys.add(key)
+                    n_new += 1
+                if hasattr(pbar, "set_postfix"):
+                    pbar.set_postfix(new=n_new, skipped=n_skipped, failed=n_failed)
+            if hasattr(pbar, "close"):
+                pbar.close()
 
-        print(f"  -> {n_new} new judge scores written to {paths['scores']}"
-              f" ({n_skipped} already done, {n_failed} unparseable)")
-        _write_merged_view(paths, spec)
+            print(f"  -> {n_new} new judge scores written to {paths['scores']}"
+                  f" ({n_skipped} already done, {n_failed} unparseable)")
+            _write_merged_view(paths, spec)
+
+    print(f"\n{'=' * 72}\nDone -- {n_models} model(s) processed.\n{'=' * 72}")
 
 
 def _write_merged_view(paths: dict[str, Path], spec: DatasetSpec) -> None:
@@ -801,10 +833,14 @@ def build_arg_parser() -> argparse.ArgumentParser:
     ps.add_argument("--types", **common_types)
     ps.add_argument("--out-dir", default="simulations/out")
     ps.add_argument("--backend", choices=["openrouter", "ollama"], required=True)
-    ps.add_argument("--model", required=True,
-                     help="OpenRouter model id (e.g. openai/gpt-4o-mini) or local Ollama tag (e.g. llama3.1:8b).")
+    ps.add_argument("--models", nargs="+", required=True,
+                     help="One or more OpenRouter model ids (e.g. openai/gpt-4o-mini) or local Ollama "
+                          "tags (e.g. llama3.1:8b qwen3:4b gpt-oss:20b), run in sequence -- e.g. for an "
+                          "unattended overnight multi-judge collection. Each gets a quick reachability "
+                          "check first (a bad/unpulled model name is skipped with a warning instead of "
+                          "burning through every item's retries).")
     ps.add_argument("--runs", type=int, default=1, help="Independent judge replicates per item.")
-    ps.add_argument("--limit", type=int, default=None, help="Cap on NEW judge calls this invocation.")
+    ps.add_argument("--limit", type=int, default=None, help="Cap on NEW judge calls per model, per type, this invocation.")
     ps.add_argument("--sleep", type=float, default=0.2, help="Seconds to sleep between judge calls.")
     ps.add_argument("--max-retries", type=int, default=3)
     ps.set_defaults(func=run_collect_judge_scores)
