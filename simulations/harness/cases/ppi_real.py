@@ -327,8 +327,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Which real datasets to check (default: all three; a dataset with no "
                               "judge_score data yet is skipped with a warning, not a hard failure).")
     parser.add_argument("--judge-models", nargs="+", default=None,
-                         help="Which judge models to use (default: every judge model collected for "
-                              "each dataset). Only items scored by EVERY selected judge are used.")
+                         help="Which judge models to use (default: auto-discover every judge model "
+                              "collected for each dataset, then apply --min-judge-coverage). Passing "
+                              "this explicitly is trusted as-is, with NO coverage filtering -- only "
+                              "items scored by EVERY selected judge are used either way.")
+    parser.add_argument("--min-judge-coverage", type=float, default=0.9,
+                         help="Auto-discovery only (ignored if --judge-models is given explicitly): "
+                              "drop any judge whose distinct-item coverage of the dataset is below this "
+                              "fraction (default 0.9) before aligning. Alignment takes the INTERSECTION "
+                              "of items across every selected judge, so one incompletely-collected judge "
+                              "(e.g. a --limit'd or still-running collect-judge-scores) otherwise drags "
+                              "the usable corpus size down for every OTHER judge too, not just itself.")
     parser.add_argument("--max-pairs", type=int, default=None,
                          help="Cap on unique judge PAIRS checked by the paired-null test (default: all "
                               "C(k, 2) pairs for k judge models -- e.g. 28 for 8 judges. Caps by random "
@@ -357,7 +366,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def official_args(base_seed: int = 46) -> argparse.Namespace:
     return argparse.Namespace(
-        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, max_pairs=None,
+        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, min_judge_coverage=0.9, max_pairs=None,
         label_fracs=list(DEFAULT_LABEL_FRACS), sizes=None, reps=200, ppi_n_boot=2000,
         alpha=0.05, seed=base_seed, progress="bar", save_results="save", plots="save",
         out_dir="simulations/out", plots_dir=None,
@@ -376,7 +385,7 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
     convention -- this case has no synthetic variant of its own (it's
     always real data), so both calls run the identical fast preset."""
     return argparse.Namespace(
-        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, max_pairs=10,
+        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, min_judge_coverage=0.9, max_pairs=10,
         label_fracs=[0.20], sizes=None, reps=5, ppi_n_boot=200,
         alpha=0.05, seed=base_seed, progress="bar", save_results="save", plots="save",
         out_dir="simulations/out", plots_dir=None,
@@ -397,7 +406,10 @@ def run(args: argparse.Namespace) -> CaseResult:
         corpora: list[RealJudgeBiasCorpus] = []
         for ds in requested:
             try:
-                corpus = load_real_judge_bias_corpus(ds, data_dir=args.data_dir, judge_models=args.judge_models)
+                corpus = load_real_judge_bias_corpus(
+                    ds, data_dir=args.data_dir, judge_models=args.judge_models,
+                    min_coverage=getattr(args, "min_judge_coverage", 0.9),
+                )
                 corpora.append(corpus)
                 print(f"  Loaded {ds}: N={corpus.corpus_size}, judge_models={corpus.judge_models}, "
                       f"corpus_mean={corpus.corpus_mean:.4f}")

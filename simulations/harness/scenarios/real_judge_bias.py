@@ -95,16 +95,27 @@ def _rescale(x: np.ndarray, bounds: tuple[float, float]) -> np.ndarray:
 
 def load_real_judge_bias_corpus(
     dataset: str, *, data_dir: str = DEFAULT_DATA_DIR, judge_models: list[str] | None = None,
+    min_coverage: float = 0.0,
 ) -> RealJudgeBiasCorpus:
     """Load simulations/out/judge_bias_<dataset>.csv (the merged
     item+judge-score view collect_judge_bias_data.py's collect-judge-scores
     step writes) into a RealJudgeBiasCorpus.
 
     `judge_models`, if given, restricts to that subset (all must be
-    present, or this raises). Default (None) uses every judge model
-    present in the file. Only items scored by EVERY selected judge model
-    are kept (mirroring real_data.py's build_openeval_multiarm_corpora,
-    which aligns all requested real models on shared item_id).
+    present, or this raises) -- an explicit request is trusted as-is, with
+    no coverage filtering applied. Default (None) auto-discovers every
+    judge model present in the file, THEN drops any whose coverage (its
+    distinct-item count / the dataset's total item count, from
+    _items.csv) is below `min_coverage`.
+
+    This matters because alignment takes the INTERSECTION of items across
+    every selected judge (mirroring real_data.py's
+    build_openeval_multiarm_corpora) -- one incompletely-collected judge
+    (e.g. a --limit'd or still-in-progress collect-judge-scores run) drags
+    the usable corpus size down for EVERY judge, not just itself. Observed
+    on real data: including one judge at ~65% coverage shrank a 5-judge
+    arena corpus from 1241 aligned items down to 811, purely because of
+    that one judge's gaps.
     """
     if dataset not in REAL_JUDGE_BIAS_DATASETS:
         raise ValueError(f"Unknown real judge-bias dataset {dataset!r}. Choices: {list(REAL_JUDGE_BIAS_DATASETS)}")
@@ -127,7 +138,29 @@ def load_real_judge_bias_corpus(
 
     models_present = sorted({r["judge_model"] for r in rows})
     if judge_models is None:
-        judge_models = models_present
+        if min_coverage > 0.0:
+            items_path = Path(data_dir) / f"judge_bias_{dataset}_items.csv"
+            with items_path.open(newline="", encoding="utf-8") as f:
+                total_items = sum(1 for _ in csv.DictReader(f))
+            items_by_model: dict[str, set[str]] = defaultdict(set)
+            for r in rows:
+                items_by_model[r["judge_model"]].add(r["item_id"])
+            kept, dropped = [], []
+            for jm in models_present:
+                cov = len(items_by_model[jm]) / total_items if total_items else 0.0
+                (kept if cov >= min_coverage else dropped).append((jm, cov))
+            if dropped:
+                print(f"  [{dataset}] excluding {len(dropped)} judge(s) below --min-judge-coverage "
+                      f"{min_coverage:.0%}: " + ", ".join(f"{jm} ({cov:.0%})" for jm, cov in dropped))
+            if not kept:
+                raise ValueError(
+                    f"No judge models in {path} meet min_coverage={min_coverage:.0%} of {total_items} "
+                    f"items. Present (with coverage): "
+                    f"{[(jm, f'{len(items_by_model[jm]) / total_items:.0%}') for jm in models_present]}"
+                )
+            judge_models = [jm for jm, _cov in kept]
+        else:
+            judge_models = models_present
     else:
         missing = [m for m in judge_models if m not in models_present]
         if missing:
