@@ -7085,11 +7085,25 @@ def _alpha_label(alpha: float) -> str:
 
 
 def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str, nonstandard: bool = False) -> str:
-    """Per-scenario corrected vs. uncorrected Type-I rate scatter, one jittered
-    column per test. Mirrors sim_type_i_calibration.py's ``_plot_results``
-    scatter (gray uncorrected dots behind colored corrected dots, one dot per
-    scenario, dashed alpha line) rather than collapsing every scenario into a
-    single averaged bar, which hid per-scenario miscalibration entirely.
+    """Grouped violin+strip of corrected vs. uncorrected Type-I rate, per
+    test -- one gray violin (uncorrected) and one test-colored violin
+    (corrected) side by side per test, each with its own jittered per-
+    scenario dots overlaid. Replaces an earlier single-column jittered-
+    scatter design (both corrected/uncorrected sharing one x per test,
+    distinguished only by color/z-order) that made the SHAPE of each
+    group's distribution hard to read once a test had more than a
+    handful of scenarios -- the violin body shows that shape directly,
+    while the dots keep the original "see every individual scenario,
+    don't just trust an averaged rate" property that a plain box/violin
+    alone would lose.
+
+    Not drawn via seaborn's usual hue-dodge violin (see
+    save_pairwise_reliability_violin_plot for that pattern elsewhere in
+    this file): dodging by a 2-level "corrected/uncorrected" hue would
+    force ONE color for every test's corrected violin, losing the
+    per-test color coding get_method_color already gives every other PPI
+    plot. Positioned by hand instead so "uncorrected" can stay uniformly
+    gray while "corrected" keeps its test-specific color.
 
     nonstandard : bool
         When False (default), plots only the standard/textbook tests
@@ -7105,6 +7119,38 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     unc_label_added = False
     all_rates: list[np.ndarray] = []
 
+    violin_width = 0.30
+    group_offset = 0.19
+
+    def _violin_and_strip(x: float, values: np.ndarray, color: str, body_alpha: float, label: str | None) -> None:
+        values = values[np.isfinite(values)]
+        if len(values) == 0:
+            return
+        # A KDE-based violin body needs >= 3 points and some spread to be
+        # well-defined (a constant-valued or 1-2-point group makes
+        # matplotlib's internal gaussian_kde raise on a singular
+        # bandwidth matrix) -- below that, the jittered dots alone still
+        # communicate the group honestly, just without a shape to draw.
+        if len(values) >= 3 and np.ptp(values) > 1e-9:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    vp = ax.violinplot([values], positions=[x], widths=violin_width, showmedians=True, showextrema=False)
+                body = vp["bodies"][0]
+                body.set_facecolor(color)
+                body.set_edgecolor(color)
+                body.set_alpha(body_alpha)
+                vp["cmedians"].set_color(color)
+                vp["cmedians"].set_linewidth(1.3)
+                vp["cmedians"].set_alpha(0.9)
+            except Exception:
+                pass
+        jitter = rng.uniform(-0.09, 0.09, size=len(values))
+        ax.scatter(
+            np.full(len(values), x) + jitter, values, s=14, alpha=0.6, color=color,
+            zorder=3, label=label, edgecolors="none",
+        )
+
     for j, t in enumerate(tests):
         t_rows = [r for r in results if r.test == t]
         rates_u = np.array([r.uncorrected_rejects / r.n_reps if r.n_reps else float("nan") for r in t_rows])
@@ -7112,17 +7158,12 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
         all_rates.append(rates_u)
         all_rates.append(rates_c)
 
-        keep_u = np.isfinite(rates_u)
-        x_u = j + rng.uniform(-0.16, 0.16, size=int(np.sum(keep_u)))
-        ax.scatter(
-            x_u, rates_u[keep_u], s=18, alpha=0.35, color="#808080",
-            label="Uncorrected (any test)" if not unc_label_added else None, zorder=1,
+        _violin_and_strip(
+            j - group_offset, rates_u, "#808080", 0.35,
+            "Uncorrected (any test)" if not unc_label_added else None,
         )
         unc_label_added = True
-
-        keep_c = np.isfinite(rates_c)
-        x_c = j + rng.uniform(-0.16, 0.16, size=int(np.sum(keep_c)))
-        ax.scatter(x_c, rates_c[keep_c], s=20, alpha=0.65, color=get_method_color(t), label=_pretty_test(t), zorder=2)
+        _violin_and_strip(j + group_offset, rates_c, get_method_color(t), 0.45, _pretty_test(t))
 
     ax.axhline(alpha, color="black", ls="--", lw=1.1, label=f"Nominal {_alpha_label(alpha)}")
     ax.set_xlim(-0.5, len(tests) - 0.5)
@@ -7135,7 +7176,10 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     ax.set_ylabel("Observed rejection rate")
     ax.set_xlabel("Test")
     title_suffix = " -- Bootstrap/CI-Based Methods" if nonstandard else ""
-    ax.set_title(f"PPI-Corrected Type-I Error, by Test{title_suffix}\n(each point: one judge-bias scenario)", fontsize=12)
+    ax.set_title(
+        f"PPI-Corrected Type-I Error, by Test{title_suffix}\n"
+        "(gray = uncorrected, color = corrected; each dot: one judge-bias scenario)", fontsize=12,
+    )
     ax.grid(axis="y", alpha=0.25, lw=0.8)
     ax.legend(loc="upper right", fontsize=8, ncol=2)
 
