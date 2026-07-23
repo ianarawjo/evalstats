@@ -1472,6 +1472,7 @@ def _ppi_paired_bayes_bootstrap(
     alpha: float,
     n_boot: int,
     rng,
+    power_tune: bool = True,
 ):
     """PPI correction for a paired mean-difference estimand
     ``mean(a_i - b_i)``, using Bayesian bootstrap (Dirichlet-weighted)
@@ -1492,15 +1493,25 @@ def _ppi_paired_bayes_bootstrap(
 
     Pairing is by array position, matching :func:`_ppi_paired_arrays`; a
     position is included in the labeled set only when *both* ``a_lab[i]``
-    and ``b_lab[i]`` are non-NaN. The rectifier is bootstrapped as a single
-    per-item residual (``true_diff - llm_diff``) rather than as two
-    separately-resampled terms, so the same Dirichlet draw is applied to
-    both the human and LLM values for a given labeled item -- preserving
-    the pairing exactly as ``correct()`` does by reusing one integer index
-    draw for both ``Y_lab[idx_lab]`` and ``Y_hat_lab[idx_lab]``.
+    and ``b_lab[i]`` are non-NaN. ``diffs_lab_true``/``diffs_lab_llm`` are
+    bootstrapped with the SAME per-replicate Dirichlet weight vector
+    (reimplemented locally rather than via bayes_bootstrap_means_1d, which
+    only returns one array's replicates and draws its own weights
+    internally -- calling it twice would give two INDEPENDENT weight draws,
+    destroying the pairing) so a given labeled item's human and LLM values
+    move together across replicates, exactly as ``correct()`` does by
+    reusing one integer index draw for both ``Y_lab[idx_lab]`` and
+    ``Y_hat_lab[idx_lab]``. This is what makes ``power_tune`` possible here
+    at all -- lambda's derivation needs Cov(b_lab, b_hat_lab), which
+    requires the two separately, not just their pre-combined residual.
+
+    ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
+    same name (see its docstring for the full lambda derivation and the
+    n_lab-dependent shrinkage) -- reimplemented here rather than delegating
+    to ``correct()``, since the whole point of this function is the
+    Dirichlet-weighted resampling ``correct()`` doesn't support.
     """
-    from evalstats.core.resampling import bayes_bootstrap_means_1d
-    from evalstats.ppi import PPIResult
+    from evalstats.ppi import PPIResult, _POWER_TUNE_SHRINKAGE_C
 
     rng = np.random.default_rng(rng)
 
@@ -1510,25 +1521,47 @@ def _ppi_paired_bayes_bootstrap(
             "No positions have human labels for both groups in a_lab and b_lab."
         )
 
-    # diffs_unlab must be DISJOINT from the labeled positions -- boot_unlab
-    # and boot_rect below are resampled and summed independently, which is
-    # only valid for disjoint samples. See _ppi_two_sample and
-    # evalstats.ppi.correct's docstring.
+    # diffs_unlab must be DISJOINT from the labeled positions -- see
+    # _ppi_two_sample and evalstats.ppi.correct's docstring.
     all_diffs = a - b
     diffs_unlab = all_diffs[~mask]
     diffs_lab_llm = all_diffs[mask]
     diffs_lab_true = (a_lab - b_lab)[mask]
-    rect_items = diffs_lab_true - diffs_lab_llm
 
     f_unlab = float(np.mean(diffs_unlab))
     f_lab = float(np.mean(diffs_lab_true))
     f_hat_lab = float(np.mean(diffs_lab_llm))
     rectifier = f_lab - f_hat_lab
-    estimate = f_unlab + rectifier
+    n_lab = len(diffs_lab_true)
+    n_unlab = len(diffs_unlab)
 
-    boot_unlab = bayes_bootstrap_means_1d(diffs_unlab, n_boot, rng, statistic="mean")
-    boot_rect = bayes_bootstrap_means_1d(rect_items, n_boot, rng, statistic="mean")
-    boots = boot_unlab + boot_rect
+    def _draw(n_draw: int) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        exp_unlab = rng.exponential(1.0, size=(n_draw, n_unlab))
+        w_unlab = exp_unlab / exp_unlab.sum(axis=1, keepdims=True)
+        b_unlab = w_unlab @ diffs_unlab
+        exp_lab = rng.exponential(1.0, size=(n_draw, n_lab))
+        w_lab = exp_lab / exp_lab.sum(axis=1, keepdims=True)
+        b_lab = w_lab @ diffs_lab_true
+        b_hat_lab = w_lab @ diffs_lab_llm
+        return b_unlab, b_lab, b_hat_lab
+
+    lam: Optional[float] = None
+    if power_tune:
+        b1_unlab, b1_lab, b1_hat_lab = _draw(n_boot)
+        denom = float(np.var(b1_unlab - b1_hat_lab, ddof=1))
+        if denom > 1e-12:
+            lam = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
+            lam = min(max(lam, 0.0), 1.0)
+        else:
+            lam = 1.0
+        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+        b2_unlab, b2_lab, b2_hat_lab = _draw(n_boot)
+        estimate = f_lab + lam * (f_unlab - f_hat_lab)
+        boots = b2_lab + lam * (b2_unlab - b2_hat_lab)
+    else:
+        b_unlab, b_lab, b_hat_lab = _draw(n_boot)
+        estimate = f_unlab + rectifier
+        boots = b_unlab + (b_lab - b_hat_lab)
 
     lo = float(np.percentile(boots, 100 * alpha / 2))
     hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
@@ -1538,7 +1571,7 @@ def _ppi_paired_bayes_bootstrap(
     return PPIResult(
         estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
         llm_estimate=f_unlab, human_estimate=f_lab, rectifier=float(rectifier),
-        p_value=p_value,
+        p_value=p_value, lam=lam,
     )
 
 
