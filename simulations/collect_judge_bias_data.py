@@ -639,7 +639,30 @@ def _make_client(backend: str):
     raise ValueError(f"Unknown backend: {backend!r}")
 
 
-def _check_model_available(client, model: str) -> str | None:
+def _extra_body_for(backend: str) -> dict:
+    """Backend-specific extra request-body fields for reasoning models.
+
+    OpenRouter normalizes reasoning-token control across providers via a
+    top-level `reasoning` object -- {"exclude": True} lets the model still
+    think internally (answer quality isn't degraded) but strips the
+    reasoning trace out of the response, so message.content gets the final
+    answer instead of an empty string starved by a small max_tokens budget.
+    Ignored harmlessly by non-reasoning OpenRouter models. NOT sent for
+    Ollama: its equivalent (`"think": False`, a differently-shaped, Ollama-
+    specific field) was tried empirically against gpt-oss:20b and had no
+    effect -- that path instead relies on the generous max_tokens=2048
+    below, confirmed empirically to leave reasoning models enough room to
+    finish thinking AND answer (a real arena item used 393 completion
+    tokens end-to-end, finish_reason="stop"). This OpenRouter-side fix is
+    UNVERIFIED against a live reasoning model (no OPENROUTER_API_KEY
+    available in this environment to test with) -- worth a small --limit
+    smoke test against whichever reasoning model you actually use there."""
+    if backend == "openrouter":
+        return {"reasoning": {"exclude": True}}
+    return {}
+
+
+def _check_model_available(client, model: str, backend: str) -> str | None:
     """One quick, no-retry call to fail fast on a bad/unpulled model name --
     returns None if the model responded, else a short error string. Without
     this, an overnight multi-model run would burn through max_retries'
@@ -648,13 +671,16 @@ def _check_model_available(client, model: str) -> str | None:
     try:
         client.chat.completions.create(
             model=model, messages=[{"role": "user", "content": "ping"}], max_tokens=1,
+            extra_body=_extra_body_for(backend),
         )
         return None
     except Exception as e:  # noqa: BLE001 -- any failure here means "skip this model"
         return str(e)
 
 
-def _call_judge(client, model: str, messages: list[dict], *, max_retries: int, sleep_s: float) -> str | None:
+def _call_judge(
+    client, model: str, messages: list[dict], *, backend: str, max_retries: int, sleep_s: float,
+) -> str | None:
     last_err = None
     for attempt in range(max_retries):
         try:
@@ -668,8 +694,10 @@ def _call_judge(client, model: str, messages: list[dict], *, max_retries: int, s
                 # parse downstream. Confirmed empirically: a real arena item
                 # used 393 completion tokens end-to-end. Non-reasoning models
                 # just stop early (finish_reason="stop") well under this cap,
-                # so it costs them nothing.
+                # so it costs them nothing. See _extra_body_for for the
+                # OpenRouter-side reasoning.exclude complement to this.
                 model=model, messages=messages, temperature=0.0, max_tokens=2048,
+                extra_body=_extra_body_for(backend),
             )
             time.sleep(sleep_s)
             return resp.choices[0].message.content or ""
@@ -693,7 +721,7 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
     for model_i, model in enumerate(args.models, start=1):
         print(f"\n{'=' * 72}\n[{model_i}/{n_models}] model={model!r}\n{'=' * 72}")
 
-        err = _check_model_available(client, model)
+        err = _check_model_available(client, model, args.backend)
         if err is not None:
             print(f"  SKIPPING {model!r} -- not reachable: {err}")
             continue
@@ -731,7 +759,7 @@ def run_collect_judge_scores(args: argparse.Namespace) -> None:
                     if args.limit is not None and n_new >= args.limit:
                         break
                     messages = build_prompt(ji)
-                    raw = _call_judge(client, model, messages, max_retries=args.max_retries, sleep_s=args.sleep)
+                    raw = _call_judge(client, model, messages, backend=args.backend, max_retries=args.max_retries, sleep_s=args.sleep)
                     score = None if raw is None else parse_response(raw)
                     if score is None:
                         n_failed += 1
