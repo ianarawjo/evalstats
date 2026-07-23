@@ -163,9 +163,12 @@ with warnings.catch_warnings():
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
-        _ppi_anova_independent,
-        _ppi_anova_repeated,
-        _ppi_friedman,
+        _ppi_anova_independent_ci,
+        _ppi_anova_repeated_ci,
+        _ppi_friedman_ci,
+        _anova_between_variance_from_groups,
+        _repeated_condition_variance,
+        _friedman_rank_variance,
         _ppi_kruskal_wallis_pairwise,
         _ppi_kruskal_wallis_pairwise_mnar_experimental,
         _ppi_lmm_p_value,
@@ -3777,11 +3780,16 @@ def _run_ppi_effect_cell(
     completely unchanged, at the cost of redrawing ttest/ttest_welch/mwu/
     wilcoxon/kruskal's bootstrap a second time (cheap at the smaller
     effect-reps count this is meant to run at). anova_ind/anova_rep/friedman
-    call the bootstrap-based SCALAR-estimate functions here (_ppi_anova_
-    independent/_ppi_anova_repeated/_ppi_friedman) instead of the closed-form
-    p-value-only ones run_ppi_simulation uses, since only the former carry an
-    estimate/CI -- the same reason sim_type_i_calibration.py's anova family
-    needed a separate pass (_run_one_effect_anova) too.
+    use the SAME closed-form noncentral-F test-inversion CI functions
+    (_ppi_anova_independent_ci/_ppi_anova_repeated_ci/_ppi_friedman_ci) that
+    evalstats.tests.anova_oneway/friedman use for their corrected_estimate/
+    corrected_ci -- previously this used a separate bootstrap-based scalar
+    estimator (_ppi_anova_independent/_ppi_anova_repeated/_ppi_friedman),
+    which was an oversight left over from before the closed-form CI fix and
+    caused anova_ind's bias-z/coverage checks to flag incorrectly (see
+    git history around 2026-07-22). llm_estimate is recomputed here on the
+    disjoint unlabeled-only complement, matching the convention documented
+    in anova_oneway/friedman's rectifier comments.
     """
     active_tests = _ppi_effective_tests(sc, active_tests)
     rng = np.random.default_rng(seed)
@@ -3860,22 +3868,45 @@ def _run_ppi_effect_cell(
 
             if ANOVA_IND.name in active_tests:
                 try:
-                    r = _ppi_anova_independent([cell.llm_a3, cell.llm_b3, cell.llm_c3], [cell.lab_a3, cell.lab_b3, cell.lab_c3], _ALPHA, n_boot, _rng_seed())
-                    out[ANOVA_IND.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    groups_ai = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
+                    groups_ai_lab = [cell.lab_a3, cell.lab_b3, cell.lab_c3]
+                    ci_result = _ppi_anova_independent_ci(groups_ai, groups_ai_lab, k=3, alpha=_ALPHA)
+                    if ci_result is not None:
+                        est, lo, hi = ci_result
+                        masks = [~np.isnan(g_lab) for g_lab in groups_ai_lab]
+                        groups_unlab = [g[~m] for g, m in zip(groups_ai, masks)]
+                        llm_est = _anova_between_variance_from_groups(groups_unlab)
+                        out[ANOVA_IND.name].append((est, lo, hi, llm_est))
                 except Exception:
                     pass
 
             if ANOVA_REP.name in active_tests:
                 try:
-                    r = _ppi_anova_repeated([cell.llm_A, cell.llm_B, cell.llm_C], [cell.lab_A, cell.lab_B, cell.lab_C], _ALPHA, n_boot, _rng_seed())
-                    out[ANOVA_REP.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    groups_ar = [cell.llm_A, cell.llm_B, cell.llm_C]
+                    groups_ar_lab = [cell.lab_A, cell.lab_B, cell.lab_C]
+                    ci_result = _ppi_anova_repeated_ci(groups_ar, groups_ar_lab, k=3, alpha=_ALPHA)
+                    if ci_result is not None:
+                        est, lo, hi = ci_result
+                        labels_mat = np.column_stack(groups_ar_lab)
+                        overlap = np.all(~np.isnan(labels_mat), axis=1)
+                        llm_unlab_matrix = np.column_stack(groups_ar)[~overlap]
+                        llm_est = _repeated_condition_variance(llm_unlab_matrix)
+                        out[ANOVA_REP.name].append((est, lo, hi, llm_est))
                 except Exception:
                     pass
 
             if FRIEDMAN.name in active_tests:
                 try:
-                    r = _ppi_friedman([cell.llm_A, cell.llm_B, cell.llm_C], [cell.lab_A, cell.lab_B, cell.lab_C], _ALPHA, n_boot, _rng_seed())
-                    out[FRIEDMAN.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    groups_fr = [cell.llm_A, cell.llm_B, cell.llm_C]
+                    groups_fr_lab = [cell.lab_A, cell.lab_B, cell.lab_C]
+                    ci_result = _ppi_friedman_ci(groups_fr, groups_fr_lab, k=3, alpha=_ALPHA)
+                    if ci_result is not None:
+                        est, lo, hi = ci_result
+                        labels_mat = np.column_stack(groups_fr_lab)
+                        overlap = np.all(~np.isnan(labels_mat), axis=1)
+                        llm_unlab_matrix = np.column_stack(groups_fr)[~overlap]
+                        llm_est = _friedman_rank_variance(llm_unlab_matrix)
+                        out[FRIEDMAN.name].append((est, lo, hi, llm_est))
                 except Exception:
                     pass
 
