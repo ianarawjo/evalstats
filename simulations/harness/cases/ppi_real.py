@@ -821,33 +821,25 @@ def run(args: argparse.Namespace) -> CaseResult:
             finite_cov = [r.coverage for r in effect_results if np.isfinite(r.coverage)]
             key_metrics["ppi_real_effect_mean_coverage"] = float(np.mean(finite_cov)) if finite_cov else float("nan")
 
-        if twogroup_results:
-            print_ppi_report(twogroup_results, alpha=args.alpha)
-            run_stem = f"ppi_real_twogroup_reps{args.reps}_{stamp}"
+        # twogroup + paired combined into ONE Type-I report/plot, matching
+        # pvalues.py's synthetic PPI sweep (run_ppi_simulation's single
+        # combined `ppi_results` list, one print_ppi_report/save_ppi_typeI_plot
+        # call) instead of two separate ones -- safe to merge since the two
+        # families use entirely disjoint test names (ttest/ttest_welch/mwu vs
+        # wilcoxon/paired_t/bayes_bootstrap/bootstrap_t/tango, no collision
+        # like the wmt_paired_bias/single-sample bootstrap_t one elsewhere in
+        # this file), so this is purely additive -- no result gets double-
+        # counted or aliased with another. Colors/legend come from methods.py's
+        # Method.color per test, same registry pvalues.py's plot uses, so a
+        # test keeps the same color whether it's plotted from a synthetic or
+        # a real-data run.
+        hypothesis_results = twogroup_results + paired_results
+        if hypothesis_results:
+            print_ppi_report(hypothesis_results, alpha=args.alpha)
+            run_stem = f"ppi_real_hypothesis_reps{args.reps}_{stamp}"
             if args.save_results == "save":
                 output_paths += save_results_artifacts_ppi(
-                    results=twogroup_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=args.latex,
-                )
-            if args.plots == "save":
-                plot_path = save_ppi_typeI_plot(
-                    results=twogroup_results, alpha=args.alpha,
-                    out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected.png"),
-                )
-                output_paths.append(plot_path)
-                print(f"Saved plot: {plot_path}")
-            c_tot = sum(r.corrected_rejects for r in twogroup_results)
-            u_tot = sum(r.uncorrected_rejects for r in twogroup_results)
-            n_tot = sum(r.n_reps for r in twogroup_results)
-            key_metrics["ppi_real_twogroup_n_results"] = len(twogroup_results)
-            key_metrics["ppi_real_twogroup_mean_corrected_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
-            key_metrics["ppi_real_twogroup_mean_uncorrected_type1"] = float(u_tot / n_tot) if n_tot else float("nan")
-
-        if paired_results:
-            print_ppi_report(paired_results, alpha=args.alpha)
-            run_stem = f"ppi_real_paired_reps{args.reps}_{stamp}"
-            if args.save_results == "save":
-                output_paths += save_results_artifacts_ppi(
-                    results=paired_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=args.latex,
+                    results=hypothesis_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=args.latex,
                 )
             if args.plots == "save":
                 # Same empty-bucket guard as the effect plot above -- a
@@ -855,27 +847,27 @@ def run(args: argparse.Namespace) -> CaseResult:
                 # bayes_bootstrap, tango}, i.e. only ONE standard test
                 # (paired_t) but TWO nonstandard ones, so neither bucket is
                 # reliably non-empty across eval_types.
-                if _has_standard_test(paired_results):
+                if _has_standard_test(hypothesis_results):
                     plot_path = save_ppi_typeI_plot(
-                        results=paired_results, alpha=args.alpha,
+                        results=hypothesis_results, alpha=args.alpha,
                         out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected.png"),
                     )
                     output_paths.append(plot_path)
                     print(f"Saved plot: {plot_path}")
-                if _has_nonstandard_test(paired_results):
+                if _has_nonstandard_test(hypothesis_results):
                     nonstd_plot_path = save_ppi_typeI_plot(
-                        results=paired_results, alpha=args.alpha,
+                        results=hypothesis_results, alpha=args.alpha,
                         out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected_nonstandard.png"),
                         nonstandard=True,
                     )
                     output_paths.append(nonstd_plot_path)
                     print(f"Saved plot: {nonstd_plot_path}")
-            c_tot = sum(r.corrected_rejects for r in paired_results)
-            u_tot = sum(r.uncorrected_rejects for r in paired_results)
-            n_tot = sum(r.n_reps for r in paired_results)
-            key_metrics["ppi_real_paired_n_results"] = len(paired_results)
-            key_metrics["ppi_real_paired_mean_corrected_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
-            key_metrics["ppi_real_paired_mean_uncorrected_type1"] = float(u_tot / n_tot) if n_tot else float("nan")
+            c_tot = sum(r.corrected_rejects for r in hypothesis_results)
+            u_tot = sum(r.uncorrected_rejects for r in hypothesis_results)
+            n_tot = sum(r.n_reps for r in hypothesis_results)
+            key_metrics["ppi_real_hypothesis_n_results"] = len(hypothesis_results)
+            key_metrics["ppi_real_hypothesis_mean_corrected_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
+            key_metrics["ppi_real_hypothesis_mean_uncorrected_type1"] = float(u_tot / n_tot) if n_tot else float("nan")
 
         return CaseResult(
             case_name=CASE_NAME, status="ok", output_paths=output_paths,
