@@ -162,6 +162,8 @@ class TestResult:
         elif test == "mannwhitney":
             return "P(X > Y)"
         elif test == "wilcoxon":
+            if ex.get("ppi_method") == "hajek_experimental":
+                return "mean Hajek signed-rank score (linearized Wilcoxon, centered at 0 under H0)"
             return "median of paired differences (X − Y)"
         elif test == "anova":
             return (
@@ -1460,6 +1462,93 @@ def _ppi_paired_arrays(
         rng=rng,
         compute_pvalue=True,
         rectifier_func=rectifier_func,
+        power_tune=power_tune,
+    )
+
+
+def _wilcoxon_hajek_scores(
+    diffs: np.ndarray,
+    abs_ref_sorted: np.ndarray,
+) -> np.ndarray:
+    """Per-item signed-rank scores for a Hajek-projection-style linearization.
+
+    For each paired difference ``d_i``, computes
+
+    ``sign(d_i) * (2 * F_mid(|d_i|) - 1)``
+
+    where ``F_mid`` is the empirical CDF (with mid-ranks for ties) of
+    ``|D|`` from a fixed reference sample. This is the canonical influence-
+    function form of the Wilcoxon signed-rank linear rank statistic.
+    """
+    diffs = np.asarray(diffs, dtype=float)
+    if diffs.size == 0:
+        return np.empty(0, dtype=float)
+
+    abs_d = np.abs(diffs)
+    n_ref = len(abs_ref_sorted)
+    if n_ref == 0:
+        return np.zeros_like(abs_d, dtype=float)
+
+    n_lt = np.searchsorted(abs_ref_sorted, abs_d, side="left")
+    n_le = np.searchsorted(abs_ref_sorted, abs_d, side="right")
+    f_mid = (n_lt + 0.5 * (n_le - n_lt)) / n_ref
+    return np.sign(diffs) * (2.0 * f_mid - 1.0)
+
+
+def _ppi_wilcoxon_hajek_experimental(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+    power_tune: bool = True,
+):
+    """Experimental PPI correction for Wilcoxon via Hajek-projection scores.
+
+    This is intentionally experimental and NOT the default Wilcoxon path.
+
+    Strategy:
+      1) Build a fixed score transform from the full LLM paired-difference
+         distribution ``D_hat = a - b``:
+         ``phi(d) = sign(d) * (2*F_mid_hat(|d|) - 1)``.
+      2) Apply PPI to the *mean* of ``phi(d)`` on unlabeled/labeled slices.
+
+    Freezing ``phi`` from the full LLM sample gives a linearized (mean-type)
+    target inspired by the Hajek projection of the Wilcoxon signed-rank
+    statistic. It is useful for head-to-head calibration/power experiments,
+    but it does not yet have a full finite-sample theory in this module.
+    """
+    from evalstats.ppi import correct
+
+    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+    if mask.sum() == 0:
+        raise ValueError(
+            "No positions have human labels for both groups in a_lab and b_lab."
+        )
+
+    llm_diffs = a - b
+    abs_ref_sorted = np.sort(np.abs(llm_diffs))
+
+    def _phi(arr: np.ndarray) -> np.ndarray:
+        return _wilcoxon_hajek_scores(arr, abs_ref_sorted)
+
+    diffs_unlab = llm_diffs[~mask]
+    diffs_lab_llm = llm_diffs[mask]
+    diffs_lab_true = (a_lab - b_lab)[mask]
+
+    return correct(
+        np.mean,
+        Y_lab=_phi(diffs_lab_true),
+        Y_hat_lab=_phi(diffs_lab_llm),
+        Y_hat_unlab=_phi(diffs_unlab),
+        X_lab=None,
+        X_unlab=None,
+        alpha=alpha,
+        n_boot=n_boot,
+        rng=rng,
+        compute_pvalue=True,
         power_tune=power_tune,
     )
 
@@ -3083,19 +3172,28 @@ def wilcoxon(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
+    method: str = "current",
     power_tune: bool = True,
 ) -> TestResult:
     """Wilcoxon signed-rank test with optional PPI correction.
 
     Uncorrected: ``scipy.stats.wilcoxon(x, y)`` (two-sided, paired by position).
 
-    PPI estimand: ``median(x_i − y_i)`` for the main term (LLM diffs),
-    with ``mean(x_lab_i − x_hat_i) − mean(y_lab_i − y_hat_i)`` as the
-    rectifier.  Using the mean for the rectifier gives a well-calibrated
-    bootstrap (the bootstrap of a mean is exact); using the median would
-    overestimate the rectifier SE by ~2×, causing conservative Type I errors.
-    H₀ is location shift = 0, so the bootstrap p-value
+    PPI estimand (``method="current"``, default):
+    ``median(x_i − y_i)`` for the main term (LLM diffs), with
+    ``mean(x_lab_i − x_hat_i) − mean(y_lab_i − y_hat_i)`` as the rectifier.
+    Using the mean for the rectifier gives a well-calibrated bootstrap (the
+    bootstrap of a mean is exact); using the median would overestimate the
+    rectifier SE by ~2×, causing conservative Type I errors. H₀ is location
+    shift = 0, so the bootstrap p-value
     ``2 * min(P(θ̂* ≤ 0), P(θ̂* ≥ 0))`` is correctly centered at the null.
+
+    Experimental alternative (``method="hajek_experimental"``): builds a
+    fixed, full-sample LLM score transform
+    ``phi(d)=sign(d)*(2*F_mid_hat(|d|)-1)`` (Hajek-projection-inspired
+    Wilcoxon linearization), then runs PPI on the mean of ``phi(d)``.
+    This is for head-to-head benchmarking; it is not presented as a fully
+    validated replacement for ``method="current"``.
 
     Pairing is by array position (``x[i]`` paired with ``y[i]``), exactly as
     in ``scipy.stats.wilcoxon``.  A position enters the labeled set only when
@@ -3111,6 +3209,10 @@ def wilcoxon(
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
+    method : {"current", "hajek_experimental"}
+        Which PPI correction path to use when labels are supplied.
+        ``"current"`` preserves the existing median+mean-rectifier approach.
+        ``"hajek_experimental"`` uses a linearized signed-rank score mean.
     power_tune : bool
         Use PPI++'s variance-minimizing power-tuning weight λ instead of
         fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
@@ -3125,6 +3227,9 @@ def wilcoxon(
     >>> result = es.tests.wilcoxon(llm_x, llm_y, print_result=False)  # silent
     >>> result = es.tests.wilcoxon(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
+    if method not in ("current", "hajek_experimental"):
+        raise ValueError(f'method must be "current" or "hajek_experimental"; got {method!r}.')
+
     x = _coerce(x)
     y = _coerce(y)
 
@@ -3156,6 +3261,7 @@ def wilcoxon(
         "n_pairs": len(x),
         "median_diff": median_diff,
         "n_boot": n_boot,
+        "ppi_method": method,
     }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = lam = None
@@ -3178,13 +3284,25 @@ def wilcoxon(
             np.where(_pair_mask, x_lab - y_lab, np.nan),
         )
 
-        # Use np.mean for the rectifier (instead of np.median) to get a
-        # better-calibrated bootstrap: the bootstrap of mean(D_lab) is exact,
-        # while the bootstrap of median(Y_lab) − median(Y_hat_lab) overestimates
-        # the variance by ~2× for typical n_lab, causing conservative Type I errors.
-        # Both estimands converge to 0 under H₀; the hybrid is asymptotically valid.
-        ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng,
-                                 rectifier_func=np.mean, power_tune=power_tune)
+        if method == "hajek_experimental":
+            ppi = _ppi_wilcoxon_hajek_experimental(
+                x,
+                y,
+                x_lab,
+                y_lab,
+                alpha,
+                n_boot,
+                rng,
+                power_tune=power_tune,
+            )
+        else:
+            # Use np.mean for the rectifier (instead of np.median) to get a
+            # better-calibrated bootstrap: the bootstrap of mean(D_lab) is exact,
+            # while the bootstrap of median(Y_lab) − median(Y_hat_lab) overestimates
+            # the variance by ~2× for typical n_lab, causing conservative Type I errors.
+            # Both estimands converge to 0 under H₀; the hybrid is asymptotically valid.
+            ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng,
+                                     rectifier_func=np.mean, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)

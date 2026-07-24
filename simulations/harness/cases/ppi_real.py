@@ -56,6 +56,7 @@ as a genuine repeated-measures design rather than an arbitrary combination.
 from __future__ import annotations
 
 import argparse
+import multiprocessing as _mp
 import time
 import warnings
 from collections import defaultdict
@@ -310,6 +311,43 @@ def _run_real_paired_cell(
     return corrected, uncorrected
 
 
+_REAL_CORPORA: list[RealJudgeBiasCorpus] = []
+"""Set by run() right before creating the worker Pool (fork context), so
+worker processes inherit it via copy-on-write instead of the (potentially
+large) corpus arrays being re-pickled through the task queue on every
+work item -- same pattern as pvalues.py's _PAIRWISE_SOURCES /
+_MULTIARM_SOURCES globals. Only meaningful in the child processes; the
+parent addresses corpora directly."""
+
+
+def _run_ppi_real_cell_worker(args: tuple) -> dict:
+    """Runs ONE (single|twogroup|paired) cell and returns everything run()
+    needs to fold it into effect_results/twogroup_results/paired_results,
+    with no dependency on the original work-item's position -- required
+    since pool.imap_unordered does not preserve submission order."""
+    check_type, corpus_idx, name, dataset, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed = args
+    corpus = _REAL_CORPORA[corpus_idx]
+
+    if check_type == "single":
+        samples_by_test = _run_real_single_cell(corpus, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed)
+        return {
+            "check_type": check_type, "name": name, "dataset": dataset, "n": n,
+            "corpus_mean": corpus.corpus_mean, "samples_by_test": samples_by_test,
+        }
+    if check_type == "twogroup":
+        corrected, uncorrected = _run_real_twogroup_cell(corpus, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed)
+        return {
+            "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
+            "methods": methods, "corrected": corrected, "uncorrected": uncorrected,
+        }
+    judge_a, judge_b = judge_or_pair
+    corrected, uncorrected = _run_real_paired_cell(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
+    return {
+        "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
+        "methods": methods, "corrected": corrected, "uncorrected": uncorrected,
+    }
+
+
 def _single_methods_for(eval_type: str) -> list[str]:
     return [_SINGLE_METHOD_BOOTSTRAP_T] + ([_SINGLE_METHOD_WILSON] if eval_type == "binary" else [])
 
@@ -383,9 +421,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-paired-check", action="store_true", help="Skip the cross-judge paired Type-I null check.")
     parser.add_argument("--latex", action="store_true")
     parser.add_argument("--workers", type=int, default=1,
-                         help="Accepted for CLI consistency with the other cases; ppi_real always runs "
-                              "serially for now. Worth revisiting once --max-pairs/judge counts get large "
-                              "enough that this becomes the bottleneck.")
+                         help="Parallelize across single/twogroup/paired cells (all corpora, label_fracs, "
+                              "sizes, judge models/pairs flattened into one work queue) using a "
+                              "multiprocessing.Pool with the fork start method, same as pvalues.py's "
+                              "run_*_simulation functions. 1 (default) runs serially. Cell seeds are fixed "
+                              "up front from --seed regardless of --workers, so results are identical "
+                              "either way -- only completion order (and hence progress-bar interleaving) "
+                              "differs.")
 
 
 def official_args(base_seed: int = 46) -> argparse.Namespace:
@@ -452,20 +494,21 @@ def run(args: argparse.Namespace) -> CaseResult:
         paired_results: list[PPIResult] = []
         seed_counter = args.seed
 
-        for corpus in corpora:
+        # Flatten every (corpus, label_frac, size, judge_model/pair, check
+        # type) cell into one work list up front, in the SAME nested order
+        # the old inline loop used to run them in, so seed_counter assigns
+        # the identical seed to the identical cell regardless of --workers
+        # -- results are therefore reproducible for a given --seed whether
+        # this runs serially or in parallel; only completion order (and
+        # hence progress-bar interleaving) can differ.
+        work_items: list[tuple] = []
+
+        for corpus_idx, corpus in enumerate(corpora):
             sizes = args.sizes or default_size_grid(corpus.corpus_size)
             single_methods = _single_methods_for(corpus.eval_type)
             twogroup_methods = _twogroup_methods_for(corpus.eval_type)
             paired_methods = _paired_methods_for(corpus.eval_type)
             pairs = all_judge_pairs(corpus, max_pairs=args.max_pairs, rng=np.random.default_rng(args.seed))
-
-            n_judge_cells = len(corpus.judge_models) * (
-                int(not args.no_single_check) + int(not args.no_twogroup_check)
-            )
-            n_pair_cells = len(pairs) * int(not args.no_paired_check)
-            n_cells = len(args.label_fracs) * len(sizes) * (n_judge_cells + n_pair_cells)
-            reporter = _ProgressReporter(max(n_cells, 1), mode=args.progress, label=f"ppi_real-{corpus.dataset}")
-            cell_i = 0
 
             for label_frac in args.label_fracs:
                 for n in sizes:
@@ -474,55 +517,68 @@ def run(args: argparse.Namespace) -> CaseResult:
 
                         if not args.no_single_check:
                             seed_counter += 1
-                            samples_by_test = _run_real_single_cell(
-                                corpus, single_methods, n, label_frac, judge_model,
-                                args.reps, args.ppi_n_boot, seed_counter,
-                            )
-                            for t in single_methods:
-                                samples = samples_by_test.get(t, [])
-                                bias_mean, z, coverage, mean_width, n_ok = _effect_cell_stats(samples, corpus.corpus_mean)
-                                if n_ok == 0:
-                                    continue
-                                unc_z = _uncorrected_bias_z(samples, corpus.corpus_mean)
-                                effect_results.append(PPIEffectResult(
-                                    name=name, tag=f"real_{corpus.dataset}", test=t, n=n, n_samples=n_ok,
-                                    null_value=corpus.corpus_mean, mean_bias=bias_mean, bias_z=z,
-                                    coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
-                                ))
-                            cell_i += 1
-                            reporter.update(cell_i, detail=f"{corpus.dataset} single judge={judge_model}")
+                            work_items.append((
+                                "single", corpus_idx, name, corpus.dataset, single_methods,
+                                n, label_frac, judge_model, args.reps, args.ppi_n_boot, seed_counter,
+                            ))
 
                         if not args.no_twogroup_check:
                             seed_counter += 1
-                            corrected, uncorrected = _run_real_twogroup_cell(
-                                corpus, twogroup_methods, n, label_frac, judge_model,
-                                args.reps, args.ppi_n_boot, seed_counter,
-                            )
-                            for t in twogroup_methods:
-                                twogroup_results.append(PPIResult(
-                                    name=name, tag=f"real_{corpus.dataset}", test=t, n_reps=args.reps,
-                                    corrected_rejects=corrected[t], uncorrected_rejects=uncorrected[t], n=n,
-                                ))
-                            cell_i += 1
-                            reporter.update(cell_i, detail=f"{corpus.dataset} twogroup judge={judge_model}")
+                            work_items.append((
+                                "twogroup", corpus_idx, name, corpus.dataset, twogroup_methods,
+                                n, label_frac, judge_model, args.reps, args.ppi_n_boot, seed_counter,
+                            ))
 
                     if not args.no_paired_check:
                         for judge_a, judge_b in pairs:
                             seed_counter += 1
                             name = f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}.pair={judge_a}~{judge_b}"
-                            corrected, uncorrected = _run_real_paired_cell(
-                                corpus, paired_methods, n, label_frac, judge_a, judge_b,
-                                args.reps, args.ppi_n_boot, seed_counter,
-                            )
-                            for t in paired_methods:
-                                paired_results.append(PPIResult(
-                                    name=name, tag=f"real_{corpus.dataset}", test=t, n_reps=args.reps,
-                                    corrected_rejects=corrected[t], uncorrected_rejects=uncorrected[t], n=n,
-                                ))
-                            cell_i += 1
-                            reporter.update(cell_i, detail=f"{corpus.dataset} pair={judge_a}~{judge_b}")
+                            work_items.append((
+                                "paired", corpus_idx, name, corpus.dataset, paired_methods,
+                                n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
+                            ))
 
-            reporter.update(max(n_cells, 1), detail="done")
+        def _consume(result: dict) -> None:
+            ct = result["check_type"]
+            if ct == "single":
+                for t, samples in result["samples_by_test"].items():
+                    bias_mean, z, coverage, mean_width, n_ok = _effect_cell_stats(samples, result["corpus_mean"])
+                    if n_ok == 0:
+                        continue
+                    unc_z = _uncorrected_bias_z(samples, result["corpus_mean"])
+                    effect_results.append(PPIEffectResult(
+                        name=result["name"], tag=f"real_{result['dataset']}", test=t, n=result["n"], n_samples=n_ok,
+                        null_value=result["corpus_mean"], mean_bias=bias_mean, bias_z=z,
+                        coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
+                    ))
+            else:
+                bucket = twogroup_results if ct == "twogroup" else paired_results
+                for t in result["methods"]:
+                    bucket.append(PPIResult(
+                        name=result["name"], tag=f"real_{result['dataset']}", test=t, n_reps=result["n_reps"],
+                        corrected_rejects=result["corrected"][t], uncorrected_rejects=result["uncorrected"][t],
+                        n=result["n"],
+                    ))
+
+        reporter = _ProgressReporter(max(len(work_items), 1), mode=args.progress, label="ppi_real")
+        n_workers = max(1, getattr(args, "workers", 1))
+
+        global _REAL_CORPORA
+        _REAL_CORPORA = corpora
+
+        if n_workers <= 1:
+            for i, item in enumerate(work_items):
+                result = _run_ppi_real_cell_worker(item)
+                _consume(result)
+                reporter.update(i + 1, detail=f"{result['dataset']} {result['check_type']}")
+        else:
+            ctx = _mp.get_context("fork")
+            with ctx.Pool(n_workers) as pool:
+                for i, result in enumerate(pool.imap_unordered(_run_ppi_real_cell_worker, work_items)):
+                    _consume(result)
+                    reporter.update(i + 1, detail=f"{result['dataset']} {result['check_type']}")
+
+        reporter.update(max(len(work_items), 1), detail="done")
 
         if effect_results:
             print_ppi_effect_report(effect_results, alpha=args.alpha)
