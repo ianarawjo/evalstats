@@ -65,10 +65,16 @@ DEFAULT_DATA_DIR = "simulations/out"
 _MIN_LAB = 15  # same floor scenarios.synthetic._jb_labels_independent uses
 
 # dataset key -> (eval_type, native (lo, hi) scale bounds to rescale onto [0, 1])
+# "privacy_judge" is sjmeis/privacy-judge replication data (see
+# simulations/import_privacy_judge_data.py) -- LLM privacy-risk judgments of
+# text snippets vs. the MEAN of ~50-68 human survey participants' 1-5
+# ratings per item. "continuous" (not "likert") since human_label is an
+# averaged, not a single discrete, label.
 REAL_JUDGE_BIAS_DATASETS: dict[str, tuple[str, tuple[float, float]]] = {
     "arena": ("binary", (0.0, 1.0)),
     "wmt_da": ("continuous", (0.0, 100.0)),
     "appstore": ("likert", (1.0, 5.0)),
+    "privacy_judge": ("continuous", (1.0, 5.0)),
 }
 
 
