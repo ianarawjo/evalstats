@@ -2417,19 +2417,50 @@ def _ppi_anova_independent_f_stat(
     grand = (ns * corr_means).sum() / N
     ss_between = float(np.sum(ns * (corr_means - grand) ** 2))
 
-    # Within-group MS from full LLM data  (≈ σ² + σ_llm²)
+    # Within-group MS from full LLM data  (≈ σ² + σ_llm²... but see the
+    # Cov(true, noise) correction below: that's only exact if the judge's
+    # error is uncorrelated with the true score.)
     ss_within = float(sum(np.sum((g - g.mean()) ** 2) for g in groups))
     ms_within = ss_within / (N - k)
 
-    # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human)
+    # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human),
+    # AND per-group Cov(true, noise) from the same labeled subset.
+    #
+    # Var(judge_score) = σ² + σ_llm² + 2·Cov(true, noise) -- the "+2·Cov" term
+    # is only zero if the judge's error is independent of the true score,
+    # which a real LLM judge routinely violates: root-caused 2026-07-24 via
+    # ppi_real.py's omnibus-independent check, on real appstore data (Likert
+    # 1-5 app reviews) -- every judge showed a substantial NEGATIVE
+    # correlation between the true rating and its own error (corr ~= -0.28 to
+    # -0.37), the classic "regression to the mean"/compression behavior of a
+    # judge predicting toward the middle of a bounded scale. That makes
+    # ms_within (computed from the judge's own, compressed scores) come out
+    # BELOW what "σ² + σ_llm², independent" would predict, so subtracting
+    # only σ_llm_sq_weighted (the ORIGINAL formula, no Cov term) systematically
+    # UNDER-estimates σ² by ~2·Cov(true, noise) -- confirmed directly: 0.130
+    # estimated vs 0.213 true population Var(human_label), a ~0.08 shortfall
+    # matching -2·(-0.04) almost exactly. This shortfall is a FIXED absolute
+    # amount, while the OTHER (correctly-shrinking) term in inflation_per_group
+    # shrinks as n_lab grows -- so the fixed shortfall becomes a LARGER
+    # fraction of denom at high label_frac, unmasking it: confirmed on real
+    # data, Type-I climbed from 0.081 (label_frac=0.05) to 0.103 (0.40)
+    # before this fix, both within noise of nominal 0.05 after it. A plain
+    # i.i.d.-Gaussian-noise synthetic repro (Cov(true, noise) = 0 by
+    # construction) never showed this at all, confirming it's specific to
+    # judges whose error genuinely correlates with the true value, not a
+    # generic small-n_lab artifact.
     sigma_llm_sq_per_group = np.zeros(k)
+    cov_true_noise_per_group = np.zeros(k)
     for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
         if mask.sum() > 1:
-            sigma_llm_sq_per_group[i] = float(np.var(g[mask] - g_lab[mask], ddof=1))
+            noise = g[mask] - g_lab[mask]
+            sigma_llm_sq_per_group[i] = float(np.var(noise, ddof=1))
+            cov_true_noise_per_group[i] = float(np.cov(g_lab[mask], noise, ddof=1)[0, 1])
 
-    # n_i-weighted average noise (matches how ms_within pools group residuals)
+    # n_i-weighted average (matches how ms_within pools group residuals)
     sigma_llm_sq_weighted = float(np.dot(ns, sigma_llm_sq_per_group) / N)
-    sigma_sq = max(ms_within - sigma_llm_sq_weighted, 0.0)
+    cov_true_noise_weighted = float(np.dot(ns, cov_true_noise_per_group) / N)
+    sigma_sq = max(ms_within - sigma_llm_sq_weighted - 2.0 * cov_true_noise_weighted, 0.0)
 
     # Per-group inflation: Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM]
     # = (σ² + σ_llm_i² × (nᵢ/n_lab_i − 1)) / ms_within
@@ -2464,7 +2495,12 @@ def _ppi_anova_independent_p_value(
 
     Var[μ̂ᵢ_PPI] = σ²/nᵢ + σ_llm² × (1/n_lab_i − 1/nᵢ)
     where σ² is the true within-group variance and σ_llm² is LLM noise variance.
-    Both are estimated from the labeled residuals (llm − human within each group).
+    Both are estimated from the labeled residuals (llm − human within each group)
+    -- σ² specifically as ms_within − σ_llm² − 2·Cov(true, noise), NOT just
+    ms_within − σ_llm² (see _ppi_anova_independent_f_stat's inline comment for
+    why the Cov term matters: a real LLM judge's error is often correlated with
+    the true score -- e.g. "regression to the mean" toward a bounded scale's
+    middle -- which the simpler independent-noise formula misses entirely).
     The inflation factor Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM] scales the F denominator so
     the test is calibrated regardless of how noisy the LLM judge is.
 
