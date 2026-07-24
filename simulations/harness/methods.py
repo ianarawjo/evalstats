@@ -304,8 +304,8 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # shrinkage formula (see evalstats.tests._ppi_paired_tango); fully
 # closed-form, no bootstrap resampling.
 # ---------------------------------------------------------------------------
-TTEST = Method("ttest", "#3182bd")
-TTEST_WELCH = Method("ttest_welch", "#6baed6")
+TTEST = Method("ttest", "#1f77b4")
+TTEST_WELCH = Method("ttest_welch", "#d62728")
 # MWU/MWU_MNAR_EXPERIMENTAL: two PPI corrections for the SAME classical test
 # (Mann-Whitney U / independent two-group mid-rank estimand P_mid(A>B)-0.5),
 # not two different classical tests. MWU applies evalstats.tests.
@@ -337,12 +337,18 @@ TTEST_WELCH = Method("ttest_welch", "#6baed6")
 # rectifier) is the default/official method again, and MWU_MNAR_EXPERIMENTAL
 # is kept (not deleted) for direct comparison, reproducing pre-2026-07-22
 # results, or anyone deliberately studying MNAR robustness, selectable
-# explicitly via --tests mwu_mnar_experimental. Colors stay in the same
-# Blues family as ttest/ttest_welch -- MWU keeps the original primary shade
-# (the default occupies that slot regardless of which algorithm currently
-# fills it), MWU_MNAR_EXPERIMENTAL gets the lighter/secondary tint.
-MWU = Method("mwu", "#9ecae1")
-MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#c6dbef")
+# explicitly via --tests mwu_mnar_experimental. cases/ppi_real.py's twogroup
+# check dropped it entirely as of 2026-07-24 (real-data judge bias isn't
+# MNAR, so there's nothing there for the local rectifier to buy over MWU --
+# see _twogroup_methods_for's docstring), so it no longer needs to share a
+# same-hue "Blues family" with ttest/ttest_welch/mwu the way it did when all
+# four were expected to appear together in one plot (that family made a
+# same-hue-different-shade grouping hard to tell apart at a glance, which is
+# why ttest/ttest_welch/mwu moved to distinct tab10 hues instead) -- kept
+# distinct here too so it isn't left visually stranded wherever it's still
+# selected explicitly.
+MWU = Method("mwu", "#2ca02c")
+MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families

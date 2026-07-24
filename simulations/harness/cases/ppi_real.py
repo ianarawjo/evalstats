@@ -485,11 +485,21 @@ def _single_methods_for(eval_type: str) -> list[str]:
 
 
 def _twogroup_methods_for(eval_type: str) -> list[str]:
-    # MWU/MWU_MNAR_EXPERIMENTAL (rank-based) aren't in pvalues.py's
-    # _PPI_BINARY_COMPATIBLE_TESTS -- binary's massive ties break the
-    # rank-based judge-bias noise model there, same restriction applies here.
+    # MWU (rank-based) isn't in pvalues.py's _PPI_BINARY_COMPATIBLE_TESTS --
+    # binary's massive ties break the rank-based judge-bias noise model
+    # there, same restriction applies here.
+    #
+    # MWU_MNAR_EXPERIMENTAL (the local-rectifier MWU variant) deliberately
+    # NOT included (as of 2026-07-24) -- it exists specifically to trade
+    # some MCAR calibration for MNAR robustness (see methods.py's
+    # MWU_MNAR_EXPERIMENTAL comment for the full history), but this check's
+    # real-data labeling is MCAR by construction (generate_real_twogroup_
+    # null_cell's _reveal_labels call), so there's no MNAR risk here for the
+    # local rectifier to buy anything against -- it would only ever look
+    # worse than plain MWU on this check, never better, for reasons that
+    # have nothing to do with either method's actual quality.
     base = [TTEST.name, TTEST_WELCH.name]
-    return base if eval_type == "binary" else base + [MWU.name, MWU_MNAR_EXPERIMENTAL.name]
+    return base if eval_type == "binary" else base + [MWU.name]
 
 
 def _has_standard_test(results: list) -> bool:

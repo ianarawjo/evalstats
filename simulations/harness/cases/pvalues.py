@@ -7073,7 +7073,7 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
 
 _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MWU_MNAR_EXPERIMENTAL.name: "Mann-Whitney U (corrected)",
-    MWU.name: "Simple MWU",
+    MWU.name: "Mann-Whitney U",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
