@@ -23,13 +23,29 @@ Four checks:
       p-value/hypothesis-test check -- these functions return
       p_value=None.
 
-  two-group Type-I null (random split)
-      Per judge model: bisect the corpus into two disjoint random
-      subsamples -- a valid null by construction (both are random draws
-      from the identical population, so their true means are equal) -- and
-      run the independent-samples tests (ttest/ttest_welch/mwu/
-      mwu_mnar_experimental) PPI correction is supposed to keep calibrated, with real
-      noise/skew/judge-bias characteristics instead of synthetic ones.
+  two-group Type-I null (random split, cross-judge)
+      For every unique PAIR of judge models: bisect the corpus into two
+      disjoint random subsamples -- a valid null by construction (both are
+      random draws from the identical population, so their TRUE, human-
+      label means are equal) -- but read group A through judge_a and group
+      B through judge_b, not the same judge reading both. Runs the
+      independent-samples tests (ttest/ttest_welch/mwu/
+      mwu_mnar_experimental) PPI correction is supposed to keep calibrated,
+      with real noise/skew/judge-bias characteristics instead of synthetic
+      ones. Cross-judge is a deliberate redesign (2026-07-23) from an
+      original same-judge-reads-both version: since a single judge reading
+      two random halves of the SAME population applies its bias identically
+      to both, the bias cancels out of the A-vs-B difference regardless of
+      its magnitude -- making "uncorrected" (a classical test on raw judge
+      scores, no human labels) structurally unable to fail, which is
+      uninformative about whether skipping PPI correction is actually
+      risky. Two DIFFERENT judges reintroduces a genuine asymmetry
+      (confirmed on real data: judges commonly differ by several
+      percentage points of mean bias on a [0,1]-rescaled scale) an
+      uncorrected test IS vulnerable to -- see
+      scenarios/real_judge_bias.py's generate_real_twogroup_null_cell for
+      the full reasoning and the specific real-data evidence that
+      motivated it.
 
   paired Type-I null (cross-judge)
       For every unique PAIR of judge models scoring the SAME items: an
@@ -38,11 +54,13 @@ Four checks:
       every item, since both judges are noisy/biased reads of the
       IDENTICAL human_label). Runs the paired-samples tests (wilcoxon/
       paired_t/bayes_bootstrap/bootstrap_t/tango) that a single judge model
-      alone can't exercise at all. With k judge models collected, all
-      C(k, 2) pairs are checked (capped by --max-pairs) -- more judges
-      means more independent (dataset, label_frac, n, pair) cells feeding
-      the SAME calibration question, i.e. more power to catch a
-      miscalibration than any single pair would give alone.
+      alone can't exercise at all. Already cross-judge from the start (see
+      the two-group check above, which was redesigned to match this one).
+      With k judge models collected, all C(k, 2) pairs are checked (capped
+      by --max-pairs) -- more judges means more independent (dataset,
+      label_frac, n, pair) cells feeding the SAME calibration question,
+      i.e. more power to catch a miscalibration than any single pair would
+      give alone.
 
   within-item paired bias/coverage (wmt_da_paired, additive/optional)
       The paired-null check above pits two DIFFERENT judge models against
@@ -186,13 +204,16 @@ def _run_real_single_cell(
 
 
 def _run_real_twogroup_cell(
-    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float, judge_model: str,
-    n_reps: int, n_boot: int, seed: int,
+    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float,
+    judge_a: str, judge_b: str, n_reps: int, n_boot: int, seed: int,
 ) -> tuple[dict[str, int], dict[str, int]]:
     """n_reps replicates of the two-group Type-I null check (random-split
-    real data), mirroring pvalues.py's _run_ppi_cell independent-groups
-    branches (ttest/ttest_welch/mwu/mwu_mnar_experimental only -- see
-    _run_real_paired_cell for the paired-samples family)."""
+    real data, cross-judge -- see generate_real_twogroup_null_cell's
+    docstring for why group A and group B are read through two DIFFERENT
+    judges, not the same one), mirroring pvalues.py's _run_ppi_cell
+    independent-groups branches (ttest/ttest_welch/mwu/
+    mwu_mnar_experimental only -- see _run_real_paired_cell for the
+    paired-samples family)."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -201,7 +222,7 @@ def _run_real_twogroup_cell(
         return int(rng.integers(0, 2 ** 31))
 
     for _ in range(n_reps):
-        a, b, lab_a, lab_b = generate_real_twogroup_null_cell(corpus, rng, n, label_frac, judge_model)
+        a, b, lab_a, lab_b = generate_real_twogroup_null_cell(corpus, rng, n, label_frac, judge_a, judge_b)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
@@ -445,13 +466,13 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
             "check_type": check_type, "name": name, "dataset": dataset, "n": n,
             "corpus_mean": corpus.corpus_mean, "samples_by_test": samples_by_test,
         }
+    judge_a, judge_b = judge_or_pair
     if check_type == "twogroup":
-        corrected, uncorrected = _run_real_twogroup_cell(corpus, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed)
+        corrected, uncorrected = _run_real_twogroup_cell(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
         return {
             "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
             "methods": methods, "corrected": corrected, "uncorrected": uncorrected,
         }
-    judge_a, judge_b = judge_or_pair
     corrected, uncorrected = _run_real_paired_cell(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
     return {
         "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
@@ -642,31 +663,36 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             for label_frac in args.label_fracs:
                 for n in sizes:
-                    for judge_model in corpus.judge_models:
-                        name = f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}.judge={judge_model}"
-
-                        if not args.no_single_check:
+                    if not args.no_single_check:
+                        for judge_model in corpus.judge_models:
+                            name = f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}.judge={judge_model}"
                             seed_counter += 1
                             work_items.append((
                                 "single", corpus_idx, name, corpus.dataset, single_methods,
                                 n, label_frac, judge_model, args.reps, args.ppi_n_boot, seed_counter,
                             ))
 
-                        if not args.no_twogroup_check:
-                            seed_counter += 1
-                            work_items.append((
-                                "twogroup", corpus_idx, name, corpus.dataset, twogroup_methods,
-                                n, label_frac, judge_model, args.reps, args.ppi_n_boot, seed_counter,
-                            ))
-
-                    if not args.no_paired_check:
+                    # twogroup/paired both need judge PAIRS (cross-judge --
+                    # see generate_real_twogroup_null_cell's docstring for
+                    # why twogroup is cross-judge too, not one judge reading
+                    # both random-split halves), so both loop over `pairs`.
+                    if not args.no_twogroup_check or not args.no_paired_check:
                         for judge_a, judge_b in pairs:
-                            seed_counter += 1
                             name = f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}.pair={judge_a}~{judge_b}"
-                            work_items.append((
-                                "paired", corpus_idx, name, corpus.dataset, paired_methods,
-                                n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
-                            ))
+
+                            if not args.no_twogroup_check:
+                                seed_counter += 1
+                                work_items.append((
+                                    "twogroup", corpus_idx, name, corpus.dataset, twogroup_methods,
+                                    n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
+                                ))
+
+                            if not args.no_paired_check:
+                                seed_counter += 1
+                                work_items.append((
+                                    "paired", corpus_idx, name, corpus.dataset, paired_methods,
+                                    n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
+                                ))
 
         if wmt_paired_corpus is not None:
             _REAL_WMT_PAIRED_CORPORA.append(wmt_paired_corpus)

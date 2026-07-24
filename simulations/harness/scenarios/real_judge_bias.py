@@ -21,12 +21,20 @@ which aligns ALL requested real models on shared item_id). This unlocks a
 genuine PAIRED structure with no synthetic data-generating process needed:
 any two judges scoring the SAME items are both noisy/biased reads of the
 IDENTICAL human_label per item, so the true paired difference between them
-is EXACTLY zero (not just equal in distribution, like the independent-group
-null below) -- see generate_real_paired_null_cell. With k judge models
-collected, all C(k, 2) unique pairs are available as independent (dataset,
-label_frac, n, pair) cells, each carrying that pair's own real noise/bias
-characteristics -- more judges means more such cells, i.e. more power to
-catch a paired-test miscalibration than a single pair alone would give.
+is EXACTLY zero (stronger than generate_real_twogroup_null_cell's "equal in
+distribution", since it's the SAME items on both sides) -- see
+generate_real_paired_null_cell. With k judge models collected, all C(k, 2)
+unique pairs are available as independent (dataset, label_frac, n, pair)
+cells, each carrying that pair's own real noise/bias characteristics --
+more judges means more such cells, i.e. more power to catch a paired-test
+miscalibration than a single pair alone would give.
+
+generate_real_twogroup_null_cell also reads its two groups through two
+DIFFERENT judges (not the same judge reading both, which was tried first
+and found to make an "uncorrected" comparison structurally unable to
+fail -- see that function's docstring for the full reasoning), so both
+the independent-groups and paired checks now depend on a corpus holding
+multiple judge models to be meaningful, not just the paired one.
 
 Unlike scenarios/real_data.py's Corpus (ground-truth accuracy corpora, no
 judge in the loop at all -- OpenEval/Inspect benchmark scores), a
@@ -270,29 +278,59 @@ def generate_real_single_cell(
 
 
 def generate_real_twogroup_null_cell(
-    corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float, judge_model: str,
+    corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
+    judge_a: str, judge_b: str,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """WOR-draw 2n DISJOINT items (both scored by `judge_model`), split
-    into two independent groups A/B -- a valid Type-I null by construction
-    (both groups are random subsamples of the SAME population, so their
-    true means are equal), carrying real noise/skew/judge-bias
-    characteristics instead of synthetic ones. Mirrors real_data.py's
-    corpus_pair_to_null_ci_pair_source permutation-null trick, simplified
-    since there's only one real arm here (not two distinct real models
-    needing symmetrizing).
+    """WOR-draw 2n DISJOINT items, split into two independent groups A/B --
+    a valid Type-I null by construction (both groups are random subsamples
+    of the SAME population, so their TRUE, human-label means are equal) --
+    but group A is read through `judge_a` and group B through `judge_b`,
+    two DIFFERENT judge models, not the same one reading both.
+
+    This is a deliberate redesign (2026-07-23) from the original single-
+    judge version, which scored both A and B with the SAME judge_model.
+    That construction made the "uncorrected" comparison (a classical test
+    run directly on judge scores, no human labels) structurally unable to
+    fail: since A and B are random draws from the identical population read
+    by the identical instrument, ANY judge bias -- however large -- is
+    identical in expectation on both sides and cancels out of an A-vs-B
+    difference completely. Confirmed directly on real data: a badly-biased,
+    weakly-human-correlated judge (e.g. arena's judges correlate with human
+    labels at only r=0.19-0.29) still passed the same-judge uncorrected
+    check at essentially nominal Type-I error, which made the check
+    uninformative about whether skipping PPI correction is actually risky --
+    it could only ever demonstrate "there was nothing to correct here,"
+    never illustrate a real failure mode the way the synthetic PPI sweep's
+    twogroup checks do (see pvalues.py's confound/noise_family scenarios).
+
+    Using two DIFFERENT real judges instead reintroduces a genuine
+    asymmetry an uncorrected test IS vulnerable to: judge_a and judge_b
+    generally have different bias/noise characteristics (confirmed
+    directly on real data: arena's 4 judges range from +0.005 to +0.066
+    mean bias on a [0,1]-rescaled scale, wmt_da's from -0.060 to +0.056),
+    so a naive "just trust the judge" comparison between a judge_a-scored
+    group and a judge_b-scored group can genuinely diverge even though the
+    TRUE (human-label) difference is exactly zero -- the real-data
+    analogue of a synthetic confound scenario, without fabricating one.
+    Deliberately NOT a content-based split (e.g. by language pair or app
+    id) -- see cases/ppi_real.py's module docstring for why that's
+    explicitly out of scope (conflates a real content difference with
+    judge bias, a dirtier signal).
 
     Only independent-samples tests apply to this structure (ttest,
-    ttest_welch, mw_naive, mwu_corr) -- for a genuine PAIRED structure, see
-    generate_real_paired_null_cell below."""
+    ttest_welch, mwu, mwu_mnar_experimental) -- for a genuine PAIRED
+    structure (same items, not disjoint groups), see
+    generate_real_paired_null_cell below, which already used two different
+    judges from the start."""
     n = min(n, corpus.corpus_size // 2)
     idx = rng.choice(corpus.corpus_size, size=2 * n, replace=False)
     idx_a, idx_b = idx[:n], idx[n:]
-    js = corpus.judge_scores[judge_model]
-    judge_a, judge_b = js[idx_a], js[idx_b]
+    judge_a_scores = corpus.judge_scores[judge_a][idx_a]
+    judge_b_scores = corpus.judge_scores[judge_b][idx_b]
     human_a, human_b = corpus.human_label[idx_a], corpus.human_label[idx_b]
     lab_a = _reveal_labels(human_a, label_frac, rng)
     lab_b = _reveal_labels(human_b, label_frac, rng)
-    return judge_a, judge_b, lab_a, lab_b
+    return judge_a_scores, judge_b_scores, lab_a, lab_b
 
 
 def generate_real_paired_null_cell(
