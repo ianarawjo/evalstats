@@ -1104,10 +1104,23 @@ def _ppi_kruskal_wallis_pairwise(
     there's no "should I subtract the LLM-noise term from a null baseline"
     step the way the ANOVA/Friedman closed-form p-values needed, which is
     exactly the kind of derivation that produced a Type-I bug for Friedman.
-    The C(k,2) pairwise contrasts have only k−1 independent degrees of
-    freedom (e.g. θ_23 is implied by θ_12 and θ_13 under exchangeability),
-    so the covariance matrix is rank-deficient; a Moore-Penrose pseudo-inverse
-    with df=k−1 handles that. The reference distribution is an F (Hotelling's
+    A Moore-Penrose pseudo-inverse handles the covariance's potential rank
+    deficiency; its degrees of freedom come from the pseudo-inverse's OWN
+    rank (at the same rcond), NOT a hardcoded k−1. An earlier version
+    assumed k−1 (reasoning that the C(k,2) pairwise contrasts have only k−1
+    independent degrees of freedom, e.g. θ_23 implied by θ_12 and θ_13 under
+    exchangeability) -- true for pairwise MEAN differences (linear
+    combinations of k group means, an exactly k−1-dimensional contrast
+    space), but NOT in general for pairwise DOMINANCE probabilities
+    (θ_ab = P_mid(a>b) is not a linear combination of per-group "effects"),
+    so the covariance is generically full rank C(k,2), not k−1 -- confirmed
+    on real data (2026-07-24): the bootstrap covariance's smallest
+    eigenvalue was nowhere near the rcond truncation floor (ratio to the
+    largest ~0.145), and testing a genuinely-rank-3 Wald statistic against
+    a chi-square(df=2) reference inflated Type-I error to 0.077-0.092 (vs
+    nominal 0.05). Deriving df from the actual rank fixes this while still
+    correctly using a smaller df in whatever corner the covariance IS
+    genuinely near-singular. The reference distribution is an F (Hotelling's
     T²-style finite-sample correction, ν = total labeled observations across
     groups) rather than a plain chi-square, since chi-square is only the
     large-sample limit and is mildly anti-conservative whenever the labeled
@@ -1165,9 +1178,36 @@ def _ppi_kruskal_wallis_pairwise(
 
     cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
     diff = theta_hat - 0.5
-    cov_pinv = np.linalg.pinv(cov, rcond=1e-8)
+    rcond = 1e-8
+    cov_pinv = np.linalg.pinv(cov, rcond=rcond)
     wald_stat = float(diff @ cov_pinv @ diff)
-    df = k - 1
+    # df = the pseudo-inverse's OWN rank (same rcond truncation), NOT a
+    # hardcoded k-1 -- root-caused 2026-07-24 via ppi_real.py's omnibus-
+    # independent check: k-1 is the correct contrast-space dimension for
+    # pairwise MEAN differences (k group means really do have exactly k-1
+    # independent linear contrasts among them), which is where this
+    # "rank-deficient, use k-1" convention comes from -- but pairwise
+    # DOMINANCE probabilities theta_ab = P_mid(a>b) are NOT linear
+    # combinations of k per-group "effects" the way mean differences are,
+    # so there is no general exact linear dependency forcing theta_23 to be
+    # determined by theta_12/theta_13 -- confirmed directly on real data
+    # (privacy_judge): the bootstrap covariance's smallest eigenvalue was
+    # NOT near zero (ratio to the largest ~0.145, nowhere close to the
+    # rcond=1e-8 truncation floor), i.e. genuinely (not just numerically)
+    # full rank C(k,2)=3 for k=3, not the assumed k-1=2. Testing a Wald
+    # statistic built from a rank-3 (or higher, for k>3) covariance against
+    # a chi-square(df=2) reference systematically over-rejects (confirmed:
+    # mean(wald_stat) ~= 2.8-2.9 vs the claimed chi2(2)'s mean of 2.0, and
+    # Type-I error 0.077-0.092 vs nominal 0.05 across label_frac 0.05-0.40).
+    # Deriving df from cov's OWN rank (at the SAME rcond used for the
+    # pseudo-inverse) fixes this while still correctly falling back to a
+    # smaller df in whatever corner the covariance genuinely IS
+    # near-singular, rather than assuming it always is: verified this
+    # closes the gap (0.077-0.092 -> 0.038-0.041, all within noise of
+    # nominal) without materially changing power under a real group
+    # difference.
+    eigvals = np.linalg.eigvalsh(cov)
+    df = int(np.linalg.matrix_rank(cov, tol=rcond * float(eigvals.max())))
 
     # Finite-sample (Hotelling's T²-style) correction: a chi-square reference
     # is only the n→∞ limit of the Wald statistic's distribution, and is
@@ -1391,9 +1431,16 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
 
     cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
     diff = theta_hat - 0.5
-    cov_pinv = np.linalg.pinv(cov, rcond=1e-8)
+    rcond = 1e-8
+    cov_pinv = np.linalg.pinv(cov, rcond=rcond)
     wald_stat = float(diff @ cov_pinv @ diff)
-    df = k - 1
+    # df = the pseudo-inverse's OWN rank, not a hardcoded k-1 -- same fix,
+    # same reasoning as _ppi_kruskal_wallis_pairwise's df (see that
+    # function's docstring): pairwise DOMINANCE probabilities aren't linear
+    # combinations of k group effects the way mean differences are, so
+    # their covariance is generically full rank C(k,2), not k-1.
+    eigvals = np.linalg.eigvalsh(cov)
+    df = int(np.linalg.matrix_rank(cov, tol=rcond * float(eigvals.max())))
 
     nu = sum(n_lab_per_group)
     if nu > df:
