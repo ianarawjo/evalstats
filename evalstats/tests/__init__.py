@@ -2662,18 +2662,30 @@ def _ppi_friedman_f_stat(
     2. The quantity that *does* transfer is the classical Friedman result:
        under H₀, within-subject ranks of the human/ground-truth data are an
        exactly known, exchangeability-derived constant
-       (``(k³−k)/12`` per row, with no ties) — call it ``Σ_H``. This is
-       estimated empirically per-row from the *full* LLM rank matrix
-       (``ms_null`` below; tie-aware, rather than hardcoding the no-tie
-       constant), and because it is already the human-side null baseline
-       (not an LLM-side estimate contaminated by LLM bias), it must NOT have
-       the LLM-noise variance subtracted back out before adding the
-       rectifier's finite-sample noise term — unlike step 1 in the ANOVA
-       case, there's nothing to recover here; ``ms_null`` already *is*
-       ``Σ_H``. (Subtracting it anyway was an earlier bug in this function
-       that inflated Type I error up to ~17% in the heteroskedastic/
-       unbalanced-label corners of ``simulations/sim_type_i_calibration.py``'s
-       sweep; see that script's "friedman" column.)
+       (``(k³−k)/12`` per row, with no ties) — call it ``Σ_H``. Because it
+       is already the human-side null baseline (not an LLM-side estimate
+       contaminated by LLM bias), it must NOT have the LLM-noise variance
+       subtracted back out before adding the rectifier's finite-sample noise
+       term — unlike step 1 in the ANOVA case, there's nothing to recover
+       here; ``ms_null`` already *is* ``Σ_H``. (Subtracting it anyway was an
+       earlier bug in this function that inflated Type I error up to ~17%
+       in the heteroskedastic/unbalanced-label corners of
+       ``simulations/sim_type_i_calibration.py``'s sweep; see that script's
+       "friedman" column.)
+
+       ``Σ_H`` is estimated (tie-aware, not the hardcoded no-tie constant)
+       as a SHRINKAGE BLEND of two per-row estimates, not from the full LLM
+       rank matrix alone (a second, separate bug, root-caused 2026-07-24 --
+       see ``ms_null``'s inline comment below for the full mechanism and
+       validation): the full-matrix estimate assumes the LLM's tie
+       structure resembles the human side's, which fails whenever the
+       labeled data is exactly tied -- true of every genuine repeated-
+       measures Type-I null (the same shared ground truth revealed for all
+       k conditions), synthetic or real, not a real-data-specific
+       artifact. The labeled human data's OWN row sum-of-squares is the
+       asymptotically correct estimate as n_lab grows, but too noisy to use
+       alone at small n_lab; shrinking between the two closed the gap in
+       both a synthetic and a real-data check.
 
     Ranking is row-local (each subject's rank vector depends only on that
     subject's own scores), so ranking commutes with row selection: ranking
@@ -2703,9 +2715,41 @@ def _ppi_friedman_f_stat(
 
     # Known (tie-adjusted) null variance scale for within-subject ranks: see
     # docstring. Estimated empirically (averaged per-row, tie-aware) from the
-    # full LLM rank matrix rather than via SS-decomposition residual.
-    row_ss = np.sum((llm_mat - (k + 1) / 2.0) ** 2, axis=1)
-    ms_null = max(float(np.mean(row_ss)) / (k - 1), 1e-12)
+    # full LLM rank matrix rather than via SS-decomposition residual -- but
+    # ONLY as one half of a shrinkage blend with the labeled human data's OWN
+    # row sum-of-squares (see below); using the LLM matrix ALONE was a real
+    # bug (root-caused 2026-07-24 via the ppi_real.py omnibus-repeated check,
+    # confirmed with a synthetic repro too -- not real-data-specific):
+    # borrowing the LLM matrix's tie structure assumes it resembles the
+    # HUMAN side's, which fails whenever the labeled data is exactly tied
+    # (every genuine repeated-measures Type-I null -- synthetic or real --
+    # reveals the SAME shared ground truth for all k conditions, so every
+    # labeled subject's row is a perfect k-way tie, giving ms_null_human ~ 0,
+    # not the LLM-borrowed constant). Since that borrowed constant does NOT
+    # shrink with n_lab while the (correctly-scaled) noise term below does,
+    # it goes from a minor contributor at small n_lab to the dominant one at
+    # large n_lab, crushing f_corr toward 0 -- confirmed empirically: Type-I
+    # error at label_frac=0.40 collapsed to exactly 0/200 across many real
+    # judge triples (vs ~2-7% at 0.05-0.20), reproduced identically with a
+    # pure-synthetic exact-tie construction (bias+noise judges, no real data
+    # involved), ruling out a real-data-specific cause.
+    row_ss_llm = np.sum((llm_mat - (k + 1) / 2.0) ** 2, axis=1)
+    ms_null_llm = max(float(np.mean(row_ss_llm)) / (k - 1), 1e-12)
+    row_ss_human = np.sum((human_lab - (k + 1) / 2.0) ** 2, axis=1)
+    ms_null_human = max(float(np.mean(row_ss_human)) / (k - 1), 1e-12)
+    # Shrink toward the human-based (asymptotically CORRECT for this
+    # estimand) estimate as n_lab grows, same _POWER_TUNE_SHRINKAGE_C-style
+    # blend evalstats.ppi.correct's power-tuning already uses for an
+    # analogous small-n_lab-noisy-estimate problem: using ms_null_human
+    # ALONE fixed the label_frac=0.40 collapse (0.000 -> ~0.05-0.10) but
+    # left a mild, roughly uniform ~2x inflation across ALL label_fracs
+    # (ms_null_human is itself noisy at small n_lab, since it's estimated
+    # from only n_lab rows) -- blending closed this gap in the same
+    # validation (synthetic AND real wmt_da data): 0.05-0.10 -> ~0.04-0.07
+    # across label_frac 0.05-0.40, no collapse, no flat over-inflation.
+    from evalstats.ppi import _POWER_TUNE_SHRINKAGE_C
+    w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+    ms_null = (1.0 - w) * ms_null_llm + w * ms_null_human
 
     # Estimate effective LLM noise variance in (rank) contrast space from the
     # labeled residual covariance, same as the repeated-ANOVA case.
