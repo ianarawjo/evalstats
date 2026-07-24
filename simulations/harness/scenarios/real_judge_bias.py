@@ -77,6 +77,26 @@ REAL_JUDGE_BIAS_DATASETS: dict[str, tuple[str, tuple[float, float]]] = {
     "privacy_judge": ("continuous", (1.0, 5.0)),
 }
 
+# dataset key -> curated judge_model subset used when load_real_judge_bias_corpus
+# is called with judge_models=None (i.e. no explicit --judge-models). Only
+# privacy_judge needs this: its 12 collected judges (vs. arena/wmt_da/
+# appstore's handful) would otherwise dominate ppi_real's pooled Type-I/
+# bias-coverage stats purely by cell count, not because its calibration
+# story is more important. The 5 below span 4 provider families and the
+# full bias/correlation range actually observed in the 12-judge set --
+# from near-zero-bias/high-correlation (claude-3-5-haiku, corr=0.91) down
+# to the worst outlier (meta-llama/Llama-3.2-1B, corr=0.21, bias=+0.31) --
+# rather than cherry-picking only the well-behaved judges, so the subset
+# still exercises PPI correction under genuinely poor judge calibration.
+# An explicit --judge-models still overrides this entirely (see
+# load_real_judge_bias_corpus's docstring -- trusted as-is, no filtering).
+_DEFAULT_JUDGE_SUBSET: dict[str, list[str]] = {
+    "privacy_judge": [
+        "claude-3-5-haiku-20241022", "gpt-4o", "gemini-2.0-flash",
+        "google/gemma-3-4b-it", "meta-llama/Llama-3.2-1B",
+    ],
+}
+
 
 @dataclass
 class RealJudgeBiasCorpus:
@@ -152,6 +172,8 @@ def load_real_judge_bias_corpus(
                           f"only fetches items + human labels, no judge scores).")
 
     models_present = sorted({r["judge_model"] for r in rows})
+    if judge_models is None and dataset in _DEFAULT_JUDGE_SUBSET:
+        judge_models = _DEFAULT_JUDGE_SUBSET[dataset]
     if judge_models is None:
         if min_coverage > 0.0:
             items_path = Path(data_dir) / f"judge_bias_{dataset}_items.csv"
