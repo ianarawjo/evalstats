@@ -44,6 +44,7 @@ within one replicate.
 from __future__ import annotations
 
 import csv
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from itertools import combinations
@@ -230,16 +231,24 @@ def default_size_grid(corpus_size: int, n_points: int = 3) -> list[int]:
     return sizes
 
 
+def _reveal_mask(n: int, frac: float, rng: np.random.Generator) -> np.ndarray:
+    """Indices to reveal (floored at _MIN_LAB) -- factored out of
+    _reveal_labels so generate_real_wmt_paired_bias_cell can apply the SAME
+    revealed-index set to both sides of a pair (an item's pair either gets
+    both its real human labels revealed together or neither, mirroring
+    generate_real_paired_null_cell's "one ground truth per item" framing)."""
+    if n < _MIN_LAB:
+        raise ValueError(f"Need n >= {_MIN_LAB} to reveal at least {_MIN_LAB} labels; got n={n}")
+    n_lab = min(n, max(_MIN_LAB, int(round(n * frac))))
+    return rng.choice(n, size=n_lab, replace=False)
+
+
 def _reveal_labels(values: np.ndarray, frac: float, rng: np.random.Generator) -> np.ndarray:
     """MCAR label-reveal: NaN out all but a `frac` fraction of `values`
     (floored at _MIN_LAB revealed items) -- the real-data analogue of
     scenarios.synthetic._jb_labels_independent, without its MNAR option."""
-    n = len(values)
-    if n < _MIN_LAB:
-        raise ValueError(f"Need n >= {_MIN_LAB} to reveal at least {_MIN_LAB} labels; got n={n}")
-    n_lab = min(n, max(_MIN_LAB, int(round(n * frac))))
-    lab = np.full(n, np.nan)
-    idx = rng.choice(n, size=n_lab, replace=False)
+    idx = _reveal_mask(len(values), frac, rng)
+    lab = np.full(len(values), np.nan)
     lab[idx] = values[idx]
     return lab
 
@@ -314,3 +323,212 @@ def generate_real_paired_null_cell(
     human = corpus.human_label[idx]
     lab = _reveal_labels(human, label_frac, rng)
     return llm_x, llm_y, lab, lab.copy()
+
+
+# ---------------------------------------------------------------------------
+# Genuine within-item paired data (wmt_da_paired): ONE judge scoring TWO
+# DIFFERENT MT systems' output for the SAME source segment, with REAL
+# (not artificially-identical) human DA scores on each side. Complements
+# generate_real_paired_null_cell's cross-judge proxy pairing (see that
+# function's docstring, and the "why this needs its own fetcher" discussion
+# in collect_judge_bias_data.py's fetch_wmt_da_paired_items) -- this is the
+# structure a real single-judge Wilcoxon-style paired comparison actually
+# has: one judge, two conditions for the same item, not two different
+# judges reading the same condition.
+# ---------------------------------------------------------------------------
+
+_ITEM_ID_PAIRED_RE = re.compile(r"^wmt_da_paired_seg(\d+)_sys([01])$")
+
+WMT_PAIRED_DATASET = "wmt_da_paired"
+WMT_PAIRED_BOUNDS = (0.0, 100.0)  # same 0-100 DA scale as plain wmt_da
+
+
+@dataclass
+class RealWithinItemPairedCorpus:
+    """collect_judge_bias_data.py's fetch_wmt_da_paired_items output,
+    loaded and aligned: for each of ``corpus_size`` source segments, the
+    REAL human DA score and every requested judge's score for its two
+    different MT systems' outputs ("A" = sys0, "B" = sys1 -- an arbitrary
+    but fixed labeling per segment, not "the better one" or "the worse
+    one"). All arrays rescaled to [0, 1] (matching
+    scenarios.EVAL_TYPE_SCALE_BOUNDS's convention). Unlike
+    RealJudgeBiasCorpus (aligned across judge models, one human_label per
+    item), this is aligned across BOTH SIDES of a pair for each judge --
+    judge_scores_a[jm][i] and judge_scores_b[jm][i] are always the two
+    systems of the SAME segment, for any requested judge jm.
+    """
+    dataset: str  # "wmt_da_paired"
+    eval_type: str  # "continuous_paired"
+    judge_models: list[str]
+    human_a: np.ndarray  # shape (corpus_size,), system A's real human DA score, rescaled
+    human_b: np.ndarray  # shape (corpus_size,), system B's real human DA score, rescaled
+    judge_scores_a: dict[str, np.ndarray]  # judge_model -> shape (corpus_size,), rescaled
+    judge_scores_b: dict[str, np.ndarray]  # judge_model -> shape (corpus_size,), rescaled
+    corpus_size: int  # number of segment-pairs
+    true_paired_mean: float
+    """Population mean of (human_a - human_b) across every aligned segment
+    -- the REAL target a PPI-corrected paired mean estimate (paired_t/
+    bayes_bootstrap/bootstrap_t) should recover, not an artificial zero
+    (contrast generate_real_paired_null_cell's exact-null construction)."""
+    true_paired_median: float
+    """Population median of (human_a - human_b) -- the analogous real
+    target for wilcoxon's median estimand."""
+
+
+def load_real_wmt_paired_corpus(
+    *, data_dir: str = DEFAULT_DATA_DIR, judge_models: list[str] | None = None, min_coverage: float = 0.0,
+) -> RealWithinItemPairedCorpus:
+    """Load simulations/out/judge_bias_wmt_da_paired.csv (the merged view
+    collect_judge_bias_data.py's collect-judge-scores writes for
+    --types continuous_paired) into a RealWithinItemPairedCorpus.
+
+    Unlike load_real_judge_bias_corpus's exact-null construction (the SAME
+    human_label copied onto both sides of a pair, forcing a KNOWN-zero true
+    difference for a Type-I check), system A and system B here genuinely
+    have DIFFERENT real human labels -- true_paired_mean/true_paired_median
+    are actual population values, not an artificial zero, so this feeds a
+    bias/coverage check (generate_real_wmt_paired_bias_cell, the paired-
+    structure analogue of generate_real_single_cell) rather than a Type-I
+    null check.
+
+    `judge_models`/`min_coverage` behave exactly as in
+    load_real_judge_bias_corpus (auto-discover + coverage filtering when
+    `judge_models` is None; trusted as-is with no filtering when given
+    explicitly) -- see that function's docstring for the coverage-filtering
+    rationale, which applies identically here.
+    """
+    path = Path(data_dir) / f"judge_bias_{WMT_PAIRED_DATASET}.csv"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{path} not found. Run:\n"
+            f"  python simulations/collect_judge_bias_data.py collect-data --types continuous_paired\n"
+            f"  python simulations/collect_judge_bias_data.py collect-judge-scores "
+            f"--types continuous_paired --backend <openrouter|ollama> --models <model>\n"
+            f"first to produce it."
+        )
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        raise ValueError(f"{path} has no rows -- run collect-judge-scores first (collect-data alone "
+                          f"only fetches items + human labels, no judge scores).")
+
+    parsed: list[tuple[int, int, dict]] = []
+    for r in rows:
+        m = _ITEM_ID_PAIRED_RE.match(r["item_id"])
+        if m is None:
+            raise ValueError(
+                f"Unexpected item_id {r['item_id']!r} in {path} -- expected "
+                f"'wmt_da_paired_seg<N>_sys<0|1>' (from fetch_wmt_da_paired_items)."
+            )
+        parsed.append((int(m.group(1)), int(m.group(2)), r))
+
+    models_present = sorted({r["judge_model"] for _seg, _sys, r in parsed})
+    if judge_models is None:
+        if min_coverage > 0.0:
+            items_path = Path(data_dir) / f"judge_bias_{WMT_PAIRED_DATASET}_items.csv"
+            with items_path.open(newline="", encoding="utf-8") as f:
+                total_items = sum(1 for _ in csv.DictReader(f))
+            items_by_model: dict[str, set[str]] = defaultdict(set)
+            for _seg, _sys, r in parsed:
+                items_by_model[r["judge_model"]].add(r["item_id"])
+            kept, dropped = [], []
+            for jm in models_present:
+                cov = len(items_by_model[jm]) / total_items if total_items else 0.0
+                (kept if cov >= min_coverage else dropped).append((jm, cov))
+            if dropped:
+                print(f"  [{WMT_PAIRED_DATASET}] excluding {len(dropped)} judge(s) below "
+                      f"--min-judge-coverage {min_coverage:.0%}: "
+                      + ", ".join(f"{jm} ({cov:.0%})" for jm, cov in dropped))
+            if not kept:
+                raise ValueError(
+                    f"No judge models in {path} meet min_coverage={min_coverage:.0%} of {total_items} "
+                    f"items. Present (with coverage): "
+                    f"{[(jm, f'{len(items_by_model[jm]) / total_items:.0%}') for jm in models_present]}"
+                )
+            judge_models = [jm for jm, _cov in kept]
+        else:
+            judge_models = models_present
+    else:
+        missing = [m for m in judge_models if m not in models_present]
+        if missing:
+            raise ValueError(f"judge_models {missing} not found in {path}. Present: {models_present}")
+
+    # (seg_idx, sys_idx, judge_model) -> list of (human_label, judge_score) across runs
+    by_seg_sys_judge: dict[tuple[int, int, str], list[tuple[float, float]]] = defaultdict(list)
+    for seg_idx, sys_idx, r in parsed:
+        jm = r["judge_model"]
+        if jm not in judge_models:
+            continue
+        by_seg_sys_judge[(seg_idx, sys_idx, jm)].append((float(r["human_label"]), float(r["judge_score"])))
+
+    all_segs = sorted({seg for (seg, _sys, _jm) in by_seg_sys_judge.keys()})
+    aligned_segs = [
+        seg for seg in all_segs
+        if all((seg, sys_idx, jm) in by_seg_sys_judge for sys_idx in (0, 1) for jm in judge_models)
+    ]
+    if not aligned_segs:
+        raise ValueError(
+            f"No segments in {path} have BOTH systems scored by every requested judge model "
+            f"{judge_models} -- pass a smaller judge_models= subset, or collect-judge-scores "
+            f"for the missing item(s)."
+        )
+
+    def _avg_human(seg: int, sys_idx: int) -> float:
+        # Identical across judge_model/run_idx for a given (seg, sys_idx)
+        # (same ground truth) -- averaging is a no-op, just collapses
+        # duplicate rows, mirroring load_real_judge_bias_corpus's human_label.
+        return float(np.mean([hl for hl, _js in by_seg_sys_judge[(seg, sys_idx, judge_models[0])]]))
+
+    human_a = np.array([_avg_human(seg, 0) for seg in aligned_segs])
+    human_b = np.array([_avg_human(seg, 1) for seg in aligned_segs])
+    judge_scores_a = {
+        jm: np.array([np.mean([js for _hl, js in by_seg_sys_judge[(seg, 0, jm)]]) for seg in aligned_segs])
+        for jm in judge_models
+    }
+    judge_scores_b = {
+        jm: np.array([np.mean([js for _hl, js in by_seg_sys_judge[(seg, 1, jm)]]) for seg in aligned_segs])
+        for jm in judge_models
+    }
+
+    human_a = _rescale(human_a, WMT_PAIRED_BOUNDS)
+    human_b = _rescale(human_b, WMT_PAIRED_BOUNDS)
+    judge_scores_a = {jm: _rescale(a, WMT_PAIRED_BOUNDS) for jm, a in judge_scores_a.items()}
+    judge_scores_b = {jm: _rescale(a, WMT_PAIRED_BOUNDS) for jm, a in judge_scores_b.items()}
+
+    diffs = human_a - human_b
+    return RealWithinItemPairedCorpus(
+        dataset=WMT_PAIRED_DATASET, eval_type="continuous_paired", judge_models=list(judge_models),
+        human_a=human_a, human_b=human_b, judge_scores_a=judge_scores_a, judge_scores_b=judge_scores_b,
+        corpus_size=len(aligned_segs),
+        true_paired_mean=float(np.mean(diffs)), true_paired_median=float(np.median(diffs)),
+    )
+
+
+def generate_real_wmt_paired_bias_cell(
+    corpus: RealWithinItemPairedCorpus, rng: np.random.Generator, n: int, label_frac: float, judge_model: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """WOR-draw n segment-pairs and reveal a label_frac fraction of their
+    REAL (genuinely different, not copied) human labels -- the (llm_x,
+    llm_y, lab_x, lab_y) shape evalstats.tests' paired-samples PPI
+    functions expect, for a bias/coverage check: does the PPI-corrected
+    paired estimate (as seen through ONE judge scoring both systems
+    independently) recover corpus.true_paired_mean/true_paired_median, with
+    correct CI coverage, as label_frac/n vary? The paired-structure
+    analogue of generate_real_single_cell -- NOT a Type-I null check like
+    generate_real_paired_null_cell (there is no artificial zero here)."""
+    n = min(n, corpus.corpus_size)
+    idx = rng.choice(corpus.corpus_size, size=n, replace=False)
+    llm_x = corpus.judge_scores_a[judge_model][idx]
+    llm_y = corpus.judge_scores_b[judge_model][idx]
+    human_a = corpus.human_a[idx]
+    human_b = corpus.human_b[idx]
+    # SHARED revealed-index set across both sides -- a segment's pair either
+    # gets both its real human labels revealed together or neither (one
+    # ground truth pair per item, mirroring generate_real_paired_null_cell's
+    # framing, just with genuinely different values on each side now).
+    reveal_idx = _reveal_mask(n, label_frac, rng)
+    lab_x = np.full(n, np.nan)
+    lab_y = np.full(n, np.nan)
+    lab_x[reveal_idx] = human_a[reveal_idx]
+    lab_y[reveal_idx] = human_b[reveal_idx]
+    return llm_x, llm_y, lab_x, lab_y

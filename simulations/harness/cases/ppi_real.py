@@ -10,7 +10,7 @@ they're fully generic over (name, tag, test) labeled results and have no
 JudgeBiasSource-specific coupling, so they work unmodified here. See
 scenarios/real_judge_bias.py's module docstring for the data-loading side.
 
-Three checks:
+Four checks:
 
   single-sample bias/coverage
       Per judge model: does the PPI-corrected estimate of THIS corpus's
@@ -44,6 +44,28 @@ Three checks:
       the SAME calibration question, i.e. more power to catch a
       miscalibration than any single pair would give alone.
 
+  within-item paired bias/coverage (wmt_da_paired, additive/optional)
+      The paired-null check above pits two DIFFERENT judge models against
+      each other as a proxy for real paired A/B data -- a real deployment
+      more often has ONE judge scoring TWO conditions for the SAME item
+      (e.g. response A vs response B for the same prompt), which is a
+      different disagreement structure (inter-judge vs within-judge/
+      across-condition) that the proxy can't exercise. This check instead
+      uses simulations/collect_judge_bias_data.py's --types
+      continuous_paired collection (RicardoRei/wmt-da-human-evaluation
+      regrouped by source segment: the SAME source sentence translated by
+      >=2 different MT systems, each independently human-DA-scored) --
+      genuine within-item paired data for a single judge. Unlike the
+      Type-I null checks above, system A and system B have REAL, generally
+      DIFFERENT human labels (not a constructed identical label), so this
+      is a bias/coverage check (does the PPI-corrected paired estimate
+      recover the corpus's TRUE population paired difference, with correct
+      CI coverage?) -- the paired-structure analogue of the single-sample
+      check, sharing its PPIEffectResult/report/plot machinery. Entirely
+      ADDITIVE to the three checks above (skipped with a warning, not a
+      hard failure, if judge_bias_wmt_da_paired.csv hasn't been collected
+      yet -- see --no-wmt-paired-check to disable explicitly).
+
 Explicitly OUT of scope for v1 (see scoping discussion): a "real" (non-
 null) group comparison via a natural categorical split (e.g. WMT by
 language pair, App Store by app_id) -- deferred since it conflates a real
@@ -57,6 +79,7 @@ from __future__ import annotations
 
 import argparse
 import multiprocessing as _mp
+import os
 import time
 import warnings
 from collections import defaultdict
@@ -91,6 +114,9 @@ from ..scenarios.real_judge_bias import (
     generate_real_single_cell,
     generate_real_twogroup_null_cell,
     generate_real_paired_null_cell,
+    RealWithinItemPairedCorpus,
+    load_real_wmt_paired_corpus,
+    generate_real_wmt_paired_bias_cell,
 )
 from .pvalues import (
     PPIResult,
@@ -311,6 +337,74 @@ def _run_real_paired_cell(
     return corrected, uncorrected
 
 
+_WMT_PAIRED_BIAS_METHODS = [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name]
+"""_paired_methods_for("continuous") minus BOOTSTRAP_T -- its test name
+("bootstrap_t") is IDENTICAL to _SINGLE_METHOD_BOOTSTRAP_T, which the
+single-sample bias/coverage check already uses for a totally different
+estimand (a population MEAN, not a population MEAN PAIRED DIFFERENCE).
+print_ppi_effect_report pools rows by test name only (not tag), so
+including it here would silently merge two unrelated checks' bias/
+coverage stats into one misleading "bootstrap_t" row. TANGO excluded for
+the same reason it's excluded from _paired_methods_for("continuous")."""
+
+
+def _run_real_wmt_paired_bias_cell(
+    corpus: RealWithinItemPairedCorpus, methods: list[str], n: int, label_frac: float, judge_model: str,
+    n_reps: int, n_boot: int, seed: int,
+) -> dict[str, list[tuple[float, float, float, float]]]:
+    """n_reps replicates of the within-item paired bias/coverage check
+    (genuine single-judge, two-condition paired data -- see
+    scenarios/real_judge_bias.py's generate_real_wmt_paired_bias_cell),
+    capturing each method's (estimate, ci_low, ci_high, llm_estimate) per
+    rep -- same tuple shape _run_real_single_cell collects, so
+    _effect_cell_stats/_uncorrected_bias_z apply unchanged. Unlike that
+    function, the correct null value differs PER TEST (corpus.
+    true_paired_median for wilcoxon's median estimand, corpus.
+    true_paired_mean for the other three's mean estimand) -- see run()'s
+    _consume for where that per-test split happens."""
+    rng = np.random.default_rng(seed)
+    out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
+
+    for _ in range(n_reps):
+        llm_x, llm_y, lab_x, lab_y = generate_real_wmt_paired_bias_cell(corpus, rng, n, label_frac, judge_model)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if WILCOXON.name in methods:
+                try:
+                    r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.median, _ALPHA, n_boot,
+                                            int(rng.integers(0, 2 ** 31)), rectifier_func=np.median)
+                    out[WILCOXON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PAIRED_T.name in methods:
+                try:
+                    r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.mean, _ALPHA, n_boot,
+                                            int(rng.integers(0, 2 ** 31)), rectifier_func=np.mean)
+                    out[PAIRED_T.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if BAYES_BOOTSTRAP.name in methods:
+                try:
+                    r = _ppi_paired_bayes_bootstrap(llm_x, llm_y, lab_x, lab_y, _ALPHA, n_boot,
+                                                     int(rng.integers(0, 2 ** 31)))
+                    out[BAYES_BOOTSTRAP.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            # BOOTSTRAP_T deliberately NOT included here -- see
+            # _WMT_PAIRED_BIAS_METHODS' docstring (its test name collides
+            # with the single-sample check's _SINGLE_METHOD_BOOTSTRAP_T,
+            # which would silently pool two different estimands' stats
+            # together in print_ppi_effect_report). Not wired up at all,
+            # rather than left reachable-but-unused, since nothing calls
+            # this function with a methods list that would ever hit it.
+
+    return dict(out)
+
+
 _REAL_CORPORA: list[RealJudgeBiasCorpus] = []
 """Set by run() right before creating the worker Pool (fork context), so
 worker processes inherit it via copy-on-write instead of the (potentially
@@ -319,13 +413,30 @@ work item -- same pattern as pvalues.py's _PAIRWISE_SOURCES /
 _MULTIARM_SOURCES globals. Only meaningful in the child processes; the
 parent addresses corpora directly."""
 
+_REAL_WMT_PAIRED_CORPORA: list[RealWithinItemPairedCorpus] = []
+"""Same fork-inheritance pattern as _REAL_CORPORA, kept as a SEPARATE list
+(rather than folded into _REAL_CORPORA) since RealWithinItemPairedCorpus is
+a different type loaded from a different file -- there's exactly one
+wmt_da_paired corpus (index 0) when present, zero when the data hasn't
+been collected yet (see run()'s try/except around load_real_wmt_paired_corpus)."""
+
 
 def _run_ppi_real_cell_worker(args: tuple) -> dict:
-    """Runs ONE (single|twogroup|paired) cell and returns everything run()
-    needs to fold it into effect_results/twogroup_results/paired_results,
-    with no dependency on the original work-item's position -- required
-    since pool.imap_unordered does not preserve submission order."""
+    """Runs ONE (single|twogroup|paired|wmt_paired_bias) cell and returns
+    everything run() needs to fold it into effect_results/twogroup_results/
+    paired_results, with no dependency on the original work-item's position
+    -- required since pool.imap_unordered does not preserve submission order."""
     check_type, corpus_idx, name, dataset, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed = args
+
+    if check_type == "wmt_paired_bias":
+        corpus = _REAL_WMT_PAIRED_CORPORA[corpus_idx]
+        samples_by_test = _run_real_wmt_paired_bias_cell(corpus, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed)
+        return {
+            "check_type": check_type, "name": name, "dataset": dataset, "n": n,
+            "true_paired_mean": corpus.true_paired_mean, "true_paired_median": corpus.true_paired_median,
+            "samples_by_test": samples_by_test,
+        }
+
     corpus = _REAL_CORPORA[corpus_idx]
 
     if check_type == "single":
@@ -419,15 +530,20 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-single-check", action="store_true", help="Skip the single-sample bias/coverage check.")
     parser.add_argument("--no-twogroup-check", action="store_true", help="Skip the two-group Type-I null check.")
     parser.add_argument("--no-paired-check", action="store_true", help="Skip the cross-judge paired Type-I null check.")
+    parser.add_argument("--no-wmt-paired-check", action="store_true",
+                         help="Skip the within-item (wmt_da_paired) bias/coverage check. Runs by default "
+                              "IF judge_bias_wmt_da_paired.csv has been collected (see "
+                              "collect_judge_bias_data.py --types continuous_paired); skipped with a "
+                              "warning, not a hard failure, if it hasn't.")
     parser.add_argument("--latex", action="store_true")
-    parser.add_argument("--workers", type=int, default=1,
-                         help="Parallelize across single/twogroup/paired cells (all corpora, label_fracs, "
-                              "sizes, judge models/pairs flattened into one work queue) using a "
-                              "multiprocessing.Pool with the fork start method, same as pvalues.py's "
-                              "run_*_simulation functions. 1 (default) runs serially. Cell seeds are fixed "
-                              "up front from --seed regardless of --workers, so results are identical "
-                              "either way -- only completion order (and hence progress-bar interleaving) "
-                              "differs.")
+    parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
+                         help="Parallel worker processes (default: cpu_count-1; 1=sequential). Parallelizes "
+                              "across single/twogroup/paired cells (all corpora, label_fracs, sizes, judge "
+                              "models/pairs flattened into one work queue) using a multiprocessing.Pool "
+                              "with the fork start method, same as pvalues.py's run_*_simulation functions. "
+                              "Cell seeds are fixed up front from --seed regardless of --workers, so "
+                              "results are identical either way -- only completion order (and hence "
+                              "progress-bar interleaving) differs.")
 
 
 def official_args(base_seed: int = 46) -> argparse.Namespace:
@@ -436,13 +552,13 @@ def official_args(base_seed: int = 46) -> argparse.Namespace:
         label_fracs=list(DEFAULT_LABEL_FRACS), sizes=None, reps=200, ppi_n_boot=2000,
         alpha=0.05, seed=base_seed, progress="bar", save_results="save", plots="save",
         out_dir="simulations/out", plots_dir=None,
-        no_single_check=False, no_twogroup_check=False, no_paired_check=False,
-        latex=True, workers=1,
+        no_single_check=False, no_twogroup_check=False, no_paired_check=False, no_wmt_paired_check=False,
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
 def official_variants(base_seed: int = 46) -> list[tuple[str, argparse.Namespace]]:
-    return [("real judge-bias data (single-sample + two-group + paired null)", official_args(base_seed))]
+    return [("real judge-bias data (single-sample + two-group + paired null + within-item paired bias/coverage)", official_args(base_seed))]
 
 
 def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.Namespace:
@@ -455,7 +571,7 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
         label_fracs=[0.20], sizes=None, reps=5, ppi_n_boot=200,
         alpha=0.05, seed=base_seed, progress="bar", save_results="save", plots="save",
         out_dir="simulations/out", plots_dir=None,
-        no_single_check=False, no_twogroup_check=False, no_paired_check=False,
+        no_single_check=False, no_twogroup_check=False, no_paired_check=False, no_wmt_paired_check=False,
         latex=True, workers=1,
     )
 
@@ -482,7 +598,21 @@ def run(args: argparse.Namespace) -> CaseResult:
             except (FileNotFoundError, ValueError) as e:
                 print(f"  Skipping {ds}: {e}")
 
-        if not corpora:
+        wmt_paired_corpus: RealWithinItemPairedCorpus | None = None
+        if not getattr(args, "no_wmt_paired_check", False):
+            try:
+                wmt_paired_corpus = load_real_wmt_paired_corpus(
+                    data_dir=args.data_dir, judge_models=args.judge_models,
+                    min_coverage=getattr(args, "min_judge_coverage", 0.9),
+                )
+                print(f"  Loaded wmt_da_paired: N={wmt_paired_corpus.corpus_size} pairs, "
+                      f"judge_models={wmt_paired_corpus.judge_models}, "
+                      f"true_paired_mean={wmt_paired_corpus.true_paired_mean:.4f}, "
+                      f"true_paired_median={wmt_paired_corpus.true_paired_median:.4f}")
+            except (FileNotFoundError, ValueError) as e:
+                print(f"  Skipping wmt_da_paired (within-item paired check): {e}")
+
+        if not corpora and wmt_paired_corpus is None:
             raise ValueError(
                 "No real judge-bias datasets with collected scores found under "
                 f"{args.data_dir!r}. Run simulations/collect_judge_bias_data.py's "
@@ -538,6 +668,21 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
                             ))
 
+        if wmt_paired_corpus is not None:
+            _REAL_WMT_PAIRED_CORPORA.append(wmt_paired_corpus)
+            wmt_paired_idx = 0
+            sizes = args.sizes or default_size_grid(wmt_paired_corpus.corpus_size)
+            for label_frac in args.label_fracs:
+                for n in sizes:
+                    for judge_model in wmt_paired_corpus.judge_models:
+                        seed_counter += 1
+                        name = f"real.{wmt_paired_corpus.dataset}.labfrac={label_frac:.2f}.n={n}.judge={judge_model}"
+                        work_items.append((
+                            "wmt_paired_bias", wmt_paired_idx, name, wmt_paired_corpus.dataset,
+                            _WMT_PAIRED_BIAS_METHODS, n, label_frac, judge_model,
+                            args.reps, args.ppi_n_boot, seed_counter,
+                        ))
+
         def _consume(result: dict) -> None:
             ct = result["check_type"]
             if ct == "single":
@@ -549,6 +694,24 @@ def run(args: argparse.Namespace) -> CaseResult:
                     effect_results.append(PPIEffectResult(
                         name=result["name"], tag=f"real_{result['dataset']}", test=t, n=result["n"], n_samples=n_ok,
                         null_value=result["corpus_mean"], mean_bias=bias_mean, bias_z=z,
+                        coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
+                    ))
+            elif ct == "wmt_paired_bias":
+                # Same PPIEffectResult shape as "single" above (reusing its
+                # report/plot machinery unmodified), but the correct null
+                # value differs PER TEST -- wilcoxon targets the population
+                # MEDIAN paired difference, the other three target the MEAN
+                # (see _run_real_wmt_paired_bias_cell's docstring).
+                for t, samples in result["samples_by_test"].items():
+                    null_value = (result["true_paired_median"] if t == WILCOXON.name
+                                  else result["true_paired_mean"])
+                    bias_mean, z, coverage, mean_width, n_ok = _effect_cell_stats(samples, null_value)
+                    if n_ok == 0:
+                        continue
+                    unc_z = _uncorrected_bias_z(samples, null_value)
+                    effect_results.append(PPIEffectResult(
+                        name=result["name"], tag=f"real_{result['dataset']}", test=t, n=result["n"], n_samples=n_ok,
+                        null_value=null_value, mean_bias=bias_mean, bias_z=z,
                         coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
                     ))
             else:

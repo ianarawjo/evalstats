@@ -4,12 +4,22 @@ collect_judge_bias_data.py -- one-off script to build small real-data
 calibration sets for the PPI judge-bias simulations
 (simulations/harness/cases/pvalues.py --mode ppi), one dataset per eval_type:
 
-  binary      lmarena-ai/arena-human-preference-140k   human pairwise votes
-              on live model battles (fresh: timestamps run into 2025).
-  continuous  RicardoRei/wmt-da-human-evaluation        human 0-100 Direct
-              Assessment scores of machine-translation quality.
-  likert      Apple App Store customer-review RSS feed  human 1-5 star
-              ratings -- fetched live, so always as fresh as "today".
+  binary            lmarena-ai/arena-human-preference-140k   human pairwise
+                    votes on live model battles (fresh: timestamps run into
+                    2025).
+  continuous        RicardoRei/wmt-da-human-evaluation        human 0-100
+                    Direct Assessment scores of machine-translation quality.
+  likert            Apple App Store customer-review RSS feed  human 1-5 star
+                    ratings -- fetched live, so always as fresh as "today".
+  continuous_paired RicardoRei/wmt-da-human-evaluation, regrouped: SAME
+                    source segment translated by >=2 different MT systems,
+                    each independently human-DA-scored -- genuine within-
+                    item paired data (a single judge can score system A's
+                    and system B's output for the SAME source sentence
+                    separately), unlike the other three eval types which
+                    have only one candidate/response per item. See
+                    fetch_wmt_da_paired_items's docstring for why this needs
+                    its own fetcher rather than reusing plain "continuous".
 
 This is deliberately NOT part of simulations/harness/ -- it is a one-off
 data-collection tool, not simulation code the harness imports. It has three
@@ -73,12 +83,16 @@ Usage:
       --types likert --backend ollama --models gemma3:4b --limit 20
 
 Output CSV columns (simulations/out/judge_bias_<key>.csv, the merged view):
-  item_id      stable per-item ID (str)
-  eval_type    "binary" | "continuous" | "likert"
-  dataset      "arena" | "wmt_da" | "appstore"
+  item_id      stable per-item ID (str) -- for "wmt_da_paired", encodes its
+               segment/system pairing as "wmt_da_paired_seg{N}_sys{0|1}"
+               (see fetch_wmt_da_paired_items) so a consumer can recover
+               which two items share a source segment without a separate
+               join table.
+  eval_type    "binary" | "continuous" | "likert" | "continuous_paired"
+  dataset      "arena" | "wmt_da" | "appstore" | "wmt_da_paired"
   human_label  ground-truth human label, NATIVE scale per eval_type:
-               binary in {0.0, 1.0}; continuous (WMT DA) in [0, 100];
-               likert (app-store stars) in {1, 2, 3, 4, 5}
+               binary in {0.0, 1.0}; continuous/continuous_paired (WMT DA)
+               in [0, 100]; likert (app-store stars) in {1, 2, 3, 4, 5}
   judge_model  judge model ID used for this row
   run_idx      0-indexed judge replicate for this (item, model)
   judge_score  judge's score, SAME native scale as human_label
@@ -117,7 +131,15 @@ DATASET_SPECS: dict[str, DatasetSpec] = {
     "binary": DatasetSpec(key="arena", eval_type="binary", native_bounds=(0.0, 1.0)),
     "continuous": DatasetSpec(key="wmt_da", eval_type="continuous", native_bounds=(0.0, 100.0)),
     "likert": DatasetSpec(key="appstore", eval_type="likert", native_bounds=(1.0, 5.0)),
+    "continuous_paired": DatasetSpec(key="wmt_da_paired", eval_type="continuous_paired", native_bounds=(0.0, 100.0)),
 }
+""""continuous_paired" is a SEPARATE key from "continuous" (not a variant
+selected by some other flag) even though it scores on the identical 0-100
+DA scale with the identical judge prompt -- keeping them as fully distinct
+datasets (separate items/scores/merged CSVs) avoids ever silently mixing
+singleton wmt_da items with wmt_da_paired's segment-grouped items in one
+file, since a paired consumer needs EVERY item to have a same-segment
+partner and a singleton consumer has no such expectation."""
 
 DEFAULT_APPSTORE_APP_IDS = [
     284882215,   # Facebook
@@ -393,6 +415,126 @@ def fetch_wmt_da_items(*, n_items: int, min_year: int, max_scan: int, seed: int)
 
 
 # ---------------------------------------------------------------------------
+# collect-data: continuous_paired -- RicardoRei/wmt-da-human-evaluation,
+# regrouped by source segment for genuine within-item paired data
+# ---------------------------------------------------------------------------
+
+
+def fetch_wmt_da_paired_items(
+    *, n_segments: int, min_year: int, min_systems: int, max_systems_per_segment: int,
+    max_scan: int, seed: int,
+) -> list[dict]:
+    """Like fetch_wmt_da_items, but groups rows by (lp, src) FIRST and keeps
+    only segments where >= min_systems different MT systems' outputs for
+    that SAME source sentence were each independently human-DA-scored --
+    then emits exactly 2 items per selected segment (the two systems with
+    the most different human scores, so the pair actually has signal).
+
+    Why this exists as a separate fetcher rather than a post-hoc join over
+    plain wmt_da items: fetch_wmt_da_items reservoir-samples individual rows
+    with no regard to grouping, so the (item_id-independent) src text isn't
+    even retained after sampling -- two rows for the SAME segment surviving
+    together into one reservoir sample is incidental, not something you can
+    reliably mine out of an existing judge_bias_wmt_da_items.csv. This
+    fetcher groups WHILE streaming, before any sampling happens, so pairing
+    is guaranteed for every item it emits.
+
+    Confirmed on a 20K-row scan (2026-07-23): 2,987 unique (lp, src)
+    segments, 2,953 of them (99%) with >= 2 systems -- multi-system
+    coverage of the same source segment is the norm for this dataset (WMT
+    shared-task design: many MT systems translate the same source set),
+    not a rare edge case worth a large --max-scan to find.
+
+    Each item's item_id encodes its segment and system index directly
+    (``wmt_da_paired_seg{N}_sys{0|1}``) instead of adding new CSV columns
+    -- a downstream consumer recovers the pairing by parsing item_id, no
+    schema change needed to the shared items/scores/merged CSV format.
+    judge_input has the IDENTICAL shape as plain wmt_da's ({lp, source,
+    reference, candidate}) -- each system's output is still scored by the
+    judge as an independent, single-item quality rating (the judge never
+    sees both systems for a segment together, since that would defeat the
+    point of getting two independently-elicited scores to pair afterward).
+
+    Note: unlike fetch_wmt_da_items's true single-pass reservoir sampling,
+    this buffers ALL eligible rows into per-segment groups while scanning
+    (needed to know each segment's full system count before deciding which
+    to keep). Also inherits plain wmt_da's OWN gotcha: this mirror's ~1.29M
+    rows are ordered ASCENDING by year (2017 first), so a low max_scan can
+    finish before reaching min_year at all -- year=2020 doesn't appear until
+    row ~698K (confirmed empirically, 2026-07-23) -- see
+    --wmt-paired-max-scan's default/help for the reasoning.
+    """
+    try:
+        from datasets import load_dataset
+    except ImportError:
+        raise ImportError("pip install datasets")
+
+    print(f"Streaming {WMT_DA_DATASET} (continuous_paired: same-segment, "
+          f"multi-system human 0-100 Direct Assessment scores) ...")
+    ds = load_dataset(WMT_DA_DATASET, split="train", streaming=True)
+
+    groups: dict[tuple[Any, str], list[dict]] = {}
+    scanned = 0
+    pbar = _progress(ds, total=max_scan, desc="wmt_da_paired", unit="row")
+    for row in pbar:
+        scanned += 1
+        if scanned > max_scan:
+            break
+        if (row.get("year") or 0) < min_year:
+            continue
+        raw = row.get("raw")
+        if raw is None or raw != raw:  # NaN check
+            continue
+        src = row.get("src")
+        if not src:
+            continue
+        key = (row.get("lp"), src)
+        g = groups.setdefault(key, [])
+        if len(g) < max_systems_per_segment:
+            g.append({"raw": float(raw), "mt": row.get("mt"), "ref": row.get("ref")})
+        if hasattr(pbar, "set_postfix"):
+            pbar.set_postfix(segments=len(groups))
+    if hasattr(pbar, "close"):
+        pbar.close()
+
+    eligible = [(key, systems) for key, systems in groups.items() if len(systems) >= min_systems]
+    print(f"  Scanned {scanned:,} rows -> {len(groups):,} unique (lp, src) segments "
+          f"(year >= {min_year}), {len(eligible):,} with >= {min_systems} systems.")
+    if not eligible:
+        print(f"  NOTE: 0 eligible segments -- this HF mirror's ~1.29M rows are ordered ascending "
+              f"by year (2017 through ~2022), so a low --wmt-paired-max-scan can finish before "
+              f"reaching {min_year} (year=2020 doesn't appear until row ~698K). Try a higher "
+              f"--wmt-paired-max-scan (default already covers the whole dataset), a lower "
+              f"--wmt-paired-min-year, or lower --wmt-paired-min-systems.")
+        return []
+
+    rng = random.Random(seed)
+    rng.shuffle(eligible)
+    chosen = eligible[:n_segments]
+    _warn_if_short(chosen, n_segments,
+                   "raise --wmt-paired-max-scan or lower --wmt-paired-min-systems.")
+
+    items: list[dict] = []
+    for seg_idx, (_key, systems) in enumerate(chosen):
+        # Two systems with the MOST DIFFERENT human scores -- a segment
+        # where every system happened to score identically would be a
+        # wasted (uninformative) pair for testing real paired differences.
+        systems_sorted = sorted(systems, key=lambda s: s["raw"])
+        for sys_idx, sysinfo in enumerate((systems_sorted[0], systems_sorted[-1])):
+            items.append({
+                "item_id": f"wmt_da_paired_seg{seg_idx}_sys{sys_idx}",
+                "human_label": sysinfo["raw"],
+                "judge_input": {
+                    "lp": _key[0], "source": _key[1],
+                    "reference": sysinfo["ref"], "candidate": sysinfo["mt"],
+                },
+            })
+    print(f"  Selected {len(chosen):,} segments -> {len(items):,} paired items "
+          f"({len(items) // 2:,} pairs).")
+    return items
+
+
+# ---------------------------------------------------------------------------
 # collect-data: likert -- Apple App Store customer-review RSS feed
 # ---------------------------------------------------------------------------
 
@@ -486,6 +628,7 @@ FETCHERS: dict[str, Callable[..., list[dict]]] = {
     "arena": fetch_arena_items,
     "wmt_da": fetch_wmt_da_items,
     "appstore": fetch_appstore_items,
+    "wmt_da_paired": fetch_wmt_da_paired_items,
 }
 
 
@@ -523,6 +666,15 @@ def run_collect_data(args: argparse.Namespace) -> None:
                 n_items=args.n_items, days_back=args.appstore_days_back,
                 max_pages=args.appstore_max_pages, seed=args.seed,
                 empty_retries=args.appstore_empty_retries, retry_sleep=args.appstore_retry_sleep,
+            )
+        elif spec.key == "wmt_da_paired":
+            # args.n_items means SEGMENTS here (2 items emitted per segment) --
+            # see fetch_wmt_da_paired_items's docstring.
+            items = fetch_wmt_da_paired_items(
+                n_segments=args.n_items, min_year=args.wmt_paired_min_year,
+                min_systems=args.wmt_paired_min_systems,
+                max_systems_per_segment=args.wmt_paired_max_systems_per_segment,
+                max_scan=args.wmt_paired_max_scan, seed=args.seed,
             )
         else:
             raise ValueError(spec.key)
@@ -617,9 +769,15 @@ def _parse_appstore_response(text: str) -> float | None:
 
 PROMPT_BUILDERS: dict[str, Callable[[dict], list[dict]]] = {
     "arena": _build_arena_prompt, "wmt_da": _build_wmt_da_prompt, "appstore": _build_appstore_prompt,
+    # Reuses wmt_da's prompt builder verbatim -- judge_input has the identical
+    # {lp, source, reference, candidate} shape, and each system's output is
+    # still scored independently (the judge never sees both systems for a
+    # segment in one call). See fetch_wmt_da_paired_items's docstring.
+    "wmt_da_paired": _build_wmt_da_prompt,
 }
 RESPONSE_PARSERS: dict[str, Callable[[str], float | None]] = {
     "arena": _parse_arena_response, "wmt_da": _parse_wmt_da_response, "appstore": _parse_appstore_response,
+    "wmt_da_paired": _parse_wmt_da_response,
 }
 
 
@@ -906,16 +1064,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
     sub = p.add_subparsers(dest="command", required=True)
 
     common_types = dict(
-        choices=["binary", "continuous", "likert"], nargs="+",
+        choices=["binary", "continuous", "likert", "continuous_paired"], nargs="+",
         default=["binary", "continuous", "likert"],
-        help="Which eval-type dataset(s) to process (default: all three).",
+        help="Which eval-type dataset(s) to process (default: the original three -- "
+             "\"continuous_paired\" is opt-in, since it's a separate, heavier "
+             "same-segment-multi-system collection pass over the SAME upstream wmt-da "
+             "dataset as \"continuous\"; pass it explicitly, e.g. --types continuous_paired).",
     )
 
     pd_ = sub.add_parser("collect-data", help="Fetch items + human labels (no LLM calls).")
     pd_.add_argument("--types", **common_types)
     pd_.add_argument("--out-dir", default="simulations/out")
     pd_.add_argument("--n-items", type=int, default=1000,
-                      help="Items to sample per dataset (PPI regimes typically want >= ~1000).")
+                      help="Items to sample per dataset (PPI regimes typically want >= ~1000). "
+                           "For continuous_paired specifically, this means SEGMENTS, not items -- "
+                           "each selected segment emits 2 items (one per system), so the resulting "
+                           "_items.csv has up to 2x this many rows.")
     pd_.add_argument("--seed", type=int, default=0)
     pd_.add_argument("--arena-max-scan", type=int, default=100_000,
                       help="Cap on upstream rows scanned for arena streaming reservoir sampling "
@@ -933,6 +1097,29 @@ def build_arg_parser() -> argparse.ArgumentParser:
                            "the default covers the whole dataset so a --wmt-min-year filter can "
                            "actually be reached; a low cap here silently yields 0 eligible rows "
                            "if it stops scanning before the requested year range.")
+    pd_.add_argument("--wmt-paired-min-year", type=int, default=2020,
+                      help="continuous_paired only: only keep WMT DA rows with year >= this.")
+    pd_.add_argument("--wmt-paired-max-scan", type=int, default=1_400_000,
+                      help="continuous_paired only: cap on upstream rows scanned. This mirror's ~1.29M "
+                           "rows are ordered ASCENDING by year (2017 first) -- confirmed empirically "
+                           "(2026-07-23): year=2020 doesn't appear until row ~698K, so this needs to "
+                           "stay close to the full-dataset default (matching plain --wmt-max-scan) for "
+                           "--wmt-paired-min-year's default (2020) to be reachable at all; a lower cap "
+                           "here silently yields 0 eligible segments, not a smaller-but-nonzero result. "
+                           "Unlike fetch_wmt_da_items's true single-pass reservoir sampling, this buffers "
+                           "every eligible row into per-segment groups WHILE scanning (needed to know "
+                           "each segment's full system count before deciding which to keep) -- expect "
+                           "somewhat more memory/runtime than the plain continuous fetch at the same "
+                           "scan size, though still bounded (further capped by "
+                           "--wmt-paired-max-systems-per-segment).")
+    pd_.add_argument("--wmt-paired-min-systems", type=int, default=2,
+                      help="continuous_paired only: only keep source segments with at least this "
+                           "many independently-scored MT systems.")
+    pd_.add_argument("--wmt-paired-max-systems-per-segment", type=int, default=8,
+                      help="continuous_paired only: cap on how many systems' rows to buffer per "
+                           "segment while scanning (bounds memory for segments with many systems; "
+                           "only the 2 with the most different human scores are ever used per pair, "
+                           "so this just needs to be >= min_systems, not exhaustive).")
     pd_.add_argument("--appstore-app-ids", type=int, nargs="+", default=DEFAULT_APPSTORE_APP_IDS)
     pd_.add_argument("--appstore-country", default="us")
     pd_.add_argument("--appstore-days-back", type=int, default=45,
