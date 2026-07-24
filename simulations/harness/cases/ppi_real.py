@@ -10,7 +10,7 @@ they're fully generic over (name, tag, test) labeled results and have no
 JudgeBiasSource-specific coupling, so they work unmodified here. See
 scenarios/real_judge_bias.py's module docstring for the data-loading side.
 
-Four checks:
+Six checks:
 
   single-sample bias/coverage
       Per judge model: does the PPI-corrected estimate of THIS corpus's
@@ -84,13 +84,31 @@ Four checks:
       hard failure, if judge_bias_wmt_da_paired.csv hasn't been collected
       yet -- see --no-wmt-paired-check to disable explicitly).
 
+  omnibus-independent Type-I null (3-group, cross-judge)
+      The 3-group generalization of the two-group check: for every unique
+      TRIPLE of judge models, bisect the corpus into three disjoint random
+      subsamples read through three DIFFERENT judges -- same cross-judge
+      reasoning as the two-group check (see generate_real_
+      omnibus_independent_null_cell). Runs anova_ind and kruskal (NOT
+      kruskal_mnar_experimental -- see _omnibus_independent_methods_for's
+      docstring for why, same reasoning as dropping mwu_mnar_experimental
+      from the two-group check). With k judge models, all C(k, 3) triples
+      are checked (capped by --max-triples).
+
+  omnibus-repeated Type-I null (3-condition, cross-judge)
+      The 3-condition generalization of the paired check: for every unique
+      TRIPLE of judge models scoring the SAME items, an EXACT null (the
+      true value is identical across all three conditions for every item).
+      Runs anova_rep and friedman -- the repeated-measures tests a single
+      judge model, or even a pair, can't exercise (see generate_real_
+      omnibus_repeated_null_cell).
+
 Explicitly OUT of scope for v1 (see scoping discussion): a "real" (non-
 null) group comparison via a natural categorical split (e.g. WMT by
 language pair, App Store by app_id) -- deferred since it conflates a real
 content difference with judge bias, a dirtier signal than the clean
-synthetic power check -- and any 3-group/repeated/factorial/nested-run
-structure (anova/friedman/kruskal/lmm), which would need 3+ judges treated
-as a genuine repeated-measures design rather than an arbitrary combination.
+synthetic power check -- and LMM/LMM_FACTORIAL/LMM_RUNS specifically
+(deferred for now, unlike the other omnibus tests above).
 """
 
 from __future__ import annotations
@@ -119,9 +137,16 @@ with warnings.catch_warnings():
         _ppi_paired_bootstrap_t,
         _ppi_paired_tango,
         _p_x_gt_y_midrank,
+        _ppi_anova_independent_p_value,
+        _ppi_anova_repeated_p_value,
+        _ppi_friedman_p_value,
+        _ppi_kruskal_wallis_pairwise,
     )
 
-from ..methods import TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO
+from ..methods import (
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
+    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
+)
 from ..scenarios.real_judge_bias import (
     REAL_JUDGE_BIAS_DATASETS,
     DEFAULT_DATA_DIR,
@@ -129,9 +154,12 @@ from ..scenarios.real_judge_bias import (
     load_real_judge_bias_corpus,
     default_size_grid,
     all_judge_pairs,
+    all_judge_triples,
     generate_real_single_cell,
     generate_real_twogroup_null_cell,
     generate_real_paired_null_cell,
+    generate_real_omnibus_independent_null_cell,
+    generate_real_omnibus_repeated_null_cell,
     RealWithinItemPairedCorpus,
     load_real_wmt_paired_corpus,
     generate_real_wmt_paired_bias_cell,
@@ -150,6 +178,10 @@ from .pvalues import (
     _uncorrected_bayes_bootstrap_paired_p_value,
     _uncorrected_bootstrap_t_paired_p_value,
     _uncorrected_tango_paired_p_value,
+    _uncorrected_anova_independent_p_value,
+    _uncorrected_anova_repeated_p_value,
+    _uncorrected_friedman_p_value,
+    _uncorrected_kruskal_p_value,
     _ProgressReporter,
     _ALPHA,
     _PPI_NONSTANDARD_TESTS,
@@ -358,6 +390,90 @@ def _run_real_paired_cell(
     return corrected, uncorrected
 
 
+def _run_real_omnibus_independent_cell(
+    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float,
+    judge_a: str, judge_b: str, judge_c: str, n_reps: int, n_boot: int, seed: int,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """n_reps replicates of the omnibus-independent Type-I null check (3-way
+    random split, cross-judge -- see generate_real_omnibus_independent_
+    null_cell's docstring), mirroring pvalues.py's _run_ppi_cell's
+    ANOVA_IND/KRUSKAL branches. See _omnibus_independent_methods_for for
+    why KRUSKAL_MNAR_EXPERIMENTAL is not wired up here."""
+    rng = np.random.default_rng(seed)
+    corrected: dict[str, int] = {t: 0 for t in methods}
+    uncorrected: dict[str, int] = {t: 0 for t in methods}
+
+    def _rng_seed() -> int:
+        return int(rng.integers(0, 2 ** 31))
+
+    for _ in range(n_reps):
+        groups, groups_lab = generate_real_omnibus_independent_null_cell(
+            corpus, rng, n, label_frac, judge_a, judge_b, judge_c,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if ANOVA_IND.name in methods:
+                try:
+                    p_u = _uncorrected_anova_independent_p_value(groups)
+                    uncorrected[ANOVA_IND.name] += int(p_u < _ALPHA)
+                    p = _ppi_anova_independent_p_value(groups, groups_lab, k=len(groups))
+                    corrected[ANOVA_IND.name] += int(p is not None and p < _ALPHA)
+                except Exception:
+                    pass
+
+            if KRUSKAL.name in methods:
+                try:
+                    p_u = _uncorrected_kruskal_p_value(groups)
+                    uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
+                    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
+                except Exception:
+                    pass
+
+    return corrected, uncorrected
+
+
+def _run_real_omnibus_repeated_cell(
+    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float,
+    judge_a: str, judge_b: str, judge_c: str, n_reps: int, n_boot: int, seed: int,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """n_reps replicates of the omnibus-repeated Type-I null check (same
+    items, 3 different judges -- see generate_real_omnibus_repeated_
+    null_cell's docstring), mirroring pvalues.py's _run_ppi_cell's
+    ANOVA_REP/FRIEDMAN branches."""
+    rng = np.random.default_rng(seed)
+    corrected: dict[str, int] = {t: 0 for t in methods}
+    uncorrected: dict[str, int] = {t: 0 for t in methods}
+
+    for _ in range(n_reps):
+        groups, groups_lab = generate_real_omnibus_repeated_null_cell(
+            corpus, rng, n, label_frac, judge_a, judge_b, judge_c,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if ANOVA_REP.name in methods:
+                try:
+                    p_u = _uncorrected_anova_repeated_p_value(groups)
+                    uncorrected[ANOVA_REP.name] += int(p_u < _ALPHA)
+                    p = _ppi_anova_repeated_p_value(groups, groups_lab, k=len(groups))
+                    corrected[ANOVA_REP.name] += int(p is not None and p < _ALPHA)
+                except Exception:
+                    pass
+
+            if FRIEDMAN.name in methods:
+                try:
+                    p_u = _uncorrected_friedman_p_value(groups)
+                    uncorrected[FRIEDMAN.name] += int(p_u < _ALPHA)
+                    p = _ppi_friedman_p_value(groups, groups_lab, k=len(groups))
+                    corrected[FRIEDMAN.name] += int(p is not None and p < _ALPHA)
+                except Exception:
+                    pass
+
+    return corrected, uncorrected
+
+
 _WMT_PAIRED_BIAS_METHODS = [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name]
 """_paired_methods_for("continuous") minus BOOTSTRAP_T -- its test name
 ("bootstrap_t") is IDENTICAL to _SINGLE_METHOD_BOOTSTRAP_T, which the
@@ -443,15 +559,16 @@ been collected yet (see run()'s try/except around load_real_wmt_paired_corpus)."
 
 
 def _run_ppi_real_cell_worker(args: tuple) -> dict:
-    """Runs ONE (single|twogroup|paired|wmt_paired_bias) cell and returns
-    everything run() needs to fold it into effect_results/twogroup_results/
-    paired_results, with no dependency on the original work-item's position
-    -- required since pool.imap_unordered does not preserve submission order."""
-    check_type, corpus_idx, name, dataset, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed = args
+    """Runs ONE (single|twogroup|paired|omnibus_independent|omnibus_repeated|
+    wmt_paired_bias) cell and returns everything run() needs to fold it into
+    effect_results/twogroup_results/paired_results/omnibus_results, with no
+    dependency on the original work-item's position -- required since
+    pool.imap_unordered does not preserve submission order."""
+    check_type, corpus_idx, name, dataset, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed = args
 
     if check_type == "wmt_paired_bias":
         corpus = _REAL_WMT_PAIRED_CORPORA[corpus_idx]
-        samples_by_test = _run_real_wmt_paired_bias_cell(corpus, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed)
+        samples_by_test = _run_real_wmt_paired_bias_cell(corpus, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed)
         return {
             "check_type": check_type, "name": name, "dataset": dataset, "n": n,
             "true_paired_mean": corpus.true_paired_mean, "true_paired_median": corpus.true_paired_median,
@@ -461,12 +578,22 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
     corpus = _REAL_CORPORA[corpus_idx]
 
     if check_type == "single":
-        samples_by_test = _run_real_single_cell(corpus, methods, n, label_frac, judge_or_pair, n_reps, n_boot, seed)
+        samples_by_test = _run_real_single_cell(corpus, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed)
         return {
             "check_type": check_type, "name": name, "dataset": dataset, "n": n,
             "corpus_mean": corpus.corpus_mean, "samples_by_test": samples_by_test,
         }
-    judge_a, judge_b = judge_or_pair
+
+    if check_type in ("omnibus_independent", "omnibus_repeated"):
+        judge_a, judge_b, judge_c = judge_or_group
+        runner = _run_real_omnibus_independent_cell if check_type == "omnibus_independent" else _run_real_omnibus_repeated_cell
+        corrected, uncorrected = runner(corpus, methods, n, label_frac, judge_a, judge_b, judge_c, n_reps, n_boot, seed)
+        return {
+            "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
+            "methods": methods, "corrected": corrected, "uncorrected": uncorrected,
+        }
+
+    judge_a, judge_b = judge_or_group
     if check_type == "twogroup":
         corrected, uncorrected = _run_real_twogroup_cell(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
         return {
@@ -519,6 +646,31 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     return [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name]
 
 
+def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
+    # anova_ind/kruskal/kruskal_mnar_experimental aren't in pvalues.py's
+    # _PPI_BINARY_COMPATIBLE_TESTS -- binary's massive ties break these
+    # rank/variance-based judge-bias models entirely, same restriction as
+    # the twogroup/paired families.
+    #
+    # KRUSKAL_MNAR_EXPERIMENTAL deliberately NOT included, for the identical
+    # reason MWU_MNAR_EXPERIMENTAL was dropped from the twogroup check (see
+    # _twogroup_methods_for's docstring): it trades some MCAR calibration
+    # for MNAR robustness, but this check's real-data labeling is MCAR by
+    # construction, so there's no MNAR risk here for its local rectifier to
+    # buy anything against.
+    if eval_type == "binary":
+        return []
+    return [ANOVA_IND.name, KRUSKAL.name]
+
+
+def _omnibus_repeated_methods_for(eval_type: str) -> list[str]:
+    # Same binary restriction as _omnibus_independent_methods_for --
+    # anova_rep/friedman are equally rank/variance-based.
+    if eval_type == "binary":
+        return []
+    return [ANOVA_REP.name, FRIEDMAN.name]
+
+
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
@@ -543,9 +695,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "(e.g. a --limit'd or still-running collect-judge-scores) otherwise drags "
                               "the usable corpus size down for every OTHER judge too, not just itself.")
     parser.add_argument("--max-pairs", type=int, default=None,
-                         help="Cap on unique judge PAIRS checked by the paired-null test (default: all "
-                              "C(k, 2) pairs for k judge models -- e.g. 28 for 8 judges. Caps by random "
-                              "subset if k is large enough that C(k, 2) would be impractically slow.")
+                         help="Cap on unique judge PAIRS checked by the twogroup/paired-null tests "
+                              "(default: all C(k, 2) pairs for k judge models -- e.g. 28 for 8 judges. "
+                              "Caps by random subset if k is large enough that C(k, 2) would be "
+                              "impractically slow.")
+    parser.add_argument("--max-triples", type=int, default=None,
+                         help="Cap on unique judge TRIPLES checked by the omnibus-independent/omnibus-"
+                              "repeated tests (default: all C(k, 3) triples for k judge models -- e.g. "
+                              "56 for 8 judges. Caps by random subset if k is large enough that C(k, 3) "
+                              "would be impractically slow.")
     parser.add_argument("--label-fracs", type=float, nargs="+", default=DEFAULT_LABEL_FRACS)
     parser.add_argument("--sizes", type=int, nargs="+", default=None,
                          help="Sample sizes per rep (default: 3 sizes bounded by each dataset's actual corpus size).")
@@ -561,6 +719,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-single-check", action="store_true", help="Skip the single-sample bias/coverage check.")
     parser.add_argument("--no-twogroup-check", action="store_true", help="Skip the two-group Type-I null check.")
     parser.add_argument("--no-paired-check", action="store_true", help="Skip the cross-judge paired Type-I null check.")
+    parser.add_argument("--no-omnibus-independent-check", action="store_true",
+                         help="Skip the 3-group cross-judge omnibus Type-I null check (anova_ind/kruskal).")
+    parser.add_argument("--no-omnibus-repeated-check", action="store_true",
+                         help="Skip the 3-condition cross-judge omnibus Type-I null check "
+                              "(anova_rep/friedman).")
     parser.add_argument("--no-wmt-paired-check", action="store_true",
                          help="Skip the within-item (wmt_da_paired) bias/coverage check. Runs by default "
                               "IF judge_bias_wmt_da_paired.csv has been collected (see "
@@ -569,8 +732,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--latex", action="store_true")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential). Parallelizes "
-                              "across single/twogroup/paired cells (all corpora, label_fracs, sizes, judge "
-                              "models/pairs flattened into one work queue) using a multiprocessing.Pool "
+                              "across single/twogroup/paired/omnibus cells (all corpora, label_fracs, "
+                              "sizes, judge models/pairs/triples flattened into one work queue) using a "
+                              "multiprocessing.Pool "
                               "with the fork start method, same as pvalues.py's run_*_simulation functions. "
                               "Cell seeds are fixed up front from --seed regardless of --workers, so "
                               "results are identical either way -- only completion order (and hence "
@@ -579,17 +743,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 def official_args(base_seed: int = 46) -> argparse.Namespace:
     return argparse.Namespace(
-        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, min_judge_coverage=0.9, max_pairs=None,
+        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, min_judge_coverage=0.9,
+        max_pairs=None, max_triples=None,
         label_fracs=list(DEFAULT_LABEL_FRACS), sizes=None, reps=200, ppi_n_boot=2000,
         alpha=0.05, seed=base_seed, progress="bar", save_results="save", plots="save",
         out_dir="simulations/out", plots_dir=None,
-        no_single_check=False, no_twogroup_check=False, no_paired_check=False, no_wmt_paired_check=False,
+        no_single_check=False, no_twogroup_check=False, no_paired_check=False,
+        no_omnibus_independent_check=False, no_omnibus_repeated_check=False, no_wmt_paired_check=False,
         latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
 
 def official_variants(base_seed: int = 46) -> list[tuple[str, argparse.Namespace]]:
-    return [("real judge-bias data (single-sample + two-group + paired null + within-item paired bias/coverage)", official_args(base_seed))]
+    return [("real judge-bias data (single-sample + two-group + paired null + omnibus null + within-item paired bias/coverage)", official_args(base_seed))]
 
 
 def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.Namespace:
@@ -598,11 +764,13 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
     convention -- this case has no synthetic variant of its own (it's
     always real data), so both calls run the identical fast preset."""
     return argparse.Namespace(
-        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, min_judge_coverage=0.9, max_pairs=10,
+        data_dir=DEFAULT_DATA_DIR, datasets=None, judge_models=None, min_judge_coverage=0.9,
+        max_pairs=10, max_triples=10,
         label_fracs=[0.20], sizes=None, reps=5, ppi_n_boot=200,
         alpha=0.05, seed=base_seed, progress="bar", save_results="save", plots="save",
         out_dir="simulations/out", plots_dir=None,
-        no_single_check=False, no_twogroup_check=False, no_paired_check=False, no_wmt_paired_check=False,
+        no_single_check=False, no_twogroup_check=False, no_paired_check=False,
+        no_omnibus_independent_check=False, no_omnibus_repeated_check=False, no_wmt_paired_check=False,
         latex=True, workers=1,
     )
 
@@ -653,6 +821,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         effect_results: list[PPIEffectResult] = []
         twogroup_results: list[PPIResult] = []
         paired_results: list[PPIResult] = []
+        omnibus_results: list[PPIResult] = []
         seed_counter = args.seed
 
         # Flatten every (corpus, label_frac, size, judge_model/pair, check
@@ -669,7 +838,10 @@ def run(args: argparse.Namespace) -> CaseResult:
             single_methods = _single_methods_for(corpus.eval_type)
             twogroup_methods = _twogroup_methods_for(corpus.eval_type)
             paired_methods = _paired_methods_for(corpus.eval_type)
+            omnibus_ind_methods = _omnibus_independent_methods_for(corpus.eval_type)
+            omnibus_rep_methods = _omnibus_repeated_methods_for(corpus.eval_type)
             pairs = all_judge_pairs(corpus, max_pairs=args.max_pairs, rng=np.random.default_rng(args.seed))
+            triples = all_judge_triples(corpus, max_triples=args.max_triples, rng=np.random.default_rng(args.seed))
 
             for label_frac in args.label_fracs:
                 for n in sizes:
@@ -702,6 +874,29 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 work_items.append((
                                     "paired", corpus_idx, name, corpus.dataset, paired_methods,
                                     n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
+                                ))
+
+                    # omnibus-independent/omnibus-repeated both need judge
+                    # TRIPLES (cross-judge, same reasoning as twogroup/paired
+                    # above, just extended to 3 groups/conditions), so both
+                    # loop over `triples`.
+                    if not args.no_omnibus_independent_check or not args.no_omnibus_repeated_check:
+                        for judge_a, judge_b, judge_c in triples:
+                            name = (f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}"
+                                    f".triple={judge_a}~{judge_b}~{judge_c}")
+
+                            if not args.no_omnibus_independent_check:
+                                seed_counter += 1
+                                work_items.append((
+                                    "omnibus_independent", corpus_idx, name, corpus.dataset, omnibus_ind_methods,
+                                    n, label_frac, (judge_a, judge_b, judge_c), args.reps, args.ppi_n_boot, seed_counter,
+                                ))
+
+                            if not args.no_omnibus_repeated_check:
+                                seed_counter += 1
+                                work_items.append((
+                                    "omnibus_repeated", corpus_idx, name, corpus.dataset, omnibus_rep_methods,
+                                    n, label_frac, (judge_a, judge_b, judge_c), args.reps, args.ppi_n_boot, seed_counter,
                                 ))
 
         if wmt_paired_corpus is not None:
@@ -751,7 +946,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                         coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
                     ))
             else:
-                bucket = twogroup_results if ct == "twogroup" else paired_results
+                if ct == "twogroup":
+                    bucket = twogroup_results
+                elif ct == "paired":
+                    bucket = paired_results
+                else:
+                    bucket = omnibus_results
                 for t in result["methods"]:
                     bucket.append(PPIResult(
                         name=result["name"], tag=f"real_{result['dataset']}", test=t, n_reps=result["n_reps"],
@@ -821,19 +1021,20 @@ def run(args: argparse.Namespace) -> CaseResult:
             finite_cov = [r.coverage for r in effect_results if np.isfinite(r.coverage)]
             key_metrics["ppi_real_effect_mean_coverage"] = float(np.mean(finite_cov)) if finite_cov else float("nan")
 
-        # twogroup + paired combined into ONE Type-I report/plot, matching
-        # pvalues.py's synthetic PPI sweep (run_ppi_simulation's single
-        # combined `ppi_results` list, one print_ppi_report/save_ppi_typeI_plot
-        # call) instead of two separate ones -- safe to merge since the two
-        # families use entirely disjoint test names (ttest/ttest_welch/mwu vs
-        # wilcoxon/paired_t/bayes_bootstrap/bootstrap_t/tango, no collision
-        # like the wmt_paired_bias/single-sample bootstrap_t one elsewhere in
-        # this file), so this is purely additive -- no result gets double-
-        # counted or aliased with another. Colors/legend come from methods.py's
-        # Method.color per test, same registry pvalues.py's plot uses, so a
-        # test keeps the same color whether it's plotted from a synthetic or
-        # a real-data run.
-        hypothesis_results = twogroup_results + paired_results
+        # twogroup + paired + omnibus combined into ONE Type-I report/plot,
+        # matching pvalues.py's synthetic PPI sweep (run_ppi_simulation's
+        # single combined `ppi_results` list, one print_ppi_report/
+        # save_ppi_typeI_plot call) instead of separate ones per family --
+        # safe to merge since all three families use entirely disjoint test
+        # names (ttest/ttest_welch/mwu vs wilcoxon/paired_t/bayes_bootstrap/
+        # bootstrap_t/tango vs anova_ind/anova_rep/friedman/kruskal, no
+        # collision like the wmt_paired_bias/single-sample bootstrap_t one
+        # elsewhere in this file), so this is purely additive -- no result
+        # gets double-counted or aliased with another. Colors/legend come
+        # from methods.py's Method.color per test, same registry pvalues.py's
+        # plot uses, so a test keeps the same color whether it's plotted
+        # from a synthetic or a real-data run.
+        hypothesis_results = twogroup_results + paired_results + omnibus_results
         if hypothesis_results:
             print_ppi_report(hypothesis_results, alpha=args.alpha)
             run_stem = f"ppi_real_hypothesis_reps{args.reps}_{stamp}"

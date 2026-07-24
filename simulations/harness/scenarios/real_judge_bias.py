@@ -227,6 +227,24 @@ def all_judge_pairs(
     return pairs
 
 
+def all_judge_triples(
+    corpus: RealJudgeBiasCorpus, *, max_triples: int | None = None, rng: np.random.Generator | None = None,
+) -> list[tuple[str, str, str]]:
+    """Every unique (judge_a, judge_b, judge_c) triple -- C(k, 3) for k judge
+    models -- for the omnibus (3-group) null checks. Same capping
+    convention as all_judge_pairs: C(k, 3) grows faster still (8 judges ->
+    56 triples), so max_triples falls back to a random subset. Returns []
+    when the corpus has fewer than 3 judge models -- callers naturally
+    produce zero omnibus work items in that case rather than needing a
+    special-cased guard."""
+    triples = list(combinations(corpus.judge_models, 3))
+    if max_triples is not None and len(triples) > max_triples:
+        rng = rng or np.random.default_rng(0)
+        keep = sorted(rng.choice(len(triples), size=max_triples, replace=False))
+        triples = [triples[i] for i in keep]
+    return triples
+
+
 def default_size_grid(corpus_size: int, n_points: int = 3) -> list[int]:
     """A small size grid bounded by (and including) the corpus's actual
     size, rather than one fixed grid applied blindly across very
@@ -361,6 +379,65 @@ def generate_real_paired_null_cell(
     human = corpus.human_label[idx]
     lab = _reveal_labels(human, label_frac, rng)
     return llm_x, llm_y, lab, lab.copy()
+
+
+def generate_real_omnibus_independent_null_cell(
+    corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
+    judge_a: str, judge_b: str, judge_c: str,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """The 3-group generalization of generate_real_twogroup_null_cell: WOR-
+    draw 3n DISJOINT items, split into three independent groups A/B/C -- a
+    valid Type-I null by construction (all three are random subsamples of
+    the SAME population, so their TRUE, human-label means are equal) -- but
+    read through three DIFFERENT judges (judge_a/judge_b/judge_c), not one
+    judge reading all three, for the same reason generate_real_
+    twogroup_null_cell is cross-judge (see that function's docstring):
+    a single judge's bias would apply identically to all three groups and
+    cancel out of any pairwise comparison, making an uncorrected omnibus
+    test structurally unable to fail.
+
+    Feeds cases/ppi_real.py's omnibus-independent check (anova_ind/kruskal
+    -- the 3-group analogue of the twogroup check's ttest/ttest_welch/mwu).
+    Returns (groups, groups_lab) as 3-element lists, the shape
+    evalstats.tests' _ppi_anova_independent_p_value/
+    _ppi_kruskal_wallis_pairwise expect."""
+    n = min(n, corpus.corpus_size // 3)
+    idx = rng.choice(corpus.corpus_size, size=3 * n, replace=False)
+    idx_a, idx_b, idx_c = idx[:n], idx[n:2 * n], idx[2 * n:]
+    judges = (judge_a, judge_b, judge_c)
+    idxs = (idx_a, idx_b, idx_c)
+    groups = [corpus.judge_scores[jm][ix] for jm, ix in zip(judges, idxs)]
+    groups_lab = [_reveal_labels(corpus.human_label[ix], label_frac, rng) for ix in idxs]
+    return groups, groups_lab
+
+
+def generate_real_omnibus_repeated_null_cell(
+    corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
+    judge_a: str, judge_b: str, judge_c: str,
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+    """The 3-condition generalization of generate_real_paired_null_cell:
+    WOR-draw n items ONCE (all three "conditions" are the SAME items) and
+    read them through three DIFFERENT judges -- an EXACT Type-I null (the
+    true value is identical across all three conditions for every single
+    item, since judge_a/judge_b/judge_c are all noisy/biased reads of the
+    IDENTICAL human_label). label_frac reveals the SAME items' human labels
+    for all three conditions (one ground truth per item, not one per
+    judge), so the three groups_lab arrays are identical (each copied, not
+    aliased, matching generate_real_paired_null_cell's lab/lab.copy()
+    convention).
+
+    Feeds cases/ppi_real.py's omnibus-repeated check (anova_rep/friedman --
+    the 3-condition analogue of the paired check's wilcoxon/paired_t/
+    bayes_bootstrap/bootstrap_t/tango, which only handle k=2 conditions).
+    Returns (groups, groups_lab) as 3-element lists, the shape
+    evalstats.tests' _ppi_anova_repeated_p_value/_ppi_friedman_p_value
+    expect."""
+    n = min(n, corpus.corpus_size)
+    idx = rng.choice(corpus.corpus_size, size=n, replace=False)
+    groups = [corpus.judge_scores[jm][idx] for jm in (judge_a, judge_b, judge_c)]
+    lab = _reveal_labels(corpus.human_label[idx], label_frac, rng)
+    groups_lab = [lab.copy(), lab.copy(), lab.copy()]
+    return groups, groups_lab
 
 
 # ---------------------------------------------------------------------------
