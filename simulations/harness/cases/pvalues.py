@@ -7202,7 +7202,13 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
         "(gray = uncorrected, color = corrected; each dot: one judge-bias scenario)", fontsize=12,
     )
     ax.grid(axis="y", alpha=0.25, lw=0.8)
-    ax.legend(loc="upper right", fontsize=8, ncol=2)
+    # Outside the axes (not "upper right" inside it, this plot's original
+    # placement) -- with up to ~11 entries (uncorrected + one per test +
+    # the nominal-alpha line), an inside legend routinely covered the
+    # upper portion of whichever test's violin/dots happened to sit under
+    # it. Same "outside right, vertically centered" convention already
+    # used elsewhere in this file (see e.g. the power/width plots' legends).
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=8)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
