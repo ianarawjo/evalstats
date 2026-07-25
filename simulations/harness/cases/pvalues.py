@@ -4753,11 +4753,11 @@ def save_ppi_comparison_plot(*, results: list[PPIComparisonResult], alpha: float
             if col_idx == 0:
                 ax.set_ylabel("Rejection rate")
             ax.set_xlabel(f"{xlabel}\n({fixed})", fontsize=9)
-    fig.legend(loc="lower center", ncol=3, fontsize=8, bbox_to_anchor=(0.5, -0.08 if len(rows_spec) > 1 else -0.14))
+    fig.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
     fig.suptitle("PPI-Corrected Estimator Comparison (Paired-Mean Estimand)", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0.10, 1, 1))
+        fig.tight_layout(rect=(0, 0, 0.85, 1))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -4873,11 +4873,11 @@ def save_ppi_null_comparison_plot(
         for xi, rate in zip(x, rates):
             if np.isfinite(rate):
                 ax.text(xi, rate + 0.02, f"{rate:.2f}", ha="center", va="bottom", fontsize=8)
-    axes[0][0].legend(loc="upper left", fontsize=8)
+    fig.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
     fig.suptitle("False-Positive Rate Under the Null (No Real Effect)", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0, 0.88, 1))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -5367,7 +5367,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
         ax.set_title(et.capitalize())
         ax.set_aspect("equal", adjustable="box")
 
-    axes[0].legend(loc="upper left", fontsize=7.5)
+    fig.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=7.5, borderaxespad=0.5)
     fig.suptitle(
         "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power\n"
         f"(N = {PPI_LABEL_EFF_N} total items, fixed; only N_lab -- and the judge's alignment with truth -- varies)",
@@ -5375,7 +5375,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.tight_layout(rect=(0, 0, 0.85, 0.92))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -7363,7 +7363,15 @@ def save_ppi_power_plot(
         ax_u.set_ylabel("Rejection rate\n(uncorrected)" if col == 0 else "")
         ax_u.set_ylim(-0.02, 1.02)
 
-    handles, labels = axes[0][0].get_legend_handles_labels()
+    # Built directly from `tests` (not axes[0][0].get_legend_handles_labels())
+    # -- a test whose ys_c happens to be all-NaN for the FIRST eval_type
+    # column (e.g. a test that only applies to some eval types) gets `continue`d
+    # before ever calling ax_c.plot(..., label=...) on axes[0][0] specifically,
+    # even though it DOES get plotted (with a label) in a later column's axes.
+    # Collecting from axes[0][0] alone silently dropped that test from the
+    # legend despite its line being visible in the figure.
+    handles = [Line2D([0], [0], color=get_method_color(t), marker="o", linewidth=1.6, markersize=4) for t in tests]
+    labels = [_pretty_test(t) for t in tests]
     handles.append(Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6))
     labels.append(f"Nominal {_alpha_label(alpha)}")
     fig.legend(handles, labels, fontsize=8, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
@@ -7435,18 +7443,23 @@ def save_ppi_power_direction_plot(
             ax.set_xlabel("Effect size")
             ax.set_ylim(-0.02, 1.02)
 
-    handles, labels = axes[0][0].get_legend_handles_labels()
+    # Built directly from `tests` (not axes[0][0].get_legend_handles_labels())
+    # -- same reason as save_ppi_power_plot: a test with no finite data in
+    # row 0's FIRST eval_type column never gets a label registered on
+    # axes[0][0], even though it's plotted (with a label) elsewhere.
+    handles = [Line2D([0], [0], color=get_method_color(t), marker="o", linewidth=1.6) for t in tests]
+    labels = [_pretty_test(t) for t in tests]
     handles += [
         Line2D([0], [0], color="#333333", marker="o", linewidth=1.6, linestyle="-"),
         Line2D([0], [0], color="#333333", marker="x", linewidth=1.0, linestyle="--", alpha=0.7),
         Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6),
     ]
     labels += ["Corrected", "Uncorrected", f"Nominal {_alpha_label(alpha)}"]
-    axes[0][0].legend(handles, labels, fontsize=7, loc="lower right", ncol=2)
+    fig.legend(handles, labels, fontsize=7, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
     fig.suptitle("PPI-Corrected Power: Bias Opposing vs. Reinforcing the True Effect", y=1.03, fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0, 0.85, 1))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -7660,12 +7673,12 @@ def save_ppi_effect_plot(
 
     handles, labels = ax1.get_legend_handles_labels()
     title_suffix = " -- Bootstrap/CI-Based Methods" if nonstandard else ""
-    fig.suptitle(f"PPI-Corrected Effect-Size Calibration: Bias, Coverage, and Width{title_suffix}", y=1.12, fontsize=12)
-    fig.legend(handles, labels, loc="lower center", ncol=min(len(tests), 8), fontsize=8, bbox_to_anchor=(0.5, 1.0))
+    fig.suptitle(f"PPI-Corrected Effect-Size Calibration: Bias, Coverage, and Width{title_suffix}", fontsize=12)
+    fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout()
+        fig.tight_layout(rect=(0, 0, 0.85, 1))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
