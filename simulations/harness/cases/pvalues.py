@@ -7802,6 +7802,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-comparison-check", action="store_true", default=False,
                          help="ppi mode: skip the 5-way estimator comparison (all_human/human_subset/llm_only/"
                               "llm_impute/ppi rejection rate vs. effect_size and label_frac, paired_t estimand)")
+    parser.add_argument("--no-label-efficiency-check", action="store_true", default=False,
+                         help="ppi mode: skip the label-efficiency check (run_ppi_label_efficiency_check) -- "
+                              "for a fixed labeling budget, how many labels would a human-only classical test "
+                              "need to match PPI's power, expressed against judge-human ALIGNMENT (not raw "
+                              "llm_noise) so the curve is directly comparable across eval types; see "
+                              "save_ppi_label_efficiency_plot's docstring.")
     parser.add_argument("--factorial-check", action="store_true", default=False,
                          help="ppi mode: run the full 7-factor factorial (bias_magnitude x N x N_lab x "
                               "label_mechanism x effect_size x bias_direction x llm_noise, continuous/paired_t) "
@@ -8840,6 +8846,42 @@ def run(args: argparse.Namespace) -> CaseResult:
                             tags=comparison_binary_tags, label=_COMPARISON_METHODS_BINARY_LABEL,
                         )
                     key_metrics["ppi_comparison_binary_n_results"] = len(comparison_results_binary_pooled)
+
+            # Label-efficiency check (run_ppi_label_efficiency_check):
+            # self-contained (builds its own continuous/likert/binary
+            # sources internally, no dependency on comparison_sources/
+            # power_sources above), so it gets its own opt-out flag rather
+            # than riding along with --no-comparison-check. Was added
+            # 2026-07-23 (commit 1e33e9b) but never actually wired into
+            # run() until now -- the functions existed and were fully
+            # implemented, just never called, so this check (and its
+            # flagship "labels saved" plot) silently never ran as part of
+            # ANY --mode ppi invocation, official-test or otherwise.
+            if not getattr(args, "no_label_efficiency_check", False):
+                label_eff_reps = getattr(args, "effect_reps", 200)
+                print(f"\npvalues simulation (PPI-corrected, label efficiency) -- "
+                      f"reps={label_eff_reps}, n_boot={args.ppi_n_boot}")
+                label_eff_results = run_ppi_label_efficiency_check(
+                    n_reps=label_eff_reps, n_boot=args.ppi_n_boot,
+                    seed=args.seed + 14, n_workers=getattr(args, "workers", 1), progress_mode=args.progress,
+                )
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    label_eff_results = [r for r in label_eff_results if r.eval_type in requested]
+                if label_eff_results:
+                    print_ppi_label_efficiency_report(label_eff_results)
+                    label_eff_stem = f"pvalues_ppi_label_efficiency_reps{label_eff_reps}_{stamp}"
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_label_efficiency(
+                            results=label_eff_results, out_dir=args.out_dir, run_stem=label_eff_stem,
+                        )
+                    if args.plots == "save":
+                        label_eff_plot_path = save_ppi_label_efficiency_plot(
+                            label_eff_results, out_path=str(Path(plots_dir) / f"{label_eff_stem}_plot.png"),
+                        )
+                        output_paths.append(label_eff_plot_path)
+                        print(f"Saved plot: {label_eff_plot_path}")
+                    key_metrics["ppi_label_efficiency_n_results"] = len(label_eff_results)
 
             if getattr(args, "factorial_check", False):
                 factorial_likert_max = getattr(args, "factorial_likert_max", 5)
