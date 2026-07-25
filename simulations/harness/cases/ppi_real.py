@@ -1596,7 +1596,11 @@ def official_args(base_seed: int = 46) -> argparse.Namespace:
 
 
 def official_variants(base_seed: int = 46) -> list[tuple[str, argparse.Namespace]]:
-    return [("real judge-bias data (single-sample + two-group + paired null + omnibus null + within-item paired bias/coverage)", official_args(base_seed))]
+    return [(
+        "real judge-bias data (single-sample + two-group + paired null + omnibus null + "
+        "within-item paired bias/coverage + positive-control power)",
+        official_args(base_seed),
+    )]
 
 
 def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.Namespace:
