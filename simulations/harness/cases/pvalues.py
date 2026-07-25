@@ -5287,13 +5287,28 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     check and PPI_LABEL_EFF_N's docstring for why 400, not the original
     100) is stated explicitly in the suptitle -- the figure previously
     showed only N_lab, leaving its denominator (how much unlabeled,
-    judge-only data N_lab sits inside) implicit."""
+    judge-only data N_lab sits inside) implicit.
+
+    Each panel gets its OWN legend immediately to its right (not one
+    legend shared across the whole figure) -- unlike a plot where every
+    panel shares the same series (e.g. one line per TEST, comparable
+    panel to panel), here each panel's lines are calibrated to that eval
+    type's OWN alignment metric/targets (Pearson r for continuous,
+    weighted kappa for likert, kappa for binary), so a single combined
+    legend was concatenating three metric-incompatible label sets into
+    one list a reader had to mentally re-split by panel. wspace is widened
+    to leave each panel room for its own legend without overlapping the
+    next panel; ax.set_aspect("equal") keeps each panel itself square
+    regardless of the wider allocated cell."""
     import matplotlib.pyplot as plt
 
     if not results:
         raise ValueError("No label-efficiency results to plot.")
     eval_types = [et for et in ("continuous", "likert", "binary") if any(r.eval_type == et for r in results)]
-    fig, axes = plt.subplots(1, len(eval_types), figsize=(4.6 * len(eval_types), 4.4), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(eval_types), figsize=(6.2 * len(eval_types), 4.4), squeeze=False,
+        gridspec_kw={"wspace": 0.75},
+    )
     axes = axes[0]
     cmap = plt.cm.viridis
 
@@ -5326,7 +5341,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
 
         ax.plot(
             [0, max_val], [0, max_val], color="black", ls="--", lw=1.2, alpha=0.6,
-            label="No benefit (y = x)" if col == 0 else None, zorder=2,
+            label="No benefit (y = x)", zorder=2,
         )
 
         annotated = False
@@ -5342,7 +5357,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             achieved = float(np.mean([r.alignment_value for r in rows]))
             ax.plot(
                 xs, ys, color=color, marker="o", markersize=5, linewidth=2.0 if is_baseline else 1.4,
-                label=f"{metric_symbol}~={achieved:.2f} (target {target:.1f})" + (" [baseline]" if is_baseline else ""),
+                label=f"{metric_symbol}~={achieved:.2f} (target {target:.1f})",
                 zorder=4,
             )
             sat_xs = [x for x, r in zip(xs, rows) if r.saturated]
@@ -5350,7 +5365,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             if sat_xs:
                 ax.plot(
                     sat_xs, sat_ys, color=color, marker="^", markersize=7, linestyle="none",
-                    label="power saturated (lower bound)" if col == 0 and i == 0 else None, zorder=5,
+                    label="power saturated (lower bound)" if i == 0 else None, zorder=5,
                 )
             if is_baseline:
                 ax.fill_between(xs, xs, ys, color=color, alpha=0.15, zorder=1)
@@ -5372,8 +5387,8 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
         ax.set_ylabel("Equivalent N_lab (human-only test)" if col == 0 else "")
         ax.set_title(et.capitalize())
         ax.set_aspect("equal", adjustable="box")
+        ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize=7, borderaxespad=0.3, frameon=True)
 
-    fig.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=7.5, borderaxespad=0.5)
     fig.suptitle(
         "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power\n"
         f"(N = {PPI_LABEL_EFF_N} total items, fixed; only N_lab -- and the judge's alignment with truth -- varies)",
