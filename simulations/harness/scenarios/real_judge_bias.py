@@ -70,11 +70,20 @@ _MIN_LAB = 15  # same floor scenarios.synthetic._jb_labels_independent uses
 # text snippets vs. the MEAN of ~50-68 human survey participants' 1-5
 # ratings per item. "continuous" (not "likert") since human_label is an
 # averaged, not a single discrete, label.
+# "iclr_metareview" is demfier/reviewertoo-iclr2026-reviews's `papers` table
+# (see simulations/import_reviewertoo_iclr_data.py) -- a single LLM
+# metareviewer's accept/reject decision vs. the real conference decision,
+# a 4000-paper random sample. A SEPARATE "binary" dataset key from "arena"
+# (REAL_JUDGE_BIAS_DATASETS keys are independent, not one-per-eval_type).
+# Has exactly ONE judge_model (no independently-collected alternatives, unlike
+# every other dataset here), so it only ever feeds the single-sample
+# bias/coverage check -- see that import script's module docstring.
 REAL_JUDGE_BIAS_DATASETS: dict[str, tuple[str, tuple[float, float]]] = {
     "arena": ("binary", (0.0, 1.0)),
     "wmt_da": ("continuous", (0.0, 100.0)),
     "appstore": ("likert", (1.0, 5.0)),
     "privacy_judge": ("continuous", (1.0, 5.0)),
+    "iclr_metareview": ("binary", (0.0, 1.0)),
 }
 
 # dataset key -> curated judge_model subset used when load_real_judge_bias_corpus
