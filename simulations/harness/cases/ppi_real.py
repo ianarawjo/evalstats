@@ -116,6 +116,7 @@ from __future__ import annotations
 import argparse
 import multiprocessing as _mp
 import os
+import re
 import time
 import warnings
 from collections import defaultdict
@@ -145,7 +146,7 @@ with warnings.catch_warnings():
 
 from ..methods import (
     TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
-    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
+    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
     REAL_JUDGE_BIAS_DATASETS,
@@ -185,6 +186,11 @@ from .pvalues import (
     _ProgressReporter,
     _ALPHA,
     _PPI_NONSTANDARD_TESTS,
+    _ppi_wilson_interval,
+    _alpha_label,
+    _pretty_test,
+    _metric_pct,
+    _alignment_bucket,
 )
 from . import CaseResult
 
@@ -672,6 +678,187 @@ def _omnibus_repeated_methods_for(eval_type: str) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
+# Extra plots for hypothesis_results (twogroup + paired + omnibus): a
+# dataset x label_frac heatmap per test, and a judge-alignment-bucketed bar
+# chart per test -- real-data analogues of pvalues.py's save_ppi_nlab_grid_
+# plot / save_ppi_alignment_sweep_plot, adapted to what real data actually
+# varies (there's no synthetic bias_magnitude/label_mechanism/effect_size
+# knob here, just which real dataset/label_frac/judges a cell used).
+# ---------------------------------------------------------------------------
+
+_PPI_REAL_LABFRAC_N_RE = re.compile(r"\.labfrac=([0-9.]+)\.n=(\d+)")
+_PPI_REAL_JUDGES_RE = re.compile(r"\.(?:judge|pair|triple)=(.+)$")
+
+
+def _parse_real_cell_labfrac_n(name: str) -> tuple[float, int]:
+    """`name` is one of run()'s work_items names, e.g.
+    "real.arena.labfrac=0.20.n=100.pair=judge_a~judge_b" -- pulls
+    (label_frac, n) back out for the heatmap's axes."""
+    m = _PPI_REAL_LABFRAC_N_RE.search(name)
+    if not m:
+        raise ValueError(f"Unrecognized ppi_real cell name: {name!r}")
+    return float(m.group(1)), int(m.group(2))
+
+
+def _parse_real_cell_judges(name: str) -> list[str]:
+    """The 1 (single), 2 (twogroup/paired), or 3 (omnibus) judge_model
+    names a cell drew on, in the order they were assigned to
+    group/condition A/B/C -- everything after the final .judge=/.pair=/
+    .triple= marker, split on "~" (see run()'s name-building f-strings)."""
+    m = _PPI_REAL_JUDGES_RE.search(name)
+    if not m:
+        return []
+    return m.group(1).split("~")
+
+
+def save_ppi_real_labfrac_dataset_heatmap(*, results: list[PPIResult], alpha: float, out_path: str) -> str:
+    """Heatmap(s) of the PPI-corrected Type-I rate over (dataset, label_frac),
+    one small-multiple panel per test -- pooled across every N and judge
+    pair/triple that test's cells span, since (unlike pvalues.py's synthetic
+    N x N_lab grid) real data has only 3-4 datasets and a handful of label
+    fracs to show, so N/judge-pair are collapsed rather than given their own
+    axis. Same TwoSlopeNorm diverging colormap centered on alpha as
+    save_ppi_nlab_grid_plot, for the same reason: under- vs over-rejection
+    should be visually distinct, not just "far from 0"."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+
+    if not results:
+        raise ValueError("No ppi_real hypothesis results to plot.")
+    tests = [m.name for m in PPI_TEST_METHODS if any(r.test == m.name for r in results)]
+    datasets = sorted({r.tag.removeprefix("real_") for r in results})
+    label_fracs = sorted({_parse_real_cell_labfrac_n(r.name)[0] for r in results})
+
+    n_cols = min(4, len(tests))
+    n_rows = -(-len(tests) // n_cols)  # ceil
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 3.6 * n_rows), squeeze=False)
+    for idx, test in enumerate(tests):
+        ax = axes[idx // n_cols][idx % n_cols]
+        rejects = np.zeros((len(datasets), len(label_fracs)))
+        totals = np.zeros((len(datasets), len(label_fracs)))
+        for r in results:
+            if r.test != test:
+                continue
+            ds = r.tag.removeprefix("real_")
+            lf, _n = _parse_real_cell_labfrac_n(r.name)
+            i, j = datasets.index(ds), label_fracs.index(lf)
+            rejects[i, j] += r.corrected_rejects
+            totals[i, j] += r.n_reps
+        grid = np.where(totals > 0, np.divide(rejects, totals, out=np.full_like(rejects, np.nan), where=totals > 0), np.nan)
+
+        vmax = max(2.0 * alpha, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * alpha)
+        im = ax.imshow(grid, origin="lower", cmap="RdBu_r", norm=TwoSlopeNorm(vmin=0.0, vcenter=alpha, vmax=vmax), aspect="auto")
+        for i in range(len(datasets)):
+            for j in range(len(label_fracs)):
+                val = grid[i, j]
+                if np.isfinite(val):
+                    ax.text(
+                        j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
+                        bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
+                    )
+        ax.set_xticks(range(len(label_fracs)))
+        ax.set_xticklabels([f"{lf:.2f}" for lf in label_fracs], fontsize=8)
+        ax.set_yticks(range(len(datasets)))
+        ax.set_yticklabels(datasets, fontsize=8)
+        ax.set_xlabel("label_frac", fontsize=8)
+        ax.set_title(_pretty_test(test), fontsize=10, color=get_method_color(test))
+        fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    for idx in range(len(tests), n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].axis("off")
+    fig.suptitle(f"PPI-Corrected Type-I Rate over Dataset x Label Fraction ({_alpha_label(alpha)})", y=1.02, fontsize=12)
+    fig.text(0.5, -0.01, "Pooled across N and judge pair/triple", ha="center", fontsize=8, color="#555555")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_ppi_real_alignment_plot(
+    *, results: list[PPIResult], alignment_by_dataset_judge: dict[tuple[str, str], float],
+    alpha: float, out_path: str,
+) -> str:
+    """Bar chart of uncorrected vs. PPI-corrected Type-I rate bucketed by
+    realized judge-human alignment, one panel per test -- the real-data
+    counterpart to save_ppi_alignment_sweep_plot, but using DIRECTLY
+    measured alignment (np.corrcoef(judge_scores, human_label) on each
+    corpus's already-[0,1]-rescaled arrays -- see RealJudgeBiasCorpus) for
+    each cell's actual judge(s), not a simulated sweep over synthetic noise
+    levels. A cell's alignment is the mean of its 1-3 involved judges'
+    individual alignment (single/twogroup/paired/omnibus cells draw on 1/2/
+    2/3 judges respectively -- see _parse_real_cell_judges). No no_bias/
+    bias_present regime split like the synthetic version: real judges are
+    always whatever bias they actually have, there's no "off" switch to
+    contrast against."""
+    import matplotlib.pyplot as plt
+
+    if not results:
+        raise ValueError("No ppi_real hypothesis results to plot.")
+    tests = [m.name for m in PPI_TEST_METHODS if any(r.test == m.name for r in results)]
+
+    def _cell_alignment(r: PPIResult) -> float | None:
+        ds = r.tag.removeprefix("real_")
+        judges = _parse_real_cell_judges(r.name)
+        vals = [alignment_by_dataset_judge[(ds, jm)] for jm in judges if (ds, jm) in alignment_by_dataset_judge]
+        return float(np.mean(vals)) if vals else None
+
+    cell_align = {id(r): _cell_alignment(r) for r in results}
+    buckets = sorted({_alignment_bucket(_metric_pct(a)) for a in cell_align.values() if a is not None})
+    if not buckets:
+        raise ValueError("No alignment data available for any ppi_real hypothesis cell.")
+
+    n_cols = min(4, len(tests))
+    n_rows = -(-len(tests) // n_cols)
+    panel_w = max(2.2, 0.85 * len(buckets))
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(panel_w * n_cols, 4.0 * n_rows), squeeze=False)
+    bar_width, gap = 0.35, 0.25
+    for idx, test in enumerate(tests):
+        ax = axes[idx // n_cols][idx % n_cols]
+        ax.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6, zorder=1, label="nominal α" if idx == 0 else None)
+        xticks, xticklabels = [], []
+        for bi, (lo, label) in enumerate(buckets):
+            cells = [r for r in results if r.test == test and cell_align.get(id(r)) is not None
+                     and _alignment_bucket(_metric_pct(cell_align[id(r)])) == (lo, label)]
+            n_reps_tot = sum(c.n_reps for c in cells)
+            for ai, (arm, color, ec) in enumerate([("uncorrected", "#999999", "none"), ("corrected", get_method_color(test), "#333333")]):
+                x = bi * (2 * bar_width + gap) + ai * bar_width
+                if n_reps_tot == 0:
+                    continue
+                rejects_tot = sum((c.uncorrected_rejects if arm == "uncorrected" else c.corrected_rejects) for c in cells)
+                rate = rejects_tot / n_reps_tot
+                lo_ci, hi_ci = _ppi_wilson_interval(rejects_tot, n_reps_tot)
+                ax.bar(x, rate, width=bar_width, color=color, edgecolor=ec, linewidth=1.0, zorder=2,
+                       label=arm if (idx == 0 and bi == 0) else None)
+                ax.errorbar(x, rate, yerr=[[max(0.0, rate - lo_ci)], [max(0.0, hi_ci - rate)]],
+                             fmt="none", ecolor="black", elinewidth=1.0, capsize=3, zorder=4)
+            mid = bi * (2 * bar_width + gap) + bar_width / 2
+            xticks.append(mid)
+            xticklabels.append(f"{label}\n(n={len(cells)})")
+        ax.set_xticks(xticks)
+        ax.set_xticklabels(xticklabels, fontsize=7)
+        ax.set_xlim(-0.3, (2 * bar_width + gap) * len(buckets) - gap + 0.05)
+        ax.set_ylim(0.0, 1.05)
+        ax.set_title(_pretty_test(test), fontsize=10, color=get_method_color(test))
+        if idx % n_cols == 0:
+            ax.set_ylabel("Type-I rate", fontsize=9)
+        ax.grid(axis="y", alpha=0.25, lw=0.8, zorder=0)
+    for idx in range(len(tests), n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].axis("off")
+    handles, labels = axes[0][0].get_legend_handles_labels()
+    fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=9, frameon=True)
+    fig.suptitle(f"PPI-Corrected Type-I Rate by Judge-Human Alignment ({_alpha_label(alpha)})", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -796,6 +983,17 @@ def run(args: argparse.Namespace) -> CaseResult:
                       f"corpus_mean={corpus.corpus_mean:.4f}")
             except (FileNotFoundError, ValueError) as e:
                 print(f"  Skipping {ds}: {e}")
+
+        # Directly-measured judge-human alignment per (dataset, judge_model)
+        # -- corpus.judge_scores/human_label are already rescaled to [0,1]
+        # for every eval_type (see RealJudgeBiasCorpus), so a plain Pearson
+        # r is comparable across binary/continuous/likert here, unlike the
+        # synthetic sweep's per-eval_type metric choice (_ALIGNMENT_VIEWS).
+        # Feeds save_ppi_real_alignment_plot below.
+        alignment_by_dataset_judge: dict[tuple[str, str], float] = {
+            (corpus.dataset, jm): float(np.corrcoef(scores, corpus.human_label)[0, 1])
+            for corpus in corpora for jm, scores in corpus.judge_scores.items()
+        }
 
         wmt_paired_corpus: RealWithinItemPairedCorpus | None = None
         if not getattr(args, "no_wmt_paired_check", False):
@@ -1063,6 +1261,18 @@ def run(args: argparse.Namespace) -> CaseResult:
                     )
                     output_paths.append(nonstd_plot_path)
                     print(f"Saved plot: {nonstd_plot_path}")
+                heatmap_path = save_ppi_real_labfrac_dataset_heatmap(
+                    results=hypothesis_results, alpha=args.alpha,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_dataset_labfrac_heatmap.png"),
+                )
+                output_paths.append(heatmap_path)
+                print(f"Saved plot: {heatmap_path}")
+                alignment_plot_path = save_ppi_real_alignment_plot(
+                    results=hypothesis_results, alignment_by_dataset_judge=alignment_by_dataset_judge,
+                    alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_alignment.png"),
+                )
+                output_paths.append(alignment_plot_path)
+                print(f"Saved plot: {alignment_plot_path}")
             c_tot = sum(r.corrected_rejects for r in hypothesis_results)
             u_tot = sum(r.uncorrected_rejects for r in hypothesis_results)
             n_tot = sum(r.n_reps for r in hypothesis_results)
