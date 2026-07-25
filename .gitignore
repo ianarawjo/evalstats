@@ -20,6 +20,8 @@ simulations/out/*
 !simulations/out/inspect_benchmarks.csv
 !simulations/out/judge_bias_privacy_judge.csv
 !simulations/out/judge_bias_privacy_judge_items.csv
+!simulations/out/judge_bias_iclr_metareview.csv
+!simulations/out/judge_bias_iclr_metareview_items.csv
 .agent-study-venv-full/
 .agent-study-venv-baseline/
 .agent-study-venv-runner/
