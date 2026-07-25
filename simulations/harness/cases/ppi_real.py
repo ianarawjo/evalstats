@@ -10,7 +10,7 @@ they're fully generic over (name, tag, test) labeled results and have no
 JudgeBiasSource-specific coupling, so they work unmodified here. See
 scenarios/real_judge_bias.py's module docstring for the data-loading side.
 
-Six checks:
+Nine checks:
 
   single-sample bias/coverage
       Per judge model: does the PPI-corrected estimate of THIS corpus's
@@ -103,23 +103,52 @@ Six checks:
       judge model, or even a pair, can't exercise (see generate_real_
       omnibus_repeated_null_cell).
 
-Explicitly OUT of scope for v1 (see scoping discussion): a "real" (non-
-null) group comparison via a natural categorical split (e.g. WMT by
-language pair, App Store by app_id) -- deferred since it conflates a real
-content difference with judge bias, a dirtier signal than the clean
-synthetic power check -- and LMM/LMM_FACTORIAL/LMM_RUNS specifically
-(deferred for now, unlike the other omnibus tests above).
+  positive-control power (twogroup-power, omnibus-independent-power,
+  wmt-paired-power; --no-power-check to disable)
+      The null checks above all ask "does correction avoid FALSE
+      positives" -- this asks the complementary question, "does correction
+      still find TRUE positives," using a genuine, EXACTLY-known non-zero
+      real effect instead of an artificial null. twogroup-power/omnibus-
+      independent-power reuse the SAME cross-judge machinery as their null-
+      check counterparts, but split the drawn sample by RANK on
+      human_label (top vs. bottom half/third) instead of randomly -- see
+      generate_real_twogroup_power_cell/generate_real_omnibus_independent_
+      power_cell's docstrings for why this stays as mechanically clean a
+      construction as the null checks' random split (deliberately NOT the
+      "natural categorical split" scoped out below -- a rank split on
+      human_label is the target quantity itself, not an extraneous
+      nuisance variable). wmt-paired-power reuses generate_real_wmt_
+      paired_bias_cell unchanged (that data already has a genuine paired
+      effect built in -- two different real MT systems' human DA scores
+      for the same segment), just checking p < alpha instead of collecting
+      bias/coverage stats. Additive to (and reuses the pairs/triples/sizes
+      of) the twogroup/omnibus-independent/wmt-paired-bias checks above --
+      no omnibus-repeated-power leg, since there's no real 3-condition
+      same-item corpus available the way wmt_da_paired provides one for
+      2 conditions (out of scope for the same reason the natural-
+      categorical-split idea below is).
+
+Explicitly OUT of scope: a "real" (non-null) group comparison via a
+natural CATEGORICAL split (e.g. WMT by language pair, App Store by app_id)
+-- still deferred, since it conflates a real content difference with judge
+bias, a dirtier signal than either the synthetic power check or this
+module's own rank-split power check above -- and LMM/LMM_FACTORIAL/
+LMM_RUNS specifically (deferred for now, unlike the other omnibus tests
+above).
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
+import io
 import multiprocessing as _mp
 import os
 import re
 import time
 import warnings
 from collections import defaultdict
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Callable
 
@@ -161,6 +190,8 @@ from ..scenarios.real_judge_bias import (
     generate_real_paired_null_cell,
     generate_real_omnibus_independent_null_cell,
     generate_real_omnibus_repeated_null_cell,
+    generate_real_twogroup_power_cell,
+    generate_real_omnibus_independent_power_cell,
     RealWithinItemPairedCorpus,
     load_real_wmt_paired_corpus,
     generate_real_wmt_paired_bias_cell,
@@ -480,6 +511,186 @@ def _run_real_omnibus_repeated_cell(
     return corrected, uncorrected
 
 
+# ---------------------------------------------------------------------------
+# Positive-control (power) checks: same cross-judge machinery as the Type-I
+# null checks above, but the drawn sample has a genuine, exactly-known
+# non-zero true effect (see generate_real_twogroup_power_cell/generate_real_
+# omnibus_independent_power_cell's docstrings for the rank-split
+# construction, and generate_real_wmt_paired_bias_cell -- already used by
+# the within-item bias/coverage check -- for the paired leg, which already
+# has a genuine real paired effect built in). "corrected"/"uncorrected"
+# dicts here count REJECTIONS same as the null-check runners, but here a
+# rejection is the DESIRED outcome (power), not a false positive.
+# ---------------------------------------------------------------------------
+
+
+def _run_real_twogroup_power_cell(
+    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float,
+    judge_a: str, judge_b: str, n_reps: int, n_boot: int, seed: int,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """n_reps replicates of the two-group power check (rank-split real data,
+    cross-judge -- see generate_real_twogroup_power_cell), mirroring
+    _run_real_twogroup_cell's test battery exactly (ttest/ttest_welch/mwu/
+    mwu_mnar_experimental) -- only the cell generator differs."""
+    rng = np.random.default_rng(seed)
+    corrected: dict[str, int] = {t: 0 for t in methods}
+    uncorrected: dict[str, int] = {t: 0 for t in methods}
+
+    def _rng_seed() -> int:
+        return int(rng.integers(0, 2 ** 31))
+
+    for _ in range(n_reps):
+        a, b, lab_a, lab_b, _true_diff = generate_real_twogroup_power_cell(corpus, rng, n, label_frac, judge_a, judge_b)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if TTEST.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_ind(a, b, equal_var=True).pvalue)
+                    uncorrected[TTEST.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    corrected[TTEST.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if TTEST_WELCH.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_ind(a, b, equal_var=False).pvalue)
+                    uncorrected[TTEST_WELCH.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    corrected[TTEST_WELCH.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if MWU.name in methods:
+                try:
+                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
+                    uncorrected[MWU.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample(a, b, lab_a, lab_b, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, _ALPHA, n_boot, _rng_seed())
+                    corrected[MWU.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if MWU_MNAR_EXPERIMENTAL.name in methods:
+                try:
+                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
+                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample_midrank_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+    return corrected, uncorrected
+
+
+def _run_real_omnibus_independent_power_cell(
+    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float,
+    judge_a: str, judge_b: str, judge_c: str, n_reps: int, n_boot: int, seed: int,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """n_reps replicates of the omnibus-independent power check (3-way
+    rank-split real data, cross-judge -- see generate_real_omnibus_
+    independent_power_cell), mirroring _run_real_omnibus_independent_cell's
+    ANOVA_IND/KRUSKAL branches exactly -- only the cell generator differs."""
+    rng = np.random.default_rng(seed)
+    corrected: dict[str, int] = {t: 0 for t in methods}
+    uncorrected: dict[str, int] = {t: 0 for t in methods}
+
+    def _rng_seed() -> int:
+        return int(rng.integers(0, 2 ** 31))
+
+    for _ in range(n_reps):
+        groups, groups_lab, _true_range = generate_real_omnibus_independent_power_cell(
+            corpus, rng, n, label_frac, judge_a, judge_b, judge_c,
+        )
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if ANOVA_IND.name in methods:
+                try:
+                    p_u = _uncorrected_anova_independent_p_value(groups)
+                    uncorrected[ANOVA_IND.name] += int(p_u < _ALPHA)
+                    p = _ppi_anova_independent_p_value(groups, groups_lab, k=len(groups))
+                    corrected[ANOVA_IND.name] += int(p is not None and p < _ALPHA)
+                except Exception:
+                    pass
+
+            if KRUSKAL.name in methods:
+                try:
+                    p_u = _uncorrected_kruskal_p_value(groups)
+                    uncorrected[KRUSKAL.name] += int(p_u < _ALPHA)
+                    pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=_rng_seed())
+                    corrected[KRUSKAL.name] += int(pw["wald_p"] < _ALPHA)
+                except Exception:
+                    pass
+
+    return corrected, uncorrected
+
+
+def _run_real_wmt_paired_power_cell(
+    corpus: RealWithinItemPairedCorpus, methods: list[str], n: int, label_frac: float, judge_model: str,
+    n_reps: int, n_boot: int, seed: int,
+) -> tuple[dict[str, int], dict[str, int]]:
+    """n_reps replicates of the within-item paired power check -- reuses
+    generate_real_wmt_paired_bias_cell UNCHANGED (it already draws a
+    genuine, non-artificial paired difference: two different real MT
+    systems' human DA scores for the same source segment -- see that
+    function's docstring), just checking p < alpha (rejection = correct
+    detection) instead of collecting (estimate, ci_low, ci_high,
+    llm_estimate) tuples for a bias/coverage check like _run_real_wmt_
+    paired_bias_cell does. Test battery mirrors _run_real_paired_cell's
+    paired-samples family (wilcoxon/paired_t/bayes_bootstrap/bootstrap_t;
+    no tango -- see _WMT_PAIRED_POWER_METHODS)."""
+    rng = np.random.default_rng(seed)
+    corrected: dict[str, int] = {t: 0 for t in methods}
+    uncorrected: dict[str, int] = {t: 0 for t in methods}
+
+    def _rng_seed() -> int:
+        return int(rng.integers(0, 2 ** 31))
+
+    for _ in range(n_reps):
+        llm_x, llm_y, lab_x, lab_y = generate_real_wmt_paired_bias_cell(corpus, rng, n, label_frac, judge_model)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if WILCOXON.name in methods:
+                try:
+                    p_u = float(scipy_stats.wilcoxon(llm_x, llm_y, alternative="two-sided").pvalue)
+                    uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
+                    corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if PAIRED_T.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(llm_x, llm_y).pvalue)
+                    uncorrected[PAIRED_T.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, np.mean, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.mean)
+                    corrected[PAIRED_T.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if BAYES_BOOTSTRAP.name in methods:
+                try:
+                    p_u = _uncorrected_bayes_bootstrap_paired_p_value(llm_x - llm_y, n_boot, np.random.default_rng(_rng_seed()))
+                    uncorrected[BAYES_BOOTSTRAP.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_bayes_bootstrap(llm_x, llm_y, lab_x, lab_y, _ALPHA, n_boot, _rng_seed())
+                    corrected[BAYES_BOOTSTRAP.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if BOOTSTRAP_T.name in methods:
+                try:
+                    p_u = _uncorrected_bootstrap_t_paired_p_value(llm_x - llm_y, n_boot, np.random.default_rng(_rng_seed()))
+                    uncorrected[BOOTSTRAP_T.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_bootstrap_t(llm_x, llm_y, lab_x, lab_y, _ALPHA, n_boot, _rng_seed())
+                    corrected[BOOTSTRAP_T.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+    return corrected, uncorrected
+
+
 _WMT_PAIRED_BIAS_METHODS = [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name]
 """_paired_methods_for("continuous") minus BOOTSTRAP_T -- its test name
 ("bootstrap_t") is IDENTICAL to _SINGLE_METHOD_BOOTSTRAP_T, which the
@@ -489,6 +700,18 @@ print_ppi_effect_report pools rows by test name only (not tag), so
 including it here would silently merge two unrelated checks' bias/
 coverage stats into one misleading "bootstrap_t" row. TANGO excluded for
 the same reason it's excluded from _paired_methods_for("continuous")."""
+
+_WMT_PAIRED_POWER_METHODS = [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name]
+"""Unlike _WMT_PAIRED_BIAS_METHODS, BOOTSTRAP_T is safe to include here --
+power_results (a PPIResult bucket keyed by rejection COUNTS, not
+PPIEffectResult's bias/coverage stats) never mixes this check's "bootstrap_t"
+with the single-sample check's differently-estimand "bootstrap_t" the way
+print_ppi_effect_report's by-test-name pooling would; every "bootstrap_t"
+row across twogroup_power/paired power/omnibus power/this check already
+means the same thing (a paired- or independent-samples bootstrap-t test),
+same as hypothesis_results already does for the Type-I null checks. TANGO
+still excluded, for the same eval_type restriction _paired_methods_for
+applies (this corpus is always eval_type="continuous_paired")."""
 
 
 def _run_real_wmt_paired_bias_cell(
@@ -566,19 +789,27 @@ been collected yet (see run()'s try/except around load_real_wmt_paired_corpus)."
 
 def _run_ppi_real_cell_worker(args: tuple) -> dict:
     """Runs ONE (single|twogroup|paired|omnibus_independent|omnibus_repeated|
-    wmt_paired_bias) cell and returns everything run() needs to fold it into
-    effect_results/twogroup_results/paired_results/omnibus_results, with no
-    dependency on the original work-item's position -- required since
-    pool.imap_unordered does not preserve submission order."""
+    wmt_paired_bias|twogroup_power|omnibus_independent_power|
+    wmt_paired_power) cell and returns everything run() needs to fold it
+    into effect_results/twogroup_results/paired_results/omnibus_results/
+    power_results, with no dependency on the original work-item's position
+    -- required since pool.imap_unordered does not preserve submission
+    order."""
     check_type, corpus_idx, name, dataset, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed = args
 
-    if check_type == "wmt_paired_bias":
+    if check_type in ("wmt_paired_bias", "wmt_paired_power"):
         corpus = _REAL_WMT_PAIRED_CORPORA[corpus_idx]
-        samples_by_test = _run_real_wmt_paired_bias_cell(corpus, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed)
+        if check_type == "wmt_paired_bias":
+            samples_by_test = _run_real_wmt_paired_bias_cell(corpus, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed)
+            return {
+                "check_type": check_type, "name": name, "dataset": dataset, "n": n,
+                "true_paired_mean": corpus.true_paired_mean, "true_paired_median": corpus.true_paired_median,
+                "samples_by_test": samples_by_test,
+            }
+        corrected, uncorrected = _run_real_wmt_paired_power_cell(corpus, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed)
         return {
-            "check_type": check_type, "name": name, "dataset": dataset, "n": n,
-            "true_paired_mean": corpus.true_paired_mean, "true_paired_median": corpus.true_paired_median,
-            "samples_by_test": samples_by_test,
+            "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
+            "methods": methods, "corrected": corrected, "uncorrected": uncorrected,
         }
 
     corpus = _REAL_CORPORA[corpus_idx]
@@ -590,9 +821,13 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
             "corpus_mean": corpus.corpus_mean, "samples_by_test": samples_by_test,
         }
 
-    if check_type in ("omnibus_independent", "omnibus_repeated"):
+    if check_type in ("omnibus_independent", "omnibus_repeated", "omnibus_independent_power"):
         judge_a, judge_b, judge_c = judge_or_group
-        runner = _run_real_omnibus_independent_cell if check_type == "omnibus_independent" else _run_real_omnibus_repeated_cell
+        runner = {
+            "omnibus_independent": _run_real_omnibus_independent_cell,
+            "omnibus_repeated": _run_real_omnibus_repeated_cell,
+            "omnibus_independent_power": _run_real_omnibus_independent_power_cell,
+        }[check_type]
         corrected, uncorrected = runner(corpus, methods, n, label_frac, judge_a, judge_b, judge_c, n_reps, n_boot, seed)
         return {
             "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
@@ -600,8 +835,9 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
         }
 
     judge_a, judge_b = judge_or_group
-    if check_type == "twogroup":
-        corrected, uncorrected = _run_real_twogroup_cell(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
+    if check_type in ("twogroup", "twogroup_power"):
+        runner = _run_real_twogroup_cell if check_type == "twogroup" else _run_real_twogroup_power_cell
+        corrected, uncorrected = runner(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
         return {
             "check_type": check_type, "name": name, "dataset": dataset, "n": n, "n_reps": n_reps,
             "methods": methods, "corrected": corrected, "uncorrected": uncorrected,
@@ -885,6 +1121,392 @@ def save_ppi_real_alignment_plot(
 
 
 # ---------------------------------------------------------------------------
+# Power (positive-control) report/plot -- see the _run_real_*_power_cell
+# functions above. Deliberately NOT reusing pvalues.py's print_ppi_report/
+# save_results_artifacts_ppi for this bucket even though it's the same
+# PPIResult type as hypothesis_results: that report's 2-sigma/3-sigma
+# inflation flags and Holm-Bonferroni miscalibration flag all assume a HIGH
+# rejection rate is bad (Type-I error) -- exactly backwards for a power
+# check, where a high rejection rate is the desired outcome. This section's
+# report/plot instead just states corrected vs. uncorrected power per test,
+# no miscalibration framing.
+# ---------------------------------------------------------------------------
+
+
+def print_ppi_real_power_report(results: list[PPIResult], alpha: float) -> None:
+    """Pooled corrected/uncorrected power (rejection rate under a genuine,
+    exactly-known real effect) per test -- the positive-control complement
+    to print_ppi_report's null-check table."""
+    if not results:
+        print("\n  (no ppi_real power results)")
+        return
+    print(f"\n{'=' * 90}\n  PPI_REAL -- POWER (POSITIVE CONTROL: genuine, exactly-known real effect)\n"
+          f"  {len(results)} cells; nominal {_alpha_label(alpha)}\n{'=' * 90}\n")
+    print(f"    {'test':<22} {'n_cells':>8} {'uncorrected power':>18} {'corrected power':>16}")
+    tests = [m.name for m in PPI_TEST_METHODS if any(r.test == m.name for r in results)]
+    for t in tests:
+        t_rows = [r for r in results if r.test == t]
+        n_reps_tot = sum(r.n_reps for r in t_rows)
+        u = sum(r.uncorrected_rejects for r in t_rows) / n_reps_tot if n_reps_tot else float("nan")
+        c = sum(r.corrected_rejects for r in t_rows) / n_reps_tot if n_reps_tot else float("nan")
+        print(f"    {_pretty_test(t):<22} {len(t_rows):>8d} {u:>18.3f} {c:>16.3f}")
+    print()
+
+
+def save_results_artifacts_ppi_real_power(
+    *, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str,
+) -> list[str]:
+    """CSV + log artifacts for the power check -- same CSV shape as
+    pvalues.py's save_results_artifacts_ppi, but the log uses
+    print_ppi_real_power_report (see this section's header comment for why
+    print_ppi_report itself isn't reused here)."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_ppi_power_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "name", "tag", "n", "test", "n_reps", "corrected_rejects", "uncorrected_rejects",
+            "corrected_power", "uncorrected_power",
+        ])
+        for r in results:
+            writer.writerow([
+                r.name, r.tag, r.n, r.test, r.n_reps, r.corrected_rejects, r.uncorrected_rejects,
+                f"{r.corrected_rejects / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.uncorrected_rejects / r.n_reps:.8f}" if r.n_reps else "",
+            ])
+    summary_path = out_base / f"{run_stem}_ppi_power_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_real_power_report(results, alpha=alpha)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_ppi_real_power_plot(
+    *, results: list[PPIResult], alpha: float, out_path: str, nonstandard: bool = False,
+) -> str:
+    """Bar chart of uncorrected vs. PPI-corrected power (rejection rate
+    under a genuine, exactly-known real effect -- see generate_real_
+    twogroup_power_cell / generate_real_omnibus_independent_power_cell /
+    generate_real_wmt_paired_bias_cell), one bar pair per test -- the
+    positive-control complement to save_ppi_typeI_plot's null-check view:
+    that plot answers "does correction avoid FALSE positives," this one
+    answers "does correction still find TRUE positives." Same standard/
+    nonstandard split, same Wilson-CI-on-pooled-rate convention as this
+    module's other bar-chart plots (save_ppi_real_alignment_plot etc)."""
+    import matplotlib.pyplot as plt
+
+    if not results:
+        raise ValueError("No ppi_real power results to plot.")
+    tests = [
+        m.name for m in PPI_TEST_METHODS
+        if any(r.test == m.name for r in results) and (m.name in _PPI_NONSTANDARD_TESTS) == nonstandard
+    ]
+    if not tests:
+        raise ValueError(f"No {'nonstandard' if nonstandard else 'standard'} power results to plot.")
+
+    fig, ax = plt.subplots(figsize=(1.6 * len(tests) + 2.0, 5.0))
+    bar_width, gap = 0.35, 0.3
+    for ti, t in enumerate(tests):
+        t_rows = [r for r in results if r.test == t]
+        n_reps_tot = sum(r.n_reps for r in t_rows)
+        for ai, (arm, color, ec) in enumerate([("uncorrected", "#999999", "none"), ("corrected", get_method_color(t), "#333333")]):
+            x = ti * (2 * bar_width + gap) + ai * bar_width
+            if n_reps_tot == 0:
+                continue
+            rejects_tot = sum((r.uncorrected_rejects if arm == "uncorrected" else r.corrected_rejects) for r in t_rows)
+            rate = rejects_tot / n_reps_tot
+            lo_ci, hi_ci = _ppi_wilson_interval(rejects_tot, n_reps_tot)
+            ax.bar(x, rate, width=bar_width, color=color, edgecolor=ec, linewidth=1.0, zorder=2,
+                   label=arm if ti == 0 else None)
+            ax.errorbar(x, rate, yerr=[[max(0.0, rate - lo_ci)], [max(0.0, hi_ci - rate)]],
+                         fmt="none", ecolor="black", elinewidth=1.0, capsize=3, zorder=4)
+    ax.set_xticks([ti * (2 * bar_width + gap) + bar_width / 2 for ti in range(len(tests))])
+    ax.set_xticklabels([_pretty_test(t) for t in tests], rotation=30, ha="right", fontsize=8)
+    ax.set_ylim(0.0, 1.05)
+    ax.set_ylabel("Power (correct-rejection rate)")
+    family = "CI-Based Methods" if nonstandard else "Hypothesis Tests"
+    ax.set_title(f"PPI-Corrected Power (Positive Control), {family} ({_alpha_label(alpha)})", fontsize=12)
+    ax.grid(axis="y", alpha=0.25, lw=0.8)
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=8)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# CI coverage/width vs. label_frac (effect_results: single-sample +
+# wmt_paired_bias) -- save_ppi_effect_plot's per-test jittered scatter has
+# no label_frac axis at all (every cell's label_frac collapses into one
+# column per test); this answers "how many labels does the coverage/width
+# tradeoff actually need" directly.
+# ---------------------------------------------------------------------------
+
+
+def save_ppi_real_coverage_width_by_labfrac_plot(
+    *, results: list[PPIEffectResult], alpha: float, out_path: str, nonstandard: bool = False,
+) -> str:
+    """Top row: CI coverage vs. label_frac, one line per test, pooled
+    (Wilson CI on the pooled coverage proportion) across every (dataset, n,
+    judge) cell sharing a (test, label_frac) -- each cell's own `coverage`
+    is already a proportion over its n_samples reps, so pooling multiple
+    cells at the same label_frac treats them as one larger Bernoulli sample
+    (exact only if every contributing cell were identically calibrated,
+    same simplification this module's other pooled-rate plots make).
+    Bottom row: mean CI width, weighted-averaged the same way, with error
+    bars showing the weighted standard error across contributing cells
+    (not a Wilson interval -- width isn't a proportion)."""
+    import matplotlib.pyplot as plt
+
+    if not results:
+        raise ValueError("No ppi_real effect results to plot.")
+    tests = [
+        m.name for m in PPI_TEST_METHODS
+        if any(r.test == m.name for r in results) and (m.name in _PPI_NONSTANDARD_TESTS) == nonstandard
+    ]
+    if not tests:
+        raise ValueError(f"No {'nonstandard' if nonstandard else 'standard'} effect results to plot.")
+    label_fracs = sorted({_parse_real_cell_labfrac_n(r.name)[0] for r in results})
+
+    fig, (ax_cov, ax_wid) = plt.subplots(2, 1, figsize=(7.5, 8.0), sharex=True)
+    target_cov = 1.0 - alpha
+    for t in tests:
+        color = get_method_color(t)
+        cov_xs, cov_ys, cov_lo, cov_hi = [], [], [], []
+        wid_xs, wid_ys, wid_err = [], [], []
+        for lf in label_fracs:
+            cells = [
+                r for r in results if r.test == t and _parse_real_cell_labfrac_n(r.name)[0] == lf
+                and r.n_samples > 0 and np.isfinite(r.coverage)
+            ]
+            if cells:
+                n_tot = sum(c.n_samples for c in cells)
+                successes = sum(int(round(c.coverage * c.n_samples)) for c in cells)
+                cov_rate = successes / n_tot
+                lo_ci, hi_ci = _ppi_wilson_interval(successes, n_tot)
+                cov_xs.append(lf)
+                cov_ys.append(cov_rate)
+                cov_lo.append(max(0.0, cov_rate - lo_ci))
+                cov_hi.append(max(0.0, hi_ci - cov_rate))
+
+            width_cells = [r for r in results if r.test == t and _parse_real_cell_labfrac_n(r.name)[0] == lf
+                            and r.n_samples > 0 and np.isfinite(r.mean_ci_width)]
+            if width_cells:
+                widths = np.array([c.mean_ci_width for c in width_cells])
+                weights = np.array([c.n_samples for c in width_cells], dtype=float)
+                w_mean = float(np.average(widths, weights=weights))
+                w_se = (float(np.sqrt(np.average((widths - w_mean) ** 2, weights=weights)) / np.sqrt(len(widths)))
+                        if len(widths) > 1 else 0.0)
+                wid_xs.append(lf)
+                wid_ys.append(w_mean)
+                wid_err.append(w_se)
+
+        if cov_xs:
+            ax_cov.errorbar(cov_xs, cov_ys, yerr=[cov_lo, cov_hi], color=color, marker="o", ms=5,
+                             lw=1.5, capsize=3, label=_pretty_test(t))
+        if wid_xs:
+            ax_wid.errorbar(wid_xs, wid_ys, yerr=wid_err, color=color, marker="o", ms=5, lw=1.5, capsize=3)
+
+    ax_cov.axhline(target_cov, color="black", ls="--", lw=1.1, label=f"Target = {target_cov:.2f}")
+    ax_cov.set_ylabel("CI coverage")
+    ax_cov.set_ylim(0.0, 1.02)
+    ax_cov.set_title("CI Coverage vs. Label Fraction")
+    ax_cov.grid(alpha=0.25, lw=0.8)
+    ax_cov.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=8)
+
+    ax_wid.set_ylabel("Mean CI width")
+    ax_wid.set_xlabel("label_frac")
+    ax_wid.set_title("CI Width vs. Label Fraction")
+    ax_wid.grid(alpha=0.25, lw=0.8)
+
+    family = "CI-Based Methods" if nonstandard else "Standard Tests"
+    fig.suptitle(f"PPI-Corrected CI Coverage/Width by Label Fraction, {family} ({_alpha_label(alpha)})", y=1.0, fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# Per-judge leaderboard scatter -- the raw-resolution complement to
+# save_ppi_real_alignment_plot's 10-point bucketed bars.
+# ---------------------------------------------------------------------------
+
+
+def save_ppi_real_judge_leaderboard_plot(
+    *, results: list[PPIResult], alignment_by_dataset_judge: dict[tuple[str, str], float],
+    alpha: float, out_path: str, nonstandard: bool = False,
+) -> str:
+    """Scatter of (judge-human alignment, pooled PPI-corrected Type-I rate)
+    at PER-JUDGE resolution, one point per (dataset, judge_model) per test
+    -- bucketing (save_ppi_real_alignment_plot) pools potentially very
+    different judges into the same bar, which can hide a smooth alignment-
+    calibration relationship or a sharp cliff alike. A cell can involve up
+    to 3 judges (twogroup/paired cells: 2, omnibus cells: 3 -- see
+    _parse_real_cell_judges), so a (dataset, judge_model)'s point pools
+    EVERY cell that judge appears in for that test, regardless of which
+    other judge(s) shared the cell. Point AREA encodes total pooled n_reps
+    (more area = more replicates backing that point); color encodes
+    dataset."""
+    import matplotlib.pyplot as plt
+
+    if not results:
+        raise ValueError("No ppi_real hypothesis results to plot.")
+    tests = [
+        m.name for m in PPI_TEST_METHODS
+        if any(r.test == m.name for r in results) and (m.name in _PPI_NONSTANDARD_TESTS) == nonstandard
+    ]
+    if not tests:
+        raise ValueError(f"No {'nonstandard' if nonstandard else 'standard'} test results to plot.")
+    datasets = sorted({r.tag.removeprefix("real_") for r in results})
+    cmap = plt.get_cmap("tab10")
+    ds_color = {ds: cmap(i % 10) for i, ds in enumerate(datasets)}
+
+    n_cols = min(4, len(tests))
+    n_rows = -(-len(tests) // n_cols)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 3.8 * n_rows), squeeze=False)
+    for idx, test in enumerate(tests):
+        ax = axes[idx // n_cols][idx % n_cols]
+        ax.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6, zorder=1)
+        agg: dict[tuple[str, str], list[int]] = defaultdict(lambda: [0, 0])
+        for r in results:
+            if r.test != test:
+                continue
+            ds = r.tag.removeprefix("real_")
+            for jm in _parse_real_cell_judges(r.name):
+                if (ds, jm) not in alignment_by_dataset_judge:
+                    continue
+                agg[(ds, jm)][0] += r.corrected_rejects
+                agg[(ds, jm)][1] += r.n_reps
+        for (ds, jm), (rejects, n_tot) in agg.items():
+            if n_tot == 0:
+                continue
+            x = alignment_by_dataset_judge[(ds, jm)]
+            y = rejects / n_tot
+            ax.scatter(x, y, s=max(12.0, 4.0 * np.sqrt(n_tot)), color=ds_color[ds], alpha=0.75,
+                       edgecolors="#333333", linewidths=0.5, zorder=3)
+        ax.set_xlim(-0.05, 1.05)
+        ax.set_ylim(0.0, 1.05)
+        ax.set_title(_pretty_test(test), fontsize=10, color=get_method_color(test))
+        if idx % n_cols == 0:
+            ax.set_ylabel("Corrected Type-I rate", fontsize=9)
+        if idx // n_cols == n_rows - 1:
+            ax.set_xlabel("Judge-human alignment (Pearson r)", fontsize=9)
+        ax.grid(alpha=0.25, lw=0.8, zorder=0)
+    for idx in range(len(tests), n_rows * n_cols):
+        axes[idx // n_cols][idx % n_cols].axis("off")
+    handles = [
+        plt.Line2D([0], [0], marker="o", color="none", markerfacecolor=ds_color[ds],
+                   markeredgecolor="#333333", markersize=8, label=ds)
+        for ds in datasets
+    ]
+    fig.legend(handles=handles, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=9, frameon=True, title="Dataset")
+    family = "CI-Based Methods" if nonstandard else "Hypothesis Tests"
+    fig.suptitle(f"Per-Judge Type-I Rate vs. Alignment, {family} ({_alpha_label(alpha)})", fontsize=12)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
+# N x label_frac heatmap for a small set of tests -- save_ppi_real_
+# labfrac_dataset_heatmap pools N away entirely (default_size_grid derives
+# N as a FRACTION of each dataset's own corpus_size, so absolute N values
+# aren't comparable/poolable across datasets the way label_frac/dataset
+# are). Restricted to a small `tests` subset by default (kruskal, friedman
+# -- the two tests this session's real-data debugging found most sensitive)
+# rather than every test, since a full (dataset x test) grid would be
+# #datasets x #tests panels.
+# ---------------------------------------------------------------------------
+
+
+def save_ppi_real_n_labfrac_heatmap(
+    *, results: list[PPIResult], alpha: float, out_path: str,
+    tests: tuple[str, ...] = (KRUSKAL.name, FRIEDMAN.name),
+) -> str:
+    """One row per dataset, one column per test in `tests`, grid = (N,
+    label_frac) -- pooled across judge triple/pair only (N and label_frac
+    both stay as real axes here, unlike save_ppi_real_labfrac_dataset_
+    heatmap, which pools N away). Same TwoSlopeNorm-centered-on-alpha
+    diverging colormap convention as this module's other heatmap."""
+    import matplotlib.pyplot as plt
+    from matplotlib.colors import TwoSlopeNorm
+
+    if not results:
+        raise ValueError("No ppi_real hypothesis results to plot.")
+    tests = tuple(t for t in tests if any(r.test == t for r in results))
+    if not tests:
+        raise ValueError("None of the requested tests have results to plot.")
+    datasets = sorted({r.tag.removeprefix("real_") for r in results if r.test in tests})
+    if not datasets:
+        raise ValueError("No datasets have results for the requested tests.")
+
+    n_rows, n_cols = len(datasets), len(tests)
+    fig, axes = plt.subplots(n_rows, n_cols, figsize=(4.2 * n_cols, 3.6 * n_rows), squeeze=False)
+    for ri, ds in enumerate(datasets):
+        ds_results = [r for r in results if r.tag.removeprefix("real_") == ds]
+        n_values = sorted({_parse_real_cell_labfrac_n(r.name)[1] for r in ds_results})
+        label_fracs = sorted({_parse_real_cell_labfrac_n(r.name)[0] for r in ds_results})
+        for ci, test in enumerate(tests):
+            ax = axes[ri][ci]
+            rejects = np.zeros((len(n_values), len(label_fracs)))
+            totals = np.zeros((len(n_values), len(label_fracs)))
+            for r in ds_results:
+                if r.test != test:
+                    continue
+                lf, n = _parse_real_cell_labfrac_n(r.name)
+                i, j = n_values.index(n), label_fracs.index(lf)
+                rejects[i, j] += r.corrected_rejects
+                totals[i, j] += r.n_reps
+            grid = np.where(
+                totals > 0, np.divide(rejects, totals, out=np.full_like(rejects, np.nan), where=totals > 0), np.nan,
+            )
+            vmax = max(2.0 * alpha, float(np.nanmax(grid)) * 1.1 if np.isfinite(np.nanmax(grid)) else 2.0 * alpha)
+            im = ax.imshow(grid, origin="lower", cmap="RdBu_r", norm=TwoSlopeNorm(vmin=0.0, vcenter=alpha, vmax=vmax), aspect="auto")
+            for i in range(len(n_values)):
+                for j in range(len(label_fracs)):
+                    val = grid[i, j]
+                    if np.isfinite(val):
+                        ax.text(
+                            j, i, f"{val:.2f}", ha="center", va="center", fontsize=8, color="black",
+                            bbox=dict(facecolor="white", alpha=0.55, edgecolor="none", pad=1.0),
+                        )
+            ax.set_xticks(range(len(label_fracs)))
+            ax.set_xticklabels([f"{lf:.2f}" for lf in label_fracs], fontsize=8)
+            ax.set_yticks(range(len(n_values)))
+            ax.set_yticklabels([str(n) for n in n_values], fontsize=8)
+            ax.set_xlabel("label_frac", fontsize=8)
+            if ci == 0:
+                ax.set_ylabel(f"{ds}\nN", fontsize=8)
+            ax.set_title(_pretty_test(test), fontsize=10, color=get_method_color(test))
+            fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+    fig.suptitle(f"PPI-Corrected Type-I Rate over N x Label Fraction ({_alpha_label(alpha)})", y=1.02, fontsize=12)
+    fig.text(0.5, -0.01, "Pooled across judge pair/triple; one row per dataset", ha="center", fontsize=8, color="#555555")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -942,6 +1564,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "IF judge_bias_wmt_da_paired.csv has been collected (see "
                               "collect_judge_bias_data.py --types continuous_paired); skipped with a "
                               "warning, not a hard failure, if it hasn't.")
+    parser.add_argument("--no-power-check", action="store_true",
+                         help="Skip the positive-control power checks (twogroup/omnibus-independent rank-"
+                              "split cross-judge, plus within-item wmt_da_paired power if that data is "
+                              "collected) -- does PPI correction still detect a genuine, exactly-known real "
+                              "effect, not just avoid false positives on a null.")
     parser.add_argument("--latex", action="store_true")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential). Parallelizes "
@@ -963,6 +1590,7 @@ def official_args(base_seed: int = 46) -> argparse.Namespace:
         out_dir="simulations/out", plots_dir=None,
         no_single_check=False, no_twogroup_check=False, no_paired_check=False,
         no_omnibus_independent_check=False, no_omnibus_repeated_check=False, no_wmt_paired_check=False,
+        no_power_check=False,
         latex=True, workers=max(1, (os.cpu_count() or 2) - 1),
     )
 
@@ -984,6 +1612,7 @@ def quick_args(base_seed: int = 47, data_source: str = "synthetic") -> argparse.
         out_dir="simulations/out", plots_dir=None,
         no_single_check=False, no_twogroup_check=False, no_paired_check=False,
         no_omnibus_independent_check=False, no_omnibus_repeated_check=False, no_wmt_paired_check=False,
+        no_power_check=False,
         latex=True, workers=1,
     )
 
@@ -1046,6 +1675,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         twogroup_results: list[PPIResult] = []
         paired_results: list[PPIResult] = []
         omnibus_results: list[PPIResult] = []
+        power_results: list[PPIResult] = []
         seed_counter = args.seed
 
         # Flatten every (corpus, label_frac, size, judge_model/pair, check
@@ -1123,6 +1753,30 @@ def run(args: argparse.Namespace) -> CaseResult:
                                     n, label_frac, (judge_a, judge_b, judge_c), args.reps, args.ppi_n_boot, seed_counter,
                                 ))
 
+                    # Positive-control power checks: same pairs/triples as
+                    # the null checks above, just a rank-split (not random-
+                    # split) cell generator -- see generate_real_twogroup_
+                    # power_cell / generate_real_omnibus_independent_power_
+                    # cell's docstrings. twogroup_methods/omnibus_ind_methods
+                    # reused as-is (identical test battery to the null
+                    # checks, just exercised against a genuine effect).
+                    if not getattr(args, "no_power_check", False):
+                        for judge_a, judge_b in pairs:
+                            name = f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}.pair={judge_a}~{judge_b}"
+                            seed_counter += 1
+                            work_items.append((
+                                "twogroup_power", corpus_idx, name, corpus.dataset, twogroup_methods,
+                                n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
+                            ))
+                        for judge_a, judge_b, judge_c in triples:
+                            name = (f"real.{corpus.dataset}.labfrac={label_frac:.2f}.n={n}"
+                                    f".triple={judge_a}~{judge_b}~{judge_c}")
+                            seed_counter += 1
+                            work_items.append((
+                                "omnibus_independent_power", corpus_idx, name, corpus.dataset, omnibus_ind_methods,
+                                n, label_frac, (judge_a, judge_b, judge_c), args.reps, args.ppi_n_boot, seed_counter,
+                            ))
+
         if wmt_paired_corpus is not None:
             _REAL_WMT_PAIRED_CORPORA.append(wmt_paired_corpus)
             wmt_paired_idx = 0
@@ -1137,6 +1791,13 @@ def run(args: argparse.Namespace) -> CaseResult:
                             _WMT_PAIRED_BIAS_METHODS, n, label_frac, judge_model,
                             args.reps, args.ppi_n_boot, seed_counter,
                         ))
+                        if not getattr(args, "no_power_check", False):
+                            seed_counter += 1
+                            work_items.append((
+                                "wmt_paired_power", wmt_paired_idx, name, wmt_paired_corpus.dataset,
+                                _WMT_PAIRED_POWER_METHODS, n, label_frac, judge_model,
+                                args.reps, args.ppi_n_boot, seed_counter,
+                            ))
 
         def _consume(result: dict) -> None:
             ct = result["check_type"]
@@ -1174,8 +1835,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                     bucket = twogroup_results
                 elif ct == "paired":
                     bucket = paired_results
-                else:
+                elif ct in ("omnibus_independent", "omnibus_repeated"):
                     bucket = omnibus_results
+                else:
+                    # twogroup_power / omnibus_independent_power / wmt_paired_power
+                    bucket = power_results
                 for t in result["methods"]:
                     bucket.append(PPIResult(
                         name=result["name"], tag=f"real_{result['dataset']}", test=t, n_reps=result["n_reps"],
@@ -1239,6 +1903,21 @@ def run(args: argparse.Namespace) -> CaseResult:
                     )
                     output_paths.append(nonstd_plot_path)
                     print(f"Saved plot: {nonstd_plot_path}")
+                if _has_standard_test(effect_results):
+                    cov_width_path = save_ppi_real_coverage_width_by_labfrac_plot(
+                        results=effect_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_coverage_width_by_labfrac.png"),
+                    )
+                    output_paths.append(cov_width_path)
+                    print(f"Saved plot: {cov_width_path}")
+                if _has_nonstandard_test(effect_results):
+                    nonstd_cov_width_path = save_ppi_real_coverage_width_by_labfrac_plot(
+                        results=effect_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_coverage_width_by_labfrac_nonstandard.png"),
+                        nonstandard=True,
+                    )
+                    output_paths.append(nonstd_cov_width_path)
+                    print(f"Saved plot: {nonstd_cov_width_path}")
             key_metrics["ppi_real_effect_n_results"] = len(effect_results)
             finite_z = [r.bias_z for r in effect_results if np.isfinite(r.bias_z)]
             key_metrics["ppi_real_effect_mean_abs_bias_z"] = float(np.mean(np.abs(finite_z))) if finite_z else float("nan")
@@ -1317,12 +1996,70 @@ def run(args: argparse.Namespace) -> CaseResult:
                     )
                     output_paths.append(nonstd_alignment_plot_path)
                     print(f"Saved plot: {nonstd_alignment_plot_path}")
+                if _has_standard_test(hypothesis_results):
+                    leaderboard_path = save_ppi_real_judge_leaderboard_plot(
+                        results=hypothesis_results, alignment_by_dataset_judge=alignment_by_dataset_judge,
+                        alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_judge_leaderboard.png"),
+                    )
+                    output_paths.append(leaderboard_path)
+                    print(f"Saved plot: {leaderboard_path}")
+                if _has_nonstandard_test(hypothesis_results):
+                    nonstd_leaderboard_path = save_ppi_real_judge_leaderboard_plot(
+                        results=hypothesis_results, alignment_by_dataset_judge=alignment_by_dataset_judge,
+                        alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_judge_leaderboard_nonstandard.png"),
+                        nonstandard=True,
+                    )
+                    output_paths.append(nonstd_leaderboard_path)
+                    print(f"Saved plot: {nonstd_leaderboard_path}")
+                # Restricted to kruskal/friedman by default (save_ppi_real_
+                # n_labfrac_heatmap's tests= default) -- not standard/
+                # nonstandard-split like the plots above, both tests it
+                # covers are standard hypothesis tests.
+                try:
+                    n_labfrac_path = save_ppi_real_n_labfrac_heatmap(
+                        results=hypothesis_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_n_labfrac_heatmap.png"),
+                    )
+                    output_paths.append(n_labfrac_path)
+                    print(f"Saved plot: {n_labfrac_path}")
+                except ValueError as e:
+                    print(f"  Skipping N x label_frac heatmap: {e}")
             c_tot = sum(r.corrected_rejects for r in hypothesis_results)
             u_tot = sum(r.uncorrected_rejects for r in hypothesis_results)
             n_tot = sum(r.n_reps for r in hypothesis_results)
             key_metrics["ppi_real_hypothesis_n_results"] = len(hypothesis_results)
             key_metrics["ppi_real_hypothesis_mean_corrected_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
             key_metrics["ppi_real_hypothesis_mean_uncorrected_type1"] = float(u_tot / n_tot) if n_tot else float("nan")
+
+        if power_results:
+            print_ppi_real_power_report(power_results, alpha=args.alpha)
+            run_stem = f"ppi_real_power_reps{args.reps}_{stamp}"
+            if args.save_results == "save":
+                output_paths += save_results_artifacts_ppi_real_power(
+                    results=power_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem,
+                )
+            if args.plots == "save":
+                if _has_standard_test(power_results):
+                    power_plot_path = save_ppi_real_power_plot(
+                        results=power_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_power.png"),
+                    )
+                    output_paths.append(power_plot_path)
+                    print(f"Saved plot: {power_plot_path}")
+                if _has_nonstandard_test(power_results):
+                    nonstd_power_plot_path = save_ppi_real_power_plot(
+                        results=power_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_power_nonstandard.png"),
+                        nonstandard=True,
+                    )
+                    output_paths.append(nonstd_power_plot_path)
+                    print(f"Saved plot: {nonstd_power_plot_path}")
+            c_tot = sum(r.corrected_rejects for r in power_results)
+            u_tot = sum(r.uncorrected_rejects for r in power_results)
+            n_tot = sum(r.n_reps for r in power_results)
+            key_metrics["ppi_real_power_n_results"] = len(power_results)
+            key_metrics["ppi_real_power_mean_corrected"] = float(c_tot / n_tot) if n_tot else float("nan")
+            key_metrics["ppi_real_power_mean_uncorrected"] = float(u_tot / n_tot) if n_tot else float("nan")
 
         return CaseResult(
             case_name=CASE_NAME, status="ok", output_paths=output_paths,

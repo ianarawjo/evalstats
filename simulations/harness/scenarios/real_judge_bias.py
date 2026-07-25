@@ -468,6 +468,78 @@ def generate_real_omnibus_repeated_null_cell(
     return groups, groups_lab
 
 
+def generate_real_twogroup_power_cell(
+    corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
+    judge_a: str, judge_b: str,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, float]:
+    """Positive-control counterpart to generate_real_twogroup_null_cell: WOR-
+    draw 2n items, but split by RANK on human_label (top n -> group A,
+    bottom n -> group B) instead of a random 50/50 split -- a genuine,
+    exactly-known population effect (the drawn sample's own top-half vs.
+    bottom-half human_label gap), not an unknown/uncontrolled one.
+
+    Deliberately NOT the "natural categorical split" (e.g. by language pair
+    or app id) cases/ppi_real.py's module docstring rules out of scope for
+    the null checks -- that kind of split conflates the effect with a
+    nuisance categorical variable that might itself correlate with judge
+    bias. A rank split directly on human_label is the target quantity
+    itself, not an extraneous one, so it stays exactly as mechanically
+    clean a construction as the null check's random split -- just sorted
+    instead of left random.
+
+    Same cross-judge read as generate_real_twogroup_null_cell (group A
+    through judge_a, group B through judge_b), so this exercises PPI's
+    power to detect a genuine effect under the SAME judge-bias conditions
+    the null check probes for false positives, not an easier/different
+    regime.
+
+    Returns (judge_a_scores, judge_b_scores, lab_a, lab_b, true_diff) --
+    true_diff = human_a.mean() - human_b.mean(), computed on the full drawn
+    2n sample BEFORE any label-hiding, the gold-reference target a power/
+    effect-size check compares PPI-corrected estimates against."""
+    n = min(n, corpus.corpus_size // 2)
+    idx = rng.choice(corpus.corpus_size, size=2 * n, replace=False)
+    order = np.argsort(corpus.human_label[idx])[::-1]
+    idx_sorted = idx[order]
+    idx_a, idx_b = idx_sorted[:n], idx_sorted[n:]
+    judge_a_scores = corpus.judge_scores[judge_a][idx_a]
+    judge_b_scores = corpus.judge_scores[judge_b][idx_b]
+    human_a, human_b = corpus.human_label[idx_a], corpus.human_label[idx_b]
+    true_diff = float(human_a.mean() - human_b.mean())
+    lab_a = _reveal_labels(human_a, label_frac, rng)
+    lab_b = _reveal_labels(human_b, label_frac, rng)
+    return judge_a_scores, judge_b_scores, lab_a, lab_b, true_diff
+
+
+def generate_real_omnibus_independent_power_cell(
+    corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
+    judge_a: str, judge_b: str, judge_c: str,
+) -> tuple[list[np.ndarray], list[np.ndarray], float]:
+    """Positive-control counterpart to generate_real_omnibus_independent_
+    null_cell: WOR-draw 3n items, split by RANK on human_label into thirds
+    (top n -> group A, middle n -> group B, bottom n -> group C) instead of
+    a random 3-way split -- same rank-split reasoning as generate_real_
+    twogroup_power_cell, extended to 3 groups. Cross-judge read (judge_a/
+    judge_b/judge_c), same as the null check.
+
+    Returns (groups, groups_lab, true_range) -- true_range =
+    human_a.mean() - human_c.mean() (top-third vs. bottom-third gap on the
+    full drawn sample before label-hiding), the largest of the three
+    pairwise true gaps and the natural single scalar to report as "the"
+    effect size for a 3-group omnibus check."""
+    n = min(n, corpus.corpus_size // 3)
+    idx = rng.choice(corpus.corpus_size, size=3 * n, replace=False)
+    order = np.argsort(corpus.human_label[idx])[::-1]
+    idx_sorted = idx[order]
+    idx_a, idx_b, idx_c = idx_sorted[:n], idx_sorted[n:2 * n], idx_sorted[2 * n:]
+    judges = (judge_a, judge_b, judge_c)
+    idxs = (idx_a, idx_b, idx_c)
+    groups = [corpus.judge_scores[jm][ix] for jm, ix in zip(judges, idxs)]
+    groups_lab = [_reveal_labels(corpus.human_label[ix], label_frac, rng) for ix in idxs]
+    true_range = float(corpus.human_label[idx_a].mean() - corpus.human_label[idx_c].mean())
+    return groups, groups_lab, true_range
+
+
 # ---------------------------------------------------------------------------
 # Genuine within-item paired data (wmt_da_paired): ONE judge scoring TWO
 # DIFFERENT MT systems' output for the SAME source segment, with REAL
