@@ -711,7 +711,9 @@ def _parse_real_cell_judges(name: str) -> list[str]:
     return m.group(1).split("~")
 
 
-def save_ppi_real_labfrac_dataset_heatmap(*, results: list[PPIResult], alpha: float, out_path: str) -> str:
+def save_ppi_real_labfrac_dataset_heatmap(
+    *, results: list[PPIResult], alpha: float, out_path: str, nonstandard: bool = False,
+) -> str:
     """Heatmap(s) of the PPI-corrected Type-I rate over (dataset, label_frac),
     one small-multiple panel per test -- pooled across every N and judge
     pair/triple that test's cells span, since (unlike pvalues.py's synthetic
@@ -719,13 +721,24 @@ def save_ppi_real_labfrac_dataset_heatmap(*, results: list[PPIResult], alpha: fl
     fracs to show, so N/judge-pair are collapsed rather than given their own
     axis. Same TwoSlopeNorm diverging colormap centered on alpha as
     save_ppi_nlab_grid_plot, for the same reason: under- vs over-rejection
-    should be visually distinct, not just "far from 0"."""
+    should be visually distinct, not just "far from 0".
+
+    `nonstandard` selects _PPI_NONSTANDARD_TESTS (bayes_bootstrap,
+    bootstrap_t, tango_score) instead of the hypothesis-test majority --
+    same split save_ppi_typeI_plot already draws between p-value tests and
+    CI-based methods, kept here too rather than mixing both families into
+    one grid of panels."""
     import matplotlib.pyplot as plt
     from matplotlib.colors import TwoSlopeNorm
 
     if not results:
         raise ValueError("No ppi_real hypothesis results to plot.")
-    tests = [m.name for m in PPI_TEST_METHODS if any(r.test == m.name for r in results)]
+    tests = [
+        m.name for m in PPI_TEST_METHODS
+        if any(r.test == m.name for r in results) and (m.name in _PPI_NONSTANDARD_TESTS) == nonstandard
+    ]
+    if not tests:
+        raise ValueError(f"No {'nonstandard' if nonstandard else 'standard'} test results to plot.")
     datasets = sorted({r.tag.removeprefix("real_") for r in results})
     label_fracs = sorted({_parse_real_cell_labfrac_n(r.name)[0] for r in results})
 
@@ -765,7 +778,11 @@ def save_ppi_real_labfrac_dataset_heatmap(*, results: list[PPIResult], alpha: fl
         fig.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
     for idx in range(len(tests), n_rows * n_cols):
         axes[idx // n_cols][idx % n_cols].axis("off")
-    fig.suptitle(f"PPI-Corrected Type-I Rate over Dataset x Label Fraction ({_alpha_label(alpha)})", y=1.02, fontsize=12)
+    family = "CI-Based Methods" if nonstandard else "Hypothesis Tests"
+    fig.suptitle(
+        f"PPI-Corrected Type-I Rate over Dataset x Label Fraction, {family} ({_alpha_label(alpha)})",
+        y=1.02, fontsize=12,
+    )
     fig.text(0.5, -0.01, "Pooled across N and judge pair/triple", ha="center", fontsize=8, color="#555555")
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
@@ -778,7 +795,7 @@ def save_ppi_real_labfrac_dataset_heatmap(*, results: list[PPIResult], alpha: fl
 
 def save_ppi_real_alignment_plot(
     *, results: list[PPIResult], alignment_by_dataset_judge: dict[tuple[str, str], float],
-    alpha: float, out_path: str,
+    alpha: float, out_path: str, nonstandard: bool = False,
 ) -> str:
     """Bar chart of uncorrected vs. PPI-corrected Type-I rate bucketed by
     realized judge-human alignment, one panel per test -- the real-data
@@ -791,12 +808,20 @@ def save_ppi_real_alignment_plot(
     2/3 judges respectively -- see _parse_real_cell_judges). No no_bias/
     bias_present regime split like the synthetic version: real judges are
     always whatever bias they actually have, there's no "off" switch to
-    contrast against."""
+    contrast against.
+
+    `nonstandard` selects _PPI_NONSTANDARD_TESTS instead of the hypothesis-
+    test majority, same split as save_ppi_real_labfrac_dataset_heatmap."""
     import matplotlib.pyplot as plt
 
     if not results:
         raise ValueError("No ppi_real hypothesis results to plot.")
-    tests = [m.name for m in PPI_TEST_METHODS if any(r.test == m.name for r in results)]
+    tests = [
+        m.name for m in PPI_TEST_METHODS
+        if any(r.test == m.name for r in results) and (m.name in _PPI_NONSTANDARD_TESTS) == nonstandard
+    ]
+    if not tests:
+        raise ValueError(f"No {'nonstandard' if nonstandard else 'standard'} test results to plot.")
 
     def _cell_alignment(r: PPIResult) -> float | None:
         ds = r.tag.removeprefix("real_")
@@ -848,7 +873,8 @@ def save_ppi_real_alignment_plot(
         axes[idx // n_cols][idx % n_cols].axis("off")
     handles, labels = axes[0][0].get_legend_handles_labels()
     fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=9, frameon=True)
-    fig.suptitle(f"PPI-Corrected Type-I Rate by Judge-Human Alignment ({_alpha_label(alpha)})", fontsize=12)
+    family = "CI-Based Methods" if nonstandard else "Hypothesis Tests"
+    fig.suptitle(f"PPI-Corrected Type-I Rate by Judge-Human Alignment, {family} ({_alpha_label(alpha)})", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout(rect=(0, 0, 1, 0.94))
@@ -1261,18 +1287,36 @@ def run(args: argparse.Namespace) -> CaseResult:
                     )
                     output_paths.append(nonstd_plot_path)
                     print(f"Saved plot: {nonstd_plot_path}")
-                heatmap_path = save_ppi_real_labfrac_dataset_heatmap(
-                    results=hypothesis_results, alpha=args.alpha,
-                    out_path=str(Path(plots_dir) / f"{run_stem}_dataset_labfrac_heatmap.png"),
-                )
-                output_paths.append(heatmap_path)
-                print(f"Saved plot: {heatmap_path}")
-                alignment_plot_path = save_ppi_real_alignment_plot(
-                    results=hypothesis_results, alignment_by_dataset_judge=alignment_by_dataset_judge,
-                    alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_alignment.png"),
-                )
-                output_paths.append(alignment_plot_path)
-                print(f"Saved plot: {alignment_plot_path}")
+                if _has_standard_test(hypothesis_results):
+                    heatmap_path = save_ppi_real_labfrac_dataset_heatmap(
+                        results=hypothesis_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_dataset_labfrac_heatmap.png"),
+                    )
+                    output_paths.append(heatmap_path)
+                    print(f"Saved plot: {heatmap_path}")
+                if _has_nonstandard_test(hypothesis_results):
+                    nonstd_heatmap_path = save_ppi_real_labfrac_dataset_heatmap(
+                        results=hypothesis_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"{run_stem}_dataset_labfrac_heatmap_nonstandard.png"),
+                        nonstandard=True,
+                    )
+                    output_paths.append(nonstd_heatmap_path)
+                    print(f"Saved plot: {nonstd_heatmap_path}")
+                if _has_standard_test(hypothesis_results):
+                    alignment_plot_path = save_ppi_real_alignment_plot(
+                        results=hypothesis_results, alignment_by_dataset_judge=alignment_by_dataset_judge,
+                        alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_alignment.png"),
+                    )
+                    output_paths.append(alignment_plot_path)
+                    print(f"Saved plot: {alignment_plot_path}")
+                if _has_nonstandard_test(hypothesis_results):
+                    nonstd_alignment_plot_path = save_ppi_real_alignment_plot(
+                        results=hypothesis_results, alignment_by_dataset_judge=alignment_by_dataset_judge,
+                        alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_alignment_nonstandard.png"),
+                        nonstandard=True,
+                    )
+                    output_paths.append(nonstd_alignment_plot_path)
+                    print(f"Saved plot: {nonstd_alignment_plot_path}")
             c_tot = sum(r.corrected_rejects for r in hypothesis_results)
             u_tot = sum(r.uncorrected_rejects for r in hypothesis_results)
             n_tot = sum(r.n_reps for r in hypothesis_results)
