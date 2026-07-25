@@ -4757,7 +4757,13 @@ def save_ppi_comparison_plot(*, results: list[PPIComparisonResult], alpha: float
     fig.suptitle("PPI-Corrected Estimator Comparison (Paired-Mean Estimand)", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 0.85, 1))
+        # rect right stays at 1 (not narrowed to make room for the legend) --
+        # bbox_to_anchor=(1.0, ...) already puts the legend flush against the
+        # rightmost subplot; savefig's bbox_inches="tight" grows the canvas
+        # to include it. Narrowing rect's right edge below 1 here reserves
+        # BLANK figure space between the subplots and the legend instead
+        # (confirmed as the cause of a visible gap -- 2026-07-25).
+        fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -4877,7 +4883,7 @@ def save_ppi_null_comparison_plot(
     fig.suptitle("False-Positive Rate Under the Null (No Real Effect)", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 0.88, 1))
+        fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -5375,7 +5381,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 0.85, 0.92))
+        fig.tight_layout(rect=(0, 0, 1, 0.92))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -7378,7 +7384,7 @@ def save_ppi_power_plot(
     fig.suptitle(f"PPI-Corrected Power vs. Effect Size{title_suffix}", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 0.83, 1))
+        fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -7459,7 +7465,7 @@ def save_ppi_power_direction_plot(
     fig.suptitle("PPI-Corrected Power: Bias Opposing vs. Reinforcing the True Effect", y=1.03, fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 0.85, 1))
+        fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -7678,7 +7684,7 @@ def save_ppi_effect_plot(
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 0.85, 1))
+        fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
