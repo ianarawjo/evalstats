@@ -2576,8 +2576,23 @@ def _ppi_anova_independent_ci(
     if f_corr <= 0.0 or not np.isfinite(f_corr):
         return 0.0, 0.0, 0.0
     # theta_hat = num_ms*(k-1)/N = f_corr*denom*dfn/scale (see
-    # _ppi_anova_independent_f_stat's comment for the lambda<->theta relation).
-    estimate = f_corr * denom * dfn / scale
+    # _ppi_anova_independent_f_stat's comment for the lambda<->theta relation)
+    # is a sum-of-squares-type quantity, inherently >= 0, so it carries a
+    # PERSISTENT positive bias under repeated sampling even at the true null
+    # (theta=0) -- not just noise around zero. The classical ANOVA identity
+    # in the comment above (E[ss_between] = (k-1)*denom + N*theta) gives
+    # E[raw estimate] = dfn*denom/scale > 0 whenever theta=0. Root-caused via
+    # pvalues.py's effect-size check (2026-07-25): every scenario showed a
+    # small but overwhelmingly significant (|z| up to 16) upward bias,
+    # worst in near-null true-effect scenarios (one cell's corrected
+    # estimate was 549x its true theta). Subtracting the expected-under-H0
+    # term below (dfn*denom/scale) is the same debiasing eta-squared ->
+    # omega-squared/epsilon-squared does classically, and touches ONLY this
+    # point estimate -- f_corr/dfn/dfd (what the p-value function uses) and
+    # the CI bounds below (a proper noncentral-F test-inversion via
+    # _noncentral_f_ci_lambda, which doesn't share this bias -- confirmed by
+    # near-nominal coverage even before this fix) are both unchanged.
+    estimate = max((f_corr - 1.0) * dfn * denom / scale, 0.0)
     lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
     return estimate, lam_L * denom / scale, lam_U * denom / scale
 
@@ -2710,7 +2725,10 @@ def _ppi_anova_repeated_ci(
     f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
     if f_corr <= 0.0 or not np.isfinite(f_corr):
         return 0.0, 0.0, 0.0
-    estimate = f_corr * denom * dfn / scale
+    # Debiased the same way _ppi_anova_independent_ci's estimate is -- see
+    # that function's comment for the full derivation/root-cause. f_corr/
+    # dfn/dfd (the p-value's inputs) and the CI bounds below are untouched.
+    estimate = max((f_corr - 1.0) * dfn * denom / scale, 0.0)
     lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
     return estimate, lam_L * denom / scale, lam_U * denom / scale
 
@@ -2897,7 +2915,10 @@ def _ppi_friedman_ci(
     f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
     if f_corr <= 0.0 or not np.isfinite(f_corr):
         return 0.0, 0.0, 0.0
-    estimate = f_corr * denom * dfn / scale
+    # Debiased the same way _ppi_anova_independent_ci's estimate is -- see
+    # that function's comment for the full derivation/root-cause. f_corr/
+    # dfn/dfd (the p-value's inputs) and the CI bounds below are untouched.
+    estimate = max((f_corr - 1.0) * dfn * denom / scale, 0.0)
     lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
     return estimate, lam_L * denom / scale, lam_U * denom / scale
 
