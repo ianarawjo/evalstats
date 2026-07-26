@@ -595,8 +595,16 @@ class RealWithinItemPairedCorpus:
     bayes_bootstrap/bootstrap_t) should recover, not an artificial zero
     (contrast generate_real_paired_null_cell's exact-null construction)."""
     true_paired_median: float
-    """Population median of (human_a - human_b) -- the analogous real
-    target for wilcoxon's median estimand."""
+    """Population median of (human_a - human_b) -- kept for reference/back-
+    compat, but NO LONGER wilcoxon's target -- see true_paired_midrank_theta."""
+    true_paired_midrank_theta: float
+    """Population P_mid(D > 0) - 0.5 for D = human_a - human_b -- wilcoxon's
+    real target as of 2026-07-25 (see evalstats.tests._paired_midrank_theta's
+    docstring): under heavy ties, the population MEDIAN of a paired
+    difference can stay locked at exactly 0 even under a large, real,
+    classical-Wilcoxon-detectable shift, so true_paired_median is no longer
+    a valid comparison target for wilcoxon's PPI-corrected estimate (which
+    now estimates this midrank-sign quantity instead of the median)."""
 
 
 def load_real_wmt_paired_corpus(
@@ -719,12 +727,15 @@ def load_real_wmt_paired_corpus(
     judge_scores_a = {jm: _rescale(a, WMT_PAIRED_BOUNDS) for jm, a in judge_scores_a.items()}
     judge_scores_b = {jm: _rescale(a, WMT_PAIRED_BOUNDS) for jm, a in judge_scores_b.items()}
 
+    from evalstats.tests import _paired_midrank_theta
+
     diffs = human_a - human_b
     return RealWithinItemPairedCorpus(
         dataset=WMT_PAIRED_DATASET, eval_type="continuous_paired", judge_models=list(judge_models),
         human_a=human_a, human_b=human_b, judge_scores_a=judge_scores_a, judge_scores_b=judge_scores_b,
         corpus_size=len(aligned_segs),
         true_paired_mean=float(np.mean(diffs)), true_paired_median=float(np.median(diffs)),
+        true_paired_midrank_theta=float(_paired_midrank_theta(diffs)),
     )
 
 

@@ -676,6 +676,73 @@ def _midrank_theta(x: np.ndarray, y: np.ndarray) -> float:
     return _p_x_gt_y_midrank(x, y) - 0.5
 
 
+def _p_d_gt_0_midrank(d: np.ndarray) -> float:
+    """One-sample analogue of :func:`_p_x_gt_y_midrank`: ``P(D > 0) +
+    0.5*P(D = 0)`` for an array of paired differences ``D``. Equals 0.5
+    under H0 (D symmetric about 0) for ANY distribution, including heavily
+    tied/discrete (Likert) data -- the same mid-rank tie convention
+    ``_p_x_gt_y_midrank`` uses for the independent two-sample case, just
+    applied to one array's sign pattern instead of two arrays' relative
+    order. Returns 0.5 (the H0 identity value) for an empty array."""
+    d = np.asarray(d)
+    if len(d) == 0:
+        return 0.5
+    n_pos = int(np.sum(d > 0))
+    n_zero = int(np.sum(d == 0))
+    return float((n_pos + 0.5 * n_zero) / len(d))
+
+
+def _paired_midrank_theta(d: np.ndarray) -> float:
+    """``_p_d_gt_0_midrank(d) - 0.5``, the paired/one-sample counterpart of
+    :func:`_midrank_theta` -- PPI's estimand for the Wilcoxon signed-rank
+    family in :func:`_ppi_paired_arrays`, in place of ``np.median``.
+
+    Root cause this fixes (found 2026-07-25 investigating why
+    save_ppi_label_efficiency_plot's likert panel showed PPI-corrected
+    Wilcoxon power collapsing to ~2-15% at large n_lab even under a large,
+    genuinely Wilcoxon-detectable effect, while a classical Wilcoxon on the
+    SAME labeled subset alone scored 87-98%): under heavy ties (Likert
+    ground truth is rounded to integer levels -- see
+    scenarios/synthetic.py's ``round_to_int`` for "likert"), the
+    POPULATION MEDIAN of a paired difference can stay locked at EXACTLY
+    0 even under a large, real, classical-Wilcoxon-detectable shift --
+    e.g. one confirmed case had P(D<0)=41.0% vs P(D>0)=21.8% (mean=-0.29,
+    a strong real effect) yet a population median of D that was still
+    EXACTLY 0.0, because the ~37% exact-zero mode alone was short of the
+    outright majority needed to move the median off it. This isn't a
+    bootstrap-mechanics problem the existing tie-jitter (_tie_jitter_scale)
+    can fix (that jitter targets bootstrap-resample DEGENERACY, a
+    different failure mode, confirmed still present/necessary on real
+    wmt_da paired data) -- ``median(D)`` is simply the WRONG estimand once
+    a large tied mass anchors it at 0 regardless of how the non-tied mass
+    is distributed. ``theta = P(D>0) - 0.5`` tracks the same sign/rank-based
+    asymmetry Wilcoxon's signed-rank statistic actually responds to (here:
+    0.218 - 0.5 = -0.282, clearly nonzero) and, being a smooth
+    proportion-type statistic (not a discrete order statistic), never
+    bootstrap-degenerates under ties in the first place -- no jitter
+    needed. An experimental alternative (_ppi_wilcoxon_hajek_experimental,
+    a frozen Hajek-projection linearization against the LLM's own paired-
+    diff distribution) was tried first and rejected: it fixed likert but
+    badly UNDER-powered continuous data instead (measured: 6.5% vs a
+    classical 99.5% at n_lab=200, es=0.08 frac) -- likely because ranking
+    against a judge-only reference whose own noise inflates its spread
+    compresses genuine signal in the labeled truth term. This midrank-sign
+    estimator was validated (Monte Carlo, 400 reps/cell) to keep Type-I
+    error near nominal (~0.05-0.07) AND track classical Wilcoxon's own
+    power closely in BOTH likert (0.97 vs 0.98 at n_lab=200) and continuous
+    (0.98 vs 0.995) -- unlike either the median-based or Hajek approaches,
+    neither of which was safe across both eval types at once. This is a
+    genuine efficiency trade (roughly sign-test-like, not full
+    magnitude-weighted signed-rank), not a strict generalization of
+    Wilcoxon -- but it is a large, unambiguous improvement over a
+    same-eval-type comparison that was, in the worst likert cases,
+    catastrophically UNDER its own classical human-only baseline."""
+    d = np.asarray(d)
+    if len(d) == 0:
+        return 0.0
+    return _p_d_gt_0_midrank(d) - 0.5
+
+
 def _ppi_two_sample_midrank_corrected(
     a: np.ndarray,
     b: np.ndarray,

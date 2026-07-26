@@ -3234,10 +3234,22 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     to the correct closed-form null variance even at full labeling (its
     tie-degeneracy handling is deliberately non-trivial there), so reusing
     _ppi_friedman_ci the same way produced a still-wrong gold value in
-    testing; friedman's gold-consistency gap remains open."""
+    testing; friedman's gold-consistency gap remains open.
+
+    "wilcoxon"'s gold value switched (2026-07-25) from the population
+    MEDIAN of the paired truth difference to the population midrank-sign
+    quantity P_mid(D>0)-0.5 (evalstats.tests._paired_midrank_theta) -- see
+    that function's docstring: under heavy ties (e.g. likert's integer-
+    rounded truth), the population median can stay locked at exactly 0
+    even under a large, real, classical-Wilcoxon-detectable shift, so it
+    stopped being a valid comparison target once wilcoxon's own PPI-
+    corrected estimator switched to the midrank-sign estimand (to fix a
+    corresponding power collapse under likert-like ties -- see
+    cases/pvalues.py's WILCOXON blocks)."""
     from evalstats.tests import (
         _friedman_rank_variance,
         _p_x_gt_y_midrank,
+        _paired_midrank_theta,
         _ppi_anova_independent_ci,
         _ppi_anova_repeated_ci,
     )
@@ -3264,12 +3276,15 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         diffs2[i] = a.mean() - b.mean()
         thetas2[i] = _p_x_gt_y_midrank(a, b) - 0.5
 
-    meds = np.empty(n_mc)  # median paired difference (wilcoxon)
+    meds = np.empty(n_mc)  # median paired difference -- kept for reference, no longer wilcoxon's target
+    wilcoxon_thetas = np.empty(n_mc)  # P_mid(D>0)-0.5 paired difference (wilcoxon, since 2026-07-25)
     means_paired = np.empty(n_mc)  # mean paired difference (paired_t)
     for i in range(n_mc):
         x, y = _repeated(n1, 2)
-        meds[i] = float(np.median(x - y))
-        means_paired[i] = float(np.mean(x - y))
+        d = x - y
+        meds[i] = float(np.median(d))
+        wilcoxon_thetas[i] = _paired_midrank_theta(d)
+        means_paired[i] = float(np.mean(d))
 
     bv = np.empty(n_mc)  # between-group variance (anova_ind), debiased -- see docstring
     for i in range(n_mc):
@@ -3293,7 +3308,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "ttest": float(diffs2.mean()),
         "ttest_welch": float(diffs2.mean()),
         "mw": float(thetas2.mean()),
-        "wilcoxon": float(meds.mean()),
+        "wilcoxon": float(wilcoxon_thetas.mean()),
         "paired_t": float(means_paired.mean()),
         "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t

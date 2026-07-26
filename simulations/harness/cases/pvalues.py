@@ -160,6 +160,7 @@ with warnings.catch_warnings():
         _ppi_paired_bootstrap_t,
         _ppi_paired_tango,
         _p_x_gt_y_midrank,
+        _paired_midrank_theta,
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
@@ -3482,21 +3483,17 @@ def _run_ppi_cell(
                     # slower, p-value than forcing method="exact" would.
                     p_u = float(scipy_stats.wilcoxon(cell.llm_x, cell.llm_y, alternative="two-sided").pvalue)
                     uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
-                    # rectifier_func=np.median (matching the main statistic) -- a
-                    # mismatched mean-rectifier is biased whenever the population
-                    # median diverges from the population mean of the paired
-                    # judge-score diffs: root-caused on real wmt_da data
-                    # (2026-07-23), up to 77.5% Type-I on some judge pairs. Median
-                    # rectifier alone (tried the same day) traded that for a WORSE
-                    # problem: percentile-bootstrapping a MEDIAN degenerates under
-                    # real ties (92.6% of bootstrap replicate diffs collapsing to
-                    # exactly 0 on wmt_da), driving Type-I to ~0 instead of alpha.
-                    # evalstats.ppi.correct() now smooths the bootstrap with tiny
-                    # sub-resolution jitter before each resample's median (see
-                    # _tie_jitter_scale) specifically to fix that degeneracy, which
-                    # makes rectifier_func=np.median usable again -- verified via
-                    # the same wmt_da paired check both failure modes are gone.
-                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
+                    # _paired_midrank_theta (P(D>0)-0.5, matched estimator/rectifier),
+                    # NOT np.median -- under heavy ties (e.g. likert's integer-rounded
+                    # truth), the population MEDIAN of a paired difference can stay
+                    # locked at exactly 0 even under a large, real, classical-
+                    # Wilcoxon-detectable shift, which no bootstrap jitter fixes (it's
+                    # the wrong estimand, not a resampling-degeneracy problem) -- see
+                    # _paired_midrank_theta's docstring for the full root-cause
+                    # writeup and validation (2026-07-25) against both this failure
+                    # mode and an experimental Hajek-projection alternative that
+                    # fixed likert but badly under-powered continuous instead.
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _paired_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=_paired_midrank_theta)
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[WILCOXON.name] += 1
@@ -3856,11 +3853,15 @@ def _run_ppi_effect_cell(
 
             if WILCOXON.name in active_tests:
                 try:
-                    # rectifier_func=np.median -- see the WILCOXON block in
-                    # _run_ppi_cell above for why this needs to match the
-                    # statistic and how correct()'s jitter keeps it from
-                    # degenerating on real tied data.
-                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, np.median, _ALPHA, n_boot, _rng_seed(), rectifier_func=np.median)
+                    # _paired_midrank_theta, matching _run_ppi_cell's and
+                    # _ppi_comparison_pvalue's WILCOXON blocks (all switched from
+                    # np.median 2026-07-25 -- see that function's docstring for
+                    # why raw np.median is the wrong estimand under heavy ties).
+                    # estimate_judge_bias_gold_null_values' "wilcoxon" gold value
+                    # was updated in lockstep (same date) to the matching true
+                    # P(D>0)-0.5 population quantity, so this stays an
+                    # apples-to-apples bias/coverage comparison.
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _paired_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=_paired_midrank_theta)
                     out[WILCOXON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
@@ -4298,10 +4299,12 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
         # mwu_mnar_experimental's local rectifier as of 2026-07-22.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
-    statistic = np.mean if method == PAIRED_T.name else np.median
-    # rectifier_func = statistic -- see the WILCOXON block in _run_ppi_cell
-    # for why the rectifier needs to match, and how correct()'s jitter
-    # keeps the median case from degenerating on real tied data.
+    # paired_t: np.mean. wilcoxon: _paired_midrank_theta (P(D>0)-0.5), NOT
+    # np.median -- see _paired_midrank_theta's docstring for why the median
+    # of a paired difference is the WRONG estimand under heavy ties (e.g.
+    # likert's integer-rounded truth), independent of any bootstrap-
+    # degeneracy jitter fix.
+    statistic = np.mean if method == PAIRED_T.name else _paired_midrank_theta
     return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic).p_value
 
 
