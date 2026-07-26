@@ -5283,11 +5283,11 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     not). The shaded region between the MIDDLE (target=0.5, "moderate"
     alignment) tier's curve and the diagonal is the headline "labels saved"
     story; the other tiers show how that benefit moves with judge quality
-    on the SAME axes. N=400 (fixed throughout, see run_ppi_label_efficiency_
-    check and PPI_LABEL_EFF_N's docstring for why 400, not the original
-    100) is stated explicitly in the suptitle -- the figure previously
-    showed only N_lab, leaving its denominator (how much unlabeled,
-    judge-only data N_lab sits inside) implicit.
+    on the SAME axes. N (the total item count, fixed throughout -- see
+    run_ppi_label_efficiency_check and PPI_LABEL_EFF_N's docstring) is left
+    out of the title/axis text deliberately -- the paper states it in the
+    caption instead, so this figure carries no on-plot annotations or N
+    callouts beyond the axis labels and legend.
 
     Each panel gets its OWN legend immediately to its right (not one
     legend shared across the whole figure) -- unlike a plot where every
@@ -5344,7 +5344,6 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             label="No benefit (y = x)", zorder=2,
         )
 
-        annotated = False
         for i, target in enumerate(targets):
             rows = sorted((r for r in et_rows if r.alignment_target == target), key=lambda r: r.n_lab)
             xs = [r.n_lab for r in rows]
@@ -5369,34 +5368,22 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
                 )
             if is_baseline:
                 ax.fill_between(xs, xs, ys, color=color, alpha=0.15, zorder=1)
-                unsat_rows = [(x, y, r) for x, y, r in zip(xs, ys, rows) if not r.saturated]
-                if unsat_rows and not annotated:
-                    mx, my, mid = unsat_rows[len(unsat_rows) // 2]
-                    mult = mid.equiv_n_lab / mid.n_lab if mid.n_lab else float("nan")
-                    ax.annotate(
-                        f"N_lab={mid.n_lab} -> {mid.equiv_n_lab:.0f}\n({mult:.2f}x)",
-                        xy=(mx, my), xytext=(8, 10), textcoords="offset points",
-                        fontsize=8, color=color,
-                        arrowprops=dict(arrowstyle="->", color=color, lw=1.0),
-                    )
-                    annotated = True
 
         ax.set_xlim(0, max_val)
         ax.set_ylim(0, max_val)
-        ax.set_xlabel("Actual N_lab (human labels used)")
-        ax.set_ylabel("Equivalent N_lab (human-only test)" if col == 0 else "")
+        ax.set_xlabel("Num human labels used")
+        ax.set_ylabel("Num human labels a classical test would need" if col == 0 else "")
         ax.set_title(et.capitalize())
         ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize=7, borderaxespad=0.3, frameon=True)
 
     fig.suptitle(
-        "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power\n"
-        f"(N = {PPI_LABEL_EFF_N} total items, fixed; only N_lab -- and the judge's alignment with truth -- varies)",
+        "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power",
         fontsize=11,
     )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 1, 0.92))
+        fig.tight_layout(rect=(0, 0, 1, 0.94))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)

@@ -2084,31 +2084,39 @@ covers -- enough headroom for a stable inversion without floor/ceiling
 effects at either end. See LabelEfficiencyPoint.saturated in
 cases/pvalues.py for the defensive check that still applies regardless
 (a sufficiently good judge could saturate power at ANY fixed effect size)."""
-PPI_LABEL_EFF_N = 400
+PPI_LABEL_EFF_N = 1000
 """Total item count (N) for build_ppi_label_efficiency_sources -- NOT 100
 (the ORIGINAL choice, inherited from _ppi_power_baseline's default without
-reconsidering it for this specific check): the whole motivation for using
-an LLM judge at all is that judge-scored items are cheap and plentiful while
-human labels are the expensive, scarce resource, so a realistic label-
-efficiency comparison should hold N_lab at a small ABSOLUTE count (still
-just a few dozen real labels) while N -- the pool of additional judge-only
-data PPI gets to lean on -- is large, not the other way around. 400 matches
-PPI_NLAB_GRID_N_VALUES' own largest anchor (an already-vetted point
-elsewhere in the harness) rather than introducing a new, unvetted magnitude.
-See PPI_LABEL_EFF_NLAB_TARGETS -- label_frac is back-solved from these
-ABSOLUTE N_lab targets at this N, the same pattern build_ppi_nlab_grid_
-sources already uses, rather than reusing PPI_COMPARISON_LABEL_FRACS
-(tuned for N=100 -- the SAME label_frac values at N=400 would scale N_lab
-up to 60-160, a much bigger absolute labeling budget, not the "same few
-dozen labels, more judge data around them" comparison this check is for)."""
-PPI_LABEL_EFF_NLAB_TARGETS = (15, 20, 30, 40)
+reconsidering it for this specific check), and raised again from an
+intermediate 400 (2026-07-23): the whole motivation for using an LLM judge
+at all is that judge-scored items are cheap and plentiful while human
+labels are the expensive, scarce resource, so a realistic label-efficiency
+comparison should hold N_lab at a small ABSOLUTE count (still well under a
+few hundred real labels) while N -- the pool of additional judge-only data
+PPI gets to lean on -- is large, not the other way around. 1000 (rather
+than 400) exists specifically to let PPI_LABEL_EFF_NLAB_TARGETS extend out
+to 200 while staying at only 20% of N -- at N=400, the same absolute
+targets would have pushed the top of the range to 50% of N, no longer a
+"labels are the scarce resource" regime. See PPI_LABEL_EFF_NLAB_TARGETS --
+label_frac is back-solved from these ABSOLUTE N_lab targets at this N, the
+same pattern build_ppi_nlab_grid_sources already uses, rather than reusing
+PPI_COMPARISON_LABEL_FRACS (tuned for N=100 -- the SAME label_frac values
+at N=1000 would scale N_lab up into the hundreds, a much bigger absolute
+labeling budget, not the "small number of labels, lots of judge data
+around them" comparison this check is for)."""
+PPI_LABEL_EFF_NLAB_TARGETS = (15, 20, 30, 40, 60, 90, 130, 200)
 """Absolute labeled-item-count targets for build_ppi_label_efficiency_
-sources -- the SAME small "a few dozen real human labels" range the
-original (N=100) version used, kept unchanged since realistic label
-scarcity is what this axis is meant to represent; only N (PPI_LABEL_EFF_N)
-changed. 15 sits exactly at _JB_MIN_LAB's floor, so label_frac=15/400
-hits it exactly (no floor-rounding distortion) -- confirmed for all four
-targets at N=400."""
+sources. Widened (2026-07-25) from the original 4-point (15, 20, 30, 40)
+grid, which only ever produced 4 x-axis values on save_ppi_label_
+efficiency_plot regardless of PPI_LABEL_EFF_N -- 8 points, roughly
+log-spaced from 15 (a "couple dozen labels") up to 200 (20% of
+PPI_LABEL_EFF_N=1000, still a labeled minority), gives the flagship plot
+enough points to actually show curve shape/diminishing-returns behavior
+instead of 4 sparse dots clustered in a narrow 15-40 window. Every target
+divides PPI_LABEL_EFF_N=1000 exactly (label_frac = target / 1000, e.g.
+90/1000 = 0.09), so round(N * label_frac) hits each target exactly with no
+floor-rounding distortion -- confirmed for all eight targets at N=1000. 15
+still sits exactly at _JB_MIN_LAB's floor."""
 
 
 def build_ppi_label_efficiency_sources(
@@ -3200,12 +3208,38 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     groups would push it higher than that, not away from 0. Estimating it
     by simulation, rather than assuming 0, avoids baking in a wrong
     assumption about what "no effect" looks like for that particular test.
-    """
+
+    anova_ind/anova_rep's gold values are computed via _ppi_anova_
+    independent_ci/_ppi_anova_repeated_ci themselves (called with
+    groups_lab=groups, i.e. treating the pure-truth draw as "fully
+    labeled") rather than the raw _anova_between_variance_from_groups/
+    _repeated_condition_variance -- NOT a redundant round-trip. With
+    groups_lab=groups, noise=g-g_lab=0 everywhere, so these _ci functions'
+    correction machinery degenerates to the classical (non-PPI) F-stat on
+    the truth data alone, but critically STILL applies the same debiasing
+    subtraction (evalstats.tests' anova_independent_ci/anova_repeated_ci,
+    fixed 2026-07-25) their PPI-corrected counterpart now uses. Root-caused
+    2026-07-25: after debiasing the corrected estimator (subtracting the
+    expected-under-H0 floor so it targets the clean population theta), this
+    gold reference -- still the RAW, undebiased finite-sample expectation
+    -- became the WRONG comparison target. It happened to look fine for
+    near-null scenarios (where the floor dominates gold and swamps the
+    now-fixed estimator too) but badly under-stated gold for scenarios with
+    a substantial true effect and non-negligible population variance
+    (confirmed on "eval_type.likert": raw gold 0.0089 vs the debiased
+    estimator's own mean of ~0.0038, a ~57% apparent "bias" that vanished
+    once gold was debiased the same way, to ~0.0031). friedman's frv is
+    NOT given the same treatment -- its ms_null is a shrinkage blend
+    (see _ppi_friedman_f_stat's docstring) that does NOT cleanly degenerate
+    to the correct closed-form null variance even at full labeling (its
+    tie-degeneracy handling is deliberately non-trivial there), so reusing
+    _ppi_friedman_ci the same way produced a still-wrong gold value in
+    testing; friedman's gold-consistency gap remains open."""
     from evalstats.tests import (
-        _anova_between_variance_from_groups,
         _friedman_rank_variance,
         _p_x_gt_y_midrank,
-        _repeated_condition_variance,
+        _ppi_anova_independent_ci,
+        _ppi_anova_repeated_ci,
     )
 
     rng = np.random.default_rng(seed)
@@ -3237,18 +3271,22 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         meds[i] = float(np.median(x - y))
         means_paired[i] = float(np.mean(x - y))
 
-    bv = np.empty(n_mc)  # between-group variance (anova_ind)
+    bv = np.empty(n_mc)  # between-group variance (anova_ind), debiased -- see docstring
     for i in range(n_mc):
         a3 = _marginal(n1)
         b3 = _marginal(n2)
         c3 = _marginal(n3)
-        bv[i] = _anova_between_variance_from_groups([a3, b3, c3])
+        groups3 = [a3, b3, c3]
+        ci = _ppi_anova_independent_ci(groups3, groups3, k=3, alpha=0.05)
+        bv[i] = ci[0] if ci is not None else 0.0
 
-    rv = np.empty(n_mc)  # between-condition variance (anova_rep)
-    frv = np.empty(n_mc)  # rank-based between-condition variance (friedman)
+    rv = np.empty(n_mc)  # between-condition variance (anova_rep), debiased -- see docstring
+    frv = np.empty(n_mc)  # rank-based between-condition variance (friedman) -- NOT debiased, see docstring
     for i in range(n_mc):
         mat = _repeated(n1, 3).T  # (n1, 3)
-        rv[i] = _repeated_condition_variance(mat)
+        groups_rep = [mat[:, 0], mat[:, 1], mat[:, 2]]
+        ci_r = _ppi_anova_repeated_ci(groups_rep, groups_rep, k=3, alpha=0.05)
+        rv[i] = ci_r[0] if ci_r is not None else 0.0
         frv[i] = _friedman_rank_variance(mat)
 
     return {
