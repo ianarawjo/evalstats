@@ -679,9 +679,7 @@ def build_real_data_sources(
     """Resolve (model, benchmark) pairs for `source` and return them as CISources.
 
     `source` is one of "openeval", "inspect", "appstore", "privacy_judge",
-    or "real" ("real" combines all four for maximum real-data diversity,
-    skipping any that aren't available locally with a note rather than
-    failing). When `benchmarks` is given, only the default pairs whose
+    or "real". When `benchmarks` is given, only the default pairs whose
     benchmark_id is in that list are used; `models` similarly filters by
     model name (neither applies to "appstore"/"privacy_judge" -- see
     build_judge_bias_items_corpus). With no filters, each source's curated
@@ -692,6 +690,18 @@ def build_real_data_sources(
     (continuous, real human 1-5 survey-mean scores) are the harness's first
     real Likert/continuous single-arm sources with no LLM judge involved at
     all -- see build_judge_bias_items_corpus.
+
+    "real" combines openeval + inspect + privacy_judge for maximum
+    real-data diversity, skipping any that aren't available locally with a
+    note rather than failing -- but deliberately excludes "appstore" for
+    now (2026-07-27): it's currently the only real Likert source (a single
+    dataset/population, no paired Likert source at all), too thin to treat
+    as a general real-data Likert validation the way the 5 continuous
+    OpenEval benchmarks + privacy_judge support continuous. Still directly
+    testable via --data-source appstore explicitly; just not folded into
+    the default "real" sweep until there's more Likert diversity to back
+    it up. Report continuous-only real-data results for now as the
+    numeric-data sanity check -- Likert needs more data first.
     """
     if source not in SOURCES:
         raise ValueError(f"Unknown real-data source: {source!r}. Choices: {SOURCES}")
@@ -723,7 +733,10 @@ def build_real_data_sources(
             )
         else:
             print(f"  Note: --real requested but inspect CSV not found at {csv_path!r} -- skipping inspect, using openeval only.")
-    if source in ("appstore", "real") and (not benchmarks or "appstore" in benchmarks):
+    if source == "appstore" and (not benchmarks or "appstore" in benchmarks):
+        # Deliberately NOT folded into "real" -- see docstring: too thin a
+        # Likert data point on its own to fold into the default real-data
+        # sweep yet. Still runnable directly via --data-source appstore.
         c = build_judge_bias_items_corpus("appstore", eval_type="likert", native_bounds=(1.0, 5.0))
         if c is not None and c.corpus_size >= min_corpus_size:
             corpora.append(c)
