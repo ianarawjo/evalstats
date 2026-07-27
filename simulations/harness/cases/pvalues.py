@@ -160,7 +160,7 @@ with warnings.catch_warnings():
         _ppi_paired_bootstrap_t,
         _ppi_paired_tango,
         _p_x_gt_y_midrank,
-        _paired_midrank_theta,
+        paired_walsh_midrank_theta,
         _ppi_anova_independent_p_value,
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
@@ -3483,17 +3483,23 @@ def _run_ppi_cell(
                     # slower, p-value than forcing method="exact" would.
                     p_u = float(scipy_stats.wilcoxon(cell.llm_x, cell.llm_y, alternative="two-sided").pvalue)
                     uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
-                    # _paired_midrank_theta (P(D>0)-0.5, matched estimator/rectifier),
-                    # NOT np.median -- under heavy ties (e.g. likert's integer-rounded
-                    # truth), the population MEDIAN of a paired difference can stay
-                    # locked at exactly 0 even under a large, real, classical-
-                    # Wilcoxon-detectable shift, which no bootstrap jitter fixes (it's
-                    # the wrong estimand, not a resampling-degeneracy problem) -- see
-                    # _paired_midrank_theta's docstring for the full root-cause
-                    # writeup and validation (2026-07-25) against both this failure
-                    # mode and an experimental Hajek-projection alternative that
-                    # fixed likert but badly under-powered continuous instead.
-                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _paired_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=_paired_midrank_theta)
+                    # paired_walsh_midrank_theta (evalstats.ppi -- a Hodges-Lehmann
+                    # Walsh-average midrank-sign statistic, matched estimator/
+                    # rectifier), NOT np.median -- under heavy ties (e.g. likert's
+                    # integer-rounded truth), the population MEDIAN of a paired
+                    # difference can stay locked at exactly 0 even under a large,
+                    # real, classical-Wilcoxon-detectable shift, which no bootstrap
+                    # jitter fixes (it's the wrong estimand, not a resampling-
+                    # degeneracy problem). A simpler per-item sign proportion fixed
+                    # that but was itself found to have severely inflated Type-I
+                    # error at small n_lab against real, heavily-tied judge-pair
+                    # data -- this Walsh-average construction does NOT fix that
+                    # second issue either (confirmed statistically equivalent to
+                    # the sign proportion on the specific extreme-tie data that
+                    # showed it) -- see paired_walsh_midrank_theta's docstring in
+                    # evalstats/ppi.py for the full root-cause writeup; that
+                    # inflation remains an open, documented limitation.
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, paired_walsh_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=paired_walsh_midrank_theta)
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[WILCOXON.name] += 1
@@ -3853,15 +3859,16 @@ def _run_ppi_effect_cell(
 
             if WILCOXON.name in active_tests:
                 try:
-                    # _paired_midrank_theta, matching _run_ppi_cell's and
-                    # _ppi_comparison_pvalue's WILCOXON blocks (all switched from
-                    # np.median 2026-07-25 -- see that function's docstring for
-                    # why raw np.median is the wrong estimand under heavy ties).
+                    # paired_walsh_midrank_theta (evalstats.ppi), matching
+                    # _run_ppi_cell's and _ppi_comparison_pvalue's WILCOXON blocks
+                    # (all switched from np.median, then from an intermediate
+                    # per-item sign proportion -- see that function's docstring
+                    # for the full history of why each was wrong/insufficient).
                     # estimate_judge_bias_gold_null_values' "wilcoxon" gold value
-                    # was updated in lockstep (same date) to the matching true
-                    # P(D>0)-0.5 population quantity, so this stays an
+                    # was updated in lockstep to the matching true Walsh-average
+                    # midrank-sign population quantity, so this stays an
                     # apples-to-apples bias/coverage comparison.
-                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _paired_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=_paired_midrank_theta)
+                    r = _ppi_paired_arrays(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, paired_walsh_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=paired_walsh_midrank_theta)
                     out[WILCOXON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
@@ -4299,12 +4306,14 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
         # mwu_mnar_experimental's local rectifier as of 2026-07-22.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
-    # paired_t: np.mean. wilcoxon: _paired_midrank_theta (P(D>0)-0.5), NOT
-    # np.median -- see _paired_midrank_theta's docstring for why the median
-    # of a paired difference is the WRONG estimand under heavy ties (e.g.
-    # likert's integer-rounded truth), independent of any bootstrap-
-    # degeneracy jitter fix.
-    statistic = np.mean if method == PAIRED_T.name else _paired_midrank_theta
+    # paired_t: np.mean. wilcoxon: paired_walsh_midrank_theta (evalstats.ppi --
+    # a Hodges-Lehmann Walsh-average midrank-sign statistic), NOT np.median --
+    # see that function's docstring for why the median of a paired difference
+    # is the WRONG estimand under heavy ties (e.g. likert's integer-rounded
+    # truth), independent of any bootstrap-degeneracy jitter fix, and why a
+    # simpler per-item sign proportion (tried first) also isn't safe (severely
+    # inflated Type-I error at small n_lab against real, heavily-tied data).
+    statistic = np.mean if method == PAIRED_T.name else paired_walsh_midrank_theta
     return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic).p_value
 
 

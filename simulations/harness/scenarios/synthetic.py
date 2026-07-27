@@ -3237,19 +3237,22 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     testing; friedman's gold-consistency gap remains open.
 
     "wilcoxon"'s gold value switched (2026-07-25) from the population
-    MEDIAN of the paired truth difference to the population midrank-sign
-    quantity P_mid(D>0)-0.5 (evalstats.tests._paired_midrank_theta) -- see
-    that function's docstring: under heavy ties (e.g. likert's integer-
-    rounded truth), the population median can stay locked at exactly 0
-    even under a large, real, classical-Wilcoxon-detectable shift, so it
-    stopped being a valid comparison target once wilcoxon's own PPI-
-    corrected estimator switched to the midrank-sign estimand (to fix a
-    corresponding power collapse under likert-like ties -- see
+    MEDIAN of the paired truth difference to a population midrank-sign
+    quantity, and (2026-07-26) from a per-item sign proportion to the
+    Hodges-Lehmann Walsh-average midrank-sign statistic
+    (evalstats.ppi.paired_walsh_midrank_theta) -- see that function's
+    docstring for the full history: under heavy ties (e.g. likert's
+    integer-rounded truth), the population median can stay locked at
+    exactly 0 even under a large, real, classical-Wilcoxon-detectable
+    shift, so it stopped being a valid comparison target once wilcoxon's
+    own PPI-corrected estimator switched away from it (to fix a
+    corresponding power collapse under likert-like ties, then a separate
+    Type-I inflation under extremely-tied real data -- see
     cases/pvalues.py's WILCOXON blocks)."""
     from evalstats.tests import (
         _friedman_rank_variance,
         _p_x_gt_y_midrank,
-        _paired_midrank_theta,
+        paired_walsh_midrank_theta,
         _ppi_anova_independent_ci,
         _ppi_anova_repeated_ci,
     )
@@ -3283,7 +3286,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         x, y = _repeated(n1, 2)
         d = x - y
         meds[i] = float(np.median(d))
-        wilcoxon_thetas[i] = _paired_midrank_theta(d)
+        wilcoxon_thetas[i] = paired_walsh_midrank_theta(d)
         means_paired[i] = float(np.mean(d))
 
     bv = np.empty(n_mc)  # between-group variance (anova_ind), debiased -- see docstring

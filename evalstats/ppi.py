@@ -146,6 +146,137 @@ def _tie_jitter_scale(arr: np.ndarray) -> float:
     return float(np.min(positive_gaps)) / _MEDIAN_TIE_JITTER_DIVISOR
 
 
+def _walsh_theta_row(d: np.ndarray) -> float:
+    """Exact O(n log n) computation of the one-sample midrank-sign
+    statistic ``P_mid(Walsh_ij > 0)`` for a single array of paired
+    differences ``d``, where ``Walsh_ij = (d_i + d_j) / 2`` for ``i <= j``
+    (``n*(n+1)/2`` pairs total, INCLUDING self-pairs ``i == j``). This is
+    the Hodges-Lehmann one-sample location estimator's own construction
+    (its point estimate is the MEDIAN of the Walsh averages; this is the
+    analogous midrank-tie-corrected SIGN statistic of those same averages)
+    -- see :func:`paired_walsh_midrank_theta`'s docstring for why this
+    replaces the simpler per-item sign proportion PPI previously used for
+    Wilcoxon.
+
+    Computed via a sort + vectorized ``searchsorted`` rather than the
+    naive O(n^2) pairwise enumeration (validated against an O(n^2) brute-
+    force reference over 2000 random trials, including heavily-tied
+    integer data, with zero discrepancy) -- the O(n^2) version is too slow
+    to call thousands of times per :func:`correct` invocation at realistic
+    corpus sizes (confirmed impractical at n~300, let alone ~1000+)."""
+    d = np.asarray(d, dtype=float)
+    n = len(d)
+    if n == 0:
+        return 0.5
+    ds = np.sort(d)
+    neg = -ds
+    idx_right = np.searchsorted(ds, neg, side="right")
+    idx_left = np.searchsorted(ds, neg, side="left")
+    i_arr = np.arange(n)
+    hi = np.maximum(idx_right, i_arr)
+    lo = np.maximum(idx_left, i_arr)
+    count_gt = n - hi
+    count_eq = np.maximum(0, idx_right - lo)
+    total_pairs = n * (n + 1) // 2
+    return float((count_gt.sum() + 0.5 * count_eq.sum()) / total_pairs)
+
+
+def paired_walsh_midrank_theta(d: np.ndarray) -> float:
+    """``_walsh_theta_row(d) - 0.5``, shifted to be 0 under H0 (D symmetric
+    about 0) -- :func:`correct`'s estimand for the Wilcoxon signed-rank
+    family in ``evalstats.tests._ppi_paired_arrays``, replacing an earlier
+    per-item sign proportion (``P(D>0) - 0.5``, briefly used 2026-07-25) as
+    of 2026-07-26.
+
+    Why introduced: the per-item sign proportion fixed Wilcoxon's median-
+    based power collapse under heavy ties (population median of a paired
+    difference can stay locked at exactly 0 even under a large, real,
+    classical-Wilcoxon-detectable shift -- a wrong-estimand problem, not a
+    bootstrap-degeneracy one). It was ALSO found to have severely inflated
+    Type-I error (up to 28% vs. nominal 5%) when bootstrapped at small
+    n_lab (~15) against real judge-pair data with an extreme tie rate (88%
+    of items scored identically by two real judges on real appstore data)
+    -- confirmed NOT caused by power-tuning (near-identical Type-I with
+    power_tune on/off) nor fixable by a small-sample continuity correction
+    on the point estimate (barely moved the needle, 28% -> 24% at
+    strongest). This function -- counting signs of ALL PAIRWISE Walsh
+    averages ``(d_i + d_j) / 2`` instead of individual item signs, the
+    exact construction behind the Hodges-Lehmann one-sample location
+    estimator and asymptotically equivalent to the Wilcoxon signed-rank
+    statistic itself (unlike the sign-proportion it replaces, which only
+    approximates it) -- was hypothesized to fix that inflation the same
+    way ``evalstats.tests._p_x_gt_y_midrank`` (MWU's own two-sample
+    U-statistic midrank correction) avoids it.
+
+    That hypothesis did NOT hold on the specific extreme-tie appstore
+    cell: measured Type-I was 26.4%, statistically indistinguishable from
+    the sign proportion's own 26.4% on the identical data (2026-07-26).
+    Root-caused further: on that specific population (88% exact zeros,
+    heavily concentrated at one point), this function's raw value is a
+    near-EXACT constant rescaling of the sign proportion's raw value
+    (measured ratio ~1.88, stable to within 1% across 30 independent
+    draws) -- since a percentile-bootstrap p-value is invariant to
+    multiplying an estimator by a fixed positive constant (both the point
+    estimate and every bootstrap replicate scale together), the two
+    estimators give MATHEMATICALLY EQUIVALENT inference whenever the
+    underlying population is this degenerate, regardless of which one is
+    used. The earlier "U-statistic vs. raw proportion" explanation for
+    MWU's better small-n_lab behavior therefore appears insufficient (or
+    wrong) as a general theory -- MWU's twogroup null check uses two
+    INDEPENDENT random subsamples, not this check's deterministically-
+    identical-labeled-term construction (see
+    scenarios/real_judge_bias.py's generate_real_paired_null_cell), which
+    may be the more load-bearing structural difference. Kept as Wilcoxon's
+    estimator anyway because it's still a genuine, real improvement over
+    the ORIGINAL (median-based) estimator's power collapse, is validated
+    safe (no regression) on continuous and non-extreme-tie data, and is
+    the theoretically correct signed-rank construction -- but this
+    specific extreme-tie, small-n_lab Type-I inflation remains OPEN and is
+    NOT fixed by this function. See cases/pvalues.py's/ppi_real.py's
+    WILCOXON blocks for where this is used and further discussion.
+
+    Registered in :func:`correct`'s ``_fast_batch`` dispatch (via
+    ``_walsh_theta_batch``) so this goes through the SAME vectorized-
+    resampling fast path ``np.mean``/``np.median`` use, not the slow
+    per-replicate Python loop arbitrary ``estimator_func`` callers
+    otherwise fall into -- required for this to be practical at all at
+    n_boot~2000 and realistic corpus sizes (arena/wmt_da up to ~1000-1300
+    items): the naive O(n^2)-per-call version this replaces was
+    empirically too slow to finish even a single :func:`correct` call in
+    reasonable time at those sizes (confirmed: an early un-batched
+    attempt didn't finish 500 reps in 5+ minutes at n~285)."""
+    d = np.asarray(d)
+    if len(d) == 0:
+        return 0.0
+    return _walsh_theta_row(d) - 0.5
+
+
+def _walsh_theta_batch(arr: np.ndarray) -> np.ndarray:
+    """Row-wise :func:`paired_walsh_midrank_theta` over a ``(m, n)``
+    bootstrap-replicate array, for :func:`correct`'s ``_fast_batch``
+    dispatch -- see that dict and ``paired_walsh_midrank_theta``'s
+    docstring. Still a Python-level loop over the ``m`` replicates (no
+    known way to vectorize ``_walsh_theta_row``'s per-row sort +
+    searchsorted across rows without materializing an O(m * n^2)
+    intermediate, which would be worse), but each row's O(n log n) call is
+    fast enough that looping ``m`` ~2000-4000 times is practical -- unlike
+    routing the O(n^2)-per-call version through the SLOW general
+    per-replicate loop (which also re-does rng draws and array slicing in
+    Python on every iteration, not just the estimator call).
+
+    Returns the SHIFTED (-0.5) value, matching paired_walsh_midrank_theta
+    exactly -- NOT the raw _walsh_theta_row value. correct() calls
+    estimator_func/rectifier_func directly (already shifted) for the point
+    estimate, but routes through this batch function (looked up by the
+    SHIFTED function's own id()) for bootstrap replicates -- an unshifted
+    return here would offset every bootstrap replicate by +0.5 relative to
+    the point estimate, pushing the whole bootstrap distribution away from
+    0 and driving Type-I error to ~100% (caught in testing 2026-07-26 --
+    this off-by-one-half bug, not the underlying statistic, was the actual
+    cause of that failure)."""
+    return np.array([_walsh_theta_row(row) - 0.5 for row in arr])
+
+
 def _analytic_mean_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool,
@@ -646,16 +777,23 @@ def correct(
     # ── Bootstrap replicates ──────────────────────────────────────────────────
     # Fast path: when there are no covariates and both functions are one of
     # the built-ins actually used by this codebase's internal PPI dispatch
-    # (np.mean / np.median), the whole bootstrap batches over an added
-    # replicate axis instead of a Python loop with n_boot scalar calls each —
-    # this matters most for np.median, which re-sorts on every call and
-    # otherwise dominates runtime (see _ppi_paired_arrays's wilcoxon/median
-    # callers). Falls back to the general per-replicate loop for arbitrary
-    # user-supplied estimator functions or when X_lab/X_unlab are provided.
+    # (np.mean / np.median / paired_walsh_midrank_theta), the whole
+    # bootstrap batches over an added replicate axis instead of a Python
+    # loop with n_boot scalar calls each -- this matters most for
+    # np.median (which re-sorts on every call) and paired_walsh_midrank_
+    # theta (an O(n log n) sort+searchsorted per call -- see that
+    # function's docstring for why it NEEDS this fast path to be practical
+    # at all, unlike the O(n^2) construction it replaced). Falls back to
+    # the general per-replicate loop for arbitrary user-supplied estimator
+    # functions or when X_lab/X_unlab are provided.
     #
     # Factored into a helper (drawing ONE full set of n_boot replicates per
     # call) because power_tune needs TWO independent draws -- see below.
-    _fast_batch = {id(np.mean): lambda a: a.mean(axis=1), id(np.median): lambda a: np.median(a, axis=1)}
+    _fast_batch = {
+        id(np.mean): lambda a: a.mean(axis=1),
+        id(np.median): lambda a: np.median(a, axis=1),
+        id(paired_walsh_midrank_theta): _walsh_theta_batch,
+    }
     fast_est = _fast_batch.get(id(estimator_func)) if X_unlab is None else None
     fast_rect = _fast_batch.get(id(_rect_fn)) if X_lab is None else None
 
