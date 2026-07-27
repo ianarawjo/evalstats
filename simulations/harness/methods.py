@@ -82,11 +82,18 @@ BINARY_SINGLE_EXTRA_METHODS' plain (non-PPI-corrected) Wilson CI for
 ci_single.py, a different statistical procedure that happens to share the
 same textbook name; reusing the same Method name here would have silently
 overwritten that entry (same module-level name, last assignment wins).
-Only exercised by cases/ppi_real.py's real-data single-sample bias/coverage
-check so far (pvalues.py's synthetic PPI sweep never runs a plain one-sample
-estimation check) -- registered here anyway so the shared report/plot
-functions (_ppi_tests_present etc., which filter by PPI_TEST_METHODS
-membership) recognize it instead of silently dropping it."""
+Exercised both by cases/ppi_real.py's real-data single-sample bias/coverage
+check and (as of the single-sample effect-check addition) pvalues.py's
+synthetic PPI sweep -- see PPI_BOOTSTRAP_T_SINGLE below and
+cases/pvalues.py's _run_ppi_effect_cell single-arm blocks."""
+PPI_BOOTSTRAP_T_SINGLE = Method("bootstrap_t_single", "#9edae5")
+"""PPI-corrected single-sample studentized-bootstrap CI (evalstats.tests.
+_ppi_single_bootstrap_t) -- the bounded_01/continuous analogue of PPI_WILSON,
+targeting the same single-sample (not paired) mean estimand PPI_AUTO_METHOD_
+TABLE routes non-binary robustness CIs to. Deliberately distinct from
+BOOTSTRAP_T (the paired/two-sample PPI method of the same underlying
+construction) -- same reason PPI_WILSON isn't named "wilson": different
+estimand, would silently collide if given the same Method name."""
 TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
@@ -398,12 +405,13 @@ LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
+    PPI_BOOTSTRAP_T_SINGLE,
 ]
 """Every PPI test method the harness knows how to run -- the full set
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
-    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, KRUSKAL_MNAR_EXPERIMENTAL, PPI_WILSON)
+    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, KRUSKAL_MNAR_EXPERIMENTAL)
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
@@ -412,12 +420,12 @@ sibling, but were found to cost real MCAR calibration doing so -- see
 MWU/MWU_MNAR_EXPERIMENTAL's and KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's comments
 above). Both remain selectable via --tests mwu_mnar_experimental / --tests
 kruskal_mnar_experimental for direct comparison, reproducing pre-2026-07-22
-results, or studying MNAR robustness deliberately; and except ppi_wilson,
-excluded not because it's miscalibrated but because pvalues.py's synthetic
-PPI sweep has no single-sample scenario to run it against at all (see
-PPI_WILSON's docstring) -- only cases/ppi_real.py's real-data single-sample
-check uses it, selecting it explicitly rather than through this "default
-active set"."""
+results, or studying MNAR robustness deliberately. PPI_WILSON/
+PPI_BOOTSTRAP_T_SINGLE (the single-sample robustness-CI methods
+PPI_AUTO_METHOD_TABLE routes to) are now part of the default set too --
+pvalues.py's synthetic PPI sweep gained a single-arm effect-check scenario
+(see cases/pvalues.py's _run_ppi_effect_cell single-arm blocks) precisely so
+these wouldn't be validated ONLY by cases/ppi_real.py's real-data check."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup

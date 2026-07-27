@@ -3248,7 +3248,13 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     own PPI-corrected estimator switched away from it (to fix a
     corresponding power collapse under likert-like ties, then a separate
     Type-I inflation under extremely-tied real data -- see
-    cases/pvalues.py's WILCOXON blocks)."""
+    cases/pvalues.py's WILCOXON blocks).
+
+    "ppi_wilson"/"bootstrap_t_single"'s gold value is the single-arm
+    population mean of the "a2" marginal -- the same distribution
+    generate_judge_bias_cell draws truth_a2 from -- reusing the diffs2/
+    thetas2 loop's own `a` draw rather than a separate MC loop, since it's
+    already exactly that quantity."""
     from evalstats.tests import (
         _friedman_rank_variance,
         _p_x_gt_y_midrank,
@@ -3273,11 +3279,13 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     # test's raw statistic over n_mc draws, to estimate its true null value.
     diffs2 = np.empty(n_mc)  # mean difference (ttest)
     thetas2 = np.empty(n_mc)  # rank-based effect measure (mann-whitney)
+    a_means2 = np.empty(n_mc)  # single-arm mean (ppi_wilson, bootstrap_t_single) -- same "a2" draw as diffs2/thetas2
     for i in range(n_mc):
         a = _marginal(n1)
         b = _marginal(n2)
         diffs2[i] = a.mean() - b.mean()
         thetas2[i] = _p_x_gt_y_midrank(a, b) - 0.5
+        a_means2[i] = a.mean()
 
     meds = np.empty(n_mc)  # median paired difference -- kept for reference, no longer wilcoxon's target
     wilcoxon_thetas = np.empty(n_mc)  # P_mid(D>0)-0.5 paired difference (wilcoxon, since 2026-07-25)
@@ -3320,4 +3328,6 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "anova_rep": float(rv.mean()),
         "friedman": float(frv.mean()),
         "kruskal": 0.5,
+        "ppi_wilson": float(a_means2.mean()),  # single-arm population mean of "a2" -- same estimand as truth_a2
+        "bootstrap_t_single": float(a_means2.mean()),  # same estimand, non-binary construction
     }

@@ -159,6 +159,8 @@ with warnings.catch_warnings():
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
         _ppi_paired_tango,
+        _ppi_single_wilson,
+        _ppi_single_bootstrap_t,
         _p_x_gt_y_midrank,
         paired_walsh_midrank_theta,
         _ppi_anova_independent_p_value,
@@ -248,6 +250,8 @@ from ..methods import (
     CORR_NONE,
     PPI_TEST_METHODS,
     PPI_OFFICIAL_TEST_METHODS,
+    PPI_WILSON,
+    PPI_BOOTSTRAP_T_SINGLE,
     TTEST,
     TTEST_WELCH,
     MWU,
@@ -3384,15 +3388,29 @@ _ALPHA = ALPHA_DEFAULT
 # family (mwu/wilcoxon/friedman/kruskal) and ANOVA/LMM assume a scale that
 # doesn't hold up under binary's massive ties, and generate_judge_bias_cell
 # doesn't extend its additive noise/bias/slope judge model to a 0/1
-# judgment for those structures either.
-_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name}
+# judgment for those structures either. PPI_WILSON is the single-arm
+# analogue of TANGO here -- same binary-only Wilson-style effective-n trick,
+# just for a one-sample (not paired) proportion.
+_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name, PPI_WILSON.name}
 
 # The mirror-image restriction: tests whose estimand/formula is specific to
-# paired BINARY data (Tango's discordant-pair-rate score interval, with a
-# continuity correction that only makes sense for a discrete difference) and
-# so should be excluded everywhere else, the same way BOOTSTRAP_T (numeric-
-# only, see its Method-registry comment) is excluded FROM binary.
-_PPI_BINARY_ONLY_TESTS = {TANGO.name}
+# paired/single-arm BINARY data (Tango's discordant-pair-rate score interval
+# and PPI_WILSON's Wilson score interval, both with a continuity/shrinkage
+# correction that only makes sense for a discrete proportion) and so should
+# be excluded everywhere else, the same way BOOTSTRAP_T/BOOTSTRAP_T_SINGLE
+# (numeric-only, see their Method-registry comments) are excluded FROM binary
+# by simply never being added to _PPI_BINARY_COMPATIBLE_TESTS above.
+_PPI_BINARY_ONLY_TESTS = {TANGO.name, PPI_WILSON.name}
+
+# ppi_wilson/bootstrap_t_single are single-ARM estimation methods (one
+# group's mean, via cell.llm_a2/lab_a2) with no two-group/paired rejection
+# decision to compute a Type-I error on -- unlike TANGO/BOOTSTRAP_T, which
+# are also two-/paired-group PAIRWISE_METHODS entries with a real Type-I
+# concept. Excluded from _run_ppi_cell's Type-I sweep (see its use below) so
+# they don't produce a fake "0/0 rejections, perfectly calibrated" row --
+# they're swept only by run_ppi_effect_check's bias/coverage pass, which is
+# what they're actually for (see _PPI_EFFECT_TESTS).
+_PPI_SINGLE_ARM_TESTS = {PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name}
 
 
 def _ppi_effective_tests(sc: JudgeBiasSource, active_tests: list[str]) -> list[str]:
@@ -3422,7 +3440,7 @@ def _run_ppi_cell(
         -- both support the same __setitem__ interface, so this function
         doesn't need to know which.
     """
-    active_tests = _ppi_effective_tests(sc, active_tests)
+    active_tests = [t for t in _ppi_effective_tests(sc, active_tests) if t not in _PPI_SINGLE_ARM_TESTS]
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in active_tests}
     uncorrected: dict[str, int] = {t: 0 for t in active_tests}
@@ -3765,22 +3783,28 @@ def run_ppi_simulation(
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
+    PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name,
 )
 
-# bayes_bootstrap/bootstrap_t/tango_score are excluded from the main ppi
-# Type-I/effect plots and reported in a separate plot instead: they read
-# differently to reviewers than the rest of PPI_TEST_METHODS (which are all
-# textbook tests -- t-test, Wilcoxon, ANOVA, Friedman, Kruskal, LMM). These
-# three are bootstrap/CI-based constructions (Bayesian bootstrap, studentized
-# bootstrap, Tango's score interval) that would read as unfamiliar or
-# confusing mixed in with the standard-methods plot -- tango_score
-# specifically is fundamentally a CI construction for binary paired
-# differences (see evalstats.tests._ppi_paired_tango), not a p-value test in
-# its own right, and it's also the only one of the three restricted to a
-# single binary scenario (_PPI_BINARY_ONLY_TESTS) rather than swept across
-# the full catalog, so it would look sparse/broken next to tests with ~44x
-# more scenarios' worth of points.
-_PPI_NONSTANDARD_TESTS = {BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name}
+# bayes_bootstrap/bootstrap_t/tango_score/ppi_wilson/bootstrap_t_single are
+# excluded from the main ppi Type-I/effect plots and reported in a separate
+# plot instead: they read differently to reviewers than the rest of
+# PPI_TEST_METHODS (which are all textbook tests -- t-test, Wilcoxon, ANOVA,
+# Friedman, Kruskal, LMM). These five are bootstrap/CI-based constructions
+# (Bayesian bootstrap, studentized bootstrap, Tango's/Wilson's score
+# intervals) that would read as unfamiliar or confusing mixed in with the
+# standard-methods plot -- tango_score/ppi_wilson specifically are
+# fundamentally CI constructions for binary paired/single-arm proportions
+# (see evalstats.tests._ppi_paired_tango/_ppi_single_wilson), not p-value
+# tests in their own right, and they're also the only ones of the five
+# restricted to a single binary scenario (_PPI_BINARY_ONLY_TESTS) rather
+# than swept across the full catalog, so they'd look sparse/broken next to
+# tests with ~44x more scenarios' worth of points. ppi_wilson/
+# bootstrap_t_single also have NO CI-coverage analogue in the Type-I
+# rejection sweep (unlike tango/bootstrap_t, which are also PAIRWISE_METHODS
+# entries there) -- they only ever appear via this effect-check pass, since
+# there's no single-arm rejection decision to test Type-I error on.
+_PPI_NONSTANDARD_TESTS = {BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name}
 
 
 def _ppi_tests_present(results, *, nonstandard: bool) -> list[str]:
@@ -3816,6 +3840,14 @@ def _run_ppi_effect_cell(
     git history around 2026-07-22). llm_estimate is recomputed here on the
     disjoint unlabeled-only complement, matching the convention documented
     in anova_oneway/friedman's rectifier comments.
+
+    ppi_wilson/bootstrap_t_single are the single-arm robustness-CI methods
+    PPI_AUTO_METHOD_TABLE routes to for marginal (not pairwise) alignment
+    corrections -- unlike every other test here, they use only
+    cell.llm_a2/lab_a2 (one group), not a two-group contrast; added so these
+    methods get a genuine synthetic ground-truth coverage check instead of
+    relying solely on cases/ppi_real.py's real-data check (see PPI_WILSON's
+    Method-registry comment).
     """
     active_tests = _ppi_effective_tests(sc, active_tests)
     rng = np.random.default_rng(seed)
@@ -3898,6 +3930,29 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
                     out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_WILSON.name in active_tests:
+                try:
+                    # Single-arm robustness CI (PPI_AUTO_METHOD_TABLE's binary
+                    # marginal method) -- targets the same "a2" single-group
+                    # mean estimand as TTEST/MWU's llm_a2/lab_a2 above, not a
+                    # two-group contrast. Gold null: estimate_judge_bias_
+                    # gold_null_values' "ppi_wilson" key (population mean of
+                    # the a2 marginal).
+                    r = _ppi_single_wilson(cell.llm_a2, cell.lab_a2, _ALPHA)
+                    out[PPI_WILSON.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_BOOTSTRAP_T_SINGLE.name in active_tests:
+                try:
+                    # Single-arm robustness CI (PPI_AUTO_METHOD_TABLE's
+                    # bounded_01/continuous marginal method) -- non-binary
+                    # analogue of the PPI_WILSON block above, same a2 estimand.
+                    r = _ppi_single_bootstrap_t(cell.llm_a2, cell.lab_a2, _ALPHA, n_boot, _rng_seed())
+                    out[PPI_BOOTSTRAP_T_SINGLE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
