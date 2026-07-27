@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import io
 import itertools
 import multiprocessing as _mp
@@ -88,6 +89,7 @@ from ..methods import (
     BAYES_SINGLE,
     BETA,
     LOGIT_T,
+    LOGIT_T_2ND,
     NIG,
     EL,
     BINARY_SINGLE_EXTRA_METHODS,
@@ -185,6 +187,11 @@ def _run_cell(
         active_methods += BINARY_SINGLE_EXTRA_METHODS
     else:
         active_methods += CONTINUOUS_EXTRA_METHODS
+        if methods_filter is not None and LOGIT_T_2ND.name in methods_filter:
+            # Validation-only comparison variant (logit_t_ci_1d(..., order=2))
+            # -- opt-in via --methods, not part of the default battery. See
+            # LOGIT_T_2ND's Method-registry comment.
+            active_methods = active_methods + [LOGIT_T_2ND]
     if methods_filter is not None:
         active_methods = [m for m in active_methods if m.name in methods_filter]
     wanted = {m.name for m in active_methods}
@@ -240,7 +247,10 @@ def _run_cell(
             # [0, 1] first so those assumptions actually hold. el_ci_1d is
             # nonparametric (data-driven x_min/x_max) and needs no rescale.
             scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
-            for _method, _fn in zip(CONTINUOUS_EXTRA_METHODS, (beta_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)):
+            _cont_fns = list(zip(CONTINUOUS_EXTRA_METHODS, (beta_ci_1d, logit_t_ci_1d, nig_ci_1d, el_ci_1d)))
+            if LOGIT_T_2ND.name in wanted:
+                _cont_fns.append((LOGIT_T_2ND, functools.partial(logit_t_ci_1d, order=2)))
+            for _method, _fn in _cont_fns:
                 if _method.name not in wanted:
                     continue
                 _t0 = time.perf_counter()

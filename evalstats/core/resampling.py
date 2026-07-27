@@ -548,29 +548,86 @@ def beta_ci_1d(
     return (max(0.0, lo), min(1.0, hi))
 
 
-def logit_t_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+_LOGIT_T_BOUNDARY_EPS = 1e-9
+"""Tolerance for treating an out-of-[0,1] value as floating-point rounding
+noise (e.g. 1.0000000000000004 from an upstream `score * scale` rescale)
+rather than genuinely bad data -- see logit_t_ci_1d's docstring."""
+
+
+def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[float, float]:
     """Logit-transform t-interval (delta method) for [0, 1]-bounded data.
 
     Applies the delta method to obtain a CI for the arithmetic mean E[X]:
 
     1. Compute the sample mean x̄ and its standard error SE = s/√n.
     2. Map to the logit scale: g = log(x̄/(1−x̄)).
-    3. Propagate uncertainty: SE_logit ≈ SE / (x̄(1−x̄)).
-    4. Form a t-interval on the logit scale: g ± t_{n−1} · SE_logit.
-    5. Back-transform via the sigmoid to recover bounds on [0, 1].
+    3. If ``order >= 2``, bias-correct the logit-scale point estimate for
+       the transform's own curvature (see below) -- default ``order=1``
+       skips this and uses the plain first-order delta method.
+    4. Propagate uncertainty: SE_logit ≈ SE / (x̄(1−x̄)).
+    5. Form a t-interval on the logit scale: g ± t_{n−1} · SE_logit.
+    6. Back-transform via the sigmoid to recover bounds on [0, 1].
 
     This targets E[X] directly (not E[logit(X)]), and the asymmetric
     back-transformed interval is better calibrated than a symmetric t-interval
     for skewed or boundary-hugging distributions.
 
-    Raises ``ValueError`` if any value lies outside [0, 1].
+    Values within ``_LOGIT_T_BOUNDARY_EPS`` of 0 or 1 but technically outside
+    are treated as floating-point rounding noise: clipped to [0, 1] with a
+    ``UserWarning``, not rejected. Anything further outside still raises
+    ``ValueError`` -- that's a real data problem (e.g. forgetting to rescale
+    a non-[0,1] metric), not rounding, and should surface loudly rather than
+    be silently "fixed". This distinction was added after a real incident
+    (2026-07-27): one item in a real OpenEval corpus (grok-4/truthfulqa) had
+    value 1.0000000000000004 from upstream score*scale rescaling, which the
+    unconditional raise rejected outright -- and the calling harness
+    (cases/ci_single.py) wrapped every CI computation in a blanket
+    ``except Exception: ci_low = ci_high = obs_mean``, silently turning that
+    single rejected sample into a zero-width, essentially-never-covering
+    interval. Since that item's without-replacement inclusion probability
+    scaled with n/corpus_size, more reps got silently corrupted as n grew,
+    producing a coverage curve that fell from ~90% (n=15) to ~32% (n=500) --
+    which read exactly like a genuine, worsening-with-n calibration failure.
+    It wasn't: once real_data.py's builders were fixed to clip their own
+    rescaled output (the actual right place to fix upstream data hygiene),
+    the plain order=1 delta method covered fine (92-99% across the same n
+    range, no collapse) -- there was no real logit-transform weakness on
+    that data after all. This eps-tolerant clip+warn is a second line of
+    defense so a similar rounding artifact from a different, not-yet-audited
+    caller degrades gracefully (loud warning, still-valid interval) instead
+    of silently masquerading as a statistical finding again.
+
+    order : optional 2nd-order bias correction. A first-order delta method
+    linearizes g=logit around x̄ and ignores g's own curvature; in principle,
+    for a true mean very close to a boundary (small x̄, large g''(x̄)) that
+    ignored curvature could become a non-negligible, slowly-vanishing bias.
+    The standard Taylor correction, E[g(X̄)] ≈ g(μ) + ½g''(μ)Var(X̄), is
+    available via ``order=2`` (subtracts ½g''(x̄)·SE² from the logit-scale
+    point estimate before forming the interval; g''(x) = -1/x² + 1/(1-x)²).
+    In the same investigation above, once the real data-hygiene bug was
+    fixed, order=2 tracked order=1 almost exactly on every real continuous
+    benchmark tested (grok-4/truthfulqa included) -- no measurable benefit
+    was found in practice, so ``order=1`` (cheaper, one fewer term, easier to
+    audit) is the default. order=2 is kept as an available, still
+    theoretically-motivated option rather than removed outright, in case a
+    future dataset with a more extreme true near-boundary mean (as opposed
+    to this incident's corrupted-data illusion of one) actually needs it. A
+    3rd-order term (correcting for g'''(x̄) and the sample's third central
+    moment) was also tried and gave no additional improvement over 2nd-order
+    even on the (misdiagnosed) original test case -- the noisy third-moment
+    estimate at small n cancels out any theoretical gain -- so it isn't
+    offered as an option.
 
     Parameters
     ----------
     values : np.ndarray
-        1-D array of observed scores in [0, 1].
+        1-D array of observed scores in [0, 1] (values within
+        ``_LOGIT_T_BOUNDARY_EPS`` of the boundary are clipped, not rejected).
     alpha : float
         Significance level (1 − confidence level).
+    order : int
+        1 (default) for the plain first-order delta method, or 2 for the
+        curvature-corrected variant -- see above.
 
     Returns
     -------
@@ -582,14 +639,29 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
         mean = float(np.mean(values)) if n == 1 else 0.0
         return (mean, mean)
     vals = np.asarray(values, dtype=float)
-    if np.any(vals < 0.0) or np.any(vals > 1.0):
+    if np.any(vals < -_LOGIT_T_BOUNDARY_EPS) or np.any(vals > 1.0 + _LOGIT_T_BOUNDARY_EPS):
         raise ValueError("logit_t_ci_1d requires all values in [0, 1]")
+    out_of_range = (vals < 0.0) | (vals > 1.0)
+    if np.any(out_of_range):
+        warnings.warn(
+            f"logit_t_ci_1d: {int(np.sum(out_of_range))} value(s) fractionally "
+            f"outside [0, 1] (within {_LOGIT_T_BOUNDARY_EPS:g}, consistent with "
+            "floating-point rounding) clipped to [0, 1].",
+            UserWarning, stacklevel=2,
+        )
+        vals = np.clip(vals, 0.0, 1.0)
     x_bar = float(np.mean(vals))
     se = float(np.std(vals, ddof=1)) / np.sqrt(n)
     if se <= 0.0 or not np.isfinite(se) or x_bar <= 0.0 or x_bar >= 1.0:
         return (x_bar, x_bar)
     # Delta method: SE of logit(x̄) ≈ SE(x̄) / (x̄(1−x̄))
     logit_mean = float(np.log(x_bar / (1.0 - x_bar)))
+    if order >= 2:
+        # 2nd-order bias correction: g''(x) = -1/x² + 1/(1-x)² for g=logit(x)
+        # (equivalently (2x-1)/(x²(1-x)²)); subtract ½g''(x̄)·SE² per the
+        # standard delta-method Taylor bias correction -- see docstring.
+        g2 = -1.0 / x_bar**2 + 1.0 / (1.0 - x_bar) ** 2
+        logit_mean -= 0.5 * g2 * se**2
     se_logit = se / (x_bar * (1.0 - x_bar))
     t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=n - 1))
     lo = float(1.0 / (1.0 + np.exp(-(logit_mean - t_crit * se_logit))))

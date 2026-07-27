@@ -64,9 +64,21 @@ BETA = Method("beta", "#f0027f")
 LOGIT_T = Method("logit_t", "#a6761d")
 NIG = Method("nig", "#888888")
 EL = Method("el", "#00441b")
+LOGIT_T_2ND = Method("logit_t_2nd", "#bd5b17")
+"""evalstats.core.resampling.logit_t_ci_1d(..., order=2) -- the optional
+2nd-order (curvature) bias-corrected variant, registered here purely for
+direct comparison against the order=1 default (see logit_t_ci_1d's
+docstring for why order=1 is the default: on real data, once a real
+data-hygiene bug that looked like a delta-method failure was fixed at its
+actual source, order=2 tracked order=1 almost exactly, so there's no proven
+benefit -- kept as an option, not because it's expected to win here)."""
 
 BINARY_SINGLE_EXTRA_METHODS = [WILSON, JEFFREYS, WALD, CLOPPER_PEARSON, BAYES_SINGLE]
 CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
+CONTINUOUS_EXTRA_METHODS_WITH_LOGIT_T_2ND = [BETA, LOGIT_T, LOGIT_T_2ND, NIG, EL]
+"""CONTINUOUS_EXTRA_METHODS plus logit_t_2nd -- opt-in via --methods, not
+part of the default battery (LOGIT_T_2ND is a validation-only comparison
+variant, not a distinct recommended method)."""
 
 # ---------------------------------------------------------------------------
 # Paired (pairwise-difference) extras -- for cases/ci_paired.py once ported
@@ -433,7 +445,7 @@ these wouldn't be validated ONLY by cases/ppi_real.py's real-data check."""
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
-] + CONTINUOUS_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
+] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
     + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
 ) + [
