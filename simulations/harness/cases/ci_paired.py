@@ -92,10 +92,9 @@ with warnings.catch_warnings():
         tango_paired_ci_mean,
         tango_paired_ci_multirun_effective,
         tango_paired_ci_multirun_moments,
+        bayes_paired_diff_ci,
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
-
-from ...bayes_evals import binorm_cdf  # noqa: E402
 
 from ..latex_tables import booktabs_table, escape_latex, eval_type_label, eval_type_group
 from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
@@ -262,43 +261,18 @@ def _wald_indep_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, f
 
 
 def _bayes_paired_comp_ci(a: np.ndarray, b: np.ndarray, alpha: float, num_samples: int, rng: np.random.Generator) -> tuple[float, float]:
-    """Paired Bayesian CI for p(A=1)-p(B=1) using the bivariate-normal latent model from bayes_evals.py."""
-    a_bin = (a >= 0.5).astype(float)
-    b_bin = (b >= 0.5).astype(float)
-
-    s = float(np.sum(a_bin * b_bin))
-    t = float(np.sum(a_bin * (1.0 - b_bin)))
-    u = float(np.sum((1.0 - a_bin) * b_bin))
-    v = float(np.sum((1.0 - a_bin) * (1.0 - b_bin)))
-
-    theta_as = rng.beta(1.0, 1.0, size=num_samples)
-    theta_bs = rng.beta(1.0, 1.0, size=num_samples)
-    rhos = np.clip(2.0 * rng.beta(4.0, 2.0, size=num_samples) - 1.0, -1 + 1e-20, 1 - 1e-20)
-    diff = theta_as - theta_bs
-
-    mu_a = stats.norm.ppf(theta_as)
-    mu_b = stats.norm.ppf(theta_bs)
-
-    th_v = binorm_cdf(0, 0, mu_a, mu_b, 1, 1, rhos)
-    th_s = theta_as + theta_bs + th_v - 1.0
-    th_t = 1.0 - theta_bs - th_v
-    th_u = 1.0 - theta_as - th_v
-
-    with np.errstate(divide="ignore", invalid="ignore"):
-        log_w = s * np.log(th_s) + t * np.log(th_t) + u * np.log(th_u) + v * np.log(th_v)
-
-    log_w -= np.nanmax(log_w)
-    w = np.exp(log_w)
-    w[np.isnan(w)] = 0.0
-    w_sum = float(np.sum(w))
-
-    if w_sum <= 0.0:
-        d_hat = float(np.mean(a_bin) - np.mean(b_bin))
-        return d_hat, d_hat
-
-    w /= w_sum
-    diff_post = diff[rng.choice(num_samples, size=num_samples, replace=True, p=w)]
-    return float(np.percentile(diff_post, 100.0 * alpha / 2.0)), float(np.percentile(diff_post, 100.0 * (1.0 - alpha / 2.0)))
+    """Paired Bayesian CI for p(A=1)-p(B=1) -- thin wrapper around evalstats'
+    production ``bayes_paired_diff_ci`` (the bivariate-normal latent model
+    from bayes_evals.py), which is also what ``analyze(method="bayes_binary")``
+    calls for small-N binary pairwise comparisons. Delegating here (instead of
+    hand-duplicating the algorithm, as this used to) means the calibration
+    sweep actually exercises the shipped code, not a frozen copy of it.
+    """
+    ci_low, ci_high, _prob_a_greater = bayes_paired_diff_ci(
+        (a >= 0.5).astype(float), (b >= 0.5).astype(float), alpha,
+        num_samples=num_samples, rng=rng,
+    )
+    return ci_low, ci_high
 
 
 def _pairwise_ci(
