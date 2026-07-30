@@ -1,6 +1,6 @@
 # evalstats
 
-Rigorous statistical analysis for LLM evaluations, from model and prompt comparisons to judge-bias correction, including in small sample data regimes.
+Rigorous statistical analysis for LLM evaluations, from model and prompt comparisons to statistical tests resilient to LLM judge bias, including in small sample data regimes.
 
 `evalstats` helps you answer questions like:
  - Is Prompt A actually better than Prompt B, or just slightly luckier on this dataset?
@@ -12,10 +12,10 @@ Rigorous statistical analysis for LLM evaluations, from model and prompt compari
 
 You give `evalstats` your benchmark data, and it runs statistically appropriate analyses that quantify uncertainty and provide confidence bounds on your claims. It does this in two main ways:
 
-- **Comparisons**: 95% confidence intervals, pairwise significance tests, and multi-run sensitivity analysis for comparing prompts, models, or both at once, with constraints that guide you toward best practices and choose well-calibrated methods and procedures by default, backed by simulations. Evalstats was built specifically to fill the gap of statistical knowledge for small-sample size datasets, and will output stats as long as there are at least 15 samples. See [Statistics](#statistics). 
-- **PPI-corrected inference**: using a small set of human labels to correct bias in noisy LLM-judge scores, so your means, confidence intervals, and hypothesis tests reflect what you'd have gotten from a fully human-labeled study. This builds on prediction-powered inference (PPI). See [PPI-Corrected Inference](#ppi-corrected-inference-means-cis-and-tests).
+- **Comparisons**: Comparing models, prompts, or both at once (or any other thing you're comparing, like agent harnesses), and get 95% confidence intervals, pairwise significance tests, and multi-run sensitivity analyses. `evalstats` guides you toward best practices and choose well-calibrated methods and procedures by default, backed by simulations, and was built specifically to fill the gap of statistical knowledge for small-sample size datasets N<100; it will output stats as long as there are at least 15 samples. See [Statistics](#statistics). 
+- **PPI-corrected inference**: using a small set of human labels to correct bias in noisy LLM-judge scores, so your means, confidence intervals, and hypothesis tests p-values are accurately calibrated in the face of LLM judge bias. This builds on prediction-powered inference (PPI). See [PPI-Corrected Inference](#ppi-corrected-inference-means-cis-and-tests).
 
-In particular, scientists can use our PPI-corrected statistical tests to analyze data for **mixed human-AI subject studies**, where some observations are human-labeled and the rest are graded by an LLM judge. `evalstats.tests` provides judge-bias-corrected versions of:
+In particular, scientists can use our PPI-corrected statistical tests to analyze data for **mixed human-AI subject studies**, where some observations are human-labeled and the rest are graded by an LLM judge. Use `evalstats.tests` directly for LLM-judge-bias-corrected versions of:
 
 - t-test (`ttest`, independent or paired; Welch's by default, or Student's equal-variance via `equal_var=True`)
 - Mann–Whitney U (`mannwhitney`)
@@ -24,15 +24,13 @@ In particular, scientists can use our PPI-corrected statistical tests to analyze
 - Friedman test (`friedman`, repeated-measures rank-based)
 - Kruskal-Wallis (`kruskalwallis`, independent-groups rank-based)
 
-As long as the items for human labeling were sampled at random from the full dataset, p-values will stay calibrated even when the LLM judge is biased or miscalibrated. These corrections are validated via extensive Monte Carlo simulations (see `simulations/harness`).
+As long as the items for human labeling were sampled at random from the full dataset, p-values will stay calibrated even when the LLM judge is biased or miscalibrated. These corrections are validated via extensive Monte Carlo simulations (see `simulations/harness`). To the best of our knowledge, `evalstats` provides the only known implementations of PPI-corrected rank-based nonparametric tests like Wilcoxon. 
 
-As well, there is a "learning" guide in `website/` which I am building out. 
-This will include simulation- and research-backed examples of statistics for LLM evals, 
-as well as example code (which will, obviously, tend to use `evalstats`, but
-the lessons hold regardless of implementation).  
+As well, 
 
 > [!IMPORTANT]
 > We are actively building out this project, both the website/guide and the package.
+> Aside from the package itself, there is a "learning" guide in `website/` which I am building out and will return to after writing up the simulations. This will include simulation- and research-backed examples of statistics for LLM evals, as well as example code (which will, obviously, use `evalstats`, but the lessons hold regardless of implementation). 
 > If there's something you'd like to see, or guidance on a specific topic, let us know
 > by raising an Issue.
 

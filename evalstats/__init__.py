@@ -37,7 +37,7 @@ from evalstats.alignment import validate_alignment, AlignmentResult
 from evalstats import ppi
 from evalstats import tests
 
-__version__ = "0.2.2"
+__version__ = "0.2.4"
 
 __all__ = [
     # High-level spec API
