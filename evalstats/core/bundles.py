@@ -93,6 +93,12 @@ class AnalysisBundle:
         True when ``compare(..., alignment=...)`` overrode this bundle's
         robustness/pairwise/rank_dist with a Prediction-Powered Inference
         correction (see ``evalstats.api._run_alignment_ppi``).
+    resolved_score_range : tuple[float, float] or None
+        The ``(lo, hi)`` bounds actually used to rescale data for
+        ``resolved_method='logit_t'`` / ``resolved_ci_method='logit_t'``
+        (user-declared via ``score_range``, or auto-detected/approximated —
+        see ``analyze()``'s ``score_range`` parameter). ``None`` when
+        logit-t wasn't used.
     """
 
     benchmark: BenchmarkResult
@@ -105,6 +111,7 @@ class AnalysisBundle:
     factorial_lmm_info: Optional["FactorialLMMInfo"] = None
     resolved_method: Optional[str] = None
     resolved_ci_method: Optional[str] = None
+    resolved_score_range: Optional[tuple[float, float]] = None
     p_value_method: Optional[str] = None
     ppi_applied: bool = False
 

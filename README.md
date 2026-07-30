@@ -1,6 +1,6 @@
 # evalstats
 
-Utilities and guidance for statistically sane analyses for comparing prompt and LLM performance. Compute statistics and visualize the results.
+Rigorous statistical analysis for LLM evaluations, from model and prompt comparisons to statistical tests resilient to LLM judge bias, including in small sample data regimes.
 
 `evalstats` helps you answer questions like:
  - Is Prompt A actually better than Prompt B, or just slightly luckier on this dataset?
@@ -8,20 +8,29 @@ Utilities and guidance for statistically sane analyses for comparing prompt and 
  - How sensitive is model performance to prompt wording?
  - Are my performance differences large enough to be meaningful, or just noise?
  - How stable are scores across runs, evaluators, or inputs?
- - What statistics test should I run in X situation? 
+ - Can I trust my LLM-judge scores, or do they need correcting against human labels first?
 
-The idea is simple: you give `evalstats` your benchmark data, and it runs statistically appropriate analyses that quantify uncertainty and provide confidence bounds on your claims. Datasets can include eval scores, prompts, inputs, evaluator names, and (optionally) models. `evalstats` provides:
-- Plots and tests comparing prompt performance, with bootstrapped CIs and variance
-- Plots and tests comparing model performance across prompt variations
-- Constraints that guide you into performing best practices, like always considering prompt sensitivity when benchmarking model performance
+You give `evalstats` your benchmark data, and it runs statistically appropriate analyses that quantify uncertainty and provide confidence bounds on your claims. It does this in two main ways:
 
-As well, there is a "learning" guide in `website/` which I am building out. 
-This will include simulation- and research-backed examples of statistics for LLM evals, 
-as well as example code (which will, obviously, tend to use `evalstats`, but
-the lessons hold regardless of implementation).  
+- **Comparisons**: Comparing models, prompts, or both at once (or any other thing you're comparing, like agent harnesses), and get 95% confidence intervals, pairwise significance tests, and multi-run sensitivity analyses. `evalstats` guides you toward best practices and choose well-calibrated methods and procedures by default, backed by simulations, and was built specifically to fill the gap of statistical knowledge for small-sample size datasets N<100; it will output stats as long as there are at least 15 samples. See [Statistics](#statistics). 
+- **PPI-corrected inference**: using a small set of human labels to correct bias in noisy LLM-judge scores, so your means, confidence intervals, and hypothesis tests p-values are accurately calibrated in the face of LLM judge bias. This builds on prediction-powered inference (PPI). See [PPI-Corrected Inference](#ppi-corrected-inference-means-cis-and-tests).
+
+In particular, scientists can use our PPI-corrected statistical tests to analyze data for **mixed human-AI subject studies**, where some observations are human-labeled and the rest are graded by an LLM judge. Use `evalstats.tests` directly for LLM-judge-bias-corrected versions of:
+
+- t-test (`ttest`, independent or paired; Welch's by default, or Student's equal-variance via `equal_var=True`)
+- Mann–Whitney U (`mannwhitney`)
+- Wilcoxon signed-rank (`wilcoxon`)
+- One-way ANOVA (`anova_oneway`, independent or repeated-measures)
+- Friedman test (`friedman`, repeated-measures rank-based)
+- Kruskal-Wallis (`kruskalwallis`, independent-groups rank-based)
+
+As long as the items for human labeling were sampled at random from the full dataset, p-values will stay calibrated even when the LLM judge is biased or miscalibrated. These corrections are validated via extensive Monte Carlo simulations (see `simulations/harness`). To the best of our knowledge, `evalstats` provides the only known implementations of PPI-corrected rank-based nonparametric tests like Wilcoxon. 
+
+As well, 
 
 > [!IMPORTANT]
 > We are actively building out this project, both the website/guide and the package.
+> Aside from the package itself, there is a "learning" guide in `website/` which I am building out and will return to after writing up the simulations. This will include simulation- and research-backed examples of statistics for LLM evals, as well as example code (which will, obviously, use `evalstats`, but the lessons hold regardless of implementation). 
 > If there's something you'd like to see, or guidance on a specific topic, let us know
 > by raising an Issue.
 
@@ -215,6 +224,19 @@ would have gotten from a fully human-labeled study (Angelopoulos et al., 2023).
 
 Most PPI correction methods use PPIBoot (bootstrap variant of PPI; Zrnic, 2024).
 Implemented corrections have been battle-tested via simulations (see `simulations/sim_type_i_calibration.py`).
+
+> **Important: which items get a human label must be chosen uniformly at
+> random.** PPI correction assumes the labeled subset is representative of
+> the full dataset. If your labeling process instead targets specific items
+> — e.g. "always double-check the borderline or highest-scoring responses,"
+> a common real-world review habit — that's missing-not-at-random (MNAR)
+> selection on the outcome, and PPI correction can stay badly miscalibrated
+> **no matter how many items you label**. This isn't ordinary small-sample
+> noise that more labels fixes; it was confirmed in simulation to persist
+> from 15 up through 300 labeled items out of 400. See
+> `evalstats.ppi.correct`'s docstring for the full analysis. If you can't
+> guarantee random labeling, treat any PPI-corrected result here with
+> caution regardless of the reported CI/p-value.
 
 ### Example: Comparing models with corrected LLM judge evals via `compare(..., alignment=...)`
 
@@ -441,35 +463,28 @@ pip install "evalstats[lmm]"
 
 Installation details may differ on your system.
 
-## Future and TODO
+## Reproducibility: Monte Carlo simulations
 
-We aim to continue to contribute to `evalstats`. Ideas for future features:
-- Mixed-effects models (LMMs and potentially GLMMs) for multi-input data. Currently, `evalstats` only supports the case of one input per prompt template, rather than a grid search (cross product) of different prompt variations.
-- A default "report" mode that outputs a PDF summarizing findings and diving into the details
-- Integration with ChainForge as a front-end, to bring statistical analyses to plotted evals
-- Help developers quantify the "semantic variance" of the provided prompt templates, and perhaps even factor this into the calculation in an intelligent way. This is important because the current implementation doesn't know about the diversity/representativity of the input dataset and prompts. 
-- Automatic "reliability" checking that generates minor prompt variations (e.g., lightly paraphrasing) and tests model robustness to small deviations. Implement various methods for generating minor prompt variations.
+Claims in this README like "verified in our simulations" are backed by a runnable simulation harness in `simulations/harness/` of this package. We engineered these simulations so that you can run these yourself. For instance: 
 
-Another area of concern, but separate from the current focus on running stats over benchmarking scores, is helping users improve their eval and test set validity. Benchmark validity testing could use diagnostic tools from Item Response Theory, to converge on a smaller, higher-quality item set where every item is valuable (e.g., see Fluid Benchmarking). For each item in a set, know:
-   - Difficulty: What proportion of model/prompt variants get this right? Near-zero items either have bad reference answers, are genuinely unanswerable, or represent a capability so far out of range it's not discriminating anything useful. Near-ceiling items inflate scores without adding signal.
-   - Discrimination: Does performance on this item correlate with performance on the rest of the eval? A good item should be passed by models that do well overall and failed by models that do poorly. Low or negative discrimination is a red flag. Negative discrimination especially suggests the item may be flawed, ambiguous, or testing something orthogonal.
+```bash
+python -m simulations.harness.cli --list-cases
+python -m simulations.harness.cli --official-tests
+python -m simulations.harness.cli ci_single --reps 50 --sizes 10 20
+python -m simulations.harness.cli pvalues --mode ppi --tests ttest wilcoxon anova_rep
+```
 
-More practically speaking, we could:
- - Flag always-pass and always-fail items for removal or replacement. Replace them with items at a similar difficulty level to what the user intended but with better discriminating power.
- - Flag negative-discrimination items for inspection. These usually have one of a few problems: ambiguous wording where reasonable models disagree on interpretation, a flawed reference answer, or the item is actually measuring a different construct than the rest of the eval. Decide whether to fix or drop.
- - Cluster items by similarity, either by topic or by response pattern (items that all the same models pass/fail together). Prune to the most discriminating items in each cluster. After pruning, look for construct areas that lost too many items: the user may need to write better items for that region rather than leaving it underrepresented.
- - Benchmark distillation: Using an IRT-style approach similar to Fluid Benchmarking to find the most informative subset of eval items, and removing less informative ones. Could offer multiple methods for this, and simulations showing how they perform. E.g.: 
-    - ```
-        Full benchmark: 1200 items
-        Distilled benchmark: 35 items
-        Token savings: 96%
-        Rank correlation: 0.94
-      ```
- - Target a difficulty distribution: a well-designed benchmark has items spread across the difficulty range, with more items in the middle (where models are actually differentiated) than at the extremes. If the user's distribution is skewed too easy or hard, help them write targeted items to fill gaps.
+`--official-tests will bring up a CLI with options to run specific tests. Each runs each case's canonical, full-scale preset and writes results plus a `manifest.json` (args, output paths, key metrics, pass/fail) to `simulations/out/official_<timestamp>/`. See [`simulations/harness/README.md`](simulations/harness/README.md) for the full case list, scenario library, and verification methodology against the original standalone scripts. Note that *each* simulation can take *very long* to run; even on a MacBook Pro with an M4 Max chip and 64GB RAM, with computation paralellized across 16 CPU cores, it often takes many hours.
+- `ci_single` / `ci_paired` — coverage and width of confidence interval methods (bootstrap, smoothed bootstrap, Bayesian, Wilson, etc.) across synthetic distributions and real benchmark data (OpenEval, Inspect AI).
+- `pvalues --mode pairwise` / `--mode multiarm` — Type-I error and power for pairwise and multi-arm comparisons, including multiple-comparisons correction strategies.
+- `pvalues --mode ppi` — Type-I error calibration and power for every PPI-corrected test in `evalstats.tests`, swept across judge-bias severity, label fraction, and MNAR-labeling scenarios.
 
-## Development
+
+## Development and Contributions
 
 For package build, release validation, and maintainer workflows, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
+We welcome contributions, especially refinements to our statistical methods. If you're proposing a new correction, CI method, or a fix to an existing one, we encourage battle-testing it against the [simulation harness](#reproducibility-monte-carlo-simulations) first. Please add or extend a scenario and confirm your change holds up on Type-I error and power, not just on the case that motivated it, before opening a PR. The `evalstats` repository already offers a rigorous, expansive synthetic suite that generally has held up against real data. 
 
 ## License
 

@@ -547,7 +547,7 @@ def test_analyze_auto_detects_binary_large_n_uses_tango():
     assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_non_binary_uses_t_interval():
+def test_analyze_non_binary_bounded_uses_logit_t():
     rng = np.random.default_rng(77)
     scores = rng.uniform(0, 1, size=(2, 30))
 
@@ -555,7 +555,7 @@ def test_analyze_non_binary_uses_t_interval():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(77))
 
     pair = bundle.pairwise.get("A", "B")
-    assert "t-interval" in pair.test_method.lower()
+    assert "logit-t" in pair.test_method.lower()
     assert bundle.resolved_ci_method not in {"wilson", "newcombe", "bayes_binary"}
 
 

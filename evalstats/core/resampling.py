@@ -7,6 +7,7 @@ from typing import Literal, Optional
 
 import numpy as np
 from scipy import stats
+from scipy.special import betaln
 
 from ..config import BOOTSTRAP_AUTO_MIN_N
 
@@ -160,6 +161,104 @@ def is_bounded_01_scores(scores: np.ndarray) -> bool:
     return bool(np.all(finite >= 0.0) and np.all(finite <= 1.0))
 
 
+def resolve_score_bounds(
+    scores: np.ndarray,
+    score_range: Optional[tuple[float, float]] = None,
+    *,
+    stacklevel: int = 2,
+) -> Optional[tuple[float, float]]:
+    """Resolve the ``[lo, hi]`` bounds used to rescale numeric data onto
+    ``[0, 1]`` for bounds-dependent methods (``logit_t``, ``nig``).
+
+    Only call this for data that has already been confirmed non-binary
+    (see :func:`is_binary_scores`) -- binary data has exact, unambiguous
+    bounds and never needs a ``score_range``.
+
+    Resolution order:
+
+    1. ``score_range`` explicit — used as-is, after checking every finite
+       value in *scores* actually falls within it (raises ``ValueError``
+       otherwise; a declared range that the data violates is a user error,
+       not something to silently paper over). No warning: this is an
+       informed, explicit choice.
+    2. All finite values already lie in ``[0, 1]`` (see
+       :func:`is_bounded_01_scores`) — returns ``(0.0, 1.0)`` exactly. This
+       is the common case (accuracy, ROUGE, similarity scores, ...) and
+       needs no approximation, but a ``UserWarning`` is still emitted
+       announcing the auto-detected range and the method it selects, since
+       it's still an inference from the data rather than something the
+       caller stated.
+    3. Otherwise — returns ``None``. There is no reliable way to infer a
+       finite range for data that falls outside ``[0, 1]`` without the
+       caller's input (the sample's own min/max is *not* a safe substitute
+       for the metric's true theoretical range -- e.g. a 1-5 Likert scale
+       sampled only between 2 and 4). Callers should fall back to a
+       bounds-agnostic method (e.g. ``t_interval``) in this case, and are
+       expected to emit their own ``UserWarning`` recommending an explicit
+       ``score_range`` (this function doesn't warn here itself, since the
+       right fallback method/message differs by call site -- ``auto``
+       routing silently downgrades, while an explicit ``method='logit_t'``
+       request should instead raise).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array, already known to be non-binary.
+    score_range : tuple[float, float], optional
+        User-declared ``(lo, hi)`` bounds for the eval metric, e.g.
+        ``(0, 1)`` for normalised accuracy or ``(1, 5)`` for a Likert scale.
+    stacklevel : int, optional
+        Passed through to ``warnings.warn`` so the auto-detection warning
+        points at the caller's caller (default assumes one intermediate
+        frame, e.g. ``_analyze_single``).
+
+    Returns
+    -------
+    (lo, hi) : tuple[float, float], or None
+        ``None`` when no reliable range could be established.
+
+    Raises
+    ------
+    ValueError
+        If ``score_range`` is given but some value in *scores* falls
+        outside it, or if ``score_range`` itself is degenerate (``lo >= hi``).
+    """
+    flat = scores.ravel()
+    finite = flat[np.isfinite(flat)]
+    if len(finite) == 0:
+        raise ValueError("resolve_score_bounds requires at least one finite value.")
+
+    if score_range is not None:
+        lo, hi = float(score_range[0]), float(score_range[1])
+        if lo >= hi:
+            raise ValueError(f"score_range must satisfy lo < hi; got {score_range!r}.")
+        if np.any(finite < lo) or np.any(finite > hi):
+            bad_lo = float(np.min(finite))
+            bad_hi = float(np.max(finite))
+            raise ValueError(
+                f"score_range={score_range!r} was given, but the data ranges "
+                f"from {bad_lo:g} to {bad_hi:g}, which falls outside it. Either "
+                "the declared range is wrong, or the data contains values "
+                "that shouldn't be there."
+            )
+        return lo, hi
+
+    if bool(np.all(finite >= 0.0) and np.all(finite <= 1.0)):
+        warnings.warn(
+            "Numeric evaluation data was auto-detected as [0, 1]-bounded "
+            "(e.g. normalised accuracy, ROUGE) with no explicit score_range "
+            "given, so evalstats is using method='logit_t' with score_range="
+            "(0, 1). If this metric's true range isn't actually [0, 1], pass "
+            "score_range=(true_min, true_max) explicitly to avoid a "
+            "miscalibrated CI.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+        return 0.0, 1.0
+
+    return None
+
+
 def wald_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     """Wald (normal-approximation) confidence interval for a binomial proportion.
 
@@ -266,6 +365,45 @@ def tango_paired_ci_flat(
         a = a[:, 0]
     if b.ndim == 2:
         b = b[:, 0]
+    return tango_paired_ci(a, b, alpha)
+
+
+def tango_paired_ci_mean(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Heuristic Tango CI using per-item run means for multi-run inputs.
+
+    When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
+    each item is first reduced to its run mean (shape ``(N,)``), then
+    :func:`tango_paired_ci` is applied.
+
+    This is intentionally a pragmatic variant, not a strict Tango score
+    interval derivation: :func:`tango_paired_ci` was derived for paired
+    Bernoulli observations, while run means live in ``[0, 1]`` and are
+    thresholded at 0.5 inside :func:`tango_paired_ci`.
+
+    If 1-D arrays are passed the call is forwarded directly to
+    :func:`tango_paired_ci` unchanged.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Either 1-D arrays of length N, or 2-D arrays of shape (N, R).
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = np.mean(a, axis=1)
+    if b.ndim == 2:
+        b = np.mean(b, axis=1)
     return tango_paired_ci(a, b, alpha)
 
 
@@ -410,29 +548,86 @@ def beta_ci_1d(
     return (max(0.0, lo), min(1.0, hi))
 
 
-def logit_t_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
+_LOGIT_T_BOUNDARY_EPS = 1e-9
+"""Tolerance for treating an out-of-[0,1] value as floating-point rounding
+noise (e.g. 1.0000000000000004 from an upstream `score * scale` rescale)
+rather than genuinely bad data -- see logit_t_ci_1d's docstring."""
+
+
+def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[float, float]:
     """Logit-transform t-interval (delta method) for [0, 1]-bounded data.
 
     Applies the delta method to obtain a CI for the arithmetic mean E[X]:
 
     1. Compute the sample mean x̄ and its standard error SE = s/√n.
     2. Map to the logit scale: g = log(x̄/(1−x̄)).
-    3. Propagate uncertainty: SE_logit ≈ SE / (x̄(1−x̄)).
-    4. Form a t-interval on the logit scale: g ± t_{n−1} · SE_logit.
-    5. Back-transform via the sigmoid to recover bounds on [0, 1].
+    3. If ``order >= 2``, bias-correct the logit-scale point estimate for
+       the transform's own curvature (see below) -- default ``order=1``
+       skips this and uses the plain first-order delta method.
+    4. Propagate uncertainty: SE_logit ≈ SE / (x̄(1−x̄)).
+    5. Form a t-interval on the logit scale: g ± t_{n−1} · SE_logit.
+    6. Back-transform via the sigmoid to recover bounds on [0, 1].
 
     This targets E[X] directly (not E[logit(X)]), and the asymmetric
     back-transformed interval is better calibrated than a symmetric t-interval
     for skewed or boundary-hugging distributions.
 
-    Raises ``ValueError`` if any value lies outside [0, 1].
+    Values within ``_LOGIT_T_BOUNDARY_EPS`` of 0 or 1 but technically outside
+    are treated as floating-point rounding noise: clipped to [0, 1] with a
+    ``UserWarning``, not rejected. Anything further outside still raises
+    ``ValueError`` -- that's a real data problem (e.g. forgetting to rescale
+    a non-[0,1] metric), not rounding, and should surface loudly rather than
+    be silently "fixed". This distinction was added after a real incident
+    (2026-07-27): one item in a real OpenEval corpus (grok-4/truthfulqa) had
+    value 1.0000000000000004 from upstream score*scale rescaling, which the
+    unconditional raise rejected outright -- and the calling harness
+    (cases/ci_single.py) wrapped every CI computation in a blanket
+    ``except Exception: ci_low = ci_high = obs_mean``, silently turning that
+    single rejected sample into a zero-width, essentially-never-covering
+    interval. Since that item's without-replacement inclusion probability
+    scaled with n/corpus_size, more reps got silently corrupted as n grew,
+    producing a coverage curve that fell from ~90% (n=15) to ~32% (n=500) --
+    which read exactly like a genuine, worsening-with-n calibration failure.
+    It wasn't: once real_data.py's builders were fixed to clip their own
+    rescaled output (the actual right place to fix upstream data hygiene),
+    the plain order=1 delta method covered fine (92-99% across the same n
+    range, no collapse) -- there was no real logit-transform weakness on
+    that data after all. This eps-tolerant clip+warn is a second line of
+    defense so a similar rounding artifact from a different, not-yet-audited
+    caller degrades gracefully (loud warning, still-valid interval) instead
+    of silently masquerading as a statistical finding again.
+
+    order : optional 2nd-order bias correction. A first-order delta method
+    linearizes g=logit around x̄ and ignores g's own curvature; in principle,
+    for a true mean very close to a boundary (small x̄, large g''(x̄)) that
+    ignored curvature could become a non-negligible, slowly-vanishing bias.
+    The standard Taylor correction, E[g(X̄)] ≈ g(μ) + ½g''(μ)Var(X̄), is
+    available via ``order=2`` (subtracts ½g''(x̄)·SE² from the logit-scale
+    point estimate before forming the interval; g''(x) = -1/x² + 1/(1-x)²).
+    In the same investigation above, once the real data-hygiene bug was
+    fixed, order=2 tracked order=1 almost exactly on every real continuous
+    benchmark tested (grok-4/truthfulqa included) -- no measurable benefit
+    was found in practice, so ``order=1`` (cheaper, one fewer term, easier to
+    audit) is the default. order=2 is kept as an available, still
+    theoretically-motivated option rather than removed outright, in case a
+    future dataset with a more extreme true near-boundary mean (as opposed
+    to this incident's corrupted-data illusion of one) actually needs it. A
+    3rd-order term (correcting for g'''(x̄) and the sample's third central
+    moment) was also tried and gave no additional improvement over 2nd-order
+    even on the (misdiagnosed) original test case -- the noisy third-moment
+    estimate at small n cancels out any theoretical gain -- so it isn't
+    offered as an option.
 
     Parameters
     ----------
     values : np.ndarray
-        1-D array of observed scores in [0, 1].
+        1-D array of observed scores in [0, 1] (values within
+        ``_LOGIT_T_BOUNDARY_EPS`` of the boundary are clipped, not rejected).
     alpha : float
         Significance level (1 − confidence level).
+    order : int
+        1 (default) for the plain first-order delta method, or 2 for the
+        curvature-corrected variant -- see above.
 
     Returns
     -------
@@ -444,14 +639,29 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
         mean = float(np.mean(values)) if n == 1 else 0.0
         return (mean, mean)
     vals = np.asarray(values, dtype=float)
-    if np.any(vals < 0.0) or np.any(vals > 1.0):
+    if np.any(vals < -_LOGIT_T_BOUNDARY_EPS) or np.any(vals > 1.0 + _LOGIT_T_BOUNDARY_EPS):
         raise ValueError("logit_t_ci_1d requires all values in [0, 1]")
+    out_of_range = (vals < 0.0) | (vals > 1.0)
+    if np.any(out_of_range):
+        warnings.warn(
+            f"logit_t_ci_1d: {int(np.sum(out_of_range))} value(s) fractionally "
+            f"outside [0, 1] (within {_LOGIT_T_BOUNDARY_EPS:g}, consistent with "
+            "floating-point rounding) clipped to [0, 1].",
+            UserWarning, stacklevel=2,
+        )
+        vals = np.clip(vals, 0.0, 1.0)
     x_bar = float(np.mean(vals))
     se = float(np.std(vals, ddof=1)) / np.sqrt(n)
     if se <= 0.0 or not np.isfinite(se) or x_bar <= 0.0 or x_bar >= 1.0:
         return (x_bar, x_bar)
     # Delta method: SE of logit(x̄) ≈ SE(x̄) / (x̄(1−x̄))
     logit_mean = float(np.log(x_bar / (1.0 - x_bar)))
+    if order >= 2:
+        # 2nd-order bias correction: g''(x) = -1/x² + 1/(1-x)² for g=logit(x)
+        # (equivalently (2x-1)/(x²(1-x)²)); subtract ½g''(x̄)·SE² per the
+        # standard delta-method Taylor bias correction -- see docstring.
+        g2 = -1.0 / x_bar**2 + 1.0 / (1.0 - x_bar) ** 2
+        logit_mean -= 0.5 * g2 * se**2
     se_logit = se / (x_bar * (1.0 - x_bar))
     t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=n - 1))
     lo = float(1.0 / (1.0 + np.exp(-(logit_mean - t_crit * se_logit))))
@@ -524,79 +734,42 @@ def nig_ci_nested(
     b0: float = 0.0625,
 ) -> tuple[float, float]:
     """
-    Hierarchical Normal-Inverse-Gamma CI for mean with run-level uncertainty.
+    Normal-Inverse-Gamma CI for the grand mean of multi-run data.
 
     Supports:
-      - (N,)    → falls back to standard NIG
-      - (N, R)  → hierarchical correction using run variance
+      - (N,)    -> falls back to standard NIG (``nig_ci_1d``)
+      - (N, R)  -> per-item means (NaN-robust, so unbalanced run counts are
+                   fine), then standard NIG on those means
 
     Model:
         X_ir ~ Normal(theta_i, sigma_run^2)
         theta_i ~ Normal(mu, sigma_item^2)
 
-    We approximate the marginal by inflating variance:
-        sigma_eff^2 = sigma_item^2 + sigma_run^2 / R
-
-    Then apply standard NIG on item means with corrected variance.
+    So ``Var(item_mean_i) = sigma_item^2 + sigma_run^2/R_i`` -- which is
+    exactly what the empirical variance of the *observed* item means already
+    estimates directly, no further correction needed. An earlier version
+    computed ``Var(item_means)`` as if it were an estimate of
+    ``sigma_item^2`` alone (calling it ``s2_item``) and then added
+    ``sigma_run^2/R`` back on top as an "inflation" -- silently double-
+    counting the run-noise contribution that ``Var(item_means)`` already
+    included. Verified empirically: constructing data with ``sigma_item^2 =
+    0`` by design (so the correct effective variance is exactly
+    ``sigma_run^2/R``), the old formula came out ~2x too large. Subtracting
+    then re-adding the same run-noise term is a no-op by construction, so
+    the correct effective variance is just ``Var(item_means)`` itself --
+    which also sidesteps the unbalanced-R case entirely, since it never
+    needs a single scalar R at all.
     """
     vals = np.asarray(values, dtype=float)
 
-    # ---- fallback: standard NIG ----
     if vals.ndim == 1:
         return nig_ci_1d(vals, alpha, m0, k0, a0, b0)
 
     if vals.ndim != 2:
         raise ValueError("values must be (N,) or (N, R)")
 
-    N, R = vals.shape
-
-    if N == 0:
-        scale = float(np.sqrt(b0 * (k0 + 1.0) / (a0 * k0)))
-        lo = float(stats.t.ppf(alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
-        hi = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * a0, loc=m0, scale=scale))
-        return (lo, hi)
-
-    # ---- per-item means ----
     item_means = np.nanmean(vals, axis=1)
-    x_bar = float(np.mean(item_means))
-
-    # ---- between-item variance ----
-    s2_item = float(np.var(item_means, ddof=1)) if N > 1 else 0.0
-
-    # ---- within-item (run) variance ----
-    if R > 1:
-        run_vars = np.nanvar(vals, axis=1, ddof=1)
-        s2_run = float(np.nanmean(run_vars))
-    else:
-        s2_run = 0.0
-
-    # ---- effective variance per item mean ----
-    s2_eff = s2_item + s2_run / max(R, 1)
-
-    # ---- reconstruct sum-of-squares for NIG ----
-    # We want something equivalent to:
-    # sum (x_i - x_bar)^2 but inflated by run variance
-    ss = s2_eff * (N - 1)
-
-    # ---- posterior updates (same form as 1D NIG) ----
-    kn = k0 + N
-    mn = (k0 * m0 + N * x_bar) / kn
-    an = a0 + N / 2.0
-
-    bn = (
-        b0
-        + 0.5 * ss
-        + (k0 * N) / (2.0 * kn) * (x_bar - m0) ** 2
-    )
-
-    scale = float(np.sqrt(bn / (an * kn)))
-
-    if scale <= 0.0 or not np.isfinite(scale):
-        return (mn, mn)
-
-    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=2.0 * an))
-
-    return (mn - t_crit * scale, mn + t_crit * scale)
+    return nig_ci_1d(item_means, alpha, m0, k0, a0, b0)
 
 
 def el_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
@@ -741,14 +914,17 @@ def wilson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
     return wilson_ci(successes, n, alpha)
 
 
-def _wilson_neff(p_hat: float, n_eff: float, alpha: float) -> tuple[float, float]:
+def _wilson_neff(p_hat: float, n_eff: float, alpha: float, z: float | None = None) -> tuple[float, float]:
     """Wilson score interval parameterised by an effective sample size.
 
     Applies the standard Wilson formula with *n_eff* substituted for n.
+    ``z`` overrides the normal quantile (e.g. with a t-quantile when the
+    variance behind ``n_eff`` is itself estimated from few clusters).
     """
     if n_eff <= 0.0 or not np.isfinite(n_eff):
         return (0.0, 1.0)
-    z  = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    if z is None:
+        z = float(stats.norm.ppf(1.0 - alpha / 2.0))
     z2 = z * z
     denom  = 1.0 + z2 / n_eff
     center = (p_hat + z2 / (2.0 * n_eff)) / denom
@@ -850,6 +1026,404 @@ def wilson_nested_od(
 
     n_eff = n * p_var / s2
     return _wilson_neff(p_hat, n_eff, alpha)
+
+
+def wilson_nested_od_bc(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """``wilson_nested_od`` with a bias correction for the reciprocal-variance plug-in.
+
+    ``wilson_nested_od``'s ``n_eff = n * p_var / s2`` is biased upward: ``s2``
+    is unbiased for the true between-item variance, but it enters through
+    ``1/s2``, and ``1/x`` is convex, so ``E[1/s2] > 1/sigma**2`` (Jensen's
+    inequality) -- worse at small ``n``, vanishing as ``n`` grows. Treating
+    ``s2 ~ sigma**2 * chi2_v / v`` with ``v = n - 1`` gives
+    ``E[1/s2] = 1/sigma**2 * v / (v - 2)`` for ``v > 2``, so multiplying
+    ``n_eff`` by ``(v - 2) / v = (n - 3) / (n - 1)`` removes that leading-order
+    bias (requires ``n > 3``; falls back to the plain ``n * R`` Wilson
+    interval otherwise, same as ``wilson_nested_od``'s own small-``n`` guard).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n <= 3 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    s2 = float(np.var(cell_means, ddof=1))
+    if s2 <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha)
+
+    n_eff = n * p_var / s2
+    n_eff_bc = n_eff * (n - 3) / (n - 1)
+    return _wilson_neff(p_hat, n_eff_bc, alpha)
+
+
+def wilson_nested_od_t(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """``wilson_nested_od_bc`` plus a t-quantile and a hard cap on ``n_eff``.
+
+    Two additional guards on top of the Jensen bias correction:
+
+    1. ``n_eff`` is clipped to ``n * R``: the overdispersion plug-in
+       ``n * p_var / s2`` is unbounded above when ``s2`` happens to be small,
+       yielding more effective observations than actual observations and a
+       spuriously tight interval. ``n * R`` (iid runs, ICC = 0) is the
+       information-theoretic ceiling.
+    2. The normal quantile is replaced by a t-quantile with ``n - 1`` degrees
+       of freedom: ``n_eff`` is built from a between-item variance estimated
+       on only ``n`` clusters, and plugging an estimated variance into a
+       z-interval is exactly the error the t-interval exists to fix. The two
+       quantiles converge as ``n`` grows.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+    t_crit = float(stats.t.ppf(1.0 - alpha / 2.0, df=max(n - 1, 1)))
+
+    if n <= 3 or p_var <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha, z=t_crit)
+
+    s2 = float(np.var(cell_means, ddof=1))
+    if s2 <= 0.0:
+        return _wilson_neff(p_hat, float(n * R), alpha, z=t_crit)
+
+    n_eff = n * p_var / s2 * (n - 3) / (n - 1)
+    n_eff = min(n_eff, float(n * R))
+    return _wilson_neff(p_hat, n_eff, alpha, z=t_crit)
+
+
+def jeffreys_nested_od(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Jeffreys credible interval for multi-run binary data, design-effect corrected.
+
+    Reuses ``wilson_nested_od_t``'s bias-corrected, capped overdispersion
+    plug-in ``n_eff``, but feeds it into a Jeffreys(1/2, 1/2) Beta posterior
+    (``jeffreys_ci``'s construction) instead of a Wilson/normal-approximation
+    formula: pseudo-counts ``s_eff = n_eff * p_hat``, ``f_eff = n_eff * (1 -
+    p_hat)`` go to ``Beta(s_eff + 1/2, f_eff + 1/2)``.
+
+    Motivation: ``wilson_nested_od``/``_bc``/``_t`` all still undercover at
+    extreme ``p_hat``, and Jeffreys generally has good *average* coverage
+    across p. In practice this variant did NOT fix the boundary undercoverage
+    (empirically worse: verified against real iid Bernoulli(150, 0.98) data
+    with no clustering at all, Jeffreys' own coverage there is ~0.92 vs.
+    Wilson's ~0.97 -- a genuine, well-documented (Brown, Cai & DasGupta 2001)
+    coverage oscillation with p, not an artifact of the design-effect
+    plug-in). Kept as a reference/comparison point; see
+    ``clopper_pearson_nested_od`` for the variant that actually guarantees
+    coverage.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n <= 3 or p_var <= 0.0:
+        n_eff = float(n * R)
+    else:
+        s2 = float(np.var(cell_means, ddof=1))
+        if s2 <= 0.0:
+            n_eff = float(n * R)
+        else:
+            n_eff = n * p_var / s2 * (n - 3) / (n - 1)
+            n_eff = min(n_eff, float(n * R))
+
+    if n_eff <= 0.0 or not np.isfinite(n_eff):
+        return (0.0, 1.0)
+
+    s_eff = n_eff * p_hat
+    f_eff = n_eff - s_eff
+    lo = float(stats.beta.ppf(alpha / 2.0, s_eff + 0.5, f_eff + 0.5))
+    hi = float(stats.beta.ppf(1.0 - alpha / 2.0, s_eff + 0.5, f_eff + 0.5))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def clopper_pearson_nested_od(
+    scores: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """Clopper-Pearson exact interval for multi-run binary data, design-effect corrected.
+
+    Same bias-corrected, capped overdispersion plug-in ``n_eff`` as
+    ``wilson_nested_od_t``/``jeffreys_nested_od``, but fed into the
+    Clopper-Pearson exact tail-inversion formula (continuous generalisation
+    of ``clopper_pearson_ci_1d``'s integer-count Beta-quantile construction)
+    instead of a Wilson score or Jeffreys posterior.
+
+    Motivation: neither Wilson nor Jeffreys is uniformly better across ``p``
+    -- both have genuine, well-documented (Brown, Cai & DasGupta 2001)
+    coverage dips below nominal at specific (n, p) combinations, purely from
+    the discreteness of the binomial, with no clustering involved (verified
+    directly against iid data: Jeffreys drops to ~0.92 at n=150, p=0.98;
+    Wilson drops to ~0.94 at n=150, p=0.95). Clopper-Pearson is the one
+    classical construction guaranteed to never undercover for any p, at any
+    n -- exact tail-probability inversion rather than an approximation. The
+    price is conservatism (wider intervals on average) rather than
+    efficiency, which is the trade this variant is testing.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    cell_means = scores.mean(axis=1)
+    p_hat = float(cell_means.mean())
+    p_var = p_hat * (1.0 - p_hat)
+
+    if n <= 3 or p_var <= 0.0:
+        n_eff = float(n * R)
+    else:
+        s2 = float(np.var(cell_means, ddof=1))
+        if s2 <= 0.0:
+            n_eff = float(n * R)
+        else:
+            n_eff = n * p_var / s2 * (n - 3) / (n - 1)
+            n_eff = min(n_eff, float(n * R))
+
+    if n_eff <= 0.0 or not np.isfinite(n_eff):
+        return (0.0, 1.0)
+
+    s_eff = n_eff * p_hat
+    f_eff = n_eff - s_eff
+    lo = 0.0 if s_eff <= 0.0 else float(stats.beta.ppf(alpha / 2.0, s_eff, f_eff + 1.0))
+    hi = 1.0 if f_eff <= 0.0 else float(stats.beta.ppf(1.0 - alpha / 2.0, s_eff + 1.0, f_eff))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def beta_binomial_bayes_nested(
+    scores: np.ndarray,
+    alpha: float,
+    n_p: int = 300,
+    n_icc: int = 60,
+) -> tuple[float, float]:
+    """Genuine hierarchical Bayesian credible interval for multi-run binary data.
+
+    Model: item ``i`` has a latent success probability ``p_i ~ Beta(p*kappa,
+    (1-p)*kappa)`` (population mean ``p``, concentration ``kappa``); observed
+    per-item successes ``k_i ~ Binomial(R, p_i)``, giving the marginal
+    ``k_i ~ BetaBinomial(R, p*kappa, (1-p)*kappa)`` -- this exactly matches
+    ``simulations/harness/scenarios/synthetic.py``'s ``sample_group_truth``
+    binary branch, which draws item pass-probabilities the same way, with
+    ``kappa = 1/ICC - 1``. Unlike ``wilson_nested_bb`` (which despite its
+    name fits this same Beta-Binomial *form* by method-of-moments, collapses
+    it to a single point-estimate effective sample size, and then still runs
+    the Wilson score formula), this computes the actual joint posterior over
+    ``(p, kappa)`` on a grid, numerically marginalizes out ``kappa``, and
+    returns the equal-tailed credible interval of the resulting marginal
+    posterior for ``p`` -- so uncertainty in the design effect/ICC itself
+    (which is what a point-estimate n_eff plug-in silently ignores) is
+    propagated into the width of the interval, rather than assumed away.
+
+    Priors: Jeffreys ``Beta(1/2, 1/2)`` on ``p`` (matches ``jeffreys_ci``
+    elsewhere in this module); **uniform on ICC in (0, 1)**, gridded directly
+    in ICC space and mapped to ``kappa = 1/ICC - 1``. An earlier version
+    gridded log-uniformly in kappa directly, which implies a prior density on
+    ICC of ``prop 1/(ICC*(1-ICC))`` -- U-shaped, piling mass at ICC near 0
+    ("no clustering"), which biased the posterior toward overconfident
+    (too-narrow) intervals in exactly the same direction as the point-
+    estimate n_eff methods' failure mode. Gridding uniformly in the natural,
+    bounded ICC parameterization avoids that.
+
+    Exploits the fact that each per-item count ``k_i`` only takes ``R + 1``
+    distinct values: the log-likelihood only needs their histogram, not a
+    per-item term, so cost is independent of ``n`` (dominated by the
+    ``n_p * n_icc`` grid, not by the number of items).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+    n_p, n_icc : int
+        Grid resolution for ``p`` and ``ICC``.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    k = scores.sum(axis=1).astype(int)
+    counts = np.bincount(k, minlength=R + 1).astype(float)
+
+    p_grid = np.linspace(1e-4, 1.0 - 1e-4, n_p)
+    icc_grid = np.linspace(1e-4, 1.0 - 1e-4, n_icc)
+    kappa_grid = (1.0 - icc_grid) / icc_grid
+    p_col = p_grid[:, None]
+    kappa_row = kappa_grid[None, :]
+    a = p_col * kappa_row
+    b = (1.0 - p_col) * kappa_row
+
+    log_like = -n * betaln(a, b)
+    for r in range(R + 1):
+        if counts[r] == 0.0:
+            continue
+        log_like += counts[r] * betaln(r + a, R - r + b)
+
+    log_prior_p = -0.5 * np.log(p_col) - 0.5 * np.log(1.0 - p_col)
+    log_post = log_like + log_prior_p
+    log_post -= log_post.max()
+    post = np.exp(log_post)
+
+    marg_p = post.sum(axis=1)
+    total = marg_p.sum()
+    if total <= 0.0 or not np.isfinite(total):
+        return (0.0, 1.0)
+    marg_p /= total
+    cdf = np.cumsum(marg_p)
+    lo = float(np.interp(alpha / 2.0, cdf, p_grid))
+    hi = float(np.interp(1.0 - alpha / 2.0, cdf, p_grid))
+    return (max(0.0, lo), min(1.0, hi))
+
+
+def beta_binomial_bayes_robust_nested(
+    scores: np.ndarray,
+    alpha: float,
+    n_p: int = 300,
+    n_icc: int = 60,
+    gamma: float = 0.001,
+) -> tuple[float, float]:
+    """Berger-Boos robustified version of ``beta_binomial_bayes_nested``.
+
+    Same hierarchical Beta-Binomial model and joint ``(p, ICC)`` grid, but the
+    nuisance parameter (ICC) is eliminated by *restricted maximization*
+    instead of integration (Berger & Boos 1994): build a ``1 - gamma``
+    profile-likelihood confidence set ``K`` for ICC, form the conditional
+    ``1 - (alpha - gamma)`` credible interval for ``p`` at each ICC in ``K``,
+    and report the union (min of lowers, max of uppers).
+
+    Why: marginalizing ICC (as ``beta_binomial_bayes_nested`` does) quietly
+    lets the *prior* decide the interval width whenever the data cannot
+    identify ICC -- which happens exactly in the hardest regime, e.g. very
+    rare successes at near-1 ICC, where a typical sample yields a degenerate
+    count histogram (every item 0-of-R or R-of-R, no interior counts) whose
+    likelihood is nearly flat in ICC. All-zero data justifies an upper bound
+    ~``1-(alpha/2)^(1/n)`` if items are deterministic (ICC=1) but
+    ~``1-(alpha/2)^(1/(nR))`` if runs are iid (ICC=0); integrating over an
+    unidentified ICC lands in between and undercovers. The union pays the
+    ICC=1 worst-case width *only* when the data genuinely cannot rule it
+    out; when the histogram has interior counts, the profile-likelihood set
+    ``K`` collapses and the interval reverts to the efficient marginal one.
+
+    Total error budget is ``alpha``: ``gamma`` spent on the ICC confidence
+    set, ``alpha - gamma`` on the conditional intervals. The conditional
+    pieces are Bayesian posterior slices rather than exact tail inversions,
+    so the frequentist guarantee is approximate, not exact.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Shape ``(n, R)`` -- binary (0/1) per-item per-run scores.
+    alpha : float
+        Significance level.
+    n_p, n_icc : int
+        Grid resolution for ``p`` and ``ICC``.
+    gamma : float
+        Error budget spent on the ICC profile-likelihood confidence set.
+
+    Returns
+    -------
+    tuple[float, float]
+        ``(ci_low, ci_high)`` clamped to [0, 1].
+    """
+    n, R = scores.shape
+    k = scores.sum(axis=1).astype(int)
+    counts = np.bincount(k, minlength=R + 1).astype(float)
+
+    p_grid = np.linspace(1e-4, 1.0 - 1e-4, n_p)
+    icc_grid = np.linspace(1e-4, 1.0 - 1e-4, n_icc)
+    kappa_grid = (1.0 - icc_grid) / icc_grid
+    p_col = p_grid[:, None]
+    kappa_row = kappa_grid[None, :]
+    a = p_col * kappa_row
+    b = (1.0 - p_col) * kappa_row
+
+    log_like = -n * betaln(a, b)
+    for r in range(R + 1):
+        if counts[r] == 0.0:
+            continue
+        log_like += counts[r] * betaln(r + a, R - r + b)
+
+    # Profile likelihood over ICC: max over p within each ICC column, then
+    # keep columns within the chi-square(1) cutoff for a 1-gamma set.
+    profile = log_like.max(axis=0)
+    cutoff = 0.5 * float(stats.chi2.ppf(1.0 - gamma, df=1))
+    in_set = profile >= (profile.max() - cutoff)
+
+    log_prior_p = -0.5 * np.log(p_col) - 0.5 * np.log(1.0 - p_col)
+    log_post = log_like + log_prior_p
+    log_post -= log_post.max()
+    post = np.exp(log_post)
+
+    alpha_eff = max(alpha - gamma, 1e-6)
+    lo_best, hi_best = 1.0, 0.0
+    for j in np.flatnonzero(in_set):
+        col = post[:, j]
+        total = col.sum()
+        if total <= 0.0 or not np.isfinite(total):
+            continue
+        cdf = np.cumsum(col) / total
+        lo_j = float(np.interp(alpha_eff / 2.0, cdf, p_grid))
+        hi_j = float(np.interp(1.0 - alpha_eff / 2.0, cdf, p_grid))
+        lo_best = min(lo_best, lo_j)
+        hi_best = max(hi_best, hi_j)
+
+    if hi_best < lo_best:  # every column degenerate -- give up gracefully
+        return (0.0, 1.0)
+    return (max(0.0, lo_best), min(1.0, hi_best))
 
 
 def wilson_nested_bb(
@@ -1027,14 +1601,43 @@ def tango_paired_ci(
     if values_a.shape != values_b.shape:
         raise ValueError("tango_paired_ci expects arrays with equal shape.")
 
-    n = int(len(values_a))
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    return tango_paired_ci_from_diffs(a_bin - b_bin, alpha)
+
+
+def tango_paired_ci_from_diffs(diffs: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Tango score CI for the paired binary difference, from a-minus-b diffs.
+
+    Same closed-form score interval as :func:`tango_paired_ci`, but takes
+    the already-computed per-pair difference ``a_bin - b_bin`` (values in
+    ``{-1, 0, 1}``) directly instead of the two raw ``values_a``/``values_b``
+    arrays. Concordant pairs (``diff == 0``, whether both 1 or both 0) don't
+    distinguish ``n10``/``n01`` counts either way, so ``diffs`` alone is
+    sufficient -- this lets simultaneous-CI constructions (Sidak, joint-
+    bootstrap scaling) reuse a paired comparison's already-stored
+    ``per_input_diffs`` at an adjusted alpha without re-deriving the raw
+    binary arrays.
+
+    Parameters
+    ----------
+    diffs : np.ndarray
+        1-D array of per-pair differences in ``{-1, 0, 1}`` (``a_bin - b_bin``).
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    diffs = np.asarray(diffs)
+    n = int(len(diffs))
     if n <= 0:
         return (0.0, 0.0)
 
-    a_bin = (values_a >= 0.5).astype(int)
-    b_bin = (values_b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    n10 = int(np.sum(diffs > 0))
+    n01 = int(np.sum(diffs < 0))
 
     d_hat = float((n10 - n01) / n)
     z = float(stats.norm.ppf(1.0 - alpha / 2.0))
@@ -1238,6 +1841,11 @@ def tango_paired_ci_multirun_effective(
 ) -> tuple[float, float]:
     """Correlation-aware multirun Tango CI using effective sample size.
 
+    This is "ER-Tango" in the paper's CI decision-tree figure and appendix:
+    the multi-run pairwise-binary method for N >= 50 (``method='tango'``
+    dispatches here automatically when R >= 3 seeded runs are present -- see
+    :func:`pairwise_differences`).
+
     Adjusts within-item variance using an estimated effective number of runs
     to account for correlation between runs.
 
@@ -1317,6 +1925,12 @@ def tango_paired_ci_multirun_moments(
     alpha: float,
 ) -> tuple[float, float]:
     """Multi-run Tango-style CI using a cluster moments decomposition.
+
+    Not the method ``pairwise_differences(method='tango')`` dispatches to
+    for multi-run data -- that's :func:`tango_paired_ci_multirun_effective`
+    ("ER-Tango" in the paper). This variant remains available as an
+    alternative/comparison point (see ``simulations/harness``), not as a
+    routed default.
 
     This variant estimates the paired risk-difference uncertainty via
     item-level moments of paired run differences:

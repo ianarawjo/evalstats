@@ -31,7 +31,9 @@ from .resampling import (
     nig_ci_nested,
     t_interval_ci_1d,
     bootstrap_t_ci_1d,
+    logit_t_ci_1d,
 )
+from .stats_utils import rescaled_ci
 from ..config import GRADIENT_CI_ALPHAS
 
 
@@ -196,6 +198,7 @@ def robustness_metrics(
     statistic: str = "mean",
     marginal_method: str = "smooth_bootstrap",
     multi_ci: bool = False,
+    score_range: Optional[tuple[float, float]] = None,
 ) -> RobustnessResult:
     """Compute robustness metrics for each template.
 
@@ -232,7 +235,12 @@ def robustness_metrics(
     marginal_method : str, optional
         Bootstrap method for marginal CIs: ``'smooth_bootstrap'`` (default),
         ``'bootstrap'``, ``'bca'``, ``'bayes_bootstrap'``, ``'wilson'``,
-        or ``'jeffreys'``.
+        ``'jeffreys'``, or ``'logit_t'``.
+    score_range : tuple[float, float], optional
+        Only used when ``marginal_method='logit_t'``. The eval metric's
+        ``(min, max)`` range, used to rescale ``scores`` onto ``[0, 1]``
+        before the logit transform. When ``None``, ``scores`` is assumed to
+        already lie in ``[0, 1]`` (no rescaling applied).
 
     Returns
     -------
@@ -277,7 +285,7 @@ def robustness_metrics(
     ci_low_arr: Optional[np.ndarray] = None
     ci_high_arr: Optional[np.ndarray] = None
     multi_ci_result: Optional[dict[float, tuple[np.ndarray, np.ndarray]]] = None
-    _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "nig_nested", "t_interval"}
+    _analytical = {"wilson", "wilson_od", "jeffreys", "nig", "nig_nested", "t_interval", "logit_t"}
     if n_bootstrap is not None or marginal_method in _analytical:
         if rng is None and n_bootstrap is not None:
             rng = np.random.default_rng()
@@ -343,6 +351,24 @@ def robustness_metrics(
                 if multi_ci:
                     for a in GRADIENT_CI_ALPHAS:
                         ml, mh = t_interval_ci_1d(row, a)
+                        mci_lows[a].append(ml); mci_highs[a].append(mh)
+            elif marginal_method == "logit_t":
+                # Applied to `row`, which is already collapsed to per-input
+                # cell means above -- so this is "logit-t on run means" for
+                # seeded (R >= 3) benchmarks and plain logit-t for single-run
+                # ones, with no separate nested variant needed. score_range
+                # rescales onto [0, 1] first when the metric's native scale
+                # isn't already [0, 1] (e.g. a 1-5 Likert scale).
+                if score_range is not None:
+                    lo, hi = rescaled_ci(logit_t_ci_1d, row, alpha, *score_range)
+                else:
+                    lo, hi = logit_t_ci_1d(row, alpha)
+                if multi_ci:
+                    for a in GRADIENT_CI_ALPHAS:
+                        if score_range is not None:
+                            ml, mh = rescaled_ci(logit_t_ci_1d, row, a, *score_range)
+                        else:
+                            ml, mh = logit_t_ci_1d(row, a)
                         mci_lows[a].append(ml); mci_highs[a].append(mh)
             elif marginal_method == "bootstrap_t":
                 lo, hi = bootstrap_t_ci_1d(row, point_est, n_bootstrap, alpha, rng)

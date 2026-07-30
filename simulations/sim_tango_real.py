@@ -1059,8 +1059,16 @@ def build_openeval_corpus_pairs(
     models     = list(dict.fromkeys(m for m, _ in model_bench_pairs))
 
     print("Loading OpenEval response table (~1.4 GB; cached after first download) …")
+    # The repo's own dataset card declares a split literally named "all" for
+    # this config (a convenience "every benchmark" split) -- but recent
+    # `datasets` versions reserve "all" as a special keyword and refuse to
+    # build a DatasetDict containing a split by that name, raising a ValueError
+    # before we ever get to select "train". Loading via an explicit
+    # `data_files` glob bypasses the repo's YAML split definitions entirely
+    # (the library treats it as a one-off parquet load instead), which dodges
+    # the crash and gives the same combined row set the "all" split would have.
     response_ds = load_dataset(
-        openeval_repo, "response", split="train",
+        openeval_repo, data_files="response/*.parquet", split="train",
         token=hf_token, cache_dir=cache_dir,
     )
 
@@ -2893,7 +2901,6 @@ def main() -> None:
         single_methods = (
             list(SINGLE_SAMPLE_BASE_METHODS)
             + list(SINGLE_SAMPLE_BINARY_FLAT_METHODS)
-            + list(SINGLE_SAMPLE_FLAT_METHODS)
         )
 
     print(f"\nReal-Data CI Simulation")

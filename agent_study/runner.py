@@ -29,7 +29,7 @@ from pathlib import Path
 
 import agent_study.scenarios as prompt_ab_scenarios
 import agent_study.scenarios_model_benchmark as model_benchmark_scenarios
-from agent_study.run_agent import run_agent_sync
+from agent_study.run_agent import BACKENDS, run_agent_sync
 from agent_study.score import score_run
 from agent_study.workspace import build_workspace, make_run_workspace_dir
 
@@ -50,6 +50,12 @@ FAMILIES = {
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--family", default="prompt_ab", choices=list(FAMILIES), help="Scenario family to run.")
+    parser.add_argument(
+        "--backend", default="claude_agent_sdk", choices=list(BACKENDS),
+        help="Agent harness backend. claude_agent_sdk is the original, fully validated backend; "
+             "openhands is Docker-sandboxed and model-agnostic but newer/less battle-tested. "
+             "Stays the default until openhands has passed its own smoke test.",
+    )
     parser.add_argument(
         "--scenarios", default=None,
         help="Comma-separated phenomenon names (default: all phenomena in --family).",
@@ -83,7 +89,7 @@ def main(argv=None) -> None:
     truth_dir = out_dir / "_ground_truth"  # harness-only, never copied into an agent workspace
 
     plan = [(s, c) for s in scenario_names for c in conditions]
-    print(f"Family: {args.family}. Run matrix ({len(plan)} runs): {plan}")
+    print(f"Family: {args.family}. Backend: {args.backend}. Run matrix ({len(plan)} runs): {plan}")
 
     rows = []
     for scenario_name, condition in plan:
@@ -102,10 +108,10 @@ def main(argv=None) -> None:
 
         print(f"Running agent: scenario={scenario_name} condition={condition} (workspace hidden) ...")
         prompt_text = (agent_ws / "PROMPT.md").read_text()
-        meta = run_agent_sync(agent_ws, condition, prompt_text, args.family)
+        meta = run_agent_sync(agent_ws, condition, prompt_text, args.family, args.backend)
         result = score_run(agent_ws, gt_dir / "ground_truth.json")
         result.update({
-            "condition": condition, "archive_dir": str(archive_dir),
+            "condition": condition, "backend": args.backend, "archive_dir": str(archive_dir),
             **{f"meta_{k}": v for k, v in meta.items()},
         })
         rows.append(result)
@@ -130,11 +136,18 @@ def main(argv=None) -> None:
     manifest = {
         "generated_at": timestamp,
         "family": args.family,
+        "backend": args.backend,
         "scenarios": scenario_names,
         "conditions": conditions,
         "n_runs": len(rows),
         "results_path": str(results_path),
-        "total_containment_violations": sum(r.get("meta_n_containment_violations", 0) for r in rows),
+        # meta_n_containment_violations is None (not 0) for backends with no
+        # such concept, e.g. openhands (Docker is the isolation boundary, not
+        # a hook that can count denied attempts) -- `or 0` treats "not
+        # applicable" the same as "zero" for this total, which is fine for a
+        # summary count but means this number isn't directly comparable
+        # across backends the way it is within claude_agent_sdk runs alone.
+        "total_containment_violations": sum((r.get("meta_n_containment_violations") or 0) for r in rows),
     }
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2))
 
@@ -162,7 +175,7 @@ def _print_summary(rows: list[dict]) -> None:
             acc = sum(results) / len(results) if results else float("nan")
             print(f"  {condition}: {sum(results)}/{len(results)} correct ({acc:.0%})")
 
-    total_violations = sum(r.get("meta_n_containment_violations", 0) for r in rows)
+    total_violations = sum((r.get("meta_n_containment_violations") or 0) for r in rows)
     if total_violations:
         print(f"\n[!] {total_violations} containment violation(s) attempted and blocked -- see "
               f"containment_violations.json in the affected run's archive dir.")

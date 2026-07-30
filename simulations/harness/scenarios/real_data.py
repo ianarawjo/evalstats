@@ -31,11 +31,11 @@ from typing import Any
 
 import numpy as np
 
-from . import CISource, CIPairSource, MultiArmSource
+from . import CISource, CIPairSource, MultiArmSource, EVAL_TYPE_SCALE_BOUNDS
 from .synthetic import ShapeSpec
 
-SOURCES = ["openeval", "inspect", "real"]
-PAIR_SOURCES = ["openeval", "inspect", "real"]
+SOURCES = ["openeval", "inspect", "appstore", "privacy_judge", "real"]
+PAIR_SOURCES = ["openeval", "inspect", "wmt_da_paired", "real"]
 
 # ─────────────────────────────────────────────────────────────────────────────
 # OpenEval -- constants and benchmark specs
@@ -574,6 +574,20 @@ def build_openeval_corpora(
         if spec.score_bounds is not None:
             lo, hi = spec.score_bounds
             arr = (arr - lo) / (hi - lo)
+        # Clip to the eval_type's canonical bounds -- upstream scores or
+        # score_scale/score_bounds rescaling can overshoot by a float
+        # epsilon (e.g. 1.0000000000000004), which CI methods with strict
+        # domain checks (logit_t_ci_1d) reject outright. Caught via a real
+        # case: grok-4/truthfulqa had exactly one such value, silently
+        # turning every WOR sample that included it into a raised exception
+        # -- and cases/ci_single.py's blanket ``except Exception: ci_low =
+        # ci_high = obs_mean`` fallback converted that into a zero-width,
+        # essentially-never-covering interval with no warning, mimicking a
+        # real (but nonexistent) coverage failure that got worse as N grew
+        # toward the corpus size (since that item's WOR inclusion
+        # probability scales with n/corpus_size).
+        clo, chi = EVAL_TYPE_SCALE_BOUNDS[spec.eval_type]
+        arr = np.clip(arr, clo, chi)
         print(
             f"  OK    {model_name}/{bench}: N={len(arr)}, mean={np.mean(arr):.4f}\n"
             f"        {_score_dist_summary(arr, spec.eval_type)}"
@@ -589,6 +603,69 @@ def build_openeval_corpora(
     return corpora
 
 
+def build_judge_bias_items_corpus(
+    dataset_key: str, *, eval_type: str, native_bounds: tuple[float, float],
+    data_dir: str = "simulations/out",
+) -> Corpus | None:
+    """Build a single-arm Corpus from a collect_judge_bias_data.py
+    ``collect-data`` items CSV's ``human_label`` column alone -- no judge
+    scores needed (unlike real_judge_bias.py's loaders, which need the
+    merged CSV -- i.e. also running collect-judge-scores -- for the
+    judge-vs-human bias check those feed). The human-only analogue of
+    build_wmt_da_paired_corpus_pair, for datasets whose item_id needs no
+    special parsing (one row = one independent item, unlike
+    wmt_da_paired's segment-pair encoding) -- e.g. "appstore" (likert,
+    1-5 star ratings) or "privacy_judge" (continuous, 1-5 scale, already
+    the mean of ~50-68 human survey raters per item).
+
+    Returns None (with a print explaining how to fix it) if the items CSV
+    hasn't been collected yet, mirroring build_wmt_da_paired_corpus_pair's
+    missing-CSV handling.
+
+    Rescales from `native_bounds` to `EVAL_TYPE_SCALE_BOUNDS[eval_type]`
+    (NOT hardcoded to [0, 1]) -- ci_single.py/ci_paired.py expect a
+    CISource/CorpusPair's values to already sit on eval_type's OWN
+    canonical scale (identity for "binary"/"continuous", whose canonical
+    bounds already are (0, 1); the RAW native 1-5/0-100 scale for "likert"/
+    "grades", which ci_single.py/ci_paired.py rescale to [0, 1] themselves
+    per-method via EVAL_TYPE_SCALE_BOUNDS -- see ci_single.py's
+    "rescale likert (1-5) / grades (0-100) onto [0, 1] first" comment).
+    Getting this wrong for "likert" specifically (pre-rescaling to [0, 1]
+    here, then letting ci_single.py rescale AGAIN via its (1, 5) bounds)
+    was caught live: appstore's real review-score distribution is heavily
+    boundary-saturated (~80% exactly 1 or 5 stars), and the resulting
+    double-rescaled values collapsed logit_t_ci_1d's x̄ near/at 0 every
+    single rep, showing up as a flat 0% coverage / zero-width column --
+    not a real evalstats bug, a bug in this loader.
+    """
+    path = Path(data_dir) / f"judge_bias_{dataset_key}_items.csv"
+    if not path.exists():
+        print(
+            f"  Note: {path} not found -- run\n"
+            f"    python -m simulations.collect_judge_bias_data collect-data --types <binary|continuous|likert>\n"
+            f"  first (no LLM API key needed; human labels only)."
+        )
+        return None
+
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+    if not rows:
+        print(f"  Note: {path} has no rows.")
+        return None
+
+    lo, hi = native_bounds
+    canon_lo, canon_hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
+    scores = np.array([
+        canon_lo + (float(r["human_label"]) - lo) / (hi - lo) * (canon_hi - canon_lo) for r in rows
+    ])
+    print(f"  {dataset_key}: N={len(scores)} items, mean={np.mean(scores):.4f}\n"
+          f"        {_score_dist_summary(scores, eval_type)}")
+    return Corpus(
+        model=f"{dataset_key}_human", benchmark_id=dataset_key, eval_type=eval_type,
+        source=dataset_key, scores=scores, corpus_mean=float(np.mean(scores)), corpus_size=len(scores),
+    )
+
+
 def build_real_data_sources(
     source: str,
     *,
@@ -601,13 +678,30 @@ def build_real_data_sources(
 ) -> list[CISource]:
     """Resolve (model, benchmark) pairs for `source` and return them as CISources.
 
-    `source` is one of "openeval", "inspect", or "real" ("real" combines
-    "openeval" and "inspect" for maximum real-data diversity, skipping
-    "inspect" with a warning rather than failing if its CSV isn't found
-    locally). When `benchmarks` is given, only the default pairs whose
+    `source` is one of "openeval", "inspect", "appstore", "privacy_judge",
+    or "real". When `benchmarks` is given, only the default pairs whose
     benchmark_id is in that list are used; `models` similarly filters by
-    model name. With no filters, each source's curated default pairs
-    (OPENEVAL_DEFAULT_PAIRS) or full CSV contents (inspect) are used.
+    model name (neither applies to "appstore"/"privacy_judge" -- see
+    build_judge_bias_items_corpus). With no filters, each source's curated
+    default pairs (OPENEVAL_DEFAULT_PAIRS) or full CSV contents (inspect)
+    are used.
+
+    "appstore" (likert, real human 1-5 star ratings) and "privacy_judge"
+    (continuous, real human 1-5 survey-mean scores) are the harness's first
+    real Likert/continuous single-arm sources with no LLM judge involved at
+    all -- see build_judge_bias_items_corpus.
+
+    "real" combines openeval + inspect + privacy_judge for maximum
+    real-data diversity, skipping any that aren't available locally with a
+    note rather than failing -- but deliberately excludes "appstore" for
+    now (2026-07-27): it's currently the only real Likert source (a single
+    dataset/population, no paired Likert source at all), too thin to treat
+    as a general real-data Likert validation the way the 5 continuous
+    OpenEval benchmarks + privacy_judge support continuous. Still directly
+    testable via --data-source appstore explicitly; just not folded into
+    the default "real" sweep until there's more Likert diversity to back
+    it up. Report continuous-only real-data results for now as the
+    numeric-data sanity check -- Likert needs more data first.
     """
     if source not in SOURCES:
         raise ValueError(f"Unknown real-data source: {source!r}. Choices: {SOURCES}")
@@ -639,6 +733,17 @@ def build_real_data_sources(
             )
         else:
             print(f"  Note: --real requested but inspect CSV not found at {csv_path!r} -- skipping inspect, using openeval only.")
+    if source == "appstore" and (not benchmarks or "appstore" in benchmarks):
+        # Deliberately NOT folded into "real" -- see docstring: too thin a
+        # Likert data point on its own to fold into the default real-data
+        # sweep yet. Still runnable directly via --data-source appstore.
+        c = build_judge_bias_items_corpus("appstore", eval_type="likert", native_bounds=(1.0, 5.0))
+        if c is not None and c.corpus_size >= min_corpus_size:
+            corpora.append(c)
+    if source in ("privacy_judge", "real") and (not benchmarks or "privacy_judge" in benchmarks):
+        c = build_judge_bias_items_corpus("privacy_judge", eval_type="continuous", native_bounds=(1.0, 5.0))
+        if c is not None and c.corpus_size >= min_corpus_size:
+            corpora.append(c)
 
     return [corpus_to_ci_source(c) for c in corpora]
 
@@ -646,26 +751,17 @@ def build_real_data_sources(
 # ─────────────────────────────────────────────────────────────────────────────
 # Paired (shared-item) real data
 #
-# Restricted to known-binary benchmarks (Newcombe/Tango/Bayes-paired CI
-# formulas are binary-only) and to R=1 (single run per item) -- multi-run
-# real pairs (Tango multirun variants, nested-diff bootstrap, lmm_diff) are a
+# Supports any OPENEVAL_BENCHMARK_SPECS eval_type (binary or continuous) as
+# of 2026-07-27 -- previously restricted to known-binary benchmarks only
+# (an artifact of matching sim_tango_real.py's binary-only Newcombe/Tango/
+# Bayes-paired scope, not an architectural limit: build_openeval_corpus_pairs
+# just never emitted non-binary pairs, even though ci_paired.py's generic
+# non-binary CI methods -- t_interval/logit_t/nig/el -- already handle them
+# fine). Still restricted to R=1 (single run per item) -- multi-run real
+# pairs (Tango multirun variants, nested-diff bootstrap, lmm_diff) are a
 # documented exception, deferred to a future ci_nested real-data extension.
 # See harness README known exceptions.
 # ─────────────────────────────────────────────────────────────────────────────
-
-OPENEVAL_PAIR_BINARY_SPECS: dict[str, dict] = {
-    "mmlu-pro": {"metric_name": None, "score_scale": 1.0},
-    "gpqa": {"metric_name": None, "score_scale": 1.0},
-    "boolq": {"metric_name": None, "score_scale": 1.0},
-    "imdb": {"metric_name": None, "score_scale": 1.0},
-    "culturalbench": {"metric_name": None, "score_scale": 1.0},
-    "opentom": {"metric_name": None, "score_scale": 1.0},
-    "bbq": {"metric_name": None, "score_scale": 1.0},
-    "hi-tom": {"metric_name": None, "score_scale": 1.0},
-    "omni-math": {"metric_name": None, "score_scale": 1.0},
-    "emobench": {"metric_name": None, "score_scale": 1.0},
-    "salad-bench": {"metric_name": None, "score_scale": 1.0},
-}
 
 # Default (model, benchmark) pairs confirmed to have data in OpenEval.
 OPENEVAL_PAIR_DEFAULT_MODEL_BENCH: list[tuple[str, str]] = [
@@ -696,6 +792,20 @@ OPENEVAL_PAIR_DEFAULT_MODEL_BENCH: list[tuple[str, str]] = [
     ("qwen-2.5-14b-instruct", "omni-math"),
     ("qwen-2.5-72b-instruct", "omni-math"),
     ("llama-2-13b-hf", "omni-math"),
+    # Continuous benchmarks (added 2026-07-27 once build_openeval_corpus_pairs
+    # stopped restricting to binary -- see the section comment above). Each
+    # pair confirmed live to share >=500 aligned items with no non-binary
+    # skips/rounding (they're already continuous, so nothing gets rounded).
+    ("bloom", "cnndm"),
+    ("opt-66b", "cnndm"),
+    ("DeepSeek-V3-0324", "do-not-answer"),
+    ("Phi-4", "do-not-answer"),
+    ("gemma-2b-it", "ifeval"),
+    ("qwen-3-30b-instruct", "ifeval"),
+    ("Llama-2-13b-hf", "truthfulqa"),
+    ("gemma-1.1-7b-it", "truthfulqa"),
+    ("curie", "xsum"),
+    ("davinci", "xsum"),
 ]
 
 
@@ -710,6 +820,7 @@ class CorpusPair:
     scores_b: np.ndarray  # shape (N,)
     true_diff: float  # mean(scores_a - scores_b) -- population ground truth
     corpus_size: int  # N = number of shared items
+    eval_type: str = "binary"  # "binary" | "continuous" -- see OPENEVAL_BENCHMARK_SPECS
 
 
 def corpus_pair_to_ci_pair_source(cp: CorpusPair) -> CIPairSource:
@@ -727,7 +838,7 @@ def corpus_pair_to_ci_pair_source(cp: CorpusPair) -> CIPairSource:
 
     return CIPairSource(
         label=f"{cp.model_a} vs {cp.model_b}/{cp.benchmark_id}",
-        eval_type="binary",
+        eval_type=cp.eval_type,
         true_diff=cp.true_diff,
         generate_pair=_generate_pair,
         source=cp.source,
@@ -771,7 +882,7 @@ def corpus_pair_to_null_ci_pair_source(cp: CorpusPair) -> CIPairSource:
 
     return CIPairSource(
         label=f"{cp.model_a} vs {cp.model_b}/{cp.benchmark_id}|null",
-        eval_type="binary",
+        eval_type=cp.eval_type,
         true_diff=0.0,
         generate_pair=_generate_pair,
         source=cp.source,
@@ -791,19 +902,19 @@ def build_openeval_corpus_pairs(
     cache_dir: str | None = None,
     min_pair_size: int = 50,
 ) -> list[CorpusPair]:
-    """Build CorpusPairs from OpenEval by aligning on item_id (binary benchmarks only)."""
+    """Build CorpusPairs from OpenEval by aligning on item_id (any eval_type -- see OPENEVAL_BENCHMARK_SPECS)."""
     try:
         import datasets  # noqa: F401
     except ImportError:
         raise ImportError("pip install datasets")
 
-    unknown_benches = [b for _, b in model_bench_pairs if b not in OPENEVAL_PAIR_BINARY_SPECS]
+    unknown_benches = [b for _, b in model_bench_pairs if b not in OPENEVAL_BENCHMARK_SPECS]
     if unknown_benches:
         print(
-            f"Warning: unsupported OpenEval binary benchmark IDs: {sorted(set(unknown_benches))}.\n"
-            f"  Supported: {list(OPENEVAL_PAIR_BINARY_SPECS)}"
+            f"Warning: unsupported OpenEval benchmark IDs: {sorted(set(unknown_benches))}.\n"
+            f"  Supported: {list(OPENEVAL_BENCHMARK_SPECS)}"
         )
-        model_bench_pairs = [(m, b) for m, b in model_bench_pairs if b in OPENEVAL_PAIR_BINARY_SPECS]
+        model_bench_pairs = [(m, b) for m, b in model_bench_pairs if b in OPENEVAL_BENCHMARK_SPECS]
     if not model_bench_pairs:
         return []
 
@@ -841,26 +952,39 @@ def build_openeval_corpus_pairs(
         if item_id in item_maps[key]:
             n_dedup += 1
             continue
-        spec = OPENEVAL_PAIR_BINARY_SPECS[source]
-        score = _oe_extract_score(row.get("scores"), spec["metric_name"])
+        spec = OPENEVAL_BENCHMARK_SPECS[source]
+        score = _oe_extract_score(row.get("scores"), spec.metric_name)
         if score is not None and np.isfinite(score):
-            item_maps[key][item_id] = float(score) * spec["score_scale"]
+            item_maps[key][item_id] = float(score) * spec.score_scale
 
     if n_dedup > 0:
         print(f"  {n_dedup:,} duplicate rows removed (kept first per item x model).")
 
     for (model, bench), scores_map in list(item_maps.items()):
+        spec = OPENEVAL_BENCHMARK_SPECS[bench]
         keys = list(scores_map.keys())
         vals = np.array([scores_map[k] for k in keys], dtype=float)
-        non_binary_mask = ~np.isin(vals, [0.0, 1.0])
-        if np.any(non_binary_mask):
-            rounded_vals = np.clip(np.rint(vals), 0.0, 1.0)
-            unique_bad = np.unique(vals[non_binary_mask])[:5]
-            print(f"  Warning: {model}/{bench} has {int(np.sum(non_binary_mask)):,} non-binary scores (e.g. {unique_bad}). Rounded to {{0,1}}.")
-            item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rounded_vals)}
+        if spec.eval_type == "binary":
+            non_binary_mask = ~np.isin(vals, [0.0, 1.0])
+            if np.any(non_binary_mask):
+                rounded_vals = np.clip(np.rint(vals), 0.0, 1.0)
+                unique_bad = np.unique(vals[non_binary_mask])[:5]
+                print(f"  Warning: {model}/{bench} has {int(np.sum(non_binary_mask)):,} non-binary scores (e.g. {unique_bad}). Rounded to {{0,1}}.")
+                item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rounded_vals)}
+        elif spec.score_bounds is not None:
+            # Rescale to [0,1] using the benchmark's known theoretical range
+            # (matching build_openeval_corpora's single-arm handling) so
+            # continuous benchmarks like do-not-answer/ifeval land in the
+            # same range logit_t/nig/el assume -- not just score_scale
+            # (truthfulqa/cnndm/xsum are already in [0,1] via score_scale
+            # alone and have no score_bounds set).
+            lo, hi = spec.score_bounds
+            rescaled_vals = (vals - lo) / (hi - lo)
+            item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rescaled_vals)}
 
     corpus_pairs: list[CorpusPair] = []
     for bench in sorted(bench_set):
+        spec = OPENEVAL_BENCHMARK_SPECS[bench]
         requested = list(dict.fromkeys(m for m, b in model_bench_pairs if b == bench))
         bench_models = [m for m in requested if (m, bench) in item_maps and item_maps[(m, bench)]]
         if len(bench_models) < 2:
@@ -878,11 +1002,24 @@ def build_openeval_corpus_pairs(
                 continue
             scores_a = np.array([map_a[k] for k in shared_ids])
             scores_b = np.array([map_b[k] for k in shared_ids])
-            bad_a = scores_a[~np.isin(scores_a, [0.0, 1.0])]
-            bad_b = scores_b[~np.isin(scores_b, [0.0, 1.0])]
-            if len(bad_a) > 0 or len(bad_b) > 0:
-                print(f"  Skip  ({model_a} vs {model_b}) on {bench}: non-binary scores after alignment. Skipping pair.")
-                continue
+            if spec.eval_type == "binary":
+                # The per-(model,bench) rounding pass above already forces
+                # binary benchmarks to exactly {0,1}; this only catches the
+                # (should-be-impossible) case where alignment somehow
+                # reintroduced a non-{0,1} value.
+                bad_a = scores_a[~np.isin(scores_a, [0.0, 1.0])]
+                bad_b = scores_b[~np.isin(scores_b, [0.0, 1.0])]
+                if len(bad_a) > 0 or len(bad_b) > 0:
+                    print(f"  Skip  ({model_a} vs {model_b}) on {bench}: non-binary scores after alignment. Skipping pair.")
+                    continue
+            else:
+                # Clip float-epsilon overshoot from score_scale/score_bounds
+                # rescaling -- see build_openeval_corpora's identical clip
+                # for why (a real case, grok-4/truthfulqa, had exactly one
+                # such value).
+                clo, chi = EVAL_TYPE_SCALE_BOUNDS[spec.eval_type]
+                scores_a = np.clip(scores_a, clo, chi)
+                scores_b = np.clip(scores_b, clo, chi)
             true_diff = float(np.mean(scores_a - scores_b))
             print(
                 f"  Pair  ({model_a} vs {model_b}): N={len(shared_ids)}, mean_A={np.mean(scores_a):.4f}, "
@@ -891,6 +1028,7 @@ def build_openeval_corpus_pairs(
             corpus_pairs.append(CorpusPair(
                 model_a=model_a, model_b=model_b, benchmark_id=bench, source="openeval",
                 scores_a=scores_a, scores_b=scores_b, true_diff=true_diff, corpus_size=len(shared_ids),
+                eval_type=spec.eval_type,
             ))
 
     print(f"\n  {len(corpus_pairs)} corpus pairs built from OpenEval.\n")
@@ -1057,6 +1195,7 @@ class MultiArmCorpus:
     models: list[str]  # ordered by descending real corpus mean; models[0] is "arm 0"
     scores: np.ndarray  # shape (len(models), N) -- aligned on shared item_id
     corpus_size: int  # N = number of shared items
+    eval_type: str = "binary"  # "binary" | "continuous" -- see OPENEVAL_BENCHMARK_SPECS
 
 
 def multiarm_corpus_to_source(mc: MultiArmCorpus) -> MultiArmSource:
@@ -1100,7 +1239,7 @@ def multiarm_corpus_to_source(mc: MultiArmCorpus) -> MultiArmSource:
         return _means[:k]
 
     return MultiArmSource(
-        label=f"{mc.source}:{mc.benchmark_id}", eval_type="binary",
+        label=f"{mc.source}:{mc.benchmark_id}", eval_type=mc.eval_type,
         generate_scores=_generate_scores, alt_delta=1.0, source=mc.source,
         max_n=n_total, max_k=max_k, benchmark_id=mc.benchmark_id, true_means=_true_means,
     )
@@ -1115,20 +1254,20 @@ def build_openeval_multiarm_corpora(
     min_arm_size: int = 50,
 ) -> list[MultiArmCorpus]:
     """Build MultiArmCorpora from OpenEval: for each benchmark, align ALL its
-    requested models on shared item_id (binary benchmarks only, same
-    restriction as build_openeval_corpus_pairs)."""
+    requested models on shared item_id (any eval_type -- see
+    OPENEVAL_BENCHMARK_SPECS, same as build_openeval_corpus_pairs)."""
     try:
         import datasets  # noqa: F401
     except ImportError:
         raise ImportError("pip install datasets")
 
-    unknown_benches = [b for _, b in model_bench_pairs if b not in OPENEVAL_PAIR_BINARY_SPECS]
+    unknown_benches = [b for _, b in model_bench_pairs if b not in OPENEVAL_BENCHMARK_SPECS]
     if unknown_benches:
         print(
-            f"Warning: unsupported OpenEval binary benchmark IDs: {sorted(set(unknown_benches))}.\n"
-            f"  Supported: {list(OPENEVAL_PAIR_BINARY_SPECS)}"
+            f"Warning: unsupported OpenEval benchmark IDs: {sorted(set(unknown_benches))}.\n"
+            f"  Supported: {list(OPENEVAL_BENCHMARK_SPECS)}"
         )
-        model_bench_pairs = [(m, b) for m, b in model_bench_pairs if b in OPENEVAL_PAIR_BINARY_SPECS]
+        model_bench_pairs = [(m, b) for m, b in model_bench_pairs if b in OPENEVAL_BENCHMARK_SPECS]
     if not model_bench_pairs:
         return []
 
@@ -1166,26 +1305,33 @@ def build_openeval_multiarm_corpora(
         if item_id in item_maps[key]:
             n_dedup += 1
             continue
-        spec = OPENEVAL_PAIR_BINARY_SPECS[source]
-        score = _oe_extract_score(row.get("scores"), spec["metric_name"])
+        spec = OPENEVAL_BENCHMARK_SPECS[source]
+        score = _oe_extract_score(row.get("scores"), spec.metric_name)
         if score is not None and np.isfinite(score):
-            item_maps[key][item_id] = float(score) * spec["score_scale"]
+            item_maps[key][item_id] = float(score) * spec.score_scale
 
     if n_dedup > 0:
         print(f"  {n_dedup:,} duplicate rows removed (kept first per item x model).")
 
     for (model, bench), scores_map in list(item_maps.items()):
+        spec = OPENEVAL_BENCHMARK_SPECS[bench]
         keys = list(scores_map.keys())
         vals = np.array([scores_map[k] for k in keys], dtype=float)
-        non_binary_mask = ~np.isin(vals, [0.0, 1.0])
-        if np.any(non_binary_mask):
-            rounded_vals = np.clip(np.rint(vals), 0.0, 1.0)
-            unique_bad = np.unique(vals[non_binary_mask])[:5]
-            print(f"  Warning: {model}/{bench} has {int(np.sum(non_binary_mask)):,} non-binary scores (e.g. {unique_bad}). Rounded to {{0,1}}.")
-            item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rounded_vals)}
+        if spec.eval_type == "binary":
+            non_binary_mask = ~np.isin(vals, [0.0, 1.0])
+            if np.any(non_binary_mask):
+                rounded_vals = np.clip(np.rint(vals), 0.0, 1.0)
+                unique_bad = np.unique(vals[non_binary_mask])[:5]
+                print(f"  Warning: {model}/{bench} has {int(np.sum(non_binary_mask)):,} non-binary scores (e.g. {unique_bad}). Rounded to {{0,1}}.")
+                item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rounded_vals)}
+        elif spec.score_bounds is not None:
+            lo, hi = spec.score_bounds
+            rescaled_vals = (vals - lo) / (hi - lo)
+            item_maps[(model, bench)] = {k: float(v) for k, v in zip(keys, rescaled_vals)}
 
     corpora: list[MultiArmCorpus] = []
     for bench in sorted(bench_set):
+        spec = OPENEVAL_BENCHMARK_SPECS[bench]
         requested = list(dict.fromkeys(m for m, b in model_bench_pairs if b == bench))
         bench_models = [m for m in requested if (m, bench) in item_maps and item_maps[(m, bench)]]
         if len(bench_models) < 2:
@@ -1198,13 +1344,16 @@ def build_openeval_multiarm_corpora(
         means = {m: float(np.mean([item_maps[(m, bench)][i] for i in shared_ids])) for m in bench_models}
         ordered_models = sorted(bench_models, key=lambda m: means[m], reverse=True)
         scores = np.array([[item_maps[(m, bench)][i] for i in shared_ids] for m in ordered_models])
+        # Clip float-epsilon overshoot -- see build_openeval_corpora's clip.
+        clo, chi = EVAL_TYPE_SCALE_BOUNDS[spec.eval_type]
+        scores = np.clip(scores, clo, chi)
         print(
             f"  OK    {bench}: {len(ordered_models)} models, N={len(shared_ids)} shared items, "
             f"means={[round(means[m], 4) for m in ordered_models]}"
         )
         corpora.append(MultiArmCorpus(
             benchmark_id=bench, source="openeval", models=ordered_models,
-            scores=scores, corpus_size=len(shared_ids),
+            scores=scores, corpus_size=len(shared_ids), eval_type=spec.eval_type,
         ))
 
     print(f"\n  {len(corpora)} multi-arm corpora built from OpenEval.\n")
@@ -1554,6 +1703,76 @@ def build_real_pair_sources_nested(
     )
 
 
+def build_wmt_da_paired_corpus_pair(*, data_dir: str = "simulations/out") -> CorpusPair | None:
+    """Build a real, continuous CorpusPair from wmt_da_paired's human-only
+    Direct Assessment scores (``collect_judge_bias_data.py collect-data
+    --types continuous_paired``) -- the harness's first real continuous
+    PAIRED data source, and the first real-data pair source that needs no
+    OpenEval/Inspect model-vs-model comparison at all.
+
+    Deliberately does NOT reuse real_judge_bias.py's
+    load_real_wmt_paired_corpus: that function requires the MERGED csv
+    (human labels + judge scores), i.e. also running collect-judge-scores,
+    since it feeds cases/ppi_real.py's judge-vs-human bias check. This
+    reads the plain ``_items.csv`` collect-data alone produces -- no LLM
+    judge calls, no API key -- since ci_paired.py's real-data coverage
+    sweep only ever needs the real human ground truth, never a judge's
+    estimate of it.
+
+    Each of the corpus's segments has two different MT systems' real human
+    DA scores -- system "A"/"B" per segment is an arbitrary but fixed
+    labeling (the two most-different-scoring systems for that segment, not
+    "the better one"; see fetch_wmt_da_paired_items's docstring in
+    collect_judge_bias_data.py) -- but that's exactly what CorpusPair
+    already models: a paired-by-position (scores_a[i], scores_b[i]), with
+    true_diff = mean(scores_a - scores_b) as the real population target,
+    regardless of whether "a"/"b" name the same two systems throughout.
+
+    Returns None (with a print explaining how to fix it) if the items CSV
+    hasn't been collected yet, mirroring build_inspect_corpora's
+    missing-CSV handling.
+    """
+    from .real_judge_bias import _ITEM_ID_PAIRED_RE, WMT_PAIRED_BOUNDS
+
+    path = Path(data_dir) / "judge_bias_wmt_da_paired_items.csv"
+    if not path.exists():
+        print(
+            f"  Note: {path} not found -- run\n"
+            f"    python -m simulations.collect_judge_bias_data collect-data --types continuous_paired\n"
+            f"  first (no LLM API key needed; human labels only)."
+        )
+        return None
+
+    with path.open(newline="", encoding="utf-8") as f:
+        rows = list(_csv.DictReader(f))
+
+    by_seg: dict[int, dict[int, float]] = defaultdict(dict)
+    for r in rows:
+        m = _ITEM_ID_PAIRED_RE.match(r["item_id"])
+        if m is None:
+            continue
+        by_seg[int(m.group(1))][int(m.group(2))] = float(r["human_label"])
+
+    aligned_segs = sorted(seg for seg, sides in by_seg.items() if 0 in sides and 1 in sides)
+    if not aligned_segs:
+        print(f"  Note: {path} has no segments with both sides present -- nothing to build.")
+        return None
+
+    lo, hi = WMT_PAIRED_BOUNDS
+    scores_a = np.array([(by_seg[s][0] - lo) / (hi - lo) for s in aligned_segs])
+    scores_b = np.array([(by_seg[s][1] - lo) / (hi - lo) for s in aligned_segs])
+    true_diff = float(np.mean(scores_a - scores_b))
+    print(
+        f"  wmt_da_paired: N={len(aligned_segs)} aligned segments, "
+        f"mean_A={np.mean(scores_a):.4f}, mean_B={np.mean(scores_b):.4f}, true_diff={true_diff:+.4f}"
+    )
+    return CorpusPair(
+        model_a="sysA", model_b="sysB", benchmark_id="wmt_da_paired", source="wmt_da_paired",
+        scores_a=scores_a, scores_b=scores_b, true_diff=true_diff,
+        corpus_size=len(aligned_segs), eval_type="continuous",
+    )
+
+
 def build_real_pair_sources(
     source: str,
     *,
@@ -1567,10 +1786,17 @@ def build_real_pair_sources(
 ) -> list[CIPairSource]:
     """Resolve (model, benchmark) pairs for `source` and return them as CIPairSources.
 
-    `source` is one of "openeval", "inspect", or "real" ("real" combines
-    "openeval" and "inspect" for maximum real-data diversity, skipping
-    "inspect" with a warning rather than failing if its CSV isn't found
-    locally). R=1 only -- see module docstring.
+    `source` is one of "openeval", "inspect", "wmt_da_paired", or "real"
+    ("real" combines "openeval", "inspect", and "wmt_da_paired" for maximum
+    real-data diversity, skipping any of the latter two with a note rather
+    than failing if their data isn't collected locally). "wmt_da_paired" is
+    real, continuous, human-only paired data (see
+    build_wmt_da_paired_corpus_pair) -- unlike "openeval"/"inspect", it has
+    no `benchmarks`/`models` filtering (there's exactly one benchmark and
+    no named models to filter by); its permutation-null variant (for
+    include_null=True) reuses corpus_pair_to_null_ci_pair_source the same
+    as every other CorpusPair, since that construction doesn't depend on
+    model identity. R=1 only -- see module docstring.
 
     include_null : bool
         If True, also emit a permutation-null CIPairSource (see
@@ -1609,6 +1835,10 @@ def build_real_pair_sources(
             )
         else:
             print(f"  Note: --real requested but inspect CSV not found at {csv_path!r} -- skipping inspect, using openeval only.")
+    if source in ("wmt_da_paired", "real") and (not benchmarks or "wmt_da_paired" in benchmarks):
+        wmt_pair = build_wmt_da_paired_corpus_pair()
+        if wmt_pair is not None and wmt_pair.corpus_size >= min_pair_size:
+            corpus_pairs.append(wmt_pair)
 
     sources = [corpus_pair_to_ci_pair_source(cp) for cp in corpus_pairs]
     if include_null:

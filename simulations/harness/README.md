@@ -255,6 +255,333 @@ same way `evalstats.core.resampling` is.
 - `scenarios/synthetic.py`'s `"extreme"` suite is currently identical to
   `"expanded"` -- reserved for future stress-test scenarios as more cases
   are ported.
+- `--mode ppi`'s Type-I sweep (`build_judge_bias_sources`) never sets
+  `effect_size` above 0, so it can only show whether PPI correction controls
+  false positives, never whether it retains the power to detect a genuine
+  difference under that same bias -- a method could trivially "pass" Type-I
+  calibration by rejecting almost nothing, ever. Two checks close that gap,
+  both on by default (`--no-power-check` / `--no-comparison-check` to skip):
+  - **Power check** (`build_ppi_power_sources`, `print_ppi_power_report`/
+    `save_ppi_power_plot`): the SAME per-eval-type judge-bias severity as
+    `build_judge_bias_sources`' `eval_type.*` baseline, but swept across a
+    real `effect_size` grid (`PPI_POWER_EFFECT_FRACS`, expressed as a
+    fraction of each eval type's own scale span via `_jb_effect_magnitude`,
+    the effect-size analogue of `_jb_bias_magnitude`) instead of held at 0.
+    `es=0.00` doubles as a Type-I cross-check against the main sweep.
+    `PPI_POWER_EFFECT_FRACS` has 7 points (0/0.05/0.10/0.15/0.20/0.30/0.40),
+    not the original 4 (0/0.10/0.20/0.40) -- the coarser grid's biggest gap
+    (0.20-0.40) spanned exactly where the "cancellation dip"/crossover
+    happens (see `save_ppi_power_direction_plot`), risking a smooth,
+    well-understood phenomenon reading as a kink or an artifact.
+    `save_ppi_power_plot` is two rows (top: corrected, bottom: uncorrected)
+    per eval-type column, not one set of axes with both overlaid -- with up
+    to 13 tests' solid+dashed lines sharing colors, superimposing them was
+    unreadable; uncorrected keeps its dashed linestyle in its own row. The
+    legend moved from an inside corner to outside the axes on the right,
+    since the two-row layout left no clean interior spot for 13+ entries.
+    (An earlier version of this plot also overlaid each test's no-bias
+    corrected rate as a dotted "ideal" reference line on the corrected row,
+    reusing `build_ppi_power_nobias_sources`' results -- removed again on
+    request as unneeded clutter; `run()` still computes the no-bias check
+    before the main power plot, since it also feeds its own standalone
+    `..._power_vs_effect_size_nobias.png` plot.)
+    Binary is excluded: `effect_size` is an additive shift applied directly
+    to a 0/1 truth draw in `generate_judge_bias_cell`, which only stays
+    valid at `es=0`.
+  - **Estimator comparison** (`build_ppi_comparison_label_frac_sources` +
+    the power sources' effect_size grid, `PPIComparisonResult`/
+    `run_ppi_comparison_simulation`/`save_ppi_comparison_plot`): for ONE
+    representative paired-mean estimand (`paired_t`), rejection rate for
+    five ways of turning (sparse human labels + biased LLM-judge scores)
+    into a test -- `all_human` (oracle: classical test on the full, dense
+    ground truth), `human_subset` (classical test on ONLY the labeled
+    subset's truth -- the "why not just collect more human labels instead"
+    baseline), `llm_only` (uncorrected LLM judge scores), `llm_impute` (LLM
+    scores with labeled positions overwritten by the true label -- a naive
+    missing-data-imputation baseline with NO PPI rectifier, showing that
+    "filling in what you know" isn't the same as correcting for what you
+    don't), and `ppi` (PPI-corrected). Swept two ways: vs. `effect_size` at
+    fixed `label_frac` (reusing `build_ppi_power_sources`, tag `"power"`),
+    and vs. `label_frac` at a fixed moderate `effect_size`
+    (`build_ppi_comparison_label_frac_sources`, tag `"compare_label_frac"`)
+    -- the latter answers "how many human labels does PPI actually need to
+    approach all_human's power" directly, which the effect_size axis alone
+    cannot. `JudgeBiasCellData.truth_x`/`truth_y` (dense, unmasked ground
+    truth for the paired structure only) were added to
+    `generate_judge_bias_cell`'s return value to support the `all_human`/
+    `human_subset` arms; every other test structure's dense truth is
+    discarded as before. Now runs in parallel via the same fork-pool-over-
+    sources pattern as `run_ppi_simulation`/`run_multiarm_simulation`
+    (originally sequential-only, reasonable at the comparison grid's
+    original 24 scenarios, but outgrown by `build_ppi_nlab_grid_sources`'
+    ~44 and `build_ppi_factorial_sources`' ~312).
+    `save_ppi_null_comparison_plot` is a companion bar chart isolating JUST
+    the `effect_size=0` (null) case from `save_ppi_comparison_plot`'s line
+    plot: one bar per estimator arm, one panel per eval type. Added because
+    the line plot's null point is easy to misread -- `llm_only`/
+    `llm_impute`'s high rejection rate at SMALL real effect sizes looks
+    like "more powerful than PPI" on a power-framed line plot, when it's
+    actually inflated false positives from `build_ppi_power_sources`'
+    fixed bias direction (which OPPOSES the injected effect -- see
+    `build_ppi_power_reinforcing_sources`' docstring for the sign
+    arithmetic), already present at `effect_size=0` before any real effect
+    exists. A plot with no effect_size axis at all removes that ambiguity:
+    every bar is a false-positive rate, by construction. Error bars are
+    each bar's 95% Wilson score interval (`_ppi_wilson_interval`, same
+    interval `print_ppi_report`'s Type-I flagging already uses), added so
+    MC noise at low `--effect-reps` isn't mistaken for a real miscalibration
+    finding.
+  - **Method generalization** (`_COMPARISON_METHODS`,
+    `generate_judge_bias_cell`, `pool_ppi_comparison_across_
+    methods`): the comparison/N x N_lab/factorial machinery originally
+    targeted ONE estimand -- the paired-mean difference, via `np.mean` as
+    both the PPI estimator and rectifier, identical to `paired_t`'s PPI
+    correction elsewhere in this file. For paper-defensibility this now
+    runs and averages across FOUR classical tests --
+    `TTEST_WELCH`/`PAIRED_T`/`MWU`/`WILCOXON` (`_COMPARISON_METHODS`) --
+    covering both the independent-two-group structure (ttest_welch, mwu)
+    and the paired structure (paired_t, wilcoxon), PLUS (opt-in, see
+    "Omnibus tests" below) four omnibus/multi-group tests --
+    `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` (`_COMPARISON_METHODS_
+    OMNIBUS`) -- covering the independent-three-group structure (anova_ind,
+    kruskal) and the repeated-three-group structure (anova_rep, friedman).
+    `generate_judge_bias_cell` (the FULL generator, every test structure
+    `_run_ppi_cell` itself uses -- there is no leaner variant anymore, see
+    "Omnibus tests" below) is `_run_ppi_comparison_cell`'s data source for
+    every method now. `_run_ppi_comparison_cell` takes a `method` argument
+    and dispatches via `_COMPARISON_METHOD_STRUCTURE`/`_COMPARISON_CELL_
+    FIELDS` ("group"/"pair" for the original four, "group3"/"pair3" for the
+    omnibus four); `_classical_pvalue`/`_ppi_comparison_pvalue` (two-array
+    methods) and `_classical_pvalue_omnibus`/`_ppi_comparison_pvalue_
+    omnibus` (list-of-groups methods) factor out the per-method test/PPI-
+    correction calls (mirroring `_run_ppi_cell`'s own per-test blocks
+    exactly, including using the SAME test for the all_human/human_subset
+    oracle arms as for llm_only/llm_impute/ppi -- e.g. the "mwu"
+    method-row runs Mann-Whitney on truth for its oracle arms too, not
+    always a t-test). Each of the 5 arms fails independently per replicate
+    (a wilcoxon/mannwhitneyu exception on one arm doesn't discard the
+    other 4); only a PPI bootstrap-correction failure increments
+    `n_failed` (or, for the three omnibus methods whose PPI-corrected
+    p-value function can return `None` on a degenerate fit, that's treated
+    as "not rejected," matching `_run_ppi_cell`'s own `p is not None and p
+    < alpha` pattern -- not a failure either).
+    `run_ppi_comparison_simulation` runs every (source, method) cell
+    (a `methods` parameter, defaulting to `_COMPARISON_METHODS`) and
+    returns a FLAT list tagged by `PPIComparisonResult.method`.
+    `pool_ppi_comparison_across_methods` collapses a `results` list back to
+    one (averaged) row per scenario for the report/plot functions --
+    callers MUST filter `results` to one method-family before pooling
+    (`_COMPARISON_METHODS` xor `_COMPARISON_METHODS_OMNIBUS`, never both
+    together, and never the non-standard bootstrap-CI constructions
+    bayes_bootstrap/bootstrap_t/tango_score or lmm*): these answer
+    different questions (two-group location-shift vs. three-group omnibus),
+    so folding them into the same pooled rate would blend apples with
+    oranges rather than checking robustness across reasonable alternatives
+    within one question. `run()` now saves the RAW (per-method) rows to
+    CSV, ONE file covering every method run -- the supplementary robustness
+    breakdown a reviewer can check the pooled
+    average isn't hiding one method behaving badly -- and feeds the POOLED
+    rows to every report/plot function unchanged (none of them needed to
+    change: they only ever read `.name`/`.tag`/`.rejects_*`/etc., which
+    both raw and pooled rows carry identically).
+  - **Scenario pooling** (`_pool_ppi_comparison_rows`,
+    `save_ppi_null_comparison_plot`'s `nlab_cal_results` parameter): the
+    null-effect bar chart originally read off ONE fixed scenario
+    (`build_ppi_power_sources`' `effect_size=0` point: n=100, label_frac=
+    0.20 -> N_lab=20, "severe" bias, icc=0.20, llm_noise=0.20) -- defensible
+    for a quick look, less so for a paper claim ("at this one arbitrarily
+    chosen N/N_lab..."). For continuous and likert (where
+    `build_ppi_nlab_grid_sources`' calibration grid is already computed as
+    part of the same `--no-comparison-check` gate), the null bar chart now
+    pools a SECOND axis on top of the method-pooling above, per eval type:
+    every N x N_lab cell in that eval type's slice of the grid, ~22
+    conditions, all at zero extra simulation cost since the data already
+    existed. grades has no such sweep available (`build_ppi_nlab_grid_
+    sources` deliberately excludes it as redundant with continuous) and
+    falls back to the single scenario, still pooled across the 4 methods. Each
+    panel's subtitle states which pooling applies, and the docstring is
+    explicit that the pooled Wilson CI is a standard-but-technically-
+    optimistic simplification if there's real heterogeneity across the
+    pooled conditions (the same simplification this file's other pooled
+    Type-I metrics, e.g. `key_metrics["ppi_mean_corrected_type1"]`, already
+    make) -- called out rather than presented as more rigorous than it is.
+  - `--no-typeI-check` skips the base Type-I calibration sweep
+    (`build_judge_bias_sources`, by far the slowest single piece of `--mode
+    ppi`) -- the effect/power/comparison/factorial checks don't consume its
+    results, so `--no-typeI-check --no-effect-check --no-power-check
+    --no-comparison-check --factorial-check` runs JUST the factorial sweep.
+    `official_args_ppi_factorial` packages exactly that (at
+    `official_args_ppi`'s precision tier), registered in
+    `official_variants()` as its own selectable `--official-tests` menu
+    entry, the same "split out for independent selection" reasoning
+    `official_args_ppi` itself already uses relative to `official_args`.
+  - The power check's baseline (`build_ppi_power_sources`) only exercises
+    ONE bias configuration: `bias_type="differential"` with the fixed judge
+    bias always OPPOSING the injected real effect (see
+    `build_ppi_power_reinforcing_sources`' docstring for the sign
+    arithmetic) -- which produces the "cancellation dip" visible in the
+    uncorrected power curve as effect_size approaches the bias magnitude.
+    Two more variants close the resulting gaps, each with its own plot
+    rather than folded into the main one:
+    `build_ppi_power_reinforcing_sources` (bias_delta's sign flipped, so
+    bias and effect stack instead of fighting -- arguably the more
+    dangerous real case, since the uncorrected curve just climbs faster
+    with no visible anomaly to flag it) and `build_ppi_power_nobias_sources`
+    (`bias_type="none"` -- the "no free lunch" check: does PPI correction
+    cost power when there's nothing to correct for?). All three share the
+    same `"<prefix>.<eval_type>.es=<frac>"` name shape (see
+    `_PPI_POWER_NAME_RE`), so `print_ppi_power_report`/`save_ppi_power_plot`
+    are reused as-is for the reinforcing/no-bias variants (just with a
+    `header`/`title_suffix` override); only the opposing-vs-reinforcing
+    overlay (`save_ppi_power_direction_plot`) is a dedicated new function.
+  - Every check above (power, direction, no-bias, and the 5-way comparison)
+    fixes N (total items) at 100 and only varies N_lab through `label_frac`
+    -- so none of them can answer whether calibration/power depends on the
+    RATIO N_lab/N or the ABSOLUTE N_lab count. `PPI_COMPARISON_LABEL_FRACS`
+    was also fixed here: at N=100, `_JB_MIN_LAB`'s floor made label_frac=0.05
+    and 0.10 both resolve to the SAME N_lab=15, which the plot's x-axis
+    (nominal label_frac) hid -- `PPIComparisonResult.n_lab` now reports the
+    REALIZED count, and both the label_frac comparison row and its grid
+    (`PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)`) were chosen to
+    avoid collisions. `build_ppi_nlab_grid_sources(effect_frac)` crosses N
+    (`PPI_NLAB_GRID_N_VALUES`, 30-400) and N_lab (`PPI_NLAB_GRID_NLAB_VALUES`,
+    15-80) INDEPENDENTLY, back-solving `label_frac = n_lab / n` per cell so
+    the floor never binds; `effect_frac=0.0` is the calibration question
+    (Type-I ~ alpha across the whole plane), a nonzero `effect_frac` is the
+    power companion at the same grid. Two eval types, continuous and likert
+    (likert being arguably the most common real-world LLM-as-judge output
+    format); grades is deliberately excluded as redundant with continuous
+    (it's continuous rescaled to a [0, 100] span). One representative
+    estimand (paired_t), same "one estimand is the point" scoping as the
+    5-way comparison's paired_t choice. Scenario names are
+    `nlab.<eval_type>.n=<n>.nlab=<n_lab>`. `save_ppi_nlab_grid_plot` renders
+    calibration/power as heatmaps (diverging colormap centered on alpha for
+    calibration, sequential for power), one ROW per eval type and one
+    COLUMN per panel, so a reader can scan a ROW WITHIN a panel (N's effect
+    at fixed N_lab) vs. a COLUMN (N_lab's effect at fixed N) directly --
+    `print_ppi_nlab_grid_report` facets by eval type the same way. Confirmed
+    empirically that power is much more sensitive to N_lab than to N at
+    small N_lab (e.g. N_lab=15 stays low across N=60..400), consistent with
+    PPI's two-term variance (`Var(unlabeled)/N + Var(rectifier)/N_lab`) --
+    the rectifier term dominates until N_lab is large enough, at which point
+    adding more N (cheap LLM-judged items) barely moves power further.
+  - Efficiency: `generate_judge_bias_cell` draws SIX test structures every
+    call regardless of which are used -- fine for `_run_ppi_cell` (the
+    Type-I/power/effect-check sweeps), which deliberately keeps a FIXED
+    draw order across every call so a given scenario/seed's results for a
+    given test don't change depending on what else `--tests` includes (see
+    its docstring). `_run_ppi_comparison_cell` originally used a leaner,
+    two-structure-only counterpart (`generate_judge_bias_pair_cell`, later
+    `generate_judge_bias_group_pair_cell`) since the comparison/N x N_lab/
+    factorial checks only ever needed the paired and independent-two-group
+    structures -- measured ~7.8x faster (0.08ms vs. 0.61ms/call). That
+    generator was retired once `_COMPARISON_METHODS_OMNIBUS` (anova_ind/
+    anova_rep/friedman/kruskal) needed the independent-three-group and
+    repeated-three-group structures too -- rather than adding a THIRD,
+    even-leaner generator, `_run_ppi_comparison_cell` now reads every method
+    (both the original four and the four omnibus ones) off
+    `generate_judge_bias_cell`, the same full generator `_run_ppi_cell`
+    uses. This gives up the lean generator's per-cell speedup (the
+    comparison/N x N_lab/factorial checks are correspondingly slower now,
+    on top of the omnibus methods' own added cost), in exchange for one
+    generator instead of two/three to keep in sync. The underlying PPI
+    bootstrap correction itself (`evalstats.ppi.correct`) was already
+    vectorized (a batched fast path for `np.mean`/`np.median`, chunked to
+    bound memory) -- confirmed via profiling, not changed.
+    `run_ppi_comparison_simulation` also gained the same fork-pool-over-
+    sources parallelism `run_ppi_simulation`/`run_multiarm_simulation`
+    already had (it was sequential-only, reasonably so at the original
+    ~24-scenario comparison grid, but the N x N_lab grid and factorial sweep
+    below outgrew that).
+  - **Omnibus tests in the factorial sweep** (`_COMPARISON_METHODS_OMNIBUS`,
+    `--factorial-omnibus`): after the main OFAT sweep and the factorial
+    sweep's original four two-group tests were confirmed reasonably
+    calibrated (at the time including `mwu_corr`'s local-rectifier fix,
+    since reverted -- see `MWU`/`MWU_MNAR_EXPERIMENTAL`'s `Method` docstring
+    in `methods.py` for the current status and why), extended
+    `build_ppi_factorial_sources`'s combined-factor
+    stress test to four omnibus/multi-group tests too --
+    `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` -- to check whether they
+    hold up under the SAME severe-bias x MNAR-labeling x large-N combination
+    that the OFAT sweep can't reach (kruskal in particular was already
+    flagged there as a milder, more diffusely elevated Type-I outlier, not
+    as severe as `mw_naive`'s but worth the same combined-factor check).
+    Opt-in via `--factorial-omnibus` (off by default on the bare
+    `--factorial-check` flag; ON by default in the standalone
+    `official_args_ppi_factorial`/`official_args_ppi_factorial_likert7`
+    presets, NOT in `official_args_ppi`/`official_args_ppi_no_lmm`, the
+    already-slowest "run everything" presets) since it roughly doubles the
+    method count on top of losing the lean generator's speedup above.
+    Reported and saved as its OWN pooled GLM/summary-log section
+    (`print_ppi_factorial_report`'s new `label` parameter,
+    `save_results_artifacts_ppi_factorial`'s new `write_csv=False` append
+    mode) -- never blended into the two-group tests' headline pooled rate,
+    per the apples-with-oranges reasoning in "Method generalization" above.
+    `JudgeBiasCellData` gained `truth_a2`/`truth_b2`/`truth_a3`/`truth_b3`/
+    `truth_c3`/`truth_A`/`truth_B`/`truth_C` (the dense, unmasked truth
+    arrays `generate_judge_bias_cell` already computed internally but
+    didn't expose) so the comparison sweep's all_human/human_subset oracle
+    arms work for every structure, not just the original paired one.
+  - `build_ppi_factorial_sources` (tag `"factorial"`, ~312 cells per eval
+    type, ~624 total): a TRUE full factorial (every main effect/interaction
+    directly estimable, no fractional-design confounding) crossing the six
+    factors most likely to compound in ways every one-factor-at-a-time
+    check above can't reveal -- `bias_magnitude` (none/moderate/severe,
+    matching `build_judge_bias_sources`' `biasmag.*` labels) x `N`
+    (60/200/400) x `N_lab` (15/30/80) x `label_mechanism` (mcar/mnar_mild/
+    mnar_strong) x `effect_size` (null/moderate/large) x `bias_direction`
+    (opposing/reinforcing) -- now ALSO crossed with `eval_type` (continuous,
+    likert; grades excluded as redundant with continuous). Runs
+    `_COMPARISON_METHODS` (ttest_welch/paired_t/mwu_corr/wilcoxon) by
+    default, plus `_COMPARISON_METHODS_OMNIBUS` (anova_ind/anova_rep/
+    friedman/kruskal) when `--factorial-omnibus` is set -- see "Omnibus
+    tests in the factorial sweep" above; not `paired_t` only anymore.
+    `likert_max` (default 5; `--factorial-likert-max`) rescales likert
+    scenarios' distribution/bias/effect magnitude onto a wider 1-`likert_max`
+    integer grid (same relative severity, more discrete levels) instead of
+    the standard 1-5 -- added to test whether Likert coarseness itself was
+    responsible for `mwu_corr`'s predecessor `mw_naive` breaking under
+    severe MNAR (see `sample_group_truth`'s `likert_max` parameter and
+    `_jb_bias_magnitude`/`_jb_effect_magnitude`'s `scale_bounds` override;
+    a real official 1-5 vs. 1-7 factorial comparison found the miscalibration
+    got WORSE at 1-7, not better, ruling that hypothesis out for `mw_naive`
+    specifically).
+    An earlier version of this section (and these functions' docstrings)
+    described this as continuous-only "same scoping as the comparison/N x
+    N_lab checks" -- that was a documentation error: the 5-way comparison
+    sweep already covers all three non-binary eval types, so there was
+    never a real precedent for continuous-only here, and likert was added
+    since it's arguably the most common real-world LLM-as-judge output
+    format. Scenario names are `fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
+    lm=<lm>.es=<es>.bd=<bd>` (`_PPI_FACTORIAL_NAME_RE`/
+    `_parse_ppi_factorial_name`). Two skips: `n_lab > n` (infeasible), and
+    `bias_direction="reinforcing"` when `bias_magnitude="none"` OR
+    `effect_size="null"` (redundant, not just lower-priority -- a two-sided
+    test's rejection rate depends only on the bias offset's MAGNITUDE, and
+    "opposing"/"reinforcing" are exact sign-flipped mirror images whenever
+    there's no bias, or no real effect, for the direction to matter against;
+    generating both would just waste compute on identical-in-distribution
+    cells). Made tractable by the efficiency work above -- see
+    `fit_ppi_factorial_model` (a pooled binomial GLM,
+    `_PPI_FACTORIAL_FORMULA`, on aggregate success/failure counts per cell,
+    with `eval_type` folded in as a Treatment-coded main effect -- not
+    crossed with the other six factors' interactions, since that would need
+    a fractional design to stay estimable) and `save_ppi_factorial_heatmap_
+    plot` (three flagship 2D slices, now one row per eval type) in
+    `cases/pvalues.py`. Opt-in via `--factorial-check` (default off, unlike
+    the smaller checks) given its larger scenario count, with its own
+    `--factorial-reps`/`--factorial-n-boot` (defaulting to a cheaper
+    "screening" tier than `--reps`/`--ppi-n-boot`, since a two-tier
+    screen-cheap/confirm-expensive workflow is the standard approach for a
+    factorial this size -- rerun just the cells the screening pass flags at
+    higher `--factorial-reps`/`--factorial-n-boot` for a publication-
+    precision confirmation). Caveat documented on `fit_ppi_factorial_model`:
+    strata where the corrected rate saturates to ~0/~1 for every level of
+    another factor (e.g. `effect_size="large"` crossed with
+    `bias_magnitude`) can show GLM quasi-complete-separation (huge
+    coefficients/standard errors) -- confirmed in testing, and it's the
+    correct signal that a saturated stratum carries no further information,
+    not a fitting bug.
 - There is no separate `ppi_calibration` case: `sim_type_i_calibration.py`
   was folded into `cases/pvalues.py`'s `--mode ppi` instead of becoming a
   third file, since both halves of `pvalues` answer "is this statistical
@@ -319,6 +646,39 @@ same way `evalstats.core.resampling` is.
   `_jb_llm_binary`/`_jb_llm_repeated_binary`, a confusion-matrix
   (flip-probability) model used only for the two-group-independent and
   paired structures.
+- **PPI++ power-tuning** (`evalstats.ppi.correct`'s `power_tune` parameter,
+  Angelopoulos/Duchi/Zrnic 2023 -- generalizes the original, fixed-λ=1 PPI
+  estimator with a variance-minimizing weight λ, estimated here via a
+  bootstrap-plug-in since this codebase's estimators are arbitrary, not
+  just the paper's own OLS/logistic/quantile-regression closed forms) is
+  the default (as of 2026-07-23) for every test that routes through
+  `correct()` directly -- `ttest`/`ttest_welch`/`mwu` (global rectifier)/
+  `wilcoxon`/`paired_t`, plus `bayes_bootstrap` (reimplemented locally
+  with the same two-bootstrap-draws-plus-shrinkage construction, since
+  Dirichlet-weighted resampling isn't `correct()`'s classical resampling).
+  Validated against the harness's full 139-scenario judge-bias catalog:
+  Type-I error matches the original estimator's own baseline calibration
+  (within ~0.1-0.4 percentage points), while CI width is consistently
+  narrower -- i.e. no measured drawback for these specific tests.
+  **Explicitly NOT extended to `friedman`/`kruskal`/`anova_oneway`
+  (independent or repeated)**, despite a real attempt: unlike a scalar
+  mean, these tests' estimand is a variance-like quadratic form over
+  several corrected group/condition means, and shrinking the weight
+  toward 0 does NOT fall back to a safe classical estimator the way it
+  does for a mean -- it falls back to the RAW, uncorrected, judge-biased
+  estimate PPI exists to fix in the first place. A bootstrap-variance-
+  minimizing weight search (mirroring the scalar case, adapted for the
+  quadratic estimand) confirmed this empirically: Type-I error INFLATED to
+  ~19% (vs. the original estimator's own ~4% at the same nominal 5%)
+  across the same 139-scenario sweep, because minimizing variance doesn't
+  penalize bias, and a variance-minimizer happily reintroduces judge bias
+  whenever doing so shrinks the (bounded-below-at-zero) estimate toward 0.
+  This is a genuine open problem, not a tuning-constant fix (the scalar
+  case's analogous small-n_lab issue WAS fixable this way, via
+  `_POWER_TUNE_SHRINKAGE_C` -- this one isn't the same kind of problem).
+  These four tests keep their original, fixed-weight PPI correction
+  (already validated, no known drawback of its own) rather than an
+  unvalidated power-tuned version.
 - `judge_bias.py` (planned, for `alignment`) will keep
   `sim_alignment_methods.py`'s agreement-rate proxy-noise model as its own
   named generator, separate from `scenarios/synthetic.py`'s

@@ -92,11 +92,77 @@ def interval_score(low: float, high: float, true_value: float, alpha: float) -> 
     return width
 
 
+def _shaffer_true_null_counts(n_groups: int) -> list[int]:
+    """Possible counts of true null hypotheses among all ``n_groups *
+    (n_groups - 1) / 2`` pairwise-equality tests on ``n_groups`` means
+    (Shaffer 1986's static "S1" sequence).
+
+    If the group means partition into ``g`` distinct-value clusters, the
+    largest number of true pairwise-equality nulls consistent with that
+    partition is achieved by making one cluster as large as possible (size
+    ``n_groups - g + 1``, the rest singletons), giving ``C(n_groups-g+1, 2)``
+    true nulls. Ranging ``g`` from ``n_groups`` down to ``1`` sweeps out
+    every value achievable this way.
+    """
+    return sorted({i * (i - 1) // 2 for i in range(2, n_groups + 1)} | {0})
+
+
+def _shaffer_adjusted_pvalues(p_values: np.ndarray, n_groups: int | None) -> np.ndarray:
+    """Shaffer's modified step-down Holm procedure for all-pairwise
+    comparisons among ``n_groups`` means.
+
+    Unlike plain Holm (which divides the ``j``-th smallest p-value by
+    ``m - j + 1``, the number of hypotheses not yet stepped through), Shaffer
+    exploits the logical constraint that pairwise equality is transitive: not
+    every count of remaining true nulls is actually achievable once earlier
+    hypotheses have been rejected. The divisor for step ``j`` is instead the
+    largest achievable true-null count that is ``<= m - j + 1`` (see
+    ``_shaffer_true_null_counts``), which is never larger than Holm's plain
+    ``m - j + 1`` and is often strictly smaller -- giving uniformly more
+    power than Holm at the same strong FWER control, for exactly this
+    all-pairwise-comparisons structure.
+    """
+    n = len(p_values)
+    if n_groups is None:
+        raise ValueError(
+            "'shaffer' correction requires n_groups (number of arms/groups "
+            "being pairwise-compared)"
+        )
+    expected_m = n_groups * (n_groups - 1) // 2
+    if expected_m != n:
+        raise ValueError(
+            f"'shaffer' correction expects m = n_groups*(n_groups-1)/2 = "
+            f"{expected_m} p-values for n_groups={n_groups}, got {n}"
+        )
+
+    possible_true_nulls = _shaffer_true_null_counts(n_groups)
+    divisors = np.empty(n, dtype=int)
+    for j in range(1, n + 1):
+        remaining = n - j + 1
+        candidates = [s for s in possible_true_nulls if s <= remaining]
+        divisors[j - 1] = max(candidates) if candidates else 1
+
+    order = np.argsort(p_values)
+    adjusted = np.empty(n)
+    cummax = 0.0
+    for rank, idx in enumerate(order):
+        corrected = p_values[idx] * divisors[rank]
+        cummax = max(cummax, corrected)
+        adjusted[idx] = min(cummax, 1.0)
+    return adjusted
+
+
 def correct_pvalues(
     p_values: np.ndarray,
-    method: Literal["holm", "bonferroni", "fdr_bh"],
+    method: Literal["holm", "bonferroni", "fdr_bh", "hochberg", "shaffer"],
+    n_groups: int | None = None,
 ) -> np.ndarray:
-    """Apply multiple-comparisons correction to p-values."""
+    """Apply multiple-comparisons correction to p-values.
+
+    ``n_groups`` (the number of arms/groups being compared pairwise) is
+    required for ``"shaffer"``, which needs it to derive the all-pairwise
+    divisor sequence; it is ignored by every other method.
+    """
     n = len(p_values)
     if n <= 1:
         return p_values.copy()
@@ -124,5 +190,26 @@ def correct_pvalues(
             cummin = min(cummin, corrected)
             adjusted[idx] = min(cummin, 1.0)
         return adjusted
+
+    if method == "hochberg":
+        # Step-up analogue of Holm: same per-rank multiplier (n - rank), but
+        # monotonized by a running MIN from the largest p-value downward
+        # (rather than Holm's running MAX from the smallest p-value upward).
+        # This is always <= Holm's adjusted p-values, and is valid (controls
+        # FWER) under non-negative dependence between the test statistics --
+        # exactly the positively-correlated-comparisons setting repeated-
+        # measures/shared-item designs produce.
+        order = np.argsort(p_values)
+        adjusted = np.empty(n)
+        cummin = 1.0
+        for rank in range(n - 1, -1, -1):
+            idx = order[rank]
+            corrected = p_values[idx] * (n - rank)
+            cummin = min(cummin, corrected)
+            adjusted[idx] = min(cummin, 1.0)
+        return adjusted
+
+    if method == "shaffer":
+        return _shaffer_adjusted_pvalues(p_values, n_groups)
 
     raise ValueError(f"Unknown correction method: {method}")

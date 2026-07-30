@@ -64,20 +64,54 @@ BETA = Method("beta", "#f0027f")
 LOGIT_T = Method("logit_t", "#a6761d")
 NIG = Method("nig", "#888888")
 EL = Method("el", "#00441b")
+LOGIT_T_2ND = Method("logit_t_2nd", "#bd5b17")
+"""evalstats.core.resampling.logit_t_ci_1d(..., order=2) -- the optional
+2nd-order (curvature) bias-corrected variant, registered here purely for
+direct comparison against the order=1 default (see logit_t_ci_1d's
+docstring for why order=1 is the default: on real data, once a real
+data-hygiene bug that looked like a delta-method failure was fixed at its
+actual source, order=2 tracked order=1 almost exactly, so there's no proven
+benefit -- kept as an option, not because it's expected to win here)."""
 
 BINARY_SINGLE_EXTRA_METHODS = [WILSON, JEFFREYS, WALD, CLOPPER_PEARSON, BAYES_SINGLE]
 CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
+CONTINUOUS_EXTRA_METHODS_WITH_LOGIT_T_2ND = [BETA, LOGIT_T, LOGIT_T_2ND, NIG, EL]
+"""CONTINUOUS_EXTRA_METHODS plus logit_t_2nd -- opt-in via --methods, not
+part of the default battery (LOGIT_T_2ND is a validation-only comparison
+variant, not a distinct recommended method)."""
 
 # ---------------------------------------------------------------------------
 # Paired (pairwise-difference) extras -- for cases/ci_paired.py once ported
 # ---------------------------------------------------------------------------
 NEWCOMBE = Method("newcombe_score", "#aec7e8")
 TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
+PPI_WILSON = Method("ppi_wilson", "#c49c94")
+"""PPI-corrected single-sample Wilson score interval (evalstats.tests.
+_ppi_single_wilson) -- a binary-proportion analogue of TANGO's paired
+Wilson-style effective-n trick, for a single-sample (not two/paired-group)
+mean estimand. Deliberately NOT named "wilson" -- that name is already
+BINARY_SINGLE_EXTRA_METHODS' plain (non-PPI-corrected) Wilson CI for
+ci_single.py, a different statistical procedure that happens to share the
+same textbook name; reusing the same Method name here would have silently
+overwritten that entry (same module-level name, last assignment wins).
+Exercised both by cases/ppi_real.py's real-data single-sample bias/coverage
+check and (as of the single-sample effect-check addition) pvalues.py's
+synthetic PPI sweep -- see PPI_BOOTSTRAP_T_SINGLE below and
+cases/pvalues.py's _run_ppi_effect_cell single-arm blocks."""
+PPI_BOOTSTRAP_T_SINGLE = Method("bootstrap_t_single", "#9edae5")
+"""PPI-corrected single-sample studentized-bootstrap CI (evalstats.tests.
+_ppi_single_bootstrap_t) -- the bounded_01/continuous analogue of PPI_WILSON,
+targeting the same single-sample (not paired) mean estimand PPI_AUTO_METHOD_
+TABLE routes non-binary robustness CIs to. Deliberately distinct from
+BOOTSTRAP_T (the paired/two-sample PPI method of the same underlying
+construction) -- same reason PPI_WILSON isn't named "wilson": different
+estimand, would silently collide if given the same Method name."""
 TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
+WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
 PAIRWISE_EXTRA_METHODS = [T_INTERVAL, LOGIT_T, NIG, EL]
-BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED]
+BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
 # ---------------------------------------------------------------------------
 # Nested-mode methods -- for ci_single.py's/ci_paired.py's --nested-mode,
@@ -99,13 +133,14 @@ CP_FLAT = Method("clopper_pearson_flat", "#e6ab02")
 BAYES_INDEP_FLAT = Method("bayes_indep_flat", "#1b9e77")
 BINARY_FLAT_METHODS = [WILSON_FLAT, WALD_FLAT, CP_FLAT, BAYES_INDEP_FLAT]
 
-WILSON_DE = Method("wilson_de", "#a6761d")
 WILSON_OD = Method("wilson_od", "#666666")
-BETA_BINOMIAL = Method("beta_binomial", "#17becf")
-BINARY_NESTED_METHODS = [WILSON_DE, WILSON_OD, BETA_BINOMIAL]
-
-NIG_NESTED = Method("nig_nested", "#f7b6d2")
-CONTINUOUS_NESTED_METHODS = [NIG_NESTED]
+WILSON_OD_BC = Method("wilson_od_bc", "#e31a1c")
+WILSON_OD_T = Method("wilson_od_t", "#6a3d9a")
+JEFFREYS_OD = Method("jeffreys_od", "#b2df8a")
+CP_OD = Method("cp_od", "#fb9a99")
+BB_BAYES = Method("bb_bayes", "#33a02c")
+BB_BAYES_ROBUST = Method("bb_bayes_robust", "#ff7f00")
+BINARY_NESTED_METHODS = [WILSON_OD, WILSON_OD_BC, WILSON_OD_T, JEFFREYS_OD, CP_OD, BB_BAYES, BB_BAYES_ROBUST]
 
 BOOTSTRAP_DIFF_NESTED = Method("bootstrap_diff_nested", "#1b9e77")
 BAYES_DIFF_NESTED = Method("bayes_diff_nested", "#d95f02")
@@ -113,13 +148,13 @@ SMOOTH_DIFF_NESTED = Method("smooth_diff_nested", "#7570b3")
 PAIR_DIFF_NESTED_METHODS = [BOOTSTRAP_DIFF_NESTED, BAYES_DIFF_NESTED, SMOOTH_DIFF_NESTED]
 
 TANGO_FLAT = Method("tango_flat", "#e7298a")
+TANGO_MEAN = Method("tango_mean", "#8c564b")
 NEWCOMBE_FLAT = Method("newcombe_flat", "#66a61e")
-BINARY_PAIR_FLAT_METHODS = [TANGO_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED]
+BINARY_PAIR_FLAT_METHODS = [TANGO_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
-TANGO_MULTIRUN_CLUSTER = Method("tango_multirun_cluster", "#e6ab02")
 TANGO_MULTIRUN_EFFECTIVE = Method("tango_multirun_effective", "#a6761d")
 TANGO_MULTIRUN_MOMENTS = Method("tango_multirun_mmnt", "#1b9e77")
-BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_CLUSTER, TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
+BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- raw pairwise p-value/rejection procedures (non-PPI
@@ -146,14 +181,69 @@ PAIRWISE_PVALUE_METHODS = [
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- multi-arm multiplicity-correction strategies (non-PPI
 # path), ported from sim_compare_pvalues.py's MULTIARM_CORRECTIONS.
+# NONE/HOLM/BONFERRONI/FDR_BH/HOCHBERG/SHAFFER correct the Wilcoxon
+# signed-rank p-value -- evalstats' canonical, eval-type-agnostic paired
+# test (unlike Tango/Logit-t in --mode simultaneous_ci's
+# CANONICAL_SIMULTANEOUS_CI_METHODS, one test covers binary/continuous/
+# likert/grades alike, so there's no per-eval-type split here) -- rather
+# than --multiarm-method's raw p-value; see cases/pvalues.py's
+# _compute_multiarm_metrics. HOCHBERG is a closed-form step-up refinement of
+# HOLM (never more conservative, valid under the non-negative dependence
+# repeated-measures/shared-item designs produce -- see
+# evalstats.core.stats_utils.correct_pvalues). SHAFFER is a closed-form
+# step-down refinement of HOLM specific to *all-pairwise* comparisons among
+# k arms, exploiting the transitivity of equality (if A=B and B=C then
+# A=C) to use a smaller, non-constant divisor sequence instead of HOLM's
+# plain (m, m-1, ..., 1) -- see
+# evalstats.core.stats_utils._shaffer_adjusted_pvalues.
+#
+# MAX_T/ROMANO_WOLF/WESTFALL_YOUNG are the resampling-based family: MAX_T is
+# *single-step* studentized-bootstrap max-T (one joint critical value for
+# every pair); ROMANO_WOLF is the *step-down* refinement of the same
+# bootstrap-t null (recomputing the max only over not-yet-rejected pairs at
+# each step, so it dominates MAX_T in power for the same FWER guarantee);
+# WESTFALL_YOUNG is the permutation-based (per-item sign-flip) analogue of
+# ROMANO_WOLF's step-down algorithm, exact under exchangeability of the
+# paired design rather than relying on the bootstrap's asymptotic
+# justification. All three need a bootstrap/permutation-compatible
+# resampling scheme (Wilcoxon has no joint max-T analogue), so they stay on
+# --multiarm-method (bootstrap_t by default) / per-item paired differences
+# regardless of eval type -- see cases/pvalues.py's
+# _stepdown_max_t_pvalues. FRIEDMAN_NEMENYI is unaffected either way --
+# already its own rank-based omnibus + post-hoc test.
+#
+# BOOT is the multiarm analogue of --mode simultaneous_ci's `boot` (see
+# CANONICAL_SIMULTANEOUS_CI_METHODS below, whose CORR_BOOT instance this
+# reuses as-is): it widens the canonical Wilcoxon p-value using a joint
+# bootstrap critical value (the same max-over-all-pairs studentized-mean
+# resample MAX_T/ROMANO_WOLF use -- see cases/pvalues.py's
+# _bootstrap_t_matrix) instead of a fixed, correlation-blind factor the way
+# HOLM/BONFERRONI/HOCHBERG/SHAFFER do -- rescaling raw_p by alpha/alpha_eff,
+# where alpha_eff is that joint critical value translated back to an
+# equivalent significance level (mirroring
+# evalstats.core.paired._joint_bootstrap_scaled_simultaneous_cis's z<->alpha
+# translation). Unlike MAX_T/ROMANO_WOLF/WESTFALL_YOUNG, BOOT is NOT tied to
+# --multiarm-method -- like NONE/HOLM/etc. it always operates on the
+# canonical Wilcoxon statistic, so it directly tests whether the small FWER
+# excess observed for MAX_T/ROMANO_WOLF at n=500-2000 is specific to their
+# studentized-mean bootstrap-t construction or a more general property of
+# bootstrap-based FWER correction.
 # ---------------------------------------------------------------------------
 CORR_NONE = Method("none", "#9c9ede")
 CORR_HOLM = Method("holm", "#cedb9c")
 CORR_BONFERRONI = Method("bonferroni", "#e7ba52")
 CORR_FDR_BH = Method("fdr_bh", "#ad494a")
+CORR_HOCHBERG = Method("hochberg", "#e6550d")
+CORR_SHAFFER = Method("shaffer", "#9e9ac8")
 CORR_FRIEDMAN_NEMENYI = Method("friedman_nemenyi", "#a55194")
 CORR_MAX_T = Method("max_t", "#5254a3")
-MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_FRIEDMAN_NEMENYI, CORR_MAX_T]
+CORR_ROMANO_WOLF = Method("romano_wolf", "#6baed6")
+CORR_WESTFALL_YOUNG = Method("westfall_young", "#74c476")
+CORR_BOOT = Method("boot", "#3182bd")
+MULTIARM_CORRECTION_METHODS = [
+    CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_BH, CORR_HOCHBERG, CORR_SHAFFER,
+    CORR_FRIEDMAN_NEMENYI, CORR_MAX_T, CORR_ROMANO_WOLF, CORR_WESTFALL_YOUNG, CORR_BOOT,
+]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- simultaneous-CI construction methods (non-PPI path),
@@ -169,6 +259,37 @@ MULTIARM_CORRECTION_METHODS = [CORR_NONE, CORR_HOLM, CORR_BONFERRONI, CORR_FDR_B
 # than the raw mean-difference scale a CI here would need.
 # ---------------------------------------------------------------------------
 SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
+
+# ---------------------------------------------------------------------------
+# cases/pvalues.py -- canonical-CI-based simultaneous-CI constructions
+# (non-PPI path), for --mode simultaneous_ci. `none`/`bonferroni` (built on
+# `matrix_raw.results`) and `sidak`/`boot` are all built on evalstats'
+# *canonical* pairwise CI method for the scenario's eval type -- Tango for
+# binary, Logit-t for continuous/likert (bounded [0, 1]/[lo, hi] numeric
+# data; see evalstats.config.AUTO_ANALYZE_METHOD_TABLE's "binary"/
+# "bounded_01" rows) -- rather than whatever --multiarm-method is in force.
+# max_t is the one exception: it needs a bootstrap-compatible method to
+# resample from (neither Tango nor Logit-t is), so it keeps using
+# --multiarm-method (bootstrap_t by default) regardless of eval type.
+# `grades` has no canonical default wired up here (deliberately out of
+# scope -- see cases/pvalues.py's _CANONICAL_CI_FUNC_BY_EVAL_TYPE), so these
+# rows are simply absent for grades scenarios.
+# SIDAK ("sidak") and BOOT ("boot") widen the canonical CI to hold
+# family-wise via evalstats.core.paired's generic (not method-specific)
+# _sidak_simultaneous_cis / _joint_bootstrap_scaled_simultaneous_cis, called
+# with whichever ci_func matches the scenario's eval type: Sidak's
+# closed-form per-comparison alpha adjustment, and a joint-bootstrap
+# critical value that accounts for correlation between comparisons and is
+# substituted for the canonical CI's marginal normal quantile -- the two
+# options a from-scratch multiplicity-correction analysis would reach for,
+# per Gemini's Sidak/bootstrap-scaling suggestion this mode's docstring
+# discusses. Named plain "sidak"/"boot" (not e.g. "tango_sidak") since which
+# base CI they widen is now scenario-dependent, not fixed to one method.
+# CORR_BOOT (not CORR_SIDAK) is reused as-is by MULTIARM_CORRECTION_METHODS
+# above -- see its comment for the p-value-side analogue.
+# ---------------------------------------------------------------------------
+CORR_SIDAK = Method("sidak", "#31a354")
+CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- evalstats.tests wrapper names (PPI-corrected path),
@@ -202,34 +323,136 @@ SIMULTANEOUS_CI_METHODS = [CORR_NONE, CORR_BONFERRONI, CORR_MAX_T]
 # shrinkage formula (see evalstats.tests._ppi_paired_tango); fully
 # closed-form, no bootstrap resampling.
 # ---------------------------------------------------------------------------
-TTEST = Method("ttest", "#3182bd")
-TTEST_WELCH = Method("ttest_welch", "#6baed6")
-MW = Method("mw", "#9ecae1")
+TTEST = Method("ttest", "#1f77b4")
+TTEST_WELCH = Method("ttest_welch", "#d62728")
+# MWU/MWU_MNAR_EXPERIMENTAL: two PPI corrections for the SAME classical test
+# (Mann-Whitney U / independent two-group mid-rank estimand P_mid(A>B)-0.5),
+# not two different classical tests. MWU applies evalstats.tests.
+# _ppi_two_sample's single GLOBAL rectifier -- exactly correct for a MEAN,
+# but simulation (simulations/harness/cases/pvalues.py --mode ppi,
+# judge-bias sweep, tag "label_mechanism" x "eval_type") showed it badly
+# miscalibrated for this rank estimand specifically when labeling is
+# non-uniform with respect to score (e.g. "double-check the highest-
+# scoring items") combined with real judge bias and a coarse/discrete
+# (Likert) scale: Type-I error 3-9x nominal in the worst identified cell
+# (likert, severe bias, strong such labeling: 0.36-0.41 vs nominal 0.05).
+# MWU_MNAR_EXPERIMENTAL (evalstats.tests._ppi_two_sample_midrank_corrected)
+# fixes this with a per-group, per-score-bin LOCAL rectifier instead (see
+# that function's docstring for the full mechanism/validation) -- and WAS
+# the official PPI test sweep's default (as "mwu_corr") until 2026-07-22,
+# when a controlled naive-vs-corrected comparison on matched draws (the
+# same methodology that caught kruskal_corr's analogous regression -- see
+# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL below) found the SAME failure mode here
+# at a smaller magnitude: under MCAR labeling with real judge bias present
+# and a small labeled sample, Type-I climbed from ~3.6-5.6% (global) to
+# ~5.4-7.2% (local) -- worst cells showing a clean 2x multiplier (e.g. 3.6%
+# -> 7.2% at n_lab=15, severe bias, noise=0.025), replicated across two
+# noise levels with the same n_lab/bias combination (not sampling noise:
+# ~5 SEs at n_reps=1000). Given this project's stance that PPI requires
+# MCAR labeling and treats MNAR as a documented, out-of-scope limitation
+# (see evalstats.ppi.correct's docstring) rather than something to actively
+# correct for, paying an MCAR cost for MNAR robustness in a regime users
+# are already told not to rely on is the wrong trade -- so MWU (the global
+# rectifier) is the default/official method again, and MWU_MNAR_EXPERIMENTAL
+# is kept (not deleted) for direct comparison, reproducing pre-2026-07-22
+# results, or anyone deliberately studying MNAR robustness, selectable
+# explicitly via --tests mwu_mnar_experimental. cases/ppi_real.py's twogroup
+# check dropped it entirely as of 2026-07-24 (real-data judge bias isn't
+# MNAR, so there's nothing there for the local rectifier to buy over MWU --
+# see _twogroup_methods_for's docstring), so it no longer needs to share a
+# same-hue "Blues family" with ttest/ttest_welch/mwu the way it did when all
+# four were expected to appear together in one plot (that family made a
+# same-hue-different-shade grouping hard to tell apart at a glance, which is
+# why ttest/ttest_welch/mwu moved to distinct tab10 hues instead) -- kept
+# distinct here too so it isn't left visually stranded wherever it's still
+# selected explicitly.
+MWU = Method("mwu", "#2ca02c")
+MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
+# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the SAME
+# omnibus test, generalizing the MWU/MWU_MNAR_EXPERIMENTAL story one level up (k
+# independent groups instead of 2) -- and, as of 2026-07-22, the SAME
+# conclusion. KRUSKAL applies evalstats.tests._ppi_kruskal_wallis_pairwise's
+# single GLOBAL rectifier per pairwise dominance estimate theta_ab =
+# theta_unlab + (theta_lab_human - theta_lab_llm) -- the SAME global-
+# rectifier pattern that broke MWU, just extended from one pair to all
+# C(k,2) pairs, and genuinely miscalibrated the same way under severe judge
+# bias x MNAR-like labeling x coarse/discrete scale x large N (Type-I
+# 0.32-0.49 vs nominal 0.05 in the worst identified cells). A per-group,
+# per-score-bin LOCAL rectifier (evalstats.tests.
+# _ppi_kruskal_wallis_pairwise_mnar_experimental, generalizing MW_MNAR_
+# EXPERIMENTAL's fix from 2 groups to k) was built and validated to fix
+# that MNAR regime (down to ~0.09-0.11 in the same cells) -- but was
+# confirmed (2026-07-22 screening + a controlled naive-vs-corrected
+# comparison on matched draws) to cost real MCAR calibration in exchange:
+# worst found cell went from 7.9% (global, already-imperfect) to 11.1%
+# (local) at small n_lab + high llm_noise, a regression the fix itself
+# introduces, not one it inherits. A shrinkage/partial-pooling variant was
+# prototyped to try to recover that MCAR cost without losing the MNAR fix
+# and made BOTH worse, not just MCAR (see scratch prototypes in the
+# ppi-welch-paired-t-calibration worktree). The SAME controlled comparison
+# run against MWU/MWU_MNAR_EXPERIMENTAL (same day) found the identical
+# failure mode at a smaller magnitude (~2x multiplier in the worst cells,
+# e.g. 3.6% -> 7.2%, vs. kruskal's ~1.4x) -- see MWU/MWU_MNAR_EXPERIMENTAL's
+# comment above for that data. Given this project's stance that PPI
+# requires random (MCAR) label sampling and treats MNAR as a documented,
+# out-of-scope limitation rather than something to actively correct for
+# (see evalstats.ppi.correct's docstring), paying an MCAR cost to partially
+# fix a regime users are already told not to rely on is the wrong trade for
+# either -- so KRUSKAL (the global rectifier) is the default/official
+# method as of 2026-07-22, and the local rectifier is demoted to
+# KRUSKAL_MNAR_EXPERIMENTAL: kept for direct comparison and for anyone
+# deliberately studying the MNAR-robustness question, selectable explicitly
+# via --tests kruskal_mnar_experimental, but not part of the official/
+# validated result set. Same color convention as MWU/MWU_MNAR_EXPERIMENTAL:
+# the default occupies the original primary shade, the alternate gets a
+# lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
+KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MW, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL,
-    LMM, LMM_FACTORIAL, LMM_RUNS,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
+    PPI_BOOTSTRAP_T_SINGLE,
 ]
+"""Every PPI test method the harness knows how to run -- the full set
+selectable via --tests. NOT what runs by default; see
+PPI_OFFICIAL_TEST_METHODS for that."""
+PPI_OFFICIAL_TEST_METHODS = [
+    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, KRUSKAL_MNAR_EXPERIMENTAL)
+]
+"""The default (--tests unset) active-test set for --mode ppi -- every
+PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
+(both fix real MNAR-labeling miscalibration in their global-rectifier
+sibling, but were found to cost real MCAR calibration doing so -- see
+MWU/MWU_MNAR_EXPERIMENTAL's and KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's comments
+above). Both remain selectable via --tests mwu_mnar_experimental / --tests
+kruskal_mnar_experimental for direct comparison, reproducing pre-2026-07-22
+results, or studying MNAR robustness deliberately. PPI_WILSON/
+PPI_BOOTSTRAP_T_SINGLE (the single-sample robustness-CI methods
+PPI_AUTO_METHOD_TABLE routes to) are now part of the default set too --
+pvalues.py's synthetic PPI sweep gained a single-arm effect-check scenario
+(see cases/pvalues.py's _run_ppi_effect_cell single-arm blocks) precisely so
+these wouldn't be validated ONLY by cases/ppi_real.py's real-data check."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
-    WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED,
-] + CONTINUOUS_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
-    CONTINUOUS_NESTED_METHODS + PAIR_DIFF_NESTED_METHODS
+    WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
+] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
+    PAIR_DIFF_NESTED_METHODS
     + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
-] + MULTIARM_CORRECTION_METHODS + [
-    TTEST, TTEST_WELCH, MW, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, LMM, LMM_FACTORIAL, LMM_RUNS,
+] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
+    LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 
 METHODS_BY_NAME: dict[str, Method] = {m.name: m for m in REPORT_METHOD_ORDER}

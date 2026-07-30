@@ -16,7 +16,12 @@ build/
 website/build/
 scripts/pypi_release_checks.sh
 simulations/plots/*
-simulations/out
+simulations/out/*
+!simulations/out/inspect_benchmarks.csv
+!simulations/out/judge_bias_privacy_judge.csv
+!simulations/out/judge_bias_privacy_judge_items.csv
+!simulations/out/judge_bias_iclr_metareview.csv
+!simulations/out/judge_bias_iclr_metareview_items.csv
 .agent-study-venv-full/
 .agent-study-venv-baseline/
 .agent-study-venv-runner/
@@ -28,3 +33,7 @@ TODO.md
 DESIGN.md
 evalstats_api_spec_v4.md
 *.jsonl
+simulations/harness/METHODS.md
+simulations/harness/methods_table.tex
+simulations/harness/revise_latex_tables.py
+simulations/PPI_TESTBED_REVIEW.md
