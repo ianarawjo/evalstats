@@ -845,12 +845,12 @@ def _analyze_single(
             # given -- there's no safe way to infer a metric's true bounds
             # from an arbitrary numeric sample's own min/max. In the None
             # case, auto silently downgrades to the bounds-agnostic
-            # "continuous" (t_interval) row below, but says so loudly.
+            # "unbounded" (t_interval) row below, but says so loudly.
             resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=2)
             if resolved_score_range is not None:
                 data_kind = "bounded_01"
             else:
-                data_kind = "continuous"
+                data_kind = "unbounded"
                 warnings.warn(
                     "Numeric evaluation data outside [0, 1] was auto-detected "
                     "with no explicit score_range, so evalstats is using "

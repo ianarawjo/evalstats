@@ -166,7 +166,7 @@ class TestResult:
         elif test == "wilcoxon":
             if ex.get("ppi_method") == "hajek_experimental":
                 return "mean Hajek signed-rank score (linearized Wilcoxon, centered at 0 under H0)"
-            return "median of paired differences (X − Y)"
+            return "Walsh-average midrank-sign statistic (Hodges-Lehmann-style, centered at 0 under H0)"
         elif test == "anova":
             return (
                 "between-condition variance after removing subject means"
@@ -3345,12 +3345,36 @@ def wilcoxon(
     Uncorrected: ``scipy.stats.wilcoxon(x, y)`` (two-sided, paired by position).
 
     PPI estimand (``method="current"``, default):
-    ``median(x_i − y_i)`` for the main term (LLM diffs), with
-    ``mean(x_lab_i − x_hat_i) − mean(y_lab_i − y_hat_i)`` as the rectifier.
-    Using the mean for the rectifier gives a well-calibrated bootstrap (the
-    bootstrap of a mean is exact); using the median would overestimate the
-    rectifier SE by ~2×, causing conservative Type I errors. H₀ is location
-    shift = 0, so the bootstrap p-value
+    ``theta = P_mid(Walsh_ij > 0) − 0.5``, where ``Walsh_ij = (d_i + d_j) / 2``
+    for every pair ``i <= j`` of paired LLM differences ``d = x − y``
+    (including self-pairs) -- the exact sign-statistic construction behind
+    the Hodges-Lehmann one-sample location estimator, computed by
+    :func:`evalstats.ppi.paired_walsh_midrank_theta` and used as BOTH the
+    main statistic and the rectifier (matched). ``theta`` is 0 under H₀
+    (``D`` symmetric about 0) and asymptotically equivalent to the
+    classical Wilcoxon signed-rank statistic, but bounded to ``[-0.5, 0.5]``
+    -- unlike ``median(x − y)``, this is NOT a location shift on the
+    original score scale.
+
+    This estimand replaced an earlier ``median``/``mean`` mismatched
+    rectifier pair, which was confirmed (2026-07-23, real judge-score data)
+    to inflate Type I error up to 77.5% on some judge pairs since the
+    rectifier is only unbiased when the population median equals the
+    population mean of the diffs. Matching the rectifier to a plain
+    ``median`` statistic fixed that bias but exposed a separate problem: the
+    population MEDIAN of a paired difference can stay locked at exactly 0
+    even under a large, real, classical-Wilcoxon-detectable shift when data
+    are heavily tied (e.g. Likert scores) -- the wrong estimand, not a
+    bootstrap-degeneracy issue jitter can fix. The Walsh-average midrank
+    construction avoids both problems (matched rectifier, and a statistic
+    that doesn't degenerate under ties) and is what
+    ``simulations/harness/cases/pvalues.py``/``ppi_real.py`` validate as
+    "wilcoxon" -- this function is kept one-to-one with that. It is,
+    however, NOT a complete fix: on real, extremely tied, small-n_lab data
+    (88% exact ties, n_lab~15), Type I error was measured at ~26% vs.
+    nominal 5%, a known, open, unresolved residual -- see
+    :func:`evalstats.ppi.paired_walsh_midrank_theta`'s docstring for the
+    full root-cause writeup. H₀ is theta = 0, so the bootstrap p-value
     ``2 * min(P(θ̂* ≤ 0), P(θ̂* ≥ 0))`` is correctly centered at the null.
 
     Experimental alternative (``method="hajek_experimental"``): builds a
@@ -3376,7 +3400,8 @@ def wilcoxon(
         suppress output when calling from automated pipelines.
     method : {"current", "hajek_experimental"}
         Which PPI correction path to use when labels are supplied.
-        ``"current"`` preserves the existing median+mean-rectifier approach.
+        ``"current"`` is the Walsh-average midrank-sign estimand described
+        above (matches the simulation harness's "wilcoxon").
         ``"hajek_experimental"`` uses a linearized signed-rank score mean.
     power_tune : bool
         Use PPI++'s variance-minimizing power-tuning weight λ instead of
@@ -3461,13 +3486,14 @@ def wilcoxon(
                 power_tune=power_tune,
             )
         else:
-            # Use np.mean for the rectifier (instead of np.median) to get a
-            # better-calibrated bootstrap: the bootstrap of mean(D_lab) is exact,
-            # while the bootstrap of median(Y_lab) − median(Y_hat_lab) overestimates
-            # the variance by ~2× for typical n_lab, causing conservative Type I errors.
-            # Both estimands converge to 0 under H₀; the hybrid is asymptotically valid.
-            ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, np.median, alpha, n_boot, rng,
-                                     rectifier_func=np.mean, power_tune=power_tune)
+            # paired_walsh_midrank_theta (evalstats.ppi), matched as BOTH
+            # statistic and rectifier -- see this function's docstring for
+            # why this replaced the earlier mean-rectifier (biased) and
+            # matched-median (power-collapses under ties) attempts, and why
+            # it's kept one-to-one with what the simulation harness
+            # validates as "wilcoxon".
+            ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, paired_walsh_midrank_theta, alpha, n_boot, rng,
+                                     rectifier_func=paired_walsh_midrank_theta, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)

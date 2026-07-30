@@ -39,6 +39,7 @@ import numpy as np
 import pytest
 from scipy import stats as scipy_stats
 
+from evalstats.ppi import paired_walsh_midrank_theta
 from evalstats.tests import (
     TestResult,
     ttest,
@@ -131,11 +132,18 @@ def _two_sample_unbalanced(rng, n_a=400, n_b=120, mu_a=3.0, mu_b=3.0, sigma=1.0,
 
 
 def _llm_estimand(call_fn, null, a, b):
-    """Raw LLM estimate of the same estimand as the corrected output."""
+    """Raw LLM estimate of the SAME estimand wilcoxon()/mannwhitney()/ttest()
+    actually correct -- must track whichever estimand each function's
+    default `corrected_estimate` is on, or an MSE/closeness comparison
+    against it is comparing different scales (e.g. an unbounded location
+    shift vs. a theta bounded to [-0.5, 0.5]), which trivially favors
+    whichever side happens to be bounded regardless of whether PPI
+    correction did anything. wilcoxon()'s default is the Walsh-average
+    midrank-sign statistic (see its docstring), not median(a - b)."""
     if null == 0.5:
         return float(np.mean(a[:, None] > b[None, :]))
     if call_fn is _fn_wilcoxon:
-        return float(np.median(a - b))
+        return paired_walsh_midrank_theta(a - b)
     return float(a.mean() - b.mean())
 
 
@@ -790,12 +798,20 @@ class TestPairedTests:
         )
 
     def test_wilcoxon_large_shift_detected(self):
+        """Default estimand is a Walsh-average midrank-sign statistic, theta
+        in [-0.5, 0.5] (see wilcoxon()'s docstring) -- NOT a location shift
+        on the original scale, so a large true shift should push the
+        corrected estimate strongly positive (toward its 0.5 ceiling), not
+        toward the raw mu_a - mu_b difference itself."""
         rng = np.random.default_rng(82)
         a, b, al, bl = _paired(rng, n=200, mu_a=4.5, mu_b=3.0, n_lab=50)
         r = wilcoxon(a, b, x_lab=al, y_lab=bl, n_boot=500, rng=82)
         lo, hi = r.corrected_ci
         assert lo > 0, "Wilcoxon corrected CI should exclude 0 for large true shift"
-        assert abs(r.corrected_estimate - 1.5) < 0.5
+        assert r.corrected_estimate > 0.3, (
+            f"corrected estimate {r.corrected_estimate:.3f} should be strongly positive "
+            f"(near the 0.5 ceiling) for a large, clearly-separated true shift"
+        )
 
     def test_wilcoxon_raises_when_no_overlap_in_labeled_positions(self):
         """y_lab all NaN → no position has both x and y labeled → ValueError."""

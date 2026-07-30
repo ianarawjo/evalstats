@@ -1097,7 +1097,7 @@ def _run_alignment_ppi(
     elif is_bounded_01_scores(scores_2d):
         data_kind = "bounded_01"
     else:
-        data_kind = "continuous"
+        data_kind = "unbounded"
 
     if method == "auto":
         pairwise_method, robustness_method = resolve_ppi_auto_methods(data_kind)
@@ -1222,6 +1222,7 @@ def _run_alignment_ppi(
     pair_wilcoxon_p: dict = {}
 
     from evalstats.tests import _ppi_paired_arrays as _ppi_wilcoxon_arrays
+    from evalstats.ppi import paired_walsh_midrank_theta as _wilcoxon_statistic
 
     for k, (ea, eb) in enumerate(pair_keys):
         pr = bundle.pairwise.results[(ea, eb)]
@@ -1236,8 +1237,8 @@ def _run_alignment_ppi(
             # headline point_diff/p_value above, so always computed regardless
             # of the max-T shortcut below.
             pair_wilcoxon_p[(ea, eb)] = _ppi_wilcoxon_arrays(
-                a_arr, b_arr, a_lab_arr, b_lab_arr, np.median, pair_alpha, n_boot, rng,
-                rectifier_func=np.mean,
+                a_arr, b_arr, a_lab_arr, b_lab_arr, _wilcoxon_statistic, pair_alpha, n_boot, rng,
+                rectifier_func=_wilcoxon_statistic,
             ).p_value
 
             if used_max_t:

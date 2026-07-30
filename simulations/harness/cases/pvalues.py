@@ -4344,23 +4344,28 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
     return float(scipy_stats.wilcoxon(a, b, alternative="two-sided").pvalue)
 
 
-def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int) -> float:
+def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int, power_tune: bool = True) -> float:
     """The SAME PPI-corrected call _run_ppi_cell uses for this method
     (_ppi_two_sample / _ppi_two_sample_midrank_corrected for "group"
     methods, _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
     ttest_welch/mwu/mwu_mnar_experimental/paired_t/wilcoxon blocks, which this
-    mirrors exactly)."""
+    mirrors exactly).
+
+    power_tune : forwarded to _ppi_two_sample/_ppi_paired_arrays as-is (see
+    evalstats.ppi.correct's power_tune parameter). Default True matches the
+    production default; --factorial-no-power-tune sets this False for a
+    head-to-head comparison run -- see that flag's help text."""
     if structure == "group":
         if method == TTEST_WELCH.name:
             estimator = lambda ya, yb: float(ya.mean() - yb.mean())  # noqa: E731
-            return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
+            return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune).p_value
         if method == MWU_MNAR_EXPERIMENTAL.name:
             return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
         # MWU (global rectifier): what _COMPARISON_METHODS actually uses --
         # see that constant's docstring for why it's the default over
         # mwu_mnar_experimental's local rectifier as of 2026-07-22.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
-        return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed).p_value
+        return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune).p_value
     # paired_t: np.mean. wilcoxon: paired_walsh_midrank_theta (evalstats.ppi --
     # a Hodges-Lehmann Walsh-average midrank-sign statistic), NOT np.median --
     # see that function's docstring for why the median of a paired difference
@@ -4369,7 +4374,7 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     # simpler per-item sign proportion (tried first) also isn't safe (severely
     # inflated Type-I error at small n_lab against real, heavily-tied data).
     statistic = np.mean if method == PAIRED_T.name else paired_walsh_midrank_theta
-    return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic).p_value
+    return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic, power_tune=power_tune).p_value
 
 
 def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:
@@ -4425,7 +4430,7 @@ group masked separately, e.g. group/group3's _jb_labels_independent) or
 _jb_labels_shared) -- see _run_ppi_comparison_cell."""
 
 
-def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed, method: str) -> PPIComparisonResult:
+def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed, method: str, power_tune: bool = True) -> PPIComparisonResult:
     """Runs the 5-way comparison (all_human/human_subset/llm_only/
     llm_impute/ppi) for ONE classical `method` (see _COMPARISON_METHODS/
     _COMPARISON_METHODS_OMNIBUS). Dispatches on
@@ -4526,6 +4531,7 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
                 else:
                     p_ppi = _ppi_comparison_pvalue(
                         llm_groups[0], llm_groups[1], lab_groups[0], lab_groups[1], method, structure, n_boot, ppi_seed,
+                        power_tune=power_tune,
                     )
                     rejects["ppi"] += int(p_ppi < _ALPHA)
             except Exception:
@@ -4541,14 +4547,15 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
 
 
 def _run_ppi_comparison_cell_worker(args: tuple) -> PPIComparisonResult:
-    sc, n_reps, n_boot, seed, method = args
-    return _run_ppi_comparison_cell(sc, n_reps, n_boot, seed, method)
+    sc, n_reps, n_boot, seed, method, power_tune = args
+    return _run_ppi_comparison_cell(sc, n_reps, n_boot, seed, method, power_tune=power_tune)
 
 
 def run_ppi_comparison_simulation(
     sources: list[JudgeBiasSource], n_reps: int, n_boot: int,
     progress_mode: str = "bar", seed: int = 42, n_workers: int = 1,
     methods: tuple = _COMPARISON_METHODS,
+    power_tune: bool = True,
 ) -> list[PPIComparisonResult]:
     """Runs _run_ppi_comparison_cell for every (source, method) pair --
     len(sources) x len(methods) cells total -- returning a FLAT list (each
@@ -4574,10 +4581,10 @@ def run_ppi_comparison_simulation(
     results: list[PPIComparisonResult] = []
     if n_workers <= 1:
         for i, ((sc, m), child_seed) in enumerate(zip(cells, child_seeds)):
-            results.append(_run_ppi_comparison_cell(sc, n_reps, n_boot, child_seed, m))
+            results.append(_run_ppi_comparison_cell(sc, n_reps, n_boot, child_seed, m, power_tune=power_tune))
             reporter.update(i + 1, detail=f"{sc.name} [{m}]")
     else:
-        args_list = [(sc, n_reps, n_boot, child_seed, m) for (sc, m), child_seed in zip(cells, child_seeds)]
+        args_list = [(sc, n_reps, n_boot, child_seed, m, power_tune) for (sc, m), child_seed in zip(cells, child_seeds)]
         ctx = _mp.get_context("fork")
         with ctx.Pool(n_workers) as pool:
             for i, result in enumerate(pool.imap_unordered(_run_ppi_comparison_cell_worker, args_list)):
@@ -7294,6 +7301,130 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     return out_path
 
 
+def save_ppi_factorial_typeI_violin_plot(
+    *,
+    two_group_results: list[PPIComparisonResult],
+    omnibus_results: list[PPIComparisonResult],
+    alpha: float,
+    out_path: str,
+    lm_filter: str | None = None,
+) -> str:
+    """Grouped violin+strip of corrected vs. uncorrected Type-I rate from the
+    combined-factor factorial sweep's null cells, split into two panels
+    (two-group tests | omnibus tests) -- same visual language as
+    save_ppi_typeI_plot (gray = uncorrected, test-colored = corrected, one
+    dot per scenario cell), scoped instead to PPIComparisonResult's
+    (factorial sweep) fields and, via lm_filter, to a single labeling-
+    mechanism regime.
+
+    Added because pooling MCAR and MNAR null cells into one violin hid that
+    most of the mass sits right at nominal alpha under MCAR, with only a
+    handful of MNAR cells (concentrated in mwu/kruskal, under
+    mnar_strong/mnar_mild + opposing bias direction + low noise) producing
+    a long right tail -- see run()'s factorial-check block for the two-call
+    (mcar + mnar) convention this establishes, intended to make MCAR the
+    headline figure and MNAR an explicit, separately-labeled stress test
+    rather than a silent contributor to one pooled distribution.
+
+    lm_filter : {"mcar", "mnar", None}
+        "mcar" keeps only MCAR-labeled null cells. "mnar" pools
+        mnar_mild + mnar_strong. None keeps every labeling mechanism (the
+        original, undifferentiated view) -- provided for completeness, not
+        expected to be anyone's headline choice.
+    omnibus_results : may be empty (e.g. factorial_omnibus=False) -- the
+        omnibus panel is simply omitted rather than drawn empty.
+    """
+    import matplotlib.pyplot as plt
+
+    def _filter_null(results: list[PPIComparisonResult]) -> list[PPIComparisonResult]:
+        out = []
+        for r in results:
+            d = _parse_ppi_factorial_name(r.name)
+            if d["es"] != "null":
+                continue
+            if lm_filter == "mcar" and d["lm"] != "mcar":
+                continue
+            if lm_filter == "mnar" and d["lm"] not in ("mnar_mild", "mnar_strong"):
+                continue
+            out.append(r)
+        return out
+
+    have_omnibus = bool(omnibus_results)
+    ncols = 2 if have_omnibus else 1
+    fig, axes = plt.subplots(1, ncols, figsize=(13.0 if have_omnibus else 7.0, 5.8))
+    axes = [axes] if not have_omnibus else list(axes)
+    rng = np.random.default_rng(0)
+    violin_width = 0.30
+    group_offset = 0.19
+
+    def _violin_and_strip(ax, x: float, values: np.ndarray, color: str, body_alpha: float, label: str | None) -> None:
+        values = values[np.isfinite(values)]
+        if len(values) == 0:
+            return
+        if len(values) >= 3 and np.ptp(values) > 1e-9:
+            try:
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore")
+                    vp = ax.violinplot([values], positions=[x], widths=violin_width, showmedians=True, showextrema=False)
+                body = vp["bodies"][0]
+                body.set_facecolor(color)
+                body.set_edgecolor(color)
+                body.set_alpha(body_alpha)
+                vp["cmedians"].set_color(color)
+                vp["cmedians"].set_linewidth(1.3)
+                vp["cmedians"].set_alpha(0.9)
+            except Exception:
+                pass
+        jitter = rng.uniform(-0.09, 0.09, size=len(values))
+        ax.scatter(
+            np.full(len(values), x) + jitter, values, s=12, alpha=0.55, color=color,
+            zorder=3, label=label, edgecolors="none",
+        )
+
+    def _panel(ax, results: list[PPIComparisonResult], methods: list[str], title: str) -> None:
+        unc_label_added = False
+        all_rates: list[np.ndarray] = []
+        for j, m in enumerate(methods):
+            m_rows = [r for r in results if r.method == m]
+            rates_u = np.array([r.rejects_llm_only / r.n_reps if r.n_reps else float("nan") for r in m_rows])
+            rates_c = np.array([r.rejects_ppi / r.n_reps if r.n_reps else float("nan") for r in m_rows])
+            all_rates.append(rates_u)
+            all_rates.append(rates_c)
+            _violin_and_strip(
+                ax, j - group_offset, rates_u, "#808080", 0.35,
+                "Uncorrected (any test)" if not unc_label_added else None,
+            )
+            unc_label_added = True
+            _violin_and_strip(ax, j + group_offset, rates_c, get_method_color(m), 0.45, _pretty_test(m))
+        ax.axhline(alpha, color="black", ls="--", lw=1.1, label=f"Nominal {_alpha_label(alpha)}")
+        ax.set_xlim(-0.5, len(methods) - 0.5)
+        scatter_max = np.nanmax(np.concatenate(all_rates)) if all_rates else float("nan")
+        if not np.isfinite(scatter_max):
+            scatter_max = 0.2
+        ax.set_ylim(0.0, max(0.2, float(scatter_max) * 1.05))
+        ax.set_xticks(np.arange(len(methods)))
+        ax.set_xticklabels([_pretty_test(m) for m in methods], rotation=25, ha="right", fontsize=8)
+        ax.set_ylabel("Observed rejection rate")
+        ax.set_title(title, fontsize=11)
+        ax.grid(axis="y", alpha=0.25, lw=0.8)
+
+    lm_note = {"mcar": " -- MCAR labeling", "mnar": " -- MNAR labeling (mild+strong)", None: ""}[lm_filter]
+    _panel(axes[0], _filter_null(two_group_results), list(_COMPARISON_METHODS), f"Two-group tests{lm_note}")
+    if have_omnibus:
+        _panel(axes[1], _filter_null(omnibus_results), list(_COMPARISON_METHODS_OMNIBUS), f"Omnibus tests{lm_note}")
+
+    handles, labels_ = axes[0].get_legend_handles_labels()
+    fig.legend(handles, labels_, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.0, fontsize=8)
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 _PPI_POWER_NAME_RE = re.compile(r"^[a-z]+\.([a-z]+)\.es=([\d.]+)$")
 """Matches every power-family scenario name regardless of prefix -- "power."
 (build_ppi_power_sources, bias opposing the effect), "powerrf."
@@ -7915,6 +8046,15 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "Reported and saved as its OWN pooled summary/log section (mean_of_4_omnibus), never "
                               "blended into the two-group tests' pooled rate -- see _COMPARISON_METHODS_OMNIBUS' "
                               "docstring for why (different hypothesis: 3-group omnibus vs. two-group location-shift).")
+    parser.add_argument("--factorial-no-power-tune", action="store_true", default=False,
+                         help="ppi mode: disable PPI++ power-tuning (power_tune=False, i.e. fixed lambda=1, the "
+                              "original 2023 PPI estimator) for --factorial-check's two-group methods (ttest_welch/"
+                              "paired_t/mwu/wilcoxon), instead of the evalstats.ppi.correct() default (power_tune=True "
+                              "as of 2026-07-23). Exists to isolate whether PPI++ power-tuning is the cause of "
+                              "'corrected worse than uncorrected' null cells reappearing in the two-group family -- "
+                              "run once with and once without this flag on the same seed/sources and diff the two "
+                              "results' zero-bias null cells. Ignored by --factorial-omnibus' 4 omnibus methods, "
+                              "which don't use power-tuning at all (see evalstats/ppi.py's power_tune docstring).")
     parser.add_argument("--factorial-alignment-mc", type=int, default=20000, metavar="N",
                          help="ppi mode: Monte Carlo sample size for --factorial-check's alignment-bucketed view's "
                               "per-(eval_type, llm_noise, bias_delta) alignment measurement (measure_judge_alignment "
@@ -8973,10 +9113,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                     print(f"\npvalues simulation (PPI-corrected, full factorial) -- "
                           f"{len(factorial_sources)} scenarios x {len(_COMPARISON_METHODS)} methods{omnibus_note}, "
                           f"reps={factorial_reps}, n_boot={factorial_n_boot}{likert_note}{noise_note}")
+                    factorial_power_tune = not getattr(args, "factorial_no_power_tune", False)
                     factorial_results_raw = run_ppi_comparison_simulation(
                         factorial_sources, n_reps=factorial_reps, n_boot=factorial_n_boot,
                         progress_mode=args.progress, seed=args.seed + 8, n_workers=getattr(args, "workers", 1),
-                        methods=factorial_methods,
+                        methods=factorial_methods, power_tune=factorial_power_tune,
                     )
                     factorial_results_raw_2group = [r for r in factorial_results_raw if r.method in _COMPARISON_METHODS]
                     factorial_results = pool_ppi_comparison_across_methods(factorial_results_raw_2group)
@@ -9042,6 +9183,30 @@ def run(args: argparse.Namespace) -> CaseResult:
                         )
                         output_paths.append(factorial_plot_path_mnar)
                         print(f"Saved plot: {factorial_plot_path_mnar}")
+
+                        # MCAR (headline) and MNAR (stress-test) violin+strip
+                        # views -- see save_ppi_factorial_typeI_violin_plot's
+                        # docstring for why these are kept as two separate
+                        # figures rather than one pooled-across-lm violin.
+                        factorial_violin_mcar_path = save_ppi_factorial_typeI_violin_plot(
+                            two_group_results=factorial_results_raw_2group,
+                            omnibus_results=factorial_results_raw_omnibus or [],
+                            alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{factorial_stem}_typeI_mcar.png"),
+                            lm_filter="mcar",
+                        )
+                        output_paths.append(factorial_violin_mcar_path)
+                        print(f"Saved plot: {factorial_violin_mcar_path}")
+
+                        factorial_violin_mnar_path = save_ppi_factorial_typeI_violin_plot(
+                            two_group_results=factorial_results_raw_2group,
+                            omnibus_results=factorial_results_raw_omnibus or [],
+                            alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{factorial_stem}_typeI_mnar.png"),
+                            lm_filter="mnar",
+                        )
+                        output_paths.append(factorial_violin_mnar_path)
+                        print(f"Saved plot: {factorial_violin_mnar_path}")
 
                     key_metrics["ppi_factorial_n_results"] = len(factorial_results_baseline)
                     key_metrics["ppi_factorial_likert_max"] = factorial_likert_max

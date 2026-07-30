@@ -49,7 +49,7 @@ def supports_ansi_color() -> bool:
 # the input data shape (see BenchmarkResult.is_seeded in core/types.py)
 # rather than a method-selection choice.
 
-DataKind = Literal["binary", "bounded_01", "continuous"]
+DataKind = Literal["binary", "bounded_01", "unbounded"]
 
 # --- Bootstrap resampling variant (resolve_resampling_method) --------------
 # Plain (non-binary) bootstrap CIs: sample_size >= this -> "bootstrap"
@@ -110,8 +110,13 @@ class AutoAnalyzeRule:
 # sample's own min/max -- that's not a safe substitute for a metric's true
 # theoretical bounds (e.g. a 1-5 Likert scale sampled only between 2 and 4
 # would silently produce a miscalibrated CI). Numeric data outside [0, 1]
-# with no score_range given falls through to the "continuous" row instead
-# (also with a UserWarning, recommending an explicit score_range).
+# with no score_range given falls through to the "unbounded" row instead
+# (also with a UserWarning, recommending an explicit score_range). Named
+# "unbounded", not "continuous" -- the simulation harness's own eval_type
+# taxonomy already uses "continuous" for a different concept (a bounded
+# Beta-distributed shape), and reusing the same word here for an entirely
+# different meaning (numeric data with NO reliable range at all) was a
+# recurring source of confusion between the package and the harness.
 AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     AutoAnalyzeRule(
         data_kind="binary", max_n=50,
@@ -156,7 +161,7 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
         ),
     ),
     AutoAnalyzeRule(
-        data_kind="continuous", max_n=None,
+        data_kind="unbounded", max_n=None,
         pairwise_method="t_interval",
         robustness_method_single_run="t_interval",
         robustness_method_seeded="t_interval",
@@ -183,7 +188,7 @@ def resolve_auto_analyze_methods(
 
     Parameters
     ----------
-    data_kind : "binary", "bounded_01", or "continuous"
+    data_kind : "binary", "bounded_01", or "unbounded"
         Detected data type (see ``is_binary_scores`` / ``is_bounded_01_scores``
         in ``core.resampling``).
     n : int
@@ -246,15 +251,27 @@ PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
         reason=(
             "Numeric [0, 1]-bounded data: PPI-corrected studentized bootstrap "
             "(see evalstats.tests._ppi_paired_bootstrap_t / "
-            "_ppi_single_bootstrap_t). The non-aligned default (t_interval) "
-            "has no PPI-corrected form."
+            "_ppi_single_bootstrap_t). TEMPORARY: the non-aligned default for "
+            "this data_kind is logit_t (see AUTO_ANALYZE_METHOD_TABLE), not "
+            "bootstrap_t -- there is currently no PPI-corrected logit_t, so "
+            "this row silently downgrades bounded data to a less-preferred "
+            "method under alignment=. This is the known gap to close, not an "
+            "intentional choice; once a PPI-corrected logit_t exists, this "
+            "row should route here instead."
         ),
     ),
     PPIAutoMethodRule(
-        data_kind="continuous",
+        data_kind="unbounded",
         pairwise_method="bootstrap_t",
         robustness_method="bootstrap_t",
-        reason="Arbitrary numeric data: same PPI-corrected studentized bootstrap as bounded_01.",
+        reason=(
+            "Numeric data with no reliable [lo, hi] range: same PPI-corrected "
+            "studentized bootstrap as bounded_01. Unlike the bounded_01 row "
+            "above, this one is NOT a gap -- logit_t requires known bounds to "
+            "do the logit transform at all, so a bounds-agnostic bootstrap is "
+            "the correct choice here, matching the non-aligned default's own "
+            "fallback to t_interval for the same reason."
+        ),
     ),
 )
 
