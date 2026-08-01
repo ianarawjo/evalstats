@@ -1905,19 +1905,31 @@ _PPI_POWER_EVAL_TYPES = ("continuous", "likert", "grades")
 # only 2 of _COMPARISON_METHODS' 4 tests apply, and pooling those under the
 # SAME "false positive/power rate" figure as the other eval types would be
 # apples-to-oranges).
-PPI_POWER_EFFECT_FRACS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.30, 0.40)
+PPI_POWER_EFFECT_FRACS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.225, 0.25, 0.275, 0.30, 0.40)
 """Effect-size grid for build_ppi_power_sources/build_ppi_comparison_*, as a
 fraction of each eval type's own scale span (same convention as
 _jb_bias_magnitude's bias_delta fractions). 0.0 is kept as a Type-I
 cross-check against build_judge_bias_sources' "eval_type.*" scenarios (same
 settings, same expected ~alpha rejection rate) rather than dropped, since it
-anchors the left edge of the power curve at the correct floor. 7 points
+anchors the left edge of the power curve at the correct floor. 10 points
 (vs. the original 4: 0/0.10/0.20/0.40) to resolve the power curve's shape
 well enough to read visually -- the original grid's biggest gaps (0.20-0.40)
 spanned exactly the region where save_ppi_power_direction_plot's
 "cancellation dip" (opposing bias) or crossover (reinforcing bias) happens,
 so a coarse grid could make a smooth, well-understood phenomenon look like
-a kink or an artifact."""
+a kink or an artifact.
+
+0.225/0.25/0.275 were added specifically to bridge that same 0.20-0.30 gap
+with a point that lands on a clean INTEGER crossing for likert (scale span
+4.0, so frac=0.25 -> effect_size=1.00 exactly -- a full one-point difference
+on the 1-5 scale). The original grid's 0.20/0.30 (effect_size 0.80/1.20)
+straddled that boundary without ever landing on it. This matters because
+likert's truth arrays are integer-valued: MWU's reinforcing-bias power
+anomaly (see cases/pvalues.py's appendix writeup) traces to a discrete
+rank-invariance in how the scenario's truth values are constructed, which
+breaks specifically as continuous judge noise pushes ranks across an
+integer boundary -- a grid that skips over the boundary can't resolve
+whether the anomaly's onset/shape actually lines up with it."""
 PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
 """Label-fraction grid for build_ppi_comparison_label_frac_sources, at
 _ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
@@ -2018,6 +2030,66 @@ def build_ppi_power_nobias_sources() -> list[JudgeBiasSource]:
         for et in _PPI_POWER_EVAL_TYPES
         for frac in PPI_POWER_EFFECT_FRACS
     ]
+
+
+PPI_POWER_NLAB_GRID_N_VALUES = (100, 200, 400, 800)
+PPI_POWER_NLAB_GRID_NLAB_VALUES = (20, 40, 60)
+"""N (total items) x N_lab (ABSOLUTE labeled-item count) grid for
+build_ppi_power_nlab_grid_reinforcing_sources. N=100/N_lab=20 is
+_ppi_power_baseline's existing fixed point (label_frac=0.20 at n=100) --
+kept as the grid's first cell so this sweep's (100, 20) row is directly
+comparable to the single-point build_ppi_power_reinforcing_sources results
+already reported elsewhere. The other 11 cells ask two separate questions
+at once: does a BIGGER unlabeled pool (N up to 8x) help on its own, and
+does MORE ABSOLUTE labels (N_lab up to 3x) help on its own -- crossed
+independently (like build_ppi_nlab_grid_sources' calibration-side grid)
+rather than only scaled together, since the two knobs are controlled by
+different real-world costs (collecting more unlabeled model outputs is
+usually cheap; collecting more human labels is usually the expensive one)."""
+
+
+def build_ppi_power_nlab_grid_reinforcing_sources() -> list[JudgeBiasSource]:
+    """N x N_lab x effect_size grid, likert only, REINFORCING bias direction
+    (see build_ppi_power_reinforcing_sources) -- a label/dataset-size sweep
+    for the specific scenario where MWU's non-monotonic power anomaly was
+    found (cases/pvalues.py's appendix writeup on the discrete-rank-
+    invariance mechanism). build_ppi_power_reinforcing_sources only ever
+    checks ONE (N, N_lab) point (the _ppi_power_baseline fixed values,
+    n=100/label_frac=0.20 -> n_lab=20); this grid instead asks how the
+    anomaly's shape moves as more labels or a larger unlabeled pool become
+    available, using the SAME extended effect_size grid
+    (PPI_POWER_EFFECT_FRACS, which now includes 0.225/0.25/0.275 bridging
+    the likert integer-crossing point at es=1.00) at every cell so the full
+    power curve -- not just one point -- can be read off each (N, N_lab)
+    combination.
+
+    Restricted to likert (where the anomaly appears) rather than every
+    eval type, and to the reinforcing bias direction (where it appears),
+    to keep this a "light" sweep per-cell as originally scoped, rather than
+    tripling cost by also covering opposing/no-bias and every eval type.
+    label_frac is back-solved to `n_lab / n` per cell, exactly matching
+    build_ppi_nlab_grid_sources' convention; cells where n_lab >= n are
+    skipped as infeasible (none arise at this grid's actual values, since
+    N_lab's max of 60 is always well under N's min of 100). Tag
+    "power_nlab_grid_rf"; scenario names are
+    "powernlab.<eval_type>.n=<n>.nlab=<n_lab>.es=<frac>", parsed by
+    _parse_ppi_power_nlab_grid_name in cases/pvalues.py."""
+    et = "likert"
+    sources = []
+    for n in PPI_POWER_NLAB_GRID_N_VALUES:
+        for n_lab in PPI_POWER_NLAB_GRID_NLAB_VALUES:
+            if n_lab >= n:
+                continue
+            for frac in PPI_POWER_EFFECT_FRACS:
+                kw = _ppi_power_baseline(et)
+                kw["n"] = n
+                kw["label_frac"] = n_lab / n
+                kw["bias_delta"] = -_jb_bias_magnitude(et)
+                sources.append(JudgeBiasSource(
+                    name=f"powernlab.{et}.n={n}.nlab={n_lab}.es={frac:.3f}", tag="power_nlab_grid_rf",
+                    effect_size=_jb_effect_magnitude(et, frac), **kw,
+                ))
+    return sources
 
 
 def build_ppi_comparison_label_frac_sources() -> list[JudgeBiasSource]:

@@ -190,6 +190,7 @@ from ..scenarios.synthetic import (
     build_ppi_power_sources,
     build_ppi_power_reinforcing_sources,
     build_ppi_power_nobias_sources,
+    build_ppi_power_nlab_grid_reinforcing_sources,
     build_ppi_comparison_label_frac_sources,
     build_ppi_nlab_grid_sources,
     build_ppi_factorial_sources,
@@ -7691,6 +7692,177 @@ def save_ppi_power_direction_plot(
     return out_path
 
 
+_PPI_POWER_NLAB_GRID_NAME_RE = re.compile(r"^powernlab\.([a-z]+)\.n=(\d+)\.nlab=(\d+)\.es=([\d.]+)$")
+
+
+def _parse_ppi_power_nlab_grid_name(name: str) -> tuple[str, int, int, float]:
+    m = _PPI_POWER_NLAB_GRID_NAME_RE.match(name)
+    if not m:
+        raise ValueError(f"Unrecognized power n_lab-grid scenario name: {name!r}")
+    return m.group(1), int(m.group(2)), int(m.group(3)), float(m.group(4))
+
+
+def print_ppi_power_nlab_grid_report(results: list[PPIResult], alpha: float) -> None:
+    """Corrected rejection rate (POWER) across the N x N_lab label/dataset-
+    size grid (build_ppi_power_nlab_grid_reinforcing_sources), one table per
+    test: rows are (N, N_lab) cells, columns are effect_size. Uncorrected
+    rate is dropped here (unlike print_ppi_power_report) to keep the table
+    narrow enough to read across up to 10 effect_size columns x 12
+    label-count rows -- see the CSV artifact and save_ppi_power_nlab_grid_
+    plots for full corrected+uncorrected detail per cell."""
+    if not results:
+        print("\n  (no PPI power n_lab-grid results)")
+        return
+    tests = [m.name for m in PPI_TEST_METHODS if m.name in {r.test for r in results}]
+    parsed = {r.name: _parse_ppi_power_nlab_grid_name(r.name) for r in results}
+    cells = sorted({(n, nlab) for _, n, nlab, _ in parsed.values()})
+    es_values = sorted({es for _, _, _, es in parsed.values()})
+
+    print(f"\n{'='*88}\n  PVALUES (PPI-CORRECTED) -- POWER vs. LABEL/DATASET-SIZE GRID (bias reinforcing effect)\n"
+          f"  Corrected rejection rate only; nominal alpha={alpha}\n{'='*88}")
+    for t in tests:
+        t_rows = [r for r in results if r.test == t]
+        if not t_rows:
+            continue
+        print(f"\n  [{t}]")
+        hdr = f"    {'N':>5}  {'N_lab':>6}" + "".join(f"  es={es:.3f}".rjust(10) for es in es_values)
+        print(hdr)
+        for (n, nlab) in cells:
+            cell_all = [r for r in t_rows if parsed[r.name][1] == n and parsed[r.name][2] == nlab]
+            if not cell_all:
+                continue
+            row = f"    {n:>5}  {nlab:>6}"
+            for es in es_values:
+                cr = [r for r in cell_all if parsed[r.name][3] == es]
+                c_tot = sum(r.corrected_rejects for r in cr)
+                n_tot = sum(r.n_reps for r in cr)
+                rc = c_tot / n_tot if n_tot > 0 else float("nan")
+                row += f"  {rc:>8.3f}"
+            print(row)
+    print()
+
+
+def save_results_artifacts_ppi_power_nlab_grid(
+    *, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str,
+) -> list[str]:
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_ppi_power_nlab_grid_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "name", "tag", "eval_type", "n", "n_lab", "effect_size", "test", "n_reps",
+            "corrected_rejects", "uncorrected_rejects", "n_failed", "corrected_rate", "uncorrected_rate",
+        ])
+        for r in results:
+            et, n, nlab, es = _parse_ppi_power_nlab_grid_name(r.name)
+            writer.writerow([
+                r.name, r.tag, et, n, nlab, f"{es:.4f}", r.test, r.n_reps, r.corrected_rejects, r.uncorrected_rejects, r.n_failed,
+                f"{r.corrected_rejects / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.uncorrected_rejects / r.n_reps:.8f}" if r.n_reps else "",
+            ])
+    summary_path = out_base / f"{run_stem}_ppi_power_nlab_grid_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_power_nlab_grid_report(results, alpha=alpha)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_ppi_power_nlab_grid_plots(
+    *, results: list[PPIResult], alpha: float, out_dir: str, stem: str,
+) -> list[str]:
+    """One power-curve plot per (N, N_lab) cell of the label/dataset-size
+    grid (build_ppi_power_nlab_grid_reinforcing_sources), plus one averaged
+    summary plot pooling every cell -- the user-facing deliverable for "does
+    more labels/data fix MWU's reinforcing-bias power anomaly, and if so how
+    much." Each cell panel plots corrected (solid) and uncorrected (dashed)
+    rejection rate vs. effect_size, one color per test present, mirroring
+    save_ppi_power_direction_plot's single-eval_type/single-direction line
+    convention. The averaged plot pools corrected_rejects/uncorrected_rejects/
+    n_reps across ALL (N, N_lab) cells before dividing (reps-weighted mean,
+    not a naive mean-of-rates), so cells with more reps aren't
+    under/over-weighted."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    if not results:
+        raise ValueError("No PPI power n_lab-grid results to plot.")
+    parsed = {r.name: _parse_ppi_power_nlab_grid_name(r.name) for r in results}
+    tests = _ppi_tests_present(results, nonstandard=False)
+    cells = sorted({(n, nlab) for _, n, nlab, _ in parsed.values()})
+    es_all = sorted({es for _, _, _, es in parsed.values()})
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    out_paths: list[str] = []
+
+    def _plot_rates(ax, cell_results: list[PPIResult], es_values: list[float]) -> None:
+        ax.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6)
+        for t in tests:
+            t_rows = [r for r in cell_results if r.test == t]
+            ys_c, ys_u = [], []
+            for es in es_values:
+                cr = [r for r in t_rows if parsed[r.name][3] == es]
+                c_tot = sum(r.corrected_rejects for r in cr)
+                u_tot = sum(r.uncorrected_rejects for r in cr)
+                n_tot = sum(r.n_reps for r in cr)
+                ys_c.append(c_tot / n_tot if n_tot > 0 else float("nan"))
+                ys_u.append(u_tot / n_tot if n_tot > 0 else float("nan"))
+            if not any(np.isfinite(ys_c)):
+                continue
+            color = get_method_color(t)
+            ax.plot(es_values, ys_c, marker="o", color=color, linewidth=1.6, markersize=4, label=_pretty_test(t), zorder=2)
+            ax.plot(es_values, ys_u, marker="x", color=color, linewidth=1.2, linestyle="--", markersize=4, alpha=0.6, zorder=1)
+        ax.set_ylim(-0.02, 1.02)
+
+    def _legend_handles() -> tuple[list, list]:
+        handles = [Line2D([0], [0], color=get_method_color(t), marker="o", linewidth=1.6, markersize=4) for t in tests]
+        labels = [_pretty_test(t) for t in tests]
+        handles += [
+            Line2D([0], [0], color="#333333", marker="x", linewidth=1.2, linestyle="--", alpha=0.6),
+            Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6),
+        ]
+        labels += ["Uncorrected (any test)", f"Nominal {_alpha_label(alpha)}"]
+        return handles, labels
+
+    for (n, nlab) in cells:
+        cell_results = [r for r in results if parsed[r.name][1] == n and parsed[r.name][2] == nlab]
+        es_values = sorted({parsed[r.name][3] for r in cell_results})
+        fig, ax = plt.subplots(figsize=(5.2, 4.2))
+        _plot_rates(ax, cell_results, es_values)
+        ax.set_xlabel("Effect size")
+        ax.set_ylabel("Rejection rate")
+        ax.set_title(f"N={n}, N_lab={nlab}")
+        handles, labels = _legend_handles()
+        fig.legend(handles, labels, fontsize=7, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+            fig.tight_layout()
+        cell_path = str(out_base / f"{stem}_n{n}_nlab{nlab}.png")
+        fig.savefig(cell_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        out_paths.append(cell_path)
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.4))
+    _plot_rates(ax, results, es_all)
+    ax.set_xlabel("Effect size")
+    ax.set_ylabel("Rejection rate")
+    ax.set_title(f"Averaged Across {len(cells)} (N, N_lab) Combinations")
+    handles, labels = _legend_handles()
+    fig.legend(handles, labels, fontsize=7, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
+    fig.suptitle("PPI-Corrected Power vs. Effect Size, Averaged Over Label/Dataset-Size Grid", fontsize=11)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    avg_path = str(out_base / f"{stem}_averaged.png")
+    fig.savefig(avg_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    out_paths.append(avg_path)
+    return out_paths
+
+
 def print_ppi_effect_report(results: list[PPIEffectResult], alpha: float) -> None:
     """Bias & CI-coverage summary, mirroring sim_type_i_calibration.py's
     ``_print_effect_table``: per-test mean bias, worst |z|, coverage, worst
@@ -8021,6 +8193,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-comparison-check", action="store_true", default=False,
                          help="ppi mode: skip the 5-way estimator comparison (all_human/human_subset/llm_only/"
                               "llm_impute/ppi rejection rate vs. effect_size and label_frac, paired_t estimand)")
+    parser.add_argument("--power-nlab-grid-check", action="store_true", default=False,
+                         help="ppi mode: run the N x N_lab label/dataset-size power grid (likert, bias "
+                              "reinforcing the effect -- build_ppi_power_nlab_grid_reinforcing_sources), "
+                              "investigating whether more labels or a larger unlabeled pool change MWU's "
+                              "non-monotonic power anomaly under this bias direction. Opt-in (default off): "
+                              "4 N values x 3 N_lab values x 10 effect_size points = 120 scenarios, on top of "
+                              "the standard power check -- restrict to the test under investigation with "
+                              "e.g. --tests mwu for a fast targeted run. Uses --effect-reps/--ppi-n-boot, "
+                              "same as the other power checks. Produces one plot per (N, N_lab) cell plus one "
+                              "reps-weighted averaged summary plot -- see save_ppi_power_nlab_grid_plots.")
     parser.add_argument("--no-label-efficiency-check", action="store_true", default=False,
                          help="ppi mode: skip the label-efficiency check (run_ppi_label_efficiency_check) -- "
                               "for a fixed labeling budget, how many labels would a human-only classical test "
@@ -8910,6 +9092,36 @@ def run(args: argparse.Namespace) -> CaseResult:
                         output_paths.append(direction_plot_path)
                         print(f"Saved plot: {direction_plot_path}")
                     key_metrics["ppi_power_reinforcing_n_results"] = len(reinforcing_results)
+
+            if getattr(args, "power_nlab_grid_check", False):
+                nlab_grid_sources = build_ppi_power_nlab_grid_reinforcing_sources()
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    nlab_grid_sources = [s for s in nlab_grid_sources if s.eval_type in requested]
+                if nlab_grid_sources:
+                    nlab_grid_reps = getattr(args, "effect_reps", 200)
+                    print(f"\npvalues simulation (PPI-corrected, power vs. label/dataset-size grid) -- "
+                          f"{len(nlab_grid_sources)} scenarios, reps={nlab_grid_reps}, n_boot={args.ppi_n_boot}")
+                    nlab_grid_results = run_ppi_simulation(
+                        nlab_grid_sources, active_tests=active_tests, n_reps=nlab_grid_reps, n_boot=args.ppi_n_boot,
+                        progress_mode=args.progress, seed=args.seed + 15, n_workers=getattr(args, "workers", 1),
+                    )
+                    print_ppi_power_nlab_grid_report(nlab_grid_results, alpha=args.alpha)
+                    nlab_grid_stem = f"pvalues_ppi_power_nlab_grid_reps{nlab_grid_reps}_{stamp}"
+                    if nlab_grid_results:
+                        if args.save_results == "save":
+                            output_paths += save_results_artifacts_ppi_power_nlab_grid(
+                                results=nlab_grid_results, alpha=args.alpha, out_dir=args.out_dir,
+                                run_stem=nlab_grid_stem,
+                            )
+                        if args.plots == "save":
+                            nlab_grid_plot_paths = save_ppi_power_nlab_grid_plots(
+                                results=nlab_grid_results, alpha=args.alpha, out_dir=plots_dir, stem=nlab_grid_stem,
+                            )
+                            output_paths += nlab_grid_plot_paths
+                            for p in nlab_grid_plot_paths:
+                                print(f"Saved plot: {p}")
+                        key_metrics["ppi_power_nlab_grid_n_results"] = len(nlab_grid_results)
 
             comparison_results_pooled: list[PPIComparisonResult] = []
             nlab_cal_pooled: list[PPIComparisonResult] = []
