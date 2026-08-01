@@ -5323,7 +5323,7 @@ def _calibrate_noise_for_alignment(
 def run_ppi_label_efficiency_check(
     n_reps: int, n_boot: int, ref_n_mc: int = 3000, align_n_mc: int = 20_000, seed: int = 71,
     n_workers: int = 1, progress_mode: str = "bar",
-) -> list[LabelEfficiencyPoint]:
+) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float]]]:
     """Runs the label-efficiency comparison sweep (continuous/likert via
     build_ppi_label_efficiency_sources + _COMPARISON_METHODS, binary via
     build_ppi_label_efficiency_sources_binary + _COMPARISON_METHODS_BINARY),
@@ -5347,9 +5347,29 @@ def run_ppi_label_efficiency_check(
     unchanged) -- see save_ppi_label_efficiency_plot, which states this
     explicitly so the figure doesn't leave N_lab's denominator implicit.
 
-    Returns one LabelEfficiencyPoint per (eval_type, alignment_target,
-    n_lab) cell -- the save_ppi_label_efficiency_plot input."""
+    Returns a 3-tuple:
+      - one LabelEfficiencyPoint per (eval_type, alignment_target, n_lab)
+        cell, pooled across each eval type's method family -- the
+        save_ppi_label_efficiency_plot input (unchanged from before).
+      - the RAW, per-method PPIComparisonResult rows underlying that
+        pooling (every method x scenario cell, before pool_ppi_comparison_
+        across_methods averages them away) -- computing this sweep is
+        expensive (the alignment calibration alone runs align_n_mc=20,000
+        MC draws per target per eval type), so callers should persist this
+        alongside the pooled points rather than let it be silently
+        discarded, the way it previously was: a "is one method dragging
+        the pooled average down" question could only be answered before by
+        re-running the whole sweep from scratch. See
+        save_results_artifacts_ppi_label_efficiency_raw.
+      - the noise -> (eval_type, alignment_metric, target, achieved)
+        calibration lookup, as a flat list of tuples (eval_type, noise,
+        alignment_metric, target, achieved) -- needed to map the raw rows'
+        embedded noise value (in PPIComparisonResult.name) back to the
+        alignment level it was calibrated to hit, without re-running
+        _calibrate_noise_for_alignment."""
     results: list[LabelEfficiencyPoint] = []
+    all_raw: list[PPIComparisonResult] = []
+    calib_rows: list[tuple[str, float, str, float, float]] = []
 
     cont_likert_baselines = {et: _ppi_power_baseline(et) for et in ("continuous", "likert")}
     binary_baseline = _ppi_power_baseline_binary()
@@ -5379,6 +5399,11 @@ def run_ppi_label_efficiency_check(
         bin_info[noise] = (target, achieved)
     calib_info["binary"] = bin_info
 
+    for et, info in calib_info.items():
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        for noise, (target, achieved) in info.items():
+            calib_rows.append((et, noise, metric_name, target, achieved))
+
     cont_likert_sources = build_ppi_label_efficiency_sources(noise_by_eval_type=noise_by_eval_type)
     groups = [
         ("continuous", [s for s in cont_likert_sources if s.eval_type == "continuous"],
@@ -5398,6 +5423,7 @@ def run_ppi_label_efficiency_check(
             sources, n_reps, n_boot, methods=methods, seed=seed, n_workers=n_workers,
             progress_mode=progress_mode,
         )
+        all_raw.extend(raw)
         pooled = pool_ppi_comparison_across_methods(raw)
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
         for r in pooled:
@@ -5418,7 +5444,7 @@ def run_ppi_label_efficiency_check(
                 alignment_target=target, alignment_value=achieved,
                 n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps, saturated=saturated,
             ))
-    return results
+    return results, all_raw, calib_rows
 
 
 def print_ppi_label_efficiency_report(results: list[LabelEfficiencyPoint]) -> None:
@@ -5479,6 +5505,56 @@ def save_results_artifacts_ppi_label_efficiency(
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
     return [str(csv_path), str(summary_path)]
+
+
+def save_results_artifacts_ppi_label_efficiency_raw(
+    *, raw: list[PPIComparisonResult], calib_rows: list[tuple[str, float, str, float, float]],
+    out_dir: str, run_stem: str,
+) -> list[str]:
+    """Persists the RAW, per-method data run_ppi_label_efficiency_check
+    computes but the pooled LabelEfficiencyPoint/save_results_artifacts_
+    ppi_label_efficiency path discards -- this sweep is expensive (the
+    alignment calibration alone runs align_n_mc=20,000 MC draws per target
+    per eval type, on top of the comparison simulation itself), so "is one
+    method dragging the pooled average down for eval type X" should be
+    answerable from a saved CSV, not require re-running the whole check.
+
+    Two CSVs: one row per (scenario, method) cell (same column shape as
+    save_results_artifacts_ppi_comparison's raw CSV, for consistency with
+    the other comparison-sweep raw exports elsewhere in this file), and a
+    small calibration-lookup CSV mapping each embedded noise value (see
+    PPIComparisonResult.name, e.g. "labeleff.continuous.noise=0.0909....")
+    back to the alignment target/metric/achieved value it was calibrated
+    to hit -- without this, the raw CSV's noise column is just a number,
+    not "the noise level that hits weighted_kappa~=0.8"."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    raw_path = out_base / f"{run_stem}_ppi_label_efficiency_raw_results.csv"
+    with raw_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "name", "tag", "eval_type", "method", "n", "n_reps", "effect_size", "label_frac", "n_lab",
+            "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
+        ])
+        for r in raw:
+            writer.writerow([
+                r.name, r.tag, r.eval_type, r.method, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
+                f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_llm_impute / r.n_reps:.8f}" if r.n_reps else "",
+                f"{r.rejects_ppi / r.n_reps:.8f}" if r.n_reps else "",
+                r.n_failed,
+            ])
+    calib_path = out_base / f"{run_stem}_ppi_label_efficiency_calibration.csv"
+    with calib_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["eval_type", "judge_noise", "alignment_metric", "alignment_target", "alignment_achieved"])
+        for et, noise, metric_name, target, achieved in calib_rows:
+            writer.writerow([et, f"{noise:.4f}", metric_name, f"{target:.2f}", f"{achieved:.4f}"])
+    print(f"Saved results: {raw_path}")
+    print(f"Saved results: {calib_path}")
+    return [str(raw_path), str(calib_path)]
 
 
 def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str) -> str:
@@ -9604,19 +9680,25 @@ def run(args: argparse.Namespace) -> CaseResult:
                 label_eff_reps = getattr(args, "effect_reps", 200)
                 print(f"\npvalues simulation (PPI-corrected, label efficiency) -- "
                       f"reps={label_eff_reps}, n_boot={args.ppi_n_boot}")
-                label_eff_results = run_ppi_label_efficiency_check(
+                label_eff_results, label_eff_raw, label_eff_calib_rows = run_ppi_label_efficiency_check(
                     n_reps=label_eff_reps, n_boot=args.ppi_n_boot,
                     seed=args.seed + 14, n_workers=getattr(args, "workers", 1), progress_mode=args.progress,
                 )
                 if args.eval_types:
                     requested = set(args.eval_types)
                     label_eff_results = [r for r in label_eff_results if r.eval_type in requested]
+                    label_eff_raw = [r for r in label_eff_raw if r.eval_type in requested]
+                    label_eff_calib_rows = [row for row in label_eff_calib_rows if row[0] in requested]
                 if label_eff_results:
                     print_ppi_label_efficiency_report(label_eff_results)
                     label_eff_stem = f"pvalues_ppi_label_efficiency_reps{label_eff_reps}_{stamp}"
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_label_efficiency(
                             results=label_eff_results, out_dir=args.out_dir, run_stem=label_eff_stem,
+                        )
+                        output_paths += save_results_artifacts_ppi_label_efficiency_raw(
+                            raw=label_eff_raw, calib_rows=label_eff_calib_rows,
+                            out_dir=args.out_dir, run_stem=label_eff_stem,
                         )
                     if args.plots == "save":
                         label_eff_plot_path = save_ppi_label_efficiency_plot(
