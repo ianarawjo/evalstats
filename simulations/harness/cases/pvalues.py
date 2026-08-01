@@ -3733,7 +3733,27 @@ def run_ppi_simulation(
     # _run_in_flight_reporter's docstring for why this matters here
     # specifically (long individual cells + imap_unordered's coarse
     # per-cell-only progress signal).
-    manager = _mp.Manager()
+    #
+    # ctx.Manager() (NOT the bare _mp.Manager()) -- a bare Manager() spawns
+    # its server process using the platform's DEFAULT start method
+    # regardless of what context the Pool below explicitly requests, which
+    # is "spawn" on macOS. Confirmed 2026-07-31: running this function's
+    # caller as a plain top-level script (no `if __name__ == "__main__":`
+    # guard, e.g. a script fed via `python - <<EOF` or executed directly)
+    # crashed two different ways under the bare Manager() -- a
+    # FileNotFoundError when spawn's bootstrap tried to re-import a script
+    # with no real file backing it (piped via stdin), and, once given a
+    # real file, "An attempt has been made to start a new process before
+    # the current process has finished its bootstrapping phase" (spawn's
+    # safety check against exactly this recursive-reimport hazard, since
+    # the un-guarded script re-executes the Manager()/Pool()-creating code
+    # on every re-import). Pinning the Manager to the SAME fork context the
+    # Pool already uses avoids the re-import step entirely (fork duplicates
+    # the current process directly), matching run_ppi_comparison_simulation
+    # and every other pool in this file, none of which hit this because
+    # none of them also create a Manager.
+    ctx = _mp.get_context("fork")
+    manager = ctx.Manager()
     progress_dict = manager.dict()
     args_list = [
         (sc, active_tests, n_reps, n_boot, child_seed, progress_dict)
@@ -3753,7 +3773,6 @@ def run_ppi_simulation(
         reporter_thread.start()
 
     try:
-        ctx = _mp.get_context("fork")
         with ctx.Pool(n_workers) as pool:
             for i, cell_results in enumerate(pool.imap_unordered(_run_ppi_cell_worker, args_list)):
                 if cell_results:
