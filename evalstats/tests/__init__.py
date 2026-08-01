@@ -2955,9 +2955,12 @@ def _ppi_friedman_ci(
     if f_corr <= 0.0 or not np.isfinite(f_corr):
         return 0.0, 0.0, 0.0
     # Debiased the same way _ppi_anova_independent_ci's estimate is -- see
-    # that function's comment for the full derivation/root-cause. f_corr/
-    # dfn/dfd (the p-value's inputs) and the CI bounds below are untouched.
-    estimate = max((f_corr - 1.0) * dfn * denom / scale, 0.0)
+    # that function's comment for the full derivation/root-cause (this had
+    # the identical max(.,0) floor, and the identical fix: report the
+    # unclamped, possibly-negative debiased estimate directly, the same
+    # convention omega-squared/epsilon-squared use). f_corr/dfn/dfd (the
+    # p-value's inputs) and the CI bounds below are untouched by this.
+    estimate = (f_corr - 1.0) * dfn * denom / scale
     lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
     return estimate, lam_L * denom / scale, lam_U * denom / scale
 

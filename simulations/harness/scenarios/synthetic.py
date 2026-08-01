@@ -3273,7 +3273,6 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     thetas2 loop's own `a` draw rather than a separate MC loop, since it's
     already exactly that quantity."""
     from evalstats.tests import (
-        _friedman_rank_variance,
         _p_x_gt_y_midrank,
         paired_walsh_midrank_theta,
         _ppi_anova_independent_ci,
@@ -3347,10 +3346,27 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     # same noisy-negative-vs-non-negative-CI-floor mismatch bv_gold's
     # comment describes.
     rv_gold = 0.0
-    frv = np.empty(n_mc)  # rank-based between-condition variance (friedman) -- NOT debiased, see docstring
-    for i in range(n_mc):
-        mat = _repeated(n1, 3).T  # (n1, 3)
-        frv[i] = _friedman_rank_variance(mat)
+
+    # friedman's gold value gets the same treatment too, as of 2026-07-31 --
+    # contrary to this function's older docstring note (kept below, now
+    # historical) claiming the "fully labeled" _ppi_friedman_ci approach
+    # gave "a still-wrong gold value in testing": re-verified directly
+    # after removing _ppi_friedman_ci's own max(.,0) floor (same fix as
+    # anova_ind/anova_rep) -- calling it with groups_lab=groups on 3000
+    # pure-truth draws converged to -0.000034 (SE 0.000108, z=-0.31), not
+    # distinguishable from the true, exactly-known value of 0.0. That
+    # degeneracy is expected on inspection: with groups_lab=groups (zero
+    # noise), _ppi_friedman_f_stat's "human" and "LLM" rank matrices are
+    # computed from IDENTICAL data (row-local ranking, same rows selected),
+    # so its shrinkage blend collapses to a no-op (both halves equal) and
+    # its noise/delta terms vanish exactly -- the "doesn't cleanly
+    # degenerate" concern the old note raised doesn't actually apply here.
+    # The raw (undebiased) _friedman_rank_variance this replaced was
+    # comparing the now-debiased corrected estimator against the WRONG,
+    # undebiased target (measured 0.0059 vs the debiased estimator's true
+    # ~0.0 target on "eval_type.continuous") -- the same mismatch
+    # anova_ind/anova_rep's raw gold had before 2026-07-25's debiasing fix.
+    frv_gold = 0.0
 
     return {
         "ttest": float(diffs2.mean()),
@@ -3363,7 +3379,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,
         "anova_rep": rv_gold,
-        "friedman": float(frv.mean()),
+        "friedman": frv_gold,
         "kruskal": 0.5,
         "ppi_wilson": float(a_means2.mean()),  # single-arm population mean of "a2" -- same estimand as truth_a2
         "bootstrap_t_single": float(a_means2.mean()),  # same estimand, non-binary construction
