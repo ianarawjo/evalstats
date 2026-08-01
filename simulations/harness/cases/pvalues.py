@@ -4792,7 +4792,11 @@ _PPI_COMPARISON_COLS = [
 ]
 
 
-def save_ppi_comparison_plot(*, results: list[PPIComparisonResult], alpha: float, out_path: str) -> str:
+def save_ppi_comparison_plot(
+    *, results: list[PPIComparisonResult], alpha: float, out_path: str,
+    results_binary: list[PPIComparisonResult] | None = None,
+    nlab_pow_results: list[PPIComparisonResult] | None = None,
+) -> str:
     """The flagship 5-way estimator-comparison figure: rejection rate for
     all_human/human_subset/llm_only/llm_impute/ppi, one row per x-axis
     (effect_size, then label_frac), one column per eval type. The story this
@@ -4807,47 +4811,112 @@ def save_ppi_comparison_plot(*, results: list[PPIComparisonResult], alpha: float
     stays low even at higher N_lab (still small relative to all_human's full
     N). Plotted against the REALIZED N_lab (PPIComparisonResult.n_lab), not
     the nominal label_frac -- see PPI_COMPARISON_LABEL_FRACS' docstring for
-    why label_frac alone can be misleading once _JB_MIN_LAB's floor binds."""
+    why label_frac alone can be misleading once _JB_MIN_LAB's floor binds.
+
+    results_binary : optional
+        Binary's separate comparison sweep (own tags "power_binary"/
+        "complab_binary", own 2-method pool -- see run()'s dedicated binary
+        comparison block). When given, prepended as the LEFTMOST column --
+        binary was previously silently absent from this figure entirely
+        (computed and reported in text/CSV, never plotted), which reads to
+        a reviewer as binary having been skipped rather than just shown
+        elsewhere.
+
+    nlab_pow_results : optional
+        build_ppi_nlab_grid_sources' power grid (effect_frac=
+        PPI_COMPARISON_MODERATE_EFFECT_FRAC), pre-pooled across methods --
+        same data already used by save_ppi_null_comparison_plot's
+        nlab_cal_results argument for the null case. When given for an
+        eval_type, the n_lab row for that column is pooled (reps-weighted)
+        ACROSS EVERY N in the grid at each N_lab, instead of the single
+        fixed N=100 comparison_sources' 'compare_label_frac' sweep alone --
+        this data was already being computed and printed/saved to CSV every
+        run, just never fed into this plot. Falls back to the fixed-N=100
+        sweep for any eval_type not covered by the grid (e.g. grades,
+        binary -- build_ppi_nlab_grid_sources_binary isn't wired into run()
+        yet)."""
     import matplotlib.pyplot as plt
 
     if not results:
         raise ValueError("No PPI comparison results to plot.")
-    rows_spec = [
-        ("power", "effect_size", "Effect size", "label budget fixed at N_lab/N = 20%"),
-        ("compare_label_frac", "n_lab", "N_lab (labeled items)", f"effect size fixed at {PPI_COMPARISON_MODERATE_EFFECT_FRAC:.0%} of scale (moderate)"),
-    ]
-    rows_spec = [(tag, field, xlabel, fixed) for tag, field, xlabel, fixed in rows_spec if any(r.tag == tag for r in results)]
     eval_types = sorted({r.eval_type for r in results})
+    columns = (["binary"] if results_binary else []) + eval_types
 
-    fig, axes = plt.subplots(
-        len(rows_spec), len(eval_types), figsize=(4.8 * len(eval_types), 4.0 * len(rows_spec)), squeeze=False,
-    )
-    for row_idx, (tag, field, xlabel, fixed) in enumerate(rows_spec):
-        tag_rows = [r for r in results if r.tag == tag]
-        x_values = sorted({getattr(r, field) for r in tag_rows})
-        for col_idx, et in enumerate(eval_types):
-            ax = axes[row_idx][col_idx]
-            ax.axhline(
-                alpha, color="black", ls="--", lw=1.0, alpha=0.5,
-                label=f"Nominal {_alpha_label(alpha)}" if row_idx == 0 and col_idx == 0 else None,
-            )
-            et_rows = {getattr(r, field): r for r in tag_rows if r.eval_type == et}
-            for key, rejects_field in _PPI_COMPARISON_COLS:
-                style = _PPI_COMPARISON_STYLE[key]
-                ys = [
-                    (getattr(et_rows[x], rejects_field) / et_rows[x].n_reps) if x in et_rows and et_rows[x].n_reps else float("nan")
-                    for x in x_values
-                ]
-                ax.plot(
-                    x_values, ys, color=style["color"], marker=style["marker"], linestyle=style["ls"],
-                    linewidth=1.8, markersize=5, label=style["label"] if row_idx == 0 and col_idx == 0 else None,
+    nlab_pow_by_et_nlab: dict[str, dict[int, PPIComparisonResult]] = {}
+    if nlab_pow_results:
+        for et in {r.eval_type for r in nlab_pow_results}:
+            by_nlab = {}
+            for nlab in sorted({r.n_lab for r in nlab_pow_results if r.eval_type == et}):
+                pooled = _pool_ppi_comparison_rows(
+                    [r for r in nlab_pow_results if r.eval_type == et and r.n_lab == nlab]
                 )
-            ax.set_ylim(-0.02, 1.02)
-            if row_idx == 0:
-                ax.set_title(et.capitalize())
-            if col_idx == 0:
-                ax.set_ylabel("Rejection rate")
-            ax.set_xlabel(f"{xlabel}\n({fixed})", fontsize=9)
+                if pooled is not None:
+                    by_nlab[nlab] = pooled
+            if by_nlab:
+                nlab_pow_by_et_nlab[et] = by_nlab
+
+    n_rows = 2
+    fig, axes = plt.subplots(
+        n_rows, len(columns), figsize=(4.8 * len(columns), 4.0 * n_rows), squeeze=False,
+    )
+
+    def _plot_row(ax, row_idx: int, col_idx: int, x_values: list, et_rows: dict, xlabel: str, fixed: str) -> None:
+        ax.axhline(
+            alpha, color="black", ls="--", lw=1.0, alpha=0.5,
+            label=f"Nominal {_alpha_label(alpha)}" if row_idx == 0 and col_idx == 0 else None,
+        )
+        for key, rejects_field in _PPI_COMPARISON_COLS:
+            style = _PPI_COMPARISON_STYLE[key]
+            ys = [
+                (getattr(et_rows[x], rejects_field) / et_rows[x].n_reps) if x in et_rows and et_rows[x].n_reps else float("nan")
+                for x in x_values
+            ]
+            ax.plot(
+                x_values, ys, color=style["color"], marker=style["marker"], linestyle=style["ls"],
+                linewidth=1.8, markersize=5, label=style["label"] if row_idx == 0 and col_idx == 0 else None,
+            )
+        ax.set_ylim(-0.02, 1.02)
+        if col_idx == 0:
+            ax.set_ylabel("Rejection rate")
+        ax.set_xlabel(f"{xlabel}\n({fixed})", fontsize=9)
+
+    for col_idx, col in enumerate(columns):
+        is_binary = col == "binary"
+        et = col
+        source = results_binary if is_binary else results
+        methods_note = " (2 tests pooled)" if is_binary else ""
+
+        # Row 0: vs effect_size -- always the fixed-N comparison_sources
+        # sweep (no broader-N grid exists for this axis; a full effect_size
+        # x N x N_lab grid would need a genuinely new sweep, not just a
+        # different slice of already-collected data).
+        ax0 = axes[0][col_idx]
+        tag0 = "power_binary" if is_binary else "power"
+        tag0_rows = [r for r in source if r.tag == tag0 and r.eval_type == et]
+        x0_values = sorted({r.effect_size for r in tag0_rows})
+        et0_rows = {r.effect_size: r for r in tag0_rows}
+        _plot_row(ax0, 0, col_idx, x0_values, et0_rows, "Effect size", f"label budget fixed at N_lab/N = 20%{methods_note}")
+        ax0.set_title("Binary" if is_binary else et.capitalize())
+
+        # Row 1: vs n_lab -- pooled across the FULL N x N_lab grid when
+        # available (nlab_pow_by_et_nlab), instead of the fixed-N=100 sweep.
+        ax1 = axes[1][col_idx]
+        if is_binary:
+            tag1_rows = [r for r in source if r.tag == "complab_binary" and r.eval_type == et]
+            x1_values = sorted({r.n_lab for r in tag1_rows})
+            et1_rows = {r.n_lab: r for r in tag1_rows}
+            fixed1 = f"effect size fixed at {PPI_COMPARISON_MODERATE_EFFECT_FRAC:.0%}; N=100{methods_note}"
+        elif et in nlab_pow_by_et_nlab:
+            et1_rows = nlab_pow_by_et_nlab[et]
+            x1_values = sorted(et1_rows.keys())
+            fixed1 = f"effect size fixed at {PPI_COMPARISON_MODERATE_EFFECT_FRAC:.0%}; pooled over N=30-400"
+        else:
+            tag1_rows = [r for r in results if r.tag == "compare_label_frac" and r.eval_type == et]
+            x1_values = sorted({r.n_lab for r in tag1_rows})
+            et1_rows = {r.n_lab: r for r in tag1_rows}
+            fixed1 = f"effect size fixed at {PPI_COMPARISON_MODERATE_EFFECT_FRAC:.0%}; N=100"
+        _plot_row(ax1, 1, col_idx, x1_values, et1_rows, "N_lab (labeled items)", fixed1)
+
     fig.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
     fig.suptitle("PPI-Corrected Estimator Comparison (Paired-Mean Estimand)", fontsize=12)
     with warnings.catch_warnings():
@@ -4877,6 +4946,7 @@ read at a glance."""
 def save_ppi_null_comparison_plot(
     *, results: list[PPIComparisonResult], alpha: float, out_path: str,
     nlab_cal_results: list[PPIComparisonResult] | None = None,
+    results_binary: list[PPIComparisonResult] | None = None,
 ) -> str:
     """Bar chart isolating JUST the null (no real effect) case from
     save_ppi_comparison_plot's line plot -- one bar per estimator arm, one
@@ -4911,6 +4981,16 @@ def save_ppi_null_comparison_plot(
     methods, just not across N/N_lab. Each panel's subtitle states which
     pooling applies.
 
+    results_binary : optional
+        Binary's separate null-effect comparison sweep (own "power_binary"
+        tag, own 2-method pool -- ttest_welch/paired_t only, no mwu/
+        wilcoxon). When given, prepended as the LEFTMOST panel -- binary was
+        previously computed and reported in text/CSV but never plotted
+        here. No N x N_lab grid exists for binary yet (build_ppi_nlab_grid_
+        sources_binary isn't wired into run()), so its panel is always the
+        single-scenario (N=100) pooling, same caveat as the grades
+        fallback above.
+
     Error bars are the 95% Wilson score interval for each bar's underlying
     binomial proportion (_ppi_wilson_interval, the same interval
     print_ppi_report's Type-I flagging already uses), computed on the
@@ -4927,7 +5007,9 @@ def save_ppi_null_comparison_plot(
     null_rows = [r for r in results if r.tag == "power" and abs(r.effect_size) < 1e-9]
     if not null_rows:
         raise ValueError("No null-effect (effect_size=0) comparison results to plot.")
+    null_rows_binary = [r for r in (results_binary or []) if r.tag == "power_binary" and abs(r.effect_size) < 1e-9]
     eval_types = sorted({r.eval_type for r in null_rows})
+    columns = (["binary"] if null_rows_binary else []) + eval_types
     nlab_null_pool_by_et: dict[str, PPIComparisonResult | None] = {}
     if nlab_cal_results:
         for et in {r.eval_type for r in nlab_cal_results}:
@@ -4935,11 +5017,14 @@ def save_ppi_null_comparison_plot(
                 [r for r in nlab_cal_results if r.tag == "nlab_grid" and r.eval_type == et]
             )
 
-    fig, axes = plt.subplots(1, len(eval_types), figsize=(3.4 * len(eval_types), 4.9), squeeze=False)
+    fig, axes = plt.subplots(1, len(columns), figsize=(3.4 * len(columns), 4.9), squeeze=False)
     x = np.arange(len(_PPI_NULL_COMPARISON_ORDER))
-    for col, et in enumerate(eval_types):
+    for col, et in enumerate(columns):
         ax = axes[0][col]
-        if nlab_null_pool_by_et.get(et) is not None:
+        if et == "binary":
+            r = next(r for r in null_rows_binary if r.eval_type == "binary")
+            subtitle = f"pooled: 2 tests\n(N={r.n}, N_lab={r.n_lab}, n_reps={r.n_reps})"
+        elif nlab_null_pool_by_et.get(et) is not None:
             r = nlab_null_pool_by_et[et]
             subtitle = f"pooled: 4 tests x N x N_lab\n(n_reps={r.n_reps})"
         else:
@@ -9239,6 +9324,8 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             comparison_results_pooled: list[PPIComparisonResult] = []
             nlab_cal_pooled: list[PPIComparisonResult] = []
+            nlab_pow_pooled: list[PPIComparisonResult] = []
+            comparison_results_binary_pooled: list[PPIComparisonResult] = []
             if not getattr(args, "no_comparison_check", False):
                 comparison_sources = power_sources + build_ppi_comparison_label_frac_sources()
                 if args.eval_types:
@@ -9263,13 +9350,11 @@ def run(args: argparse.Namespace) -> CaseResult:
                             results=comparison_results_raw, pooled_results=comparison_results_pooled,
                             alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_stem,
                         )
-                    if args.plots == "save":
-                        comparison_plot_path = save_ppi_comparison_plot(
-                            results=comparison_results_pooled, alpha=args.alpha,
-                            out_path=str(Path(plots_dir) / f"{comparison_stem}_five_way_comparison.png"),
-                        )
-                        output_paths.append(comparison_plot_path)
-                        print(f"Saved plot: {comparison_plot_path}")
+                    # Plot saved later (after the N x N_lab grid and binary
+                    # comparison blocks below finish), once nlab_pow_pooled/
+                    # comparison_results_binary_pooled are available too --
+                    # see the "Flagship 5-way comparison plot" block after
+                    # the binary comparison check.
 
                     key_metrics["ppi_comparison_n_results"] = len(comparison_results_pooled)
                     max_es_rows = [r for r in comparison_results_pooled if r.tag == "power" and r.effect_size == max((r.effect_size for r in comparison_results_pooled if r.tag == "power"), default=0.0)]
@@ -9345,18 +9430,10 @@ def run(args: argparse.Namespace) -> CaseResult:
                     key_metrics["ppi_nlab_grid_n_calibration_results"] = len(nlab_cal_pooled)
                     key_metrics["ppi_nlab_grid_n_power_results"] = len(nlab_pow_pooled)
 
-                # Null-effect 5-way bar chart: pools across BOTH _COMPARISON_METHODS
-                # (already done above) AND, for continuous, the N x N_lab grid just
-                # computed -- see save_ppi_null_comparison_plot's docstring for why
-                # this is more defensible than reading off a single scenario.
-                if args.plots == "save" and comparison_results_pooled:
-                    null_comparison_plot_path = save_ppi_null_comparison_plot(
-                        results=comparison_results_pooled, alpha=args.alpha,
-                        out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_reps{getattr(args, 'effect_reps', 200)}_{stamp}_null_false_positive_rate.png"),
-                        nlab_cal_results=nlab_cal_pooled or None,
-                    )
-                    output_paths.append(null_comparison_plot_path)
-                    print(f"Saved plot: {null_comparison_plot_path}")
+                # Null-effect 5-way bar chart and the flagship 5-way comparison
+                # plot are both saved later (after the binary comparison block
+                # below), so binary's leftmost panel can be included -- see
+                # those two save_ppi_*_plot calls after the binary block.
 
             if not getattr(args, "no_comparison_check", False):
                 # Binary's estimator-comparison sweep, kept entirely separate
@@ -9400,6 +9477,32 @@ def run(args: argparse.Namespace) -> CaseResult:
                             tags=comparison_binary_tags, label=_COMPARISON_METHODS_BINARY_LABEL,
                         )
                     key_metrics["ppi_comparison_binary_n_results"] = len(comparison_results_binary_pooled)
+
+                # Both comparison plots, saved here (not right after each
+                # sweep above) so binary's leftmost panel -- computed just
+                # above -- can be included. Binary was previously silently
+                # absent from both figures entirely (computed and reported
+                # in text/CSV, never plotted), which reads to a reviewer as
+                # binary having been skipped rather than shown elsewhere.
+                if args.plots == "save" and comparison_results_pooled:
+                    comparison_reps_for_stem = getattr(args, "effect_reps", 200)
+                    comparison_plot_path = save_ppi_comparison_plot(
+                        results=comparison_results_pooled, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_reps{comparison_reps_for_stem}_{stamp}_five_way_comparison.png"),
+                        results_binary=comparison_results_binary_pooled or None,
+                        nlab_pow_results=nlab_pow_pooled or None,
+                    )
+                    output_paths.append(comparison_plot_path)
+                    print(f"Saved plot: {comparison_plot_path}")
+
+                    null_comparison_plot_path = save_ppi_null_comparison_plot(
+                        results=comparison_results_pooled, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_reps{comparison_reps_for_stem}_{stamp}_null_false_positive_rate.png"),
+                        nlab_cal_results=nlab_cal_pooled or None,
+                        results_binary=comparison_results_binary_pooled or None,
+                    )
+                    output_paths.append(null_comparison_plot_path)
+                    print(f"Saved plot: {null_comparison_plot_path}")
 
             # Label-efficiency check (run_ppi_label_efficiency_check):
             # self-contained (builds its own continuous/likert/binary
