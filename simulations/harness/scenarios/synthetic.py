@@ -3209,45 +3209,49 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     by simulation, rather than assuming 0, avoids baking in a wrong
     assumption about what "no effect" looks like for that particular test.
 
-    anova_rep's gold value is computed via _ppi_anova_repeated_ci itself
-    (called with groups_lab=groups, i.e. treating the pure-truth draw as
-    "fully labeled") rather than the raw _repeated_condition_variance --
-    NOT a redundant round-trip. With groups_lab=groups, noise=g-g_lab=0
-    everywhere, so this _ci function's correction machinery degenerates to
-    the classical (non-PPI) F-stat on the truth data alone, but critically
-    STILL applies the same debiasing subtraction (evalstats.tests'
-    anova_repeated_ci, fixed 2026-07-25) its PPI-corrected counterpart
-    uses. Root-caused 2026-07-25: after debiasing the corrected estimator
-    (subtracting the expected-under-H0 floor so it targets the clean
-    population theta), a raw/undebiased gold reference became the WRONG
-    comparison target -- it happened to look fine for near-null scenarios
-    (where the floor dominates gold and swamps the now-fixed estimator
-    too) but badly under-stated gold for scenarios with a substantial true
-    effect and non-negligible population variance (confirmed on
-    "eval_type.likert": raw gold 0.0089 vs the debiased estimator's own
-    mean of ~0.0038, a ~57% apparent "bias" that vanished once gold was
-    debiased the same way, to ~0.0031).
+    anova_ind's and anova_rep's gold values are both the known-exact
+    constant 0.0 (see bv_gold/rv_gold below), not re-derived by
+    simulation. This wasn't always true and is worth explaining, since an
+    earlier version of both got this wrong in two successive ways:
 
-    anova_ind's gold value is NOT computed this way (see bv_gold below,
-    2026-07-31): once _ppi_anova_independent_ci's point estimate ALSO had
-    its max(.,0) floor removed (a separate fix, for the estimator's own
-    bias -- see that function's docstring), re-deriving the gold value via
-    this same Monte-Carlo-on-pure-truth approach started producing a
+    (1) Originally these gold values used the RAW (undebiased) closed-form
+    null variance. Root-caused 2026-07-25: once the corrected estimators
+    (evalstats.tests' anova_independent_ci/anova_repeated_ci) were
+    debiased -- subtracting the expected-under-H0 floor so they target the
+    clean population theta instead -- an undebiased gold reference became
+    the wrong comparison target. It happened to look fine for near-null
+    scenarios (where the floor dominates gold and swamps the now-fixed
+    estimator too) but badly under-stated gold for scenarios with a
+    substantial true effect (confirmed on "eval_type.likert": raw gold
+    0.0089 vs the debiased estimator's own mean of ~0.0038). The fix at
+    the time was to re-derive gold via Monte Carlo using the SAME debiased
+    _ci functions (called with groups_lab=groups, i.e. treating the
+    pure-truth draw as "fully labeled," which makes noise=g-g_lab=0
+    everywhere and degenerates their correction machinery to the classical
+    F-stat on truth alone, while still applying the debiasing step).
+
+    (2) That Monte Carlo re-derivation itself broke 2026-07-31, when
+    anova_independent_ci/anova_repeated_ci's point estimates ALSO had a
+    max(.,0) floor removed (a separate fix, for the estimators' own bias
+    -- see _ppi_anova_independent_ci's docstring). Re-deriving gold via
+    this same Monte-Carlo-on-pure-truth approach then started producing a
     slightly-negative estimate in ~50% of scenarios (pure MC noise around
     the true, exactly-known value of 0.0), which the CI's lower bound --
-    mathematically constrained to be >= 0 -- could then never cover,
-    manufacturing 0% coverage in exactly those scenarios despite coverage
-    against the true 0.0 measuring 97.4% in the same check. anova_ind's
-    gold value is therefore just the known-exact 0.0 directly, not
-    re-derived by simulation at all.
+    mathematically constrained to be >= 0, since it comes from inverting a
+    noncentral-F test -- could then never cover, manufacturing exactly 0%
+    coverage in those scenarios despite coverage against the true 0.0
+    measuring 97.4% (anova_ind) in the same check. Since _repeated/
+    _marginal above never inject a condition/group effect (this function
+    only ever computes the null-hypothesis baseline), the debiased target
+    for both is simply, exactly 0.0 -- no simulation needed at all.
 
-    friedman's frv is NOT given the anova_rep treatment either -- its
-    ms_null is a shrinkage blend (see _ppi_friedman_f_stat's docstring)
-    that does NOT cleanly degenerate to the correct closed-form null
-    variance even at full labeling (its tie-degeneracy handling is
-    deliberately non-trivial there), so reusing _ppi_friedman_ci the same
-    way produced a still-wrong gold value in testing; friedman's
-    gold-consistency gap remains open.
+    friedman's frv is NOT given this treatment -- its ms_null is a
+    shrinkage blend (see _ppi_friedman_f_stat's docstring) that does NOT
+    cleanly degenerate to the correct closed-form null variance even at
+    full labeling (its tie-degeneracy handling is deliberately non-trivial
+    there), so reusing _ppi_friedman_ci the same way produced a
+    still-wrong gold value in testing; friedman's gold-consistency gap
+    remains open.
 
     "wilcoxon"'s gold value switched (2026-07-25) from the population
     MEDIAN of the paired truth difference to a population midrank-sign
@@ -3334,13 +3338,18 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     # noise colliding with a boundary it can never legitimately cross.
     bv_gold = 0.0
 
-    rv = np.empty(n_mc)  # between-condition variance (anova_rep), debiased -- see docstring
+    # anova_rep's gold value gets the identical treatment as anova_ind's
+    # bv_gold above, for the identical reason: _ppi_anova_repeated_ci had
+    # the same max(.,0) floor (removed 2026-07-31, same fix), _repeated
+    # here never injects a condition effect (this function only ever
+    # computes the null-hypothesis baseline), so the debiased target is
+    # exactly 0.0 -- re-deriving it by Monte Carlo would reintroduce the
+    # same noisy-negative-vs-non-negative-CI-floor mismatch bv_gold's
+    # comment describes.
+    rv_gold = 0.0
     frv = np.empty(n_mc)  # rank-based between-condition variance (friedman) -- NOT debiased, see docstring
     for i in range(n_mc):
         mat = _repeated(n1, 3).T  # (n1, 3)
-        groups_rep = [mat[:, 0], mat[:, 1], mat[:, 2]]
-        ci_r = _ppi_anova_repeated_ci(groups_rep, groups_rep, k=3, alpha=0.05)
-        rv[i] = ci_r[0] if ci_r is not None else 0.0
         frv[i] = _friedman_rank_variance(mat)
 
     return {
@@ -3353,7 +3362,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,
-        "anova_rep": float(rv.mean()),
+        "anova_rep": rv_gold,
         "friedman": float(frv.mean()),
         "kruskal": 0.5,
         "ppi_wilson": float(a_means2.mean()),  # single-arm population mean of "a2" -- same estimand as truth_a2
