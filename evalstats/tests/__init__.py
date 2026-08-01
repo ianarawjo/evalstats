@@ -3401,13 +3401,82 @@ def wilcoxon(
     :func:`evalstats.ppi.paired_walsh_midrank_theta`'s docstring for the
     full root-cause writeup. H₀ is theta = 0, so the bootstrap p-value
     ``2 * min(P(θ̂* ≤ 0), P(θ̂* ≥ 0))`` is correctly centered at the null.
+    UPDATE (2026-08-01): the underlying ``correct()`` call now
+    auto-switches to a closed-form analytic backend below n_lab=30 (see
+    :func:`evalstats.ppi._analytic_walsh_theta_correct`), which measurably
+    (though not completely) reduces this residual -- roughly HALVES the
+    Type-I inflation on real (non-identical-pair) appstore extreme-tie
+    data at n_lab=15 (23.4-25.2% with the old bootstrap-only construction
+    -> 12.0-17.2% with the new analytic one, 500 reps, same data/seeds)
+    -- see ``paired_walsh_midrank_theta``'s docstring for the full
+    before/after numbers. Still open, just less severe. On the
+    synthetic ``build_judge_bias_sources`` sweep (continuous/likert/
+    grades, no extreme ties), calibration was already close to nominal
+    with the old construction and stays close to nominal (same or
+    slightly better, never worse) with the new one -- e.g. n_lab=15:
+    continuous 7.4%->6.6%, likert 8.6%->6.4%; n_lab=20 baseline:
+    continuous 7.0%->6.4%, likert 8.7%->7.0%, grades 7.0%->7.5% (800
+    reps, n_boot=1500) -- no regression anywhere checked.
+
+    A SEPARATE, independently-discovered issue (2026-08-01): pooling
+    across a label-efficiency check (fixed labeling budget, PPI power vs.
+    labels-only power) showed PPI correction gives this estimand much
+    LESS power lift than the other three ``_COMPARISON_METHODS``
+    (paired_t/ttest_welch/mwu) at matched n_lab -- e.g. continuous
+    good-judge data: paired_t's PPI lift was +0.31 to +0.48 across
+    n_lab=15/30/60 vs. this estimand's +0.08 to +0.14 over the SAME
+    range (200 reps, n_boot=2000); likert good-judge data showed an even
+    larger gap (paired_t up to +0.88 vs. this estimand's +0.16-0.20). Root
+    -caused (matched-random-draw comparison, same data fed to both
+    estimators) to the Walsh-average rectifier's genuinely higher finite-
+    sample variance on its own [-0.5, 0.5] scale -- confirmed NOT a
+    resampling/bootstrap-construction artifact (the bootstrap's own
+    variance estimate matched a many-fresh-draws Monte Carlo oracle
+    closely, and a normal approximation from the same bootstrap replicates
+    gave essentially the same CI width as the percentile interval) -- see
+    :func:`evalstats.ppi._analytic_walsh_theta_correct`'s docstring for
+    the full investigation. The new analytic backend above does NOT close
+    this gap (it targets calibration, not power, and the underlying
+    variance difference is real, not a construction artifact); at
+    n_lab>=30 (both old and new constructions on the bootstrap path there)
+    the label-efficiency lift numbers are unchanged. At n_lab<30, where
+    the analytic path activates, it gives a small but real (direction-
+    consistent across independent re-runs at two different precisions,
+    not just Monte Carlo noise) REDUCTION in lift vs. the old bootstrap
+    -- continuous n_lab=15: +0.060 old -> +0.025 new; likert n_lab=15:
+    +0.105 old -> +0.085 new (200 reps, n_boot=2000, official precision;
+    an earlier lower-precision 150-rep pass showed the same direction,
+    +0.067->+0.053 and +0.113->+0.107) -- the cost of properly fixing
+    calibration rather than relying on the old bootstrap's own mild
+    small-n_lab over-rejection for "free" extra power. This power-lift
+    gap is believed NOT cleanly fixable
+    without a fundamentally different estimand or bootstrap construction,
+    matching this estimand's general history (see
+    ``paired_walsh_midrank_theta``'s docstring) of prior attempted fixes
+    each trading one problem for another.
 
     Experimental alternative (``method="hajek_experimental"``): builds a
     fixed, full-sample LLM score transform
     ``phi(d)=sign(d)*(2*F_mid_hat(|d|)-1)`` (Hajek-projection-inspired
     Wilcoxon linearization), then runs PPI on the mean of ``phi(d)``.
     This is for head-to-head benchmarking; it is not presented as a fully
-    validated replacement for ``method="current"``.
+    validated replacement for ``method="current"``. Tested (2026-08-01)
+    specifically as a candidate fix for the power-lift gap above, since
+    reducing the estimand to a mean unlocks the SAME analytic backend
+    ``method="current"`` now has: it does NOT work -- on the SAME
+    label-efficiency cells above, ``hajek_experimental``'s PPI-corrected
+    power was BELOW its own classical (labels-only) power at every single
+    cell tested (continuous/likert good-judge, n_lab=15/30/60; e.g.
+    continuous n_lab=60: classical 0.700 -> hajek-PPI 0.033, a lift of
+    -0.667), i.e. applying this correction is actively worse than running
+    the classical test on the labeled subset alone. This was NOT a
+    Type-I/power tradeoff (its Type-I error on ``build_judge_bias_
+    sources``' effect_size=0 rows was fine, if anything slightly
+    conservative vs. ``method="current"``'s own) -- the point estimate
+    itself was found to frequently have the wrong sign/magnitude under
+    real judge bias, traced to freezing the ``phi`` reference distribution
+    from the FULL (potentially judge-biased) LLM sample rather than from
+    truth's own scale.
 
     Pairing is by array position (``x[i]`` paired with ``y[i]``), exactly as
     in ``scipy.stats.wilcoxon``.  A position enters the labeled set only when

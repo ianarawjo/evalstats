@@ -235,6 +235,39 @@ def paired_walsh_midrank_theta(d: np.ndarray) -> float:
     NOT fixed by this function. See cases/pvalues.py's/ppi_real.py's
     WILCOXON blocks for where this is used and further discussion.
 
+    UPDATE (2026-08-01): this extreme-tie residual was found to be
+    substantially (not fully) reduced by :func:`correct`'s new
+    ``paired_walsh_midrank_theta`` analytic backend (see
+    :func:`_analytic_walsh_theta_correct`), which now activates
+    automatically (``backend="auto"``, the default) below ``n_lab=30`` --
+    the SAME n_lab range this extreme-tie inflation was measured in. On
+    the SAME real appstore data at n_lab=15
+    (``simulations/harness/scenarios/real_judge_bias.py``'s
+    ``generate_real_paired_null_cell``, judges anthropic/claude-haiku-4.5
+    x google/gemma-4-26b-a4b-it and google/gemma-4-26b-a4b-it x
+    thinkingmachines/inkling -- a different, currently-collected judge
+    roster than the original 88%-tie pair this docstring's numbers above
+    were measured on, since judge rosters have changed since 2026-07-26;
+    a like-for-like re-run against the ORIGINAL 88%-tie pair was not
+    repeated), measured Type-I with the OLD (percentile-bootstrap-only)
+    construction was 23.4-25.2% (500 reps, n_boot=1500) -- reproducing
+    the same OPEN residual this docstring describes -- while the NEW
+    analytic path measured 12.0-17.2% on the IDENTICAL data/seeds:
+    roughly HALVES the inflation, but does NOT eliminate it (still well
+    above nominal 5%). This is a genuine improvement, not a full fix --
+    the residual remains open. Root cause of the improvement: the
+    analytic path replaces the percentile bootstrap (which needs
+    n_lab >> 30 for this estimand to reliably converge) with a closed-
+    form Hajek-projection variance / Student-t interval that doesn't need
+    to approximate a sampling distribution from a small empirical
+    resample. This analytic path does NOT, however, close the SEPARATE
+    finding that PPI correction gives this estimand much less POWER LIFT
+    than mean-based estimands (paired_t/ttest_welch/mwu) at matched
+    n_lab -- see :func:`_analytic_walsh_theta_correct`'s docstring for
+    why that gap was root-caused to a genuine, non-resampling-artifact
+    difference in finite-sample variance, and does not close under this
+    (or any other attempted) CI-construction change alone.
+
     Registered in :func:`correct`'s ``_fast_batch`` dispatch (via
     ``_walsh_theta_batch``) so this goes through the SAME vectorized-
     resampling fast path ``np.mean``/``np.median`` use, not the slow
@@ -275,6 +308,187 @@ def _walsh_theta_batch(arr: np.ndarray) -> np.ndarray:
     this off-by-one-half bug, not the underlying statistic, was the actual
     cause of that failure)."""
     return np.array([_walsh_theta_row(row) - 0.5 for row in arr])
+
+
+def _walsh_theta_h1_components(d: np.ndarray) -> np.ndarray:
+    """Per-item empirical Hajek-projection ("structural component") values
+    for :func:`paired_walsh_midrank_theta`'s underlying pairwise kernel
+    ``h(d_i,d_j) = 1{d_i+d_j>0} + 0.5*1{d_i+d_j=0}`` -- the SAME
+    "structural components" construction DeLong et al. (1988) use to get
+    the variance (and, for two correlated samples, covariance) of an AUC
+    estimator, applied here to the analogous one-sample Walsh-average
+    U-statistic instead of DeLong's two-sample Mann-Whitney U-statistic.
+
+    ``h1_hat(d_i) = (1/n) * sum_j [1{d_i+d_j>0} + 0.5*1{d_i+d_j=0}]``, with
+    ``j`` ranging over ALL ``n`` items (including ``j=i``) -- the plug-in
+    estimate of the first-order Hajek projection ``h1(d) = E_D2[h(d, D2)]``,
+    evaluated at each observed ``d_i``. This is a "leave-in" (not
+    leave-one-out) projection: it differs from the textbook leave-one-out
+    jackknife-style version by one O(1/n) term, which does not matter for a
+    VARIANCE estimate (only the point estimate needs the sharper
+    leave-one-out correction, and this function is never used for the
+    point estimate -- :func:`paired_walsh_midrank_theta` itself, via
+    :func:`_walsh_theta_row`, already handles that separately).
+
+    Used by :func:`_walsh_theta_analytic_variance` (single-sample variance,
+    ``Var(U) ~= (4/n)*Var(h1_hat)``, the standard degree-2 U-statistic
+    asymptotic variance) and directly by
+    :func:`_analytic_walsh_theta_correct` (paired covariance: for two
+    structural-component arrays computed on the SAME n items,
+    ``Var(A-B) ~= (4/n)*Var(h1_hat_A - h1_hat_B)``, which folds the
+    variance-of-A, variance-of-B, and covariance(A,B) terms into one pass).
+
+    Numerically validated (2026-08-01) against a many-fresh-draws Monte
+    Carlo "oracle" sampling variance of ``paired_walsh_midrank_theta``
+    itself, on the label-efficiency check's continuous good-judge scenario
+    (``simulations/harness/scenarios/synthetic.py``'s
+    ``build_ppi_label_efficiency_sources``, noise=0.0909 i.e. pearson
+    r~0.80): the single-sample variance formula matched the oracle to
+    within 7% at n_lab=15/30 and within 1% at n_lab=60; the paired
+    (rectifier) covariance version matched the oracle rectifier variance
+    to within 2-17% across the same n_lab grid -- close enough to trust as
+    :func:`correct`'s analytic backend for this estimand, the role
+    :func:`_analytic_mean_correct` already plays for ``np.mean``. Same
+    O(n log n) sort + vectorized ``searchsorted`` construction as
+    :func:`_walsh_theta_row`, just without that function's ``i<=j``
+    upper-triangular restriction (every item is compared against ALL n
+    others here, not just itself-and-later)."""
+    d = np.asarray(d, dtype=float)
+    n = len(d)
+    if n == 0:
+        return np.empty(0, dtype=float)
+    ds = np.sort(d)
+    neg = -d
+    idx_right = np.searchsorted(ds, neg, side="right")
+    idx_left = np.searchsorted(ds, neg, side="left")
+    count_gt = n - idx_right
+    count_eq = idx_right - idx_left
+    return (count_gt + 0.5 * count_eq) / n
+
+
+def _walsh_theta_analytic_variance(d: np.ndarray) -> float:
+    """Analytic (no-bootstrap) variance estimate of
+    ``paired_walsh_midrank_theta(d)`` for a single sample ``d``, via the
+    standard degree-2 U-statistic asymptotic variance
+    ``Var(U_n) ~= (m^2/n)*zeta_1`` (``m=2`` for a pairwise kernel), with
+    ``zeta_1 = Var(h1(D))`` estimated by the empirical plug-in structural
+    components from :func:`_walsh_theta_h1_components`. See that
+    function's docstring for the numerical validation against a Monte
+    Carlo oracle."""
+    n = len(d)
+    if n < 2:
+        return 0.0
+    h1 = _walsh_theta_h1_components(d)
+    return 4.0 * float(np.var(h1, ddof=1)) / n
+
+
+def _analytic_walsh_theta_correct(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
+    alpha: float, power_tune: bool,
+) -> "PPIResult":
+    """Closed-form (no-bootstrap) PPI correction for
+    ``estimator_func=paired_walsh_midrank_theta`` -- the Walsh-average
+    midrank-sign analogue of :func:`_analytic_mean_correct`'s role for
+    ``np.mean``. Same two-term (rectifier + unlabeled-sample) variance
+    decomposition and power-tuning shrinkage as that function; only the
+    per-term variance/covariance estimator differs (Hajek-projection
+    structural components -- :func:`_walsh_theta_h1_components` /
+    :func:`_walsh_theta_analytic_variance` -- instead of the mean's plain
+    sample variance/covariance).
+
+    Why this exists: ``paired_walsh_midrank_theta`` is not ``np.mean``, so
+    it never qualified for :func:`correct`'s pre-2026-08-01 analytic
+    backend, leaving ``wilcoxon()`` stuck on the percentile bootstrap at
+    every n_lab -- unlike ``paired_t`` (``evalstats.tests.ttest``'s
+    ``paired=True`` path), which gets the closed-form path automatically
+    below ``n_lab=30``. This was root-caused (2026-08-01) as part of the
+    label-efficiency check's finding that wilcoxon's PPI correction gives
+    much less power lift than paired_t/ttest_welch/mwu at matched n_lab
+    (see ``simulations/harness/cases/pvalues.py``'s
+    ``run_ppi_label_efficiency_check`` and this module's own
+    ``paired_walsh_midrank_theta`` docstring for the full numbers) --
+    via a matched-random-draw comparison (the SAME
+    ``generate_judge_bias_cell()`` draw fed to both estimators, so the
+    comparison isn't confounded by different random samples): wilcoxon's
+    percentile-bootstrap CI was ~2.6-2.8x wider than paired_t's at matched
+    n_lab=30/60 (continuous, good judge), stable across n_boot=300-6000
+    (ruling out Monte Carlo noise). Two follow-up checks then ruled out
+    the bootstrap CONSTRUCTION as the cause: (a) the percentile bootstrap's
+    OWN variance estimate matched a many-fresh-draws Monte Carlo "oracle"
+    sampling variance closely for BOTH estimators (ratio 0.91-1.05 for
+    wilcoxon's two PPI terms, 0.77-1.02 for paired_t's, at n_lab=30) --
+    i.e. the bootstrap is not itself inflating variance beyond the
+    estimator's true sampling variability; (b) a normal approximation
+    built from the SAME bootstrap replicates gave essentially the same CI
+    width as the percentile interval for both estimators (ratio
+    0.995-1.028, bootstrap-distribution skew ~0) -- i.e. no meaningful
+    skew-driven percentile-construction penalty either. So the wider CI
+    reflects the Walsh-average rectifier's genuinely higher finite-sample
+    variance on its own [-0.5, 0.5] scale, not a fixable resampling
+    inefficiency -- this analytic replacement does NOT close that gap (see
+    ``wilcoxon()``'s docstring for the measured before/after power
+    numbers). Its value is narrower in scope: it (a) unlocks the SAME
+    small-n_lab (<30) fast, better-calibrated path ``np.mean`` already
+    has -- :func:`correct`'s percentile bootstrap is documented to need
+    n_lab >~ 50 for good Type-I calibration on real judge-pair data, while
+    an analytic path reaches that around n_lab~25-30 (see
+    :func:`_analytic_mean_correct`'s docstring) -- and (b) removes the
+    percentile bootstrap's own residual Monte Carlo noise, which was
+    already shown to be small for this estimand (CI width stable across
+    n_boot=300-6000, see above) but is not literally zero at finite
+    n_boot.
+
+    Degrees of freedom for the Student-t interval: ``n_lab - 1``, matching
+    :func:`_analytic_mean_correct`'s choice (the labeled term is the
+    variance bottleneck there too, for the same reason: n_all is typically
+    much larger than n_lab, so its analytic variance contributes a much
+    smaller share of the total variance)."""
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+
+    f_unlab = paired_walsh_midrank_theta(Y_hat_unlab)
+    f_lab = paired_walsh_midrank_theta(Y_lab)
+    f_hat_lab = paired_walsh_midrank_theta(Y_hat_lab)
+    rectifier = f_lab - f_hat_lab
+
+    var_unlab = _walsh_theta_analytic_variance(Y_hat_unlab) if n_all > 1 else 0.0
+    var_lab = _walsh_theta_analytic_variance(Y_lab) if n_lab > 1 else 0.0
+    var_hat_lab = _walsh_theta_analytic_variance(Y_hat_lab) if n_lab > 1 else 0.0
+
+    if n_lab > 1:
+        h1_lab = _walsh_theta_h1_components(Y_lab)
+        h1_hat_lab = _walsh_theta_h1_components(Y_hat_lab)
+        cov_lab_hatlab = 4.0 * float(np.cov(h1_lab, h1_hat_lab, ddof=1)[0, 1]) / n_lab
+    else:
+        cov_lab_hatlab = 0.0
+
+    lam = 1.0
+    if power_tune:
+        denom = var_unlab + var_hat_lab
+        if denom > 1e-12:
+            lam = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        # else: degenerate variance -- fall back to lam=1, matching
+        # _analytic_mean_correct and the bootstrap path.
+        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+
+    estimate = f_lab + lam * (f_unlab - f_hat_lab)
+    var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    se = float(np.sqrt(var_estimate))
+    df = max(n_lab - 1, 1)
+
+    if se <= 0.0:
+        ci_low = ci_high = estimate
+        p_value = 1.0 if abs(estimate) < 1e-12 else 0.0
+    else:
+        t_crit = float(_t_dist.ppf(1.0 - alpha / 2.0, df))
+        ci_low, ci_high = estimate - t_crit * se, estimate + t_crit * se
+        p_value = min(max(float(2.0 * (1.0 - _t_dist.cdf(abs(estimate) / se, df))), 0.0), 1.0)
+
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
+        p_value=p_value, lam=(lam if power_tune else None),
+    )
 
 
 def _analytic_mean_correct(
@@ -371,6 +585,28 @@ def _analytic_mean_correct(
         llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
         p_value=p_value, lam=(lam if power_tune else None),
     )
+
+
+_ANALYTIC_BACKENDS = {
+    id(np.mean): _analytic_mean_correct,
+    id(paired_walsh_midrank_theta): _analytic_walsh_theta_correct,
+}
+"""Maps ``estimator_func``'s identity (``id()``) to its closed-form
+analytic corrector, for :func:`correct`'s ``backend`` dispatch. Added
+2026-08-01 -- previously :func:`correct` special-cased ``estimator_func is
+np.mean`` directly; generalized to a registry so
+:func:`_analytic_walsh_theta_correct` (the Walsh-average midrank-sign
+analogue for ``paired_walsh_midrank_theta``, i.e. ``wilcoxon()``'s
+default estimand) could be added WITHOUT wilcoxon needing its own
+parallel dispatch path -- both now go through the exact same
+``backend="auto"``/``n_lab < _MIN_LAB_RECOMMENDED`` logic np.mean already
+used. Extending this to a new estimand requires BOTH a corrector function
+matching ``_analytic_mean_correct``'s signature (``Y_lab, Y_hat_lab,
+Y_hat_unlab, alpha, power_tune -> PPIResult``) AND an entry here --
+``estimator_func`` and ``rectifier_func`` must resolve to the SAME entry
+(matched, exactly like the pre-existing ``np.mean`` requirement), since
+the two-term variance decomposition assumes the rectifier and the main
+estimand share one variance/covariance model."""
 
 
 def resolve_arrays(
@@ -597,9 +833,14 @@ def correct(
     backend : {"auto", "bootstrap", "analytic"}
         How to build the CI/p-value. "bootstrap" is the percentile-
         resampling method described above, unconditionally. "analytic" is
-        a closed-form (delta-method) alternative for ``estimator_func is
-        np.mean`` with no covariates (``X_lab``/``X_unlab`` both None) --
-        see :func:`_analytic_mean_correct`; raises ``ValueError`` if
+        a closed-form (delta-method / Hajek-projection, depending on the
+        estimand) alternative for ``estimator_func`` registered in
+        :data:`_ANALYTIC_BACKENDS` (``np.mean`` -- see
+        :func:`_analytic_mean_correct` -- and, as of 2026-08-01,
+        :func:`paired_walsh_midrank_theta` -- see
+        :func:`_analytic_walsh_theta_correct`) with no covariates
+        (``X_lab``/``X_unlab`` both None) and ``rectifier_func`` matching
+        ``estimator_func`` (or ``None``); raises ``ValueError`` if
         requested for anything else. "auto" (the default) uses "analytic"
         when it's applicable AND ``n_lab < 30`` (below which the
         percentile bootstrap is known to undercover -- see the
@@ -613,7 +854,16 @@ def correct(
         reached the same target by n_lab ~= 25-30 -- it doesn't need to
         approximate a sampling distribution from a small empirical
         resample, since it plugs sample variances directly into a known
-        (Student's t) distributional form instead.
+        (Student's t) distributional form instead. For
+        ``paired_walsh_midrank_theta`` specifically, "analytic" narrows
+        wilcoxon's CI/improves its calibration ONLY at small n_lab (via
+        this same mechanism); it does NOT close the ~2.6-2.8x wider-CI gap
+        this estimand has vs. ``np.mean`` at n_lab>=30 (both on the
+        bootstrap path there) -- that gap was root-caused to the
+        Walsh-average estimand's genuinely higher finite-sample variance,
+        not a fixable bootstrap-construction inefficiency; see
+        :func:`_analytic_walsh_theta_correct`'s docstring for the full
+        evidence.
 
     Returns
     -------
@@ -744,14 +994,18 @@ def correct(
     # ── backend dispatch (auto/bootstrap/analytic) ────────────────────────────
     if backend not in ("auto", "bootstrap", "analytic"):
         raise ValueError(f"backend must be 'auto', 'bootstrap', or 'analytic'; got {backend!r}.")
+    _analytic_fn = _ANALYTIC_BACKENDS.get(id(estimator_func))
     _analytic_available = (
-        estimator_func is np.mean and _rect_fn is np.mean and X_lab is None and X_unlab is None
+        _analytic_fn is not None and id(_rect_fn) == id(estimator_func)
+        and X_lab is None and X_unlab is None
     )
     if backend == "analytic" and not _analytic_available:
         raise ValueError(
-            "backend='analytic' requires estimator_func=np.mean (and rectifier_func=np.mean or "
-            f"None) with no covariates; got estimator_func={estimator_func!r}, "
-            f"rectifier_func={rectifier_func!r}, X_lab={'given' if X_lab is not None else None}."
+            "backend='analytic' requires estimator_func to be one of the registered analytic "
+            "estimands (np.mean, or evalstats.ppi.paired_walsh_midrank_theta -- see "
+            "_ANALYTIC_BACKENDS), with rectifier_func matching estimator_func (or None) and no "
+            f"covariates; got estimator_func={estimator_func!r}, rectifier_func={rectifier_func!r}, "
+            f"X_lab={'given' if X_lab is not None else None}."
         )
     use_analytic = backend == "analytic" or (
         backend == "auto" and _analytic_available and n_lab < _MIN_LAB_RECOMMENDED
@@ -766,7 +1020,7 @@ def correct(
             UserWarning, stacklevel=2,
         )
     if use_analytic:
-        return _analytic_mean_correct(Y_lab, Y_hat_lab, Y_hat_unlab, alpha, power_tune)
+        return _analytic_fn(Y_lab, Y_hat_lab, Y_hat_unlab, alpha, power_tune)
 
     # ── Point estimate (lambda=1 terms; combined into `estimate` below) ──────
     f_unlab   = _call(estimator_func, Y_hat_unlab, X_unlab)
