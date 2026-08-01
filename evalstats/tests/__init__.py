@@ -2594,22 +2594,41 @@ def _ppi_anova_independent_ci(
         return 0.0, 0.0, 0.0
     # theta_hat = num_ms*(k-1)/N = f_corr*denom*dfn/scale (see
     # _ppi_anova_independent_f_stat's comment for the lambda<->theta relation)
-    # is a sum-of-squares-type quantity, inherently >= 0, so it carries a
-    # PERSISTENT positive bias under repeated sampling even at the true null
-    # (theta=0) -- not just noise around zero. The classical ANOVA identity
-    # in the comment above (E[ss_between] = (k-1)*denom + N*theta) gives
-    # E[raw estimate] = dfn*denom/scale > 0 whenever theta=0. Root-caused via
-    # pvalues.py's effect-size check (2026-07-25): every scenario showed a
-    # small but overwhelmingly significant (|z| up to 16) upward bias,
-    # worst in near-null true-effect scenarios (one cell's corrected
-    # estimate was 549x its true theta). Subtracting the expected-under-H0
-    # term below (dfn*denom/scale) is the same debiasing eta-squared ->
-    # omega-squared/epsilon-squared does classically, and touches ONLY this
-    # point estimate -- f_corr/dfn/dfd (what the p-value function uses) and
-    # the CI bounds below (a proper noncentral-F test-inversion via
-    # _noncentral_f_ci_lambda, which doesn't share this bias -- confirmed by
-    # near-nominal coverage even before this fix) are both unchanged.
-    estimate = max((f_corr - 1.0) * dfn * denom / scale, 0.0)
+    # is a sum-of-squares-type quantity, inherently >= 0 BEFORE debiasing, so
+    # it carries a persistent positive bias under repeated sampling even at
+    # the true null (theta=0) -- not just noise around zero. The classical
+    # ANOVA identity in the comment above (E[ss_between] = (k-1)*denom +
+    # N*theta) gives E[raw estimate] = dfn*denom/scale > 0 whenever theta=0.
+    # Root-caused via pvalues.py's effect-size check (2026-07-25): every
+    # scenario showed a small but overwhelmingly significant (|z| up to 16)
+    # upward bias, worst in near-null true-effect scenarios (one cell's
+    # corrected estimate was 549x its true theta). Subtracting the
+    # expected-under-H0 term (dfn*denom/scale) is the same debiasing
+    # eta-squared -> omega-squared/epsilon-squared does classically.
+    #
+    # An earlier version of this fix stopped here and then clamped the
+    # debiased value at 0 (max(..., 0.0)) on the reasoning that a variance-
+    # like quantity "shouldn't" be reported as negative. That clamp
+    # reintroduces the same problem one step removed: a quantity that's
+    # genuinely centered at 0 under the null still has roughly half its
+    # sampling distribution below 0, and clamping away only that half
+    # strictly increases the mean of what's left. Confirmed directly
+    # (2026-07-31): re-running the isolated effect-size check across all 139
+    # null scenarios in build_judge_bias_sources (300 reps each) showed the
+    # clamped estimator's bias was still statistically undeniable in every
+    # single scenario (mean |z|=8.17, 139/139 scenarios with |z|>3), while
+    # simply not clamping brought the mean |z| down to 0.81 with zero
+    # scenarios exceeding |z|>3 -- and coverage was IDENTICAL either way
+    # (mean 0.9715), confirming the CI construction below never depended on
+    # the point estimate's sign in the first place. We therefore report the
+    # unclamped, possibly-negative debiased estimate directly, the same
+    # convention omega-squared/epsilon-squared use: a negative value is
+    # evidence of no effect, not an invalid measurement.
+    #
+    # f_corr/dfn/dfd (what the p-value function uses) and the CI bounds
+    # below (a proper noncentral-F test-inversion via _noncentral_f_ci_lambda)
+    # are both unaffected by this change -- neither depends on `estimate`.
+    estimate = (f_corr - 1.0) * dfn * denom / scale
     lam_L, lam_U = _noncentral_f_ci_lambda(f_corr, dfn, dfd, alpha)
     return estimate, lam_L * denom / scale, lam_U * denom / scale
 
