@@ -4796,6 +4796,7 @@ def save_ppi_comparison_plot(
     *, results: list[PPIComparisonResult], alpha: float, out_path: str,
     results_binary: list[PPIComparisonResult] | None = None,
     nlab_pow_results: list[PPIComparisonResult] | None = None,
+    nlab_pow_results_binary: list[PPIComparisonResult] | None = None,
 ) -> str:
     """The flagship 5-way estimator-comparison figure: rejection rate for
     all_human/human_subset/llm_only/llm_impute/ppi, one row per x-axis
@@ -4832,9 +4833,15 @@ def save_ppi_comparison_plot(
         fixed N=100 comparison_sources' 'compare_label_frac' sweep alone --
         this data was already being computed and printed/saved to CSV every
         run, just never fed into this plot. Falls back to the fixed-N=100
-        sweep for any eval_type not covered by the grid (e.g. grades,
-        binary -- build_ppi_nlab_grid_sources_binary isn't wired into run()
-        yet)."""
+        sweep for any eval_type not covered by the grid (e.g. grades).
+
+    nlab_pow_results_binary : optional
+        build_ppi_nlab_grid_sources_binary's power grid, the binary
+        analogue of ``nlab_pow_results`` -- pools binary's n_lab row across
+        N the same way, instead of the fixed-N=100 results_binary sweep.
+        Binary's effect_size row has no grid analogue (the grid only
+        covers one fixed effect_frac per call, same limitation as the
+        non-binary columns) and stays on the fixed-N=100 sweep."""
     import matplotlib.pyplot as plt
 
     if not results:
@@ -4854,6 +4861,13 @@ def save_ppi_comparison_plot(
                     by_nlab[nlab] = pooled
             if by_nlab:
                 nlab_pow_by_et_nlab[et] = by_nlab
+
+    nlab_pow_by_nlab_binary: dict[int, PPIComparisonResult] = {}
+    if nlab_pow_results_binary:
+        for nlab in sorted({r.n_lab for r in nlab_pow_results_binary}):
+            pooled = _pool_ppi_comparison_rows([r for r in nlab_pow_results_binary if r.n_lab == nlab])
+            if pooled is not None:
+                nlab_pow_by_nlab_binary[nlab] = pooled
 
     n_rows = 2
     fig, axes = plt.subplots(
@@ -4901,7 +4915,11 @@ def save_ppi_comparison_plot(
         # Row 1: vs n_lab -- pooled across the FULL N x N_lab grid when
         # available (nlab_pow_by_et_nlab), instead of the fixed-N=100 sweep.
         ax1 = axes[1][col_idx]
-        if is_binary:
+        if is_binary and nlab_pow_by_nlab_binary:
+            et1_rows = nlab_pow_by_nlab_binary
+            x1_values = sorted(et1_rows.keys())
+            fixed1 = f"effect size fixed at {PPI_COMPARISON_MODERATE_EFFECT_FRAC:.0%}; pooled over N=30-400{methods_note}"
+        elif is_binary:
             tag1_rows = [r for r in source if r.tag == "complab_binary" and r.eval_type == et]
             x1_values = sorted({r.n_lab for r in tag1_rows})
             et1_rows = {r.n_lab: r for r in tag1_rows}
@@ -4947,6 +4965,7 @@ def save_ppi_null_comparison_plot(
     *, results: list[PPIComparisonResult], alpha: float, out_path: str,
     nlab_cal_results: list[PPIComparisonResult] | None = None,
     results_binary: list[PPIComparisonResult] | None = None,
+    nlab_cal_results_binary: list[PPIComparisonResult] | None = None,
 ) -> str:
     """Bar chart isolating JUST the null (no real effect) case from
     save_ppi_comparison_plot's line plot -- one bar per estimator arm, one
@@ -4986,10 +5005,16 @@ def save_ppi_null_comparison_plot(
         tag, own 2-method pool -- ttest_welch/paired_t only, no mwu/
         wilcoxon). When given, prepended as the LEFTMOST panel -- binary was
         previously computed and reported in text/CSV but never plotted
-        here. No N x N_lab grid exists for binary yet (build_ppi_nlab_grid_
-        sources_binary isn't wired into run()), so its panel is always the
-        single-scenario (N=100) pooling, same caveat as the grades
-        fallback above.
+        here.
+
+    nlab_cal_results_binary : optional
+        build_ppi_nlab_grid_sources_binary's calibration grid (effect_frac=
+        0.0), pre-pooled across binary's 2 methods -- the binary analogue
+        of ``nlab_cal_results``. When given, binary's panel is ALSO pooled
+        across its full N x N_lab grid instead of the single (N=100,
+        N_lab=20) scenario, matching continuous/likert's treatment. Falls
+        back to the single-scenario pooling (same caveat as the grades
+        fallback above) if omitted.
 
     Error bars are the 95% Wilson score interval for each bar's underlying
     binomial proportion (_ppi_wilson_interval, the same interval
@@ -5016,12 +5041,19 @@ def save_ppi_null_comparison_plot(
             nlab_null_pool_by_et[et] = _pool_ppi_comparison_rows(
                 [r for r in nlab_cal_results if r.tag == "nlab_grid" and r.eval_type == et]
             )
+    nlab_null_pool_binary = (
+        _pool_ppi_comparison_rows([r for r in nlab_cal_results_binary if r.tag == "nlab_grid_binary"])
+        if nlab_cal_results_binary else None
+    )
 
     fig, axes = plt.subplots(1, len(columns), figsize=(3.4 * len(columns), 4.9), squeeze=False)
     x = np.arange(len(_PPI_NULL_COMPARISON_ORDER))
     for col, et in enumerate(columns):
         ax = axes[0][col]
-        if et == "binary":
+        if et == "binary" and nlab_null_pool_binary is not None:
+            r = nlab_null_pool_binary
+            subtitle = f"pooled: 2 tests x N x N_lab\n(n_reps={r.n_reps})"
+        elif et == "binary":
             r = next(r for r in null_rows_binary if r.eval_type == "binary")
             subtitle = f"pooled: 2 tests\n(N={r.n}, N_lab={r.n_lab}, n_reps={r.n_reps})"
         elif nlab_null_pool_by_et.get(et) is not None:
@@ -9326,6 +9358,8 @@ def run(args: argparse.Namespace) -> CaseResult:
             nlab_cal_pooled: list[PPIComparisonResult] = []
             nlab_pow_pooled: list[PPIComparisonResult] = []
             comparison_results_binary_pooled: list[PPIComparisonResult] = []
+            nlab_cal_pooled_binary: list[PPIComparisonResult] = []
+            nlab_pow_pooled_binary: list[PPIComparisonResult] = []
             if not getattr(args, "no_comparison_check", False):
                 comparison_sources = power_sources + build_ppi_comparison_label_frac_sources()
                 if args.eval_types:
@@ -9478,6 +9512,56 @@ def run(args: argparse.Namespace) -> CaseResult:
                         )
                     key_metrics["ppi_comparison_binary_n_results"] = len(comparison_results_binary_pooled)
 
+                # Binary's N x N_lab grid -- the binary analogue of the
+                # continuous/likert nlab_grid block above (build_ppi_nlab_
+                # grid_sources_binary), previously computed nowhere: binary's
+                # comparison figures fell back to the single (N=100, N_lab=20)
+                # scenario while continuous/likert already got the full grid.
+                nlab_cal_sources_binary = build_ppi_nlab_grid_sources_binary(effect_frac=0.0)
+                nlab_pow_sources_binary = build_ppi_nlab_grid_sources_binary(effect_frac=PPI_COMPARISON_MODERATE_EFFECT_FRAC)
+                if args.eval_types:
+                    nlab_cal_sources_binary = [s for s in nlab_cal_sources_binary if s.eval_type in requested]
+                    nlab_pow_sources_binary = [s for s in nlab_pow_sources_binary if s.eval_type in requested]
+                if nlab_cal_sources_binary or nlab_pow_sources_binary:
+                    nlab_reps_binary = getattr(args, "effect_reps", 200)
+                    print(f"\npvalues simulation (PPI-corrected, N x N_lab grid, binary) -- "
+                          f"{len(nlab_cal_sources_binary)} calibration + {len(nlab_pow_sources_binary)} power scenarios "
+                          f"x {len(_COMPARISON_METHODS_BINARY)} methods, reps={nlab_reps_binary}, n_boot={args.ppi_n_boot}")
+                    nlab_cal_raw_binary = run_ppi_comparison_simulation(
+                        nlab_cal_sources_binary, n_reps=nlab_reps_binary, n_boot=args.ppi_n_boot,
+                        progress_mode=args.progress, seed=args.seed + 17, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS_BINARY,
+                    ) if nlab_cal_sources_binary else []
+                    nlab_pow_raw_binary = run_ppi_comparison_simulation(
+                        nlab_pow_sources_binary, n_reps=nlab_reps_binary, n_boot=args.ppi_n_boot,
+                        progress_mode=args.progress, seed=args.seed + 18, n_workers=getattr(args, "workers", 1),
+                        methods=_COMPARISON_METHODS_BINARY,
+                    ) if nlab_pow_sources_binary else []
+                    nlab_cal_pooled_binary = pool_ppi_comparison_across_methods(nlab_cal_raw_binary) if nlab_cal_raw_binary else []
+                    nlab_pow_pooled_binary = pool_ppi_comparison_across_methods(nlab_pow_raw_binary) if nlab_pow_raw_binary else []
+                    print_ppi_nlab_grid_report(
+                        nlab_cal_pooled_binary, alpha=args.alpha, header="N x N_LAB GRID (calibration, effect_size=0, binary)",
+                    )
+                    print_ppi_nlab_grid_report(
+                        nlab_pow_pooled_binary, alpha=args.alpha, header="N x N_LAB GRID (power, moderate effect_size, binary)",
+                    )
+                    nlab_stem_binary = f"pvalues_ppi_nlab_grid_binary_reps{nlab_reps_binary}_{stamp}"
+                    if args.save_results == "save":
+                        if nlab_cal_raw_binary:
+                            output_paths += save_results_artifacts_ppi_nlab_grid(
+                                results=nlab_cal_raw_binary, pooled_results=nlab_cal_pooled_binary,
+                                alpha=args.alpha, out_dir=args.out_dir,
+                                run_stem=f"{nlab_stem_binary}_calibration", header="N x N_LAB GRID (calibration, effect_size=0, binary)",
+                            )
+                        if nlab_pow_raw_binary:
+                            output_paths += save_results_artifacts_ppi_nlab_grid(
+                                results=nlab_pow_raw_binary, pooled_results=nlab_pow_pooled_binary,
+                                alpha=args.alpha, out_dir=args.out_dir,
+                                run_stem=f"{nlab_stem_binary}_power", header="N x N_LAB GRID (power, moderate effect_size, binary)",
+                            )
+                    key_metrics["ppi_nlab_grid_binary_n_calibration_results"] = len(nlab_cal_pooled_binary)
+                    key_metrics["ppi_nlab_grid_binary_n_power_results"] = len(nlab_pow_pooled_binary)
+
                 # Both comparison plots, saved here (not right after each
                 # sweep above) so binary's leftmost panel -- computed just
                 # above -- can be included. Binary was previously silently
@@ -9491,6 +9575,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_reps{comparison_reps_for_stem}_{stamp}_five_way_comparison.png"),
                         results_binary=comparison_results_binary_pooled or None,
                         nlab_pow_results=nlab_pow_pooled or None,
+                        nlab_pow_results_binary=nlab_pow_pooled_binary or None,
                     )
                     output_paths.append(comparison_plot_path)
                     print(f"Saved plot: {comparison_plot_path}")
@@ -9500,6 +9585,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_reps{comparison_reps_for_stem}_{stamp}_null_false_positive_rate.png"),
                         nlab_cal_results=nlab_cal_pooled or None,
                         results_binary=comparison_results_binary_pooled or None,
+                        nlab_cal_results_binary=nlab_cal_pooled_binary or None,
                     )
                     output_paths.append(null_comparison_plot_path)
                     print(f"Saved plot: {null_comparison_plot_path}")
