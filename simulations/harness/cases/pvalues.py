@@ -7750,6 +7750,7 @@ def print_ppi_power_nlab_grid_report(
 
 def save_results_artifacts_ppi_power_nlab_grid(
     *, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str,
+    header: str = "bias reinforcing effect",
 ) -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
@@ -7770,7 +7771,7 @@ def save_results_artifacts_ppi_power_nlab_grid(
     summary_path = out_base / f"{run_stem}_ppi_power_nlab_grid_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_power_nlab_grid_report(results, alpha=alpha)
+        print_ppi_power_nlab_grid_report(results, alpha=alpha, header=header)
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -9215,7 +9216,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_power_nlab_grid(
                             results=nlab_grid_results, alpha=args.alpha, out_dir=args.out_dir,
-                            run_stem=nlab_grid_stem,
+                            run_stem=nlab_grid_stem, header=f"bias {direction_label} effect",
                         )
                     if args.plots == "save":
                         nlab_grid_plot_paths = save_ppi_power_nlab_grid_plots(
