@@ -1944,7 +1944,25 @@ generating condition would be misleading. This grid's four fractions all
 resolve to distinct actual n_lab (15/20/30/40) at n=100 -- see
 PPIComparisonResult.n_lab, which reports the REALIZED count rather than
 the nominal fraction for exactly this reason."""
-PPI_COMPARISON_MODERATE_EFFECT_FRAC = 0.20
+PPI_COMPARISON_MODERATE_EFFECT_FRAC = 0.10
+"""Fixed effect-size fraction for build_ppi_comparison_label_frac_sources/
+build_ppi_nlab_grid_sources' power variant/their binary analogues -- every
+consumer of this constant holds effect_size fixed and varies label_frac/
+N_lab instead (never the "vs effect_size" sweeps, which use their own
+PPI_POWER_EFFECT_FRACS grid), so this is specifically "the effect size used
+whenever we're looking at the label-budget axis instead."
+
+Was 0.20 ("moderate") until 2026-08-01: at 0.20, continuous's and likert's
+power (both all_human and PPI-corrected) saturate near 1.0 across most of
+PPI_NLAB_GRID_NLAB_VALUES' N_lab range, flattening the "does PPI beat
+human_subset" comparison into visual parity for reasons that have nothing
+to do with PPI's actual value-add -- there's just no headroom left once
+both arms are pinned near the ceiling. Same root cause, same fix already
+applied to PPI_LABEL_EFF_EFFECT_FRAC (0.08) for the analogous label-
+efficiency sweep; see that constant's docstring for the original
+diagnosis. 0.10 keeps this constant's own "moderate, not small" framing
+closer to its original value than 0.08 would, while still leaving
+meaningful headroom below saturation at the N_lab range this feeds."""
 
 
 def _ppi_power_baseline(eval_type: str) -> dict:
