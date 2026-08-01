@@ -368,6 +368,32 @@ TTEST_WELCH = Method("ttest_welch", "#d62728")
 # selected explicitly.
 MWU = Method("mwu", "#2ca02c")
 MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
+# MWU_MNAR_POOLED (evalstats.tests._ppi_two_sample_midrank_corrected_pooled):
+# a candidate replacement for MWU_MNAR_EXPERIMENTAL's bootstrap, NOT its
+# rectifier. Investigated 2026-08-01 after tracing MWU_MNAR_EXPERIMENTAL's
+# MCAR cost to something other than the local-vs-global rectifier choice:
+# even at n_strata=1 (mathematically the SAME point estimate as MWU's
+# global rectifier), MWU_MNAR_EXPERIMENTAL's bootstrap still ran hotter
+# than MWU under MCAR, and isolating power-tuning (MWU defaults to it,
+# MWU_MNAR_EXPERIMENTAL has none) didn't explain the gap either (MWU with
+# power_tune=False stayed close to nominal, unlike the local rectifier at
+# n_strata=1). The remaining difference: MWU_MNAR_EXPERIMENTAL draws FOUR
+# separate bootstrap resamples (group A/B x labeled/unlabeled, each fixing
+# that group's own count every replicate); evalstats.ppi.correct (what MWU
+# actually uses) instead pools group A + B's unlabeled items into ONE
+# array and draws a SINGLE resample from the pool (likewise for labeled
+# items), letting the group split vary replicate-to-replicate. Switching
+# ONLY that (same rectifier, same truth-binning collider fix, same hard
+# min_lab_per_bin cutoff) improved BOTH axes on matched draws across 5
+# MCAR + 4 MNAR corners (n_reps=1500, likert): mean MCAR |gap to naive|
+# 0.0113 -> 0.0092, mean MNAR-corner rate (vs. nominal 0.05) 0.072 -> 0.056
+# -- better than MWU_MNAR_EXPERIMENTAL in every corner tested, not just on
+# average. This scratch-scale result is what this Method exists to
+# validate at harness scale (full Type-I sweep + factorial grid) before
+# any decision about promoting it -- see the validation run this Method
+# was added for. Selectable via --tests mwu_mnar_pooled; not part of
+# PPI_OFFICIAL_TEST_METHODS pending that validation.
+MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MNAR_EXPERIMENTAL's purple
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
@@ -415,7 +441,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE,
 ]
@@ -423,7 +449,7 @@ PPI_TEST_METHODS = [
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
-    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, KRUSKAL_MNAR_EXPERIMENTAL)
+    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, KRUSKAL_MNAR_EXPERIMENTAL)
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental

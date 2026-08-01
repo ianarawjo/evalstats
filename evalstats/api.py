@@ -732,7 +732,7 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     """
     from evalstats.tests import (
         _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
-        _ppi_paired_arrays, _ppi_two_sample_midrank_corrected,
+        _ppi_paired_arrays, _ppi_two_sample_midrank_corrected_pooled,
     )
     if method == "tango":
         return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
@@ -745,12 +745,17 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     if method == "wilcoxon":
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.median, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "mannwhitney":
-        # Per-group, per-score-bin local rectifier -- NOT the single-global-
-        # rectifier _ppi_two_sample -- see _ppi_two_sample_midrank_corrected's
-        # docstring for why the naive global rectifier badly miscalibrates
+        # Per-group, per-score-bin local rectifier with a POOLED bootstrap
+        # resample -- matches evalstats.tests.mannwhitney's method="local"
+        # default (promoted 2026-08-01; see _ppi_two_sample_midrank_
+        # corrected_pooled's docstring for the full validation). NOT the
+        # single-global-rectifier _ppi_two_sample: that badly miscalibrates
         # this rank estimand under score-correlated labeling + real judge
-        # bias (validated via simulations/harness --mode ppi).
-        return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, alpha, n_boot, rng)
+        # bias. NOT _ppi_two_sample_midrank_corrected either (this
+        # function's stratified-resample predecessor, "mnar_experimental")
+        # -- the pooled resample strictly dominated it in validation, with
+        # no MCAR cost.
+        return _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
         f"method {method!r}. Supported pairwise methods: "

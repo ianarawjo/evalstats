@@ -916,6 +916,169 @@ def _ppi_two_sample_midrank_corrected(
     )
 
 
+def _ppi_two_sample_midrank_corrected_pooled(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+    n_strata: int = 2,
+    min_lab_per_bin: int = 5,
+) -> "PPIResult":
+    """Variant of :func:`_ppi_two_sample_midrank_corrected` that is now
+    :func:`mannwhitney`'s ``method="local"`` default (promoted 2026-08-01):
+    IDENTICAL rectifier mechanism (same per-group, per-score-bin local
+    rectifier, same truth-based bin assignment for labeled items, same
+    hard ``min_lab_per_bin`` global-fallback cutoff) -- the ONLY change is
+    the bootstrap RESAMPLING SCHEME.
+
+    ``_ppi_two_sample_midrank_corrected`` draws FOUR separate resamples
+    (group A unlabeled, group B unlabeled, group A labeled, group B
+    labeled), each fixing that group's own count exactly on every
+    replicate. :func:`evalstats.ppi.correct` (what the GLOBAL-rectifier
+    sibling, ``_ppi_two_sample``, actually uses) instead pools group A +
+    group B's unlabeled items into ONE array and draws a SINGLE resample
+    from that combined pool (via its ``X_unlab`` covariate convention,
+    same for the labeled pool) -- letting the group split vary
+    replicate-to-replicate the way a real single multinomial resample of
+    "all n_lab labeled items" naturally would, rather than conditioning it
+    on the observed split.
+
+    This function mirrors that pooled convention instead, keeping every
+    other design choice unchanged. Investigated 2026-08-01 after tracing
+    ``_ppi_two_sample_midrank_corrected``'s known MCAR-calibration cost
+    (see :func:`evalstats.tests.mannwhitney`'s ``method`` docstring: ~2x
+    multiplier at small n_lab, e.g. 3.6% -> 7.2%) to something OTHER than
+    its rectifier: even at ``n_strata=1`` (mathematically the SAME point
+    estimate as the global rectifier), the stratified-resampling bootstrap
+    still ran hotter than ``_ppi_two_sample`` -- and isolating power-tuning
+    (``_ppi_two_sample`` defaults to PPI++ power-tuning; this function has
+    none) also failed to explain the gap, since ``_ppi_two_sample(...,
+    power_tune=False)`` stayed close to nominal while the stratified-
+    resampling local rectifier did not. The remaining, previously-untested
+    difference was this resampling scheme -- switching ONLY that, on
+    matched draws across 5 MCAR corners x 4 MNAR corners (n_reps=1500 each,
+    likert): mean |gap to naive| on MCAR corners improved (0.0113 ->
+    0.0092) AND mean MNAR-corner rate improved (0.072 -> 0.056, vs.
+    nominal 0.05, vs. naive's 0.275) relative to the shipped function --
+    better on BOTH axes simultaneously, in every corner tested.
+
+    Confirmed at full harness scale (``simulations/harness/cases/
+    pvalues.py``'s MWU_MNAR_POOLED method): a 2064-scenario factorial grid
+    x {this, ``_ppi_two_sample`` ("global"), ``_ppi_two_sample_midrank_
+    corrected`` ("mnar_experimental")}, reps=300, n_boot=500, zero bootstrap
+    failures across all 6192 cells. MCAR-only cells (528 per method): mean
+    Type-I 0.0486 vs. 0.0518 ("global") / 0.0517 ("mnar_experimental"),
+    worst-case 0.093 vs. 0.097 / 0.107 -- no regression, mild improvement.
+    By label mechanism (mcar / mnar_mild / mnar_strong), mean Type-I is
+    0.049 / 0.048 / 0.048 for this function (flat) vs. 0.052 / 0.067 / 0.096
+    ("global") and 0.052 / 0.056 / 0.067 ("mnar_experimental"); worst single
+    cell across the whole grid: 0.097 here vs. 0.200 ("mnar_experimental")
+    vs. 0.630 ("global"). Power preserved (moderate/large-effect cells
+    within a few points of both alternatives); CI coverage on the effect
+    check is marginally better than "mnar_experimental"'s (0.951 vs 0.947).
+    See :func:`mannwhitney`'s ``method`` parameter docstring for the
+    user-facing summary of this validation.
+    """
+    from evalstats.ppi import PPIResult
+
+    rng = np.random.default_rng(rng)
+
+    mask_a = ~np.isnan(a_lab)
+    mask_b = ~np.isnan(b_lab)
+    if mask_a.sum() == 0 and mask_b.sum() == 0:
+        raise ValueError("No labeled items found in a_lab or b_lab.")
+
+    llm_unlab_a, llm_unlab_b = a[~mask_a], b[~mask_b]
+    llm_lab_a, llm_lab_b = a[mask_a], b[mask_b]
+    truth_lab_a, truth_lab_b = a_lab[mask_a], b_lab[mask_b]
+
+    def _bin_edges(llm_all: np.ndarray) -> np.ndarray:
+        if n_strata <= 1:
+            return np.array([])
+        qs = np.linspace(0, 100, n_strata + 1)[1:-1]
+        return np.percentile(llm_all, qs)
+
+    edges_a = _bin_edges(a)
+    edges_b = _bin_edges(b)
+    bin_unlab_a = np.searchsorted(edges_a, llm_unlab_a, side="right")
+    bin_unlab_b = np.searchsorted(edges_b, llm_unlab_b, side="right")
+    # Labeled items binned by TRUE value, not their own noisy LLM score --
+    # see _ppi_two_sample_midrank_corrected's docstring ("Collider fix") for
+    # why binning by LLM score instead is itself a source of Type-I
+    # inflation under MNAR labeling.
+    bin_lab_a = np.searchsorted(edges_a, truth_lab_a, side="right")
+    bin_lab_b = np.searchsorted(edges_b, truth_lab_b, side="right")
+
+    # -- Pool group A + group B into single arrays, tagging each item with
+    # its ORIGINAL group (0=A, 1=B) and its (group-specific) bin index, so
+    # both travel together through a single pooled resample -- mirroring
+    # evalstats.ppi.correct's X_unlab/X_lab covariate convention exactly. --
+    n_unlab_a, n_unlab_b = len(llm_unlab_a), len(llm_unlab_b)
+    n_lab_a, n_lab_b = len(llm_lab_a), len(llm_lab_b)
+    n_unlab_total = n_unlab_a + n_unlab_b
+    n_lab_total = n_lab_a + n_lab_b
+
+    pool_unlab_llm = np.concatenate([llm_unlab_a, llm_unlab_b])
+    pool_unlab_bin = np.concatenate([bin_unlab_a, bin_unlab_b])
+    pool_unlab_grp = np.concatenate([np.zeros(n_unlab_a, dtype=int), np.ones(n_unlab_b, dtype=int)])
+
+    pool_lab_llm = np.concatenate([llm_lab_a, llm_lab_b])
+    pool_lab_truth = np.concatenate([truth_lab_a, truth_lab_b])
+    pool_lab_bin = np.concatenate([bin_lab_a, bin_lab_b])
+    pool_lab_grp = np.concatenate([np.zeros(n_lab_a, dtype=int), np.ones(n_lab_b, dtype=int)])
+
+    def _correct_unlab(llm_unlab, bin_unlab, llm_lab, bin_lab, truth_lab) -> np.ndarray:
+        global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
+        rects = np.full(max(n_strata, 1), global_rect)
+        for k in range(max(n_strata, 1)):
+            m = bin_lab == k
+            if m.sum() >= min_lab_per_bin:
+                rects[k] = float(np.mean(truth_lab[m]) - np.mean(llm_lab[m]))
+        return llm_unlab + rects[bin_unlab]
+
+    def _point_estimate(unlab_llm, unlab_bin, unlab_grp, lab_llm, lab_truth, lab_bin, lab_grp) -> float:
+        ga, gb = lab_grp == 0, lab_grp == 1
+        ua, ub = unlab_grp == 0, unlab_grp == 1
+        corr_unlab_a = _correct_unlab(unlab_llm[ua], unlab_bin[ua], lab_llm[ga], lab_bin[ga], lab_truth[ga])
+        corr_unlab_b = _correct_unlab(unlab_llm[ub], unlab_bin[ub], lab_llm[gb], lab_bin[gb], lab_truth[gb])
+        combined_a = np.concatenate([lab_truth[ga], corr_unlab_a])
+        combined_b = np.concatenate([lab_truth[gb], corr_unlab_b])
+        return _midrank_theta(combined_a, combined_b)
+
+    estimate = _point_estimate(
+        pool_unlab_llm, pool_unlab_bin, pool_unlab_grp,
+        pool_lab_llm, pool_lab_truth, pool_lab_bin, pool_lab_grp,
+    )
+
+    f_unlab = _midrank_theta(llm_unlab_a, llm_unlab_b) if (n_unlab_a and n_unlab_b) else \
+        _midrank_theta(a[~mask_a], b[~mask_b])
+    f_lab = _midrank_theta(truth_lab_a, truth_lab_b)
+    f_hat_lab = _midrank_theta(llm_lab_a, llm_lab_b)
+
+    boots = np.empty(n_boot)
+    for i in range(n_boot):
+        idx_u = rng.integers(0, n_unlab_total, n_unlab_total) if n_unlab_total else np.empty(0, dtype=int)
+        idx_l = rng.integers(0, n_lab_total, n_lab_total) if n_lab_total else np.empty(0, dtype=int)
+        boots[i] = _point_estimate(
+            pool_unlab_llm[idx_u], pool_unlab_bin[idx_u], pool_unlab_grp[idx_u],
+            pool_lab_llm[idx_l], pool_lab_truth[idx_l], pool_lab_bin[idx_l], pool_lab_grp[idx_l],
+        )
+
+    lo = float(np.percentile(boots, 100 * alpha / 2))
+    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
+    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
+        llm_estimate=float(f_unlab), human_estimate=float(f_lab),
+        rectifier=float(f_lab - f_hat_lab), p_value=p_value,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Non-PPI paired/binary p-value helpers
 #
@@ -3195,7 +3358,7 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "global",
+    method: str = "local",
     power_tune: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
@@ -3218,41 +3381,72 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
-    method : {"global", "mnar_experimental"}
+    method : {"local", "global", "mnar_experimental"}
         Which PPI correction to use for the mid-rank estimand (default
-        ``"global"``). This default changed on 2026-07-22 -- read this in
-        full before overriding it.
+        ``"local"`` as of 2026-08-01). This default changed twice -- read
+        this in full before overriding it.
 
-        ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier --
-        simple, and exactly correct for a MEAN, but under labeling that's
-        non-uniform with respect to score (e.g. "double-check the highest-
-        scoring items") combined with real judge bias and coarse/discrete
-        scales, this rank estimand is genuinely miscalibrated: Type-I error
-        up to 3-9x nominal in the worst identified case (Likert, strong such
-        labeling, severe bias).
+        ``"local"`` (:func:`_ppi_two_sample_midrank_corrected_pooled`) is a
+        per-group, per-score-bin LOCAL rectifier, computed with a POOLED
+        bootstrap resample (group A + B's unlabeled items resampled together
+        as one draw, same for the labeled items -- matching
+        :func:`evalstats.ppi.correct`'s own resampling convention exactly).
+        This is now the default because a full-harness factorial validation
+        (2064 scenarios x {this, "global", "mnar_experimental"}, reps=300,
+        n_boot=500, zero bootstrap failures -- see
+        ``simulations/harness/cases/pvalues.py``'s MWU_MNAR_POOLED method)
+        found it strictly dominates BOTH alternatives, not just under MNAR
+        labeling: on MCAR-only cells specifically (528 scenarios), mean
+        Type-I 0.0486 (vs. "global"'s 0.0518 and "mnar_experimental"'s
+        0.0517) and worst-case 0.093 (vs. 0.097 and 0.107) -- i.e. no MCAR
+        regression, if anything a small improvement. Under MNAR labeling the
+        gap is decisive: mean Type-I by label mechanism (mcar / mnar_mild /
+        mnar_strong) is 0.049 / 0.048 / 0.048 for "local" -- essentially
+        flat -- versus 0.052 / 0.067 / 0.096 for "global" and 0.052 / 0.056
+        / 0.067 for "mnar_experimental", and the worst single cell across
+        the whole grid drops from 0.630 ("global") to 0.200
+        ("mnar_experimental") to 0.097 ("local"). Power is preserved
+        (moderate/large-effect cells all within a few points of the other
+        two methods) and CI coverage on the effect-size check is marginally
+        better than "mnar_experimental"'s (0.951 vs. 0.947). As a side
+        effect, "local" (like "mnar_experimental") also does not show the
+        non-monotonic power dip "global" exhibits under Likert + judge bias
+        reinforcing a real effect (see ``simulations/harness``'s appendix
+        writeup on that anomaly) -- that turned out to be a fragility
+        specific to the global rectifier.
+
+        ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier
+        (no per-bin structure) -- simple, and exactly correct for a MEAN,
+        but under labeling that's non-uniform with respect to score (e.g.
+        "double-check the highest-scoring items") combined with real judge
+        bias and coarse/discrete scales, this rank estimand is genuinely
+        miscalibrated: Type-I error up to 3-9x nominal in the worst
+        identified case (Likert, strong such labeling, severe bias). Kept
+        available for anyone wanting the simplest possible construction, or
+        reproducing results computed under the 2026-07-22 through
+        2026-08-01 default.
 
         ``"mnar_experimental"`` (:func:`_ppi_two_sample_midrank_corrected`)
-        fixes that with a per-group, per-score-bin LOCAL rectifier instead
-        (see that function's docstring for the full mechanism). This option
-        was the default (as ``"corrected"``) until 2026-07-22, when a
-        controlled naive-vs-corrected comparison on matched draws (the same
-        methodology that caught an analogous, larger regression in
-        ``kruskalwallis``'s equivalent option) found it costs real
-        calibration under ordinary, correctly-random (MCAR) labeling in
-        exchange for the MNAR fix: worst found cells show a ~2x multiplier
-        (e.g. 3.6% -> 7.2% at a small labeled sample with real judge bias
-        present, MCAR labeling), replicated across two noise levels with the
-        same n_lab/bias combination. Since this package's PPI correction
-        generally assumes labels are sampled uniformly at random (see
-        :func:`evalstats.ppi.correct`'s docstring) and treats MNAR labeling
-        as an out-of-scope, documented limitation rather than something to
-        actively correct for, paying that MCAR cost for MNAR robustness is
-        the wrong trade for the default. ``"mnar_experimental"`` remains
-        available for anyone deliberately studying the MNAR-robustness
-        question, or reproducing results computed under the pre-2026-07-22
-        default -- see ``simulations/harness/cases/pvalues.py --mode ppi``
-        (methods ``mwu`` vs ``mwu_mnar_experimental``) for the calibration
-        study behind this change.
+        is "local"'s predecessor: the SAME per-group, per-score-bin
+        rectifier, but with a stratified (four separate per-group,
+        per-labeled/unlabeled resamples, each fixing that group's own count
+        exactly every replicate) bootstrap instead of "local"'s pooled one.
+        This was the default (as ``"corrected"``) until 2026-07-22, when a
+        controlled naive-vs-corrected comparison on matched draws found it
+        cost real calibration under ordinary, correctly-random (MCAR)
+        labeling in exchange for the MNAR fix (worst found cells showed a
+        ~2x multiplier, e.g. 3.6% -> 7.2%), so "global" became the default
+        instead. Root-caused 2026-08-01 to the stratified resampling scheme
+        specifically, not the rectifier -- switching only that (to what is
+        now "local") recovered the MCAR cost without losing the MNAR fix
+        (see "local"'s entry above). Kept available for reproducing results
+        computed under that 2026-07-22 - 2026-08-01 window, or for anyone
+        deliberately wanting the stratified-resample construction -- not
+        recommended for new work now that "local" exists.
+
+        See ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
+        ``mwu`` / ``mwu_mnar_experimental`` / ``mwu_mnar_pooled``) for the
+        calibration studies behind all of this.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -3260,11 +3454,14 @@ def mannwhitney(
         Use PPI++'s variance-minimizing power-tuning weight λ instead of
         fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
         ``power_tune`` parameter for validation status). Only applies to
-        ``method="global"``; ignored (has no effect) when
-        ``method="mnar_experimental"``, which uses a different, not-yet
-        power-tuned local-rectifier bootstrap. Pass ``power_tune=False`` to
-        reproduce the original PPI estimator exactly. The value actually
-        used is on the returned ``TestResult.lam``.
+        ``method="global"``; ignored (has no effect) for ``method="local"``
+        or ``method="mnar_experimental"``, both of which use their own,
+        not-yet power-tuned local-rectifier bootstrap (see "local"'s
+        docstring entry above -- despite lacking power-tuning, it still
+        matched or beat "global"'s power in validation). Pass
+        ``power_tune=False`` (with ``method="global"``) to reproduce the
+        original PPI estimator exactly. The value actually used is on the
+        returned ``TestResult.lam`` (``None`` for "local"/"mnar_experimental").
 
     Examples
     --------
@@ -3272,8 +3469,8 @@ def mannwhitney(
     >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
-    if method not in ("global", "mnar_experimental"):
-        raise ValueError(f'method must be "global" or "mnar_experimental"; got {method!r}.')
+    if method not in ("local", "global", "mnar_experimental"):
+        raise ValueError(f'method must be "local", "global", or "mnar_experimental"; got {method!r}.')
 
     x = _coerce(x)
     y = _coerce(y)
@@ -3311,7 +3508,9 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        if method == "mnar_experimental":
+        if method == "local":
+            ppi = _ppi_two_sample_midrank_corrected_pooled(x, y, x_lab, y_lab, alpha, n_boot, rng)
+        elif method == "mnar_experimental":
             ppi = _ppi_two_sample_midrank_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
         else:
             # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
