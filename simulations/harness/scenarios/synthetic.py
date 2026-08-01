@@ -2035,17 +2035,50 @@ def build_ppi_power_nobias_sources() -> list[JudgeBiasSource]:
 PPI_POWER_NLAB_GRID_N_VALUES = (100, 200, 400, 800)
 PPI_POWER_NLAB_GRID_NLAB_VALUES = (20, 40, 60)
 """N (total items) x N_lab (ABSOLUTE labeled-item count) grid for
-build_ppi_power_nlab_grid_reinforcing_sources. N=100/N_lab=20 is
-_ppi_power_baseline's existing fixed point (label_frac=0.20 at n=100) --
-kept as the grid's first cell so this sweep's (100, 20) row is directly
-comparable to the single-point build_ppi_power_reinforcing_sources results
-already reported elsewhere. The other 11 cells ask two separate questions
-at once: does a BIGGER unlabeled pool (N up to 8x) help on its own, and
-does MORE ABSOLUTE labels (N_lab up to 3x) help on its own -- crossed
-independently (like build_ppi_nlab_grid_sources' calibration-side grid)
-rather than only scaled together, since the two knobs are controlled by
-different real-world costs (collecting more unlabeled model outputs is
-usually cheap; collecting more human labels is usually the expensive one)."""
+build_ppi_power_nlab_grid_reinforcing_sources/build_ppi_power_nlab_grid_
+opposing_sources. N=100/N_lab=20 is _ppi_power_baseline's existing fixed
+point (label_frac=0.20 at n=100) -- kept as the grid's first cell so this
+sweep's (100, 20) row is directly comparable to the single-point
+build_ppi_power_reinforcing_sources/build_ppi_power_sources results already
+reported elsewhere. The other 11 cells ask two separate questions at once:
+does a BIGGER unlabeled pool (N up to 8x) help on its own, and does MORE
+ABSOLUTE labels (N_lab up to 3x) help on its own -- crossed independently
+(like build_ppi_nlab_grid_sources' calibration-side grid) rather than only
+scaled together, since the two knobs are controlled by different
+real-world costs (collecting more unlabeled model outputs is usually
+cheap; collecting more human labels is usually the expensive one)."""
+
+
+def _build_ppi_power_nlab_grid_sources(*, reinforcing: bool) -> list[JudgeBiasSource]:
+    """Shared body for build_ppi_power_nlab_grid_reinforcing_sources/
+    build_ppi_power_nlab_grid_opposing_sources -- identical N x N_lab x
+    effect_size grid, differing only in bias_delta's sign (see
+    build_ppi_power_reinforcing_sources' docstring for what that sign
+    controls). Both directions reuse the SAME "powernlab.<eval_type>.n=
+    <n>.nlab=<n_lab>.es=<frac>" name pattern (parsed by
+    _parse_ppi_power_nlab_grid_name in cases/pvalues.py) since direction is
+    tracked by which of the two source lists a result came from, not by its
+    name -- run() calls run_ppi_simulation on each list separately. Only
+    the ``tag`` differs ("power_nlab_grid_rf"/"power_nlab_grid_op"), for
+    the results CSV/manifest."""
+    et = "likert"
+    tag = "power_nlab_grid_rf" if reinforcing else "power_nlab_grid_op"
+    sources = []
+    for n in PPI_POWER_NLAB_GRID_N_VALUES:
+        for n_lab in PPI_POWER_NLAB_GRID_NLAB_VALUES:
+            if n_lab >= n:
+                continue
+            for frac in PPI_POWER_EFFECT_FRACS:
+                kw = _ppi_power_baseline(et)
+                kw["n"] = n
+                kw["label_frac"] = n_lab / n
+                if reinforcing:
+                    kw["bias_delta"] = -_jb_bias_magnitude(et)
+                sources.append(JudgeBiasSource(
+                    name=f"powernlab.{et}.n={n}.nlab={n_lab}.es={frac:.3f}", tag=tag,
+                    effect_size=_jb_effect_magnitude(et, frac), **kw,
+                ))
+    return sources
 
 
 def build_ppi_power_nlab_grid_reinforcing_sources() -> list[JudgeBiasSource]:
@@ -2064,32 +2097,35 @@ def build_ppi_power_nlab_grid_reinforcing_sources() -> list[JudgeBiasSource]:
     combination.
 
     Restricted to likert (where the anomaly appears) rather than every
-    eval type, and to the reinforcing bias direction (where it appears),
-    to keep this a "light" sweep per-cell as originally scoped, rather than
-    tripling cost by also covering opposing/no-bias and every eval type.
-    label_frac is back-solved to `n_lab / n` per cell, exactly matching
-    build_ppi_nlab_grid_sources' convention; cells where n_lab >= n are
-    skipped as infeasible (none arise at this grid's actual values, since
-    N_lab's max of 60 is always well under N's min of 100). Tag
-    "power_nlab_grid_rf"; scenario names are
-    "powernlab.<eval_type>.n=<n>.nlab=<n_lab>.es=<frac>", parsed by
-    _parse_ppi_power_nlab_grid_name in cases/pvalues.py."""
-    et = "likert"
-    sources = []
-    for n in PPI_POWER_NLAB_GRID_N_VALUES:
-        for n_lab in PPI_POWER_NLAB_GRID_NLAB_VALUES:
-            if n_lab >= n:
-                continue
-            for frac in PPI_POWER_EFFECT_FRACS:
-                kw = _ppi_power_baseline(et)
-                kw["n"] = n
-                kw["label_frac"] = n_lab / n
-                kw["bias_delta"] = -_jb_bias_magnitude(et)
-                sources.append(JudgeBiasSource(
-                    name=f"powernlab.{et}.n={n}.nlab={n_lab}.es={frac:.3f}", tag="power_nlab_grid_rf",
-                    effect_size=_jb_effect_magnitude(et, frac), **kw,
-                ))
-    return sources
+    eval type, to keep this a "light" sweep per-cell as originally scoped,
+    rather than tripling cost by also covering every eval type. Always run
+    alongside build_ppi_power_nlab_grid_opposing_sources (see that
+    function's docstring) -- the two together are what confirmed the
+    anomaly is specific to this bias direction, not an artifact of the
+    integer-truth construction alone (which is direction-agnostic, since
+    bias only touches the simulated judge's scores, never the ground
+    truth). label_frac is back-solved to `n_lab / n` per cell, exactly
+    matching build_ppi_nlab_grid_sources' convention; cells where n_lab >=
+    n are skipped as infeasible (none arise at this grid's actual values,
+    since N_lab's max of 60 is always well under N's min of 100). Tag
+    "power_nlab_grid_rf"."""
+    return _build_ppi_power_nlab_grid_sources(reinforcing=True)
+
+
+def build_ppi_power_nlab_grid_opposing_sources() -> list[JudgeBiasSource]:
+    """Same N x N_lab x effect_size grid as build_ppi_power_nlab_grid_
+    reinforcing_sources, but with bias_type="differential"'s DEFAULT sign
+    (bias opposing the injected effect -- see build_ppi_power_sources, the
+    non-grid single-point analogue) instead of the reinforcing flip. Exists
+    to directly test whether the reinforcing grid's non-monotonic power
+    anomaly is specific to that bias direction, or would show up under
+    opposing bias too: the underlying integer-valued-truth construction
+    that causes the anomaly (see build_ppi_power_nlab_grid_reinforcing_
+    sources' docstring) doesn't itself depend on bias direction (bias is
+    applied only to the simulated judge's scores, never to the ground
+    truth), so this isn't a foregone conclusion -- it has to be checked,
+    not assumed. Tag "power_nlab_grid_op"."""
+    return _build_ppi_power_nlab_grid_sources(reinforcing=False)
 
 
 def build_ppi_comparison_label_frac_sources() -> list[JudgeBiasSource]:

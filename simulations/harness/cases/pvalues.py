@@ -191,6 +191,7 @@ from ..scenarios.synthetic import (
     build_ppi_power_reinforcing_sources,
     build_ppi_power_nobias_sources,
     build_ppi_power_nlab_grid_reinforcing_sources,
+    build_ppi_power_nlab_grid_opposing_sources,
     build_ppi_comparison_label_frac_sources,
     build_ppi_nlab_grid_sources,
     build_ppi_factorial_sources,
@@ -7702,14 +7703,19 @@ def _parse_ppi_power_nlab_grid_name(name: str) -> tuple[str, int, int, float]:
     return m.group(1), int(m.group(2)), int(m.group(3)), float(m.group(4))
 
 
-def print_ppi_power_nlab_grid_report(results: list[PPIResult], alpha: float) -> None:
+def print_ppi_power_nlab_grid_report(
+    results: list[PPIResult], alpha: float, header: str = "bias reinforcing effect",
+) -> None:
     """Corrected rejection rate (POWER) across the N x N_lab label/dataset-
-    size grid (build_ppi_power_nlab_grid_reinforcing_sources), one table per
-    test: rows are (N, N_lab) cells, columns are effect_size. Uncorrected
-    rate is dropped here (unlike print_ppi_power_report) to keep the table
-    narrow enough to read across up to 10 effect_size columns x 12
-    label-count rows -- see the CSV artifact and save_ppi_power_nlab_grid_
-    plots for full corrected+uncorrected detail per cell."""
+    size grid (build_ppi_power_nlab_grid_reinforcing_sources/build_ppi_
+    power_nlab_grid_opposing_sources), one table per test: rows are (N,
+    N_lab) cells, columns are effect_size. Uncorrected rate is dropped here
+    (unlike print_ppi_power_report) to keep the table narrow enough to read
+    across up to 10 effect_size columns x 12 label-count rows -- see the
+    CSV artifact and save_ppi_power_nlab_grid_plots for full
+    corrected+uncorrected detail per cell. ``header`` distinguishes the
+    reinforcing/opposing variants when this same function is reused for
+    both (see run()'s power_nlab_grid_check block)."""
     if not results:
         print("\n  (no PPI power n_lab-grid results)")
         return
@@ -7718,7 +7724,7 @@ def print_ppi_power_nlab_grid_report(results: list[PPIResult], alpha: float) -> 
     cells = sorted({(n, nlab) for _, n, nlab, _ in parsed.values()})
     es_values = sorted({es for _, _, _, es in parsed.values()})
 
-    print(f"\n{'='*88}\n  PVALUES (PPI-CORRECTED) -- POWER vs. LABEL/DATASET-SIZE GRID (bias reinforcing effect)\n"
+    print(f"\n{'='*88}\n  PVALUES (PPI-CORRECTED) -- POWER vs. LABEL/DATASET-SIZE GRID ({header})\n"
           f"  Corrected rejection rate only; nominal alpha={alpha}\n{'='*88}")
     for t in tests:
         t_rows = [r for r in results if r.test == t]
@@ -7861,6 +7867,77 @@ def save_ppi_power_nlab_grid_plots(
     plt.close(fig)
     out_paths.append(avg_path)
     return out_paths
+
+
+def save_ppi_power_nlab_grid_direction_plot(
+    *, opposing: list[PPIResult], reinforcing: list[PPIResult], alpha: float, out_path: str,
+) -> str:
+    """The key confirming figure for cases/pvalues.py's appendix writeup on
+    MWU's reinforcing-bias power anomaly: corrected rejection rate vs.
+    effect_size, averaged (reps-weighted) across the WHOLE N x N_lab grid,
+    opposing (dashed) vs. reinforcing (solid) overlaid in one panel per
+    test. Answers "is the anomaly specific to the reinforcing direction"
+    directly and visually -- see save_ppi_power_direction_plot for the
+    single-(N, N_lab)-point analogue this mirrors. Uncorrected rate is
+    dropped here (unlike save_ppi_power_direction_plot): with both
+    direction AND test already claiming a visual channel (linestyle,
+    color), a third uncorrected line would need a fourth, and the
+    reinforcing-vs-opposing CORRECTED comparison is the one this figure
+    exists to make."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    rows = [(label, res) for label, res in [("opposing", opposing), ("reinforcing", reinforcing)] if res]
+    if not rows:
+        raise ValueError("No PPI power n_lab-grid direction results to plot.")
+    all_results = [r for _, res in rows for r in res]
+    tests = _ppi_tests_present(all_results, nonstandard=False)
+    parsed_all = {r.name: _parse_ppi_power_nlab_grid_name(r.name) for r in all_results}
+    es_values = sorted({es for _, _, _, es in parsed_all.values()})
+
+    fig, ax = plt.subplots(figsize=(5.6, 4.4))
+    ax.axhline(alpha, color="black", ls="--", lw=1.0, alpha=0.6)
+    for direction_label, res in rows:
+        parsed = {r.name: _parse_ppi_power_nlab_grid_name(r.name) for r in res}
+        linestyle = "-" if direction_label == "reinforcing" else "--"
+        for t in tests:
+            t_rows = [r for r in res if r.test == t]
+            ys = []
+            for es in es_values:
+                cell_rows = [r for r in t_rows if parsed[r.name][3] == es]
+                c_tot = sum(r.corrected_rejects for r in cell_rows)
+                n_tot = sum(r.n_reps for r in cell_rows)
+                ys.append(c_tot / n_tot if n_tot > 0 else float("nan"))
+            if not any(np.isfinite(ys)):
+                continue
+            color = get_method_color(t)
+            ax.plot(
+                es_values, ys, marker="o" if direction_label == "reinforcing" else "x",
+                color=color, linewidth=1.8, linestyle=linestyle, markersize=5,
+                label=_pretty_test(t) if direction_label == "reinforcing" else None, zorder=2,
+            )
+
+    ax.set_xlabel("Effect size")
+    ax.set_ylabel("Rejection rate (corrected)")
+    ax.set_ylim(-0.02, 1.02)
+    ax.set_title("Averaged Across the N x N_lab Grid")
+    handles = [Line2D([0], [0], color=get_method_color(t), marker="o", linewidth=1.8, markersize=5) for t in tests]
+    labels = [_pretty_test(t) for t in tests]
+    handles += [
+        Line2D([0], [0], color="#333333", marker="o", linewidth=1.8, linestyle="-"),
+        Line2D([0], [0], color="#333333", marker="x", linewidth=1.8, linestyle="--"),
+        Line2D([0], [0], color="black", linewidth=1.0, linestyle="--", alpha=0.6),
+    ]
+    labels += ["Reinforcing", "Opposing", f"Nominal {_alpha_label(alpha)}"]
+    fig.legend(handles, labels, fontsize=7, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.5)
+    fig.suptitle("PPI-Corrected Power vs. Effect Size: Bias Direction, Averaged Over Label/Dataset-Size Grid", fontsize=10)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
 
 
 def print_ppi_effect_report(results: list[PPIEffectResult], alpha: float) -> None:
@@ -8194,15 +8271,19 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="ppi mode: skip the 5-way estimator comparison (all_human/human_subset/llm_only/"
                               "llm_impute/ppi rejection rate vs. effect_size and label_frac, paired_t estimand)")
     parser.add_argument("--power-nlab-grid-check", action="store_true", default=False,
-                         help="ppi mode: run the N x N_lab label/dataset-size power grid (likert, bias "
-                              "reinforcing the effect -- build_ppi_power_nlab_grid_reinforcing_sources), "
-                              "investigating whether more labels or a larger unlabeled pool change MWU's "
-                              "non-monotonic power anomaly under this bias direction. Opt-in (default off): "
-                              "4 N values x 3 N_lab values x 10 effect_size points = 120 scenarios, on top of "
-                              "the standard power check -- restrict to the test under investigation with "
-                              "e.g. --tests mwu for a fast targeted run. Uses --effect-reps/--ppi-n-boot, "
-                              "same as the other power checks. Produces one plot per (N, N_lab) cell plus one "
-                              "reps-weighted averaged summary plot -- see save_ppi_power_nlab_grid_plots.")
+                         help="ppi mode: run the N x N_lab label/dataset-size power grid (likert), BOTH bias "
+                              "directions -- build_ppi_power_nlab_grid_reinforcing_sources + build_ppi_power_"
+                              "nlab_grid_opposing_sources, always run together (same convention as the "
+                              "standard power check's opposing+reinforcing pair) -- investigating whether more "
+                              "labels or a larger unlabeled pool change MWU's non-monotonic power anomaly, and "
+                              "whether that anomaly is specific to bias reinforcing (vs. opposing) the effect. "
+                              "Opt-in (default off): 4 N values x 3 N_lab values x 10 effect_size points x 2 "
+                              "directions = 240 scenarios, on top of the standard power check -- restrict to "
+                              "the test under investigation with e.g. --tests mwu for a fast targeted run. Uses "
+                              "--effect-reps/--ppi-n-boot, same as the other power checks. Produces one plot "
+                              "per (N, N_lab) cell plus one averaged summary plot per direction (see "
+                              "save_ppi_power_nlab_grid_plots), plus one direction-comparison plot averaged "
+                              "over the whole grid (save_ppi_power_nlab_grid_direction_plot).")
     parser.add_argument("--no-label-efficiency-check", action="store_true", default=False,
                          help="ppi mode: skip the label-efficiency check (run_ppi_label_efficiency_check) -- "
                               "for a fixed labeling budget, how many labels would a human-only classical test "
@@ -9094,34 +9175,66 @@ def run(args: argparse.Namespace) -> CaseResult:
                     key_metrics["ppi_power_reinforcing_n_results"] = len(reinforcing_results)
 
             if getattr(args, "power_nlab_grid_check", False):
-                nlab_grid_sources = build_ppi_power_nlab_grid_reinforcing_sources()
+                # Both directions ALWAYS run together (never just reinforcing
+                # alone) -- matching how the base power check always runs
+                # build_ppi_power_sources (opposing) + build_ppi_power_
+                # reinforcing_sources together under one flag. The whole
+                # point of this grid is to test whether the anomaly is
+                # specific to the reinforcing direction; running only one
+                # direction can't answer that.
+                nlab_grid_variants = [
+                    ("reinforcing", build_ppi_power_nlab_grid_reinforcing_sources(), args.seed + 15),
+                    ("opposing", build_ppi_power_nlab_grid_opposing_sources(), args.seed + 16),
+                ]
                 if args.eval_types:
                     requested = set(args.eval_types)
-                    nlab_grid_sources = [s for s in nlab_grid_sources if s.eval_type in requested]
-                if nlab_grid_sources:
-                    nlab_grid_reps = getattr(args, "effect_reps", 200)
-                    print(f"\npvalues simulation (PPI-corrected, power vs. label/dataset-size grid) -- "
-                          f"{len(nlab_grid_sources)} scenarios, reps={nlab_grid_reps}, n_boot={args.ppi_n_boot}")
+                    nlab_grid_variants = [
+                        (label, [s for s in srcs if s.eval_type in requested], seed)
+                        for label, srcs, seed in nlab_grid_variants
+                    ]
+                nlab_grid_reps = getattr(args, "effect_reps", 200)
+                nlab_grid_results_by_direction: dict[str, list[PPIResult]] = {}
+                for direction_label, nlab_grid_sources, direction_seed in nlab_grid_variants:
+                    if not nlab_grid_sources:
+                        continue
+                    print(f"\npvalues simulation (PPI-corrected, power vs. label/dataset-size grid, "
+                          f"bias {direction_label}) -- {len(nlab_grid_sources)} scenarios, "
+                          f"reps={nlab_grid_reps}, n_boot={args.ppi_n_boot}")
                     nlab_grid_results = run_ppi_simulation(
                         nlab_grid_sources, active_tests=active_tests, n_reps=nlab_grid_reps, n_boot=args.ppi_n_boot,
-                        progress_mode=args.progress, seed=args.seed + 15, n_workers=getattr(args, "workers", 1),
+                        progress_mode=args.progress, seed=direction_seed, n_workers=getattr(args, "workers", 1),
                     )
-                    print_ppi_power_nlab_grid_report(nlab_grid_results, alpha=args.alpha)
-                    nlab_grid_stem = f"pvalues_ppi_power_nlab_grid_reps{nlab_grid_reps}_{stamp}"
-                    if nlab_grid_results:
-                        if args.save_results == "save":
-                            output_paths += save_results_artifacts_ppi_power_nlab_grid(
-                                results=nlab_grid_results, alpha=args.alpha, out_dir=args.out_dir,
-                                run_stem=nlab_grid_stem,
-                            )
-                        if args.plots == "save":
-                            nlab_grid_plot_paths = save_ppi_power_nlab_grid_plots(
-                                results=nlab_grid_results, alpha=args.alpha, out_dir=plots_dir, stem=nlab_grid_stem,
-                            )
-                            output_paths += nlab_grid_plot_paths
-                            for p in nlab_grid_plot_paths:
-                                print(f"Saved plot: {p}")
-                        key_metrics["ppi_power_nlab_grid_n_results"] = len(nlab_grid_results)
+                    nlab_grid_results_by_direction[direction_label] = nlab_grid_results
+                    print_ppi_power_nlab_grid_report(
+                        nlab_grid_results, alpha=args.alpha, header=f"bias {direction_label} effect",
+                    )
+                    if not nlab_grid_results:
+                        continue
+                    direction_suffix = "_rf" if direction_label == "reinforcing" else "_op"
+                    nlab_grid_stem = f"pvalues_ppi_power_nlab_grid{direction_suffix}_reps{nlab_grid_reps}_{stamp}"
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_power_nlab_grid(
+                            results=nlab_grid_results, alpha=args.alpha, out_dir=args.out_dir,
+                            run_stem=nlab_grid_stem,
+                        )
+                    if args.plots == "save":
+                        nlab_grid_plot_paths = save_ppi_power_nlab_grid_plots(
+                            results=nlab_grid_results, alpha=args.alpha, out_dir=plots_dir, stem=nlab_grid_stem,
+                        )
+                        output_paths += nlab_grid_plot_paths
+                        for p in nlab_grid_plot_paths:
+                            print(f"Saved plot: {p}")
+                    key_metrics[f"ppi_power_nlab_grid_{direction_label}_n_results"] = len(nlab_grid_results)
+
+                reinforcing_grid_results = nlab_grid_results_by_direction.get("reinforcing", [])
+                opposing_grid_results = nlab_grid_results_by_direction.get("opposing", [])
+                if args.plots == "save" and reinforcing_grid_results and opposing_grid_results:
+                    direction_plot_path = save_ppi_power_nlab_grid_direction_plot(
+                        opposing=opposing_grid_results, reinforcing=reinforcing_grid_results, alpha=args.alpha,
+                        out_path=str(Path(plots_dir) / f"pvalues_ppi_power_nlab_grid_reps{nlab_grid_reps}_{stamp}_direction.png"),
+                    )
+                    output_paths.append(direction_plot_path)
+                    print(f"Saved plot: {direction_plot_path}")
 
             comparison_results_pooled: list[PPIComparisonResult] = []
             nlab_cal_pooled: list[PPIComparisonResult] = []
