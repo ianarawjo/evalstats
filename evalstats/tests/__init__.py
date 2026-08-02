@@ -1152,6 +1152,24 @@ def _ppi_two_sample_adaptive(
     ``simulations/harness/cases/pvalues.py``'s MWU_ADAPTIVE validation for
     the full harness-scale confirmation.
 
+    NOT ``mannwhitney``'s default (reverted 2026-08-02, a few hours after
+    briefly holding that role): the above was validated on SYNTHETIC data
+    only. Running it against real judge-bias data
+    (``simulations/harness/cases/ppi_real.py``, wmt_da dataset) found a
+    real-data-only failure mode this synthetic validation never exercised
+    -- real continuous scores that are rounded/averaged (e.g. WMT DA
+    ratings) land at ``unique_fraction`` around 0.4-0.5, comfortably below
+    ``discreteness_threshold``, so "adaptive" dispatches to "local" -- and
+    on that real, biased-judge data, "local"'s Type-I cost was far worse
+    than any synthetic scenario found (0.25 vs. a 0.093 synthetic worst
+    case, isolated and confirmed on one wmt_da cell with a direct 300-rep
+    comparison; the full cell showed 0.393 through the dispatcher).
+    ``discreteness_threshold``=0.7 was tuned only against synthetic data's
+    clean separation (continuous unique_fraction≈1.0 vs. Likert≤0.333) and
+    doesn't handle this real-data middle zone correctly. Left available as
+    an explicit opt-in (``method="adaptive"``) pending a better
+    discreteness signal -- not yet fixed.
+
     ``power_tune`` is forwarded to the "global" branch only (see
     :func:`_ppi_two_sample`'s parameter of the same name) -- the "local"
     branch has no power-tuning support, same as ``_ppi_two_sample_
@@ -3448,7 +3466,7 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "adaptive",
+    method: str = "global",
     power_tune: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
@@ -3473,55 +3491,73 @@ def mannwhitney(
         with ``NaN`` for unlabeled items.
     method : {"adaptive", "local", "global", "mnar_experimental"}
         Which PPI correction to use for the mid-rank estimand (default
-        ``"adaptive"`` as of 2026-08-01). This default has changed three
-        times -- read this in full before overriding it.
+        ``"global"`` again as of 2026-08-02, reverted from "adaptive" a few
+        hours after that promotion -- read this in full before overriding
+        it; this default has now changed FOUR times).
+
+        ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier
+        (no per-bin structure) -- simple, and exactly correct for a MEAN,
+        but under labeling that's non-uniform with respect to score (e.g.
+        "double-check the highest-scoring items") combined with real judge
+        bias and coarse/discrete scales, this rank estimand is genuinely
+        miscalibrated: Type-I error up to 3-9x nominal in the worst
+        identified case (Likert, strong such labeling, severe bias). This
+        is the CURRENT default: it has no known real-data MCAR calibration
+        failure (unlike "local"/"adaptive" below), which is the deciding
+        factor now that one has been found. Also the simplest possible
+        construction, and reproduces results computed under the
+        2026-07-22 through 2026-08-01, and again 2026-08-02 onward,
+        defaults.
 
         ``"adaptive"`` (:func:`_ppi_two_sample_adaptive`) dispatches
         between ``"local"`` and ``"global"`` based on how discrete the
         LABELED (truth) values look (``unique_fraction = n_unique /
         n_labeled`` on the combined group A + B labeled sample; below
         ``_ADAPTIVE_DISCRETENESS_THRESHOLD``=0.7 uses "local", at or above
-        uses "global"). Exists because "local" (below), while strictly
-        better than "global" on calibration in every regime tested
-        (including MCAR), was found to cost real POWER for CONTINUOUS data
-        specifically: a 5-way estimator comparison (all_human/
-        human_subset/llm_only/llm_impute/ppi) found "local"'s corrected
-        power falls BELOW human_subset-only (i.e. the correction is
-        actively harmful, not just a smaller improvement) at every
-        effect size tested for continuous data at n_lab=20/n=100/moderate
-        bias (e.g. es=0.10: human_subset=0.730 vs. "local"=0.417) --
-        inherited from the local rectifier's fundamental construction
-        (combining labeled-true + corrected-unlabeled values into ONE
-        array before computing a single rank statistic, rather than
-        computing three separate rank statistics and linearly combining
-        them), not fixable by tuning bin count (confirmed: the deficit
-        persists even at n_strata=1).
+        uses "global"). Was briefly the default (2026-08-01 through
+        2026-08-02) -- built because "local" (below), while strictly
+        better than "global" on calibration in every SYNTHETIC regime
+        tested (including MCAR), was found to cost real POWER for
+        CONTINUOUS data specifically (a 5-way estimator comparison found
+        "local"'s corrected power falls BELOW human_subset-only at every
+        continuous effect size tested, e.g. es=0.10: human_subset=0.730
+        vs. "local"=0.417). At full synthetic harness scale (2064-scenario
+        factorial grid, 126-cell 5-way comparison, 124-scenario official
+        catalog) "adaptive" exactly recovered "global"'s continuous-data
+        behavior and "local"'s Likert-data behavior in every condition
+        tested.
 
-        Validated at full harness scale (2064-scenario factorial grid x
-        {this, "global", "local"}, reps=300/n_boot=500, zero bootstrap
-        failures, plus a 126-cell 5-way estimator comparison and the
-        124-scenario official Type-I/effect catalog): "adaptive" exactly
-        recovers "global"'s continuous-data behavior (moderate-effect
-        power gap over human_subset: +0.008 for both, vs. "local" alone at
-        -0.076; MCAR Type-I: 0.0516/0.0739/0.0784 by label mechanism vs.
-        "global"'s 0.0524/0.0730/0.0798, essentially identical) and
-        "local"'s Likert-data behavior (moderate-effect power gap: +0.308
-        vs. "global" alone's +0.124; Type-I by label mechanism:
-        0.0489/0.0492/0.0478 vs. "local" alone's 0.0482/0.0481/0.0483,
-        essentially identical, vs. "global" alone's 0.0524/0.0624/0.1124).
-        The one real trade-off: because "adaptive" routes continuous data
-        to "global", it also inherits "global"'s known MNAR-Type-I
-        vulnerability there specifically (worst continuous cell: 0.467 for
-        "adaptive" vs. 0.097 for "local" alone) -- but this only matters
-        under MNAR labeling, which this package already treats as a
-        documented, out-of-scope limitation for every PPI correction (see
-        :func:`evalstats.ppi.correct`'s docstring): the deficit "local"
-        fixes for continuous data occurs under ordinary, CORRECT (MCAR)
-        usage, while this residual only appears when a user has already
-        violated that hard requirement. See ``_ppi_two_sample_adaptive``'s
-        docstring for the full validation and
-        ``simulations/harness/cases/pvalues.py``'s MWU_ADAPTIVE method for
-        the harness-scale runs behind these numbers.
+        REVERTED (2026-08-02) after running it against
+        ``simulations/harness/cases/ppi_real.py``'s REAL judge-bias data
+        (something the synthetic-only validation above never covered) and
+        finding a severe real-data MCAR calibration failure: on the
+        wmt_da dataset (continuous DA scores, judges
+        google/gemma-4-26b-a4b-it x thinkingmachines/inkling), Type-I
+        error reached 0.393 at label_frac=0.40/n=667 (nominal 0.05,
+        Holm-confirmed), while plain "global" stayed calibrated (0.047)
+        on the identical cell. Root cause, confirmed directly: real WMT
+        DA human ratings (averages across a few annotators) aren't
+        perfectly continuous -- they cluster into a moderate number of
+        exact repeats, giving ``unique_fraction`` around 0.39-0.51 on this
+        cell, comfortably below the 0.7 threshold -- so "adaptive"
+        (correctly, per its own logic) dispatched to "local", and
+        "local"'s real Type-I cost on genuine biased-judge data turned out
+        far worse than the synthetic factorial grid's worst case (~0.097)
+        ever suggested: an isolated 300-rep direct comparison on this
+        exact cell measured "global"=0.07 vs. "local"=0.25. The synthetic
+        validation's clean separation (continuous unique_fraction≈1.0,
+        Likert≤0.333) doesn't hold on real, moderately-discretized-but-
+        genuinely-continuous data, which lands in an ambiguous middle zone
+        the 0.7 threshold was never tested against. This is a correctness
+        regression, not a tuning nitpick, so the default reverted to
+        "global" rather than living with it pending a fix. The dispatcher
+        itself remains available via ``method="adaptive"`` and unchanged
+        in code -- only the default flipped -- pending an improved
+        discreteness signal (a follow-up investigation, not yet done). See
+        ``_ppi_two_sample_adaptive``'s docstring for the full history and
+        ``simulations/harness/cases/pvalues.py``'s MWU_ADAPTIVE /
+        ``cases/ppi_real.py``'s twogroup check for the harness-scale and
+        real-data runs behind these numbers.
 
         ``"local"`` (:func:`_ppi_two_sample_midrank_corrected_pooled`) is a
         per-group, per-score-bin LOCAL rectifier, computed with a POOLED
@@ -3550,10 +3586,16 @@ def mannwhitney(
         dip "global" exhibits under Likert + judge bias reinforcing a real
         effect (a fragility specific to the global rectifier). What this
         validation pass MISSED: a follow-up 5-way estimator comparison
-        found "local" costs real power for continuous data specifically
-        (see "adaptive"'s entry above) -- calibration alone isn't the whole
-        story, which is why "adaptive" is the default instead of this.
-        Still recommended over "mnar_experimental" if you want a
+        found "local" costs real power for continuous data specifically,
+        and -- more seriously -- a subsequent REAL-data run (see
+        "adaptive"'s entry above) found "local"'s actual MCAR Type-I cost
+        on real, biased-judge continuous data (0.25 on one directly-
+        isolated wmt_da cell) far exceeds the 0.093 synthetic worst-case
+        above; that synthetic grid apparently didn't cover the regime real
+        judge bias creates. Neither "local" nor "adaptive" (which
+        dispatches to "local" for this same kind of data) is the default
+        now, for exactly this reason. Still recommended over
+        "mnar_experimental" if you want a
         non-adaptive local rectifier for some reason (e.g. deliberately
         studying Likert-only behavior without the dispatch).
 

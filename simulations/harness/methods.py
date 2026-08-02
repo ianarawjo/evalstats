@@ -429,6 +429,20 @@ MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MN
 # at 0.620); likert MNAR Type-I: adaptive=MWU_MNAR_POOLED=0.047 (vs. MWU
 # alone at 0.180, badly miscalibrated). See evalstats.tests.mannwhitney's
 # method="adaptive" docstring for the full validation.
+#
+# Was briefly promoted to mannwhitney's default (method="adaptive")
+# 2026-08-01/02, REVERTED to MWU (method="global") a few hours later: the
+# validation above is synthetic-only. Running MWU_ADAPTIVE against
+# cases/ppi_real.py's real judge-bias data (wmt_da dataset specifically)
+# found a severe real-data MCAR calibration failure the synthetic grid
+# never caught -- real (rounded/averaged) continuous truth values land at
+# unique_fraction ~0.4-0.5, below the 0.7 threshold, so adaptive dispatches
+# to the local rectifier; on real biased-judge data that rectifier's Type-I
+# cost (0.25, isolated 300-rep check on one wmt_da cell) far exceeds the
+# 0.093 synthetic worst-case above. A correctness regression, not a tuning
+# nitpick -- see evalstats.tests._ppi_two_sample_adaptive's docstring for
+# the full account. Kept available via --tests mwu_adaptive; not the
+# default pending a better discreteness signal.
 MWU_ADAPTIVE = Method("mwu_adaptive", "#98df8a")  # light tint of MWU's green
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
@@ -513,7 +527,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 
