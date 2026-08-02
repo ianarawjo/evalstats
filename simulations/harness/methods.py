@@ -388,12 +388,48 @@ MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
 # MCAR + 4 MNAR corners (n_reps=1500, likert): mean MCAR |gap to naive|
 # 0.0113 -> 0.0092, mean MNAR-corner rate (vs. nominal 0.05) 0.072 -> 0.056
 # -- better than MWU_MNAR_EXPERIMENTAL in every corner tested, not just on
-# average. This scratch-scale result is what this Method exists to
-# validate at harness scale (full Type-I sweep + factorial grid) before
-# any decision about promoting it -- see the validation run this Method
-# was added for. Selectable via --tests mwu_mnar_pooled; not part of
-# PPI_OFFICIAL_TEST_METHODS pending that validation.
+# average. Confirmed at harness scale (2064-scenario factorial grid,
+# reps=300/n_boot=500, zero bootstrap failures): MCAR-only mean Type-I
+# 0.0486 (vs. MWU's 0.0518, MWU_MNAR_EXPERIMENTAL's 0.0517), by-label-
+# mechanism mean 0.049/0.048/0.048 (mcar/mnar_mild/mnar_strong, essentially
+# flat) vs. 0.052/0.067/0.096 (MWU) and 0.052/0.056/0.067 (MWU_MNAR_
+# EXPERIMENTAL), worst cell across the whole grid 0.097 vs. 0.630 (MWU) /
+# 0.200 (MWU_MNAR_EXPERIMENTAL). Promoted to evalstats.tests.mannwhitney's
+# default (method="local") 2026-08-01. See MWU_ADAPTIVE below, however --
+# a follow-up 5-way estimator comparison (all_human/human_subset/llm_only/
+# llm_impute/ppi) found this rectifier costs real POWER for CONTINUOUS
+# data specifically (corrected power falls BELOW human_subset-only at
+# every effect size tested, e.g. es=0.10: human_subset=0.730 vs. this=
+# 0.417) -- inherited from the local rectifier's construction itself
+# (shared identically by MWU_MNAR_EXPERIMENTAL), not something this
+# resampling change introduced, and not fixable by tuning n_strata (the
+# deficit persists even at n_strata=1). Selectable via --tests
+# mwu_mnar_pooled; not part of PPI_OFFICIAL_TEST_METHODS (kept for direct
+# comparison against MWU_ADAPTIVE, which is expected to supersede it as
+# the recommended choice pending its own harness-scale validation).
 MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MNAR_EXPERIMENTAL's purple
+# MWU_ADAPTIVE (evalstats.tests._ppi_two_sample_adaptive): dispatches
+# between MWU_MNAR_POOLED's local rectifier and MWU's global one based on
+# how discrete the LABELED (truth) values look (unique_fraction =
+# n_unique/n_labeled on the combined group A+B labeled sample; below 0.7
+# -> local, at or above -> global -- see _ADAPTIVE_DISCRETENESS_THRESHOLD's
+# docstring for the empirical separation, essentially deterministic:
+# continuous always exactly 1.0, grades always >=0.967, likert always
+# <=0.333). Exists because MWU_MNAR_POOLED's continuous-data power deficit
+# (see its comment above) is real but avoidable: the deficit is specific
+# to continuous/smooth data, where the global rectifier was already
+# theoretically sufficient and the local one's per-bin/combine-then-rank
+# construction only adds cost; Likert genuinely needs the local
+# construction. Validated (matched draws, continuous + likert, vs.
+# effect_size AND vs. n_lab, plus a small-n_lab MCAR/MNAR Type-I stress
+# check): branch choice correct in every condition tested, "adaptive"
+# exactly matching whichever of MWU/MWU_MNAR_POOLED was actually better --
+# e.g. continuous es=0.10: adaptive=MWU=0.847 (vs. MWU_MNAR_POOLED alone
+# at 0.433); likert es=0.20: adaptive=MWU_MNAR_POOLED=0.967 (vs. MWU alone
+# at 0.620); likert MNAR Type-I: adaptive=MWU_MNAR_POOLED=0.047 (vs. MWU
+# alone at 0.180, badly miscalibrated). See evalstats.tests.mannwhitney's
+# method="adaptive" docstring for the full validation.
+MWU_ADAPTIVE = Method("mwu_adaptive", "#98df8a")  # light tint of MWU's green
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
@@ -441,7 +477,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE,
 ]
@@ -449,7 +485,7 @@ PPI_TEST_METHODS = [
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
-    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, KRUSKAL_MNAR_EXPERIMENTAL)
+    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, KRUSKAL_MNAR_EXPERIMENTAL)
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental

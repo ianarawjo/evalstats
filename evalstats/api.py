@@ -732,7 +732,7 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     """
     from evalstats.tests import (
         _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
-        _ppi_paired_arrays, _ppi_two_sample_midrank_corrected_pooled,
+        _ppi_paired_arrays, _ppi_two_sample_adaptive,
     )
     if method == "tango":
         return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
@@ -745,17 +745,22 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     if method == "wilcoxon":
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.median, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "mannwhitney":
-        # Per-group, per-score-bin local rectifier with a POOLED bootstrap
-        # resample -- matches evalstats.tests.mannwhitney's method="local"
-        # default (promoted 2026-08-01; see _ppi_two_sample_midrank_
-        # corrected_pooled's docstring for the full validation). NOT the
-        # single-global-rectifier _ppi_two_sample: that badly miscalibrates
-        # this rank estimand under score-correlated labeling + real judge
-        # bias. NOT _ppi_two_sample_midrank_corrected either (this
-        # function's stratified-resample predecessor, "mnar_experimental")
-        # -- the pooled resample strictly dominated it in validation, with
-        # no MCAR cost.
-        return _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, alpha, n_boot, rng)
+        # Dispatches between the per-group, per-score-bin LOCAL rectifier
+        # (pooled bootstrap resample) and the single-GLOBAL rectifier based
+        # on how discrete the labeled truth values look -- matches
+        # evalstats.tests.mannwhitney's method="adaptive" default (promoted
+        # 2026-08-01; see _ppi_two_sample_adaptive's docstring for the full
+        # validation). The plain local rectifier alone (this package's
+        # brief prior default the same day, _ppi_two_sample_midrank_
+        # corrected_pooled) was found to cost real power for CONTINUOUS
+        # data specifically (corrected power falls BELOW human_subset-only
+        # at every effect size tested) -- inherited from the local
+        # rectifier's construction itself, not fixable by binning alone.
+        # The plain global rectifier alone (_ppi_two_sample) badly
+        # miscalibrates under score-correlated labeling + real judge bias,
+        # especially for coarse/discrete (Likert) scales. Adaptive recovers
+        # whichever of the two is actually better for the data at hand.
+        return _ppi_two_sample_adaptive(a, b, a_lab, b_lab, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
         f"method {method!r}. Supported pairwise methods: "

@@ -1079,6 +1079,96 @@ def _ppi_two_sample_midrank_corrected_pooled(
     )
 
 
+_ADAPTIVE_DISCRETENESS_THRESHOLD = 0.7
+"""Cutoff for evalstats.tests._ppi_two_sample_adaptive's unique_fraction
+check: below this, the labeled sample looks coarse/discrete enough to use
+the local rectifier; at or above it, continuous enough to use the global
+one. Validated empirically (30 draws x label_frac in {0.15, 0.20, 0.40,
+0.80} x eval_type): continuous is ALWAYS exactly 1.0 (zero ties expected
+from a continuous distribution), grades is ALWAYS >= 0.967, likert is
+ALWAYS <= 0.333 -- 0.7 sits in the middle of that gap with wide margin on
+both sides, so the choice isn't sensitive to the exact cutoff."""
+
+
+def _ppi_two_sample_adaptive(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+    power_tune: bool = True,
+    discreteness_threshold: float = _ADAPTIVE_DISCRETENESS_THRESHOLD,
+) -> "PPIResult":
+    """Dispatches to :func:`_ppi_two_sample_midrank_corrected_pooled` ("local")
+    or :func:`_ppi_two_sample` ("global") based on how discrete the LABELED
+    (truth) values look -- ``evalstats.tests.mannwhitney``'s ``method="adaptive"``.
+
+    Why this exists: "local" (see that function's docstring, and
+    ``mannwhitney``'s ``method`` parameter) strictly dominates "global" on
+    calibration in every regime tested, including MCAR -- but a 5-way
+    estimator comparison (all_human/human_subset/llm_only/llm_impute/ppi,
+    the same check ``build_ppi_comparison_label_frac_sources``/
+    ``build_ppi_power_sources`` run) found "local" costs real POWER for
+    CONTINUOUS data specifically: at n_lab=20/n=100/moderate bias, its
+    corrected power fell BELOW human_subset-only at every effect size
+    tested (e.g. es=0.10: human_subset=0.730, "local"=0.417 -- worse than
+    just running a plain Mann-Whitney U on the labeled subset and ignoring
+    the other 80 items). Confirmed NOT introduced by the pooled-resample
+    fix specifically -- "mnar_experimental" (the stratified-resample
+    predecessor) shows the identical deficit (-0.072/-0.062 vs.
+    human_subset at moderate effect, pooled over bias direction, vs.
+    "global"'s +0.008/+0.010) -- so it's inherited from the LOCAL
+    RECTIFIER'S CONSTRUCTION itself: combining labeled-true values with
+    corrected-unlabeled values into ONE array before computing a single
+    rank statistic is a genuinely different (and, for smooth/continuous
+    data, less efficient) estimator than computing three separate rank
+    statistics and linearly combining them, even at ``n_strata=1``
+    (confirmed: at n_strata=1 the deficit persists, 0.930 vs. the 1.000
+    ceiling both human_subset and "global" reach at n_lab=20/moderate
+    effect/continuous -- so this is NOT a binning-granularity problem an
+    adaptive ``n_strata`` could fix; it needs a real dispatch between the
+    two different estimator constructions).
+
+    Discreteness check: ``unique_fraction = n_unique(combined labeled
+    truth) / n_labeled``. See ``_ADAPTIVE_DISCRETENESS_THRESHOLD``'s
+    docstring for the empirical separation this is based on. Checked on
+    the labeled (truth) values, not the observable judge scores -- the
+    judge's own scores are essentially always continuous-valued (real-
+    valued noise added on top of the truth) even for Likert data, so they
+    carry no discreteness signal; the human-labeled ground truth does.
+
+    Validated (matched draws, continuous + likert, vs. effect_size AND
+    vs. n_lab, plus a small_n_lab MCAR/MNAR Type-I stress check): the
+    branch choice was correct in every single condition tested (both eval
+    types x every effect_size/n_lab/bias combination checked), and
+    "adaptive" exactly matched whichever of "local"/"global" was actually
+    better in that regime -- e.g. continuous es=0.10: adaptive=global=
+    0.847 (vs. "local" alone at 0.433); likert es=0.20: adaptive=local=
+    0.967 (vs. "global" alone at 0.620); likert MNAR n_lab=15 (Type-I):
+    adaptive=local=0.047 (vs. "global" alone at 0.180, badly miscalibrated).
+    See ``mannwhitney``'s ``method`` parameter and
+    ``simulations/harness/cases/pvalues.py``'s MWU_ADAPTIVE validation for
+    the full harness-scale confirmation.
+
+    ``power_tune`` is forwarded to the "global" branch only (see
+    :func:`_ppi_two_sample`'s parameter of the same name) -- the "local"
+    branch has no power-tuning support, same as ``_ppi_two_sample_
+    midrank_corrected_pooled`` on its own.
+    """
+    mask_a, mask_b = ~np.isnan(a_lab), ~np.isnan(b_lab)
+    truth = np.concatenate([a_lab[mask_a], b_lab[mask_b]])
+    unique_frac = len(np.unique(truth)) / len(truth) if len(truth) else 1.0
+
+    if unique_frac < discreteness_threshold:
+        return _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, alpha, n_boot, rng)
+    return _ppi_two_sample(
+        a, b, a_lab, b_lab, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5,
+        alpha, n_boot, rng, power_tune=power_tune,
+    )
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Non-PPI paired/binary p-value helpers
 #
@@ -3358,7 +3448,7 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "local",
+    method: str = "adaptive",
     power_tune: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
@@ -3381,39 +3471,91 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
-    method : {"local", "global", "mnar_experimental"}
+    method : {"adaptive", "local", "global", "mnar_experimental"}
         Which PPI correction to use for the mid-rank estimand (default
-        ``"local"`` as of 2026-08-01). This default changed twice -- read
-        this in full before overriding it.
+        ``"adaptive"`` as of 2026-08-01). This default has changed three
+        times -- read this in full before overriding it.
+
+        ``"adaptive"`` (:func:`_ppi_two_sample_adaptive`) dispatches
+        between ``"local"`` and ``"global"`` based on how discrete the
+        LABELED (truth) values look (``unique_fraction = n_unique /
+        n_labeled`` on the combined group A + B labeled sample; below
+        ``_ADAPTIVE_DISCRETENESS_THRESHOLD``=0.7 uses "local", at or above
+        uses "global"). Exists because "local" (below), while strictly
+        better than "global" on calibration in every regime tested
+        (including MCAR), was found to cost real POWER for CONTINUOUS data
+        specifically: a 5-way estimator comparison (all_human/
+        human_subset/llm_only/llm_impute/ppi) found "local"'s corrected
+        power falls BELOW human_subset-only (i.e. the correction is
+        actively harmful, not just a smaller improvement) at every
+        effect size tested for continuous data at n_lab=20/n=100/moderate
+        bias (e.g. es=0.10: human_subset=0.730 vs. "local"=0.417) --
+        inherited from the local rectifier's fundamental construction
+        (combining labeled-true + corrected-unlabeled values into ONE
+        array before computing a single rank statistic, rather than
+        computing three separate rank statistics and linearly combining
+        them), not fixable by tuning bin count (confirmed: the deficit
+        persists even at n_strata=1).
+
+        Validated at full harness scale (2064-scenario factorial grid x
+        {this, "global", "local"}, reps=300/n_boot=500, zero bootstrap
+        failures, plus a 126-cell 5-way estimator comparison and the
+        124-scenario official Type-I/effect catalog): "adaptive" exactly
+        recovers "global"'s continuous-data behavior (moderate-effect
+        power gap over human_subset: +0.008 for both, vs. "local" alone at
+        -0.076; MCAR Type-I: 0.0516/0.0739/0.0784 by label mechanism vs.
+        "global"'s 0.0524/0.0730/0.0798, essentially identical) and
+        "local"'s Likert-data behavior (moderate-effect power gap: +0.308
+        vs. "global" alone's +0.124; Type-I by label mechanism:
+        0.0489/0.0492/0.0478 vs. "local" alone's 0.0482/0.0481/0.0483,
+        essentially identical, vs. "global" alone's 0.0524/0.0624/0.1124).
+        The one real trade-off: because "adaptive" routes continuous data
+        to "global", it also inherits "global"'s known MNAR-Type-I
+        vulnerability there specifically (worst continuous cell: 0.467 for
+        "adaptive" vs. 0.097 for "local" alone) -- but this only matters
+        under MNAR labeling, which this package already treats as a
+        documented, out-of-scope limitation for every PPI correction (see
+        :func:`evalstats.ppi.correct`'s docstring): the deficit "local"
+        fixes for continuous data occurs under ordinary, CORRECT (MCAR)
+        usage, while this residual only appears when a user has already
+        violated that hard requirement. See ``_ppi_two_sample_adaptive``'s
+        docstring for the full validation and
+        ``simulations/harness/cases/pvalues.py``'s MWU_ADAPTIVE method for
+        the harness-scale runs behind these numbers.
 
         ``"local"`` (:func:`_ppi_two_sample_midrank_corrected_pooled`) is a
         per-group, per-score-bin LOCAL rectifier, computed with a POOLED
         bootstrap resample (group A + B's unlabeled items resampled together
         as one draw, same for the labeled items -- matching
         :func:`evalstats.ppi.correct`'s own resampling convention exactly).
-        This is now the default because a full-harness factorial validation
-        (2064 scenarios x {this, "global", "mnar_experimental"}, reps=300,
-        n_boot=500, zero bootstrap failures -- see
+        Was briefly the default (2026-08-01, same day, before "adaptive"
+        superseded it a few hours later) after a full-harness factorial
+        validation (2064 scenarios x {this, "global", "mnar_experimental"},
+        reps=300, n_boot=500, zero bootstrap failures -- see
         ``simulations/harness/cases/pvalues.py``'s MWU_MNAR_POOLED method)
-        found it strictly dominates BOTH alternatives, not just under MNAR
-        labeling: on MCAR-only cells specifically (528 scenarios), mean
-        Type-I 0.0486 (vs. "global"'s 0.0518 and "mnar_experimental"'s
-        0.0517) and worst-case 0.093 (vs. 0.097 and 0.107) -- i.e. no MCAR
-        regression, if anything a small improvement. Under MNAR labeling the
-        gap is decisive: mean Type-I by label mechanism (mcar / mnar_mild /
-        mnar_strong) is 0.049 / 0.048 / 0.048 for "local" -- essentially
-        flat -- versus 0.052 / 0.067 / 0.096 for "global" and 0.052 / 0.056
-        / 0.067 for "mnar_experimental", and the worst single cell across
-        the whole grid drops from 0.630 ("global") to 0.200
-        ("mnar_experimental") to 0.097 ("local"). Power is preserved
-        (moderate/large-effect cells all within a few points of the other
-        two methods) and CI coverage on the effect-size check is marginally
-        better than "mnar_experimental"'s (0.951 vs. 0.947). As a side
-        effect, "local" (like "mnar_experimental") also does not show the
-        non-monotonic power dip "global" exhibits under Likert + judge bias
-        reinforcing a real effect (see ``simulations/harness``'s appendix
-        writeup on that anomaly) -- that turned out to be a fragility
-        specific to the global rectifier.
+        found it strictly dominates BOTH alternatives on CALIBRATION, not
+        just under MNAR labeling: on MCAR-only cells specifically (528
+        scenarios), mean Type-I 0.0486 (vs. "global"'s 0.0518 and
+        "mnar_experimental"'s 0.0517) and worst-case 0.093 (vs. 0.097 and
+        0.107) -- i.e. no MCAR regression on calibration, if anything a
+        small improvement. Under MNAR labeling the gap is decisive: mean
+        Type-I by label mechanism (mcar / mnar_mild / mnar_strong) is 0.049
+        / 0.048 / 0.048 for "local" -- essentially flat -- versus 0.052 /
+        0.067 / 0.096 for "global" and 0.052 / 0.056 / 0.067 for
+        "mnar_experimental", and the worst single cell across the whole
+        grid drops from 0.630 ("global") to 0.200 ("mnar_experimental") to
+        0.097 ("local"). CI coverage on the effect-size check is marginally
+        better than "mnar_experimental"'s (0.951 vs. 0.947), and "local"
+        (like "mnar_experimental") does not show the non-monotonic power
+        dip "global" exhibits under Likert + judge bias reinforcing a real
+        effect (a fragility specific to the global rectifier). What this
+        validation pass MISSED: a follow-up 5-way estimator comparison
+        found "local" costs real power for continuous data specifically
+        (see "adaptive"'s entry above) -- calibration alone isn't the whole
+        story, which is why "adaptive" is the default instead of this.
+        Still recommended over "mnar_experimental" if you want a
+        non-adaptive local rectifier for some reason (e.g. deliberately
+        studying Likert-only behavior without the dispatch).
 
         ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier
         (no per-bin structure) -- simple, and exactly correct for a MEAN,
@@ -3445,8 +3587,8 @@ def mannwhitney(
         recommended for new work now that "local" exists.
 
         See ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
-        ``mwu`` / ``mwu_mnar_experimental`` / ``mwu_mnar_pooled``) for the
-        calibration studies behind all of this.
+        ``mwu`` / ``mwu_mnar_experimental`` / ``mwu_mnar_pooled`` /
+        ``mwu_adaptive``) for the calibration studies behind all of this.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -3454,11 +3596,13 @@ def mannwhitney(
         Use PPI++'s variance-minimizing power-tuning weight λ instead of
         fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
         ``power_tune`` parameter for validation status). Only applies to
-        ``method="global"``; ignored (has no effect) for ``method="local"``
-        or ``method="mnar_experimental"``, both of which use their own,
-        not-yet power-tuned local-rectifier bootstrap (see "local"'s
-        docstring entry above -- despite lacking power-tuning, it still
-        matched or beat "global"'s power in validation). Pass
+        ``method="global"`` (and, on the branch where ``method="adaptive"``
+        dispatches to it, i.e. continuous-looking data); ignored (has no
+        effect) for ``method="local"`` or ``method="mnar_experimental"``,
+        and on "adaptive"'s discrete/Likert-looking branch, all of which use
+        their own, not-yet power-tuned local-rectifier bootstrap (see
+        "local"'s docstring entry above -- despite lacking power-tuning, it
+        still matched or beat "global"'s power in validation). Pass
         ``power_tune=False`` (with ``method="global"``) to reproduce the
         original PPI estimator exactly. The value actually used is on the
         returned ``TestResult.lam`` (``None`` for "local"/"mnar_experimental").
@@ -3469,8 +3613,8 @@ def mannwhitney(
     >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
-    if method not in ("local", "global", "mnar_experimental"):
-        raise ValueError(f'method must be "local", "global", or "mnar_experimental"; got {method!r}.')
+    if method not in ("adaptive", "local", "global", "mnar_experimental"):
+        raise ValueError(f'method must be "adaptive", "local", "global", or "mnar_experimental"; got {method!r}.')
 
     x = _coerce(x)
     y = _coerce(y)
@@ -3508,7 +3652,9 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        if method == "local":
+        if method == "adaptive":
+            ppi = _ppi_two_sample_adaptive(x, y, x_lab, y_lab, alpha, n_boot, rng, power_tune=power_tune)
+        elif method == "local":
             ppi = _ppi_two_sample_midrank_corrected_pooled(x, y, x_lab, y_lab, alpha, n_boot, rng)
         elif method == "mnar_experimental":
             ppi = _ppi_two_sample_midrank_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
