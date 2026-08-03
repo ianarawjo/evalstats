@@ -2223,12 +2223,29 @@ redundant with continuous (same convention _PPI_NLAB_GRID_EVAL_TYPES
 already uses); binary gets its own _binary builder/grid instead of being
 folded in here, since it's restricted to _COMPARISON_METHODS_BINARY."""
 PPI_LABEL_EFF_NOISE_LEVELS = (0.05, 0.20, 0.40)
-"""Three llm_noise tiers ("good"/"baseline"/"poor" judge informativeness)
-for build_ppi_label_efficiency_sources' judge-quality axis -- picked from
+"""Three llm_noise FRACTIONS ("good"/"baseline"/"poor" judge
+informativeness, each a frac-of-span value consumed via _jb_bias_magnitude
+-- see build_ppi_label_efficiency_sources' default noise_by_eval_type) for
+build_ppi_label_efficiency_sources' judge-quality axis -- picked from
 PPI_FACTORIAL_NOISE_LEVELS' existing, already-vetted grid rather than
-introducing new magnitudes. 0.20 matches _ppi_power_baseline's own default,
-so the middle tier reproduces build_ppi_comparison_label_frac_sources'
-judge severity exactly; the other two bracket it at roughly 4x apart."""
+introducing new magnitudes. 0.20 matches _ppi_power_baseline's own default
+frac, so the middle tier reproduces build_ppi_comparison_label_frac_sources'
+judge severity exactly; the other two bracket it at roughly 4x apart.
+
+FIXED 2026-08-02 (same bug/fix as _ppi_power_baseline's llm_noise, applied
+here too): build_ppi_label_efficiency_sources' DEFAULT path previously
+reused this tuple as literal RAW absolute llm_noise values, identically
+across every eval type in PPI_LABEL_EFF_EVAL_TYPES -- continuous's span is
+1.0 so that happened to be correct there, but likert's 1-5 span (4.0) meant
+the SAME raw tiers were only 1.25%/5%/10% of its own scale (vs.
+continuous's correctly-scaled 5%/20%/40%), making likert's judge look far
+better than continuous's at every matched nominal "good/baseline/poor"
+label -- confounding any cross-eval-type comparison this sweep produces.
+Does NOT affect the explicit noise_by_eval_type override path (used by
+cases/pvalues.py's alignment-calibrated caller via
+_calibrate_noise_for_alignment, which bisects a RAW llm_noise value
+directly per eval type already -- correctly scaled by construction, not
+this tuple)."""
 PPI_LABEL_EFF_NOISE_LEVELS_BINARY = (0.025, 0.10, 0.40)
 """Binary analogue of PPI_LABEL_EFF_NOISE_LEVELS -- 0.10 matches
 PPI_BINARY_NOISE_BASELINE (the existing default), the other two are
@@ -2310,7 +2327,10 @@ def build_ppi_label_efficiency_sources(
     exactly, independent of N" pattern build_ppi_nlab_grid_sources already
     uses -- NOT PPI_COMPARISON_LABEL_FRACS, which was tuned for N=100 and
     would scale N_lab up to 60-160 at N=400 instead of holding it fixed."""
-    noise_by_eval_type = noise_by_eval_type or {et: PPI_LABEL_EFF_NOISE_LEVELS for et in PPI_LABEL_EFF_EVAL_TYPES}
+    noise_by_eval_type = noise_by_eval_type or {
+        et: tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
+        for et in PPI_LABEL_EFF_EVAL_TYPES
+    }
 
     def _kwargs(et: str, n_lab_target: int, noise: float) -> dict:
         kw = _ppi_power_baseline(et)
