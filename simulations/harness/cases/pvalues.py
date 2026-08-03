@@ -5619,7 +5619,9 @@ def save_results_artifacts_ppi_label_efficiency_raw(
 
 def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str) -> str:
     """The flagship label-efficiency figure: one panel per eval type
-    (continuous, likert, binary), x=actual N_lab, y=equivalent human-only
+    (binary, continuous, likert -- the standard panel order used
+    throughout this harness's plots, see eval_types below), x=actual
+    N_lab, y=equivalent human-only
     N_lab, one line per judge-QUALITY tier (calibrated to hit a target
     alignment level -- Pearson r for continuous, weighted kappa for likert,
     kappa for binary -- see _LABEL_EFF_ALIGNMENT_METRIC/_calibrate_noise_
@@ -5652,7 +5654,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
 
     if not results:
         raise ValueError("No label-efficiency results to plot.")
-    eval_types = [et for et in ("continuous", "likert", "binary") if any(r.eval_type == et for r in results)]
+    eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in results)]
     fig, axes = plt.subplots(
         1, len(eval_types), figsize=(6.2 * len(eval_types), 4.4), squeeze=False,
         gridspec_kw={"wspace": 0.75},
