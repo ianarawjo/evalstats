@@ -2122,10 +2122,13 @@ real power signal to show growing with N_lab at all. Re-scanned frac in
 climb across n_lab=15-40 for every eval type (continuous ~0.43->0.54,
 likert ~0.32->0.43, grades ~0.32->0.52 -- 200 reps per point), the best
 balance of "genuinely moderate" and "still has headroom to show N_lab
-mattering" of the fracs tested. PPI_LABEL_EFF_EFFECT_FRAC (0.08) was
-checked too and did NOT need the same fix -- its much larger N=1000 pool
-(vs. this constant's N=100) already gives a sensible 0.06->0.39 climb
-across n_lab=15-200 at that same frac, unaffected."""
+mattering" of the fracs tested. PPI_LABEL_EFF_EFFECT_FRAC was checked too
+at the time (0.08, its value then) using this constant's own baseline
+(non-alignment-calibrated) noise and appeared fine -- that check turned
+out to be misleading (see PPI_LABEL_EFF_EFFECT_FRAC's own docstring): its
+sweep actually uses ALIGNMENT-CALIBRATED noise, not this constant's
+baseline, and DID need the same kind of fix once checked against the real
+noise values -- re-derived to 0.15 in a follow-up pass the same day."""
 
 
 def _ppi_power_baseline(eval_type: str) -> dict:
@@ -2415,30 +2418,43 @@ PPI_LABEL_EFF_NOISE_LEVELS_BINARY = (0.025, 0.10, 0.40)
 """Binary analogue of PPI_LABEL_EFF_NOISE_LEVELS -- 0.10 matches
 PPI_BINARY_NOISE_BASELINE (the existing default), the other two are
 PPI_BINARY_NOISE_LEVELS' low/high ends."""
-PPI_LABEL_EFF_EFFECT_FRAC = 0.08
+PPI_LABEL_EFF_EFFECT_FRAC = 0.15
 """Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
-than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.30 as of 2026-08-03; was 0.20
-when this comment was first written) deliberately: at that constant's own
-scale, continuous's classical (human-only) test already exceeds 90% power
-at n_lab=15-40, so both PPI's and the reference curve's power saturate
-near 1.0 at the good-judge noise tier -- inverting a power that's AT a
-flat curve's plateau is ill-posed and previously produced a spurious "500
-labels" (cases/pvalues.py's n_grid cap) equivalent-N for those cells,
-blowing up save_ppi_label_efficiency_plot's shared per-panel axis scale.
-Confirmed empirically (2026-07-23) that 0.08 keeps pooled power comfortably
-inside ~0.13-0.64 across every (eval_type, judge_noise) cell this sweep
-covers -- enough headroom for a stable inversion without floor/ceiling
-effects at either end. That confirmation predates both the 2026-08-03
-SD-standardization fix and the same-day _marginal effect-rounding bug
-fix, so the exact 0.13-0.64 range is not re-verified as still accurate --
-a 2026-08-03 spot check at the baseline (0.20) noise tier only (not the
-full noise_levels sweep) found continuous/likert both still climb
-sensibly, 0.06->0.39 across n_lab=15-200, with no floor-clamping -- but a
-full re-verification across every (eval_type, judge_noise) cell, the way
-the original 2026-07-23 pass did, hasn't been redone. See
-LabelEfficiencyPoint.saturated in cases/pvalues.py for the defensive
-check that still applies regardless (a sufficiently good judge could
-saturate power at ANY fixed effect size)."""
+than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.30) deliberately: continuous's
+classical (human-only) test power grows faster with N_lab at that
+constant's own scale, so both PPI's and the reference curve's power would
+saturate near 1.0 at the good-judge noise tier -- inverting a power
+that's AT a flat curve's plateau is ill-posed and previously produced a
+spurious "500 labels" (cases/pvalues.py's n_grid cap) equivalent-N for
+those cells, blowing up save_ppi_label_efficiency_plot's shared per-panel
+axis scale.
+
+RE-DERIVED 2026-08-03 (was 0.08, confirmed 2026-07-23 to keep power inside
+~0.13-0.64 under the then-current span-based convention). That earlier
+spot check, and a same-day 2026-08-03 re-check at ONLY the baseline
+(non-alignment-calibrated) noise tier, both missed the actual problem:
+this sweep's noise comes from _calibrate_noise_for_alignment, bisecting
+llm_noise to hit a TARGET ALIGNMENT level per (eval_type, target) cell --
+NOT a fixed multiple of EVAL_TYPE_POPULATION_SD the way the rest of this
+file's llm_noise values are. Confirmed directly on the actual official run
+(official_20260803_013611): at frac=0.08, EVEN THE BEST-judge tier
+(target alignment=0.80, continuous's calibrated noise=0.0909) gave
+PPI-corrected power stuck at 0.05-0.20 across the ENTIRE n_lab=15-200
+range -- not the "0.13-0.64, enough headroom" the historical confirmation
+claimed. Near-floor power makes the equiv_N_lab/multiplier column (a
+ratio-of-ratios, inverting through the ALSO near-floor human_subset
+curve) extremely noise-sensitive -- this is what actually produced the
+jittery, spiky label-efficiency plot for continuous (and, equally,
+likert) in that run, not a plotting bug. Re-scanned frac in
+{0.08, 0.15, 0.25, 0.35, 0.50} at the REAL alignment-calibrated noise for
+both the best-judge (target=0.80) and worst-judge (target=0.30) tiers:
+0.15 gives non-floor, non-saturated growth at BOTH ends -- best-judge
+continuous 0.09->0.60 across n_lab=15->200, worst-judge continuous
+0.06->0.37 -- while 0.25+ saturates too early at the best-judge tier
+(continuous already at 0.93 by n_lab=200) and 0.08 sits at floor
+throughout. See LabelEfficiencyPoint.saturated in cases/pvalues.py for
+the defensive check that still applies regardless (a sufficiently good
+judge could saturate power at ANY fixed effect size)."""
 PPI_LABEL_EFF_N = 1000
 """Total item count (N) for build_ppi_label_efficiency_sources -- NOT 100
 (the ORIGINAL choice, inherited from _ppi_power_baseline's default without
@@ -2658,54 +2674,68 @@ interpretation for likert specifically; still the best available
 standardized choice.)"""
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
-PPI_FACTORIAL_NOISE_LEVELS = (0.025, 0.0354, 0.05, 0.0707, 0.10, 0.1414, 0.20, 0.2828, 0.40, 0.5657, 0.80)
+PPI_FACTORIAL_NOISE_LEVELS = (
+    0.025, 0.0319, 0.0406, 0.0518, 0.066, 0.0841, 0.1072, 0.1366, 0.1741, 0.2219,
+    0.2828, 0.3605, 0.4595, 0.5856, 0.7464, 0.9514, 1.2126, 1.5455, 1.9698, 2.5107,
+    3.2, 4.0786, 5.1984, 6.6257, 8.4449, 10.7635, 13.7187, 17.4853, 22.2861, 28.405,
+)
 """llm_noise FRACTIONS of the eval type's own POPULATION SD (see
 EVAL_TYPE_POPULATION_SD -- same standardized convention _jb_bias_magnitude
 already applies to this function's bias_delta/effect_size -- see
-build_ppi_factorial_sources). A geometric sequence, ratio sqrt(2), anchored
-at 0.20 (the harness's pre-existing baseline llm_noise for
-build_judge_bias_sources), spanning 6 steps down and 6 up and then CAPPED
-at frac=1.0 (dropping the top two points a symmetric span would otherwise
-include, ~1.13 and ~1.6).
+build_ppi_factorial_sources). A geometric sequence, ratio 2**0.35 (~1.275),
+anchored at 0.025 (this constant's own original low end).
 
-STALE justification as of the 2026-08-03 SD-standardization fix: the
-original reasoning here was "a noise SD can't meaningfully exceed its own
-scale's full SPAN" -- true under the pre-fix span-based convention (where
-frac=1.0 meant "noise SD equals the whole measurable range"), but no
-longer the right frame now that frac is a population-SD fraction: frac=1.0
-now means "1 population SD of noise" (SNR=1), a large but entirely
-plausible measurement-error regime, not an impossible one -- there's no
-equivalently hard physical ceiling at frac=1.0 anymore. The cap's actual
-grid (stopping at 0.80) may still be a reasonable range in practice, but
-the STATED reason for it no longer holds; re-justifying (or widening) this
-grid under the new convention is an open follow-up, not done as part of
-the 2026-08-03 fix. Every value from the rule is kept as-is (no
-per-value tuning): this is deliberately NOT the empirically-tuned 12-point
-grid an earlier version of this sweep used (which was constructed by
-testing candidate values until they populated every alignment bucket --
-defensible for exploration, but not for a design a reviewer might ask
-"why these specific numbers" about). Verified coverage (paired with
-PPI_FACTORIAL_BIAS_MAGNITUDES over es="null" cells, the same combination
-build_ppi_factorial_sources now generates), AS MEASURED PRE-2026-08-03 (NOT
-re-verified under the SD-standardization fix -- the actual llm_noise
-magnitude reached by each frac changed for likert, so this specific
-alignment-bucket coverage claim should be treated as approximate/stale
-until re-run): 9/10 of the 10-point alignment buckets for continuous's
-Pearson r (missing only 0-10%), 8/10 for likert's weighted kappa (missing
-0-10%, 10-20%) -- the two lowest buckets, i.e. "the judge is essentially
-noise," are the least informative regime for this sweep's actual point
-(subtle, hard-to-detect miscalibration), so their absence is a principled
-omission, not a coverage failure. See measure_judge_alignment/
-cases/pvalues.py's alignment-bucket plots for how this grid gets consumed
-once crossed into the factorial."""
-PPI_FACTORIAL_NOISE_LEVELS_FAST = PPI_FACTORIAL_NOISE_LEVELS[::2]
-"""Every other point of PPI_FACTORIAL_NOISE_LEVELS -- (0.025, 0.05, 0.10,
-0.20, 0.40, 0.80), 6 points instead of 11. Not a separately-tuned grid: since
-PPI_FACTORIAL_NOISE_LEVELS steps by a constant ratio (sqrt(2)), skipping
-every other point yields another clean geometric sequence, ratio 2, still
-anchored at the same 0.20 baseline -- so this stays exactly as justifiable
-as the full grid, just coarser (fewer alignment buckets get populated,
-about half as many null-effect cells to run). Passed as build_ppi_
+RE-DERIVED 2026-08-03 (widened, not just re-labeled -- same day as, but
+after, the SD-standardization fix that made this necessary): the previous
+11-point grid (ratio sqrt(2), 0.025-0.80, capped there because "a noise SD
+can't meaningfully exceed the whole scale SPAN" under the old span-based
+convention) turned out to badly under-range once frac became a
+population-SD fraction. Confirmed directly: even this grid's OLD maximum
+(frac=0.80, i.e. 0.80 population SDs of noise) only brought continuous's
+Pearson r down to 0.772 and likert's weighted kappa down to 0.731 -- both
+still in the SAME (0.7-0.8) top alignment bucket. Every alignment-bucketed
+plot built from the old grid was therefore only ever populating the
+highest 2-3 of 10 buckets (confirmed in a real official run,
+official_20260803_013611) -- not a plotting bug, a genuine noise-range
+gap. Re-measured how far frac needs to go to reach near-zero alignment:
+~frac=16-24 for both continuous (r~0.04-0.06) and likert (kappa~0.03-0.05).
+
+Widened to 30 points (ratio 2**0.35, spanning 0.025 to ~28.4 -- roughly
+36x the old grid's range) by simply extending the same "clean geometric
+sequence, no per-value tuning" design principle the original grid used,
+not by hand-picking values to hit specific buckets (which the original
+grid's own docstring explicitly rejected as "defensible for exploration,
+but not for a design a reviewer might ask 'why these specific numbers'
+about" -- that principle is preserved here, just extended further and at
+a finer ratio). VERIFIED (2026-08-03, n_mc=2000 per point): this grid
+achieves full 10/10 alignment-bucket coverage for BOTH continuous's
+Pearson r and likert's weighted kappa -- a real improvement on the
+original grid's own historical claim of 9/10 and 8/10 respectively (which
+was itself never actually achieved after the SD-standardization fix, per
+above). A coarser ratio (2**0.4, 26 points) got 10/10 for continuous but
+only 9/10 for likert (missing the 0.6-0.7 bucket); an even coarser ratio-2
+(11 points, same count as the original grid) only reached 6/10 for both --
+confirming genuine resolution, not just range, was needed through the
+"transition zone" (~frac=0.8-6.4) where alignment changes fastest.
+
+binary's own noise grid (PPI_BINARY_NOISE_LEVELS, below) is a SEPARATE,
+PRE-EXISTING gap (5/10 kappa buckets, unrelated to this SD-standardization
+work -- binary's noise is a flip-probability rate, never routed through
+_jb_bias_magnitude/EVAL_TYPE_POPULATION_SD at all) -- not fixed here,
+flagged for a separate pass. See measure_judge_alignment/cases/pvalues.py's
+alignment-bucket plots for how this grid gets consumed once crossed into
+the factorial."""
+PPI_FACTORIAL_NOISE_LEVELS_FAST = PPI_FACTORIAL_NOISE_LEVELS[::3]
+"""Every third point of PPI_FACTORIAL_NOISE_LEVELS -- 10 points instead of
+30 (was every OTHER point, 6 of 11, before the 2026-08-03 widening -- with
+3x as many points in the full grid now, skipping 2 instead of 1 keeps the
+"fast" variant's own point count roughly the same as before, rather than
+tripling it too). Not a separately-tuned grid: since PPI_FACTORIAL_NOISE_
+LEVELS steps by a constant ratio (2**0.35), skipping every third point
+yields another clean geometric sequence, ratio 2**1.05 (~2.07), from the
+same 0.025 starting point -- so this stays exactly as justifiable as the
+full grid, just coarser (fewer alignment buckets get populated, a third
+as many null-effect cells to run). Passed as build_ppi_
 factorial_sources' noise_levels argument by cases/pvalues.py's
 --factorial-fast-noise / official_args_ppi_factorial_fast_noise, for a
 quicker factorial+alignment pass before committing to the full grid's
