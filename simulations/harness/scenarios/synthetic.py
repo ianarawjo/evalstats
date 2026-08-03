@@ -30,6 +30,7 @@ Suites (how many shapes to test against):
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass, replace
 from typing import Callable, Sequence
 
@@ -1539,55 +1540,166 @@ def _jb_labels_shared(
     return labs
 
 
+EVAL_TYPE_POPULATION_SD: dict[str, float] = {
+    "continuous": 0.12060453783110545,
+    "likert": 1.144685,
+    "grades": 19.719146,
+    "binary": 0.5,
+}
+"""Population standard deviation of each eval type's REPRESENTATIVE shape's
+TRUTH distribution (see _PPI_REPRESENTATIVE_SHAPE_LABEL), measured at
+icc=1.0 (pure signal, no measurement-noise attenuation) -- the denominator
+_jb_bias_magnitude/_jb_effect_magnitude use to express bias/noise/effect
+severity as a Cohen's-d-style STANDARDIZED effect size (frac = "how many
+population SDs"), not a raw fraction of the eval type's scale span. This is
+what makes "frac=0.30" mean the SAME real severity for continuous, likert,
+and grades -- see those two functions' docstrings for the full history of
+why the old span-based convention did NOT (FIXED 2026-08-03).
+
+continuous: EXACT closed form -- cont-right-skew is Beta(2, 8) on [0, 1],
+Var = ab/((a+b)^2(a+b+1)) = 16/1100, SD = sqrt(16/1100).
+
+binary: EXACT closed form -- the representative shape is p=0.50, so the
+{0, 1} truth outcome is Bernoulli(0.5), SD = sqrt(0.5*0.5) = 0.5.
+
+likert/grades: no closed form (the underlying Normal-latent construction is
+rounded-to-nearest-integer (likert only) and clamped to the eval type's
+scale bounds before use -- see sample_group_truth -- and clamping/rounding
+have no simple closed-form variance). Measured by direct Monte Carlo
+simulation of sample_group_truth itself (not a separate model): N=5,000,000
+draws, seed=20260803, icc=1.0. likert-mid is latent Normal(mu=3.0,
+total_std=1.2) rounded+clamped to [1, 5] -> realized SD=1.144685 (SE
+0.00036, vs. the raw unclamped total_std=1.2 -- clamping trims ~4.6% of the
+variance). grades-mid is latent Normal(mu=55.0, total_std=20.0) clamped
+(not rounded) to [0, 100] -> realized SD=19.719146 (SE 0.0062, ~1.4% below
+the raw total_std=20.0). Reproducible: ``sample_group_truth(_ppi_shape(et),
+5_000_000, 1, 1, 1.0, np.random.default_rng(20260803))[0,:,0].std()``.
+
+Deliberately NOT the raw shape.params total_std for likert/grades -- the
+realized (post-rounding/clamping) SD is what actually reaches
+generate_judge_bias_cell downstream, and using the unclamped parameter
+would reintroduce a small but real bias in the same "unit mismatch"
+direction this whole fix exists to close."""
+
+
+@functools.lru_cache(maxsize=None)
+def _likert_population_sd(likert_max: int, n_mc: int = 5_000_000, seed: int = 20260803) -> float:
+    """EVAL_TYPE_POPULATION_SD['likert']'s methodology, generalized to a
+    NON-default likert_max (e.g. --factorial-likert-max 7) -- likert-mid's
+    latent Normal(mu, total_std) is itself rescaled by _likert_scale_factor
+    for a non-default likert_max (see sample_group_truth), so the realized
+    post-round+clamp SD genuinely changes with likert_max and can't just
+    reuse the likert_max=5 constant. Cached (via lru_cache) since this is a
+    5-million-draw Monte Carlo call and likert_max overrides, while real,
+    are rare -- computed once per distinct likert_max per process, not
+    once per _jb_bias_magnitude/_jb_effect_magnitude call."""
+    if likert_max == 5:
+        return EVAL_TYPE_POPULATION_SD["likert"]
+    shape = _ppi_shape("likert")
+    rng = np.random.default_rng(seed)
+    truth = sample_group_truth(shape, n_mc, 1, 1, 1.0, rng, likert_max=likert_max)[0, :, 0]
+    return float(truth.std(ddof=0))
+
+
+def _eval_type_population_sd(eval_type: str, *, scale_bounds: tuple[float, float] | None = None) -> float:
+    """EVAL_TYPE_POPULATION_SD[eval_type], with scale_bounds (see
+    _jb_bias_magnitude's parameter of the same name) mapped to the matching
+    likert_max-specific SD via _likert_population_sd when eval_type is
+    "likert" and scale_bounds overrides the default (1.0, 5.0) span --
+    scale_bounds is ONLY ever passed for likert_max overrides in this
+    codebase (build_ppi_factorial_sources is the sole caller), so hi is
+    exactly likert_max for that case."""
+    if scale_bounds is not None and eval_type == "likert":
+        return _likert_population_sd(int(round(scale_bounds[1])))
+    return EVAL_TYPE_POPULATION_SD[eval_type]
+
+
 def _jb_bias_magnitude(eval_type: str, frac: float = 0.30, *, scale_bounds: tuple[float, float] | None = None) -> float:
-    """`frac` of `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, as an
-    absolute bias_delta value.
+    """`frac` population STANDARD DEVIATIONS of `eval_type`'s own truth
+    distribution (EVAL_TYPE_POPULATION_SD), as an absolute bias_delta value
+    -- a Cohen's-d-style standardized effect size, not a raw fraction of
+    the eval type's scale span.
 
     `bias_delta`/`bias_const` are RAW additive offsets on the eval type's
     own native scale (see _jb_llm: ``pred = anchor + slope*(truth-anchor)
     + bias``), NOT normalized to a common [0, 1] fraction -- so reusing the
     same absolute number (e.g. the historical default of 0.30) across eval
-    types gives wildly different real severities: "30% of range" for
-    continuous ([0, 1]) but only "0.3% of range" for grades ([0, 100]).
-    Confirmed empirically that reusing 0.30 verbatim made grades' bias
-    scenarios produce essentially NO Type-I inflation (~5%, indistinguishable
-    from no bias at all) while continuous saturated at 100% -- not a
-    deliberate difference in severity, just an unconverted unit. Binary is
-    not meant to be passed here: its bias model (_jb_llm_binary) works via
-    flip-probabilities, not an additive offset, so this fractional framing
-    doesn't apply to it (its EVAL_TYPE_SCALE_BOUNDS span of 1.0 happens to
-    match continuous's anyway, so its historical bias_delta=0.30 was
-    already correctly scaled by coincidence).
+    types gives wildly different real severities. This was originally fixed
+    (pre-2026-08-03) by scaling `frac` to the eval type's SCALE SPAN instead
+    of reusing it as a raw absolute number: "30% of range" for continuous
+    ([0, 1]), "30% of range" for grades ([0, 100]) rather than a flat 0.30
+    for both. That fix was itself INCOMPLETE, discovered 2026-08-02/03 while
+    investigating why continuous and grades showed very different PPI power
+    profiles in cross-eval-type comparisons (the 5-way estimator comparison,
+    the label-efficiency check): "fraction of span" is not the same
+    statistic as "fraction of population SD" whenever different eval types'
+    representative truth SHAPES have different span-to-SD ratios, which they
+    do (continuous's Beta(2,8): span/SD=8.30; grades' Normal-based shape:
+    span/SD=5.07; likert's: span/SD=3.49) -- so a nominal frac=0.30 was
+    ALREADY silently 2.4x more severe (in real, standardized terms) for
+    continuous than for likert even after the span-based fix, e.g. bias
+    (frac=0.30, OLD span convention): continuous=0.30 (2.49 population SDs),
+    likert=1.20 (1.05 population SDs). Confirmed this fully explained
+    several apparent "PPI behaves very differently by eval type" findings
+    that were actually just this unit mismatch (see EVAL_TYPE_POPULATION_SD's
+    docstring and this fix's commit message for the full numbers). FIXED
+    2026-08-03: `frac` now multiplies population SD directly, so the SAME
+    frac value is the SAME standardized (Cohen's-d) severity for every eval
+    type, by construction -- this is the convention every "mild"/"moderate"/
+    "severe" bias tier, every effect_size grid point, and every llm_noise
+    level throughout this harness now shares. Binary is not meant to be
+    passed here: its bias model (_jb_llm_binary) works via flip-
+    probabilities, not an additive offset on a continuous/graded/Likert
+    scale, so this framing doesn't apply to it at all (see
+    PPI_BINARY_BIAS_MAGNITUDES instead, an already-standardized
+    misclassification-probability convention that never went through this
+    function).
 
     scale_bounds : (lo, hi), optional
-        Overrides the EVAL_TYPE_SCALE_BOUNDS[eval_type] lookup -- e.g. pass
-        (1.0, 7.0) when building a JudgeBiasSource with likert_max=7, so
-        "frac" keeps meaning the same RELATIVE severity on the wider scale
-        instead of silently becoming a smaller fraction of it.
+        Overrides the EVAL_TYPE_POPULATION_SD[eval_type] lookup with the
+        likert_max-specific SD instead -- e.g. pass (1.0, 7.0) when building
+        a JudgeBiasSource with likert_max=7, so "frac" keeps meaning the
+        same STANDARDIZED severity on the wider scale (see
+        _eval_type_population_sd/_likert_population_sd). The parameter name
+        is unchanged from the pre-2026-08-03 span-based convention for
+        call-site compatibility -- it's still an (lo, hi) tuple, just
+        interpreted as "derive the likert_max-specific population SD" now
+        instead of "use this span directly."
     """
-    lo, hi = scale_bounds if scale_bounds is not None else EVAL_TYPE_SCALE_BOUNDS[eval_type]
-    return frac * (hi - lo)
+    sd = _eval_type_population_sd(eval_type, scale_bounds=scale_bounds)
+    return frac * sd
 
 
 def _jb_effect_magnitude(eval_type: str, frac: float, *, scale_bounds: tuple[float, float] | None = None) -> float:
-    """`frac` of `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, as an
-    absolute JudgeBiasSource.effect_size value -- the same eval-type-relative
-    fractional convention _jb_bias_magnitude uses for bias_delta, so
-    "how big a real effect" and "how big a judge bias" are expressed on a
-    directly comparable scale. Binary's span is (0.0, 1.0), same as
-    continuous, so `frac` reads directly as an absolute pass-rate-point
-    shift (e.g. frac=0.20 means "20 points of proportion") -- valid for any
-    frac now that generate_judge_bias_cell's `_marginal` shifts the base
-    pass rate BEFORE the Bernoulli draw (via sample_group_truth's effects
-    parameter) rather than adding to the realized {0, 1} outcome afterward;
-    the caller (e.g. build_ppi_power_sources_binary) is responsible for
-    keeping frac small enough, relative to the scenario's own base rate,
-    that base_rate + frac stays sensibly inside (0, 1) rather than
-    clipping into a degenerate near-certain outcome.
+    """`frac` population STANDARD DEVIATIONS of `eval_type`'s own truth
+    distribution (EVAL_TYPE_POPULATION_SD), as an absolute
+    JudgeBiasSource.effect_size value -- the same standardized-effect-size
+    convention _jb_bias_magnitude uses for bias_delta (see that function's
+    docstring for the full 2026-08-03 fix history: "fraction of span" is
+    NOT the same statistic as "fraction of population SD" across eval types
+    with different span-to-SD ratios, and the older span-based convention
+    silently gave the SAME nominal frac a 2.4x-different real, standardized
+    severity for continuous vs. likert). So "how big a real effect" and
+    "how big a judge bias" are now expressed on a directly, RIGOROUSLY
+    comparable scale -- e.g. frac=0.08 is 0.08 population SDs of real
+    separation between groups, for every eval type. Binary does NOT share
+    EVAL_TYPE_POPULATION_SD's continuous/likert/grades convention directly
+    -- see _jb_effect_magnitude_binary, which pre-compensates frac for
+    binary's own boundary-clipping dynamics on top of this same standardized
+    base, re-derived under the new SD convention (the compensation factor
+    changed from 2.0 to 1.75 -- see that function's docstring for why).
+    generate_judge_bias_cell's `_marginal` shifts the base pass rate BEFORE
+    the Bernoulli draw (via sample_group_truth's effects parameter) rather
+    than adding to the realized {0, 1} outcome afterward, so any frac is
+    valid there; the caller (e.g. build_ppi_power_sources_binary) is still
+    responsible for keeping the REALIZED absolute effect small enough,
+    relative to the scenario's own base rate, that base_rate + effect stays
+    sensibly inside (0, 1) rather than clipping into a degenerate
+    near-certain outcome.
 
     scale_bounds : (lo, hi), optional -- see _jb_bias_magnitude's."""
-    lo, hi = scale_bounds if scale_bounds is not None else EVAL_TYPE_SCALE_BOUNDS[eval_type]
-    return frac * (hi - lo)
+    sd = _eval_type_population_sd(eval_type, scale_bounds=scale_bounds)
+    return frac * sd
 
 
 def build_judge_bias_sources() -> list[JudgeBiasSource]:
@@ -1682,15 +1794,24 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # bias`), NOT normalized to a common [0, 1] fraction -- see
     # _jb_bias_magnitude's docstring for why every differential-bias
     # scenario above (eval_type.*/shape.*) uses it instead of a bare
-    # number. This sweep expresses magnitude as a FRACTION of each eval
-    # type's own EVAL_TYPE_SCALE_BOUNDS span, so "mild"/"moderate"/"severe"
-    # mean the same relative severity everywhere. Verified empirically
-    # (n=100/icc=0.20, uncorrected ttest rejection rate, alpha=0.05): 3% of
-    # span -> ~12-24%, 7% -> ~45-74%, 30% -> 100%, consistently across
-    # continuous/likert/grades. Binary is excluded -- its bias model
-    # (_jb_llm_binary) works via flip-probabilities, not an additive offset
-    # on a continuous scale, so this fractional framing doesn't apply the
-    # same way (though its span happens to match continuous's anyway).
+    # number. This sweep expresses magnitude in POPULATION-SD units (see
+    # EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude's 2026-08-03 fix), so
+    # "mild"/"moderate"/"severe" mean the same STANDARDIZED severity
+    # everywhere. Re-verified under that fix (n=100/icc=0.20, uncorrected
+    # ttest rejection rate, alpha=0.05, 300 reps): mild (0.03 SD) ->
+    # continuous 0.040/likert 0.063/grades 0.047 (all barely above nominal,
+    # tightly clustered); moderate (0.07 SD) -> 0.067/0.083/0.090 (mild
+    # inflation, tightly clustered); severe (0.30 SD) -> 0.590/0.573/0.570
+    # (strong, near-IDENTICAL inflation -- not saturated at 100% the way
+    # the pre-fix span-based convention's continuous cell was). The
+    # pre-2026-08-03 span-based version of this same check reported "3% of
+    # span -> ~12-24%, 7% -> ~45-74%, 30% -> 100%" -- a 2x-6x spread within
+    # each nominal tier across eval types, which the fix closes to a
+    # tight, consistent cluster at every tier, exactly the comparability
+    # this convention is supposed to provide. Binary is excluded -- its
+    # bias model (_jb_llm_binary) works via flip-probabilities, not an
+    # additive offset on a continuous scale, so this framing doesn't apply
+    # to it at all (see PPI_BINARY_BIAS_MAGNITUDES instead).
     for et in ["continuous", "likert", "grades"]:
         for label, frac in [("mild", 0.03), ("moderate", 0.07), ("severe", 0.30)]:
             S.append(make_scenario(
@@ -1802,8 +1923,9 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # confound_shift_a=1.0 (group A's confound sits ~1 SD above group B's,
     # confound_shift_b=0.0) is what actually creates the between-group
     # nuisance difference; confound_weight (an eval-type-relative fraction
-    # of scale span, same _jb_bias_magnitude convention bias_delta uses)
-    # converts that SD-scale gap into a score-scale judge-bias contribution.
+    # of POPULATION SD, same standardized _jb_bias_magnitude convention
+    # bias_delta uses -- see EVAL_TYPE_POPULATION_SD) converts that SD-scale
+    # gap into a score-scale judge-bias contribution.
     # Values chosen to land in a demonstrably-partial (not saturated)
     # uncorrected-rejection range, the same "verified empirically" practice
     # bias_magnitude's own sweep used -- see build_ppi_power_sources'
@@ -1907,29 +2029,37 @@ _PPI_POWER_EVAL_TYPES = ("continuous", "likert", "grades")
 # apples-to-oranges).
 PPI_POWER_EFFECT_FRACS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.225, 0.25, 0.275, 0.30, 0.40)
 """Effect-size grid for build_ppi_power_sources/build_ppi_comparison_*, as a
-fraction of each eval type's own scale span (same convention as
-_jb_bias_magnitude's bias_delta fractions). 0.0 is kept as a Type-I
-cross-check against build_judge_bias_sources' "eval_type.*" scenarios (same
-settings, same expected ~alpha rejection rate) rather than dropped, since it
-anchors the left edge of the power curve at the correct floor. 10 points
-(vs. the original 4: 0/0.10/0.20/0.40) to resolve the power curve's shape
-well enough to read visually -- the original grid's biggest gaps (0.20-0.40)
-spanned exactly the region where save_ppi_power_direction_plot's
-"cancellation dip" (opposing bias) or crossover (reinforcing bias) happens,
-so a coarse grid could make a smooth, well-understood phenomenon look like
-a kink or an artifact.
+POPULATION-SD fraction of each eval type's own truth distribution (see
+EVAL_TYPE_POPULATION_SD / _jb_bias_magnitude's 2026-08-03 fix -- same
+standardized convention _jb_bias_magnitude's bias_delta fractions use). 0.0
+is kept as a Type-I cross-check against build_judge_bias_sources'
+"eval_type.*" scenarios (same settings, same expected ~alpha rejection
+rate) rather than dropped, since it anchors the left edge of the power
+curve at the correct floor. 10 points (vs. the original 4: 0/0.10/0.20/0.40)
+to resolve the power curve's shape well enough to read visually -- the
+original grid's biggest gaps (0.20-0.40) spanned exactly the region where
+save_ppi_power_direction_plot's "cancellation dip" (opposing bias) or
+crossover (reinforcing bias) happens, so a coarse grid could make a smooth,
+well-understood phenomenon look like a kink or an artifact.
 
-0.225/0.25/0.275 were added specifically to bridge that same 0.20-0.30 gap
-with a point that lands on a clean INTEGER crossing for likert (scale span
-4.0, so frac=0.25 -> effect_size=1.00 exactly -- a full one-point difference
-on the 1-5 scale). The original grid's 0.20/0.30 (effect_size 0.80/1.20)
-straddled that boundary without ever landing on it. This matters because
-likert's truth arrays are integer-valued: MWU's reinforcing-bias power
-anomaly (see cases/pvalues.py's appendix writeup) traces to a discrete
-rank-invariance in how the scenario's truth values are constructed, which
-breaks specifically as continuous judge noise pushes ranks across an
-integer boundary -- a grid that skips over the boundary can't resolve
-whether the anomaly's onset/shape actually lines up with it."""
+STALE as of the 2026-08-03 SD-standardization fix: 0.225/0.25/0.275 were
+originally added under the PRE-FIX span-based convention specifically to
+bridge the 0.20-0.30 gap with a point landing on a clean INTEGER crossing
+for likert (old convention: scale span 4.0, so frac=0.25 -> effect_size=
+1.00 exactly -- a full one-point difference on the 1-5 scale, the
+mechanism behind MWU's reinforcing-bias power anomaly -- see cases/
+pvalues.py's appendix writeup and evalstats.tests.mannwhitney's method
+docstring's Likert-power-dip investigation). Under the NEW SD-based
+convention, frac=0.25 no longer lands anywhere near that boundary --
+0.25 * EVAL_TYPE_POPULATION_SD["likert"] (1.1447) = 0.2862, not 1.00; the
+frac that WOULD hit effect_size=1.00 exactly is now ~0.8736, far outside
+this grid's current 0.0-0.40 range (and likely already power-saturated
+for most eval types at that magnitude, so simply extending the grid out
+to it may not be the right fix either). These three grid points are kept
+here for now (still useful, just no longer serving their original
+bridging purpose) -- re-deriving a grid that properly resolves the
+integer-crossing boundary under the new convention is an OPEN follow-up,
+not done as part of the 2026-08-03 fix."""
 PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
 """Label-fraction grid for build_ppi_comparison_label_frac_sources, at
 _ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
@@ -1966,43 +2096,40 @@ meaningful headroom below saturation at the N_lab range this feeds."""
 
 
 def _ppi_power_baseline(eval_type: str) -> dict:
-    """`llm_noise` is `_jb_bias_magnitude(eval_type, 0.20)` -- a FRACTION of
-    `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, matching the convention
+    """`llm_noise` is `_jb_bias_magnitude(eval_type, 0.20)` -- 0.20
+    POPULATION SDs of `eval_type`'s own truth distribution (see
+    EVAL_TYPE_POPULATION_SD), matching the standardized convention
     `bias_delta` below already uses (and the convention
     `build_ppi_factorial_sources` already independently applied to its own
     llm_noise grid, anchored at this same 0.20 baseline -- see
     PPI_FACTORIAL_NOISE_LEVELS' docstring).
 
-    FIXED 2026-08-02 (was previously a literal, unscaled `llm_noise=0.20`
-    applied identically to every eval type -- the exact class of bug
-    `_jb_bias_magnitude`'s own docstring already documents and warns
-    against for `bias_delta`, just never migrated here for `llm_noise`).
-    Confirmed via simulation this was the actual root cause -- not eval
-    type, not any specific test (paired_t/ttest_welch/mwu/wilcoxon all
-    showed it identically) -- of a "continuous data's PPI-corrected power
-    barely beats human_subset-only, but grades doesn't show this" finding
-    in build_ppi_comparison_label_frac_sources/build_ppi_power_sources'
-    5-way estimator comparison: a flat SD of 0.20 is close to 2x the
-    default continuous shape's own population SD (~0.121, giving the
-    simulated judge a signal-to-noise ratio of only ~0.6 -- noise
-    EXCEEDING signal) but under 1% of grades' default shape's SD (~20,
-    SNR~100 -- an essentially noiseless judge). Since PPI's power
-    advantage over human_subset-alone scales with judge informativeness,
-    this single unconverted unit fully explained the asymmetry -- verified
-    directly by swapping ONLY the noise level (holding truth shape fixed)
-    between the two eval types and watching each fully reproduce the
-    other's pattern in both directions. This changes the REALIZED
-    llm_noise for every caller that doesn't explicitly override it
-    (build_ppi_power_sources/_reinforcing/_nobias, build_ppi_comparison_
-    label_frac_sources, build_ppi_power_nlab_grid_*) -- e.g. likert's
-    noise goes from raw 0.20 (5% of its 1-5 span) to 0.80 (still 20% of
-    that span, an actually-comparable severity to continuous's). Not a
-    side effect to overlook when comparing against pre-fix saved runs.
-    build_ppi_label_efficiency_sources is UNAFFECTED (it always overrides
-    llm_noise immediately after calling this, via its own separately-
-    convention'd PPI_LABEL_EFF_NOISE_LEVELS -- worth reconciling
-    separately if that turns out to have the same unconverted-unit issue,
-    not addressed here)."""
+    Two-stage fix history: FIXED 2026-08-02 (was previously a literal,
+    unscaled `llm_noise=0.20` applied identically to every eval type,
+    regardless of scale) -- confirmed via simulation this was the root
+    cause of a "continuous data's PPI-corrected power barely beats
+    human_subset-only, but grades doesn't show this" finding in the 5-way
+    estimator comparison: a flat SD of 0.20 gave continuous's default shape
+    a signal-to-noise ratio of only ~0.6 (noise EXCEEDING signal) but
+    grades' an SNR~100 (an essentially noiseless judge), fully explaining
+    the asymmetry. That fix made `llm_noise` a fraction of each eval type's
+    SCALE SPAN (matching `bias_delta`'s then-convention). FIXED AGAIN
+    2026-08-03: "fraction of span" turned out to be an INCOMPLETE fix --
+    span-to-population-SD ratios differ by eval type (continuous 8.30,
+    grades 5.07, likert 3.49), so even the span-based version silently gave
+    the SAME nominal frac a different real, standardized severity per eval
+    type. `_jb_bias_magnitude`/`_jb_effect_magnitude` (what this function
+    calls) now use population SD directly -- see their docstrings and
+    EVAL_TYPE_POPULATION_SD's for the full derivation and re-verification.
+    This changes the REALIZED llm_noise/bias_delta AGAIN for every caller
+    that doesn't explicitly override it (build_ppi_power_sources/
+    _reinforcing/_nobias, build_ppi_comparison_label_frac_sources,
+    build_ppi_power_nlab_grid_*, and -- via its own default noise_by_
+    eval_type dict, which also routes through _jb_bias_magnitude as of the
+    2026-08-02 label-efficiency fix -- build_ppi_label_efficiency_sources
+    too, automatically, with no further code change needed there). Not a
+    side effect to overlook when comparing against ANY pre-2026-08-03
+    saved run."""
     return dict(
         eval_type=eval_type, icc=0.20, n=100, label_frac=0.20,
         llm_noise=_jb_bias_magnitude(eval_type, 0.20), bias_type="differential",
@@ -2224,13 +2351,14 @@ already uses); binary gets its own _binary builder/grid instead of being
 folded in here, since it's restricted to _COMPARISON_METHODS_BINARY."""
 PPI_LABEL_EFF_NOISE_LEVELS = (0.05, 0.20, 0.40)
 """Three llm_noise FRACTIONS ("good"/"baseline"/"poor" judge
-informativeness, each a frac-of-span value consumed via _jb_bias_magnitude
--- see build_ppi_label_efficiency_sources' default noise_by_eval_type) for
-build_ppi_label_efficiency_sources' judge-quality axis -- picked from
-PPI_FACTORIAL_NOISE_LEVELS' existing, already-vetted grid rather than
-introducing new magnitudes. 0.20 matches _ppi_power_baseline's own default
-frac, so the middle tier reproduces build_ppi_comparison_label_frac_sources'
-judge severity exactly; the other two bracket it at roughly 4x apart.
+informativeness, each a POPULATION-SD fraction consumed via
+_jb_bias_magnitude -- see build_ppi_label_efficiency_sources' default
+noise_by_eval_type) for build_ppi_label_efficiency_sources' judge-quality
+axis -- picked from PPI_FACTORIAL_NOISE_LEVELS' existing, already-vetted
+grid rather than introducing new magnitudes. 0.20 matches
+_ppi_power_baseline's own default frac, so the middle tier reproduces
+build_ppi_comparison_label_frac_sources' judge severity exactly; the other
+two bracket it at roughly 4x apart.
 
 FIXED 2026-08-02 (same bug/fix as _ppi_power_baseline's llm_noise, applied
 here too): build_ppi_label_efficiency_sources' DEFAULT path previously
@@ -2241,7 +2369,11 @@ the SAME raw tiers were only 1.25%/5%/10% of its own scale (vs.
 continuous's correctly-scaled 5%/20%/40%), making likert's judge look far
 better than continuous's at every matched nominal "good/baseline/poor"
 label -- confounding any cross-eval-type comparison this sweep produces.
-Does NOT affect the explicit noise_by_eval_type override path (used by
+FIXED AGAIN 2026-08-03 (automatically, no code change needed here): once
+_jb_bias_magnitude itself switched from span-based to population-SD-based
+(see EVAL_TYPE_POPULATION_SD), this tuple's default path inherited the fix
+for free, since it already routed through that shared function. Does
+NOT affect the explicit noise_by_eval_type override path (used by
 cases/pvalues.py's alignment-calibrated caller via
 _calibrate_noise_for_alignment, which bisects a RAW llm_noise value
 directly per eval type already -- correctly scaled by construction, not
@@ -2468,32 +2600,45 @@ PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.20, "
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
 PPI_FACTORIAL_NOISE_LEVELS = (0.025, 0.0354, 0.05, 0.0707, 0.10, 0.1414, 0.20, 0.2828, 0.40, 0.5657, 0.80)
-"""llm_noise FRACTIONS of the eval type's own EVAL_TYPE_SCALE_BOUNDS span
-(same frac-of-span convention _jb_bias_magnitude already applies to this
-function's bias_delta/effect_size -- see build_ppi_factorial_sources).
-A geometric sequence, ratio sqrt(2), anchored at 0.20 (the harness's
-pre-existing baseline llm_noise for build_judge_bias_sources), spanning 6
-steps down and 6 up and then CAPPED at frac=1.0 (dropping the top two
-points a symmetric span would otherwise include, ~1.13 and ~1.6): a noise
-SD can't meaningfully exceed its own scale's full span and still be read as
-"a fraction of the scale" -- past frac=1.0 the judge's typical error is
-already larger than the entire measurable range, which isn't a realistic
-measurement-error regime to model, just a numeral that happens to keep the
-geometric rule going. Every value from the rule is kept as-is (no
+"""llm_noise FRACTIONS of the eval type's own POPULATION SD (see
+EVAL_TYPE_POPULATION_SD -- same standardized convention _jb_bias_magnitude
+already applies to this function's bias_delta/effect_size -- see
+build_ppi_factorial_sources). A geometric sequence, ratio sqrt(2), anchored
+at 0.20 (the harness's pre-existing baseline llm_noise for
+build_judge_bias_sources), spanning 6 steps down and 6 up and then CAPPED
+at frac=1.0 (dropping the top two points a symmetric span would otherwise
+include, ~1.13 and ~1.6).
+
+STALE justification as of the 2026-08-03 SD-standardization fix: the
+original reasoning here was "a noise SD can't meaningfully exceed its own
+scale's full SPAN" -- true under the pre-fix span-based convention (where
+frac=1.0 meant "noise SD equals the whole measurable range"), but no
+longer the right frame now that frac is a population-SD fraction: frac=1.0
+now means "1 population SD of noise" (SNR=1), a large but entirely
+plausible measurement-error regime, not an impossible one -- there's no
+equivalently hard physical ceiling at frac=1.0 anymore. The cap's actual
+grid (stopping at 0.80) may still be a reasonable range in practice, but
+the STATED reason for it no longer holds; re-justifying (or widening) this
+grid under the new convention is an open follow-up, not done as part of
+the 2026-08-03 fix. Every value from the rule is kept as-is (no
 per-value tuning): this is deliberately NOT the empirically-tuned 12-point
 grid an earlier version of this sweep used (which was constructed by
 testing candidate values until they populated every alignment bucket --
 defensible for exploration, but not for a design a reviewer might ask
 "why these specific numbers" about). Verified coverage (paired with
 PPI_FACTORIAL_BIAS_MAGNITUDES over es="null" cells, the same combination
-build_ppi_factorial_sources now generates): 9/10 of the 10-point alignment
-buckets for continuous's Pearson r (missing only 0-10%), 8/10 for likert's
-weighted kappa (missing 0-10%, 10-20%) -- the two lowest buckets, i.e. "the
-judge is essentially noise," are the least informative regime for this
-sweep's actual point (subtle, hard-to-detect miscalibration), so their
-absence is a principled omission, not a coverage failure. See
-measure_judge_alignment/cases/pvalues.py's alignment-bucket plots for how
-this grid gets consumed once crossed into the factorial."""
+build_ppi_factorial_sources now generates), AS MEASURED PRE-2026-08-03 (NOT
+re-verified under the SD-standardization fix -- the actual llm_noise
+magnitude reached by each frac changed for likert, so this specific
+alignment-bucket coverage claim should be treated as approximate/stale
+until re-run): 9/10 of the 10-point alignment buckets for continuous's
+Pearson r (missing only 0-10%), 8/10 for likert's weighted kappa (missing
+0-10%, 10-20%) -- the two lowest buckets, i.e. "the judge is essentially
+noise," are the least informative regime for this sweep's actual point
+(subtle, hard-to-detect miscalibration), so their absence is a principled
+omission, not a coverage failure. See measure_judge_alignment/
+cases/pvalues.py's alignment-bucket plots for how this grid gets consumed
+once crossed into the factorial."""
 PPI_FACTORIAL_NOISE_LEVELS_FAST = PPI_FACTORIAL_NOISE_LEVELS[::2]
 """Every other point of PPI_FACTORIAL_NOISE_LEVELS -- (0.025, 0.05, 0.10,
 0.20, 0.40, 0.80), 6 points instead of 11. Not a separately-tuned grid: since
@@ -2597,38 +2742,44 @@ def build_ppi_factorial_sources(
     _PPI_FACTORIAL_NAME_RE/_parse_ppi_factorial_name for the corresponding
     parser.
 
-    llm_noise itself is now computed the SAME frac-of-span way bias_delta/
+    llm_noise itself is computed the SAME standardized way bias_delta/
     effect_size already are (_jb_bias_magnitude(et, noise_frac,
-    scale_bounds=et_scale_bounds)), not the flat raw 0.20 (rescaled only for
-    non-default likert_max, via _likert_scale_factor) this function used
-    before llm_noise became a swept factor -- that flat convention was
-    actually frac=0.20 on continuous's span but frac=0.05 on likert_max=5's
-    4x-wider span, an inconsistency PPI_FACTORIAL_NOISE_LEVELS' docstring
-    already flags and fixes. Switching the baseline (0.20-frac) cell's likert llm_noise from
-    raw 0.20 to raw 0.80 is a real, deliberate change to every non-swept
-    (es != "null") likert cell's noise level, made for that same
-    comparably-disruptive-across-eval-types reason -- not a side effect to
-    overlook when comparing against pre-this-change factorial runs.
+    scale_bounds=et_scale_bounds) -- as of 2026-08-03, `frac` population SDs
+    of the eval type's own truth distribution, see EVAL_TYPE_POPULATION_SD;
+    originally, until 2026-08-02, a flat raw 0.20 (rescaled only for
+    non-default likert_max, via _likert_scale_factor); from 2026-08-02 a
+    fraction of scale span, which the same 2026-08-03 fix superseded again).
+    Two historical inconsistencies this progression fixed: the pre-2026-08-02
+    flat convention was actually frac=0.20 on continuous's span but frac=
+    0.05 on likert_max=5's 4x-wider span (PPI_FACTORIAL_NOISE_LEVELS'
+    docstring); the 2026-08-02 through 2026-08-03 span-based convention was
+    itself frac=0.20 on continuous's span/SD ratio (8.30) but a
+    proportionally different real severity on likert's (3.49) -- see
+    _jb_bias_magnitude's docstring for the full derivation. Not a side
+    effect to overlook when comparing against pre-2026-08-03 factorial runs.
 
     likert_max : int, default 5
         Forwarded to every likert JudgeBiasSource's own likert_max field
         (continuous sources are unaffected) -- 5 (the default) reproduces
-        the standard scenarios exactly. A non-default value also widens the
-        (lo, hi) span _jb_bias_magnitude/_jb_effect_magnitude/llm_noise use
-        for likert's bias_delta/effect_size/noise, so "moderate"/"severe"
-        bias, "moderate"/"large" effect, and every llm_noise level keep
-        meaning the same RELATIVE severity on the wider scale rather than
-        becoming a smaller fraction of it. Scenario names are unchanged (no
-        likert_max marker) -- distinguish likert_max=7 runs by their own
-        --official-tests output directory/manifest.json.
+        the standard scenarios exactly. A non-default value also changes
+        the population SD _jb_bias_magnitude/_jb_effect_magnitude/llm_noise
+        use for likert's bias_delta/effect_size/noise (via
+        _likert_population_sd, a Monte-Carlo-estimated SD specific to that
+        likert_max, cached), so "moderate"/"severe" bias, "moderate"/
+        "large" effect, and every llm_noise level keep meaning the same
+        STANDARDIZED severity on the wider scale rather than becoming a
+        smaller or larger standardized fraction of it. Scenario names are
+        unchanged (no likert_max marker) -- distinguish likert_max=7 runs
+        by their own --official-tests output directory/manifest.json.
 
     noise_levels : Sequence[float], default PPI_FACTORIAL_NOISE_LEVELS
         The llm_noise fraction grid crossed into es="null" cells (see above)
         -- pass PPI_FACTORIAL_NOISE_LEVELS_FAST (or any other geometric
         subsequence) for a coarser, faster pass. Every value must still be
-        a valid frac-of-span fraction; 0.20 should stay in the grid if the
-        result will feed fit_ppi_factorial_model/save_ppi_factorial_
-        heatmap_plot, which filter down to that baseline level."""
+        a valid population-SD fraction (see EVAL_TYPE_POPULATION_SD); 0.20
+        should stay in the grid if the result will feed
+        fit_ppi_factorial_model/save_ppi_factorial_heatmap_plot, which
+        filter down to that baseline level."""
     sources: list[JudgeBiasSource] = []
     for et in _PPI_FACTORIAL_EVAL_TYPES:
         et_scale_bounds = (1.0, float(likert_max)) if et == "likert" else None
@@ -2742,26 +2893,49 @@ jump between hand-picked severity levels."""
 
 def _jb_effect_magnitude_binary(frac: float) -> float:
     """_jb_effect_magnitude("binary", frac), pre-compensated for binary's
-    effect-size attenuation. generate_judge_bias_cell's `_marginal` shifts
-    binary truth's base PASS RATE before its Bernoulli draw (see
-    _marginal's docstring), but that draw's own per-item pass-probability
-    comes from a Beta distribution at icc=1.0 -- the LOWEST concentration
-    _marginal ever uses (icc=1.0 means "no noise layered on top of the true
-    per-item variation," and for binary that variation itself is modeled as
-    a U-shaped, near-bimodal spread of per-item pass probabilities). Most
-    items already sit close to 0 or 1 before any effect is added, so a
-    `frac` shift clips against that boundary for roughly half of them --
-    confirmed by direct simulation: a nominal frac shift realizes as only
-    ~51-59% of its nominal value in the actual realized group-mean
-    difference (e.g. frac=0.40 realizes as a ~0.22 proportion difference,
-    not 0.40). Doubling frac here compensates for that, so a binary
-    scenario's NOMINAL "es=<frac>" label stays directly comparable to a
-    continuous/likert scenario's same label in REALIZED effect terms (e.g.
-    binary's frac=0.20 realizes as ~0.11, close to continuous's frac=0.10's
-    exact 0.10 -- verified empirically, not assumed) even though the
-    UNDERLYING JudgeBiasSource.effect_size field the caller passes to
-    generate_judge_bias_cell is the doubled, pre-compensated value."""
-    return _jb_effect_magnitude("binary", 2.0 * frac)
+    effect-size attenuation, so that `frac` ends up meaning the SAME thing
+    it does for continuous/likert/grades: `frac` population standard
+    deviations of REALIZED separation (binary's own population SD is a flat
+    0.5 -- see EVAL_TYPE_POPULATION_SD -- so target realized diff = frac *
+    0.5).
+
+    generate_judge_bias_cell's `_marginal` shifts binary truth's base PASS
+    RATE before its Bernoulli draw (see _marginal's docstring), but that
+    draw's own per-item pass-probability comes from a Beta distribution at
+    icc=1.0 -- the LOWEST concentration `_marginal` ever uses (icc=1.0
+    means "no noise layered on top of the true per-item variation," and for
+    binary that variation itself is modeled as a U-shaped, near-bimodal
+    spread of per-item pass probabilities). Most items already sit close to
+    0 or 1 before any effect is added, so a raw shift clips against that
+    boundary for roughly half of them -- confirmed by direct simulation
+    (unchanged mechanism from before the 2026-08-03 SD-standardization fix,
+    since it depends on the ABSOLUTE input magnitude, not which convention
+    produced it): an UNCOMPENSATED `_jb_effect_magnitude("binary", frac)`
+    input realizes as only ~55-59% of its nominal value in the actual
+    realized group-mean difference (e.g. frac=0.40 -> input 0.2000 ->
+    realized ~0.1105, a 55% realization).
+
+    RE-DERIVED 2026-08-03 (the compensation factor itself, not just the
+    base convention it corrects): the pre-2026-08-03 version multiplied
+    frac by a flat 2.0 before the (then span-based) lookup, calibrated so
+    binary's realized proportion difference matched continuous's OWN
+    (then-also-span-based, so numerically equal to frac on continuous's
+    [0, 1] span) absolute effect_size. That calibration doesn't carry over
+    unchanged: switching _jb_effect_magnitude's underlying convention from
+    span-based to population-SD-based changes the ABSOLUTE magnitude fed in
+    per unit of `frac` for EVERY eval type, including binary, which shifts
+    how much clipping attenuates it. Re-measured directly (this function's
+    target definition above, 300k-draw Monte Carlo per frac, frac in
+    [0.05, 0.40]): a compensation factor of 1.75 (replacing 2.0) lands the
+    REALIZED standardized effect within 6% of the target `frac` across that
+    whole range, and within 1% at frac=0.08/0.10 specifically (
+    PPI_LABEL_EFF_EFFECT_FRAC / PPI_COMPARISON_MODERATE_EFFECT_FRAC, the two
+    fracs this function is actually called with most). Like the pre-fix
+    2.0 constant, 1.75 is a single-point approximation, not a perfect
+    correction at every frac (the true needed factor drifts from ~1.70 at
+    frac=0.05 to ~1.81 at frac=0.40, since the clipping mechanism isn't
+    perfectly linear) -- documented, not silently assumed exact."""
+    return _jb_effect_magnitude("binary", 1.75 * frac)
 
 
 def _ppi_power_baseline_binary() -> dict:
@@ -3041,13 +3215,14 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
 
 PPI_ALIGNMENT_HUMAN_NOISE_LEVELS = (0.05, 0.15, 0.30)
 """A small range of plausible inter-annotator noise FRACTIONS (of the eval
-type's own span -- same frac-of-span convention as PPI_ALIGNMENT_NOISE_
-LEVELS, for the same reason: a raw noise value isn't comparably disruptive
-across continuous's 1.0 span and likert's 4.0 one) for measure_human_human_
-alignment's companion sweep -- deliberately a RANGE, not one anchored value,
-since there's no canonical "true" human-human noise level to assert (that
-would be the same overfitting-to-one-number problem as anchoring the main
-sweep to one paper's reported figures)."""
+type's own POPULATION SD -- same standardized convention PPI_ALIGNMENT_
+NOISE_LEVELS/_jb_bias_magnitude use, see EVAL_TYPE_POPULATION_SD, for the
+same reason: a raw noise value isn't comparably disruptive across eval
+types with different population SDs) for measure_human_human_alignment's
+companion sweep -- deliberately a RANGE, not one anchored value, since
+there's no canonical "true" human-human noise level to assert (that would
+be the same overfitting-to-one-number problem as anchoring the main sweep
+to one paper's reported figures)."""
 
 
 def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc: int = 20_000, seed: int = 0) -> dict:
@@ -3058,14 +3233,15 @@ def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc:
     (a judge landing in the same range two independent humans typically
     land in is a materially different finding than a judge landing well
     below it). Both raters see the SAME latent truth, each with independent
-    zero-mean noise at `human_noise_frac` of eval_type's own span (no bias
-    term -- inter-rater disagreement is modeled as pure noise here, not a
-    directional bias between two humans, since there's no principled way to
-    say which of two human raters is the "biased" one). Uses the same
-    shape/anchor machinery _jb_llm itself uses, and the same frac-of-span
-    scaling _jb_bias_magnitude applies to JudgeBiasSource.llm_noise via
-    build_ppi_factorial_sources' llm_noise factor, so results are directly
-    comparable to the main judge-alignment view."""
+    zero-mean noise at `human_noise_frac` population SDs of eval_type's own
+    truth distribution (no bias term -- inter-rater disagreement is modeled
+    as pure noise here, not a directional bias between two humans, since
+    there's no principled way to say which of two human raters is the
+    "biased" one). Uses the same shape/anchor machinery _jb_llm itself
+    uses, and the same standardized-SD scaling _jb_bias_magnitude applies
+    to JudgeBiasSource.llm_noise via build_ppi_factorial_sources' llm_noise
+    factor, so results are directly comparable to the main judge-alignment
+    view."""
     from scipy.stats import pearsonr, spearmanr
     from sklearn.metrics import cohen_kappa_score
 
