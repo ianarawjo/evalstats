@@ -536,7 +536,11 @@ PPI_TEST_METHODS = [
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
-    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL)
+    m for m in PPI_TEST_METHODS
+    if m not in (
+        MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL,
+        LMM, LMM_FACTORIAL, LMM_RUNS,
+    )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
@@ -545,7 +549,16 @@ sibling, but were found to cost real MCAR calibration doing so -- see
 MWU/MWU_MNAR_EXPERIMENTAL's and KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's comments
 above). Both remain selectable via --tests mwu_mnar_experimental / --tests
 kruskal_mnar_experimental for direct comparison, reproducing pre-2026-07-22
-results, or studying MNAR robustness deliberately. PPI_WILSON/
+results, or studying MNAR robustness deliberately.
+
+lmm/lmm_factorial/lmm_runs EXCLUDED from the official set as of 2026-08-03
+at the user's explicit request: not being reported in the current paper
+iteration (may be added back for a later one) -- no point paying their
+runtime cost (and reviewing their output) in every official pass while
+that's true. Still fully selectable via --tests lmm/lmm_factorial/
+lmm_runs for anyone who wants them.
+
+PPI_WILSON/
 PPI_BOOTSTRAP_T_SINGLE (the single-sample robustness-CI methods
 PPI_AUTO_METHOD_TABLE routes to) are now part of the default set too --
 pvalues.py's synthetic PPI sweep gained a single-arm effect-check scenario
