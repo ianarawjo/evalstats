@@ -265,14 +265,19 @@ same way `evalstats.core.resampling` is.
     `save_ppi_power_plot`): the SAME per-eval-type judge-bias severity as
     `build_judge_bias_sources`' `eval_type.*` baseline, but swept across a
     real `effect_size` grid (`PPI_POWER_EFFECT_FRACS`, expressed as a
-    fraction of each eval type's own scale span via `_jb_effect_magnitude`,
-    the effect-size analogue of `_jb_bias_magnitude`) instead of held at 0.
+    fraction of each eval type's own POPULATION SD via `_jb_effect_magnitude`
+    -- a Cohen's-d-style standardized effect size, see
+    `EVAL_TYPE_POPULATION_SD`/`_jb_bias_magnitude`'s 2026-08-03 fix -- the
+    effect-size analogue of `_jb_bias_magnitude`) instead of held at 0.
     `es=0.00` doubles as a Type-I cross-check against the main sweep.
-    `PPI_POWER_EFFECT_FRACS` has 7 points (0/0.05/0.10/0.15/0.20/0.30/0.40),
-    not the original 4 (0/0.10/0.20/0.40) -- the coarser grid's biggest gap
-    (0.20-0.40) spanned exactly where the "cancellation dip"/crossover
-    happens (see `save_ppi_power_direction_plot`), risking a smooth,
-    well-understood phenomenon reading as a kink or an artifact.
+    `PPI_POWER_EFFECT_FRACS` has 16 points spanning 0.0-1.20 (re-derived
+    2026-08-03 alongside the SD-standardization fix -- the pre-fix grid's
+    range was tuned in span units and no longer reaches power saturation
+    for any eval type once frac means population SDs instead), denser
+    through the climbing 0.05-0.80 region where the "cancellation
+    dip"/crossover phenomenon (see `save_ppi_power_direction_plot`) and a
+    likert-specific power non-monotonicity (still an open investigation --
+    see that constant's docstring) both live.
     `save_ppi_power_plot` is two rows (top: corrected, bottom: uncorrected)
     per eval-type column, not one set of axes with both overlaid -- with up
     to 13 tests' solid+dashed lines sharing colors, superimposing them was

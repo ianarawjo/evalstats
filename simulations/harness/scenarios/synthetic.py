@@ -2027,7 +2027,9 @@ _PPI_POWER_EVAL_TYPES = ("continuous", "likert", "grades")
 # only 2 of _COMPARISON_METHODS' 4 tests apply, and pooling those under the
 # SAME "false positive/power rate" figure as the other eval types would be
 # apples-to-oranges).
-PPI_POWER_EFFECT_FRACS = (0.0, 0.05, 0.10, 0.15, 0.20, 0.225, 0.25, 0.275, 0.30, 0.40)
+PPI_POWER_EFFECT_FRACS = (
+    0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60, 0.70, 0.80, 0.874, 1.00, 1.20,
+)
 """Effect-size grid for build_ppi_power_sources/build_ppi_comparison_*, as a
 POPULATION-SD fraction of each eval type's own truth distribution (see
 EVAL_TYPE_POPULATION_SD / _jb_bias_magnitude's 2026-08-03 fix -- same
@@ -2035,31 +2037,55 @@ standardized convention _jb_bias_magnitude's bias_delta fractions use). 0.0
 is kept as a Type-I cross-check against build_judge_bias_sources'
 "eval_type.*" scenarios (same settings, same expected ~alpha rejection
 rate) rather than dropped, since it anchors the left edge of the power
-curve at the correct floor. 10 points (vs. the original 4: 0/0.10/0.20/0.40)
-to resolve the power curve's shape well enough to read visually -- the
-original grid's biggest gaps (0.20-0.40) spanned exactly the region where
-save_ppi_power_direction_plot's "cancellation dip" (opposing bias) or
-crossover (reinforcing bias) happens, so a coarse grid could make a smooth,
-well-understood phenomenon look like a kink or an artifact.
+curve at the correct floor.
 
-STALE as of the 2026-08-03 SD-standardization fix: 0.225/0.25/0.275 were
-originally added under the PRE-FIX span-based convention specifically to
-bridge the 0.20-0.30 gap with a point landing on a clean INTEGER crossing
-for likert (old convention: scale span 4.0, so frac=0.25 -> effect_size=
-1.00 exactly -- a full one-point difference on the 1-5 scale, the
-mechanism behind MWU's reinforcing-bias power anomaly -- see cases/
-pvalues.py's appendix writeup and evalstats.tests.mannwhitney's method
-docstring's Likert-power-dip investigation). Under the NEW SD-based
-convention, frac=0.25 no longer lands anywhere near that boundary --
-0.25 * EVAL_TYPE_POPULATION_SD["likert"] (1.1447) = 0.2862, not 1.00; the
-frac that WOULD hit effect_size=1.00 exactly is now ~0.8736, far outside
-this grid's current 0.0-0.40 range (and likely already power-saturated
-for most eval types at that magnitude, so simply extending the grid out
-to it may not be the right fix either). These three grid points are kept
-here for now (still useful, just no longer serving their original
-bridging purpose) -- re-deriving a grid that properly resolves the
-integer-crossing boundary under the new convention is an OPEN follow-up,
-not done as part of the 2026-08-03 fix."""
+RE-DERIVED 2026-08-03 (widened, not just re-labeled): the pre-2026-08-03
+grid (10 points, 0.0-0.40) was tuned under the span-based convention,
+where its max (frac=0.40) meant wildly different real severities by eval
+type -- 3.32 population SDs for continuous (guaranteed saturation),
+0.35 SD for likert, a negligible 0.02 SD for grades (see
+_jb_bias_magnitude's docstring). Under the new SD convention the SAME
+0.0-0.40 range no longer reaches saturation for ANY eval type -- power
+curves were being cut off before their interesting/high-power region,
+confirmed both via the oracle (full n=100 truth, plain ttest, effect-
+size-only, no judge noise/PPI correction) and the actual PPI-corrected
+power at baseline settings (n=100, n_lab=20, default bias/noise severity,
+150-300 reps per point):
+
+Oracle power (identical across eval types now, exactly as standardization
+should give -- a clean confirming check on its own): frac=0.0 -> ~0.06,
+0.20 -> ~0.30, 0.40 -> ~0.79, 0.60 -> ~0.99, 0.80 -> 1.00 (saturated by
+~0.8 SD).
+
+PPI-corrected power (global rectifier, mid-rank estimand, n_lab=20):
+continuous and grades climb smoothly and saturate by ~0.80-0.90 SD
+(continuous: 0.06/0.19/0.44/0.72/0.83/0.98/1.00 at frac=0/0.20/0.30/0.40/
+0.50/0.60/0.80; grades: similar shape, saturates ~0.80). likert does NOT
+climb smoothly -- power jumps to ~0.71 already at frac=0.10, DIPS to
+~0.61 at 0.20, then wobbles in the 0.63-0.77 range through 0.30-0.80,
+before jumping to 1.00 around frac=0.90. This is almost certainly the
+SAME "MWU reinforcing-bias power anomaly"/discrete-rank-invariance
+mechanism already investigated this session (see cases/pvalues.py's
+appendix writeup and evalstats.tests.mannwhitney's method docstring's
+Likert-power-dip investigation) -- likert's integer-valued truth means
+MULTIPLE possible rank-invariant regions can exist across a wide
+effect-size range, not just the single boundary the pre-fix grid's
+0.225/0.25/0.275 points targeted (which, under the OLD span convention,
+aimed at frac=0.25 -> effect_size=1.00 exactly; under the NEW convention
+that same exact boundary sits at frac~=0.8736, included here as 0.874).
+CHARACTERIZING WHY likert wobbles across this whole range (not just at
+one boundary) is an OPEN follow-up, not resolved by this grid widening --
+this grid gives enough resolution (0.05 steps through 0.05-0.40, then
+0.10 steps through 0.40-0.80, plus the 0.874 landmark) to SEE the wobble
+clearly on a plot, which is the prerequisite for investigating it, but
+does not itself explain it.
+
+16 points (up from 10), spanning roughly 3x the old range (SD-comparable
+severity now needs a wider frac range than span-comparable severity did)
+-- still denser than sparse through the climbing 0.05-0.80 region (where
+save_ppi_power_direction_plot's "cancellation dip"/crossover phenomena,
+and likert's wobble, all live), with 1.00/1.20 as saturation-confirming
+tail points."""
 PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
 """Label-fraction grid for build_ppi_comparison_label_frac_sources, at
 _ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
@@ -2596,7 +2622,24 @@ PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
     "mnar_mild": dict(label_mnar=True, mnar_strength=0.8, mnar_mode="high"),
     "mnar_strong": dict(label_mnar=True, mnar_strength=1.6, mnar_mode="high"),
 }
-PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.20, "large": 0.40}
+PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.50, "large": 0.80}
+"""RE-DERIVED 2026-08-03: now that `frac` is a population-SD-standardized
+effect size (see EVAL_TYPE_POPULATION_SD / _jb_bias_magnitude's fix), these
+match Cohen's (1988) own conventional "medium" (0.5) and "large" (0.8)
+standardized-effect-size benchmarks directly, rather than an arbitrary
+pair of numbers -- 0.20/0.40 were tuned under the old span-based
+convention, where their real, standardized severity varied wildly by eval
+type (see PPI_POWER_EFFECT_FRACS' docstring for the exact numbers of that
+mismatch) and neither reliably reached high power at this factorial grid's
+N/N_lab combinations. Verified at PPI_POWER_EFFECT_FRACS' own baseline
+settings (n=100, n_lab=20): frac=0.50 gives PPI-corrected power ~0.83
+(continuous)/~0.82 (grades) -- solidly powered but not saturated, a
+genuine "moderate" cell; frac=0.80 gives ~1.00 for both -- saturated, a
+genuine "large" cell. (likert's power is non-monotonic across this whole
+range for reasons not yet understood -- see PPI_POWER_EFFECT_FRACS'
+docstring -- so "moderate"/"large" don't carry quite the same clean
+interpretation for likert specifically; still the best available
+standardized choice.)"""
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
 PPI_FACTORIAL_NOISE_LEVELS = (0.025, 0.0354, 0.05, 0.0707, 0.10, 0.1414, 0.20, 0.2828, 0.40, 0.5657, 0.80)
