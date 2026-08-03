@@ -3793,12 +3793,27 @@ def mannwhitney(
         grid drops from 0.630 ("global") to 0.200 ("mnar_experimental") to
         0.097 ("local"). CI coverage on the effect-size check is marginally
         better than "mnar_experimental"'s (0.951 vs. 0.947), and "local"
-        (like "mnar_experimental") does not show the non-monotonic power
-        dip "global" exhibits under Likert + judge bias reinforcing a real
-        effect (a fragility specific to the global rectifier). What this
-        validation pass MISSED: a follow-up 5-way estimator comparison
-        found "local" costs real power for continuous data specifically,
-        and -- more seriously -- a subsequent REAL-data run (see
+        (like "mnar_experimental") shows a smaller dip than "global"'s in
+        the same region a Likert power curve plateaus-then-jumps near
+        effect_size=1.00 (a full integer point on the 1-5 scale) -- NOTE
+        (corrected 2026-08-02, this claim was previously overstated as "a
+        fragility specific to the global rectifier"): that base plateau-
+        then-jump shape is NOT a rectifier artifact at all -- it shows up
+        identically in the all_human/human_subset curves too (which never
+        touch a judge score or any rectifier), because Likert truth values
+        are generated continuous-then-ROUNDED-to-the-nearest-integer (see
+        ``simulations/harness/scenarios/synthetic.py``'s
+        ``sample_group_truth``): an injected effect smaller than one full
+        Likert point gets partly absorbed by rounding, so TRUE separation
+        stays flat until the effect crosses an integer boundary, which
+        every method inherits from the ground truth. "global"'s corrected
+        curve shows a MORE PRONOUNCED dip on top of that shared baseline
+        under Likert + judge bias reinforcing a real effect than "local"'s
+        does -- a real, still-valid comparative difference between the two
+        rectifiers -- but the underlying dip itself is not global-specific.
+        What this validation pass MISSED: a follow-up 5-way estimator
+        comparison found "local" costs real power for continuous data
+        specifically, and -- more seriously -- a subsequent REAL-data run (see
         "adaptive"'s entry above) found "local"'s actual MCAR Type-I cost
         on real, biased-judge continuous data (0.25 on one directly-
         isolated wmt_da cell) far exceeds the 0.093 synthetic worst-case
