@@ -444,6 +444,43 @@ MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MN
 # the full account. Kept available via --tests mwu_adaptive; not the
 # default pending a better discreteness signal.
 MWU_ADAPTIVE = Method("mwu_adaptive", "#98df8a")  # light tint of MWU's green
+# MWU_RIDGE (evalstats.tests._ppi_two_sample_ridge_corrected): the user's
+# requested next step
+# after MWU_ADAPTIVE's revert (2026-08-02): "mix the ideas from global and
+# local... dynamic adaptation of the pooling to the data" instead of a hard
+# threshold dispatch. Root-caused MWU_ADAPTIVE's wmt_da failure precisely:
+# MWU_MNAR_POOLED's per-bin STEP-FUNCTION rectifier has a real point-
+# estimate BIAS on that cell (+0.042 under a true null, vs. MWU's +0.0003 --
+# confirmed it's bias, not bootstrap variance-underestimation), because
+# within a bin the judge's bias (truth-llm) is strongly correlated with the
+# item's own score (corr -0.8 to -0.99 on that cell) -- a real slope a flat
+# per-bin mean can't capture, and the STEP boundary amplifies it (bias jumps
+# from -0.011 at n_strata=1 to +0.04-0.05 the moment n_strata>=2, and does
+# NOT improve with finer bins). MWU_RIDGE replaces the step function with a
+# ridge-shrunk LINEAR rectifier (fit per group: diff=truth-llm ~ beta0 +
+# beta1*llm_score, ridge penalty lam=ridge_k*Sxx, ridge_k dimensionless) --
+# on the exact failing wmt_da cell this brings Type-I from 0.25 (local) down
+# to 0.047 (nominal, beating MWU's own 0.07). ridge_k=2.0 was picked from
+# that ONE cell's bias/variance tradeoff curve (not a fully-automatic
+# selection rule -- two candidates, empirical-Bayes/SE-based and closed-form
+# LOOCV, were tried and rejected, both barely shrinking since they only see
+# IN-SAMPLE/interpolation risk, not the EXTRAPOLATION risk to wherever
+# unlabeled items' scores actually sit), but generalizes well: validated at
+# full factorial-grid scale (2064 scenarios/8256 cells, reps=150/n_boot=300)
+# -- MCAR mean/worst 0.056/0.113 (matches MWU's 0.054/0.113, no regression);
+# MNAR-mild/strong worst-case 0.107/0.127, close to MWU_MNAR_POOLED's
+# 0.107/0.120, vs. MWU's catastrophic 0.467/0.613 or MWU_ADAPTIVE's
+# 0.520/0.440; power at moderate effect: continuous 0.975 (near MWU's 0.996
+# ceiling), likert 0.871 -- the BEST of all four methods, beating even
+# MWU_MNAR_POOLED's own 0.827 -- and against REAL data (cases/ppi_real.py,
+# all 5 datasets): Type-I max 0.120 (== MWU's own max, vs. MWU_ADAPTIVE's
+# 0.380), zero NEW Holm-confirmed cells, fixes wmt_da across multiple judge
+# pairs (not just the tuning cell), real power unchanged at 1.000. See
+# evalstats.tests._ppi_two_sample_ridge_corrected's docstring and
+# simulations/out/mwu_ridge_validation/VALIDATION_SUMMARY.md for full
+# numbers. NOT wired into mannwhitney() yet -- selectable via --tests
+# mwu_ridge; pending a decision on whether/how to expose it as a method.
+MWU_RIDGE = Method("mwu_ridge", "#c49c94")  # muted brown -- distinct from the MWU family's greens/purples
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
@@ -491,7 +528,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE,
 ]
@@ -499,7 +536,7 @@ PPI_TEST_METHODS = [
 selectable via --tests. NOT what runs by default; see
 PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
-    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, KRUSKAL_MNAR_EXPERIMENTAL)
+    m for m in PPI_TEST_METHODS if m not in (MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL)
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
@@ -527,7 +564,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

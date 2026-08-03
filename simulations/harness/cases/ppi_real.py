@@ -163,6 +163,7 @@ with warnings.catch_warnings():
         _ppi_two_sample,
         _ppi_two_sample_midrank_corrected,
         _ppi_two_sample_adaptive,
+        _ppi_two_sample_ridge_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -176,7 +177,7 @@ with warnings.catch_warnings():
     )
 
 from ..methods import (
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_ADAPTIVE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
@@ -339,6 +340,15 @@ def _run_real_twogroup_cell(
                     uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample_adaptive(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
                     corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if MWU_RIDGE.name in methods:
+                try:
+                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
+                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample_ridge_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -599,6 +609,15 @@ def _run_real_twogroup_power_cell(
                     uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
                     r = _ppi_two_sample_adaptive(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
                     corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if MWU_RIDGE.name in methods:
+                try:
+                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
+                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample_ridge_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
+                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -917,7 +936,7 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # zero MNAR benefit, since real labeling here is MCAR) -- worth seeing
     # on genuine human data rather than only synthetic.
     base = [TTEST.name, TTEST_WELCH.name]
-    return base if eval_type == "binary" else base + [MWU.name, MWU_ADAPTIVE.name]
+    return base if eval_type == "binary" else base + [MWU.name, MWU_ADAPTIVE.name, MWU_RIDGE.name]
 
 
 def _has_standard_test(results: list) -> bool:

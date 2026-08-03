@@ -1079,6 +1079,187 @@ def _ppi_two_sample_midrank_corrected_pooled(
     )
 
 
+def _ppi_two_sample_ridge_corrected(
+    a: np.ndarray,
+    b: np.ndarray,
+    a_lab: np.ndarray,
+    b_lab: np.ndarray,
+    alpha: float,
+    n_boot: int,
+    rng,
+    ridge_k: float = 2.0,
+    min_lab_for_slope: int = 5,
+) -> "PPIResult":
+    """EXPERIMENTAL, not yet wired into ``mannwhitney``. Replaces "local"'s
+    STEP-FUNCTION per-bin rectifier with a smooth, ridge-shrunk LINEAR
+    rectifier: fits ``diff = truth_lab - llm_lab ~ beta0 + beta1*(llm_lab -
+    mean(llm_lab))`` per group via ridge regression (penalty
+    ``lam = ridge_k * Sxx``, i.e. ``ridge_k`` is dimensionless/scale-free --
+    0 = plain OLS slope, large = shrinks toward the flat/global-only
+    intercept beta0), then applies the fitted line to each unlabeled item
+    AT ITS OWN score. Same pooled-bootstrap resampling scheme as
+    :func:`_ppi_two_sample_midrank_corrected_pooled` ("local") -- only the
+    rectifier's functional form changed.
+
+    Why this exists: investigating the ``mannwhitney`` ``method="adaptive"``
+    revert (see that function's docstring) traced the real wmt_da Type-I
+    failure to something more specific than "local dispatch was wrong" --
+    on that real cell, "local"'s STEP-FUNCTION rectifier (n_strata=2) has a
+    real point-estimate BIAS under the null (mean estimate +0.042 across
+    300 reps, vs. "global"'s +0.0003 -- confirmed it's bias, not
+    variance-underestimation: "local"'s CI is centered off-target, not too
+    narrow). Root cause, confirmed directly on that cell: within a bin, the
+    judge's bias (truth - llm) is STRONGLY correlated with the item's own
+    llm score (corr -0.80 to -0.99, i.e. bias has a steep near-linear slope
+    even within what "local" treats as one flat-correction region) --
+    combined with the labeled subsample's mean llm score inside a bin not
+    matching the unlabeled subsample's mean llm score in that same bin
+    (0.77 vs. 0.61 in one bin), a flat per-bin mean rectifier extrapolates
+    the WRONG constant to the unlabeled items. A plain (unshrunk) linear
+    fit of the same relationship removes almost all of this bias (mean
+    estimate -0.0024) but at a large variance cost (std 0.083 vs.
+    "local"'s 0.031, since llm scores here are heavily compressed/skewed --
+    median llm score 0.91 -- making the OLS slope estimate leverage-
+    sensitive). Ridge-shrinking the slope traces out a smooth, well-behaved
+    bias/variance tradeoff curve (bias magnitude shrinks monotonically as
+    ``ridge_k``->0, variance shrinks monotonically as ``ridge_k``->infinity,
+    converging at large ``ridge_k`` to n_strata=1's own small residual bias
+    of -0.011/std 0.044) -- unlike the STEP function, which jumps straight
+    to a large 0.042 bias the moment n_strata goes from 1 to 2 and does NOT
+    improve with finer bins (n_strata=2..8 all sit around 0.041-0.051 bias
+    on this cell) -- i.e. the hard bin BOUNDARY itself, not merely
+    insufficient bin count, is what's pathological on this real, skewed
+    distribution. ``ridge_k=2`` (chosen from this one cell's tradeoff
+    curve, NOT yet validated broadly) already recovers most of the
+    available bias reduction (-0.0084 vs. -0.0024 at ridge_k=0, vs.
+    "local"'s +0.042) while keeping variance close to the well-shrunk
+    asymptote (0.050 vs. 0.047 at ridge_k=64).
+
+    Tried and rejected as the shrinkage-strength selector: (a) an
+    empirical-Bayes/James-Stein rule shrinking beta1 by its own SE
+    (``max(0, 1 - se(beta1)^2/beta1^2)``) -- barely shrinks here (std stays
+    0.081) because the within-SAMPLE slope estimate looks highly
+    significant (that same corr -0.8 to -0.99) even though it doesn't
+    generalize well to unlabeled items outside the labeled range; (b)
+    closed-form LOOCV -- same problem, chooses almost no shrinkage (std
+    0.080), because LOOCV only measures interpolation error WITHIN the
+    labeled llm-score range, not the actual risk that matters here:
+    extrapolating the fitted line to wherever the UNLABELED items' scores
+    happen to sit (a covariate-shift problem LOOCV on the labeled sample
+    alone doesn't see). Neither is a solved problem -- ``ridge_k`` is
+    currently a FIXED constant (mirroring how :func:`evalstats.ppi.correct`
+    already fixes ``_POWER_TUNE_SHRINKAGE_C``), chosen from this one real
+    cell's tradeoff curve, not a fully data-adaptive-per-call value the way
+    the user's original "dynamic pooling" framing wanted -- an open
+    question for future work.
+
+    Validated beyond that one cell (2026-08-02): (a) the standard synthetic
+    Type-I sweep (139 scenarios, reps=300): 0/399 Holm-confirmed
+    miscalibrated cells, corr max/mean 0.103/0.057 (vs. "global"'s
+    0.090/0.053, "local"'s 0.093/0.048) -- no synthetic regression. (b) The
+    full factorial grid (2064 scenarios, 8256 cells, reps=150/n_boot=300):
+    MCAR mean/worst-case 0.056/0.113 (matches "global"'s 0.054/0.113, no
+    regression); MNAR-mild/strong worst-case 0.107/0.127 -- dramatically
+    closer to "local"'s 0.107/0.120 than to "global"'s catastrophic
+    0.467/0.613 or "adaptive"'s 0.520/0.440; zero bootstrap failures across
+    all 8256 cells. Power at moderate effect size: continuous 0.975 (close
+    to "global"'s 0.996 ceiling, recovering most of "local"'s 0.914
+    deficit), likert 0.871 -- actually the BEST of all four methods
+    tested, beating even "local"'s own 0.827. (c) Real data
+    (``cases/ppi_real.py``, all 5 datasets, twogroup checks): Type-I corr
+    max 0.120 (== "global"'s own max, vs. "adaptive"'s 0.380), zero NEW
+    Holm-confirmed miscalibrated cells (13/1104 total, same absolute count
+    as the "adaptive"-only run's 13/912 -- all attributable to "adaptive"
+    or baseline noise), fixes the wmt_da failure across MULTIPLE judge
+    pairs (not just the one ``ridge_k`` was tuned on), real positive-
+    control power stays at 1.000 (no regression). See
+    ``simulations/out/mwu_ridge_validation/VALIDATION_SUMMARY.md`` for the
+    full numbers. NOT wired into ``mannwhitney()`` as a selectable
+    ``method`` yet -- available only via the harness's ``--tests
+    mwu_ridge`` pending a decision on whether/how to expose it.
+    """
+    from evalstats.ppi import PPIResult
+
+    rng = np.random.default_rng(rng)
+
+    mask_a = ~np.isnan(a_lab)
+    mask_b = ~np.isnan(b_lab)
+    if mask_a.sum() == 0 and mask_b.sum() == 0:
+        raise ValueError("No labeled items found in a_lab or b_lab.")
+
+    llm_unlab_a, llm_unlab_b = a[~mask_a], b[~mask_b]
+    llm_lab_a, llm_lab_b = a[mask_a], b[mask_b]
+    truth_lab_a, truth_lab_b = a_lab[mask_a], b_lab[mask_b]
+
+    n_unlab_a, n_unlab_b = len(llm_unlab_a), len(llm_unlab_b)
+    n_lab_a, n_lab_b = len(llm_lab_a), len(llm_lab_b)
+    n_unlab_total = n_unlab_a + n_unlab_b
+    n_lab_total = n_lab_a + n_lab_b
+
+    pool_unlab_llm = np.concatenate([llm_unlab_a, llm_unlab_b])
+    pool_unlab_grp = np.concatenate([np.zeros(n_unlab_a, dtype=int), np.ones(n_unlab_b, dtype=int)])
+
+    pool_lab_llm = np.concatenate([llm_lab_a, llm_lab_b])
+    pool_lab_truth = np.concatenate([truth_lab_a, truth_lab_b])
+    pool_lab_grp = np.concatenate([np.zeros(n_lab_a, dtype=int), np.ones(n_lab_b, dtype=int)])
+
+    def _correct_unlab(llm_unlab: np.ndarray, llm_lab: np.ndarray, truth_lab: np.ndarray) -> np.ndarray:
+        n = len(llm_lab)
+        if n == 0:
+            return llm_unlab
+        diff = truth_lab - llm_lab
+        beta0 = float(np.mean(diff))
+        if n < min_lab_for_slope:
+            return llm_unlab + beta0
+        xbar = float(np.mean(llm_lab))
+        x = llm_lab - xbar
+        Sxx = float(np.sum(x * x))
+        if Sxx <= 1e-12:
+            return llm_unlab + beta0
+        lam = ridge_k * Sxx
+        beta1 = float(np.sum(x * (diff - beta0)) / (Sxx + lam))
+        return llm_unlab + beta0 + beta1 * (llm_unlab - xbar)
+
+    def _point_estimate(unlab_llm, unlab_grp, lab_llm, lab_truth, lab_grp) -> float:
+        ga, gb = lab_grp == 0, lab_grp == 1
+        ua, ub = unlab_grp == 0, unlab_grp == 1
+        corr_unlab_a = _correct_unlab(unlab_llm[ua], lab_llm[ga], lab_truth[ga])
+        corr_unlab_b = _correct_unlab(unlab_llm[ub], lab_llm[gb], lab_truth[gb])
+        combined_a = np.concatenate([lab_truth[ga], corr_unlab_a])
+        combined_b = np.concatenate([lab_truth[gb], corr_unlab_b])
+        return _midrank_theta(combined_a, combined_b)
+
+    estimate = _point_estimate(
+        pool_unlab_llm, pool_unlab_grp,
+        pool_lab_llm, pool_lab_truth, pool_lab_grp,
+    )
+
+    f_unlab = _midrank_theta(llm_unlab_a, llm_unlab_b) if (n_unlab_a and n_unlab_b) else \
+        _midrank_theta(a[~mask_a], b[~mask_b])
+    f_lab = _midrank_theta(truth_lab_a, truth_lab_b)
+    f_hat_lab = _midrank_theta(llm_lab_a, llm_lab_b)
+
+    boots = np.empty(n_boot)
+    for i in range(n_boot):
+        idx_u = rng.integers(0, n_unlab_total, n_unlab_total) if n_unlab_total else np.empty(0, dtype=int)
+        idx_l = rng.integers(0, n_lab_total, n_lab_total) if n_lab_total else np.empty(0, dtype=int)
+        boots[i] = _point_estimate(
+            pool_unlab_llm[idx_u], pool_unlab_grp[idx_u],
+            pool_lab_llm[idx_l], pool_lab_truth[idx_l], pool_lab_grp[idx_l],
+        )
+
+    lo = float(np.percentile(boots, 100 * alpha / 2))
+    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
+    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
+    p_value = min(max(p_value, 0.0), 1.0)
+
+    return PPIResult(
+        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
+        llm_estimate=float(f_unlab), human_estimate=float(f_lab),
+        rectifier=float(f_lab - f_hat_lab), p_value=p_value,
+    )
+
+
 _ADAPTIVE_DISCRETENESS_THRESHOLD = 0.7
 """Cutoff for evalstats.tests._ppi_two_sample_adaptive's unique_fraction
 check: below this, the labeled sample looks coarse/discrete enough to use
@@ -3466,7 +3647,7 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "global",
+    method: str = "ridge",
     power_tune: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
@@ -3489,25 +3670,55 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
-    method : {"adaptive", "local", "global", "mnar_experimental"}
+    method : {"ridge", "adaptive", "local", "global", "mnar_experimental"}
         Which PPI correction to use for the mid-rank estimand (default
-        ``"global"`` again as of 2026-08-02, reverted from "adaptive" a few
-        hours after that promotion -- read this in full before overriding
-        it; this default has now changed FOUR times).
+        ``"ridge"`` as of 2026-08-02, replacing "global" a few hours after
+        THAT promotion -- read this in full before overriding it; this
+        default has now changed FIVE times).
 
-        ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier
-        (no per-bin structure) -- simple, and exactly correct for a MEAN,
-        but under labeling that's non-uniform with respect to score (e.g.
-        "double-check the highest-scoring items") combined with real judge
-        bias and coarse/discrete scales, this rank estimand is genuinely
-        miscalibrated: Type-I error up to 3-9x nominal in the worst
-        identified case (Likert, strong such labeling, severe bias). This
-        is the CURRENT default: it has no known real-data MCAR calibration
-        failure (unlike "local"/"adaptive" below), which is the deciding
-        factor now that one has been found. Also the simplest possible
-        construction, and reproduces results computed under the
-        2026-07-22 through 2026-08-01, and again 2026-08-02 onward,
-        defaults.
+        ``"ridge"`` (:func:`_ppi_two_sample_ridge_corrected`) replaces
+        "local"'s STEP-FUNCTION per-bin rectifier with a smooth, ridge-
+        shrunk LINEAR one: fits ``diff = truth_lab - llm_lab ~ beta0 +
+        beta1*(llm_lab - mean(llm_lab))`` per group via ridge regression
+        (penalty ``lam = ridge_k * Sxx``, ``ridge_k=2.0`` fixed, dimension-
+        less/scale-free), then applies the fitted line to each unlabeled
+        item at ITS OWN score -- a continuous dial between "local"-like
+        (unshrunk slope) and "global"-like (beta1 shrunk to 0) behavior,
+        in the spirit of PPI++'s own power-tuning shrinkage. Built after
+        investigating exactly why "adaptive" (below) failed on real data:
+        root-caused to "local"'s hard bin BOUNDARY, not to dispatching to
+        it at all -- within a bin, judge bias is strongly correlated with
+        the item's own score (corr -0.8 to -0.99 on the failing wmt_da
+        cell), a real slope a flat per-bin mean can't capture, and the
+        bias jumps from -0.011 (no split) to +0.04-0.05 the instant
+        n_strata goes from 1 to 2, not improving with finer bins. A smooth
+        ridge-shrunk slope removes that bias without the boundary
+        artifact. Validated at three levels (2026-08-02): (1) standard
+        synthetic sweep (139 scenarios, reps=300): 0/399 Holm-confirmed
+        miscalibrated cells. (2) Full factorial grid (2064 scenarios, 8256
+        cells, reps=150/n_boot=300): MCAR mean/worst 0.056/0.113 (matches
+        "global"'s 0.054/0.113, no regression); MNAR-mild/strong worst-
+        case 0.107/0.127 (close to "local"'s 0.107/0.120, vs. "global"'s
+        catastrophic 0.467/0.613 or "adaptive"'s 0.520/0.440); power at
+        moderate effect: continuous 0.975 (near "global"'s 0.996 ceiling),
+        likert 0.871 -- the BEST of all four methods compared, beating
+        even "local"'s own 0.827; zero bootstrap failures across all 8256
+        cells. (3) Real data (``cases/ppi_real.py``, all 5 datasets):
+        Type-I max 0.120 (== "global"'s own max, vs. "adaptive"'s 0.380),
+        zero NEW Holm-confirmed cells, fixes the wmt_da failure across
+        MULTIPLE judge pairs (not just the one ``ridge_k`` was tuned on),
+        real positive-control power unchanged at 1.000. The one open
+        caveat: ``ridge_k=2.0`` is a fixed constant picked from one real
+        cell's bias/variance tradeoff curve (mirroring how
+        :func:`evalstats.ppi.correct` fixes its own power-tune shrinkage
+        constant), not a fully data-adaptive-per-call value -- two
+        automatic selectors (empirical-Bayes/SE-based, closed-form LOOCV)
+        were tried and rejected, both under-shrinking because they only
+        measure in-sample/interpolation risk, not the extrapolation risk
+        to wherever unlabeled items' scores actually sit. See
+        ``_ppi_two_sample_ridge_corrected``'s docstring and
+        ``simulations/out/mwu_ridge_validation/VALIDATION_SUMMARY.md`` for
+        full numbers.
 
         ``"adaptive"`` (:func:`_ppi_two_sample_adaptive`) dispatches
         between ``"local"`` and ``"global"`` based on how discrete the
@@ -3605,10 +3816,12 @@ def mannwhitney(
         "double-check the highest-scoring items") combined with real judge
         bias and coarse/discrete scales, this rank estimand is genuinely
         miscalibrated: Type-I error up to 3-9x nominal in the worst
-        identified case (Likert, strong such labeling, severe bias). Kept
-        available for anyone wanting the simplest possible construction, or
-        reproducing results computed under the 2026-07-22 through
-        2026-08-01 default.
+        identified case (Likert, strong such labeling, severe bias). Was
+        briefly the default twice (2026-07-22 through 2026-08-01, and
+        again for a few hours on 2026-08-02 after "adaptive"'s revert,
+        before "ridge" replaced it the same day) -- kept available for
+        anyone wanting the simplest possible construction, or reproducing
+        results computed under either of those windows.
 
         ``"mnar_experimental"`` (:func:`_ppi_two_sample_midrank_corrected`)
         is "local"'s predecessor: the SAME per-group, per-score-bin
@@ -3630,7 +3843,8 @@ def mannwhitney(
 
         See ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
         ``mwu`` / ``mwu_mnar_experimental`` / ``mwu_mnar_pooled`` /
-        ``mwu_adaptive``) for the calibration studies behind all of this.
+        ``mwu_adaptive`` / ``mwu_ridge``) for the calibration studies
+        behind all of this.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
@@ -3640,14 +3854,16 @@ def mannwhitney(
         ``power_tune`` parameter for validation status). Only applies to
         ``method="global"`` (and, on the branch where ``method="adaptive"``
         dispatches to it, i.e. continuous-looking data); ignored (has no
-        effect) for ``method="local"`` or ``method="mnar_experimental"``,
-        and on "adaptive"'s discrete/Likert-looking branch, all of which use
-        their own, not-yet power-tuned local-rectifier bootstrap (see
-        "local"'s docstring entry above -- despite lacking power-tuning, it
-        still matched or beat "global"'s power in validation). Pass
+        effect) for ``method="ridge"``, ``"local"``, or
+        ``"mnar_experimental"``, and on "adaptive"'s discrete/Likert-looking
+        branch, all of which use their own, not-yet power-tuned local-
+        rectifier bootstrap (see "local"'s docstring entry above --
+        despite lacking power-tuning, it still matched or beat "global"'s
+        power in validation, and "ridge" beat both). Pass
         ``power_tune=False`` (with ``method="global"``) to reproduce the
         original PPI estimator exactly. The value actually used is on the
-        returned ``TestResult.lam`` (``None`` for "local"/"mnar_experimental").
+        returned ``TestResult.lam`` (``None`` for "ridge"/"local"/
+        "mnar_experimental").
 
     Examples
     --------
@@ -3655,8 +3871,8 @@ def mannwhitney(
     >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
-    if method not in ("adaptive", "local", "global", "mnar_experimental"):
-        raise ValueError(f'method must be "adaptive", "local", "global", or "mnar_experimental"; got {method!r}.')
+    if method not in ("ridge", "adaptive", "local", "global", "mnar_experimental"):
+        raise ValueError(f'method must be "ridge", "adaptive", "local", "global", or "mnar_experimental"; got {method!r}.')
 
     x = _coerce(x)
     y = _coerce(y)
@@ -3694,7 +3910,9 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        if method == "adaptive":
+        if method == "ridge":
+            ppi = _ppi_two_sample_ridge_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
+        elif method == "adaptive":
             ppi = _ppi_two_sample_adaptive(x, y, x_lab, y_lab, alpha, n_boot, rng, power_tune=power_tune)
         elif method == "local":
             ppi = _ppi_two_sample_midrank_corrected_pooled(x, y, x_lab, y_lab, alpha, n_boot, rng)

@@ -732,7 +732,7 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     """
     from evalstats.tests import (
         _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
-        _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
+        _ppi_paired_arrays, _ppi_two_sample_ridge_corrected,
     )
     if method == "tango":
         return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
@@ -745,18 +745,17 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     if method == "wilcoxon":
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.median, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "mannwhitney":
-        # Matches evalstats.tests.mannwhitney's method="global" default
-        # (reverted back to this 2026-08-02, a few hours after briefly
-        # defaulting to method="adaptive" -- see mannwhitney's `method`
-        # docstring for the full history). "adaptive"/"local" dispatch to
-        # a per-group, per-score-bin rectifier for discrete-looking labeled
-        # data, which was found (via a REAL-data run against wmt_da) to
-        # have a severe real Type-I calibration cost under ordinary MCAR
-        # labeling that the synthetic-only validation missed -- a
-        # correctness regression, not a tuning nitpick, so this pairwise
-        # dispatch stays on the plain global rectifier (_ppi_two_sample)
-        # until that's resolved.
-        return _ppi_two_sample(a, b, a_lab, b_lab, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, alpha, n_boot, rng)
+        # Matches evalstats.tests.mannwhitney's method="ridge" default
+        # (2026-08-02 -- see mannwhitney's `method` docstring for the full
+        # five-default history). "ridge" replaces the earlier "local"/
+        # "adaptive" per-bin STEP-FUNCTION rectifier (whose hard bin
+        # boundary caused a real Type-I calibration failure on real wmt_da
+        # data under ordinary MCAR labeling) with a smooth, ridge-shrunk
+        # LINEAR rectifier -- validated to fix that real-data failure while
+        # matching "global"'s own MCAR calibration and beating both
+        # alternatives on Likert power (see
+        # _ppi_two_sample_ridge_corrected's docstring).
+        return _ppi_two_sample_ridge_corrected(a, b, a_lab, b_lab, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
         f"method {method!r}. Supported pairwise methods: "

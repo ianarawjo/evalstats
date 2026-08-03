@@ -157,6 +157,7 @@ with warnings.catch_warnings():
         _ppi_two_sample_midrank_corrected,
         _ppi_two_sample_midrank_corrected_pooled,
         _ppi_two_sample_adaptive,
+        _ppi_two_sample_ridge_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -262,6 +263,7 @@ from ..methods import (
     MWU_MNAR_EXPERIMENTAL,
     MWU_MNAR_POOLED,
     MWU_ADAPTIVE,
+    MWU_RIDGE,
     ANOVA_IND,
     ANOVA_REP,
     FRIEDMAN,
@@ -3516,6 +3518,15 @@ def _run_ppi_cell(
                 except Exception:
                     failed[MWU_ADAPTIVE.name] += 1
 
+            if MWU_RIDGE.name in active_tests:
+                try:
+                    p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
+                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
+                    r = _ppi_two_sample_ridge_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
+                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[MWU_RIDGE.name] += 1
+
             if WILCOXON.name in active_tests:
                 try:
                     # Deliberately left at scipy's default method="auto" --
@@ -3824,7 +3835,7 @@ def run_ppi_simulation(
 # ---------------------------------------------------------------------------
 
 _PPI_EFFECT_TESTS = (
-    TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
+    TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, MWU_RIDGE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
     PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name,
 )
@@ -3943,6 +3954,13 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_two_sample_adaptive(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
                     out[MWU_ADAPTIVE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if MWU_RIDGE.name in active_tests:
+                try:
+                    r = _ppi_two_sample_ridge_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
+                    out[MWU_RIDGE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -4355,7 +4373,7 @@ filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
 kept in its own report section/log rather than merged into the headline
 _COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
-    TTEST_WELCH.name: "group", MWU_MNAR_EXPERIMENTAL.name: "group", MWU_MNAR_POOLED.name: "group", MWU_ADAPTIVE.name: "group", MWU.name: "group",
+    TTEST_WELCH.name: "group", MWU_MNAR_EXPERIMENTAL.name: "group", MWU_MNAR_POOLED.name: "group", MWU_ADAPTIVE.name: "group", MWU_RIDGE.name: "group", MWU.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
     ANOVA_IND.name: "group3", KRUSKAL.name: "group3", KRUSKAL_MNAR_EXPERIMENTAL.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
@@ -4422,6 +4440,8 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
             return _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
         if method == MWU_ADAPTIVE.name:
             return _ppi_two_sample_adaptive(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
+        if method == MWU_RIDGE.name:
+            return _ppi_two_sample_ridge_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
         # MWU (global rectifier): what _COMPARISON_METHODS actually uses --
         # see that constant's docstring for why it's the default over
         # mwu_mnar_experimental's local rectifier as of 2026-07-22.
@@ -7411,6 +7431,7 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MWU_MNAR_EXPERIMENTAL.name: "Mann-Whitney U (corrected)",
     MWU_MNAR_POOLED.name: "Mann-Whitney U (corrected, pooled resample)",
     MWU_ADAPTIVE.name: "Mann-Whitney U (adaptive)",
+    MWU_RIDGE.name: "Mann-Whitney U (ridge)",
     MWU.name: "Mann-Whitney U",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
