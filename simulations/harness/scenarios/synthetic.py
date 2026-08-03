@@ -2060,32 +2060,32 @@ should give -- a clean confirming check on its own): frac=0.0 -> ~0.06,
 PPI-corrected power (global rectifier, mid-rank estimand, n_lab=20):
 continuous and grades climb smoothly and saturate by ~0.80-0.90 SD
 (continuous: 0.06/0.19/0.44/0.72/0.83/0.98/1.00 at frac=0/0.20/0.30/0.40/
-0.50/0.60/0.80; grades: similar shape, saturates ~0.80). likert does NOT
-climb smoothly -- power jumps to ~0.71 already at frac=0.10, DIPS to
-~0.61 at 0.20, then wobbles in the 0.63-0.77 range through 0.30-0.80,
-before jumping to 1.00 around frac=0.90. This is almost certainly the
-SAME "MWU reinforcing-bias power anomaly"/discrete-rank-invariance
-mechanism already investigated this session (see cases/pvalues.py's
-appendix writeup and evalstats.tests.mannwhitney's method docstring's
-Likert-power-dip investigation) -- likert's integer-valued truth means
-MULTIPLE possible rank-invariant regions can exist across a wide
-effect-size range, not just the single boundary the pre-fix grid's
-0.225/0.25/0.275 points targeted (which, under the OLD span convention,
-aimed at frac=0.25 -> effect_size=1.00 exactly; under the NEW convention
-that same exact boundary sits at frac~=0.8736, included here as 0.874).
-CHARACTERIZING WHY likert wobbles across this whole range (not just at
-one boundary) is an OPEN follow-up, not resolved by this grid widening --
-this grid gives enough resolution (0.05 steps through 0.05-0.40, then
-0.10 steps through 0.40-0.80, plus the 0.874 landmark) to SEE the wobble
-clearly on a plot, which is the prerequisite for investigating it, but
-does not itself explain it.
+0.50/0.60/0.80; grades: similar shape, saturates ~0.80).
+
+RESOLVED 2026-08-03 (same day, a few hours after this grid was widened):
+likert's non-monotonic "wobble" this grid's resolution first made visible
+-- power jumping to ~0.71 already at frac=0.10, dipping to ~0.61 at 0.20,
+wobbling 0.63-0.77 through 0.30-0.80 -- was NOT a deep discrete-rank-
+invariance mystery. Root-caused to a genuine BUG in generate_judge_bias_
+cell's _marginal() helper: effect_size was being added to the truth value
+AFTER sample_group_truth's internal rounding, not before, so likert's
+integer-valued truth ended up "integer + effect" (a non-integer value)
+instead of properly re-rounded -- an ARTIFICIAL, near-perfect tie-
+breaking pattern between groups for ANY nonzero effect, however tiny.
+Confirmed on pure oracle truth data (zero PPI machinery involved) --
+see _marginal's docstring for the full mechanism and fix. Post-fix,
+likert's PPI-corrected power climbs smoothly too (0.04/0.21/0.34/0.63/
+0.91/1.00 at frac=0/0.20/0.30/0.40/0.60/0.80), matching continuous/
+grades' shape. This grid's 0.874 landmark (likert's exact integer-
+crossing boundary under the SD convention) remains worth keeping for the
+SEPARATE, still-real "cancellation dip"/crossover phenomenon below, even
+though it turned out not to be what was causing the wobble.
 
 16 points (up from 10), spanning roughly 3x the old range (SD-comparable
 severity now needs a wider frac range than span-comparable severity did)
--- still denser than sparse through the climbing 0.05-0.80 region (where
-save_ppi_power_direction_plot's "cancellation dip"/crossover phenomena,
-and likert's wobble, all live), with 1.00/1.20 as saturation-confirming
-tail points."""
+-- still denser than sparse through the climbing 0.05-0.80 region, where
+save_ppi_power_direction_plot's "cancellation dip"/crossover phenomenon
+lives, with 1.00/1.20 as saturation-confirming tail points."""
 PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
 """Label-fraction grid for build_ppi_comparison_label_frac_sources, at
 _ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
@@ -2100,7 +2100,7 @@ generating condition would be misleading. This grid's four fractions all
 resolve to distinct actual n_lab (15/20/30/40) at n=100 -- see
 PPIComparisonResult.n_lab, which reports the REALIZED count rather than
 the nominal fraction for exactly this reason."""
-PPI_COMPARISON_MODERATE_EFFECT_FRAC = 0.10
+PPI_COMPARISON_MODERATE_EFFECT_FRAC = 0.30
 """Fixed effect-size fraction for build_ppi_comparison_label_frac_sources/
 build_ppi_nlab_grid_sources' power variant/their binary analogues -- every
 consumer of this constant holds effect_size fixed and varies label_frac/
@@ -2108,17 +2108,24 @@ N_lab instead (never the "vs effect_size" sweeps, which use their own
 PPI_POWER_EFFECT_FRACS grid), so this is specifically "the effect size used
 whenever we're looking at the label-budget axis instead."
 
-Was 0.20 ("moderate") until 2026-08-01: at 0.20, continuous's and likert's
-power (both all_human and PPI-corrected) saturate near 1.0 across most of
-PPI_NLAB_GRID_NLAB_VALUES' N_lab range, flattening the "does PPI beat
-human_subset" comparison into visual parity for reasons that have nothing
-to do with PPI's actual value-add -- there's just no headroom left once
-both arms are pinned near the ceiling. Same root cause, same fix already
-applied to PPI_LABEL_EFF_EFFECT_FRAC (0.08) for the analogous label-
-efficiency sweep; see that constant's docstring for the original
-diagnosis. 0.10 keeps this constant's own "moderate, not small" framing
-closer to its original value than 0.08 would, while still leaving
-meaningful headroom below saturation at the N_lab range this feeds."""
+History: was 0.20 ("moderate") until 2026-08-01 (span-based convention;
+saturated near 1.0 across most of PPI_NLAB_GRID_NLAB_VALUES' N_lab range,
+flattening the "does PPI beat human_subset" comparison into visual parity
+for reasons unrelated to PPI's actual value-add), then 0.10 (still
+span-based). RE-DERIVED 2026-08-03 for the SD-standardized convention
+(see EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude's fix): 0.10 population
+SDs turned out to sit almost entirely at floor -- verified directly,
+PPI-corrected power at n=100/n_lab=15-40 stayed 0.06-0.10 (essentially
+the null rate) across continuous/likert/grades, giving this sweep no
+real power signal to show growing with N_lab at all. Re-scanned frac in
+{0.20, 0.30, 0.40, 0.50}: 0.30 gives a clear, non-floor, non-saturated
+climb across n_lab=15-40 for every eval type (continuous ~0.43->0.54,
+likert ~0.32->0.43, grades ~0.32->0.52 -- 200 reps per point), the best
+balance of "genuinely moderate" and "still has headroom to show N_lab
+mattering" of the fracs tested. PPI_LABEL_EFF_EFFECT_FRAC (0.08) was
+checked too and did NOT need the same fix -- its much larger N=1000 pool
+(vs. this constant's N=100) already gives a sensible 0.06->0.39 climb
+across n_lab=15-200 at that same frac, unaffected."""
 
 
 def _ppi_power_baseline(eval_type: str) -> dict:
@@ -2410,19 +2417,28 @@ PPI_BINARY_NOISE_BASELINE (the existing default), the other two are
 PPI_BINARY_NOISE_LEVELS' low/high ends."""
 PPI_LABEL_EFF_EFFECT_FRAC = 0.08
 """Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
-than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.20) deliberately: at 0.20,
-continuous's classical (human-only) test already exceeds 90% power at
-n_lab=15-40, so both PPI's and the reference curve's power saturate near
-1.0 at the good-judge noise tier -- inverting a power that's AT a flat
-curve's plateau is ill-posed and previously produced a spurious "500
+than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.30 as of 2026-08-03; was 0.20
+when this comment was first written) deliberately: at that constant's own
+scale, continuous's classical (human-only) test already exceeds 90% power
+at n_lab=15-40, so both PPI's and the reference curve's power saturate
+near 1.0 at the good-judge noise tier -- inverting a power that's AT a
+flat curve's plateau is ill-posed and previously produced a spurious "500
 labels" (cases/pvalues.py's n_grid cap) equivalent-N for those cells,
 blowing up save_ppi_label_efficiency_plot's shared per-panel axis scale.
 Confirmed empirically (2026-07-23) that 0.08 keeps pooled power comfortably
 inside ~0.13-0.64 across every (eval_type, judge_noise) cell this sweep
 covers -- enough headroom for a stable inversion without floor/ceiling
-effects at either end. See LabelEfficiencyPoint.saturated in
-cases/pvalues.py for the defensive check that still applies regardless
-(a sufficiently good judge could saturate power at ANY fixed effect size)."""
+effects at either end. That confirmation predates both the 2026-08-03
+SD-standardization fix and the same-day _marginal effect-rounding bug
+fix, so the exact 0.13-0.64 range is not re-verified as still accurate --
+a 2026-08-03 spot check at the baseline (0.20) noise tier only (not the
+full noise_levels sweep) found continuous/likert both still climb
+sensibly, 0.06->0.39 across n_lab=15-200, with no floor-clamping -- but a
+full re-verification across every (eval_type, judge_noise) cell, the way
+the original 2026-07-23 pass did, hasn't been redone. See
+LabelEfficiencyPoint.saturated in cases/pvalues.py for the defensive
+check that still applies regardless (a sufficiently good judge could
+saturate power at ANY fixed effect size)."""
 PPI_LABEL_EFF_N = 1000
 """Total item count (N) for build_ppi_label_efficiency_sources -- NOT 100
 (the ORIGINAL choice, inherited from _ppi_power_baseline's default without
