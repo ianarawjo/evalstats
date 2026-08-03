@@ -5737,7 +5737,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             if sat_xs:
                 ax.plot(
                     sat_xs, sat_ys, color=color, marker="^", markersize=7, linestyle="none",
-                    label="power saturated (lower bound)" if i == 0 else None, zorder=5,
+                    label="power saturated" if i == 0 else None, zorder=5,
                 )
 
         ax.set_xlim(0, max_val)
