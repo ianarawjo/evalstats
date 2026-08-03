@@ -5301,9 +5301,9 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
     return float(np.interp(target_power, power_grid, n_grid))
 
 
-_LABEL_EFF_ALIGNMENT_TARGETS = (0.8, 0.7, 0.6, 0.5, 0.3)
+_LABEL_EFF_ALIGNMENT_TARGETS = (0.8, 0.7, 0.6, 0.5, 0.4, 0.3)
 """Round, reviewer-legible judge-quality targets the label-efficiency
-check's noise axis is CALIBRATED to hit, per eval type -- five points
+check's noise axis is CALIBRATED to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
 (1977) kappa scale (also read loosely against Cohen 1988's "large"/"medium"/
 "small" correlation bands for continuous's Pearson r -- see _kappa_band/
@@ -5311,10 +5311,14 @@ _corr_band). Widened from an earlier 3-point (0.8/0.5/0.2) version for a
 more complete picture of how the label-efficiency curve moves across the
 alignment range -- 0.2 dropped in favor of 0.3 (a small step below "fair"
 was judged less informative than one more point in the 0.5-0.8 range where
-the curve moves the most). Chosen so a reader can ask "how would this look
-with a kappa=0.8 judge" and get a direct answer, rather than an
-uninterpretable llm_noise dial that means something different in every
-eval type."""
+the curve moves the most). 0.4 added 2026-08-03 to pin down the practical
+"don't bother running stats over judge scores" cutoff for the paper's
+guidance section -- the 0.5-0.3 gap was the widest in the original 5-point
+grid and straddles where the label-efficiency multiplier is expected to
+approach 1x (no benefit over human-only testing). Chosen so a reader can
+ask "how would this look with a kappa=0.8 judge" and get a direct answer,
+rather than an uninterpretable llm_noise dial that means something
+different in every eval type."""
 _LABEL_EFF_ALIGNMENT_METRIC = {
     "continuous": ("pearson_r", "r"),
     "likert": ("weighted_kappa", "κ"),
@@ -5617,6 +5621,22 @@ def save_results_artifacts_ppi_label_efficiency_raw(
     return [str(raw_path), str(calib_path)]
 
 
+_LABEL_EFF_MARKER_SHAPES = ("o", "s", "D", "P", "X", "*")
+"""Per-alignment-target marker shapes for save_ppi_label_efficiency_plot,
+cycled by index alongside (not instead of) the viridis color ramp -- a
+colorblind/grayscale-print accessibility aid so lines stay distinguishable
+by shape even where two adjacent targets' colors read as similar. "^"
+(up-triangle) is deliberately excluded: it's reserved for the separate
+"saturated" lower-bound overlay marker, and reusing it as a target's own
+line marker would make that overlay ambiguous with the line's normal
+markers at the same point. "*" renders visually smaller than the other
+glyphs at equal markersize, hence _LABEL_EFF_MARKER_SIZE's per-shape bump."""
+_LABEL_EFF_MARKER_SIZE = {"*": 9, "P": 6, "X": 6}
+"""markersize overrides for _LABEL_EFF_MARKER_SHAPES entries that render
+smaller/larger than "o" at the same nominal size; anything not listed here
+falls back to the default markersize passed at the call site."""
+
+
 def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str) -> str:
     """The flagship label-efficiency figure: one panel per eval type
     (binary, continuous, likert -- the standard panel order used
@@ -5630,10 +5650,11 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     means very different judge quality across eval types -- alignment is
     the one axis a reader can compare panels against directly (a "kappa=0.8
     judge" means the same thing in every panel; a "noise=0.2 judge" does
-    not). The shaded region between the MIDDLE (target=0.5, "moderate"
-    alignment) tier's curve and the diagonal is the headline "labels saved"
-    story; the other tiers show how that benefit moves with judge quality
-    on the SAME axes. N (the total item count, fixed throughout -- see
+    not). The target~0.7 tier is drawn bolder as a visual anchor (no shaded
+    region -- an earlier fill-between to the diagonal was removed as visual
+    clutter, see git history); the other tiers show how that benefit moves
+    with judge quality on the SAME axes. N (the total item count, fixed
+    throughout -- see
     run_ppi_label_efficiency_check and PPI_LABEL_EFF_N's docstring) is left
     out of the title/axis text deliberately -- the paper states it in the
     caption instead, so this figure carries no on-plot annotations or N
@@ -5704,8 +5725,10 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             color = cmap(0.15 + 0.7 * i / max(1, len(targets) - 1))
             is_baseline = target == baseline_target
             achieved = float(np.mean([r.alignment_value for r in rows]))
+            marker = _LABEL_EFF_MARKER_SHAPES[i % len(_LABEL_EFF_MARKER_SHAPES)]
             ax.plot(
-                xs, ys, color=color, marker="o", markersize=5, linewidth=2.0 if is_baseline else 1.4,
+                xs, ys, color=color, marker=marker,
+                markersize=_LABEL_EFF_MARKER_SIZE.get(marker, 5), linewidth=2.0 if is_baseline else 1.4,
                 label=f"{metric_symbol}~={achieved:.2f} (target {target:.1f})",
                 zorder=4,
             )
@@ -5716,8 +5739,6 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
                     sat_xs, sat_ys, color=color, marker="^", markersize=7, linestyle="none",
                     label="power saturated (lower bound)" if i == 0 else None, zorder=5,
                 )
-            if is_baseline:
-                ax.fill_between(xs, xs, ys, color=color, alpha=0.15, zorder=1)
 
         ax.set_xlim(0, max_val)
         ax.set_ylim(0, max_val)
