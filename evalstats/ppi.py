@@ -255,18 +255,43 @@ def paired_walsh_midrank_theta(d: np.ndarray) -> float:
     analytic path measured 12.0-17.2% on the IDENTICAL data/seeds:
     roughly HALVES the inflation, but does NOT eliminate it (still well
     above nominal 5%). This is a genuine improvement, not a full fix --
-    the residual remains open. Root cause of the improvement: the
-    analytic path replaces the percentile bootstrap (which needs
-    n_lab >> 30 for this estimand to reliably converge) with a closed-
-    form Hajek-projection variance / Student-t interval that doesn't need
-    to approximate a sampling distribution from a small empirical
-    resample. This analytic path does NOT, however, close the SEPARATE
-    finding that PPI correction gives this estimand much less POWER LIFT
-    than mean-based estimands (paired_t/ttest_welch/mwu) at matched
-    n_lab -- see :func:`_analytic_walsh_theta_correct`'s docstring for
-    why that gap was root-caused to a genuine, non-resampling-artifact
-    difference in finite-sample variance, and does not close under this
-    (or any other attempted) CI-construction change alone.
+    the residual remains open (still true as of 2026-08-02 -- re-checked
+    on the SAME real appstore judge pairs at n_lab=15, where this
+    estimand's analytic path already applied before AND after the
+    2026-08-02 update below, so it's unaffected: 14.7%/12.7% analytic vs.
+    15.7%/17.3% bootstrap, both well above nominal). Root cause of the
+    original improvement: the analytic path replaces the percentile
+    bootstrap (which needs n_lab >> 30 for this estimand to reliably
+    converge) with a closed-form Hajek-projection variance / Student-t
+    interval that doesn't need to approximate a sampling distribution from
+    a small empirical resample. At n_lab=30/60 -- newly on the analytic
+    path as of the 2026-08-02 update below, previously always bootstrap --
+    the same real appstore pairs show Type-I close to nominal for BOTH
+    backends with no systematic difference (5.0-8.0%, 300 reps each): the
+    extreme-tie residual above is specific to small n_lab and does not
+    reappear at n_lab=30/60 under the new dispatch.
+
+    UPDATE (2026-08-02): the SEPARATE power-lift gap this docstring
+    previously described as not closing under "this (or any other
+    attempted) CI-construction change" WAS, in fact, closed by exactly
+    that -- just not the specific change tried as of 2026-08-01,
+    which only compared analytic-vs-bootstrap BELOW n_lab=30 (where
+    analytic already ran). A follow-up head-to-head EXTENDING the analytic
+    construction to n_lab=30/60/90/130 (same estimand held fixed, same
+    drawn data, only the CI construction differing) found it beats the
+    percentile bootstrap on power at every point checked, by a WIDENING
+    margin as n_lab grows -- see :func:`_analytic_walsh_theta_correct`'s
+    docstring for the full numbers. ``correct()``'s ``backend="auto"``
+    dispatch (see :data:`_ANALYTIC_ALWAYS_PREFERRED`) now uses the
+    analytic backend for this estimand at EVERY n_lab, not just below 30
+    -- this is the estimand ``wilcoxon()`` uses by default, so this change
+    applies to it directly. The gap has NOT necessarily vanished entirely
+    (bootstrap and analytic weren't compared past n_lab=200, and the
+    remaining gap to mean-based estimands like paired_t was not
+    independently re-measured after this change), but it is substantially
+    smaller than previously documented, and the mechanism previously
+    called "not a fixable... inefficiency" turned out to be exactly that,
+    once the fix was applied to the RIGHT n_lab range.
 
     Registered in :func:`correct`'s ``_fast_batch`` dispatch (via
     ``_walsh_theta_batch``) so this goes through the SAME vectorized-
@@ -442,7 +467,88 @@ def _analytic_walsh_theta_correct(
     :func:`_analytic_mean_correct`'s choice (the labeled term is the
     variance bottleneck there too, for the same reason: n_all is typically
     much larger than n_lab, so its analytic variance contributes a much
-    smaller share of the total variance)."""
+    smaller share of the total variance).
+
+    UPDATE (2026-08-02): the "does NOT close that gap" claim two
+    paragraphs up was accurate for what was actually tested at the time
+    (analytic vs. bootstrap ONLY below n_lab=30, where this backend
+    already activated) but incomplete as a claim about CI construction in
+    general -- it never tested what happens if the analytic construction
+    is extended PAST n_lab=30, because :func:`correct`'s dispatch didn't
+    allow that combination to run under "auto" then. A follow-up
+    investigation did exactly that: called this function directly (via
+    ``backend="analytic"``, bypassing the n_lab<30 gate) at n_lab=30/60/
+    90/130, on the SAME estimand (``paired_walsh_midrank_theta``) and the
+    SAME per-replicate drawn data as the percentile-bootstrap path, so
+    only the CI construction differs -- an apples-to-apples isolation the
+    2026-08-01 investigation didn't have.
+
+    Power (continuous/likert good-judge synthetic data, 200 reps,
+    n_boot=1500 for the bootstrap arm; analytic has no bootstrap and is
+    exact given its inputs):
+
+    ==========  ========  =========  ========  =======
+    eval_type   n_lab     bootstrap  analytic  delta
+    ==========  ========  =========  ========  =======
+    continuous  30        0.390      0.495     +0.105
+    continuous  60        0.505      0.780     +0.275
+    continuous  90        0.415      0.955     +0.540
+    continuous  130       0.150      0.980     +0.830
+    likert      30        0.370      0.420     +0.050
+    likert      60        0.525      0.770     +0.245
+    likert      90        0.465      0.910     +0.445
+    likert      130       0.245      0.975     +0.730
+    ==========  ========  =========  ========  =======
+
+    Analytic wins at every point, by a WIDENING margin -- the opposite of
+    what "the gap doesn't close" implied. More strikingly, bootstrap's OWN
+    power is non-monotonic: it peaks around n_lab=60 and falls back off by
+    n_lab=130, while analytic's power climbs smoothly and monotonically to
+    near-saturating. Type-I calibration was checked at the same 16 cells
+    (effect_size=0) and was statistically indistinguishable between the
+    two backends everywhere (0.010-0.065 vs. nominal 0.05, both backends,
+    ordinary Monte Carlo noise at 200 reps) -- no calibration cost for the
+    power gain. The oracle-variance validation
+    :func:`_walsh_theta_h1_components` documents (originally only checked
+    at n_lab=15/30/60) was separately extended to n_lab=90/130/200 (3000-
+    draw Monte Carlo oracle, continuous/likert good-judge): single-sample
+    variance ratio (analytic estimate / oracle) 0.936-1.002, paired-
+    rectifier covariance-based variance ratio 0.965-1.033 -- TIGHTER than
+    the original 7%/1% (single-sample) and 2-17% (paired) figures at
+    n_lab=15-30/60, as expected since the Hajek-projection approximation
+    is asymptotic and improves with n. Real appstore extreme-tie data
+    (n_lab=30/60, two judge pairs, 300 reps each) showed no systematic
+    Type-I difference between backends either (5.0-8.0%, both close to
+    nominal) -- the OPEN small-n_lab (~15) extreme-tie residual documented
+    above is unaffected by this change, since that residual was already on
+    the analytic path before it.
+
+    Given this, :data:`_ANALYTIC_ALWAYS_PREFERRED` now routes
+    ``paired_walsh_midrank_theta`` through this function at EVERY n_lab
+    under ``backend="auto"``, not just below 30 -- see that constant's
+    docstring. ``np.mean``'s own n_lab<30 gate is UNCHANGED; nothing here
+    revisits that estimator's separately-validated threshold.
+
+    Working hypothesis (UNCONFIRMED) for WHY bootstrap's power specifically
+    degrades at larger n_lab for this estimand: :func:`correct`'s
+    ``power_tune`` shrinkage (``_POWER_TUNE_SHRINKAGE_C``) pulls the
+    bootstrap-estimated lambda back toward 1 by an amount that WEAKENS as
+    n_lab grows (``1 - (1-lam)*n_lab/(n_lab+20)``) -- by n_lab=90-130, the
+    raw bootstrap lambda* (itself estimated from an EXTRA layer of
+    resampling, per correct()'s power_tune docstring) is applied nearly
+    unshrunk. If that raw lambda* is a noisier estimate for this estimand
+    specifically than for e.g. a mean (plausible given the Walsh-average
+    rectifier's own higher finite-sample variance, documented above), its
+    noise could be actively hurting power once shrinkage stops masking it
+    -- while this function's own lambda* is closed-form (no resampling
+    noise in the lambda estimate itself), so it wouldn't inherit the same
+    problem. This is a plausible story consistent with the shape of the
+    numbers above (bootstrap peaks near n_lab=60, where shrinkage is still
+    partially protective, and falls off past it) but was NOT directly
+    verified (e.g. by comparing bootstrap power_tune=True vs. power_tune=
+    False at these n_lab, or by inspecting the raw lambda* estimates'
+    own variance) -- flagged here as a lead for future investigation, not
+    an established mechanism."""
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
@@ -599,14 +705,46 @@ np.mean`` directly; generalized to a registry so
 analogue for ``paired_walsh_midrank_theta``, i.e. ``wilcoxon()``'s
 default estimand) could be added WITHOUT wilcoxon needing its own
 parallel dispatch path -- both now go through the exact same
-``backend="auto"``/``n_lab < _MIN_LAB_RECOMMENDED`` logic np.mean already
-used. Extending this to a new estimand requires BOTH a corrector function
-matching ``_analytic_mean_correct``'s signature (``Y_lab, Y_hat_lab,
-Y_hat_unlab, alpha, power_tune -> PPIResult``) AND an entry here --
-``estimator_func`` and ``rectifier_func`` must resolve to the SAME entry
-(matched, exactly like the pre-existing ``np.mean`` requirement), since
-the two-term variance decomposition assumes the rectifier and the main
-estimand share one variance/covariance model."""
+``backend="auto"`` logic np.mean already used. Extending this to a new
+estimand requires BOTH a corrector function matching
+``_analytic_mean_correct``'s signature (``Y_lab, Y_hat_lab, Y_hat_unlab,
+alpha, power_tune -> PPIResult``) AND an entry here -- ``estimator_func``
+and ``rectifier_func`` must resolve to the SAME entry (matched, exactly
+like the pre-existing ``np.mean`` requirement), since the two-term
+variance decomposition assumes the rectifier and the main estimand share
+one variance/covariance model."""
+
+_ANALYTIC_ALWAYS_PREFERRED = {id(paired_walsh_midrank_theta)}
+"""``estimator_func`` identities that :func:`correct`'s ``backend="auto"``
+should route to the analytic backend at EVERY ``n_lab`` -- not only below
+``_MIN_LAB_RECOMMENDED``, the threshold ``np.mean``'s entry in
+:data:`_ANALYTIC_BACKENDS` still uses unchanged. Added 2026-08-02 for
+``paired_walsh_midrank_theta`` specifically, after a head-to-head
+investigation (same estimand, same drawn data, only the CI construction
+differing) found the analytic path beats the percentile bootstrap on
+POWER at every ``n_lab`` checked from 30 up through 200 -- not just
+matching it, the gap WIDENS as ``n_lab`` grows (e.g. continuous good-judge
+power lift over the classical labels-only baseline: bootstrap peaked
+around n_lab=60 then fell back off, while analytic climbed monotonically
+to near-saturating power by n_lab=130-200) -- while Type-I calibration
+stayed statistically indistinguishable between the two backends at every
+n_lab tested (200-rep precision, both hovering near nominal 5% with
+ordinary Monte Carlo noise, no systematic degradation either direction).
+The oracle-variance validation :func:`_walsh_theta_h1_components` already
+documents (originally only checked at n_lab=15/30/60) was extended to
+n_lab=90/130/200 as part of the same pass and, if anything, got TIGHTER
+(within ~1-3% of a 3000-draw Monte Carlo oracle at n_lab>=90, vs. the
+original 7%/1% figures at n_lab=15-30/60) -- expected, since the
+underlying Hajek-projection approximation is asymptotic and only
+improves with n. See :func:`_analytic_walsh_theta_correct`'s docstring
+for the full numbers and the (unconfirmed) working hypothesis for WHY the
+bootstrap's own power degrades at larger n_lab specifically for this
+estimand. ``np.mean`` is deliberately NOT added here: its own n_lab<30
+gate was validated independently on its own terms (see
+:func:`_analytic_mean_correct`'s docstring) and nothing in this
+investigation touched that evidence -- this set exists specifically so
+one estimand's preference doesn't have to be smuggled into, or force a
+review of, the shared ``_MIN_LAB_RECOMMENDED`` threshold."""
 
 
 def resolve_arrays(
@@ -842,28 +980,59 @@ def correct(
         (``X_lab``/``X_unlab`` both None) and ``rectifier_func`` matching
         ``estimator_func`` (or ``None``); raises ``ValueError`` if
         requested for anything else. "auto" (the default) uses "analytic"
-        when it's applicable AND ``n_lab < 30`` (below which the
+        when it's applicable AND EITHER ``n_lab < 30`` (below which the
         percentile bootstrap is known to undercover -- see the
-        power_tune docstring above), otherwise falls back to "bootstrap"
-        and, if ``n_lab < 30`` there too (i.e. analytic wasn't
-        applicable for this estimator_func), emits a ``UserWarning``
-        instead of silently returning an under-covering interval.
-        Root-caused via real judge-pair data (2026-07-23): on noisy/
-        discrete real data, the bootstrap needed n_lab >~ 50 before
+        power_tune docstring above) OR ``estimator_func`` is in
+        :data:`_ANALYTIC_ALWAYS_PREFERRED` (currently just
+        ``paired_walsh_midrank_theta`` -- see below), otherwise falls back
+        to "bootstrap" and, if ``n_lab < 30`` there too (i.e. analytic
+        wasn't applicable for this estimator_func), emits a
+        ``UserWarning`` instead of silently returning an under-covering
+        interval. Root-caused via real judge-pair data (2026-07-23): on
+        noisy/discrete real data, the bootstrap needed n_lab >~ 50 before
         Type-I error settled near nominal alpha, while the analytic path
         reached the same target by n_lab ~= 25-30 -- it doesn't need to
         approximate a sampling distribution from a small empirical
         resample, since it plugs sample variances directly into a known
-        (Student's t) distributional form instead. For
-        ``paired_walsh_midrank_theta`` specifically, "analytic" narrows
-        wilcoxon's CI/improves its calibration ONLY at small n_lab (via
-        this same mechanism); it does NOT close the ~2.6-2.8x wider-CI gap
-        this estimand has vs. ``np.mean`` at n_lab>=30 (both on the
-        bootstrap path there) -- that gap was root-caused to the
-        Walsh-average estimand's genuinely higher finite-sample variance,
-        not a fixable bootstrap-construction inefficiency; see
-        :func:`_analytic_walsh_theta_correct`'s docstring for the full
-        evidence.
+        (Student's t) distributional form instead. ``np.mean`` keeps
+        exactly this n_lab<30 gate, unchanged -- its own threshold was
+        validated on its own terms and this investigation didn't revisit
+        that evidence.
+
+        ``paired_walsh_midrank_theta`` is different: as of 2026-08-02 it
+        uses "analytic" at EVERY n_lab, not just below 30. Earlier
+        (2026-08-01) this docstring stated that "analytic" narrowed
+        wilcoxon's CI ONLY at small n_lab and did NOT close a ~2.6-2.8x
+        wider-CI gap vs. ``np.mean`` at n_lab>=30 -- that finding compared
+        analytic against bootstrap ONLY below n_lab=30 (where analytic
+        already activated) and never checked whether extending analytic
+        PAST 30 would behave differently; it hadn't been tested. It has
+        now: a head-to-head at n_lab=30/60/90/130 (same estimand, same
+        drawn data, only the CI construction differing -- continuous/
+        likert good-judge synthetic data, 200 reps, n_boot=1500) found
+        analytic beats bootstrap on POWER at every point, by a WIDENING
+        margin (e.g. continuous: lift over bootstrap +0.105/+0.275/+0.540/
+        +0.830 at n_lab=30/60/90/130; likert: +0.050/+0.245/+0.445/+0.730)
+        -- bootstrap's own power is in fact non-monotonic, peaking around
+        n_lab=60 and falling back off by n_lab=130 (continuous:
+        0.390->0.505->0.415->0.150; likert: 0.370->0.525->0.465->0.245),
+        while analytic's power climbs smoothly and monotonically
+        (continuous: 0.495->0.780->0.955->0.980). Type-I calibration was
+        statistically indistinguishable between the two backends at every
+        point checked (16 cells, all within ordinary Monte Carlo noise of
+        nominal 5%, no systematic degradation either direction). The
+        earlier "not a fixable bootstrap-construction inefficiency"
+        framing is therefore SUPERSEDED for the power question
+        specifically: it was accurate as a description of "does switching
+        CONSTRUCTION at the SAME n_lab<30 threshold change n_lab>=30
+        behavior" (no, because analytic never ran there before), but
+        wrong as a claim that no CI-construction change could help --
+        extending WHERE the analytic construction applies does help,
+        substantially. See :func:`_analytic_walsh_theta_correct`'s
+        docstring for the full numbers, the oracle-variance re-validation
+        extended to n_lab=90/130/200, and an unconfirmed working
+        hypothesis for WHY bootstrap's power specifically degrades at
+        larger n_lab for this estimand.
 
     Returns
     -------
@@ -1008,7 +1177,9 @@ def correct(
             f"X_lab={'given' if X_lab is not None else None}."
         )
     use_analytic = backend == "analytic" or (
-        backend == "auto" and _analytic_available and n_lab < _MIN_LAB_RECOMMENDED
+        backend == "auto" and _analytic_available and (
+            n_lab < _MIN_LAB_RECOMMENDED or id(estimator_func) in _ANALYTIC_ALWAYS_PREFERRED
+        )
     )
     if not use_analytic and n_lab < _MIN_LAB_RECOMMENDED:
         warnings.warn(

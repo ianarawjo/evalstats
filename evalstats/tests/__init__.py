@@ -3435,25 +3435,45 @@ def wilcoxon(
     closely, and a normal approximation from the same bootstrap replicates
     gave essentially the same CI width as the percentile interval) -- see
     :func:`evalstats.ppi._analytic_walsh_theta_correct`'s docstring for
-    the full investigation. The new analytic backend above does NOT close
-    this gap (it targets calibration, not power, and the underlying
-    variance difference is real, not a construction artifact); at
-    n_lab>=30 (both old and new constructions on the bootstrap path there)
-    the label-efficiency lift numbers are unchanged. At n_lab<30, where
-    the analytic path activates, it gives a small but real (direction-
-    consistent across independent re-runs at two different precisions,
-    not just Monte Carlo noise) REDUCTION in lift vs. the old bootstrap
-    -- continuous n_lab=15: +0.060 old -> +0.025 new; likert n_lab=15:
-    +0.105 old -> +0.085 new (200 reps, n_boot=2000, official precision;
-    an earlier lower-precision 150-rep pass showed the same direction,
-    +0.067->+0.053 and +0.113->+0.107) -- the cost of properly fixing
-    calibration rather than relying on the old bootstrap's own mild
-    small-n_lab over-rejection for "free" extra power. This power-lift
-    gap is believed NOT cleanly fixable
-    without a fundamentally different estimand or bootstrap construction,
-    matching this estimand's general history (see
-    ``paired_walsh_midrank_theta``'s docstring) of prior attempted fixes
-    each trading one problem for another.
+    the full investigation. As of 2026-08-01, the (then-new) analytic
+    backend did NOT close this gap at n_lab>=30 -- it only activated below
+    n_lab=30, so n_lab>=30 was unaffected by it (still bootstrap); at
+    n_lab<30, where it DID activate, it gave a small REDUCTION in lift vs.
+    the old bootstrap (continuous n_lab=15: +0.060 old -> +0.025 new;
+    likert n_lab=15: +0.105 old -> +0.085 new) -- the cost of properly
+    fixing calibration rather than relying on the old bootstrap's own mild
+    small-n_lab over-rejection for "free" extra power. At the time, this
+    gap was believed NOT cleanly fixable without a fundamentally different
+    estimand or bootstrap construction.
+
+    UPDATE (2026-08-02): that belief was wrong, or at least incomplete --
+    the fix wasn't a different estimand, it was applying the SAME analytic
+    construction to a WIDER n_lab range than the 2026-08-01 investigation
+    tried. A head-to-head at n_lab=30/60/90/130 (analytic vs. bootstrap,
+    same estimand, same drawn data) found analytic wins on power at every
+    point by a widening margin (e.g. continuous: bootstrap power
+    0.390/0.505/0.415/0.150 vs. analytic 0.495/0.780/0.955/0.980 at
+    n_lab=30/60/90/130 respectively -- bootstrap's own power is in fact
+    non-monotonic, peaking near n_lab=60 and falling back off, while
+    analytic's climbs smoothly and monotonically), with Type-I calibration
+    statistically indistinguishable between the two backends at every
+    point checked (200 reps, both eval types). ``paired_walsh_midrank_
+    theta`` -- this function's default estimand -- now uses the analytic
+    backend at EVERY n_lab (see ``evalstats.ppi._ANALYTIC_ALWAYS_
+    PREFERRED``), not just below 30. The residual small-n_lab (~15)
+    extreme-tie Type-I inflation documented above is UNAFFECTED by this
+    (it was already on the analytic path); real appstore data at the newly
+    -affected n_lab=30/60 showed no calibration regression either (close
+    to nominal, no systematic bootstrap-vs-analytic difference). See
+    ``evalstats.ppi._analytic_walsh_theta_correct``'s docstring for the
+    full numbers, the oracle-variance re-validation extended to
+    n_lab=90/130/200, and an unconfirmed working hypothesis for why
+    bootstrap's power specifically degrades at larger n_lab here. The gap
+    to mean-based estimands (paired_t/ttest_welch/mwu) may not be fully
+    closed -- it was not independently re-measured end-to-end after this
+    change -- but the mechanism previously believed unfixable without a
+    different estimand turned out to be fixable via CI construction alone,
+    once applied to the right n_lab range.
 
     Experimental alternative (``method="hajek_experimental"``): builds a
     fixed, full-sample LLM score transform
