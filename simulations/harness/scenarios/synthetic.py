@@ -1966,9 +1966,47 @@ meaningful headroom below saturation at the N_lab range this feeds."""
 
 
 def _ppi_power_baseline(eval_type: str) -> dict:
+    """`llm_noise` is `_jb_bias_magnitude(eval_type, 0.20)` -- a FRACTION of
+    `eval_type`'s own EVAL_TYPE_SCALE_BOUNDS span, matching the convention
+    `bias_delta` below already uses (and the convention
+    `build_ppi_factorial_sources` already independently applied to its own
+    llm_noise grid, anchored at this same 0.20 baseline -- see
+    PPI_FACTORIAL_NOISE_LEVELS' docstring).
+
+    FIXED 2026-08-02 (was previously a literal, unscaled `llm_noise=0.20`
+    applied identically to every eval type -- the exact class of bug
+    `_jb_bias_magnitude`'s own docstring already documents and warns
+    against for `bias_delta`, just never migrated here for `llm_noise`).
+    Confirmed via simulation this was the actual root cause -- not eval
+    type, not any specific test (paired_t/ttest_welch/mwu/wilcoxon all
+    showed it identically) -- of a "continuous data's PPI-corrected power
+    barely beats human_subset-only, but grades doesn't show this" finding
+    in build_ppi_comparison_label_frac_sources/build_ppi_power_sources'
+    5-way estimator comparison: a flat SD of 0.20 is close to 2x the
+    default continuous shape's own population SD (~0.121, giving the
+    simulated judge a signal-to-noise ratio of only ~0.6 -- noise
+    EXCEEDING signal) but under 1% of grades' default shape's SD (~20,
+    SNR~100 -- an essentially noiseless judge). Since PPI's power
+    advantage over human_subset-alone scales with judge informativeness,
+    this single unconverted unit fully explained the asymmetry -- verified
+    directly by swapping ONLY the noise level (holding truth shape fixed)
+    between the two eval types and watching each fully reproduce the
+    other's pattern in both directions. This changes the REALIZED
+    llm_noise for every caller that doesn't explicitly override it
+    (build_ppi_power_sources/_reinforcing/_nobias, build_ppi_comparison_
+    label_frac_sources, build_ppi_power_nlab_grid_*) -- e.g. likert's
+    noise goes from raw 0.20 (5% of its 1-5 span) to 0.80 (still 20% of
+    that span, an actually-comparable severity to continuous's). Not a
+    side effect to overlook when comparing against pre-fix saved runs.
+    build_ppi_label_efficiency_sources is UNAFFECTED (it always overrides
+    llm_noise immediately after calling this, via its own separately-
+    convention'd PPI_LABEL_EFF_NOISE_LEVELS -- worth reconciling
+    separately if that turns out to have the same unconverted-unit issue,
+    not addressed here)."""
     return dict(
         eval_type=eval_type, icc=0.20, n=100, label_frac=0.20,
-        llm_noise=0.20, bias_type="differential", bias_delta=_jb_bias_magnitude(eval_type),
+        llm_noise=_jb_bias_magnitude(eval_type, 0.20), bias_type="differential",
+        bias_delta=_jb_bias_magnitude(eval_type),
     )
 
 
