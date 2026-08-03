@@ -3423,22 +3423,47 @@ def generate_judge_bias_cell(
 
     def _marginal(n: int, effect: float = 0.0) -> np.ndarray:
         """Independent single-group truth draw, optionally shifted by
-        `effect`. Binary routes the shift through sample_group_truth's
-        `effects` parameter, which shifts the base PASS RATE before the
-        Bernoulli draw (clipped to [0, 1]) -- the same mechanism the
-        repeated-measures path (_repeated, below) already uses correctly.
-        Adding `effect` to the REALIZED {0, 1} outcome afterward, the way
-        every other eval type does, would push binary truth outside {0, 1}
-        for any nonzero effect; effect=0.0 (the only value this function
-        was ever called with for binary before it gained an `effect`
-        parameter) is numerically identical either way, so this doesn't
-        change existing Type-I (es=0.0) results, only newly enables es!=0
-        for binary."""
-        if scenario.eval_type == "binary":
-            return sample_group_truth(
-                shape, n, 1, 1, 1.0, rng, effects=np.array([effect]), likert_max=scenario.likert_max,
-            )[0, :, 0]
-        return sample_group_truth(shape, n, 1, 1, 1.0, rng, likert_max=scenario.likert_max)[0, :, 0] + effect
+        `effect`, via sample_group_truth's own `effects` parameter -- which
+        shifts the LATENT value (base pass rate for binary, before its
+        Bernoulli draw; the pre-rounding/pre-clamping latent Normal for
+        likert/grades) before _finish's clamp/round step, the same
+        mechanism _repeated (below) already uses correctly for every eval
+        type.
+
+        BUG FIXED 2026-08-03: the non-binary branch used to compute
+        sample_group_truth(effect=0) (i.e. the fully rounded/clamped
+        REALIZED value) and add `effect` to THAT afterward, instead of
+        threading it through `effects` like the binary branch already did.
+        For continuous/grades (clamp-only, no rounding) this was nearly
+        harmless -- clamping is a no-op away from the [0,1]/[0,100]
+        boundary, so post-clamp shift almost always equals pre-clamp shift.
+        For LIKERT it was NOT harmless: rounding-to-nearest-integer touches
+        EVERY draw, not just boundary cases, so adding `effect` to an
+        ALREADY-ROUNDED integer produces a non-integer "integer + effect"
+        value (confirmed directly: group B's realized truth values were
+        exactly {1, 2, 3, 4, 5} + a constant fractional offset, not
+        properly re-rounded integers) -- creating an ARTIFICIAL, near-
+        perfect tie-breaking pattern between the two groups at every
+        shared "level" for ANY nonzero effect, however tiny. This is what
+        was actually behind a severe MWU/Kruskal-specific (independent-
+        groups rank tests; wilcoxon/friedman use the unaffected _repeated
+        path) power discontinuity on likert data: power jumping from a
+        correctly-nominal ~6% at the true null straight to ~60-85% at the
+        smallest tested nonzero effect_size, then plateauing instead of
+        climbing -- confirmed to reproduce on PURE ORACLE TRUTH data (a
+        plain scipy.stats.mannwhitneyu on the dense truth arrays, zero PPI
+        machinery, zero judge noise involved), which is what pinned this
+        down as a truth-GENERATION bug rather than anything in the PPI
+        correction code (the "global"/"local"/"ridge"/"adaptive" rectifier
+        investigations earlier this session were all built on top of a
+        test statistic that already had this artifact baked in beneath
+        it). Binary was already unaffected (see its own reasoning above,
+        now shared by every eval type): adding effect to a REALIZED {0,1}
+        outcome would push it outside {0,1}, so it always routed through
+        `effects` correctly."""
+        return sample_group_truth(
+            shape, n, 1, 1, 1.0, rng, effects=np.array([effect]), likert_max=scenario.likert_max,
+        )[0, :, 0]
 
     def _repeated(n: int, n_conditions: int, effects: np.ndarray) -> np.ndarray:
         return sample_group_truth(
