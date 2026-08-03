@@ -924,19 +924,17 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # worse than plain MWU on this check, never better, for reasons that
     # have nothing to do with either method's actual quality.
     #
-    # MWU_ADAPTIVE (added 2026-08-02) included alongside MWU despite the
-    # MCAR-by-construction reasoning above: it should REDUCE to MWU (the
-    # "global" branch) on this repo's continuous/graded corpora (arena,
-    # wmt_da, privacy_judge, iclr_metareview -- unique_fraction close to
-    # 1.0), so no cost expected there. appstore (1-5 stars, discrete) is
-    # the interesting cell -- it's Likert-like enough to trip the
-    # discreteness threshold and dispatch to the local rectifier, so this
-    # check is exactly where adaptive would pay the same MCAR calibration/
-    # power cost the comment above says MWU_MNAR_EXPERIMENTAL would (for
-    # zero MNAR benefit, since real labeling here is MCAR) -- worth seeing
-    # on genuine human data rather than only synthetic.
+    # MWU_ADAPTIVE/MWU_RIDGE EXCLUDED as of 2026-08-03 (were briefly
+    # included 2026-08-02 while under active investigation -- see
+    # evalstats.tests.mannwhitney's method docstring for the full history
+    # of both, ultimately not adopted as mannwhitney()'s default). This
+    # official pathway now shows only the actual default (plain MWU,
+    # method="global"), matching PPI_OFFICIAL_TEST_METHODS' own exclusion
+    # of every non-default MWU variant in methods.py. Both remain fully
+    # runnable via this same function for anyone deliberately re-running
+    # that investigation -- only the OFFICIAL set changed.
     base = [TTEST.name, TTEST_WELCH.name]
-    return base if eval_type == "binary" else base + [MWU.name, MWU_ADAPTIVE.name, MWU_RIDGE.name]
+    return base if eval_type == "binary" else base + [MWU.name]
 
 
 def _has_standard_test(results: list) -> bool:
