@@ -43,6 +43,12 @@ class AlignmentResult:
         Point estimates and bootstrap CIs for each alignment metric.
     representativeness : dict
         Representativeness check results (distribution and slice columns).
+    bias_check : dict or None
+        For likert/continuous/grade score types, compares the correlation-type
+        metric (weighted κ or Pearson r) against ICC(2,1) to flag whether the
+        judge is systematically biased in absolute scale despite tracking
+        human relative ordering.  ``None`` for binary score types, where ICC
+        isn't computed.
     """
 
     def __init__(
@@ -56,6 +62,7 @@ class AlignmentResult:
         calibration: dict,
         alignment_metrics: dict,
         representativeness: dict,
+        bias_check: Optional[dict] = None,
     ) -> None:
         self.llm_metric = llm_metric
         self.human_col = human_col
@@ -65,6 +72,7 @@ class AlignmentResult:
         self._calibration = calibration
         self.alignment_metrics = alignment_metrics
         self.representativeness = representativeness
+        self.bias_check = bias_check
 
     # ── sampling ─────────────────────────────────────────────────────────────
 
@@ -130,17 +138,96 @@ class AlignmentResult:
 
     # ── display ──────────────────────────────────────────────────────────────
 
-    def summary(self) -> None:
-        """Print a plain-language alignment and representativeness report."""
-        width = 58
-        print("Judge alignment report")
-        print("─" * width)
+    def summary(self, verbose: bool = False) -> None:
+        """Print an alignment and representativeness report.
+
+        Parameters
+        ----------
+        verbose : bool
+            If ``False`` (default), print a short, plain-language report:
+            one line per check/metric, with an explanation only where
+            something looks off. Aimed at readers who don't need the
+            statistical background spelled out every time.
+            If ``True``, print the full report — every metric's definition,
+            why it was chosen, how to interpret it, and citation-ready
+            wording for a paper.
+        """
+        if verbose:
+            self._summary_verbose()
+        else:
+            self._summary_simple()
+
+    def _header(self) -> None:
         pct = 100.0 * self.n_labeled / self.n_total if self.n_total > 0 else 0.0
+        print("Judge alignment report")
+        print("─" * 58)
         print(
             f"Alignment set  : {self.n_labeled} of {self.n_total} items "
             f"have human labels ({pct:.1f}%)"
         )
         print()
+
+    def _summary_simple(self) -> None:
+        self._header()
+
+        if self.bias_check is not None:
+            bc = self.bias_check
+            if not bc["passed"]:
+                print(
+                    f"⚠ Possible judge bias: {bc['corr_label']} = "
+                    f"{bc['corr_estimate']:.2f} but ICC(2,1) = {bc['icc_estimate']:.2f} "
+                    "— the judge ranks items like humans do, but its raw scores "
+                    "look shifted or compressed relative to human scores."
+                )
+                print(
+                    "  Treat raw judge scores with caution; consider "
+                    "recalibrating (compare(alignment=...)) before using them "
+                    "directly. Run .summary(verbose=True) for the full check."
+                )
+            else:
+                print(
+                    f"✓ No sign of judge bias: {bc['corr_label']} and ICC(2,1) "
+                    "roughly agree."
+                )
+            print()
+
+        rep = self.representativeness
+        rep_failed = [
+            (k, v) for k, v in rep.items() if not v["passed"]
+        ]
+        if rep_failed:
+            print("⚠ Representativeness: the labeled sample may not be representative")
+            for key, val in rep_failed:
+                name = "score distribution" if key == "score_distribution" else key[len("slice_"):]
+                print(f"    - {name}: {val['message']}")
+        else:
+            print("✓ Representativeness: labeled items look like the full item pool")
+        print()
+
+        score_type_note = _SCORE_TYPE_NOTES.get(
+            self.score_type, f"score type detected as {self.score_type!r}"
+        )
+        print(f"Alignment metrics ({self.score_type} scores — {score_type_note}):")
+        for entry in self.alignment_metrics.values():
+            label = entry.get("label", "")
+            est = entry["estimate"]
+            lo = entry["ci_low"]
+            hi = entry["ci_high"]
+            band = entry.get("band")
+            tail = f"  {band}" if band else ""
+            print(f"  {label:<20} {est:6.2f}  [{lo:5.2f}, {hi:5.2f}]{tail}")
+        print()
+        print("Run .summary(verbose=True) for definitions, rationale, and")
+        print("citation-ready wording for each check above.")
+        print("─" * 58)
+
+    def _summary_verbose(self) -> None:
+        self._header()
+
+        if self.bias_check is not None and not self.bias_check["passed"]:
+            print(f"⚠ Judge bias flag: {self.bias_check['message']}")
+            print("   (see 'Bias diagnostics' below for details)")
+            print()
 
         # Representativeness
         rep = self.representativeness
@@ -196,7 +283,12 @@ class AlignmentResult:
             if example:
                 print(f"      -> Example paper reporting: {example}")
             print()
-        print("─" * width)
+
+        if self.bias_check is not None:
+            print("Bias diagnostics:")
+            _print_check("Judge scale bias (correlation vs. ICC)", self.bias_check)
+
+        print("─" * 58)
 
     def __repr__(self) -> str:
         return (
@@ -299,7 +391,7 @@ _SCORE_TYPE_NOTES = {
 }
 
 
-def _interpret_kappa(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str]:
+def _interpret_kappa(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str, str]:
     """Landis & Koch (1977) benchmarks for kappa-type statistics."""
     if est < 0:
         band = "poor"
@@ -313,16 +405,17 @@ def _interpret_kappa(est: float, lo: float, hi: float, n: int, label: str) -> tu
         band = "substantial"
     else:
         band = "almost perfect"
+    band_phrase = f"{band} agreement"
     interpretation = f"{band} agreement (Landis & Koch, 1977 benchmarks)"
     example = (
         f'"{label} = {est:.2f}, 95% CI [{lo:.2f}, {hi:.2f}] (n={n}), indicating '
         f'{band} agreement between the LLM judge and human raters, per the Landis '
         f'& Koch (1977) benchmarks."'
     )
-    return interpretation, example
+    return band_phrase, interpretation, example
 
 
-def _interpret_corr(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str]:
+def _interpret_corr(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str, str]:
     """Cohen (1988) conventions for correlation-coefficient magnitude."""
     a = abs(est)
     if a < 0.10:
@@ -334,16 +427,37 @@ def _interpret_corr(est: float, lo: float, hi: float, n: int, label: str) -> tup
     else:
         band = "large"
     direction = "positive" if est >= 0 else "negative"
-    interpretation = f"{band} {direction} correlation (Cohen, 1988 conventions)"
+    band_phrase = f"{band} {direction} correlation"
+    interpretation = f"{band_phrase} (Cohen, 1988 conventions)"
     example = (
         f'"{label} = {est:.2f}, 95% CI [{lo:.2f}, {hi:.2f}] (n={n}), a {band} '
         f'{direction} correlation between the LLM judge and human scores (Cohen, '
         f'1988 conventions)."'
     )
-    return interpretation, example
+    return band_phrase, interpretation, example
 
 
-def _interpret_pct_agreement(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str]:
+def _interpret_icc(est: float, lo: float, hi: float, n: int, label: str) -> tuple[str, str, str]:
+    """Koo & Li (2016) benchmarks for ICC magnitude."""
+    if est < 0.50:
+        band = "poor"
+    elif est < 0.75:
+        band = "moderate"
+    elif est < 0.90:
+        band = "good"
+    else:
+        band = "excellent"
+    band_phrase = f"{band} absolute agreement"
+    interpretation = f"{band_phrase} (Koo & Li, 2016 benchmarks)"
+    example = (
+        f'"{label} = {est:.2f}, 95% CI [{lo:.2f}, {hi:.2f}] (n={n}), indicating '
+        f'{band} absolute agreement between the LLM judge and human raters, per '
+        f'Koo & Li (2016) benchmarks."'
+    )
+    return band_phrase, interpretation, example
+
+
+def _interpret_pct_agreement(est: float, lo: float, hi: float, n: int, label: str) -> tuple[Optional[str], str, str]:
     interpretation = (
         "no universally-agreed threshold exists for raw percent agreement — read it "
         "alongside Cohen's κ, since it does not correct for chance and can look high "
@@ -353,7 +467,7 @@ def _interpret_pct_agreement(est: float, lo: float, hi: float, n: int, label: st
         f'"the LLM judge matched human labels on {est * 100:.1f}% of items, 95% CI '
         f'[{lo * 100:.1f}%, {hi * 100:.1f}%] (n={n})."'
     )
-    return interpretation, example
+    return None, interpretation, example
 
 
 def _bootstrap_ci_2(
@@ -374,6 +488,134 @@ def _bootstrap_ci_2(
     lo = float(np.percentile(boot, 100.0 * alpha / 2))
     hi = float(np.percentile(boot, 100.0 * (1.0 - alpha / 2)))
     return obs, lo, hi
+
+
+def _icc_21(a: np.ndarray, b: np.ndarray) -> float:
+    """Shrout & Fleiss (1979) ICC(2,1): two-way random effects, single rater,
+    absolute agreement, for exactly two raters (``a``, ``b``).
+
+    Unlike Pearson/Spearman r or weighted kappa's category-index distance,
+    this is sensitive to a systematic offset or scale mismatch between the
+    two raters — it measures whether they land on the same absolute values,
+    not just whether they move together.
+    """
+    n = len(a)
+    data = np.column_stack([a, b]).astype(float)
+    k = 2
+    grand_mean = data.mean()
+    row_means = data.mean(axis=1)
+    col_means = data.mean(axis=0)
+
+    df_row = max(n - 1, 1)
+    SSR = k * np.sum((row_means - grand_mean) ** 2)
+    SSC = n * np.sum((col_means - grand_mean) ** 2)  # (k-1) == 1
+    SST = np.sum((data - grand_mean) ** 2)
+    SSE = SST - SSR - SSC
+
+    MSR = SSR / df_row
+    MSC = SSC
+    MSE = SSE / df_row  # (n-1)(k-1) == n-1
+
+    denom = MSR + MSE + 2.0 * (MSC - MSE) / n
+    if denom <= 1e-12:
+        return 1.0
+    return float((MSR - MSE) / denom)
+
+
+def _bootstrap_ci_gap(
+    fn_corr,
+    fn_icc,
+    a: np.ndarray,
+    b: np.ndarray,
+    *,
+    n_boot: int = 2000,
+    alpha: float = 0.05,
+    rng: np.random.Generator,
+) -> tuple[float, float, float]:
+    """Paired bootstrap CI for (correlation-type metric − ICC(2,1)).
+
+    Resamples items once per draw and evaluates both statistics on the same
+    resample, so the CI reflects the sampling distribution of the *gap*
+    itself, not the (looser, more conservative) union of two independently
+    bootstrapped CIs.
+    """
+    n = len(a)
+    obs = float(fn_corr(a, b) - fn_icc(a, b))
+    boot = np.empty(n_boot)
+    for i in range(n_boot):
+        idx = rng.integers(0, n, size=n)
+        boot[i] = fn_corr(a[idx], b[idx]) - fn_icc(a[idx], b[idx])
+    lo = float(np.percentile(boot, 100.0 * alpha / 2))
+    hi = float(np.percentile(boot, 100.0 * (1.0 - alpha / 2)))
+    return obs, lo, hi
+
+
+def _build_bias_check(
+    corr_label: str,
+    corr_est: float,
+    icc_est: float,
+    gap_est: float,
+    gap_lo: float,
+    gap_hi: float,
+) -> dict:
+    """Package the correlation-vs-ICC(2,1) discrepancy check into a dict with
+    the same shape as the representativeness checks, so it can be rendered
+    with the same ``_print_check`` helper in ``AlignmentResult.summary()``.
+    """
+    flagged = gap_lo > 0.0
+    if flagged:
+        message = (
+            f"possible judge bias: {corr_label} = {corr_est:.3f} but "
+            f"ICC(2,1) = {icc_est:.3f} (gap = {gap_est:.3f}, 95% CI "
+            f"[{gap_lo:.3f}, {gap_hi:.3f}], excludes 0)"
+        )
+    else:
+        message = (
+            f"no evidence of scale bias: {corr_label} = {corr_est:.3f} and "
+            f"ICC(2,1) = {icc_est:.3f} are consistent (gap 95% CI "
+            f"[{gap_lo:.3f}, {gap_hi:.3f}] includes 0)"
+        )
+    what = (
+        f"Compares {corr_label}, which is insensitive to a systematic offset "
+        "or scale difference between judge and human scores, against "
+        "ICC(2,1), which penalizes exactly that. A paired bootstrap CI is "
+        "used so the comparison reflects the sampling distribution of the "
+        "gap itself rather than the union of two separate CIs."
+    )
+    why = (
+        "A correlation-type metric can look strong even when a judge is "
+        "systematically shifted or compressed relative to human scores, "
+        "since it only requires the two to move together. This check exists "
+        "to catch that failure mode before it's mistaken for genuine "
+        "agreement."
+    )
+    if flagged:
+        interpretation = (
+            "the judge tracks human relative ordering but disagrees on "
+            "absolute scale — treat raw judge scores as biased; consider "
+            "using the Bayesian calibration model fit by validate_alignment "
+            "(e.g. via compare(alignment=...)) to correct for it before "
+            "drawing conclusions from raw judge scores"
+        )
+    else:
+        interpretation = (
+            "the correlation and absolute-agreement metrics tell a "
+            "consistent story — no sign that the judge's ranking ability is "
+            "masking a scale or offset problem"
+        )
+    return {
+        "passed": not flagged,
+        "message": message,
+        "corr_label": corr_label,
+        "corr_estimate": corr_est,
+        "icc_estimate": icc_est,
+        "gap": gap_est,
+        "gap_ci_low": gap_lo,
+        "gap_ci_high": gap_hi,
+        "what": what,
+        "why": why,
+        "interpretation": interpretation,
+    }
 
 
 def _compute_alignment_metrics(
@@ -399,10 +641,11 @@ def _compute_alignment_metrics(
             return (p_o - p_e) / (1.0 - p_e) if p_e < 1.0 else 1.0
 
         est, lo, hi = _bootstrap_ci_2(agree, llm, human, alpha=alpha, rng=rng)
-        interp, example = _interpret_pct_agreement(est, lo, hi, len(llm), "Percent agreement")
+        band, interp, example = _interpret_pct_agreement(est, lo, hi, len(llm), "Percent agreement")
         metrics["percent_agreement"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Percent agreement",
+            "band": band,
             "what": (
                 "The fraction of items where the LLM judge's label exactly matches "
                 "the human label."
@@ -415,10 +658,11 @@ def _compute_alignment_metrics(
             "example": example,
         }
         est, lo, hi = _bootstrap_ci_2(kappa, llm, human, alpha=alpha, rng=rng)
-        interp, example = _interpret_kappa(est, lo, hi, len(llm), "Cohen's κ")
+        band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Cohen's κ")
         metrics["cohens_kappa"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Cohen's κ",
+            "band": band,
             "what": (
                 "Percent agreement adjusted for the rate of agreement expected from "
                 "two raters guessing at random, given the observed marginal label "
@@ -457,10 +701,11 @@ def _compute_alignment_metrics(
 
         if k >= 2:
             est, lo, hi = _bootstrap_ci_2(wk, llm, human, alpha=alpha, rng=rng)
-            interp, example = _interpret_kappa(est, lo, hi, len(llm), "Weighted Cohen's κ")
+            band, interp, example = _interpret_kappa(est, lo, hi, len(llm), "Weighted Cohen's κ")
             metrics["weighted_kappa"] = {
                 "estimate": est, "ci_low": lo, "ci_high": hi,
                 "label": "Weighted Cohen's κ",
+                "band": band,
                 "what": (
                     "Cohen's κ extended so that disagreements receive larger penalties "
                     "as ratings become farther apart on the ordinal scale (Cohen, 1968)."
@@ -475,10 +720,11 @@ def _compute_alignment_metrics(
                 "example": example,
             }
         est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
-        interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
+        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Spearman r",
+            "band": band,
             "what": (
                 "Rank correlation between judge and human scores — checks whether "
                 "higher judge scores correspond to higher human scores, without "
@@ -493,6 +739,36 @@ def _compute_alignment_metrics(
             "example": example,
         }
 
+        if k >= 2:
+            icc_est, icc_lo, icc_hi = _bootstrap_ci_2(_icc_21, llm, human, alpha=alpha, rng=rng)
+            band, interp, example = _interpret_icc(icc_est, icc_lo, icc_hi, len(llm), "ICC(2,1)")
+            metrics["icc_21"] = {
+                "estimate": icc_est, "ci_low": icc_lo, "ci_high": icc_hi,
+                "label": "ICC(2,1)",
+                "band": band,
+                "what": (
+                    "Two-way random-effects intraclass correlation for absolute "
+                    "agreement (Shrout & Fleiss, 1979): unlike weighted κ's "
+                    "category-index distance or Spearman r's rank comparison, it "
+                    "is sensitive to a systematic offset between the judge and "
+                    "human scale, not just whether they move together."
+                ),
+                "why": (
+                    "Computed alongside weighted κ to check for absolute-scale "
+                    "bias: a judge that ranks items correctly but is shifted or "
+                    "compressed relative to human scores can still get a high "
+                    "weighted κ / Spearman r while scoring poorly here."
+                ),
+                "interpretation": interp,
+                "example": example,
+            }
+
+            gap_est, gap_lo, gap_hi = _bootstrap_ci_gap(wk, _icc_21, llm, human, alpha=alpha, rng=rng)
+            metrics["_bias_check"] = _build_bias_check(
+                "Weighted Cohen's κ", metrics["weighted_kappa"]["estimate"],
+                icc_est, gap_est, gap_lo, gap_hi,
+            )
+
     else:  # continuous / grade
         def pe(a, b):
             r, _ = pearsonr(a, b)
@@ -503,10 +779,11 @@ def _compute_alignment_metrics(
             return float(r)
 
         est, lo, hi = _bootstrap_ci_2(pe, llm, human, alpha=alpha, rng=rng)
-        interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
+        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Pearson r")
         metrics["pearson_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Pearson r",
+            "band": band,
             "what": "Linear correlation coefficient between judge and human scores.",
             "why": (
                 "Your judge produces continuous/numeric scores, so a correlation "
@@ -516,10 +793,11 @@ def _compute_alignment_metrics(
             "example": example,
         }
         est, lo, hi = _bootstrap_ci_2(sp, llm, human, alpha=alpha, rng=rng)
-        interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
+        band, interp, example = _interpret_corr(est, lo, hi, len(llm), "Spearman r")
         metrics["spearman_r"] = {
             "estimate": est, "ci_low": lo, "ci_high": hi,
             "label": "Spearman r",
+            "band": band,
             "what": "Rank correlation between judge and human scores.",
             "why": (
                 "Reported alongside Pearson r to check whether agreement holds even "
@@ -529,6 +807,35 @@ def _compute_alignment_metrics(
             "interpretation": interp,
             "example": example,
         }
+
+        icc_est, icc_lo, icc_hi = _bootstrap_ci_2(_icc_21, llm, human, alpha=alpha, rng=rng)
+        band, interp, example = _interpret_icc(icc_est, icc_lo, icc_hi, len(llm), "ICC(2,1)")
+        metrics["icc_21"] = {
+            "estimate": icc_est, "ci_low": icc_lo, "ci_high": icc_hi,
+            "label": "ICC(2,1)",
+            "band": band,
+            "what": (
+                "Two-way random-effects intraclass correlation for absolute "
+                "agreement (Shrout & Fleiss, 1979): unlike Pearson/Spearman r, "
+                "which are invariant to any linear rescaling of one variable, "
+                "this is sensitive to a systematic offset or scale mismatch "
+                "between the judge and human scale."
+            ),
+            "why": (
+                "Computed alongside Pearson r to check for absolute-scale bias: "
+                "a judge that is consistently shifted or compressed relative to "
+                "human scores can still score a perfect Pearson r while "
+                "disagreeing badly here."
+            ),
+            "interpretation": interp,
+            "example": example,
+        }
+
+        gap_est, gap_lo, gap_hi = _bootstrap_ci_gap(pe, _icc_21, llm, human, alpha=alpha, rng=rng)
+        metrics["_bias_check"] = _build_bias_check(
+            "Pearson r", metrics["pearson_r"]["estimate"],
+            icc_est, gap_est, gap_lo, gap_hi,
+        )
 
     return metrics
 
@@ -756,6 +1063,7 @@ def validate_alignment(
     alignment_metrics = _compute_alignment_metrics(
         llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng
     )
+    bias_check = alignment_metrics.pop("_bias_check", None)
 
     # Representativeness: score distribution
     rep: dict = {}
@@ -801,4 +1109,5 @@ def validate_alignment(
         calibration=calibration,
         alignment_metrics=alignment_metrics,
         representativeness=rep,
+        bias_check=bias_check,
     )

@@ -218,7 +218,18 @@ def load_real_judge_bias_corpus(
         jm = r["judge_model"]
         if jm not in judge_models:
             continue
-        by_item_judge[(r["item_id"], jm)].append((float(r["human_label"]), float(r["judge_score"])))
+        judge_score = float(r["judge_score"])
+        if dataset == "privacy_judge":
+            # A small number of raw judge_score rows fall outside the
+            # dataset's declared native scale (1.0, 5.0) -- e.g. a judge
+            # occasionally producing 6.0, an out-of-rubric rating (confirmed
+            # 2026-08-05: exactly 1 of 3147 rows, no rows below 1.0). Left
+            # unclamped, _rescale below (no clipping of its own) would map
+            # 6.0 to 1.25 -- outside the [0, 1] range every downstream PPI
+            # correction assumes every rescaled score lives in. Clamp here,
+            # at ingestion, before any averaging/rescaling happens.
+            judge_score = min(max(judge_score, 1.0), 5.0)
+        by_item_judge[(r["item_id"], jm)].append((float(r["human_label"]), judge_score))
 
     all_items = sorted({item for (item, _jm) in by_item_judge.keys()})
     aligned_items = [item for item in all_items if all((item, jm) in by_item_judge for jm in judge_models)]
