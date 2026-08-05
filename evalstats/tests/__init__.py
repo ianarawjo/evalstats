@@ -2612,6 +2612,136 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
     )
 
 
+def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float):
+    """PPI correction for a single-sample mean estimand ``mean(a)`` on an
+    unbounded numeric scale, via the closed-form (no-bootstrap) analytic
+    construction -- evalstats.ppi._analytic_mean_correct -- applied at
+    EVERY n_lab (not just below _MIN_LAB_RECOMMENDED, unlike
+    _ppi_paired_bootstrap_t's own small-n_lab-only use of the same
+    function; see evalstats.ppi._ANALYTIC_ALWAYS_PREFERRED's precedent
+    for always preferring the closed form over a bootstrap for a mean-type
+    estimand). The single-sample sibling of _ppi_paired_t_interval and the
+    closed-form analogue of _ppi_single_bootstrap_t (identical estimand,
+    no bootstrap resampling at all).
+
+    A position is included in the labeled set only when ``a_lab[i]`` is
+    non-NaN.
+    """
+    from evalstats.ppi import _analytic_mean_correct
+
+    mask = ~np.isnan(a_lab)
+    if mask.sum() == 0:
+        raise ValueError("No positions have human labels in a_lab.")
+
+    all_values = np.asarray(a, dtype=float)
+    values_unlab = all_values[~mask]
+    values_lab_llm = all_values[mask]
+    values_lab_true = np.asarray(a_lab, dtype=float)[mask]
+
+    return _analytic_mean_correct(values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=False)
+
+
+def _ppi_paired_t_interval(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, alpha: float):
+    """PPI correction for a paired mean-difference estimand ``mean(a_i -
+    b_i)`` on an unbounded numeric scale, via the closed-form (no-
+    bootstrap) analytic construction -- the closed-form analogue of
+    _ppi_paired_bootstrap_t (identical estimand; that function already
+    delegates to this same evalstats.ppi._analytic_mean_correct below
+    _MIN_LAB_RECOMMENDED -- this function uses it unconditionally, at
+    every n_lab).
+
+    Pairing is by array position, matching _ppi_paired_bootstrap_t; a
+    position is included in the labeled set only when *both* ``a_lab[i]``
+    and ``b_lab[i]`` are non-NaN.
+    """
+    from evalstats.ppi import _analytic_mean_correct
+
+    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+    if mask.sum() == 0:
+        raise ValueError(
+            "No positions have human labels for both groups in a_lab and b_lab."
+        )
+
+    all_diffs = a - b
+    diffs_unlab = all_diffs[~mask]
+    diffs_lab_llm = all_diffs[mask]
+    diffs_lab_true = (a_lab - b_lab)[mask]
+
+    return _analytic_mean_correct(diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=False)
+
+
+def _ppi_single_logit_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, lo: float = 0.0, hi: float = 1.0):
+    """PPI correction for a single-sample mean estimand on a [lo, hi]-
+    bounded numeric scale (continuous/likert/grades), via the closed-form
+    logit-t construction -- evalstats.ppi._analytic_logit_t_correct.
+    Single-sample sibling of _ppi_paired_logit_t; [lo,hi]-bounded analogue
+    of _ppi_single_t_interval (identical closed-form point estimate/
+    variance -- only the CI's shape differs).
+
+    ``lo, hi`` default to (0.0, 1.0) -- the only range evalstats.api's PPI
+    alignment path currently supports (its data_kind="bounded_01" means
+    raw scores are LITERALLY in [0, 1] -- see
+    evalstats.api._run_alignment_ppi's is_bounded_01_scores check, which
+    has no score_range concept). The simulation harness (whose likert/
+    grades scenarios are NOT natively [0, 1]) passes its own
+    EVAL_TYPE_SCALE_BOUNDS[eval_type] explicitly instead.
+
+    A position is included in the labeled set only when ``a_lab[i]`` is
+    non-NaN.
+    """
+    from evalstats.ppi import _analytic_logit_t_correct
+
+    mask = ~np.isnan(a_lab)
+    if mask.sum() == 0:
+        raise ValueError("No positions have human labels in a_lab.")
+
+    all_values = np.asarray(a, dtype=float)
+    values_unlab = all_values[~mask]
+    values_lab_llm = all_values[mask]
+    values_lab_true = np.asarray(a_lab, dtype=float)[mask]
+
+    return _analytic_logit_t_correct(
+        values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=False, lo=lo, hi=hi,
+    )
+
+
+def _ppi_paired_logit_t(
+    a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, alpha: float,
+    lo: float = 0.0, hi: float = 1.0,
+):
+    """PPI correction for a paired mean-difference estimand on a [lo, hi]-
+    bounded numeric scale, via the closed-form logit-t construction. A
+    signed difference of two [lo, hi] scores spans [-(hi-lo), hi-lo], not
+    [lo, hi] itself -- rescaled the same way evalstats.core.paired's own
+    (non-PPI) "logit_t" pairwise-CI branch handles a paired logit-t CI:
+    diff bounds are derived from the SCORE's own [lo, hi] span, not
+    passed directly.
+
+    Pairing is by array position, matching _ppi_paired_t_interval; a
+    position is included in the labeled set only when *both* ``a_lab[i]``
+    and ``b_lab[i]`` are non-NaN.
+    """
+    from evalstats.ppi import _analytic_logit_t_correct
+
+    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
+    if mask.sum() == 0:
+        raise ValueError(
+            "No positions have human labels for both groups in a_lab and b_lab."
+        )
+
+    all_diffs = a - b
+    diffs_unlab = all_diffs[~mask]
+    diffs_lab_llm = all_diffs[mask]
+    diffs_lab_true = (a_lab - b_lab)[mask]
+
+    diff_span = hi - lo
+    diff_lo, diff_hi = -diff_span, diff_span
+
+    return _analytic_logit_t_correct(
+        diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=False, lo=diff_lo, hi=diff_hi,
+    )
+
+
 def _sanitize_multigroup_ppi_labels(
     groups: list[np.ndarray],
     groups_lab,

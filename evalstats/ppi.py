@@ -10,7 +10,10 @@ from dataclasses import dataclass
 from typing import Callable, Optional
 
 import numpy as np
+from scipy.special import expit as _sigmoid
 from scipy.stats import t as _t_dist
+
+from .core.resampling import _LOGIT_T_BOUNDARY_EPS
 
 _MIN_LAB_RECOMMENDED = 30
 """Below this many labeled items, the percentile bootstrap this module
@@ -597,48 +600,21 @@ def _analytic_walsh_theta_correct(
     )
 
 
-def _analytic_mean_correct(
-    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
-    alpha: float, power_tune: bool,
-) -> "PPIResult":
-    """Closed-form (delta-method) PPI correction for estimator_func=np.mean --
-    no bootstrap resampling at all. See correct()'s ``backend`` parameter
-    for when this replaces the percentile bootstrap.
+def _analytic_mean_point_se(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, power_tune: bool,
+) -> tuple[float, float, float, float, float, Optional[float], int]:
+    """Shared closed-form point-estimate/SE/df computation for a PPI mean
+    correction -- factored out of :func:`_analytic_mean_correct` so
+    :func:`_analytic_logit_t_correct` can reuse the IDENTICAL point-
+    estimate/variance derivation (only the CI construction differs: a
+    plain t-interval on the raw scale in ``_analytic_mean_correct`` vs. a
+    delta-method logit-scale transform in ``_analytic_logit_t_correct``)
+    without duplicating or re-deriving the variance algebra. See
+    ``_analytic_mean_correct``'s docstring for the closed-form lambda*/
+    variance derivation this implements, unchanged from before this was
+    split out (verified via a fixed-seed before/after comparison).
 
-    Root-caused via real judge-pair data (2026-07-23): the percentile
-    bootstrap needs roughly n_lab >= 50 on noisy/discrete real data before
-    Type-I error settles near nominal alpha; this closed-form path reaches
-    the same target by n_lab ~= 25-30, since it doesn't need to
-    approximate a sampling distribution from a small empirical resample --
-    it plugs sample variances directly into a known distributional form
-    (Student's t, df = n_lab - 1, since the labeled-subset term is the
-    bottleneck).
-
-    Point estimate is identical to the bootstrap path's (same f_unlab/
-    f_lab/f_hat_lab/rectifier definitions); only the variance/CI/p-value
-    construction differs.
-
-    power_tune's lambda* has a closed form here too (the ORIGINAL PPI++
-    derivation for a mean/OLS-type estimand -- Angelopoulos/Duchi/Zrnic
-    2023's own result, not an approximation of it): minimizing
-    Var(F_lab + lambda*(F_unlab - F_hat_lab)) over lambda, where F_unlab is
-    independent of (F_lab, F_hat_lab) by the disjointness requirement,
-    gives
-
-        lambda* = Cov(F_lab, F_hat_lab) / [Var(F_unlab) + Var(F_hat_lab)]
-
-    with F_lab/F_hat_lab/F_unlab the SAMPLE MEANS (not raw items) -- i.e.
-    Var(F_hat_lab) = var(Y_hat_lab, ddof=1)/n_lab, Cov(F_lab, F_hat_lab) =
-    cov(Y_lab, Y_hat_lab, ddof=1)/n_lab (paired at the item level, cross-
-    item covariance is 0 under i.i.d. sampling), Var(F_unlab) =
-    var(Y_hat_unlab, ddof=1)/n_all. correct()'s bootstrap path estimates
-    this SAME quantity by resampling, as a general-purpose stand-in that
-    works for arbitrary estimator_func; for the mean specifically this
-    closed form is exact, not an approximation, and needs no extra
-    bootstrap pass to get it. No small-n_lab shrinkage is applied (unlike
-    the bootstrap path's _POWER_TUNE_SHRINKAGE_C) -- that shrinkage exists
-    specifically to compensate for the bootstrap's own small-sample
-    weakness, which this path doesn't have.
+    Returns (estimate, se, f_unlab, f_lab, rectifier, lam_or_None, df).
     """
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
@@ -678,6 +654,59 @@ def _analytic_mean_correct(
     se = float(np.sqrt(var_estimate))
     df = max(n_lab - 1, 1)
 
+    return estimate, se, f_unlab, f_lab, rectifier, (lam if power_tune else None), df
+
+
+def _analytic_mean_correct(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
+    alpha: float, power_tune: bool,
+) -> "PPIResult":
+    """Closed-form (delta-method) PPI correction for estimator_func=np.mean --
+    no bootstrap resampling at all. See correct()'s ``backend`` parameter
+    for when this replaces the percentile bootstrap.
+
+    Root-caused via real judge-pair data (2026-07-23): the percentile
+    bootstrap needs roughly n_lab >= 50 on noisy/discrete real data before
+    Type-I error settles near nominal alpha; this closed-form path reaches
+    the same target by n_lab ~= 25-30, since it doesn't need to
+    approximate a sampling distribution from a small empirical resample --
+    it plugs sample variances directly into a known distributional form
+    (Student's t, df = n_lab - 1, since the labeled-subset term is the
+    bottleneck).
+
+    Point estimate is identical to the bootstrap path's (same f_unlab/
+    f_lab/f_hat_lab/rectifier definitions); only the variance/CI/p-value
+    construction differs. That shared point-estimate/variance/df
+    computation now lives in :func:`_analytic_mean_point_se` (this
+    function is a thin wrapper around it, building a plain t-interval);
+    see that function's own docstring for why it was split out.
+
+    power_tune's lambda* has a closed form here too (the ORIGINAL PPI++
+    derivation for a mean/OLS-type estimand -- Angelopoulos/Duchi/Zrnic
+    2023's own result, not an approximation of it): minimizing
+    Var(F_lab + lambda*(F_unlab - F_hat_lab)) over lambda, where F_unlab is
+    independent of (F_lab, F_hat_lab) by the disjointness requirement,
+    gives
+
+        lambda* = Cov(F_lab, F_hat_lab) / [Var(F_unlab) + Var(F_hat_lab)]
+
+    with F_lab/F_hat_lab/F_unlab the SAMPLE MEANS (not raw items) -- i.e.
+    Var(F_hat_lab) = var(Y_hat_lab, ddof=1)/n_lab, Cov(F_lab, F_hat_lab) =
+    cov(Y_lab, Y_hat_lab, ddof=1)/n_lab (paired at the item level, cross-
+    item covariance is 0 under i.i.d. sampling), Var(F_unlab) =
+    var(Y_hat_unlab, ddof=1)/n_all. correct()'s bootstrap path estimates
+    this SAME quantity by resampling, as a general-purpose stand-in that
+    works for arbitrary estimator_func; for the mean specifically this
+    closed form is exact, not an approximation, and needs no extra
+    bootstrap pass to get it. No small-n_lab shrinkage is applied (unlike
+    the bootstrap path's _POWER_TUNE_SHRINKAGE_C) -- that shrinkage exists
+    specifically to compensate for the bootstrap's own small-sample
+    weakness, which this path doesn't have.
+    """
+    estimate, se, f_unlab, f_lab, rectifier, lam, df = _analytic_mean_point_se(
+        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune,
+    )
+
     if se <= 0.0:
         ci_low = ci_high = estimate
         p_value = 1.0 if abs(estimate) < 1e-12 else 0.0
@@ -689,7 +718,110 @@ def _analytic_mean_correct(
     return PPIResult(
         estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
         llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
-        p_value=p_value, lam=(lam if power_tune else None),
+        p_value=p_value, lam=lam,
+    )
+
+
+def _analytic_logit_t_correct(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
+    alpha: float, power_tune: bool, lo: float = 0.0, hi: float = 1.0,
+) -> "PPIResult":
+    """Closed-form PPI correction for a [lo, hi]-bounded mean estimand, CI
+    constructed on the logit scale -- the PPI analogue of
+    evalstats.core.resampling.logit_t_ci_1d. Built the same way
+    _analytic_mean_correct is: IDENTICAL point-estimate/variance
+    derivation (delegated to _analytic_mean_point_se, shared with
+    _analytic_mean_correct -- the two differ ONLY in how the CI is built
+    from (estimate, se, df)), then a delta-method logit-scale t-interval
+    instead of a plain one:
+
+      1. Rescale (estimate, se) linearly onto [0, 1]: scaled = (x - lo) /
+         (hi - lo). Valid because a linear rescale commutes with taking a
+         sample mean/SE, so this does NOT require recomputing the point
+         estimate/variance on rescaled arrays from scratch.
+      2. logit(scaled_estimate), SE_logit = scaled_se / (scaled*(1-scaled))
+         -- literally logit_t_ci_1d's own delta-method step, applied to
+         PPI's corrected estimate/SE instead of a plain sample mean/SE.
+      3. t-interval on the logit scale, df = max(n_lab-1, 1) -- the SAME
+         df convention _analytic_mean_correct's plain t-interval uses
+         (the labeled-subset term is this estimator's variance
+         bottleneck either way).
+      4. Back-transform via sigmoid, rescale to [lo, hi].
+
+    Unlike logit_t_ci_1d's raw per-item values (guaranteed within [0, 1]
+    once each item itself is, by that function's own stricter raw-value
+    range check), PPI's corrected ESTIMATE is f_lab + lam*(f_unlab -
+    f_hat_lab) -- a signed combination NOT itself constrained to [lo, hi]
+    -- and CAN legitimately land outside it for a small/noisy labeled
+    subset (the same phenomenon _ppi_single_wilson's docstring notes for
+    its own p_hat_for_wilson clip). So instead of logit_t_ci_1d's
+    raise-on-out-of-range (a real raw-data-hygiene bug there), the
+    rescaled estimate here is clipped into [_LOGIT_T_BOUNDARY_EPS, 1 -
+    _LOGIT_T_BOUNDARY_EPS] before the logit transform when it lands at or
+    outside [0, 1] (with a UserWarning) -- reusing _ppi_single_wilson's
+    established "clip before feeding a bounded-domain formula" precedent
+    rather than inventing new logic. The returned ``estimate`` is left
+    UN-clipped (same convention as _ppi_single_wilson: the reported point
+    estimate is always the true PPI estimate; only the value fed
+    internally to the bounded-domain formula is clipped). The final CI is
+    clamped to [lo, hi] (matching logit_t_ci_1d's own guarantee).
+
+    p_value uses estimate/se on the RAW scale -- numerically identical to
+    what _analytic_mean_correct would report on the same inputs. This
+    matches an established project convention, confirmed by direct read
+    of evalstats/core/paired.py's classical (non-PPI) method="logit_t"
+    branch (lines ~764-799 as of 2026-08-05): it ALSO returns the plain
+    paired-t-test p-value regardless of the logit CI construction -- only
+    the CI's shape differs, never the significance test itself.
+    """
+    estimate, se, f_unlab, f_lab, rectifier, lam, df = _analytic_mean_point_se(
+        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune,
+    )
+
+    if se <= 0.0 or not np.isfinite(se):
+        ci_low = ci_high = float(np.clip(estimate, lo, hi))
+        p_value = 1.0 if abs(estimate) < 1e-12 else 0.0
+        return PPIResult(
+            estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+            llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
+            p_value=p_value, lam=lam,
+        )
+
+    span = hi - lo
+    scaled_est = (estimate - lo) / span
+    scaled_se = se / span
+
+    if scaled_est <= 0.0 or scaled_est >= 1.0:
+        warnings.warn(
+            f"_analytic_logit_t_correct: PPI-corrected estimate {estimate:.6g} is outside "
+            f"[{lo:g}, {hi:g}] -- clipping toward the boundary for the logit transform. "
+            "Expected occasionally for a small/noisy labeled subset (the correction term "
+            "isn't itself constrained to [lo, hi] even though every individual observation "
+            "is); see this function's docstring.",
+            UserWarning, stacklevel=2,
+        )
+    clipped = float(np.clip(scaled_est, _LOGIT_T_BOUNDARY_EPS, 1.0 - _LOGIT_T_BOUNDARY_EPS))
+
+    logit_mean = float(np.log(clipped / (1.0 - clipped)))
+    se_logit = scaled_se / (clipped * (1.0 - clipped))
+    t_crit = float(_t_dist.ppf(1.0 - alpha / 2.0, df))
+    # scipy.special.expit (not a raw 1/(1+exp(-x))) -- numerically stable
+    # for large |logit_mean +/- t_crit*se_logit|, which a clipped-but-still-
+    # near-boundary estimate can produce (se_logit blows up as clipped
+    # approaches 0 or 1); a raw exp() here can overflow before the ratio
+    # collapses to the correct 0.0/1.0 limit.
+    lo_s = float(_sigmoid(logit_mean - t_crit * se_logit))
+    hi_s = float(_sigmoid(logit_mean + t_crit * se_logit))
+    ci_low = float(np.clip(lo_s * span + lo, lo, hi))
+    ci_high = float(np.clip(hi_s * span + lo, lo, hi))
+
+    t_obs = estimate / se
+    p_value = min(max(float(2.0 * (1.0 - _t_dist.cdf(abs(t_obs), df))), 0.0), 1.0)
+
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
+        p_value=p_value, lam=lam,
     )
 
 
