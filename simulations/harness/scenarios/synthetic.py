@@ -2489,6 +2489,43 @@ divides PPI_LABEL_EFF_N=1000 exactly (label_frac = target / 1000, e.g.
 floor-rounding distortion -- confirmed for all eight targets at N=1000. 15
 still sits exactly at _JB_MIN_LAB's floor."""
 
+PPI_NFORMULA_N_VALUES = (250, 500, 1000, 2000)
+"""Total-item (N) grid for build_ppi_nformula_sources(_binary) -- a clean
+geometric sequence (ratio 2), anchored at PPI_LABEL_EFF_N=1000 (one of the
+four points), extending both below and above it. Exists to test whether
+the label-efficiency multiplier (equiv_n_lab / n_lab) genuinely depends
+only on judge alignment -- as the PPI++ asymptotic variance formula's
+leading term, N_lab' ~= N_lab / (1 - rho^2), implies once N is large
+relative to N_lab -- or whether the SECOND term (the judge-only estimate's
+own O(1/N) variance, which vanishes and drops out of that formula in the
+large-N limit) actually matters at the N/N_lab ratios a real study might
+use. Crossed against PPI_NFORMULA_NLAB_VALUES, N/N_lab ratios span ~1.25
+(N=250, N_lab=200 -- deliberately close to the boundary where the missing
+term should matter most) up to ~100 (N=2000, N_lab=20 -- solidly
+asymptotic), rather than staying in the >=5x-headroom regime
+PPI_LABEL_EFF_N/PPI_LABEL_EFF_NLAB_TARGETS were chosen to stay safely
+inside of (see PPI_LABEL_EFF_N's own docstring)."""
+PPI_NFORMULA_NLAB_VALUES = (20, 40, 90, 200)
+"""Absolute N_lab grid for build_ppi_nformula_sources(_binary) -- every
+other point of the already-vetted PPI_LABEL_EFF_NLAB_TARGETS (dropping 15,
+30, 60, 130), reused rather than re-derived so this already-large 4-factor
+grid (N x N_lab x effect_frac x alignment_target) doesn't multiply out of
+hand. 15 (the _JB_MIN_LAB floor) is excluded deliberately -- an edge case
+better suited to the original label-efficiency sweep than to a
+formula-fitting grid that wants clean, non-floored N_lab values
+throughout."""
+PPI_NFORMULA_EFFECT_FRACS = (0.10, 0.15, 0.30)
+"""Effect-size-fraction grid for build_ppi_nformula_sources(_binary) --
+reuses two already-established, independently-justified constants
+(PPI_LABEL_EFF_EFFECT_FRAC=0.15, this sweep's own baseline; PPI_COMPARISON_
+MODERATE_EFFECT_FRAC=0.30, this paper's OTHER primary "moderate effect"
+convention) as two of three points, plus 0.10 to bracket below, rather
+than inventing new magnitudes for this check specifically -- the whole
+point of this grid is testing whether the label-efficiency multiplier is
+effect-size-INDEPENDENT, so its own points should be ones already
+independently meaningful elsewhere in the paper, not picked to make the
+fit look clean."""
+
 
 def build_ppi_label_efficiency_sources(
     noise_by_eval_type: dict[str, tuple[float, ...]] | None = None,
@@ -2567,6 +2604,89 @@ def build_ppi_label_efficiency_sources_binary(
         )
         for noise in noise_levels
         for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
+    ]
+
+
+def build_ppi_nformula_sources(
+    noise_by_eval_type: dict[str, tuple[float, ...]] | None = None,
+    n_values: tuple[int, ...] = PPI_NFORMULA_N_VALUES,
+    n_lab_values: tuple[int, ...] = PPI_NFORMULA_NLAB_VALUES,
+    effect_fracs: tuple[float, ...] = PPI_NFORMULA_EFFECT_FRACS,
+) -> list[JudgeBiasSource]:
+    """N x N_lab x effect_size x judge-quality grid for the label-efficiency
+    N-formula check (cases/pvalues.py's run_ppi_nformula_check) -- extends
+    build_ppi_label_efficiency_sources (which holds N and effect_size fixed
+    at PPI_LABEL_EFF_N/PPI_LABEL_EFF_EFFECT_FRAC) by ALSO sweeping those two
+    axes, to test whether a closed-form rule of thumb for the label-
+    efficiency multiplier needs an explicit N term, and holds across effect
+    sizes, rather than being derived at one fixed (N, effect_size) pair.
+    Same judge-quality-axis calibration convention as build_ppi_label_
+    efficiency_sources (`noise_by_eval_type` overrides per eval type --
+    callers wanting ALIGNMENT-calibrated noise, not a raw shared grid, must
+    pass eval-type-specific values; see that function's docstring).
+
+    label_frac is back-solved to `n_lab / n` per cell -- same "hit an
+    ABSOLUTE N_lab exactly" pattern build_ppi_nlab_grid_sources/build_ppi_
+    label_efficiency_sources already use -- skipping any (n, n_lab) cell
+    where n_lab >= n. Never binds at the current PPI_NFORMULA_N_VALUES/
+    PPI_NFORMULA_NLAB_VALUES (every N_lab value stays comfortably below
+    every N value); kept only for robustness against a future grid edit.
+    Tag "nformula"."""
+    noise_by_eval_type = noise_by_eval_type or {
+        et: tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
+        for et in PPI_LABEL_EFF_EVAL_TYPES
+    }
+
+    def _kwargs(et: str, n: int, n_lab: int, noise: float) -> dict:
+        kw = _ppi_power_baseline(et)
+        kw["n"] = n
+        kw["label_frac"] = n_lab / n
+        kw["llm_noise"] = noise
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"nformula.{et}.noise={noise:.4f}.n={n}.lab={n_lab}.es={frac:.3f}", tag="nformula",
+            effect_size=_jb_effect_magnitude(et, frac),
+            **_kwargs(et, n, n_lab, noise),
+        )
+        for et in PPI_LABEL_EFF_EVAL_TYPES
+        for noise in noise_by_eval_type[et]
+        for n in n_values
+        for n_lab in n_lab_values
+        if n_lab < n
+        for frac in effect_fracs
+    ]
+
+
+def build_ppi_nformula_sources_binary(
+    noise_levels: tuple[float, ...] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    n_values: tuple[int, ...] = PPI_NFORMULA_N_VALUES,
+    n_lab_values: tuple[int, ...] = PPI_NFORMULA_NLAB_VALUES,
+    effect_fracs: tuple[float, ...] = PPI_NFORMULA_EFFECT_FRACS,
+) -> list[JudgeBiasSource]:
+    """Binary analogue of build_ppi_nformula_sources, restricted to
+    _COMPARISON_METHODS_BINARY (ttest_welch/paired_t) -- see build_ppi_
+    label_efficiency_sources_binary's docstring for why mwu/wilcoxon are
+    excluded on 0/1 data. Tag "nformula_binary"."""
+    def _kwargs(n: int, n_lab: int, noise: float) -> dict:
+        kw = _ppi_power_baseline_binary()
+        kw["n"] = n
+        kw["label_frac"] = n_lab / n
+        kw["llm_noise"] = noise
+        return kw
+
+    return [
+        JudgeBiasSource(
+            name=f"nformula.binary.noise={noise:.4f}.n={n}.lab={n_lab}.es={frac:.3f}", tag="nformula_binary",
+            effect_size=_jb_effect_magnitude_binary(frac),
+            **_kwargs(n, n_lab, noise),
+        )
+        for noise in noise_levels
+        for n in n_values
+        for n_lab in n_lab_values
+        if n_lab < n
+        for frac in effect_fracs
     ]
 
 
@@ -2675,7 +2795,7 @@ standardized choice.)"""
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
 PPI_FACTORIAL_NOISE_LEVELS = (
-    0.025, 0.0319, 0.0406, 0.0518, 0.066, 0.0841, 0.1072, 0.1366, 0.1741, 0.2219,
+    0.025, 0.0319, 0.0406, 0.0518, 0.066, 0.0841, 0.1072, 0.1366, 0.1741, 0.20, 0.2219,
     0.2828, 0.3605, 0.4595, 0.5856, 0.7464, 0.9514, 1.2126, 1.5455, 1.9698, 2.5107,
     3.2, 4.0786, 5.1984, 6.6257, 8.4449, 10.7635, 13.7187, 17.4853, 22.2861, 28.405,
 )
@@ -2683,7 +2803,34 @@ PPI_FACTORIAL_NOISE_LEVELS = (
 EVAL_TYPE_POPULATION_SD -- same standardized convention _jb_bias_magnitude
 already applies to this function's bias_delta/effect_size -- see
 build_ppi_factorial_sources). A geometric sequence, ratio 2**0.35 (~1.275),
-anchored at 0.025 (this constant's own original low end).
+anchored at 0.025 (this constant's own original low end), PLUS one
+deliberate, non-geometric extra point: 0.20 (inserted 2026-08-03, between
+0.1741 and 0.2219 -- see "REQUIRED: 0.20" below for why). This is the one
+sanctioned exception to this file's "clean geometric sequence, no
+per-value tuning" design principle (see the 2026-08-03 widening note
+below) -- it isn't picked to hit an alignment bucket, it's a hard
+structural requirement of a downstream consumer, not an aesthetic choice.
+
+REQUIRED: 0.20 -- build_ppi_factorial_sources hardcodes es!="null" cells
+(moderate/large effect) at a literal noise=0.20, INDEPENDENT of this
+tuple (only es="null" cells sweep this grid at all -- see that function's
+docstring). cases/pvalues.py's run() filters BOTH down to `noise == 0.20`
+for fit_ppi_factorial_model/save_ppi_factorial_heatmap_plot's baseline
+subset. If 0.20 isn't an EXACT member of this tuple, that baseline subset
+silently ends up with zero es="null" rows (moderate/large still land at
+0.20; null cells land wherever this grid actually put them, which is
+nowhere near 0.20 without this fix) -- and the GLM's `C(es,
+Treatment('null'))` term then crashes with patsy's "specified level
+'null' not found", since the reference level literally isn't present in
+the data. CONFIRMED the hard way (2026-08-03): the 2026-08-03 widening
+below dropped 0.20 from the grid without noticing, and a real official
+--factorial-check run (4800 scenarios x 4 methods, ~50 min compute) hit
+exactly this crash at the report-generation stage, AFTER the simulation
+finished but BEFORE any results were saved -- see cases/pvalues.py's
+run()/fit_ppi_factorial_model for the accompanying defensive check and
+save-ordering fix. Do not remove 0.20 from this grid without also
+re-deriving build_ppi_factorial_sources' hardcoded baseline (or vice
+versa) -- they must always agree.
 
 RE-DERIVED 2026-08-03 (widened, not just re-labeled -- same day as, but
 after, the SD-standardization fix that made this necessary): the previous
@@ -2700,8 +2847,9 @@ official_20260803_013611) -- not a plotting bug, a genuine noise-range
 gap. Re-measured how far frac needs to go to reach near-zero alignment:
 ~frac=16-24 for both continuous (r~0.04-0.06) and likert (kappa~0.03-0.05).
 
-Widened to 30 points (ratio 2**0.35, spanning 0.025 to ~28.4 -- roughly
-36x the old grid's range) by simply extending the same "clean geometric
+Widened to 30 geometric points (31 counting the 0.20 insertion above,
+ratio 2**0.35, spanning 0.025 to ~28.4 -- roughly 36x the old grid's
+range) by simply extending the same "clean geometric
 sequence, no per-value tuning" design principle the original grid used,
 not by hand-picking values to hit specific buckets (which the original
 grid's own docstring explicitly rejected as "defensible for exploration,
@@ -2726,20 +2874,31 @@ flagged for a separate pass. See measure_judge_alignment/cases/pvalues.py's
 alignment-bucket plots for how this grid gets consumed once crossed into
 the factorial."""
 PPI_FACTORIAL_NOISE_LEVELS_FAST = PPI_FACTORIAL_NOISE_LEVELS[::3]
-"""Every third point of PPI_FACTORIAL_NOISE_LEVELS -- 10 points instead of
-30 (was every OTHER point, 6 of 11, before the 2026-08-03 widening -- with
-3x as many points in the full grid now, skipping 2 instead of 1 keeps the
+"""Every third point of PPI_FACTORIAL_NOISE_LEVELS -- 11 points instead of
+31 (was every OTHER point, 6 of 11, before the 2026-08-03 widening -- with
+~3x as many points in the full grid now, skipping 2 instead of 1 keeps the
 "fast" variant's own point count roughly the same as before, rather than
-tripling it too). Not a separately-tuned grid: since PPI_FACTORIAL_NOISE_
-LEVELS steps by a constant ratio (2**0.35), skipping every third point
-yields another clean geometric sequence, ratio 2**1.05 (~2.07), from the
-same 0.025 starting point -- so this stays exactly as justifiable as the
-full grid, just coarser (fewer alignment buckets get populated, a third
-as many null-effect cells to run). Passed as build_ppi_
+tripling it too). Mostly a clean geometric subsequence (ratio 2**1.05,
+~2.07, from the same 0.025 starting point) EXCEPT it also happens to land
+squarely on the one non-geometric point, 0.20 -- verified by the assertion
+below, not by construction, since 0.20's insertion index (9) happening to
+be a multiple of 3 is coincidental, not derived. Passed as build_ppi_
 factorial_sources' noise_levels argument by cases/pvalues.py's
 --factorial-fast-noise / official_args_ppi_factorial_fast_noise, for a
 quicker factorial+alignment pass before committing to the full grid's
 longer runtime."""
+assert 0.20 in PPI_FACTORIAL_NOISE_LEVELS, (
+    "PPI_FACTORIAL_NOISE_LEVELS must contain 0.20 exactly -- build_ppi_factorial_sources hardcodes "
+    "es!=\"null\" cells at noise=0.20 independent of this grid, and cases/pvalues.py's run() filters "
+    "BOTH down to noise==0.20 for the GLM/heatmap baseline. Missing this silently produces zero "
+    "es=\"null\" rows in that baseline and crashes fit_ppi_factorial_model's C(es, Treatment('null')) "
+    "with patsy's \"specified level 'null' not found\" -- AFTER the full sweep has already run. See "
+    "this constant's own docstring for the 2026-08-03 incident this assertion guards against."
+)
+assert 0.20 in PPI_FACTORIAL_NOISE_LEVELS_FAST, (
+    "PPI_FACTORIAL_NOISE_LEVELS_FAST must also contain 0.20 exactly -- see PPI_FACTORIAL_NOISE_LEVELS' "
+    "assertion above for why; --factorial-fast-noise hits the identical crash if this ever drifts."
+)
 
 
 def build_ppi_factorial_sources(
@@ -2801,19 +2960,26 @@ def build_ppi_factorial_sources(
       direction, or no real effect for that direction to interact with.
       Generating both would waste compute on literally redundant cells
       instead of covering new ground.
-    - llm_noise is only swept across PPI_FACTORIAL_NOISE_LEVELS' full 11
+    - llm_noise is only swept across PPI_FACTORIAL_NOISE_LEVELS' full 31
       points for es="null" cells (where the alignment-bucketed plots draw
       their data); es != "null" cells (power, not the alignment view's
-      concern) hold llm_noise at its single 0.20 baseline, same as every
-      other non-alignment factorial output. Skipping the other 10 noise
-      levels there keeps the power-focused majority of the grid at its
-      original size instead of multiplying it 11x for no analytical benefit.
+      concern) hold llm_noise at its single, literal 0.20 baseline, same as
+      every other non-alignment factorial output -- NOT drawn from this
+      grid, which is why 0.20 must remain an exact member of it (see
+      PPI_FACTORIAL_NOISE_LEVELS' own docstring: cases/pvalues.py's GLM/
+      heatmap baseline filters BOTH down to noise==0.20, and a mismatch
+      here crashes that filter's es="null" side silently, not loudly, until
+      the GLM fit itself). Skipping the other 30 noise levels for non-null
+      cells keeps the power-focused majority of the grid at its original
+      size instead of multiplying it 31x for no analytical benefit.
       ~312 cells per eval type survive the direction-redundancy + n_lab>=n
       skips at the 0.20 noise baseline (down from 432, 3x3x3x3x3x2 minus
-      n_lab>n infeasibility); the "null"-effect subset of those (72 per eval
-      type) additionally gets the other 10 noise levels, adding 72*10=720
-      more per eval type. Total: (312 + 720) * 2 eval types = 2,064 cells,
-      vs. 624 before llm_noise joined the cross.
+      n_lab>n infeasibility) -- 72 of those 312 are the "null"-effect subset
+      (at noise=0.20 specifically), which additionally gets the OTHER 30
+      noise levels, adding 72*30=2160 more per eval type. Total: (312 +
+      2160) * 2 eval types = 4,944 cells, vs. 624 before llm_noise joined
+      the cross. (Verified directly against build_ppi_factorial_sources'
+      actual output, not hand-computed, after the 0.20 insertion fix.)
 
     Small enough, per eval type/paired_t, for a TRUE full factorial (every
     main effect and interaction directly estimable, no confounding to
@@ -3205,6 +3371,47 @@ def build_ppi_factorial_sources_binary() -> list[JudgeBiasSource]:
 # ---------------------------------------------------------------------------
 
 
+def _icc_21(a: np.ndarray, b: np.ndarray) -> float:
+    """Shrout & Fleiss (1979) ICC(2,1): two-way random effects, single
+    rater, absolute agreement, for exactly two raters. Mirrors evalstats.
+    alignment._icc_21 exactly (same formula, re-derived here rather than
+    imported -- this module measures its own synthetic judges independently
+    of the evalstats internals it's implicitly validating, same convention
+    _kappa_band/_corr_band already follow for their evalstats-mirrored
+    bands, see cases/pvalues.py).
+
+    Included as a companion to pearson_r/weighted_kappa specifically
+    because it's sensitive to exactly what those two are NOT: a systematic
+    offset or scale mismatch between judge and truth. Pearson r is
+    invariant to any affine rescaling of one variable, and weighted kappa
+    only "sees" bias insofar as it shifts items across the fixed category
+    grid -- so a judge that's additively biased but otherwise low-noise can
+    read as well-aligned on either metric while ICC(2,1) correctly marks it
+    down. That's the whole point of adding an ICC-bucketed _ALIGNMENT_VIEWS
+    entry alongside them, not a redundant third correlation-type view."""
+    n = len(a)
+    data = np.column_stack([a, b]).astype(float)
+    k = 2
+    grand_mean = data.mean()
+    row_means = data.mean(axis=1)
+    col_means = data.mean(axis=0)
+
+    df_row = max(n - 1, 1)
+    SSR = k * np.sum((row_means - grand_mean) ** 2)
+    SSC = n * np.sum((col_means - grand_mean) ** 2)  # (k-1) == 1
+    SST = np.sum((data - grand_mean) ** 2)
+    SSE = SST - SSR - SSC
+
+    MSR = SSR / df_row
+    MSC = SSC
+    MSE = SSE / df_row  # (n-1)(k-1) == n-1
+
+    denom = MSR + MSE + 2.0 * (MSC - MSE) / n
+    if denom <= 1e-12:
+        return 1.0
+    return float((MSR - MSE) / denom)
+
+
 def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int = 0) -> dict:
     """Large-sample (n_mc), FULLY-labeled point measurement of judge-human
     alignment for one JudgeBiasSource's judge model -- deliberately separate
@@ -3233,12 +3440,15 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
         Likert-type judge alignment), "spearman_r" (rank correlation --
         some work recommends this instead for Likert judges, since it
         doesn't require picking tie-weights the way weighted kappa does),
-        "percent_agreement" (raw exact-match % -- rarely reported alone,
-        kept as an intuitive companion number).
+        "icc_21" (Shrout & Fleiss two-way random-effects ICC, absolute
+        agreement -- see _icc_21's docstring for why it's included
+        alongside the two correlation-type metrics rather than instead of
+        them), "percent_agreement" (raw exact-match % -- rarely reported
+        alone, kept as an intuitive companion number).
       - continuous: "pearson_r" (still the most commonly reported single
         number for numeric/continuous judge-vs-human agreement),
         "spearman_r" (companion, robust to nonlinear-but-monotonic
-        judge miscalibration).
+        judge miscalibration), "icc_21" (see _icc_21's docstring).
     All are on their natural scale (roughly -1 to 1 for a correlation/kappa,
     though never far below 0 for a judge that's at least weakly aligned with
     truth) -- callers wanting a 0-100 bucketing axis apply their own
@@ -3295,11 +3505,13 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
         kappa = float(cohen_kappa_score(truth.astype(int), llm_rounded.astype(int), weights="quadratic"))
         pct_agree = float(np.mean(llm_rounded == truth) * 100.0)
         rho, _ = spearmanr(truth, llm_rounded)
-        return {"weighted_kappa": kappa, "spearman_r": float(rho), "percent_agreement": pct_agree}
+        icc = _icc_21(truth, llm_rounded)
+        return {"weighted_kappa": kappa, "spearman_r": float(rho), "icc_21": icc, "percent_agreement": pct_agree}
     else:
         r, _ = pearsonr(truth, llm)
         rho, _ = spearmanr(truth, llm)
-        return {"pearson_r": float(r), "spearman_r": float(rho)}
+        icc = _icc_21(truth, llm)
+        return {"pearson_r": float(r), "spearman_r": float(rho), "icc_21": icc}
 
 
 PPI_ALIGNMENT_HUMAN_NOISE_LEVELS = (0.05, 0.15, 0.30)
@@ -3349,11 +3561,13 @@ def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc:
         kappa = float(cohen_kappa_score(r1.astype(int), r2.astype(int), weights="quadratic"))
         pct_agree = float(np.mean(r1 == r2) * 100.0)
         rho, _ = spearmanr(r1, r2)
-        return {"weighted_kappa": kappa, "spearman_r": float(rho), "percent_agreement": pct_agree}
+        icc = _icc_21(r1, r2)
+        return {"weighted_kappa": kappa, "spearman_r": float(rho), "icc_21": icc, "percent_agreement": pct_agree}
     else:
         r, _ = pearsonr(rater1, rater2)
         rho, _ = spearmanr(rater1, rater2)
-        return {"pearson_r": float(r), "spearman_r": float(rho)}
+        icc = _icc_21(rater1, rater2)
+        return {"pearson_r": float(r), "spearman_r": float(rho), "icc_21": icc}
 
 
 @dataclass
@@ -3745,7 +3959,13 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     population mean of the "a2" marginal -- the same distribution
     generate_judge_bias_cell draws truth_a2 from -- reusing the diffs2/
     thetas2 loop's own `a` draw rather than a separate MC loop, since it's
-    already exactly that quantity."""
+    already exactly that quantity.
+
+    "ppi_t_interval"/"ppi_logit_t" (added 2026-08-05) target the SAME
+    paired mean-difference estimand as "paired_t"/"tango_score" (both are
+    closed-form PPI corrections for mean(a_i - b_i), differing only in
+    the CI's shape -- raw vs. logit-transformed -- not the point
+    estimate/null itself), so they reuse means_paired.mean() directly."""
     from evalstats.tests import (
         _p_x_gt_y_midrank,
         paired_walsh_midrank_theta,
@@ -3851,6 +4071,8 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "ppi_t_interval": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "ppi_logit_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,
         "anova_rep": rv_gold,
         "friedman": frv_gold,

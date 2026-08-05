@@ -164,6 +164,10 @@ with warnings.catch_warnings():
         _ppi_paired_tango,
         _ppi_single_wilson,
         _ppi_single_bootstrap_t,
+        _ppi_single_t_interval,
+        _ppi_paired_t_interval,
+        _ppi_single_logit_t,
+        _ppi_paired_logit_t,
         _p_x_gt_y_midrank,
         paired_walsh_midrank_theta,
         _ppi_anova_independent_p_value,
@@ -200,12 +204,19 @@ from ..scenarios.synthetic import (
     build_ppi_factorial_sources,
     build_ppi_label_efficiency_sources,
     build_ppi_label_efficiency_sources_binary,
+    build_ppi_nformula_sources,
+    build_ppi_nformula_sources_binary,
     PPI_LABEL_EFF_NOISE_LEVELS,
     PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
     PPI_LABEL_EFF_EFFECT_FRAC,
     PPI_LABEL_EFF_N,
+    PPI_NFORMULA_N_VALUES,
+    PPI_NFORMULA_NLAB_VALUES,
+    PPI_NFORMULA_EFFECT_FRACS,
     _ppi_power_baseline,
     _ppi_power_baseline_binary,
+    _jb_effect_magnitude,
+    _jb_effect_magnitude_binary,
     _JB_MIN_LAB,
     build_ppi_power_sources_binary,
     build_ppi_power_reinforcing_sources_binary,
@@ -257,6 +268,8 @@ from ..methods import (
     PPI_OFFICIAL_TEST_METHODS,
     PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE,
+    PPI_T_INTERVAL,
+    PPI_LOGIT_T,
     TTEST,
     TTEST_WELCH,
     MWU,
@@ -3593,6 +3606,25 @@ def _run_ppi_cell(
                 except Exception:
                     failed[TANGO.name] += 1
 
+            if PPI_T_INTERVAL.name in active_tests:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(cell.llm_x, cell.llm_y).pvalue)
+                    uncorrected[PPI_T_INTERVAL.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_t_interval(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
+                    corrected[PPI_T_INTERVAL.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[PPI_T_INTERVAL.name] += 1
+
+            if PPI_LOGIT_T.name in active_tests:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(cell.llm_x, cell.llm_y).pvalue)
+                    uncorrected[PPI_LOGIT_T.name] += int(p_u < _ALPHA)
+                    _lo, _hi = EVAL_TYPE_SCALE_BOUNDS[sc.eval_type]
+                    r = _ppi_paired_logit_t(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, lo=_lo, hi=_hi)
+                    corrected[PPI_LOGIT_T.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[PPI_LOGIT_T.name] += 1
+
             if ANOVA_IND.name in active_tests:
                 try:
                     groups_ind = [cell.llm_a3, cell.llm_b3, cell.llm_c3]
@@ -3837,28 +3869,54 @@ def run_ppi_simulation(
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, MWU_RIDGE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
-    PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name,
+    PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
 )
 
-# bayes_bootstrap/bootstrap_t/tango_score/ppi_wilson/bootstrap_t_single are
-# excluded from the main ppi Type-I/effect plots and reported in a separate
-# plot instead: they read differently to reviewers than the rest of
-# PPI_TEST_METHODS (which are all textbook tests -- t-test, Wilcoxon, ANOVA,
-# Friedman, Kruskal, LMM). These five are bootstrap/CI-based constructions
-# (Bayesian bootstrap, studentized bootstrap, Tango's/Wilson's score
-# intervals) that would read as unfamiliar or confusing mixed in with the
-# standard-methods plot -- tango_score/ppi_wilson specifically are
-# fundamentally CI constructions for binary paired/single-arm proportions
-# (see evalstats.tests._ppi_paired_tango/_ppi_single_wilson), not p-value
-# tests in their own right, and they're also the only ones of the five
-# restricted to a single binary scenario (_PPI_BINARY_ONLY_TESTS) rather
-# than swept across the full catalog, so they'd look sparse/broken next to
-# tests with ~44x more scenarios' worth of points. ppi_wilson/
-# bootstrap_t_single also have NO CI-coverage analogue in the Type-I
-# rejection sweep (unlike tango/bootstrap_t, which are also PAIRWISE_METHODS
-# entries there) -- they only ever appear via this effect-check pass, since
-# there's no single-arm rejection decision to test Type-I error on.
-_PPI_NONSTANDARD_TESTS = {BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name}
+# bayes_bootstrap/bootstrap_t/tango_score/ppi_wilson/bootstrap_t_single/
+# ppi_t_interval/ppi_logit_t are excluded from the main ppi Type-I/effect
+# plots and reported in a separate plot instead: they read differently to
+# reviewers than the rest of PPI_TEST_METHODS (which are all textbook tests
+# -- t-test, Wilcoxon, ANOVA, Friedman, Kruskal, LMM). These are bootstrap/
+# CI-based constructions (Bayesian bootstrap, studentized bootstrap, Tango's/
+# Wilson's score intervals, and now the closed-form logit-t/t-interval CIs)
+# that would read as unfamiliar or confusing mixed in with the standard-
+# methods plot -- tango_score/ppi_wilson specifically are fundamentally CI
+# constructions for binary paired/single-arm proportions (see
+# evalstats.tests._ppi_paired_tango/_ppi_single_wilson), not p-value tests
+# in their own right, and (along with bootstrap_t_single) are restricted to
+# a single binary scenario (_PPI_BINARY_ONLY_TESTS) rather than swept across
+# the full catalog, so they'd look sparse/broken next to tests with ~44x
+# more scenarios' worth of points. ppi_wilson/bootstrap_t_single also have
+# NO CI-coverage analogue in the Type-I rejection sweep (unlike tango/
+# bootstrap_t, which are also PAIRWISE_METHODS entries there) -- they only
+# ever appear via this effect-check pass, since there's no single-arm
+# rejection decision to test Type-I error on. ppi_t_interval/ppi_logit_t
+# (added 2026-08-05) DO have a Type-I analogue (see _run_ppi_cell) and run
+# across the full non-binary catalog like BOOTSTRAP_T/PAIRED_T -- they're
+# grouped here purely on "reads like a CI construction, not a textbook
+# test" grounds, the same criterion already applied to tango/bootstrap_t.
+_PPI_NONSTANDARD_TESTS = {
+    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, PPI_WILSON.name,
+    PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
+}
+
+_PPI_CI_COMPARISON_TESTS = {TANGO.name, PPI_WILSON.name, PPI_LOGIT_T.name, PPI_T_INTERVAL.name}
+"""The curated CI-coverage/width comparison methods for save_ppi_effect_plot's
+ci_comparison=True figure -- REPLACES the paper's old 5-method "nonstandard"
+comparison ({bayes_bootstrap, bootstrap_t, tango, ppi_wilson,
+bootstrap_t_single}, still available via _ppi_tests_present(nonstandard=True))
+with exactly these four closed-form PPI-corrected CI methods: Tango (binary
+paired), PPI Wilson (binary single), PPI logit-t and PPI t-interval (numeric
+paired, the closed-form bounded/unbounded replacements for bootstrap_t's role
+in this comparison -- see PPI_AUTO_METHOD_TABLE in evalstats/config.py).
+bayes_bootstrap/bootstrap_t/bootstrap_t_single are NOT dropped from
+validation -- they keep running (and being flagged for miscalibration) in
+the main Type-I/power sweep and its own save_ppi_typeI_plot(nonstandard=True)
+plot (_PPI_NONSTANDARD_TESTS, unchanged in role); they just no longer get
+their own dedicated CI-coverage/width comparison figure here. Deliberately a
+SEPARATE constant from _PPI_NONSTANDARD_TESTS, not a rename/reuse of it --
+_PPI_NONSTANDARD_TESTS is shared by BOTH the Type-I plot and this effect/
+coverage plot, and only the latter is meant to narrow to these four."""
 
 
 def _ppi_tests_present(results, *, nonstandard: bool) -> list[str]:
@@ -3869,6 +3927,15 @@ def _ppi_tests_present(results, *, nonstandard: bool) -> list[str]:
     if nonstandard:
         return [m.name for m in PPI_TEST_METHODS if m.name in present and m.name in _PPI_NONSTANDARD_TESTS]
     return [m.name for m in PPI_TEST_METHODS if m.name in present and m.name not in _PPI_NONSTANDARD_TESTS]
+
+
+def _ppi_ci_comparison_tests_present(results) -> list[str]:
+    """Test names in _PPI_CI_COMPARISON_TESTS present in results, in
+    PPI_TEST_METHODS' canonical order -- the curated-plot analogue of
+    _ppi_tests_present(nonstandard=True), backed by _PPI_CI_COMPARISON_TESTS
+    instead."""
+    present = {r.test for r in results}
+    return [m.name for m in PPI_TEST_METHODS if m.name in present and m.name in _PPI_CI_COMPARISON_TESTS]
 
 
 def _run_ppi_effect_cell(
@@ -4005,6 +4072,21 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
                     out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_T_INTERVAL.name in active_tests:
+                try:
+                    r = _ppi_paired_t_interval(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
+                    out[PPI_T_INTERVAL.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_LOGIT_T.name in active_tests:
+                try:
+                    _lo, _hi = EVAL_TYPE_SCALE_BOUNDS[sc.eval_type]
+                    r = _ppi_paired_logit_t(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, lo=_lo, hi=_hi)
+                    out[PPI_LOGIT_T.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -4300,18 +4382,34 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
         if not m:
             raise ValueError(f"_ppi_source_effect_frac: could not parse es label from {sc.name!r}")
         return PPI_FACTORIAL_EFFECT_FRACS[m.group(1)]
+    if sc.tag in ("nformula", "nformula_binary"):
+        m = re.search(r"\.es=([\d.]+)$", sc.name)
+        if not m:
+            raise ValueError(f"_ppi_source_effect_frac: could not parse es frac from {sc.name!r}")
+        return float(m.group(1))
     raise ValueError(f"_ppi_source_effect_frac: unrecognized tag {sc.tag!r}")
 
 
-_COMPARISON_METHODS = (TTEST_WELCH.name, PAIRED_T.name, MWU.name, WILCOXON.name)
-"""The four classical two-sample/paired tests the PPI estimator-comparison
+_COMPARISON_METHODS = (TTEST.name, TTEST_WELCH.name, PAIRED_T.name, MWU.name, WILCOXON.name)
+"""The five classical two-sample/paired tests the PPI estimator-comparison
 sweep (and everything downstream: N x N_lab grid, full factorial, the
 null-effect bar chart) runs and, by default, averages across -- rather than
-paired_t alone. ttest_welch/paired_t (mean-based) and mwu/wilcoxon (rank-
-based) cover both the independent-two-group and paired structures, and all
-four test the SAME two-group mean/location-shift question via different
+paired_t alone. ttest/ttest_welch/paired_t (mean-based) and mwu/wilcoxon
+(rank-based) cover both the independent-two-group and paired structures, and
+all five test the SAME two-group mean/location-shift question via different
 classical machinery, so averaging their rejection rates is a coherent
-summary of "does this hold across reasonable test choices." Uses MWU
+summary of "does this hold across reasonable test choices." ttest (plain
+Student's, equal_var=True) was added 2026-08-05 alongside ttest_welch
+(Welch's, equal_var=False) -- both share the IDENTICAL PPI correction (the
+mean-difference estimator; PPI correction doesn't depend on the classical
+equal-variance assumption at all), differing only in which classical
+uncorrected test computes the "uncorrected" arm's p-value -- so this was a
+one-line addition (_classical_pvalue's uncorrected branch), not a new PPI
+estimand. Added specifically so save_ppi_typeI_plot's 9-test roster (the
+main Type-I sweep, build_judge_bias_sources) and _COMPARISON_METHODS +
+_COMPARISON_METHODS_OMNIBUS (9 = 5 + 4) line up exactly, letting the
+factorial-sourced Type-I-by-test violin plot (save_ppi_factorial_typeI_
+violin_plot) show the same 9 tests the OFAT-sourced one does. Uses MWU
 (evalstats.tests._ppi_two_sample's single-global-rectifier midrank
 correction), not MWU_MNAR_EXPERIMENTAL (evalstats.tests.
 _ppi_two_sample_midrank_corrected's per-group, per-score-bin LOCAL
@@ -4373,12 +4471,12 @@ filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
 kept in its own report section/log rather than merged into the headline
 _COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
-    TTEST_WELCH.name: "group", MWU_MNAR_EXPERIMENTAL.name: "group", MWU_MNAR_POOLED.name: "group", MWU_ADAPTIVE.name: "group", MWU_RIDGE.name: "group", MWU.name: "group",
+    TTEST.name: "group", TTEST_WELCH.name: "group", MWU_MNAR_EXPERIMENTAL.name: "group", MWU_MNAR_POOLED.name: "group", MWU_ADAPTIVE.name: "group", MWU_RIDGE.name: "group", MWU.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
     ANOVA_IND.name: "group3", KRUSKAL.name: "group3", KRUSKAL_MNAR_EXPERIMENTAL.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
 }
-_COMPARISON_METHODS_LABEL = "ttest_welch/paired_t/mwu/wilcoxon"
+_COMPARISON_METHODS_LABEL = "ttest/ttest_welch/paired_t/mwu/wilcoxon"
 _COMPARISON_METHODS_OMNIBUS_LABEL = "anova_ind/anova_rep/friedman/kruskal"
 _COMPARISON_METHODS_BINARY = (TTEST_WELCH.name, PAIRED_T.name)
 """The 2 of _COMPARISON_METHODS' 4 pooled tests that are valid on binary's
@@ -4411,6 +4509,8 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
     all_human/human_subset arms run Mann-Whitney on truth for the
     "mwu"/"mwu_mnar_experimental" method-rows, not always a t-test)."""
     if structure == "group":
+        if method == TTEST.name:
+            return float(scipy_stats.ttest_ind(a, b, equal_var=True).pvalue)
         if method == TTEST_WELCH.name:
             return float(scipy_stats.ttest_ind(a, b, equal_var=False).pvalue)
         return float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
@@ -4431,7 +4531,11 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     production default; --factorial-no-power-tune sets this False for a
     head-to-head comparison run -- see that flag's help text."""
     if structure == "group":
-        if method == TTEST_WELCH.name:
+        if method in (TTEST.name, TTEST_WELCH.name):
+            # Identical PPI correction for both -- PPI's mean-difference
+            # estimator doesn't depend on the classical equal-variance
+            # assumption at all; only _classical_pvalue's UNCORRECTED arm
+            # differs between them (equal_var=True vs False).
             estimator = lambda ya, yb: float(ya.mean() - yb.mean())  # noqa: E731
             return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune).p_value
         if method == MWU_MNAR_EXPERIMENTAL.name:
@@ -5228,6 +5332,19 @@ class LabelEfficiencyPoint:
     likert/binary's ran to ~50-60). Saturated points are still shown (as a
     lower-bound marker, not a real equivalent-N), but excluded from axis-
     limit computation."""
+    n: int = PPI_LABEL_EFF_N
+    """Total item count this point was simulated at. Defaulted to
+    PPI_LABEL_EFF_N for backward compatibility with run_ppi_label_
+    efficiency_check (which holds N fixed and never sets this explicitly)
+    -- run_ppi_nformula_check is the only caller that varies it, sweeping
+    PPI_NFORMULA_N_VALUES to test whether the label-efficiency multiplier
+    needs an explicit N term (see that function's docstring)."""
+    effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC
+    """Eval-type-relative effect-size fraction this point was simulated at
+    (see PPIComparisonResult.effect_size's docstring for the convention).
+    Defaulted to PPI_LABEL_EFF_EFFECT_FRAC for the same backward-
+    compatibility reason as `n` -- run_ppi_nformula_check sweeps PPI_
+    NFORMULA_EFFECT_FRACS instead of holding this fixed."""
 
 
 def _classical_pooled_power_curve(
@@ -5328,6 +5445,21 @@ _LABEL_EFF_ALIGNMENT_METRIC = {
 judge-quality axis is calibrated/labeled by -- the SAME primary-metric
 choice _ALIGNMENT_VIEWS makes for the (separate) alignment sweep, so a
 reader who has seen that sweep recognizes the same metric here."""
+
+_NFORMULA_ALIGNMENT_TARGETS = (0.8, 0.5, 0.3)
+"""Reduced subset of _LABEL_EFF_ALIGNMENT_TARGETS for run_ppi_nformula_
+check -- the same 3 points build_ppi_label_efficiency_sources' own
+alignment axis used before this session widened it to 6 (see _LABEL_EFF_
+ALIGNMENT_TARGETS' docstring), and label_efficiency_table.py's own
+DEFAULT_ALIGNMENT_TARGETS. Kept at 3 (not the full 6) because run_ppi_
+nformula_check already crosses N x N_lab x effect_frac x alignment_target
+-- a genuinely 4-factor grid -- and each additional alignment target
+multiplies every other axis's cell count, on top of alignment
+calibration's own align_n_mc=20,000-draw cost per (eval_type, target)
+pair (which does NOT get cheaper by reusing _LABEL_EFF_ALIGNMENT_TARGETS'
+own calibration -- N/effect_frac vary independently of alignment, so a
+separate calibration pass is still required here, just over fewer
+targets)."""
 
 
 def _calibrate_noise_for_alignment(
@@ -5511,6 +5643,153 @@ def run_ppi_label_efficiency_check(
     return results, all_raw, calib_rows
 
 
+def run_ppi_nformula_check(
+    n_reps: int, n_boot: int, ref_n_mc: int = 10_000, align_n_mc: int = 50_000, seed: int = 73,
+    n_workers: int = 1, progress_mode: str = "bar",
+) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float]]]:
+    """N x N_lab x effect_size x judge-quality label-efficiency sweep --
+    extends run_ppi_label_efficiency_check (which holds N=PPI_LABEL_EFF_N
+    and effect_size=PPI_LABEL_EFF_EFFECT_FRAC fixed) by ALSO sweeping those
+    two axes, via build_ppi_nformula_sources(_binary)/PPI_NFORMULA_N_VALUES/
+    PPI_NFORMULA_NLAB_VALUES/PPI_NFORMULA_EFFECT_FRACS. Exists to derive
+    (and check) a closed-form rule-of-thumb formula for the label-
+
+    ref_n_mc/align_n_mc default HIGHER than run_ppi_label_efficiency_check's
+    matching defaults (3000/20_000) -- deliberately, not an oversight: this
+    check's whole output feeds a regression (fit_nformula_rule_of_thumb.py)
+    whose coefficient standard errors are sensitive to per-cell noise in
+    `multiplier` (a ratio-of-ratios inversion, worst for continuous's
+    steep classical power curve -- confirmed 2026-08-03: continuous's
+    fitted c1 SE was visibly larger than binary/likert's at these
+    functions' shared old defaults), unlike the original label-efficiency
+    check's per-cell table/plot use, which tolerates more per-cell noise.
+    Both knobs are cheap to raise here regardless: each is evaluated only
+    ONCE per (eval_type, effect_frac) or (eval_type, target) combination
+    -- 9 calibration draws, 9 reference curves -- not once per (N, N_lab)
+    grid cell, so raising them doesn't scale with the 432-cell grid the
+    way n_reps/n_boot do.
+    efficiency multiplier that includes N explicitly and holds across
+    effect sizes -- the base asymptotic PPI++ formula N_lab' ~= N_lab /
+    (1 - rho^2) drops N because it assumes N is large relative to N_lab,
+    which run_ppi_label_efficiency_check's own fixed (N=1000, N_lab<=200,
+    ratio>=5) design never tested outside of.
+
+    Same alignment-calibration convention as run_ppi_label_efficiency_check
+    (_calibrate_noise_for_alignment, over _NFORMULA_ALIGNMENT_TARGETS -- a
+    reduced 3-point subset, see that constant's docstring for why), and the
+    same classical reference-curve machinery (_classical_pooled_power_
+    curve/_equivalent_n_lab) -- but now one reference curve per (eval_type,
+    effect_frac) pair (PPI_NFORMULA_EFFECT_FRACS), not one per eval_type,
+    since the reference itself depends on effect size. The reference curve
+    does NOT depend on N (see _classical_pooled_power_curve's docstring --
+    it's built from a synthetic n_grid unrelated to the real sweep's N/
+    N_lab split), so each (eval_type, effect_frac) curve is correctly
+    computed once and reused across every N value.
+
+    Returns the same 3-tuple shape as run_ppi_label_efficiency_check --
+    pooled LabelEfficiencyPoint rows (now with `n`/`effect_frac` varying
+    instead of held at their default), raw per-method PPIComparisonResult
+    rows, and the calibration lookup -- reusing that output schema (and
+    save_results_artifacts_ppi_label_efficiency_raw for the raw CSV)
+    rather than a parallel one, so rows from this sweep can be directly
+    compared against/merged with the original label-efficiency check's:
+    filtering to n=PPI_LABEL_EFF_N, effect_frac=PPI_LABEL_EFF_EFFECT_FRAC
+    should closely reproduce (modulo n_lab/alignment-target subsetting and
+    independent MC noise) that check's own results -- a useful sanity
+    check in itself. Use save_results_artifacts_ppi_nformula (NOT save_
+    results_artifacts_ppi_label_efficiency) for the pooled CSV, since the
+    latter's writer doesn't emit the n/effect_frac columns this sweep
+    needs to be interpretable."""
+    results: list[LabelEfficiencyPoint] = []
+    all_raw: list[PPIComparisonResult] = []
+    calib_rows: list[tuple[str, float, str, float, float]] = []
+
+    cont_likert_baselines = {et: _ppi_power_baseline(et) for et in ("continuous", "likert")}
+    binary_baseline = _ppi_power_baseline_binary()
+
+    # Calibrate llm_noise -> target alignment level, per eval type -- same
+    # as run_ppi_label_efficiency_check, and equally independent of N/
+    # effect_frac here (see _calibrate_noise_for_alignment's docstring:
+    # alignment is measured off group A, which never carries the injected
+    # effect, and is unrelated to N/N_lab).
+    noise_by_eval_type: dict[str, tuple[float, ...]] = {}
+    calib_info: dict[str, dict[float, tuple[float, float]]] = {}
+    for et, baseline in cont_likert_baselines.items():
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        noises, info = [], {}
+        for target in _NFORMULA_ALIGNMENT_TARGETS:
+            noise, achieved = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
+            noises.append(noise)
+            info[noise] = (target, achieved)
+        noise_by_eval_type[et] = tuple(noises)
+        calib_info[et] = info
+
+    metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
+    bin_noises, bin_info = [], {}
+    for target in _NFORMULA_ALIGNMENT_TARGETS:
+        noise, achieved = _calibrate_noise_for_alignment(
+            "binary", target, metric_name_bin, binary_baseline, n_mc=align_n_mc, seed=seed,
+        )
+        bin_noises.append(noise)
+        bin_info[noise] = (target, achieved)
+    calib_info["binary"] = bin_info
+
+    for et, info in calib_info.items():
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        for noise, (target, achieved) in info.items():
+            calib_rows.append((et, noise, metric_name, target, achieved))
+
+    cont_likert_sources = build_ppi_nformula_sources(noise_by_eval_type=noise_by_eval_type)
+    groups = [
+        ("continuous", [s for s in cont_likert_sources if s.eval_type == "continuous"],
+         _COMPARISON_METHODS, r"nformula\.continuous\.noise=([\d.]+)\.n=\d+\.lab=\d+\.es=[\d.]+"),
+        ("likert", [s for s in cont_likert_sources if s.eval_type == "likert"],
+         _COMPARISON_METHODS, r"nformula\.likert\.noise=([\d.]+)\.n=\d+\.lab=\d+\.es=[\d.]+"),
+        ("binary", build_ppi_nformula_sources_binary(noise_levels=tuple(bin_noises)),
+         _COMPARISON_METHODS_BINARY, r"nformula\.binary\.noise=([\d.]+)\.n=\d+\.lab=\d+\.es=[\d.]+"),
+    ]
+
+    # One classical reference curve per (eval_type, effect_frac) -- NOT per
+    # N (see docstring above) -- precomputed once and reused across every
+    # N/alignment-target row at that (eval_type, effect_frac).
+    n_grid = np.geomspace(float(_JB_MIN_LAB), 500.0, 28)
+    ref_curves: dict[tuple[str, float], np.ndarray] = {}
+    for eval_type, _sources, methods, _name_re in groups:
+        for frac in PPI_NFORMULA_EFFECT_FRACS:
+            es = _jb_effect_magnitude_binary(frac) if eval_type == "binary" else _jb_effect_magnitude(eval_type, frac)
+            ref_curves[(eval_type, frac)] = _classical_pooled_power_curve(eval_type, es, methods, n_grid, ref_n_mc, seed)
+
+    for eval_type, sources, methods, name_re in groups:
+        if not sources:
+            continue
+        raw = run_ppi_comparison_simulation(
+            sources, n_reps, n_boot, methods=methods, seed=seed, n_workers=n_workers,
+            progress_mode=progress_mode,
+        )
+        all_raw.extend(raw)
+        pooled = pool_ppi_comparison_across_methods(raw)
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
+        for r in pooled:
+            m = re.match(name_re, r.name)
+            if not m:
+                raise ValueError(f"run_ppi_nformula_check: could not parse noise from {r.name!r}")
+            noise = float(m.group(1))
+            closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
+            target, achieved = calib_info[eval_type][closest_noise]
+            closest_frac = min(PPI_NFORMULA_EFFECT_FRACS, key=lambda f: abs(f - r.effect_size))
+            power_grid = ref_curves[(eval_type, closest_frac)]
+            ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
+            equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
+            saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
+            results.append(LabelEfficiencyPoint(
+                eval_type=eval_type, judge_noise=noise, alignment_metric=metric_name,
+                alignment_target=target, alignment_value=achieved,
+                n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps, saturated=saturated,
+                n=r.n, effect_frac=r.effect_size,
+            ))
+    return results, all_raw, calib_rows
+
+
 def print_ppi_label_efficiency_report(results: list[LabelEfficiencyPoint]) -> None:
     """N_lab / PPI power / equivalent human-only N_lab / multiplier table,
     grouped by eval_type then alignment_target -- the console/console-log
@@ -5542,6 +5821,49 @@ def print_ppi_label_efficiency_report(results: list[LabelEfficiencyPoint]) -> No
     print()
 
 
+def print_ppi_nformula_report(results: list[LabelEfficiencyPoint]) -> None:
+    """Console/log counterpart of run_ppi_nformula_check, analogous to
+    print_ppi_label_efficiency_report -- but grouped by eval_type, THEN
+    effect_frac, THEN N, then alignment_target, since (unlike the original
+    label-efficiency check) neither N nor effect_frac is constant across
+    `results` here. Reusing print_ppi_label_efficiency_report directly
+    would be wrong: its per-target grouping silently assumes every row for
+    a given (eval_type, target) shares the same N/effect_frac, which this
+    sweep's rows don't."""
+    if not results:
+        print("\n  (no n-formula results)")
+        return
+    print(
+        f"\n{'='*88}\n  PVALUES (PPI-CORRECTED) -- LABEL EFFICIENCY N-FORMULA CHECK\n"
+        f"  N, N_lab, and effect_frac all vary -- see PPI_NFORMULA_N_VALUES/"
+        f"PPI_NFORMULA_NLAB_VALUES/PPI_NFORMULA_EFFECT_FRACS\n{'='*88}"
+    )
+    for et in sorted({r.eval_type for r in results}):
+        print(f"\n  [{et}]")
+        for frac in sorted({r.effect_frac for r in results if r.eval_type == et}):
+            print(f"    effect_frac={frac:.3f}")
+            for n in sorted({r.n for r in results if r.eval_type == et and r.effect_frac == frac}):
+                print(f"      N={n}")
+                for target in sorted(
+                    {r.alignment_target for r in results if r.eval_type == et and r.effect_frac == frac and r.n == n},
+                    reverse=True,
+                ):
+                    rows = sorted(
+                        (r for r in results if r.eval_type == et and r.effect_frac == frac and r.n == n and r.alignment_target == target),
+                        key=lambda r: r.n_lab,
+                    )
+                    metric = rows[0].alignment_metric
+                    achieved_vals = {r.alignment_value for r in rows}
+                    achieved_str = f"{sum(achieved_vals) / len(achieved_vals):.3f}" if achieved_vals else "n/a"
+                    print(f"        target {metric}={target:.2f}  (achieved ~{achieved_str})")
+                    print(f"          {'N_lab':>8} {'ppi_power':>10} {'equiv_N_lab':>12} {'multiplier':>11}")
+                    for r in rows:
+                        mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
+                        flag = "  (saturated, lower bound)" if r.saturated else ""
+                        print(f"          {r.n_lab:>8} {r.ppi_power:>10.3f} {r.equiv_n_lab:>12.1f} {mult:>10.2f}x{flag}")
+    print()
+
+
 def save_results_artifacts_ppi_label_efficiency(
     *, results: list[LabelEfficiencyPoint], out_dir: str, run_stem: str,
 ) -> list[str]:
@@ -5565,6 +5887,45 @@ def save_results_artifacts_ppi_label_efficiency(
     buf = io.StringIO()
     with redirect_stdout(buf):
         print_ppi_label_efficiency_report(results)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    print(f"Saved results: {csv_path}")
+    print(f"Saved log: {summary_path}")
+    return [str(csv_path), str(summary_path)]
+
+
+def save_results_artifacts_ppi_nformula(
+    *, results: list[LabelEfficiencyPoint], out_dir: str, run_stem: str,
+) -> list[str]:
+    """Pooled-CSV counterpart of save_results_artifacts_ppi_label_efficiency
+    for run_ppi_nformula_check's output -- a SEPARATE function (not an
+    extension of that one) so the original label-efficiency CSV's column
+    set/writer stays untouched. Adds `n` and `effect_frac` columns (both
+    fixed constants in the original sweep's CSV, so not worth adding
+    there) since this sweep's whole point is that they vary. Use save_
+    results_artifacts_ppi_label_efficiency_raw (unchanged, reused as-is)
+    for the accompanying raw per-method/calibration CSVs -- PPIComparisonResult
+    already carries `n`/`effect_size` per row, so nothing needed adding
+    there."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    csv_path = out_base / f"{run_stem}_ppi_nformula_results.csv"
+    with csv_path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow([
+            "eval_type", "n", "effect_frac", "alignment_metric", "alignment_target", "alignment_value",
+            "judge_noise", "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier", "saturated",
+        ])
+        for r in results:
+            mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
+            writer.writerow([
+                r.eval_type, r.n, f"{r.effect_frac:.4f}", r.alignment_metric, f"{r.alignment_target:.2f}",
+                f"{r.alignment_value:.4f}", f"{r.judge_noise:.4f}", r.n_lab, r.n_reps,
+                f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}", r.saturated,
+            ])
+    summary_path = out_base / f"{run_stem}_ppi_nformula_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_nformula_report(results)
     summary_path.write_text(buf.getvalue(), encoding="utf-8")
     print(f"Saved results: {csv_path}")
     print(f"Saved log: {summary_path}")
@@ -6032,6 +6393,21 @@ entirely and reports realized-alignment buckets directly rather than a
 fitted noise coefficient."""
 
 
+_PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS = {
+    "bm": "none", "lm": "mcar", "es": "null", "bd": "opposing", "et": "continuous",
+}
+"""Every Treatment() reference level _PPI_FACTORIAL_FORMULA depends on --
+checked up front by fit_ppi_factorial_model before handing `df` to patsy,
+so a missing level fails with a clear, actionable message pointing at
+WHICH column/level is missing, rather than patsy's generic (and, for a
+run that just spent 30-60 minutes of compute, very unwelcome) "specified
+level 'x' not found" with no indication of why. Added after exactly this
+happened for real (2026-08-03): PPI_FACTORIAL_NOISE_LEVELS briefly lost
+its required 0.20 anchor point during a widening, silently emptying the
+es="null" rows out of the noise==0.20 baseline subset this formula is
+always fit on -- see that constant's docstring for the full incident."""
+
+
 def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd.DataFrame]:
     """Fit _PPI_FACTORIAL_FORMULA and return (summary_text, raw dataframe).
 
@@ -6045,11 +6421,28 @@ def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd
     (non-saturated) coefficients remain informative; treat any
     coefficient with a standard error orders of magnitude larger than its
     neighbors as "this stratum saturated," not as a real, enormous effect.
-    """
+
+    Raises ValueError (not patsy's own cryptic "specified level ... not
+    found") if `results` is missing any of _PPI_FACTORIAL_FORMULA_
+    REFERENCE_LEVELS' required Treatment() reference levels -- almost
+    always means `results` was filtered down to the wrong noise level (or
+    otherwise mis-scoped) before reaching here, not a real data problem;
+    see that constant's docstring."""
     import statsmodels.api as sm
     import statsmodels.formula.api as smf
 
     df = _ppi_factorial_dataframe(results)
+    if df.empty:
+        raise ValueError("fit_ppi_factorial_model: `results` produced an empty dataframe -- nothing to fit.")
+    for col, required_level in _PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS.items():
+        present = set(df[col].unique())
+        if required_level not in present:
+            raise ValueError(
+                f"fit_ppi_factorial_model: column {col!r} is missing its required reference level "
+                f"{required_level!r} (present: {sorted(present)}) -- `results` is almost certainly filtered "
+                f"to the wrong scope (e.g. the wrong llm_noise baseline) before reaching this function. "
+                f"See _PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS' docstring."
+            )
     fit = smf.glm(formula=_PPI_FACTORIAL_FORMULA, data=df, family=sm.families.Binomial()).fit()
     return fit.summary().as_text(), df
 
@@ -6422,9 +6815,10 @@ class PPIAlignmentSweepResult:
     noise: float
     bias_label: str
     """One of PPI_FACTORIAL_BIAS_MAGNITUDES' keys (none/moderate/severe) --
-    "none" is this result's REGIME marker (see _alignment_regime): every
-    other label means real judge bias was present, regardless of
-    magnitude."""
+    see _alignment_regime for how this maps to a bucketed-view regime:
+    "none" -> no_bias, "severe" -> bias_present, "moderate" -> excluded
+    from the two-regime bucketed print/plot views (still present in the
+    raw per-cell CSV)."""
     lm: str
     """One of PPI_FACTORIAL_LABEL_MECHANISMS' keys (mcar/mnar_mild/
     mnar_strong) for the cell this alignment measurement was derived from.
@@ -6457,15 +6851,36 @@ def _alignment_regime(bias_label: str) -> str:
     """The qualitative "why is this cell at this alignment level" split the
     whole sweep is built to make visible: "no_bias" (bias_label == "none" --
     whatever alignment level this cell landed at came purely from llm_noise)
-    vs. "bias_present" (any nonzero bias_delta, regardless of magnitude --
-    lumped into one regime rather than none/mild/moderate/severe/extreme
-    sub-bins, since the point is the qualitative presence of bias, not its
-    size, and finer sub-bins would fragment already-sparse per-bucket cell
-    counts further)."""
-    return "no_bias" if bias_label == "none" else "bias_present"
+    vs. "bias_present" (bias_label == "severe" ONLY). Returns "excluded" for
+    "moderate" -- filtered out of print_ppi_alignment_sweep_report/save_ppi_
+    alignment_sweep_plot's regime loops entirely (both only ever iterate
+    ("no_bias", "bias_present")), not shown as a third regime.
+
+    RE-DERIVED 2026-08-03 (was: any nonzero bias_delta, moderate+severe
+    pooled together into one "bias_present" regime): pooling both
+    magnitudes averaged away the sharpest version of this view's own
+    point. Confirmed on a real run (factorial_alignment_recheck_
+    20260803_135105, likert/weighted kappa): at the SAME 90-100%
+    ("almost perfect") alignment bucket, severe bias alone gives an
+    UNCORRECTED false-positive rate of 0.852, vs. moderate bias alone's
+    0.300 at that same bucket -- pooled, this read as a much less
+    alarming ~0.55. The rhetorical point this view exists to make -- a
+    judge can read as near-perfectly aligned by IRR while still being
+    catastrophically miscalibrated if used naively -- comes through far
+    more sharply using severe alone than the pooled average. Moderate-
+    bias cells are NOT dropped from the underlying data (they still run
+    as part of the full factorial grid, feed fit_ppi_factorial_model/
+    save_ppi_factorial_heatmap_plot/save_results_artifacts_ppi_alignment_
+    sweep's raw per-cell CSV as before) -- only excluded from THIS
+    bucketed print/plot view's two-regime comparison."""
+    if bias_label == "none":
+        return "no_bias"
+    if bias_label == "severe":
+        return "bias_present"
+    return "excluded"
 
 
-_PPI_ALIGNMENT_REGIME_LABEL = {"no_bias": "no judge bias (noise only)", "bias_present": "judge bias present"}
+_PPI_ALIGNMENT_REGIME_LABEL = {"no_bias": "no judge bias (noise only)", "bias_present": "bias present"}
 _PPI_ALIGNMENT_BUCKET_WIDTH = 10
 
 
@@ -6518,10 +6933,24 @@ def _corr_band(x: float) -> str:
     return "large"
 
 
+def _icc_band(x: float) -> str:
+    """Koo & Li (2016) benchmarks for ICC magnitude -- same bands
+    evalstats.alignment._interpret_icc uses."""
+    if x < 0.50:
+        return "poor"
+    if x < 0.75:
+        return "moderate"
+    if x < 0.90:
+        return "good"
+    return "excellent"
+
+
 _ALIGNMENT_VIEWS = [
     ("continuous", "pearson_r", "Pearson r", _corr_band, "Cohen, 1988", "r"),
+    ("continuous", "icc_21", "ICC(2,1)", _icc_band, "Koo & Li, 2016", "ICC"),
     ("likert", "weighted_kappa", "weighted κ", _kappa_band, "Landis & Koch, 1977", "κ"),
     ("likert", "spearman_r", "Spearman r", _corr_band, "Cohen, 1988", "ρ"),
+    ("likert", "icc_21", "ICC(2,1)", _icc_band, "Koo & Li, 2016", "ICC"),
     ("binary", "kappa", "Cohen's κ", _kappa_band, "Landis & Koch, 1977", "κ"),
 ]
 """The (eval_type, metric, display_label, qualitative-band function,
@@ -6536,11 +6965,27 @@ kappa is, not less: at "large"/"almost perfect" alignment, Spearman's
 bucket showed materially higher uncorrected false-positive rates than
 kappa's -- both being rank/order-based to some degree, but kappa's
 near-exact-match requirement is more bias-sensitive than pure rank
-preservation is). Binary gets (unweighted) Cohen's kappa only -- no second
-correlation-type view, since on 2x2 binary data Pearson/Spearman/Kendall's
-tau-b/phi/MCC are all essentially the same statistic (see measure_judge_
-alignment's binary branch), so adding one would be redundant, not a
-genuinely different lens the way Spearman is for likert. `symbol` is the
+preservation is). Continuous and likert ALSO each get an ICC(2,1) view
+(_icc_21/_icc_band) -- unlike Pearson r (invariant to any affine rescaling)
+or weighted kappa (only bias-sensitive insofar as bias shifts items across
+the fixed category grid), ICC(2,1) is absolute-agreement, not just
+relative-agreement: a judge that's additively biased but otherwise
+low-noise can read as well-aligned on the other views while ICC(2,1)
+correctly marks it down. This makes ICC's bucket the sharpest version of
+this whole sweep's point (see measure_judge_alignment's docstring) -- a
+biased-but-precise judge should land in a LOWER ICC bucket even at a
+region of the noise grid where Pearson r/weighted kappa would call it
+"almost perfect". Binary gets (unweighted) Cohen's kappa only -- no
+correlation-type view (on 2x2 binary data Pearson/Spearman/Kendall's
+tau-b/phi/MCC are all essentially the same statistic, see measure_judge_
+alignment's binary branch, so adding one would be redundant) and no ICC
+view either, matching evalstats/alignment.py's own choice not to compute
+ICC(2,1) for binary judges -- its variance-decomposition doesn't map
+cleanly onto two nominal categories the way it does onto an ordinal/
+numeric scale, and kappa already IS an absolute-agreement statistic on
+binary data (unlike Pearson r on continuous/likert data), so there's no
+"correlation looks great but absolute agreement doesn't" gap for ICC to
+expose there. `symbol` is the
 conventional single-character notation used in bucket subplot titles (e.g.
 "κ=0.40-0.50"). Drives print_ppi_alignment_sweep_report/save_ppi_alignment_
 sweep_plot/the human-human companion uniformly -- one call per entry -- so
@@ -6658,7 +7103,13 @@ def save_results_artifacts_ppi_alignment_sweep(
     rerunning the simulation."""
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
-    metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "percent_agreement"]
+    # "kappa" (binary's own unweighted Cohen's kappa -- see measure_judge_
+    # alignment's docstring) was missing here despite the docstring above
+    # claiming "one column per possible metric" -- silently dropped binary's
+    # primary alignment metric from every saved CSV, discovered 2026-08-03
+    # while trying to re-derive save_ppi_alignment_sweep_plot's binary/kappa
+    # view from an already-saved CSV without rerunning the simulation.
+    metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "kappa", "icc_21", "percent_agreement"]
     csv_path = out_base / f"{run_stem}_ppi_alignment_sweep_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -6835,7 +7286,7 @@ def print_human_human_alignment_report(rows: list[dict]) -> None:
 def save_human_human_alignment_csv(*, rows: list[dict], out_dir: str, run_stem: str) -> str:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
-    metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "percent_agreement"]
+    metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "icc_21", "percent_agreement"]
     csv_path = out_base / f"{run_stem}_human_human_alignment.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
@@ -7155,7 +7606,9 @@ def build_ppi_alignment_results_from_factorial_binary(
     likert_max) for consistency, just with fewer distinct noise levels (9
     vs. 11) and one fewer bias level (3 vs. bm's role here). `bias_label` is
     the bias_magnitude label (none/moderate/severe) -- _alignment_regime
-    only checks for "none", so this reuses that function unchanged."""
+    checks for "none"/"severe" only (moderate excluded from the bucketed
+    view, see that function's docstring), so this reuses that function
+    unchanged."""
     by_name = {sc.name: sc for sc in factorial_sources}
     align_cache: dict[tuple, dict] = {}
     results: list[PPIAlignmentSweepResult] = []
@@ -7461,6 +7914,7 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
     KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
+    PPI_T_INTERVAL.name: "PPI t-interval", PPI_LOGIT_T.name: "PPI logit-t",
 }
 
 
@@ -7517,7 +7971,7 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     import matplotlib.pyplot as plt
 
     tests = _ppi_tests_present(results, nonstandard=nonstandard)
-    fig, ax = plt.subplots(figsize=(10.0, 5.8))
+    fig, ax = plt.subplots(figsize=(10.0, 5.0))
     rng = np.random.default_rng(0)
     unc_label_added = False
     all_rates: list[np.ndarray] = []
@@ -7610,21 +8064,37 @@ def save_ppi_factorial_typeI_violin_plot(
     lm_filter: str | None = None,
 ) -> str:
     """Grouped violin+strip of corrected vs. uncorrected Type-I rate from the
-    combined-factor factorial sweep's null cells, split into two panels
-    (two-group tests | omnibus tests) -- same visual language as
-    save_ppi_typeI_plot (gray = uncorrected, test-colored = corrected, one
-    dot per scenario cell), scoped instead to PPIComparisonResult's
-    (factorial sweep) fields and, via lm_filter, to a single labeling-
-    mechanism regime.
+    combined-factor factorial sweep's null cells -- ONE panel across all
+    nine tests (the five _COMPARISON_METHODS two-group/paired tests, THEN
+    the four _COMPARISON_METHODS_OMNIBUS tests, same order/columns
+    save_ppi_typeI_plot's OFAT-sourced version uses), not two side-by-side
+    panels. Same visual language as save_ppi_typeI_plot (gray = uncorrected,
+    test-colored = corrected, one dot per scenario cell), scoped instead to
+    PPIComparisonResult's (factorial sweep) fields and, via lm_filter, to a
+    single labeling-mechanism regime.
 
-    Added because pooling MCAR and MNAR null cells into one violin hid that
-    most of the mass sits right at nominal alpha under MCAR, with only a
-    handful of MNAR cells (concentrated in mwu/kruskal, under
-    mnar_strong/mnar_mild + opposing bias direction + low noise) producing
-    a long right tail -- see run()'s factorial-check block for the two-call
-    (mcar + mnar) convention this establishes, intended to make MCAR the
-    headline figure and MNAR an explicit, separately-labeled stress test
-    rather than a silent contributor to one pooled distribution.
+    UNIFIED 2026-08-05 (was: two side-by-side panels, two-group | omnibus)
+    -- specifically to give the factorial sweep's much denser scenario
+    grid (every N x N_lab x bias x label_mechanism x noise combination,
+    vs. build_judge_bias_sources' curated ~130-scenario OFAT catalog) the
+    same single-panel, all-9-tests-together comparability save_ppi_typeI_
+    plot already has, so the two plots read as directly comparable views
+    of the same 9 tests rather than differently-shaped figures. Requires
+    _COMPARISON_METHODS to include ttest (added the same day, alongside
+    ttest_welch, specifically so this 9-test parity would hold) -- without
+    it this panel would only ever show 8 of save_ppi_typeI_plot's 9 tests.
+
+    Added (pre-unification) because pooling MCAR and MNAR null cells into
+    one violin hid that most of the mass sits right at nominal alpha under
+    MCAR, with only a handful of MNAR cells (concentrated in mwu/kruskal,
+    under mnar_strong/mnar_mild + opposing bias direction + low noise)
+    producing a long right tail -- see run()'s factorial-check block for
+    the two-call (mcar + mnar) convention this establishes, intended to
+    make MCAR the headline figure and MNAR an explicit, separately-labeled
+    stress test rather than a silent contributor to one pooled
+    distribution. That MCAR/MNAR split is unaffected by the panel
+    unification above -- still two separate saved figures, one per
+    lm_filter value.
 
     lm_filter : {"mcar", "mnar", None}
         "mcar" keeps only MCAR-labeled null cells. "mnar" pools
@@ -7632,7 +8102,7 @@ def save_ppi_factorial_typeI_violin_plot(
         original, undifferentiated view) -- provided for completeness, not
         expected to be anyone's headline choice.
     omnibus_results : may be empty (e.g. factorial_omnibus=False) -- the
-        omnibus panel is simply omitted rather than drawn empty.
+        four omnibus columns are simply omitted rather than drawn empty.
     """
     import matplotlib.pyplot as plt
 
@@ -7650,14 +8120,17 @@ def save_ppi_factorial_typeI_violin_plot(
         return out
 
     have_omnibus = bool(omnibus_results)
-    ncols = 2 if have_omnibus else 1
-    fig, axes = plt.subplots(1, ncols, figsize=(13.0 if have_omnibus else 7.0, 5.8))
-    axes = [axes] if not have_omnibus else list(axes)
+    methods = list(_COMPARISON_METHODS) + (list(_COMPARISON_METHODS_OMNIBUS) if have_omnibus else [])
+    results = _filter_null(two_group_results) + (_filter_null(omnibus_results) if have_omnibus else [])
+
+    fig, ax = plt.subplots(figsize=(2.0 * len(methods), 5.0))
     rng = np.random.default_rng(0)
     violin_width = 0.30
     group_offset = 0.19
+    unc_label_added = False
+    all_rates: list[np.ndarray] = []
 
-    def _violin_and_strip(ax, x: float, values: np.ndarray, color: str, body_alpha: float, label: str | None) -> None:
+    def _violin_and_strip(x: float, values: np.ndarray, color: str, body_alpha: float, label: str | None) -> None:
         values = values[np.isfinite(values)]
         if len(values) == 0:
             return
@@ -7681,40 +8154,36 @@ def save_ppi_factorial_typeI_violin_plot(
             zorder=3, label=label, edgecolors="none",
         )
 
-    def _panel(ax, results: list[PPIComparisonResult], methods: list[str], title: str) -> None:
-        unc_label_added = False
-        all_rates: list[np.ndarray] = []
-        for j, m in enumerate(methods):
-            m_rows = [r for r in results if r.method == m]
-            rates_u = np.array([r.rejects_llm_only / r.n_reps if r.n_reps else float("nan") for r in m_rows])
-            rates_c = np.array([r.rejects_ppi / r.n_reps if r.n_reps else float("nan") for r in m_rows])
-            all_rates.append(rates_u)
-            all_rates.append(rates_c)
-            _violin_and_strip(
-                ax, j - group_offset, rates_u, "#808080", 0.35,
-                "Uncorrected (any test)" if not unc_label_added else None,
-            )
-            unc_label_added = True
-            _violin_and_strip(ax, j + group_offset, rates_c, get_method_color(m), 0.45, _pretty_test(m))
-        ax.axhline(alpha, color="black", ls="--", lw=1.1, label=f"Nominal {_alpha_label(alpha)}")
-        ax.set_xlim(-0.5, len(methods) - 0.5)
-        scatter_max = np.nanmax(np.concatenate(all_rates)) if all_rates else float("nan")
-        if not np.isfinite(scatter_max):
-            scatter_max = 0.2
-        ax.set_ylim(0.0, max(0.2, float(scatter_max) * 1.05))
-        ax.set_xticks(np.arange(len(methods)))
-        ax.set_xticklabels([_pretty_test(m) for m in methods], rotation=25, ha="right", fontsize=8)
-        ax.set_ylabel("Observed rejection rate")
-        ax.set_title(title, fontsize=11)
-        ax.grid(axis="y", alpha=0.25, lw=0.8)
+    for j, m in enumerate(methods):
+        m_rows = [r for r in results if r.method == m]
+        rates_u = np.array([r.rejects_llm_only / r.n_reps if r.n_reps else float("nan") for r in m_rows])
+        rates_c = np.array([r.rejects_ppi / r.n_reps if r.n_reps else float("nan") for r in m_rows])
+        all_rates.append(rates_u)
+        all_rates.append(rates_c)
+        _violin_and_strip(
+            j - group_offset, rates_u, "#808080", 0.35,
+            "Uncorrected (any test)" if not unc_label_added else None,
+        )
+        unc_label_added = True
+        _violin_and_strip(j + group_offset, rates_c, get_method_color(m), 0.45, _pretty_test(m))
 
     lm_note = {"mcar": " -- MCAR labeling", "mnar": " -- MNAR labeling (mild+strong)", None: ""}[lm_filter]
-    _panel(axes[0], _filter_null(two_group_results), list(_COMPARISON_METHODS), f"Two-group tests{lm_note}")
-    if have_omnibus:
-        _panel(axes[1], _filter_null(omnibus_results), list(_COMPARISON_METHODS_OMNIBUS), f"Omnibus tests{lm_note}")
-
-    handles, labels_ = axes[0].get_legend_handles_labels()
-    fig.legend(handles, labels_, loc="center left", bbox_to_anchor=(1.0, 0.5), borderaxespad=0.0, fontsize=8)
+    ax.axhline(alpha, color="black", ls="--", lw=1.1, label=f"Nominal {_alpha_label(alpha)}")
+    ax.set_xlim(-0.5, len(methods) - 0.5)
+    scatter_max = np.nanmax(np.concatenate(all_rates)) if all_rates else float("nan")
+    if not np.isfinite(scatter_max):
+        scatter_max = 0.2
+    ax.set_ylim(0.0, max(0.2, float(scatter_max) * 1.05))
+    ax.set_xticks(np.arange(len(methods)))
+    ax.set_xticklabels([_pretty_test(m) for m in methods], rotation=30, ha="right", fontsize=8)
+    ax.set_ylabel("Observed rejection rate")
+    ax.set_xlabel("Test")
+    ax.set_title(
+        f"PPI-Corrected Type-I Error, by Test (Full Factorial Sweep){lm_note}\n"
+        "(gray = uncorrected, color = corrected; each dot: one factorial scenario cell)", fontsize=12,
+    )
+    ax.grid(axis="y", alpha=0.25, lw=0.8)
+    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), borderaxespad=0.0, fontsize=8)
 
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
@@ -8359,25 +8828,29 @@ def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: 
 
 
 def save_ppi_effect_plot(
-    *, results: list[PPIEffectResult], alpha: float, out_path: str, nonstandard: bool = False,
+    *, results: list[PPIEffectResult], alpha: float, out_path: str, ci_comparison: bool = False,
 ) -> str:
     """Bias-z / CI-coverage / CI-width scatter, one jittered column per test
     -- mirrors sim_type_i_calibration.py's ``_plot_effect_results`` (3
     panels), reading directly off PPIEffectResult's already-aggregated
     per-scenario stats rather than raw bootstrap samples.
 
-    nonstandard : bool
+    ci_comparison : bool
         When False (default), plots only the standard/textbook tests
-        (excludes bayes_bootstrap/bootstrap_t/tango_score). When True,
-        plots ONLY those three bootstrap/CI-based methods instead -- see
-        _PPI_NONSTANDARD_TESTS for why they're kept out of the main plot.
+        (excludes bayes_bootstrap/bootstrap_t/tango/ppi_wilson/
+        bootstrap_t_single/ppi_t_interval/ppi_logit_t -- see
+        _PPI_NONSTANDARD_TESTS). When True, plots ONLY the curated
+        4-method PPI-corrected CI comparison instead -- Tango, PPI Wilson,
+        PPI logit-t, PPI t-interval -- see _PPI_CI_COMPARISON_TESTS for
+        why exactly these four (and not the broader bootstrap/CI-based
+        set _ppi_tests_present(nonstandard=True) would return).
     """
     import matplotlib.pyplot as plt
 
     if not results:
         raise ValueError("save_ppi_effect_plot: no PPI effect-check results to plot.")
 
-    tests = _ppi_tests_present(results, nonstandard=nonstandard)
+    tests = _ppi_ci_comparison_tests_present(results) if ci_comparison else _ppi_tests_present(results, nonstandard=False)
     target_cov = 1.0 - alpha
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16.0, 5.5))
     rng = np.random.default_rng(0)
@@ -8426,7 +8899,7 @@ def save_ppi_effect_plot(
     ax3.grid(axis="y", alpha=0.25, lw=0.8)
 
     handles, labels = ax1.get_legend_handles_labels()
-    title_suffix = " -- Bootstrap/CI-Based Methods" if nonstandard else ""
+    title_suffix = " -- PPI-Corrected CI Methods (Tango / Wilson / Logit-t / t-interval)" if ci_comparison else ""
     fig.suptitle(f"PPI-Corrected Effect-Size Calibration: Bias, Coverage, and Width{title_suffix}", fontsize=12)
     fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
 
@@ -8632,6 +9105,22 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "(PPI_BINARY_BIAS_MAGNITUDES/PPI_BINARY_NOISE_LEVELS), different pooled test set, so "
                               "kept as its own toggle rather than folded into the same flag. Reuses "
                               "--factorial-reps/--factorial-n-boot/--factorial-alignment-mc.")
+    parser.add_argument("--nformula-check", action="store_true", default=False,
+                         help="ppi mode: run the label-efficiency N-formula check (run_ppi_nformula_check) -- "
+                              "extends the label-efficiency check (--no-label-efficiency-check) by ALSO sweeping "
+                              "N (PPI_NFORMULA_N_VALUES) and effect size (PPI_NFORMULA_EFFECT_FRACS), not just "
+                              "N_lab and judge alignment -- a one-off, opt-in (default off) check for deriving/"
+                              "verifying a closed-form rule-of-thumb formula for the label-efficiency multiplier "
+                              "that includes N explicitly and holds across effect sizes, distinct from --mode "
+                              "ppi's main label-efficiency path. See official_args_ppi_nformula for a ready-made "
+                              "official-precision preset, selectable on its own from the --official-tests menu.")
+    parser.add_argument("--nformula-reps", type=int, default=100, metavar="N",
+                         help="ppi mode: reps for --nformula-check (default 100, a screening-tier rep count -- "
+                              "bump toward --effect-reps for a publication-precision confirmation pass, see "
+                              "official_args_ppi_nformula).")
+    parser.add_argument("--nformula-n-boot", type=int, default=500, metavar="N",
+                         help="ppi mode: PPI bootstrap resample count for --nformula-check (default 500, "
+                              "screening-tier -- bump toward --ppi-n-boot for a confirmation pass).")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
 
@@ -8839,6 +9328,34 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     return args
 
 
+def official_args_ppi_nformula(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for JUST the label-efficiency N-formula check
+    (run_ppi_nformula_check) -- split out from official_args_ppi the same
+    way official_args_ppi_factorial is, so --official-tests can run/skip it
+    independently of the base Type-I sweep and the other --mode ppi checks.
+    Disables every other opt-out check (--no-typeI-check/--no-effect-check/
+    --no-power-check/--no-comparison-check/--no-label-efficiency-check) so
+    this preset runs ONLY the N-formula sweep, not also the (much slower)
+    base Type-I sweep or the original label-efficiency check it extends.
+
+    nformula_reps/nformula_n_boot are set to the SAME precision tier the
+    other secondary checks already run at (effect_reps/ppi_n_boot,
+    200/2000) -- not --nformula-check's own screening-tier CLI default
+    (100/500, meant for fast interactive iteration while designing the
+    grid, not a result worth citing) -- the same convention official_args_
+    ppi_factorial uses for factorial_reps/factorial_n_boot."""
+    args = official_args_ppi(base_seed)
+    args.no_typeI_check = True
+    args.no_effect_check = True
+    args.no_power_check = True
+    args.no_comparison_check = True
+    args.no_label_efficiency_check = True
+    args.nformula_check = True
+    args.nformula_reps = args.effect_reps
+    args.nformula_n_boot = args.ppi_n_boot
+    return args
+
+
 def official_args_ppi_factorial_likert7(base_seed: int = 42) -> argparse.Namespace:
     """Same as official_args_ppi_factorial, except likert scenarios are
     generated on a 1-7 scale instead of the standard 1-5 (factorial_likert_max
@@ -9009,6 +9526,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (ppi factorial only)", official_args_ppi_factorial(base_seed)),
         ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
         ("synthetic (ppi factorial only, binary)", official_args_ppi_factorial_binary(base_seed)),
+        ("synthetic (ppi n-formula check only)", official_args_ppi_nformula(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
         ("real data (pairwise + multiarm)", real_official_args(base_seed)),
         ("real data (pairwise)", real_official_args_pairwise(base_seed)),
@@ -9329,14 +9847,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                         )
                         output_paths.append(effect_plot_path)
                         print(f"Saved plot: {effect_plot_path}")
-                        if any(r.test in _PPI_NONSTANDARD_TESTS for r in effect_results):
-                            nonstd_effect_plot_path = save_ppi_effect_plot(
+                        if any(r.test in _PPI_CI_COMPARISON_TESTS for r in effect_results):
+                            ci_comparison_plot_path = save_ppi_effect_plot(
                                 results=effect_results, alpha=args.alpha,
-                                out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_nonstandard.png"),
-                                nonstandard=True,
+                                out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_ci_comparison.png"),
+                                ci_comparison=True,
                             )
-                            output_paths.append(nonstd_effect_plot_path)
-                            print(f"Saved plot: {nonstd_effect_plot_path}")
+                            output_paths.append(ci_comparison_plot_path)
+                            print(f"Saved plot: {ci_comparison_plot_path}")
 
                     key_metrics["ppi_effect_n_results"] = len(effect_results)
                     finite_z = [r.bias_z for r in effect_results if np.isfinite(r.bias_z)]
@@ -9794,6 +10312,37 @@ def run(args: argparse.Namespace) -> CaseResult:
                         print(f"Saved plot: {label_eff_plot_path}")
                     key_metrics["ppi_label_efficiency_n_results"] = len(label_eff_results)
 
+            # N-formula check (run_ppi_nformula_check): opt-in, separate from
+            # the label-efficiency check above -- see --nformula-check's help
+            # text for why this is kept as its own toggle/output rather than
+            # folded into --no-label-efficiency-check.
+            if getattr(args, "nformula_check", False):
+                nformula_reps = getattr(args, "nformula_reps", 100)
+                nformula_n_boot = getattr(args, "nformula_n_boot", 500)
+                print(f"\npvalues simulation (PPI-corrected, label efficiency N-formula check) -- "
+                      f"reps={nformula_reps}, n_boot={nformula_n_boot}")
+                nformula_results, nformula_raw, nformula_calib_rows = run_ppi_nformula_check(
+                    n_reps=nformula_reps, n_boot=nformula_n_boot,
+                    seed=args.seed + 15, n_workers=getattr(args, "workers", 1), progress_mode=args.progress,
+                )
+                if args.eval_types:
+                    requested = set(args.eval_types)
+                    nformula_results = [r for r in nformula_results if r.eval_type in requested]
+                    nformula_raw = [r for r in nformula_raw if r.eval_type in requested]
+                    nformula_calib_rows = [row for row in nformula_calib_rows if row[0] in requested]
+                if nformula_results:
+                    print_ppi_nformula_report(nformula_results)
+                    nformula_stem = f"pvalues_ppi_nformula_reps{nformula_reps}_{stamp}"
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_nformula(
+                            results=nformula_results, out_dir=args.out_dir, run_stem=nformula_stem,
+                        )
+                        output_paths += save_results_artifacts_ppi_label_efficiency_raw(
+                            raw=nformula_raw, calib_rows=nformula_calib_rows,
+                            out_dir=args.out_dir, run_stem=nformula_stem,
+                        )
+                    key_metrics["ppi_nformula_n_results"] = len(nformula_results)
+
             if getattr(args, "factorial_check", False):
                 factorial_likert_max = getattr(args, "factorial_likert_max", 5)
                 factorial_omnibus = getattr(args, "factorial_omnibus", False)
@@ -9832,10 +10381,6 @@ def run(args: argparse.Namespace) -> CaseResult:
                     factorial_results_baseline = [
                         r for r in factorial_results if _parse_ppi_factorial_name(r.name)["noise"] == 0.20
                     ]
-                    print_ppi_factorial_report(
-                        factorial_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL,
-                        null_results_full=factorial_results, raw_results_full=factorial_results_raw_2group,
-                    )
 
                     omnibus_results = None
                     omnibus_results_baseline = None
@@ -9848,14 +10393,24 @@ def run(args: argparse.Namespace) -> CaseResult:
                         omnibus_results_baseline = [
                             r for r in omnibus_results if _parse_ppi_factorial_name(r.name)["noise"] == 0.20
                         ]
-                        print_ppi_factorial_report(
-                            omnibus_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
-                            null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
-                        )
 
                     stem_lmax_suffix = f"_lmax{factorial_likert_max}" if factorial_likert_max != 5 else ""
                     stem_noise_suffix = "_fastnoise" if factorial_fast_noise else ""
                     factorial_stem = f"pvalues_ppi_factorial_reps{factorial_reps}{stem_lmax_suffix}{stem_noise_suffix}_{stamp}"
+
+                    # Save the RAW simulation data to disk BEFORE attempting any
+                    # GLM-dependent reporting below -- both print_ppi_factorial_
+                    # report and save_results_artifacts_ppi_factorial's own .log
+                    # step fit fit_ppi_factorial_model, which can raise (see
+                    # _PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS' docstring for the
+                    # exact incident this ordering guards against: a run that
+                    # spends 30-60+ minutes of compute must not lose that data
+                    # just because the GLM/report stage afterward hits a
+                    # problem). save_results_artifacts_ppi_factorial writes its
+                    # CSV before attempting its own .log, so calling it here
+                    # (rather than only the live console print below) is what
+                    # actually persists the raw results even if the GLM step
+                    # fails.
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_factorial(
                             results=factorial_results_raw, pooled_results=factorial_results_baseline,
@@ -9870,6 +10425,17 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 write_csv=False, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
                                 null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
                             )
+
+                    print_ppi_factorial_report(
+                        factorial_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_LABEL,
+                        null_results_full=factorial_results, raw_results_full=factorial_results_raw_2group,
+                    )
+                    if omnibus_results_baseline is not None:
+                        print_ppi_factorial_report(
+                            omnibus_results_baseline, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                            null_results_full=omnibus_results, raw_results_full=factorial_results_raw_omnibus,
+                        )
+
                     if args.plots == "save":
                         factorial_plot_path = save_ppi_factorial_heatmap_plot(
                             results=factorial_results_baseline, alpha=args.alpha,
