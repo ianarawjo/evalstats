@@ -2767,7 +2767,14 @@ PPI_FACTORIAL_BIAS_MAGNITUDES: dict[str, float] = {"none": 0.0, "moderate": 0.07
 """bias_delta fractions -- "moderate"/"severe" match build_judge_bias_sources'
 biasmag.*.moderate/biasmag.*.severe labels exactly, so factorial results are
 comparable to the existing OFAT bias_magnitude sweep."""
-PPI_FACTORIAL_N_VALUES = (60, 200, 400)
+PPI_FACTORIAL_N_VALUES = (60, 100, 200, 400)
+"""Widened 2026-08-05 to include 100, matching build_judge_bias_sources'
+own N sweep ([60, 100, 200, 400]) exactly -- previously (60, 200, 400)
+left an unexplained gap relative to that OFAT catalog, flagged when
+writing up the paper's data-generation appendix. No collision with
+PPI_FACTORIAL_NLAB_VALUES (15, 30, 80): every N_lab value stays strictly
+below every N value, so the n_lab>=n skip in build_ppi_factorial_sources
+still never binds."""
 PPI_FACTORIAL_NLAB_VALUES = (15, 30, 80)
 PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
     "mcar": dict(label_mnar=False, mnar_strength=0.0, mnar_mode="high"),
@@ -2972,14 +2979,15 @@ def build_ppi_factorial_sources(
       the GLM fit itself). Skipping the other 30 noise levels for non-null
       cells keeps the power-focused majority of the grid at its original
       size instead of multiplying it 31x for no analytical benefit.
-      ~312 cells per eval type survive the direction-redundancy + n_lab>=n
-      skips at the 0.20 noise baseline (down from 432, 3x3x3x3x3x2 minus
-      n_lab>n infeasibility) -- 72 of those 312 are the "null"-effect subset
-      (at noise=0.20 specifically), which additionally gets the OTHER 30
-      noise levels, adding 72*30=2160 more per eval type. Total: (312 +
-      2160) * 2 eval types = 4,944 cells, vs. 624 before llm_noise joined
-      the cross. (Verified directly against build_ppi_factorial_sources'
-      actual output, not hand-computed, after the 0.20 insertion fix.)
+      ~429 cells per eval type survive the direction-redundancy + n_lab>=n
+      skips at the 0.20 noise baseline (4x3x3x3x3x2 minus n_lab>n
+      infeasibility, up from ~312 before PPI_FACTORIAL_N_VALUES gained its
+      4th point, 100, on 2026-08-05 -- see that constant's own docstring)
+      -- 99 of those 429 are the "null"-effect subset (at noise=0.20
+      specifically), which additionally gets the OTHER 30 noise levels,
+      adding 99*30=2970 more per eval type. Total: (429 + 2970) * 2 eval
+      types = 6,798 cells. (Verified directly against build_ppi_factorial_
+      sources' actual output, not hand-computed.)
 
     Small enough, per eval type/paired_t, for a TRUE full factorial (every
     main effect and interaction directly estimable, no confounding to
@@ -3342,6 +3350,143 @@ def build_ppi_factorial_sources_binary() -> list[JudgeBiasSource]:
                                     **lm_kw,
                                 ))
     return sources
+
+
+def build_judge_bias_sources_binary() -> list[JudgeBiasSource]:
+    """Binary analogue of build_judge_bias_sources -- a one-factor-at-a-time
+    sweep scoped to the factors that actually mean something for a
+    flip-probability judge (_jb_llm_binary/_jb_llm_repeated_binary): sample
+    size, group balance, label fraction, label mechanism (MCAR/MNAR), noise
+    level, bias type, bias magnitude, repeated-measures correlation,
+    heteroskedastic noise, and base-rate shape. Deliberately excludes
+    scale/slope miscalibration and noise_family (contaminated noise) --
+    neither is modeled by _jb_llm_binary at all (see its own docstring).
+
+    Historically binary had only ONE scenario in build_judge_bias_sources
+    ("eval_type.binary") plus 5 "confound.binary.*" scenarios -- 6 total,
+    versus 100+ each for continuous/likert/grades -- because when that
+    scoping decision was made, only the mean-based tests (ttest/ttest_welch/
+    paired_t) applied to binary data. That's stale: Tango and PPI-Wilson
+    (see _PPI_BINARY_COMPATIBLE_TESTS in cases/pvalues.py) are now
+    binary-specific PPI-corrected CI methods with real validation needs of
+    their own, and 6 scenarios (all bias_type="none" confound checks, zero
+    coverage of sample size/balance/label fraction/MNAR/noise/bias
+    type-or-magnitude/shape) isn't enough to validate them credibly next to
+    t-interval/logit-t's 100+-scenario coverage.
+
+    Kept as a SEPARATE function (summed with build_judge_bias_sources() at
+    the call site) rather than folded into that function's own eval_type
+    loops, since binary's judge/truth model is structurally different
+    (flip-probability, not affine-in-truth) and needs its own baseline
+    dict and magnitude constants (PPI_BINARY_BIAS_MAGNITUDES/
+    PPI_BINARY_NOISE_BASELINE/PPI_BINARY_NOISE_LEVELS/BINARY_SHAPES -- all
+    reused directly from the existing binary-scoped builders above, no new
+    grids invented). Tags reuse the SAME strings build_judge_bias_sources'
+    groups use (e.g. "sample_size", "balance") so downstream reporting
+    (which pools by tag+test, not eval_type) shows binary alongside the
+    other eval types under those tags -- exactly the same tag-sharing
+    precedent "confound" already established.
+
+    Scenario names are prefixed "<tag>.binary." to avoid colliding with
+    build_judge_bias_sources' own names, matching the existing
+    "confound.binary.*" naming precedent."""
+    BB: dict = dict(
+        eval_type="binary", icc=0.20, n=100, n2=None, n3=None,
+        label_frac=0.20, llm_noise=PPI_BINARY_NOISE_BASELINE, llm_noise2=None, llm_noise3=None,
+        bias_type="differential",
+        bias_delta=PPI_BINARY_BIAS_MAGNITUDES["severe"], bias_const=PPI_BINARY_BIAS_MAGNITUDES["severe"],
+        label_mnar=False, mnar_strength=1.0, mnar_mode="high",
+        repeated_corr=0.0,
+    )
+
+    S: list[JudgeBiasSource] = []
+
+    def make_scenario(name, tag, **kw):
+        return JudgeBiasSource(name=name, tag=tag, **{**BB, **kw})
+
+    for n in [60, 100, 200, 400]:
+        S.append(make_scenario(f"n.binary.{n}", "sample_size", n=n))
+
+    S.append(make_scenario("balance.binary.1:1", "balance", n=100, n2=100))
+    S.append(make_scenario("balance.binary.2:1", "balance", n=67, n2=133))
+    S.append(make_scenario("balance.binary.4:1", "balance", n=40, n2=160))
+
+    for lab in [0.05, 0.10, 0.20, 0.40]:
+        S.append(make_scenario(f"lab.binary.{lab:.0%}", "label_frac", label_frac=lab))
+
+    S.append(make_scenario("label.binary.mcar", "label_mechanism", label_mnar=False, mnar_strength=0.0))
+    S.append(make_scenario("label.binary.mnar-mild", "label_mechanism", label_mnar=True, mnar_strength=0.8, mnar_mode="high"))
+    S.append(make_scenario("label.binary.mnar-strong", "label_mechanism", label_mnar=True, mnar_strength=1.6, mnar_mode="high"))
+
+    for noise in [0.025, 0.05, 0.20, 0.40]:
+        S.append(make_scenario(f"noise.binary.{noise}", "llm_noise", llm_noise=noise))
+
+    for bt in ["none", "constant", "differential"]:
+        S.append(make_scenario(f"bias.binary.{bt}", "bias_type", bias_type=bt))
+
+    for label, bm in PPI_BINARY_BIAS_MAGNITUDES.items():
+        S.append(make_scenario(
+            f"biasmag.binary.{label}", "bias_magnitude",
+            bias_type=("none" if label == "none" else "differential"), bias_delta=bm,
+        ))
+
+    # bias_type="none" throughout, mirroring build_judge_bias_sources' own
+    # "corr.*" group -- isolates the repeated-measures correlation factor
+    # (exercised via _jb_llm_repeated_binary's x/y paired structure) from
+    # bias, rather than compounding the two.
+    S.append(make_scenario("corr.binary.0.0", "repeated_corr", repeated_corr=0.0, bias_type="none"))
+    S.append(make_scenario("corr.binary.0.3", "repeated_corr", repeated_corr=0.3, bias_type="none"))
+    S.append(make_scenario("corr.binary.0.7", "repeated_corr", repeated_corr=0.7, bias_type="none"))
+
+    # llm_noise/llm_noise2 pulled from PPI_BINARY_NOISE_LEVELS' own grid --
+    # "extreme" uses that grid's actual min/max, "mild" a less extreme pair
+    # -- rather than continuous's 0.02-0.80 range, which would exceed
+    # binary's documented 0.40 cap (see PPI_BINARY_NOISE_LEVELS' docstring
+    # for why 0.40 is where the noise parameter stops meaning what it's
+    # supposed to).
+    S.append(make_scenario("hetero.binary.mild", "heteroskedastic", llm_noise=0.05, llm_noise2=0.20))
+    S.append(make_scenario(
+        "hetero.binary.extreme", "heteroskedastic",
+        llm_noise=PPI_BINARY_NOISE_LEVELS[0], llm_noise2=PPI_BINARY_NOISE_LEVELS[-1],
+    ))
+
+    # Base-rate shape imbalance -- binary's analogue of continuous/likert/
+    # grades' "shape.*" group. All four are BINARY_SHAPES' "standard"-tier
+    # entries (not "expanded"-only), matching the same suite-tier
+    # convention the shape catalog uses elsewhere.
+    for p_label in ["p=0.10", "p=0.30", "p=0.70", "p=0.90"]:
+        S.append(make_scenario(f"shape.binary.{p_label}", "shape", shape_label=p_label))
+
+    S.append(make_scenario("stress.binary.small+sparse", "stress", n=30, label_frac=0.07))
+    S.append(make_scenario("stress.binary.large+noisy", "stress", n=300, llm_noise=PPI_BINARY_NOISE_LEVELS[-1]))
+
+    S.append(make_scenario(
+        "interact.binary.small+unbal+hetero+diff", "interaction",
+        n=30, n2=120, label_frac=0.05, llm_noise=0.05, llm_noise2=PPI_BINARY_NOISE_LEVELS[-1],
+        bias_type="differential",
+    ))
+
+    # Companion bias-magnitude crossing -- lightweight, single-companion
+    # version of build_judge_bias_sources' own 2-point (mild/moderate)
+    # cross (see that block's comment for the "uncorrected dots cluster at
+    # ~alpha or ~1.0" problem it exists to avoid): PPI_BINARY_BIAS_
+    # MAGNITUDES only has one non-zero tier below "severe" ("moderate"),
+    # so there's only one meaningful companion point to add, not two. Adds
+    # one companion at bias_delta="moderate" per eligible base scenario
+    # above (every bias_type="differential" scenario except the dedicated
+    # bias_type/bias_magnitude groups, which already cover this cross
+    # directly), keeping the original unchanged.
+    _EXCLUDED_TAGS = {"bias_type", "bias_magnitude"}
+    extra: list[JudgeBiasSource] = []
+    for sc in S:
+        if sc.bias_type != "differential" or sc.tag in _EXCLUDED_TAGS:
+            continue
+        extra.append(replace(
+            sc, name=f"{sc.name}.modbias", bias_delta=PPI_BINARY_BIAS_MAGNITUDES["moderate"],
+        ))
+    S.extend(extra)
+
+    return S
 
 
 # ---------------------------------------------------------------------------

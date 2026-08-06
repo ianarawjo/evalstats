@@ -194,6 +194,7 @@ from ..scenarios.synthetic import (
     build_pair_sources,
     build_multiarm_sources,
     build_judge_bias_sources,
+    build_judge_bias_sources_binary,
     build_ppi_power_sources,
     build_ppi_power_reinforcing_sources,
     build_ppi_power_nobias_sources,
@@ -7670,7 +7671,7 @@ def _fmt_ppi_rate(rate: float | None, flag2: float, flag3: float) -> str:
     return s + "  "
 
 
-def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
+def print_ppi_report(results: list[PPIResult], alpha: float, regime: str = "") -> None:
     """Scenario x test calibration table, mirroring sim_type_i_calibration.py's
     ``_print_table``: tag-grouped scenario rows, one column per test, per-cell
     2-sigma/3-sigma inflation flags, a Wilson-CI miscalibration flag (dagger),
@@ -7678,7 +7679,12 @@ def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
     with flag counts plus per-test corrected/uncorrected max/mean/median --
     instead of one flat row per (scenario, test) cell and a single
     averaged-rate table.
-    """
+
+    regime : str
+        Optional label (e.g. "MCAR", "MNAR") appended to the header, used by
+        run() to print separate MCAR/MNAR tables -- see JudgeBiasSource.
+        label_mnar and the "MNAR is adversarial to PPI" discussion at that
+        call site for why these are split rather than pooled."""
     if not results:
         print("\n  (no PPI results)")
         return
@@ -7729,7 +7735,7 @@ def print_ppi_report(results: list[PPIResult], alpha: float) -> None:
 
     print()
     print(dbar)
-    print("  PVALUES (PPI-CORRECTED) -- TYPE I ERROR CALIBRATION")
+    print(f"  PVALUES (PPI-CORRECTED) -- TYPE I ERROR CALIBRATION{f' ({regime})' if regime else ''}")
     print(f"  n_reps={n_reps}  alpha={alpha}")
     print(f"  2σ flag (●): rate > {flag2:.3f}    3σ flag (●●): rate > {flag3:.3f}")
     print("  Wilson flag (†): 95% CI for rejection rate excludes alpha")
@@ -7862,7 +7868,7 @@ def latex_ppi_overall_summary(results: list[PPIResult], alpha: float) -> str:
     )
 
 
-def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
+def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False, regime: str = "") -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_results.csv"
@@ -7878,7 +7884,7 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
     summary_path = out_base / f"{run_stem}_ppi_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_report(results, alpha=alpha)
+        print_ppi_report(results, alpha=alpha, regime=regime)
     summary_text = buf.getvalue()
     if latex:
         summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_ppi_overall_summary(results, alpha=alpha)
@@ -7914,7 +7920,8 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
     KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
-    PPI_T_INTERVAL.name: "PPI t-interval", PPI_LOGIT_T.name: "PPI logit-t",
+    PPI_T_INTERVAL.name: "t-interval", PPI_LOGIT_T.name: "logit-t",
+    PPI_WILSON.name: "Wilson", PPI_BOOTSTRAP_T_SINGLE.name: "Bootstrap-t (single)",
 }
 
 
@@ -7941,7 +7948,7 @@ def _alpha_label(alpha: float) -> str:
     return f"α = {alpha:g}"
 
 
-def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str, nonstandard: bool = False) -> str:
+def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str, nonstandard: bool = False, regime: str = "") -> str:
     """Grouped violin+strip of corrected vs. uncorrected Type-I rate, per
     test -- one gray violin (uncorrected) and one test-colored violin
     (corrected) side by side per test, each with its own jittered per-
@@ -8033,6 +8040,7 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
     ax.set_ylabel("Observed rejection rate")
     ax.set_xlabel("Test")
     title_suffix = " -- Bootstrap/CI-Based Methods" if nonstandard else ""
+    title_suffix += f" ({regime})" if regime else ""
     ax.set_title(
         f"PPI-Corrected Type-I Error, by Test{title_suffix}\n"
         "(gray = uncorrected, color = corrected; each dot: one judge-bias scenario)", fontsize=12,
@@ -8689,11 +8697,15 @@ def save_ppi_power_nlab_grid_direction_plot(
     return out_path
 
 
-def print_ppi_effect_report(results: list[PPIEffectResult], alpha: float) -> None:
+def print_ppi_effect_report(results: list[PPIEffectResult], alpha: float, regime: str = "") -> None:
     """Bias & CI-coverage summary, mirroring sim_type_i_calibration.py's
     ``_print_effect_table``: per-test mean bias, worst |z|, coverage, worst
     coverage scenario, and mean CI width, plus a flagged-cells list (|bias
-    z| > 3, or coverage meaningfully under the 1-alpha target)."""
+    z| > 3, or coverage meaningfully under the 1-alpha target).
+
+    regime : str
+        Optional label (e.g. "MCAR", "MNAR") appended to the header -- see
+        print_ppi_report's own regime parameter."""
     if not results:
         print(
             "\n  (no PPI effect-check results -- active --tests must include at least one of "
@@ -8710,7 +8722,7 @@ def print_ppi_effect_report(results: list[PPIEffectResult], alpha: float) -> Non
     dbar = "=" * width
     print()
     print(dbar)
-    print("  PVALUES (PPI-CORRECTED) -- EFFECT-SIZE CALIBRATION (bias & CI coverage)")
+    print(f"  PVALUES (PPI-CORRECTED) -- EFFECT-SIZE CALIBRATION (bias & CI coverage){f' ({regime})' if regime else ''}")
     print("  (vs. Monte Carlo gold-reference null per scenario/test -- see estimate_judge_bias_gold_null_values)")
     print(dbar)
     print()
@@ -8799,7 +8811,7 @@ def latex_ppi_effect_overall_summary(results: list[PPIEffectResult], alpha: floa
     )
 
 
-def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False) -> list[str]:
+def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: float, out_dir: str, run_stem: str, latex: bool = False, regime: str = "") -> list[str]:
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     csv_path = out_base / f"{run_stem}_ppi_effect_results.csv"
@@ -8817,7 +8829,7 @@ def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: 
     summary_path = out_base / f"{run_stem}_ppi_effect_summary.log"
     buf = io.StringIO()
     with redirect_stdout(buf):
-        print_ppi_effect_report(results, alpha=alpha)
+        print_ppi_effect_report(results, alpha=alpha, regime=regime)
     summary_text = buf.getvalue()
     if latex:
         summary_text += "\n% --- LaTeX table (--latex) ---\n" + latex_ppi_effect_overall_summary(results, alpha=alpha)
@@ -8828,7 +8840,7 @@ def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: 
 
 
 def save_ppi_effect_plot(
-    *, results: list[PPIEffectResult], alpha: float, out_path: str, ci_comparison: bool = False,
+    *, results: list[PPIEffectResult], alpha: float, out_path: str, ci_comparison: bool = False, regime: str = "",
 ) -> str:
     """Bias-z / CI-coverage / CI-width scatter, one jittered column per test
     -- mirrors sim_type_i_calibration.py's ``_plot_effect_results`` (3
@@ -8900,6 +8912,7 @@ def save_ppi_effect_plot(
 
     handles, labels = ax1.get_legend_handles_labels()
     title_suffix = " -- PPI-Corrected CI Methods (Tango / Wilson / Logit-t / t-interval)" if ci_comparison else ""
+    title_suffix += f" ({regime})" if regime else ""
     fig.suptitle(f"PPI-Corrected Effect-Size Calibration: Bias, Coverage, and Width{title_suffix}", fontsize=12)
     fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
 
@@ -9783,12 +9796,25 @@ def run(args: argparse.Namespace) -> CaseResult:
             # both stay selectable explicitly via --tests for comparison.
             active_tests = args.tests if args.tests else [m.name for m in PPI_OFFICIAL_TEST_METHODS]
             print(f"\npvalues simulation (PPI-corrected) -- tests={active_tests}")
-            jb_sources = build_judge_bias_sources()
+            jb_sources = build_judge_bias_sources() + build_judge_bias_sources_binary()
             if args.eval_types:
                 requested = set(args.eval_types)
                 jb_sources = [s for s in jb_sources if s.eval_type in requested]
             if not jb_sources:
                 raise ValueError("No JudgeBiasSources left after filtering.")
+
+            # MNAR (label_mnar=True -- the "label.*mnar-*"/"label.binary.
+            # mnar-*" scenarios and their bias-magnitude companions) is kept
+            # OUT of the paper's primary results: the paper assumes an MCAR
+            # labeling regime, and MNAR is a known-adversarial condition for
+            # PPI's rectifier (label selection depends on the outcome itself,
+            # violating the missing-completely-at-random assumption the
+            # simple rectifier relies on -- see the 2026-08-05 finding that
+            # label.*.mnar-strong drives Tango/Wilson's worst bias_z on
+            # binary data while continuous/likert/grades stay well-calibrated
+            # under the same mechanism). Reported separately, as an explicit
+            # limitation, rather than pooled into the headline MCAR numbers.
+            mnar_names = {s.name for s in jb_sources if s.label_mnar}
 
             if not getattr(args, "no_typeI_check", False):
                 print(f"  {len(jb_sources)} scenarios, reps={args.reps}, n_boot={args.ppi_n_boot}, alpha={args.alpha}")
@@ -9797,28 +9823,51 @@ def run(args: argparse.Namespace) -> CaseResult:
                     jb_sources, active_tests=active_tests, n_reps=args.reps, n_boot=args.ppi_n_boot,
                     progress_mode=args.progress, seed=args.seed, n_workers=getattr(args, "workers", 1),
                 )
-                print_ppi_report(ppi_results, alpha=args.alpha)
+                ppi_results_mcar = [r for r in ppi_results if r.name not in mnar_names]
+                ppi_results_mnar = [r for r in ppi_results if r.name in mnar_names]
+                print_ppi_report(ppi_results_mcar, alpha=args.alpha, regime="MCAR")
+                if ppi_results_mnar:
+                    print_ppi_report(ppi_results_mnar, alpha=args.alpha, regime="MNAR -- adversarial to PPI, reported as a known limitation, not part of the paper's primary MCAR results")
 
                 run_stem = f"pvalues_ppi_reps{args.reps}_{stamp}"
                 if args.save_results == "save":
-                    output_paths += save_results_artifacts_ppi(results=ppi_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False))
+                    output_paths += save_results_artifacts_ppi(results=ppi_results_mcar, alpha=args.alpha, out_dir=args.out_dir, run_stem=run_stem, latex=getattr(args, "latex", False), regime="MCAR")
+                    if ppi_results_mnar:
+                        output_paths += save_results_artifacts_ppi(results=ppi_results_mnar, alpha=args.alpha, out_dir=args.out_dir, run_stem=f"{run_stem}_mnar", latex=getattr(args, "latex", False), regime="MNAR")
                 if args.plots == "save":
-                    plot_path = save_ppi_typeI_plot(results=ppi_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected.png"))
+                    plot_path = save_ppi_typeI_plot(results=ppi_results_mcar, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected.png"), regime="MCAR")
                     output_paths.append(plot_path)
                     print(f"Saved plot: {plot_path}")
-                    if any(r.test in _PPI_NONSTANDARD_TESTS for r in ppi_results):
+                    if any(r.test in _PPI_NONSTANDARD_TESTS for r in ppi_results_mcar):
                         nonstd_plot_path = save_ppi_typeI_plot(
-                            results=ppi_results, alpha=args.alpha,
+                            results=ppi_results_mcar, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected_nonstandard.png"),
-                            nonstandard=True,
+                            nonstandard=True, regime="MCAR",
                         )
                         output_paths.append(nonstd_plot_path)
                         print(f"Saved plot: {nonstd_plot_path}")
+                    if ppi_results_mnar:
+                        mnar_plot_path = save_ppi_typeI_plot(
+                            results=ppi_results_mnar, alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected_mnar.png"),
+                            regime="MNAR",
+                        )
+                        output_paths.append(mnar_plot_path)
+                        print(f"Saved plot: {mnar_plot_path}")
+                        if any(r.test in _PPI_NONSTANDARD_TESTS for r in ppi_results_mnar):
+                            nonstd_mnar_plot_path = save_ppi_typeI_plot(
+                                results=ppi_results_mnar, alpha=args.alpha,
+                                out_path=str(Path(plots_dir) / f"{run_stem}_typeI_corrected_vs_uncorrected_nonstandard_mnar.png"),
+                                nonstandard=True, regime="MNAR",
+                            )
+                            output_paths.append(nonstd_mnar_plot_path)
+                            print(f"Saved plot: {nonstd_mnar_plot_path}")
 
-                c_tot = sum(r.corrected_rejects for r in ppi_results)
-                u_tot = sum(r.uncorrected_rejects for r in ppi_results)
-                n_tot = sum(r.n_reps for r in ppi_results)
-                key_metrics["ppi_n_results"] = len(ppi_results)
+                # Headline key_metrics reflect the MCAR (primary) regime only.
+                c_tot = sum(r.corrected_rejects for r in ppi_results_mcar)
+                u_tot = sum(r.uncorrected_rejects for r in ppi_results_mcar)
+                n_tot = sum(r.n_reps for r in ppi_results_mcar)
+                key_metrics["ppi_n_results"] = len(ppi_results_mcar)
                 key_metrics["ppi_mean_corrected_type1"] = float(c_tot / n_tot) if n_tot else float("nan")
                 key_metrics["ppi_mean_uncorrected_type1"] = float(u_tot / n_tot) if n_tot else float("nan")
 
@@ -9831,35 +9880,62 @@ def run(args: argparse.Namespace) -> CaseResult:
                     gold_null_mc=effect_gold_mc, progress_mode=args.progress, seed=args.seed + 1,
                     n_workers=getattr(args, "workers", 1),
                 )
-                print_ppi_effect_report(effect_results, alpha=args.alpha)
+                effect_results_mcar = [r for r in effect_results if r.name not in mnar_names]
+                effect_results_mnar = [r for r in effect_results if r.name in mnar_names]
+                print_ppi_effect_report(effect_results_mcar, alpha=args.alpha, regime="MCAR")
+                if effect_results_mnar:
+                    print_ppi_effect_report(effect_results_mnar, alpha=args.alpha, regime="MNAR -- adversarial to PPI, reported as a known limitation, not part of the paper's primary MCAR results")
 
                 effect_stem = f"pvalues_ppi_effect_reps{effect_reps}_{stamp}"
-                if effect_results:
+                if effect_results_mcar:
                     if args.save_results == "save":
                         output_paths += save_results_artifacts_ppi_effect(
-                            results=effect_results, alpha=args.alpha, out_dir=args.out_dir, run_stem=effect_stem,
-                            latex=getattr(args, "latex", False),
+                            results=effect_results_mcar, alpha=args.alpha, out_dir=args.out_dir, run_stem=effect_stem,
+                            latex=getattr(args, "latex", False), regime="MCAR",
                         )
+                        if effect_results_mnar:
+                            output_paths += save_results_artifacts_ppi_effect(
+                                results=effect_results_mnar, alpha=args.alpha, out_dir=args.out_dir, run_stem=f"{effect_stem}_mnar",
+                                latex=getattr(args, "latex", False), regime="MNAR",
+                            )
                     if args.plots == "save":
                         effect_plot_path = save_ppi_effect_plot(
-                            results=effect_results, alpha=args.alpha,
+                            results=effect_results_mcar, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width.png"),
+                            regime="MCAR",
                         )
                         output_paths.append(effect_plot_path)
                         print(f"Saved plot: {effect_plot_path}")
-                        if any(r.test in _PPI_CI_COMPARISON_TESTS for r in effect_results):
+                        if any(r.test in _PPI_CI_COMPARISON_TESTS for r in effect_results_mcar):
                             ci_comparison_plot_path = save_ppi_effect_plot(
-                                results=effect_results, alpha=args.alpha,
+                                results=effect_results_mcar, alpha=args.alpha,
                                 out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_ci_comparison.png"),
-                                ci_comparison=True,
+                                ci_comparison=True, regime="MCAR",
                             )
                             output_paths.append(ci_comparison_plot_path)
                             print(f"Saved plot: {ci_comparison_plot_path}")
+                        if effect_results_mnar:
+                            mnar_effect_plot_path = save_ppi_effect_plot(
+                                results=effect_results_mnar, alpha=args.alpha,
+                                out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_mnar.png"),
+                                regime="MNAR",
+                            )
+                            output_paths.append(mnar_effect_plot_path)
+                            print(f"Saved plot: {mnar_effect_plot_path}")
+                            if any(r.test in _PPI_CI_COMPARISON_TESTS for r in effect_results_mnar):
+                                ci_comparison_mnar_plot_path = save_ppi_effect_plot(
+                                    results=effect_results_mnar, alpha=args.alpha,
+                                    out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_ci_comparison_mnar.png"),
+                                    ci_comparison=True, regime="MNAR",
+                                )
+                                output_paths.append(ci_comparison_mnar_plot_path)
+                                print(f"Saved plot: {ci_comparison_mnar_plot_path}")
 
-                    key_metrics["ppi_effect_n_results"] = len(effect_results)
-                    finite_z = [r.bias_z for r in effect_results if np.isfinite(r.bias_z)]
+                    # Headline key_metrics reflect the MCAR (primary) regime only.
+                    key_metrics["ppi_effect_n_results"] = len(effect_results_mcar)
+                    finite_z = [r.bias_z for r in effect_results_mcar if np.isfinite(r.bias_z)]
                     key_metrics["ppi_effect_mean_abs_bias_z"] = float(np.mean(np.abs(finite_z))) if finite_z else float("nan")
-                    finite_cov = [r.coverage for r in effect_results if np.isfinite(r.coverage)]
+                    finite_cov = [r.coverage for r in effect_results_mcar if np.isfinite(r.coverage)]
                     key_metrics["ppi_effect_mean_coverage"] = float(np.mean(finite_cov)) if finite_cov else float("nan")
 
             power_sources = build_ppi_power_sources()
