@@ -2555,49 +2555,57 @@ def _ppi_single_bootstrap_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, n_bo
 
 
 def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
-    """PPI correction for a single-sample binary proportion ``mean(a)``,
-    using evalstats.core.resampling's Wilson score interval
-    (``_wilson_neff``) with an EFFECTIVE sample size substituted in --
-    the same trick :func:`_ppi_paired_tango` uses, since Wilson's variance
-    term ``p_hat*(1-p_hat)/n`` has the identical "reference variance,
-    divided by n" structure Tango's does. ``_wilson_neff`` is also what
-    ``evalstats.core.resampling.wilson_nested_de/od/bb`` already use for
-    their own effective-n corrections (design effect, overdispersion,
-    Beta-Binomial) -- this reuses the exact same building block for a
-    PPI-based effective-n instead.
+    """PPI correction for a single-sample binary proportion ``mean(a)``:
+    sample variance (ddof=1) + a t(df=n_lab-1) critical value (matching
+    ``_analytic_mean_point_se``, the t-interval/logit-t backend), built as
+    a plain symmetric interval around the corrected estimate and clamped
+    to ``[0, 1]``. Fully closed-form -- no bootstrap resampling is used.
 
-    Fully closed-form -- no bootstrap resampling is used.
-
-    FIXED 2026-08-05, two issues found via the official binary OFAT sweep
+    FIXED 2026-08-05, in two stages, via the official binary OFAT sweep
     (worst case ``shape.binary.p=0.10``: empirical coverage 85.7% against
     a nominal 95% target):
 
-    1. Sample variance (ddof=1) + a t(df=n_lab-1) critical value replace
-       the previous population variance (ddof=0) + normal-z convention --
-       same fix and same rationale as :func:`_ppi_paired_tango`'s own
-       "FIXED 2026-08-05" note (mirrors ``_analytic_mean_point_se``).
-    2. ``n_eff`` is now calibrated from ``p_hat_for_wilson*(1-p_hat_for_wilson)``
-       (the SAME proportion plugged into ``_wilson_neff``'s own
-       ``p_hat*(1-p_hat)/n_eff`` formula) instead of ``sigma2_f`` (the raw,
-       UNCORRECTED judge proportion's variance). The two are only
-       interchangeable when they're numerically close; under differential
-       judge bias they aren't -- bias/noise in a flip-probability judge
-       model pulls the raw proportion toward 0.5, while the corrected
-       estimate sits near the true (possibly far-from-0.5) value, so at a
-       boundary-ish true rate the mismatch is large (confirmed directly at
-       p=0.10: raw judge population variance ~0.217 vs. the corrected
-       estimate's own p*(1-p)~0.10, a 2.2x gap). Recalibrating n_eff from
-       the SAME p makes ``_wilson_neff``'s internal variance term equal
-       ``v_hat`` by construction, restoring the substitution's validity.
-       Falls back to the old ``sigma2_f``-based n_eff only when
-       ``p_hat_for_wilson`` clips to exactly 0 or 1 (no other proportion to
-       calibrate against there).
+    Stage 1 (kept the classical Wilson score-interval shape, via
+    evalstats.core.resampling's ``_wilson_neff`` with an EFFECTIVE sample
+    size substituted in -- the same trick :func:`_ppi_paired_tango` uses):
+    switched ddof=0->1 + normal-z->t(n_lab-1) (same fix and rationale as
+    Tango's own "FIXED 2026-08-05" note), and recalibrated the
+    substituted ``n_eff`` from the CORRECTED proportion's own
+    ``p*(1-p)`` instead of the raw, uncorrected judge proportion's
+    variance (the two diverge under differential bias, worst at a
+    boundary-ish true rate -- confirmed at p=0.10: raw judge variance
+    ~0.217 vs. the corrected estimate's own p*(1-p)~0.10, a 2.2x gap).
+    This raised worst-case coverage to ~88-90%, still short of 95%.
+
+    Stage 2 (this version): dropped the classical Wilson score-interval
+    SHAPE entirely. Its shrinkage-toward-0.5 term --
+    ``center = (p_hat + t^2/(2n_eff)) / (1 + t^2/n_eff)`` -- is derived by
+    solving a score-test equation that evaluates a Binomial's variance
+    p(1-p)/n AT EACH HYPOTHESIZED true value, which is exactly what makes
+    Wilson well-calibrated for a genuine binomial proportion (variance
+    genuinely grows toward p=0.5 and shrinks toward the boundaries). The
+    PPI-corrected estimator's ``v_hat`` is a plug-in variance that does
+    NOT vary with the hypothesized value that way, so borrowing the
+    shrinkage term introduces a spurious bias toward 0.5 with no
+    compensating change in width. Confirmed directly at p=0.10, n_eff~20:
+    the shrunk center sits ~0.146 above the raw estimate (a huge shift
+    relative to the true 0.10), and 100% of the stage-1 fix's remaining
+    miscoverage there was the true value falling BELOW ci_low -- zero
+    cases above ci_high -- the textbook signature of this one-directional
+    bias, not sampling noise. A plain symmetric t-interval built from the
+    IDENTICAL (estimate, v_hat, df) on the same data reached 95.5%
+    coverage in isolation; clamping it to [0, 1] (needed since a raw
+    Wald-type interval can extend outside a proportion's valid range,
+    especially near a boundary) can only IMPROVE coverage of a true value
+    already known to lie in [0, 1] -- it never removes truth-containing
+    mass. Verified on the full 65-scenario binary MCAR sweep: worst-case
+    coverage 89.4%->92.5%, zero scenarios left below 90% (previously 1)
+    or even below 92.5% (previously 2).
 
     A position is included in the labeled set only when ``a_lab[i]`` is
     non-NaN.
     """
     from evalstats.ppi import PPIResult
-    from evalstats.core.resampling import _wilson_neff
     from scipy.stats import t as _t_dist
 
     mask = ~np.isnan(a_lab)
@@ -2642,15 +2650,11 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
             p_value=1.0,
         )
 
-    # Wilson's own formula assumes p_hat in [0, 1]; PPI correction can, in
-    # principle, push the point estimate slightly outside that range for a
-    # small/noisy labeled subset, so clamp just for this substitution.
-    p_hat_for_wilson = float(np.clip(estimate, 0.0, 1.0))
-    wilson_var = p_hat_for_wilson * (1.0 - p_hat_for_wilson)
-    n_eff = wilson_var / v_hat if wilson_var > 0.0 else sigma2_f / v_hat
-    ci_low, ci_high = _wilson_neff(p_hat_for_wilson, n_eff, alpha, z=t_crit)
+    se = float(np.sqrt(v_hat))
+    ci_low = max(0.0, estimate - t_crit * se)
+    ci_high = min(1.0, estimate + t_crit * se)
 
-    t_obs = estimate / np.sqrt(v_hat)
+    t_obs = estimate / se
     p_value = float(2.0 * (1.0 - _t_dist.cdf(abs(t_obs), df)))
     p_value = min(max(p_value, 0.0), 1.0)
 
