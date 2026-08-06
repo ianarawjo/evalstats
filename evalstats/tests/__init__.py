@@ -2358,10 +2358,27 @@ def _ppi_paired_tango(
     ``V_hat_PPI = Var(unlabeled diffs)/N + Var(rectifier residuals)/n_lab``
     -- by substituting an EFFECTIVE n that reproduces the same
     "variance = (reference variance) / n" relationship the original formula
-    assumes: ``n_eff = Var(unlabeled diffs, ddof=0) / V_hat_PPI``. This
-    reduces EXACTLY to the original (uncorrected) Tango formula in the
-    degenerate case where the "labeled" subset is the full sample with no
-    judge error (rectifier -> 0, n_eff -> n).
+    assumes: ``n_eff = Var(unlabeled diffs) / V_hat_PPI``. This reduces
+    EXACTLY to the original (uncorrected) Tango formula in the degenerate
+    case where the "labeled" subset is the full sample with no judge error
+    (rectifier -> 0, n_eff -> n).
+
+    Uses SAMPLE variance (ddof=1) and a t(df=n_lab-1) critical value --
+    NOT the classical Tango formula's own population variance (ddof=0) and
+    normal-z critical value -- matching ``_analytic_mean_point_se``'s
+    convention (the closed-form backend behind ppi_t_interval/ppi_logit_t).
+    FIXED 2026-08-05: the original ddof=0/normal-z version was found to be
+    mildly Type-I inflated in the official binary OFAT sweep (~65
+    scenarios, mean corrected rejection rate ~6.0% vs. nominal 5%, 20%
+    flagged >2sigma) while ppi_t_interval/ppi_logit_t showed zero
+    inflation on the identical judge-bias mechanism -- confirmed by direct
+    simulation that switching to ddof=1+t(n_lab-1) alone (holding
+    everything else fixed) closes most of the gap (e.g. n.binary.100:
+    naive rejection rate 6.1%->4.5%; shape.binary.p=0.90: 7.5%->5.5%),
+    the same reason a t-interval uses n-1 degrees of freedom instead of a
+    normal quantile when its own variance is estimated from finite data.
+    ``n_lab`` (not ``n_all``) sets df since the labeled subset -- driving
+    the rectifier term -- is the smaller, more uncertain sample.
 
     Unlike the other ``_ppi_paired_*`` functions here, this is fully
     closed-form -- no bootstrap resampling is used (or would be
@@ -2374,7 +2391,7 @@ def _ppi_paired_tango(
     and ``b_lab[i]`` are non-NaN.
     """
     from evalstats.ppi import PPIResult
-    from scipy.stats import norm as _norm
+    from scipy.stats import t as _t_dist
 
     mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
     if mask.sum() == 0:
@@ -2401,17 +2418,18 @@ def _ppi_paired_tango(
     rectifier = f_lab - f_hat_lab
     estimate = float(f_unlab + rectifier)
 
-    def _pvar(x: np.ndarray) -> float:
-        # Population variance (ddof=0), matching Tango's own (n10+n01)/n -
-        # d_hat^2 derivation exactly (rather than the ddof=1 sample variance
-        # used elsewhere in this module).
-        return float(np.mean((x - np.mean(x)) ** 2)) if len(x) > 0 else 0.0
+    def _svar(x: np.ndarray) -> float:
+        # Sample variance (ddof=1) -- see the "FIXED 2026-08-05" docstring
+        # note above for why this replaces the classical Tango formula's
+        # own population (ddof=0) convention.
+        return float(np.var(x, ddof=1)) if len(x) > 1 else 0.0
 
-    sigma2_f = _pvar(diffs_unlab)      # per-item variance, disjoint unlabeled sample
-    sigma2_rect = _pvar(rect_items)    # per-item variance, rectifier residuals
+    sigma2_f = _svar(diffs_unlab)      # per-item variance, disjoint unlabeled sample
+    sigma2_rect = _svar(rect_items)    # per-item variance, rectifier residuals
     v_hat = sigma2_f / n_all + sigma2_rect / n_lab
 
-    z = float(_norm.ppf(1.0 - alpha / 2.0))
+    df = max(n_lab - 1, 1)
+    t_crit = float(_t_dist.ppf(1.0 - alpha / 2.0, df))
 
     if v_hat <= 0.0 or not np.isfinite(v_hat) or sigma2_f <= 0.0:
         # Degenerate (e.g. every diff identical): no meaningful interval to derive.
@@ -2422,14 +2440,14 @@ def _ppi_paired_tango(
         )
 
     n_eff = sigma2_f / v_hat
-    shrink = 1.0 / (1.0 + z ** 2 / n_eff)
+    shrink = 1.0 / (1.0 + t_crit ** 2 / n_eff)
     center = estimate * shrink
-    radius = float(z * shrink * np.sqrt(v_hat + z ** 2 / (4.0 * n_eff ** 2)))
+    radius = float(t_crit * shrink * np.sqrt(v_hat + t_crit ** 2 / (4.0 * n_eff ** 2)))
     ci_low = float(np.clip(center - radius, -1.0, 1.0))
     ci_high = float(np.clip(center + radius, -1.0, 1.0))
 
-    z_obs = estimate / np.sqrt(v_hat)
-    p_value = float(2.0 * (1.0 - _norm.cdf(abs(z_obs))))
+    t_obs = estimate / np.sqrt(v_hat)
+    p_value = float(2.0 * (1.0 - _t_dist.cdf(abs(t_obs), df)))
     p_value = min(max(p_value, 0.0), 1.0)
 
     return PPIResult(
@@ -2550,12 +2568,37 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
 
     Fully closed-form -- no bootstrap resampling is used.
 
+    FIXED 2026-08-05, two issues found via the official binary OFAT sweep
+    (worst case ``shape.binary.p=0.10``: empirical coverage 85.7% against
+    a nominal 95% target):
+
+    1. Sample variance (ddof=1) + a t(df=n_lab-1) critical value replace
+       the previous population variance (ddof=0) + normal-z convention --
+       same fix and same rationale as :func:`_ppi_paired_tango`'s own
+       "FIXED 2026-08-05" note (mirrors ``_analytic_mean_point_se``).
+    2. ``n_eff`` is now calibrated from ``p_hat_for_wilson*(1-p_hat_for_wilson)``
+       (the SAME proportion plugged into ``_wilson_neff``'s own
+       ``p_hat*(1-p_hat)/n_eff`` formula) instead of ``sigma2_f`` (the raw,
+       UNCORRECTED judge proportion's variance). The two are only
+       interchangeable when they're numerically close; under differential
+       judge bias they aren't -- bias/noise in a flip-probability judge
+       model pulls the raw proportion toward 0.5, while the corrected
+       estimate sits near the true (possibly far-from-0.5) value, so at a
+       boundary-ish true rate the mismatch is large (confirmed directly at
+       p=0.10: raw judge population variance ~0.217 vs. the corrected
+       estimate's own p*(1-p)~0.10, a 2.2x gap). Recalibrating n_eff from
+       the SAME p makes ``_wilson_neff``'s internal variance term equal
+       ``v_hat`` by construction, restoring the substitution's validity.
+       Falls back to the old ``sigma2_f``-based n_eff only when
+       ``p_hat_for_wilson`` clips to exactly 0 or 1 (no other proportion to
+       calibrate against there).
+
     A position is included in the labeled set only when ``a_lab[i]`` is
     non-NaN.
     """
     from evalstats.ppi import PPIResult
     from evalstats.core.resampling import _wilson_neff
-    from scipy.stats import norm as _norm
+    from scipy.stats import t as _t_dist
 
     mask = ~np.isnan(a_lab)
     if mask.sum() == 0:
@@ -2580,12 +2623,17 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
     rectifier = f_lab - f_hat_lab
     estimate = float(f_unlab + rectifier)
 
-    def _pvar(x: np.ndarray) -> float:
-        return float(np.mean((x - np.mean(x)) ** 2)) if len(x) > 0 else 0.0
+    def _svar(x: np.ndarray) -> float:
+        # Sample variance (ddof=1) -- see the "FIXED 2026-08-05" docstring
+        # note above.
+        return float(np.var(x, ddof=1)) if len(x) > 1 else 0.0
 
-    sigma2_f = _pvar(values_unlab)      # = p_hat*(1-p_hat) exactly, for a 0/1 array
-    sigma2_rect = _pvar(rect_items)
+    sigma2_f = _svar(values_unlab)      # raw (uncorrected) judge proportion's variance
+    sigma2_rect = _svar(rect_items)
     v_hat = sigma2_f / n_all + sigma2_rect / n_lab
+
+    df = max(n_lab - 1, 1)
+    t_crit = float(_t_dist.ppf(1.0 - alpha / 2.0, df))
 
     if v_hat <= 0.0 or not np.isfinite(v_hat) or sigma2_f <= 0.0:
         return PPIResult(
@@ -2594,15 +2642,16 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
             p_value=1.0,
         )
 
-    n_eff = sigma2_f / v_hat
     # Wilson's own formula assumes p_hat in [0, 1]; PPI correction can, in
     # principle, push the point estimate slightly outside that range for a
     # small/noisy labeled subset, so clamp just for this substitution.
     p_hat_for_wilson = float(np.clip(estimate, 0.0, 1.0))
-    ci_low, ci_high = _wilson_neff(p_hat_for_wilson, n_eff, alpha)
+    wilson_var = p_hat_for_wilson * (1.0 - p_hat_for_wilson)
+    n_eff = wilson_var / v_hat if wilson_var > 0.0 else sigma2_f / v_hat
+    ci_low, ci_high = _wilson_neff(p_hat_for_wilson, n_eff, alpha, z=t_crit)
 
-    z_obs = estimate / np.sqrt(v_hat)
-    p_value = float(2.0 * (1.0 - _norm.cdf(abs(z_obs))))
+    t_obs = estimate / np.sqrt(v_hat)
+    p_value = float(2.0 * (1.0 - _t_dist.cdf(abs(t_obs), df)))
     p_value = min(max(p_value, 0.0), 1.0)
 
     return PPIResult(
