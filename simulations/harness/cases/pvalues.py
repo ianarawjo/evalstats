@@ -8841,6 +8841,7 @@ def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: 
 
 def save_ppi_effect_plot(
     *, results: list[PPIEffectResult], alpha: float, out_path: str, ci_comparison: bool = False, regime: str = "",
+    width_norm: dict[str, float] | None = None,
 ) -> str:
     """Bias-z / CI-coverage / CI-width scatter, one jittered column per test
     -- mirrors sim_type_i_calibration.py's ``_plot_effect_results`` (3
@@ -8856,6 +8857,31 @@ def save_ppi_effect_plot(
         PPI logit-t, PPI t-interval -- see _PPI_CI_COMPARISON_TESTS for
         why exactly these four (and not the broader bootstrap/CI-based
         set _ppi_tests_present(nonstandard=True) would return).
+
+    width_norm : dict[str, float] | None
+        Optional ``{scenario_name: divisor}`` map (typically each
+        scenario's own eval-type scale SPAN, e.g. from
+        EVAL_TYPE_SCALE_BOUNDS) used to rescale the CI Width panel's raw
+        ``mean_ci_width`` before plotting. PPIEffectResult has no
+        eval_type field of its own (see its docstring), so callers that
+        want normalized widths must build this from the JudgeBiasSource
+        list that produced ``results`` and pass it in -- see run()'s call
+        site. None (the default) plots raw, un-normalized widths,
+        unchanged from before this parameter existed.
+
+        Added 2026-08-05: without this, t-interval/logit-t's shared CI
+        Width panel plots grades (0-100 scale), likert (1-5), and
+        continuous/binary (0-1) scenarios' raw widths on one shared axis
+        -- e.g. grades widths cluster around 8-16.6, continuous around
+        0.4-1.6, purely because grades' scale is 100x continuous's, not
+        because grades is worse-calibrated (coverage stays nominal, 95-97%,
+        across all of them; confirmed directly by generating actual data
+        for the widest case, shape.grades-mixture: its truth SD is ~1.9x
+        the grades baseline's, matching its ~2x-wider CI almost exactly --
+        an intentionally extreme 3-cluster stress-test shape, not a bug).
+        Dividing by each scenario's own scale span turns "raw score units"
+        into "fraction of that eval type's natural range," which IS
+        directly comparable across eval types.
     """
     import matplotlib.pyplot as plt
 
@@ -8882,7 +8908,10 @@ def save_ppi_effect_plot(
         keep_c = np.isfinite(cov)
         ax2.scatter(x[keep_c], cov[keep_c], s=22, alpha=0.7, color=color)
 
-        wid = np.array([r.mean_ci_width for r in t_rows])
+        if width_norm is not None:
+            wid = np.array([r.mean_ci_width / width_norm.get(r.name, 1.0) for r in t_rows])
+        else:
+            wid = np.array([r.mean_ci_width for r in t_rows])
         keep_w = np.isfinite(wid)
         ax3.scatter(x[keep_w], wid[keep_w], s=22, alpha=0.7, color=color)
 
@@ -8906,7 +8935,7 @@ def save_ppi_effect_plot(
 
     ax3.set_xticks(np.arange(len(tests)))
     ax3.set_xticklabels([_pretty_test(t) for t in tests], rotation=30, ha="right", fontsize=8)
-    ax3.set_ylabel("Mean CI width")
+    ax3.set_ylabel("Mean CI width (fraction of eval-type scale)" if width_norm is not None else "Mean CI width")
     ax3.set_title("CI Width")
     ax3.grid(axis="y", alpha=0.25, lw=0.8)
 
@@ -9816,6 +9845,17 @@ def run(args: argparse.Namespace) -> CaseResult:
             # limitation, rather than pooled into the headline MCAR numbers.
             mnar_names = {s.name for s in jb_sources if s.label_mnar}
 
+            # {scenario_name: eval-type scale span} -- turns save_ppi_effect_plot's
+            # CI Width panel from raw score units (where grades' 0-100 scale
+            # dwarfs continuous/binary's 0-1 and likert's 1-5, purely from
+            # units, not calibration -- see that function's width_norm
+            # docstring) into "fraction of eval-type scale," comparable
+            # across eval types.
+            width_norm = {
+                s.name: (EVAL_TYPE_SCALE_BOUNDS[s.eval_type][1] - EVAL_TYPE_SCALE_BOUNDS[s.eval_type][0])
+                for s in jb_sources
+            }
+
             if not getattr(args, "no_typeI_check", False):
                 print(f"  {len(jb_sources)} scenarios, reps={args.reps}, n_boot={args.ppi_n_boot}, alpha={args.alpha}")
 
@@ -9902,7 +9942,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                         effect_plot_path = save_ppi_effect_plot(
                             results=effect_results_mcar, alpha=args.alpha,
                             out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width.png"),
-                            regime="MCAR",
+                            regime="MCAR", width_norm=width_norm,
                         )
                         output_paths.append(effect_plot_path)
                         print(f"Saved plot: {effect_plot_path}")
@@ -9910,7 +9950,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             ci_comparison_plot_path = save_ppi_effect_plot(
                                 results=effect_results_mcar, alpha=args.alpha,
                                 out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_ci_comparison.png"),
-                                ci_comparison=True, regime="MCAR",
+                                ci_comparison=True, regime="MCAR", width_norm=width_norm,
                             )
                             output_paths.append(ci_comparison_plot_path)
                             print(f"Saved plot: {ci_comparison_plot_path}")
@@ -9918,7 +9958,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             mnar_effect_plot_path = save_ppi_effect_plot(
                                 results=effect_results_mnar, alpha=args.alpha,
                                 out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_mnar.png"),
-                                regime="MNAR",
+                                regime="MNAR", width_norm=width_norm,
                             )
                             output_paths.append(mnar_effect_plot_path)
                             print(f"Saved plot: {mnar_effect_plot_path}")
@@ -9926,7 +9966,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 ci_comparison_mnar_plot_path = save_ppi_effect_plot(
                                     results=effect_results_mnar, alpha=args.alpha,
                                     out_path=str(Path(plots_dir) / f"{effect_stem}_bias_coverage_width_ci_comparison_mnar.png"),
-                                    ci_comparison=True, regime="MNAR",
+                                    ci_comparison=True, regime="MNAR", width_norm=width_norm,
                                 )
                                 output_paths.append(ci_comparison_mnar_plot_path)
                                 print(f"Saved plot: {ci_comparison_mnar_plot_path}")
