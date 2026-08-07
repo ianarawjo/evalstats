@@ -113,35 +113,59 @@ BOOTSTRAP_T (the paired/two-sample PPI method of the same underlying
 construction) -- same reason PPI_WILSON isn't named "wilson": different
 estimand, would silently collide if given the same Method name."""
 PPI_T_INTERVAL = Method("ppi_t_interval", "#08519c")
-"""PPI-corrected single-/paired-sample closed-form (no-bootstrap) t-interval
-for an UNBOUNDED numeric mean/mean-difference estimand (evalstats.tests.
-_ppi_single_t_interval / _ppi_paired_t_interval, both thin wrappers around
-evalstats.ppi._analytic_mean_correct). The closed-form replacement for
-BOOTSTRAP_T's role in PPI_AUTO_METHOD_TABLE's "unbounded" row (see
-evalstats.config) -- resolved 2026-08-05, closing a previously-documented
-gap. Uses the analytic construction at EVERY n_lab, not just below
-_MIN_LAB_RECOMMENDED, mirroring the precedent evalstats.ppi.
-_ANALYTIC_ALWAYS_PREFERRED set for the Wilcoxon estimand (analytic beat
-bootstrap at every n_lab tested, 30-200). Run as a PAIRED mean-difference
-test in this harness (cell.llm_x/llm_y/lab_x/lab_y), the same structural
-role BOOTSTRAP_T/PAIRED_T occupy -- see PPI_LOGIT_T below for its
-[0,1]-bounded sibling. Deliberately NOT named "t_interval" -- that's
-already the plain (non-PPI-corrected) classical T_INTERVAL method above,
-a different statistical procedure that happens to share the textbook
-name (same reason PPI_WILSON isn't named "wilson")."""
+"""PPI-corrected closed-form (no-bootstrap) t-interval for an UNBOUNDED
+numeric mean/mean-difference estimand (evalstats.tests._ppi_single_t_interval
+/ _ppi_paired_t_interval, both thin wrappers around evalstats.ppi.
+_analytic_mean_correct). The closed-form replacement for BOOTSTRAP_T's role
+in PPI_AUTO_METHOD_TABLE's "unbounded" row (see evalstats.config) --
+resolved 2026-08-05, closing a previously-documented gap. Uses the analytic
+construction at EVERY n_lab, not just below _MIN_LAB_RECOMMENDED,
+mirroring the precedent evalstats.ppi._ANALYTIC_ALWAYS_PREFERRED set for
+the Wilcoxon estimand (analytic beat bootstrap at every n_lab tested,
+30-200). Run as a PAIRED mean-difference test in this harness (cell.llm_x/
+llm_y/lab_x/lab_y), the same structural role BOOTSTRAP_T/PAIRED_T occupy --
+see PPI_LOGIT_T below for its [0,1]-bounded sibling. Deliberately NOT named
+"t_interval" -- that's already the plain (non-PPI-corrected) classical
+T_INTERVAL method above, a different statistical procedure that happens to
+share the textbook name (same reason PPI_WILSON isn't named "wilson").
+
+PAIRED estimand only, as of ppi_real.py's real-data check gaining a
+single-sample robustness-CI check that ALSO wants closed-form t-interval/
+logit-t coverage (2026-08-07) -- see PPI_T_INTERVAL_SINGLE below for the
+single-sample sibling, split out the same way PPI_BOOTSTRAP_T_SINGLE was
+split from BOOTSTRAP_T: this Method's name is pooled across every paired-
+family check that uses it (print_ppi_effect_report groups by test name
+only, not by estimand), so a single-sample usage under the SAME name would
+silently merge two different estimands' bias/coverage stats together."""
+PPI_T_INTERVAL_SINGLE = Method("ppi_t_interval_single", "#6baed6")  # lighter tint of PPI_T_INTERVAL
+"""Single-sample sibling of PPI_T_INTERVAL (evalstats.tests.
+_ppi_single_t_interval), split out 2026-08-07 for the same reason
+PPI_BOOTSTRAP_T_SINGLE is split from BOOTSTRAP_T -- see PPI_T_INTERVAL's
+docstring. Targets an UNBOUNDED numeric single-sample mean estimand, the
+non-binary/non-[0,1]-bounded counterpart to PPI_WILSON's role."""
 PPI_LOGIT_T = Method("ppi_logit_t", "#8dd3c7")
-"""PPI-corrected single-/paired-sample closed-form (no-bootstrap) logit-t
-CI for a [lo, hi]-BOUNDED numeric mean/mean-difference estimand
-(evalstats.tests._ppi_single_logit_t / _ppi_paired_logit_t, wrapping
-evalstats.ppi._analytic_logit_t_correct -- the PPI analogue of
-evalstats.core.resampling.logit_t_ci_1d's delta-method construction,
+"""PPI-corrected closed-form (no-bootstrap) logit-t CI for a [lo, hi]-BOUNDED
+numeric mean/mean-difference estimand (evalstats.tests._ppi_single_logit_t /
+_ppi_paired_logit_t, wrapping evalstats.ppi._analytic_logit_t_correct -- the
+PPI analogue of evalstats.core.resampling.logit_t_ci_1d's delta-method construction,
 reusing the SAME point estimate/p-value as PPI_T_INTERVAL and differing
 only in the CI's shape). The closed-form replacement for BOOTSTRAP_T's
 role in PPI_AUTO_METHOD_TABLE's "bounded_01" row -- resolved 2026-08-05.
 Run as a PAIRED mean-difference test here, rescaled onto [0, 1] via this
 harness's own EVAL_TYPE_SCALE_BOUNDS[eval_type] (continuous/likert/grades;
 excluded from binary scenarios the same way BOOTSTRAP_T is). Deliberately
-NOT named "logit_t" -- see PPI_T_INTERVAL's docstring for why."""
+NOT named "logit_t" -- see PPI_T_INTERVAL's docstring for why.
+
+PAIRED estimand only -- see PPI_LOGIT_T_SINGLE below and PPI_T_INTERVAL's
+matching docstring addendum for why (same name-pooling collision risk)."""
+PPI_LOGIT_T_SINGLE = Method("ppi_logit_t_single", "#ccebc5")  # lighter tint of PPI_LOGIT_T
+"""Single-sample sibling of PPI_LOGIT_T (evalstats.tests._ppi_single_logit_t),
+split out 2026-08-07 for the same reason PPI_BOOTSTRAP_T_SINGLE is split
+from BOOTSTRAP_T -- see PPI_T_INTERVAL_SINGLE's docstring (identical
+reasoning, [0,1]-bounded instead of unbounded). PPI_AUTO_METHOD_TABLE's
+"bounded_01" robustness method -- the non-binary counterpart to PPI_WILSON's
+binary role; every real dataset ppi_real.py checks is already rescaled to
+[0, 1] (see RealJudgeBiasCorpus), so this applies uniformly there."""
 TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
@@ -566,7 +590,7 @@ LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
     TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
-    PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T,
+    PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
 """Every PPI test method the harness knows how to run -- the full set
 selectable via --tests. NOT what runs by default; see
@@ -612,7 +636,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
-    PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE,
+    PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
     TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,

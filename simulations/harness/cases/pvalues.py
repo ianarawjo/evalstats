@@ -271,6 +271,8 @@ from ..methods import (
     PPI_BOOTSTRAP_T_SINGLE,
     PPI_T_INTERVAL,
     PPI_LOGIT_T,
+    PPI_T_INTERVAL_SINGLE,
+    PPI_LOGIT_T_SINGLE,
     TTEST,
     TTEST_WELCH,
     MWU,
@@ -3899,6 +3901,7 @@ _PPI_EFFECT_TESTS = (
 _PPI_NONSTANDARD_TESTS = {
     BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, PPI_WILSON.name,
     PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
+    PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 }
 
 _PPI_CI_COMPARISON_TESTS = {TANGO.name, PPI_WILSON.name, PPI_LOGIT_T.name, PPI_T_INTERVAL.name}
@@ -7935,6 +7938,7 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
     PPI_T_INTERVAL.name: "t-interval", PPI_LOGIT_T.name: "logit-t",
     PPI_WILSON.name: "Wilson", PPI_BOOTSTRAP_T_SINGLE.name: "Bootstrap-t (single)",
+    PPI_T_INTERVAL_SINGLE.name: "t-interval (single)", PPI_LOGIT_T_SINGLE.name: "logit-t (single)",
 }
 
 
