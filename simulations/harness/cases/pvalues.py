@@ -4962,6 +4962,7 @@ def save_ppi_comparison_plot(
     results_binary: list[PPIComparisonResult] | None = None,
     nlab_pow_results: list[PPIComparisonResult] | None = None,
     nlab_pow_results_binary: list[PPIComparisonResult] | None = None,
+    label: str = _COMPARISON_METHODS_LABEL,
 ) -> str:
     """The flagship 5-way estimator-comparison figure: rejection rate for
     all_human/human_subset/llm_only/llm_impute/ppi, one row per x-axis
@@ -5006,7 +5007,19 @@ def save_ppi_comparison_plot(
         N the same way, instead of the fixed-N=100 results_binary sweep.
         Binary's effect_size row has no grid analogue (the grid only
         covers one fixed effect_frac per call, same limitation as the
-        non-binary columns) and stays on the fixed-N=100 sweep."""
+        non-binary columns) and stays on the fixed-N=100 sweep.
+
+    label : names which test(s) were pooled into `results`, shown in the
+        figure's own suptitle (e.g. run()'s omnibus comparison call passes
+        _COMPARISON_METHODS_OMNIBUS_LABEL here). Defaults to
+        _COMPARISON_METHODS_LABEL, matching every other pooled-results
+        report/save function's own `label` parameter/default in this
+        module. Previously hardcoded as "(Paired-Mean Estimand)" -- not
+        actually accurate even for the default two-group pool (mixes
+        ttest/welch/paired_t's mean-difference estimand with mwu's
+        dominance probability and wilcoxon's Walsh-average), so this
+        replaces it with the actual pooled method list rather than a
+        single estimand name that was never quite right."""
     import matplotlib.pyplot as plt
 
     if not results:
@@ -5101,7 +5114,7 @@ def save_ppi_comparison_plot(
         _plot_row(ax1, 1, col_idx, x1_values, et1_rows, "N_lab (labeled items)", fixed1)
 
     fig.legend(loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
-    fig.suptitle("PPI-Corrected Estimator Comparison (Paired-Mean Estimand)", fontsize=12)
+    fig.suptitle(f"PPI-Corrected Estimator Comparison ({label})", fontsize=12)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         # rect right stays at 1 (not narrowed to make room for the legend) --
@@ -9065,6 +9078,16 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-comparison-check", action="store_true", default=False,
                          help="ppi mode: skip the 5-way estimator comparison (all_human/human_subset/llm_only/"
                               "llm_impute/ppi rejection rate vs. effect_size and label_frac, paired_t estimand)")
+    parser.add_argument("--comparison-omnibus", action="store_true", default=False,
+                         help="ppi mode: also pool the 4 omnibus/multi-group tests (anova_ind, anova_rep, friedman, "
+                              "kruskal -- _COMPARISON_METHODS_OMNIBUS) through the SAME comparison_sources sweep "
+                              "the 5-way estimator comparison already runs (--no-comparison-check's grid, NOT "
+                              "--factorial-check's), producing a second 5-way comparison figure as a reader-facing "
+                              "sanity check that the all_human > ppi > human_subset > llm_only/llm_impute story "
+                              "isn't an artifact specific to the two-group/paired tests. Cheap relative to "
+                              "--factorial-omnibus (comparison_sources is ~60 scenarios, not --factorial-check's "
+                              "~6798), so this defaults on in official_args_ppi (unlike --factorial-omnibus, which "
+                              "stays opt-in even there) -- see save_ppi_comparison_plot's label parameter.")
     parser.add_argument("--power-nlab-grid-check", action="store_true", default=False,
                          help="ppi mode: run the N x N_lab label/dataset-size power grid (likert), BOTH bias "
                               "directions -- build_ppi_power_nlab_grid_reinforcing_sources + build_ppi_power_"
@@ -9291,13 +9314,24 @@ def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
     same way continuous/likert/grades' versions are. factorial_check_binary
     is the one genuinely new opt-in toggle (separate from factorial_check:
     different bias/noise convention, different pooled test set -- see
-    _COMPARISON_METHODS_BINARY), enabled here at the same precision tier."""
+    _COMPARISON_METHODS_BINARY), enabled here at the same precision tier.
+
+    comparison_omnibus=True: also pools _COMPARISON_METHODS_OMNIBUS through
+    the 5-way estimator comparison sweep above (comparison_sources -- NOT
+    factorial_check's much larger grid), producing a second 5-way figure as
+    a sanity check that the estimator-comparison story isn't specific to
+    the two-group/paired tests. Unlike factorial_omnibus (deliberately left
+    off here, opt-in only via the standalone official_args_ppi_factorial
+    preset, since it meaningfully increases --factorial-check's runtime),
+    this is cheap -- comparison_sources is ~60 scenarios vs. --factorial-
+    check's ~6798 -- so it defaults on for every official_args_ppi* preset."""
     args = official_args(base_seed)
     args.mode = "ppi"
     args.factorial_check = True
     args.factorial_reps = args.effect_reps
     args.factorial_n_boot = args.ppi_n_boot
     args.factorial_check_binary = True
+    args.comparison_omnibus = True
     return args
 
 
@@ -10151,6 +10185,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                     print(f"Saved plot: {direction_plot_path}")
 
             comparison_results_pooled: list[PPIComparisonResult] = []
+            comparison_results_omnibus_pooled: list[PPIComparisonResult] = []
             nlab_cal_pooled: list[PPIComparisonResult] = []
             nlab_pow_pooled: list[PPIComparisonResult] = []
             comparison_results_binary_pooled: list[PPIComparisonResult] = []
@@ -10198,6 +10233,39 @@ def run(args: argparse.Namespace) -> CaseResult:
                         key_metrics["ppi_comparison_power_ppi_at_max_es"] = float(
                             sum(r.rejects_ppi for r in max_es_rows) / sum(r.n_reps for r in max_es_rows)
                         )
+
+                    # Reader-facing sanity check (opt-in via --comparison-omnibus,
+                    # on by default in official_args_ppi -- see its docstring):
+                    # does the SAME estimator-comparison story (all_human > ppi >
+                    # human_subset > llm_only/llm_impute) hold if the omnibus
+                    # tests are pooled instead of _COMPARISON_METHODS? Reuses the
+                    # SAME comparison_sources grid computed above (NOT the
+                    # factorial sweep, which is a separate ~6798-scenario grid --
+                    # see --factorial-omnibus for that one). comparison_sources
+                    # is only ~60 scenarios, so this is cheap even at full
+                    # reps/n_boot precision -- no screening-tier default needed
+                    # the way --factorial-check has one.
+                    if getattr(args, "comparison_omnibus", False):
+                        print(f"\npvalues simulation (PPI-corrected, estimator comparison, omnibus) -- "
+                              f"{len(comparison_sources)} scenarios x {len(_COMPARISON_METHODS_OMNIBUS)} methods "
+                              f"({_COMPARISON_METHODS_OMNIBUS_LABEL}), reps={comparison_reps}, n_boot={args.ppi_n_boot}")
+                        comparison_results_omnibus_raw = run_ppi_comparison_simulation(
+                            comparison_sources, n_reps=comparison_reps, n_boot=args.ppi_n_boot,
+                            progress_mode=args.progress, seed=args.seed + 19, n_workers=getattr(args, "workers", 1),
+                            methods=_COMPARISON_METHODS_OMNIBUS,
+                        )
+                        comparison_results_omnibus_pooled = pool_ppi_comparison_across_methods(comparison_results_omnibus_raw)
+                        print_ppi_comparison_report(
+                            comparison_results_omnibus_pooled, alpha=args.alpha, label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                        )
+                        comparison_omnibus_stem = f"pvalues_ppi_comparison_omnibus_reps{comparison_reps}_{stamp}"
+                        if args.save_results == "save":
+                            output_paths += save_results_artifacts_ppi_comparison(
+                                results=comparison_results_omnibus_raw, pooled_results=comparison_results_omnibus_pooled,
+                                alpha=args.alpha, out_dir=args.out_dir, run_stem=comparison_omnibus_stem,
+                                label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                            )
+                        key_metrics["ppi_comparison_omnibus_n_results"] = len(comparison_results_omnibus_pooled)
 
                 # N x N_lab grid: does calibration/power depend on the RATIO
                 # N_lab/N or the ABSOLUTE N_lab count? build_ppi_nlab_grid_sources
@@ -10385,6 +10453,21 @@ def run(args: argparse.Namespace) -> CaseResult:
                     )
                     output_paths.append(null_comparison_plot_path)
                     print(f"Saved plot: {null_comparison_plot_path}")
+
+                    if comparison_results_omnibus_pooled:
+                        # No results_binary/nlab_pow_results_binary equivalent --
+                        # _COMPARISON_METHODS_OMNIBUS is never run against binary
+                        # data anywhere in this harness (binary's own comparison
+                        # sweep uses the unrelated 2-method
+                        # _COMPARISON_METHODS_BINARY), so there's no omnibus-on-
+                        # binary column to plot.
+                        comparison_omnibus_plot_path = save_ppi_comparison_plot(
+                            results=comparison_results_omnibus_pooled, alpha=args.alpha,
+                            out_path=str(Path(plots_dir) / f"pvalues_ppi_comparison_omnibus_reps{comparison_reps_for_stem}_{stamp}_five_way_comparison_omnibus.png"),
+                            label=_COMPARISON_METHODS_OMNIBUS_LABEL,
+                        )
+                        output_paths.append(comparison_omnibus_plot_path)
+                        print(f"Saved plot: {comparison_omnibus_plot_path}")
 
             # Label-efficiency check (run_ppi_label_efficiency_check):
             # self-contained (builds its own continuous/likert/binary
