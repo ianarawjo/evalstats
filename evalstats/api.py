@@ -719,8 +719,8 @@ def _bridge_to_io(
 # PPI alignment correction
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PPI_PAIRWISE_SUPPORTED = ("tango", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap")
-_PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t")
+_PPI_PAIRWISE_SUPPORTED = ("tango", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
+_PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t", "ppi_t_interval", "ppi_logit_t")
 
 
 def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng):
@@ -729,10 +729,18 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     Only methods with a validated PPI-corrected counterpart (see
     ``evalstats.tests``'s ``_ppi_paired_*``/``_ppi_two_sample`` functions,
     calibrated via ``simulations/harness --mode ppi``) are supported here.
+
+    "ppi_t_interval"/"ppi_logit_t" are DISTINCT method strings from the
+    existing bare "t_interval" (below) -- that one already maps to
+    ``_ppi_paired_arrays(..., np.mean, rectifier_func=np.mean)``, the
+    generic PPI-mean-diff bootstrap routine, not the closed-form analytic
+    construction these two use. Reusing "t_interval"/"logit_t" here would
+    silently collide with that existing mapping.
     """
     from evalstats.tests import (
         _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
-        _ppi_paired_arrays, _ppi_two_sample_midrank_corrected,
+        _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
+        _ppi_paired_t_interval, _ppi_paired_logit_t,
     )
     if method == "tango":
         return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
@@ -740,17 +748,30 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
         return _ppi_paired_bootstrap_t(a, b, a_lab, b_lab, alpha, n_boot, rng)
     if method == "bayes_bootstrap":
         return _ppi_paired_bayes_bootstrap(a, b, a_lab, b_lab, alpha, n_boot, rng)
+    if method == "ppi_t_interval":
+        return _ppi_paired_t_interval(a, b, a_lab, b_lab, alpha)
+    if method == "ppi_logit_t":
+        # lo/hi default (0.0, 1.0): this dispatch path has no score_range
+        # concept (see _run_alignment_ppi's is_bounded_01_scores check --
+        # "bounded_01" always means raw scores are literally in [0, 1] here).
+        return _ppi_paired_logit_t(a, b, a_lab, b_lab, alpha)
     if method in ("t_interval", "bootstrap"):
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "wilcoxon":
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.median, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "mannwhitney":
-        # Per-group, per-score-bin local rectifier -- NOT the single-global-
-        # rectifier _ppi_two_sample -- see _ppi_two_sample_midrank_corrected's
-        # docstring for why the naive global rectifier badly miscalibrates
-        # this rank estimand under score-correlated labeling + real judge
-        # bias (validated via simulations/harness --mode ppi).
-        return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, alpha, n_boot, rng)
+        # Matches evalstats.tests.mannwhitney's method="global" default
+        # (reinstated 2026-08-02, a few hours after "ridge" -- see
+        # mannwhitney's `method` docstring's "REVERTED TO 'global'" note
+        # for the full six-default history). NOT a finding against
+        # "ridge" -- it remains the best-validated option by every number
+        # gathered -- reverted because the harness's --official-tests
+        # suite has always tested plain "global" under the name "mwu"
+        # (hardcoded, doesn't track mannwhitney()'s actual default), so
+        # production stays aligned with what's actually been exercised by
+        # that sanctioned pipeline until "ridge" gets its own official
+        # pass.
+        return _ppi_two_sample(a, b, a_lab, b_lab, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
         f"method {method!r}. Supported pairwise methods: "
@@ -917,11 +938,18 @@ def _max_t_from_joint_stats(
 
 def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng):
     """Dispatch to the PPI-corrected single-sample implementation of *method*."""
-    from evalstats.tests import _ppi_single_wilson, _ppi_single_bootstrap_t
+    from evalstats.tests import (
+        _ppi_single_wilson, _ppi_single_bootstrap_t, _ppi_single_t_interval, _ppi_single_logit_t,
+    )
     if method == "wilson":
         return _ppi_single_wilson(a, a_lab, alpha)
     if method == "bootstrap_t":
         return _ppi_single_bootstrap_t(a, a_lab, alpha, n_boot, rng)
+    if method == "ppi_t_interval":
+        return _ppi_single_t_interval(a, a_lab, alpha)
+    if method == "ppi_logit_t":
+        # lo/hi default (0.0, 1.0) -- see _ppi_pairwise_dispatch's matching note.
+        return _ppi_single_logit_t(a, a_lab, alpha)
     if method == "bootstrap":
         from evalstats.ppi import correct as _ppi_correct
         mask = ~np.isnan(a_lab)

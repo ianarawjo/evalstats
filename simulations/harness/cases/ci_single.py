@@ -1228,6 +1228,106 @@ def save_reliability_violin_plot(*, results: list[SimResult], alpha: float, n_re
     return out_path
 
 
+def save_by_n_violin_plot(
+    *, results: list[SimResult], alpha: float, n_reps: int, out_dir: str, run_stem: str,
+) -> list[str]:
+    """Grouped violin plots of per-scenario coverage and interval score vs.
+    sample size n -- one column per eval type present in ``results``, one
+    violin per method at each n within a column (dodged side by side); each
+    dot is one scenario's (label) mean coverage/score at that n and method.
+
+    Companion to ``save_reliability_violin_plot`` above: that plot averages
+    over n to show cross-scenario spread, this one keeps n on the x-axis to
+    show how a method's coverage/score spread shifts with sample size --
+    e.g. for checking logit_t against another continuous/likert method via
+    --eval-types continuous --methods logit_t <other> --by-n-violin-plot.
+
+    Not part of --official-tests: opt-in via --by-n-violin-plot, meant to be
+    run deliberately with --methods scoped down to just the methods being
+    compared (a full-battery run makes for an unreadable dodge).
+
+    Returns
+    -------
+    list[str]
+        Paths to the two saved PNGs (coverage, then score).
+    """
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    target = 1.0 - alpha
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    present_methods = {r.method for r in results}
+    method_objs = order_present_methods(present_methods)
+    method_names = [m.name for m in method_objs]
+    palette = {m.name: m.color for m in method_objs}
+
+    df = pd.DataFrame([
+        {
+            "eval_type": r.eval_type, "label": r.label, "method": r.method, "n": r.n,
+            "coverage": r.covered / r.n_reps, "score": r.total_score / r.n_reps,
+        }
+        for r in results
+    ])
+    df = df[df["method"].isin(method_names)]
+    if df.empty:
+        raise ValueError(
+            "save_by_n_violin_plot: no results left to plot for the requested methods "
+            f"{sorted(method_names)}. Check --eval-types and --methods produced overlapping data."
+        )
+
+    ns = sorted(df["n"].unique())
+    n_order = [str(n) for n in ns]
+    df["n_label"] = df["n"].astype(str)
+
+    out_paths: list[str] = []
+    for metric, ylabel, fname_suffix in [
+        ("coverage", "Coverage per scenario", "by_n_violin_coverage"),
+        ("score", "Interval score per scenario", "by_n_violin_score"),
+    ]:
+        n_cols = max(len(eval_types_present), 1)
+        fig, axes = plt.subplots(1, n_cols, figsize=((1.1 * len(ns) + 2.5) * n_cols, 5.5), squeeze=False)
+        for col_idx, et in enumerate(eval_types_present):
+            ax = axes[0][col_idx]
+            et_df = df[df["eval_type"] == et]
+            et_methods = [m for m in method_names if m in et_df["method"].values]
+            sns.violinplot(
+                data=et_df, x="n_label", y=metric, order=n_order, hue="method", hue_order=et_methods,
+                palette=palette, cut=0, inner="quartile", linewidth=0.8, dodge=True, alpha=0.35, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="n_label", y=metric, order=n_order, hue="method", hue_order=et_methods,
+                palette=palette, size=4, alpha=0.6, dodge=True, jitter=0.15,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
+
+            if metric == "coverage":
+                ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+
+            handles, _ = ax.get_legend_handles_labels()
+            method_handles = handles[:len(et_methods)]
+            ax.legend(
+                handles=method_handles, title="Method", fontsize=8, title_fontsize=9,
+                loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+            )
+
+            ax.set_xlabel("Sample size (n)")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper())
+
+        fig.suptitle(f"{ylabel} vs. Sample Size\n{run_stem} | reps={n_reps} | alpha={alpha}", fontsize=12)
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+            fig.tight_layout()
+
+        out_path = str(Path(out_dir) / f"{run_stem}_{fname_suffix}.png")
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        out_paths.append(out_path)
+
+    return out_paths
+
+
 def save_cost_plot(*, results: list[SimResult], alpha: float, n_reps: int, out_path: str) -> str:
     """Scatter plot: x = mean CI time (log ms), y = coverage; one subplot per eval type."""
     import matplotlib.pyplot as plt
@@ -1447,6 +1547,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "own binary underperformance.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
+    parser.add_argument("--by-n-violin-plot", action="store_true", default=False,
+                         help="Also save grouped violin plots of per-scenario coverage and interval "
+                              "score vs. sample size -- one violin per method at each n (one column "
+                              "per eval type present). Useful for comparing a small set of methods "
+                              "directly, e.g. --eval-types continuous --methods logit_t nig "
+                              "--by-n-violin-plot. Not part of --official-tests, and cheapest combined "
+                              "with --methods to skip the methods you aren't plotting.")
 
 
 def official_args(base_seed: int = 42) -> argparse.Namespace:
@@ -1705,6 +1812,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                     output_paths.append(run_noise_path)
                 print(f"Saved plots: {output_paths[-4:] if run_noise_path else output_paths[-3:]}")
 
+            if getattr(args, "by_n_violin_plot", False):
+                violin_paths = save_by_n_violin_plot(
+                    results=results, alpha=args.alpha, n_reps=args.reps,
+                    out_dir=plots_dir, run_stem=run_stem,
+                )
+                output_paths += violin_paths
+                print(f"Saved by-n violin plots: {', '.join(violin_paths)}")
+
             overall_cov = float(np.mean([r.covered / r.n_reps for r in results])) if results else float("nan")
             return CaseResult(
                 case_name=CASE_NAME, status="ok", output_paths=output_paths,
@@ -1768,6 +1883,14 @@ def run(args: argparse.Namespace) -> CaseResult:
             )
             output_paths += [cov_path, width_path, cost_path, reliability_path]
             print(f"Saved plots: {cov_path}, {width_path}, {cost_path}, {reliability_path}")
+
+        if getattr(args, "by_n_violin_plot", False):
+            violin_paths = save_by_n_violin_plot(
+                results=results, alpha=args.alpha, n_reps=args.reps,
+                out_dir=plots_dir, run_stem=run_stem,
+            )
+            output_paths += violin_paths
+            print(f"Saved by-n violin plots: {', '.join(violin_paths)}")
 
         overall_cov = float(np.mean([r.covered / r.n_reps for r in results])) if results else float("nan")
         return CaseResult(

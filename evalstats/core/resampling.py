@@ -605,18 +605,31 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[flo
     available via ``order=2`` (subtracts ½g''(x̄)·SE² from the logit-scale
     point estimate before forming the interval; g''(x) = -1/x² + 1/(1-x)²).
     In the same investigation above, once the real data-hygiene bug was
-    fixed, order=2 tracked order=1 almost exactly on every real continuous
-    benchmark tested (grok-4/truthfulqa included) -- no measurable benefit
-    was found in practice, so ``order=1`` (cheaper, one fewer term, easier to
-    audit) is the default. order=2 is kept as an available, still
-    theoretically-motivated option rather than removed outright, in case a
-    future dataset with a more extreme true near-boundary mean (as opposed
-    to this incident's corrupted-data illusion of one) actually needs it. A
+    fixed, order=2 tracked order=1 almost exactly on that (non-skewed)
+    dataset -- but a later, dedicated investigation (2026-08-04, see
+    simulations/investigate_logit_t_boundary.py and the harness's
+    logit_t_boundary_investigation memory) tested order=2 on genuinely
+    boundary-hugging, right-skewed single-sample data (e.g. BLEU-style
+    automated metrics) and found a real, consistent coverage improvement at
+    small n, at negligible width cost on well-behaved data -- so "no
+    measurable benefit" does NOT generalize; it was specific to that one
+    non-skewed case. ``order=1`` (cheaper, one fewer term, easier to audit)
+    is this function's default, and stays so everywhere in this project
+    (simulations/harness/cases/ci_single.py briefly defaulted its LOGIT_T
+    method to order=2 over the above finding, then reverted it the same day
+    -- the gain was real but too modest to justify re-running the paper's
+    simulations/rewriting results over; see LOGIT_T_2ND's Method-registry
+    comment in simulations/harness/methods.py for the opt-in comparison
+    variant kept for whenever that tradeoff gets revisited). order=2 was
+    also confirmed to NOT help cases/ci_paired.py's use of logit_t, since
+    paired diffs get rescaled to center near 0.5 regardless of marginal
+    skew, where order=2's boundary-only correction never activates. A
     3rd-order term (correcting for g'''(x̄) and the sample's third central
-    moment) was also tried and gave no additional improvement over 2nd-order
-    even on the (misdiagnosed) original test case -- the noisy third-moment
-    estimate at small n cancels out any theoretical gain -- so it isn't
-    offered as an option.
+    moment) was tried in both the original (misdiagnosed) and the 2026-08-04
+    genuinely-
+    skewed investigations, and gave no additional improvement over 2nd-order
+    in either -- the noisy third-moment estimate at small n cancels out any
+    theoretical gain -- so it isn't offered as an option.
 
     Parameters
     ----------

@@ -1413,17 +1413,20 @@ def save_reliability_violin_plot(*, results: list[SimResult], alpha: float, n_re
     return out_path
 
 
-def save_discordant_comparison_violin_plots(
+def save_by_n_violin_plot(
     *, results: list[SimResult], alpha: float, n_reps: int, out_dir: str, run_stem: str,
 ) -> list[str]:
     """Grouped violin plots of per-scenario coverage and interval score vs.
-    sample size, for a small set of binary-only paired methods -- built for
-    (but not limited to) comparing tango_score vs. tango_scc vs.
-    bayes_paired_comp across N (e.g. via ``--methods tango_score tango_scc
-    bayes_paired_comp --sizes 10 15 20 30 40 50 60 70 80 90 100 110 125
-    --violin-plot``, see ``add_arguments``'s ``--violin-plot`` help and
-    ``discordant_comparison_args`` below for the exact recommended
-    invocation).
+    sample size n -- one column per eval type present in ``results``, one
+    violin per method at each n within a column (dodged side by side); each
+    dot is one scenario's (label) mean coverage/score at that n and method.
+
+    Originally built (and hardcoded) for comparing tango_score vs.
+    tango_scc vs. bayes_paired_comp across N on binary data only; generalized
+    to any eval type/method combination so it also works for e.g. logit_t vs.
+    another continuous/likert method (via --eval-types/--methods -- see
+    ``add_arguments``'s ``--by-n-violin-plot`` help and
+    ``discordant_comparison_args`` below for a worked binary example).
 
     One violin per method at each n (dodged side by side); each dot is one
     scenario's (label) mean coverage/score at that n and method -- this
@@ -1447,7 +1450,8 @@ def save_discordant_comparison_violin_plots(
     import seaborn as sns
 
     target = 1.0 - alpha
-    non_null = [r for r in results if not r.is_null and r.eval_type == "binary"]
+    non_null = [r for r in results if not r.is_null]
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
     present_methods = {r.method for r in non_null}
     method_objs = order_present_methods(present_methods)
     method_names = [m.name for m in method_objs]
@@ -1455,7 +1459,7 @@ def save_discordant_comparison_violin_plots(
 
     df = pd.DataFrame([
         {
-            "label": r.label, "method": r.method, "n": r.n,
+            "eval_type": r.eval_type, "label": r.label, "method": r.method, "n": r.n,
             "coverage": r.covered / r.n_reps, "score": r.total_score / r.n_reps,
         }
         for r in non_null
@@ -1463,11 +1467,9 @@ def save_discordant_comparison_violin_plots(
     df = df[df["method"].isin(method_names)]
     if df.empty:
         raise ValueError(
-            "save_discordant_comparison_violin_plots: no binary-eval-type results found for "
-            f"the requested methods {sorted(method_names)}. This plot only covers binary "
-            "paired methods (tango_score, tango_scc, bayes_paired_comp, bayes_indep_comp, "
-            "newcombe_score) -- check --eval-types includes 'binary' and --methods names a "
-            "binary method."
+            "save_by_n_violin_plot: no non-null results found for the requested methods "
+            f"{sorted(method_names)}. Check --eval-types and --methods produced overlapping "
+            "data (--include-null rows are excluded from this plot)."
         )
 
     ns = sorted(df["n"].unique())
@@ -1476,33 +1478,40 @@ def save_discordant_comparison_violin_plots(
 
     out_paths: list[str] = []
     for metric, ylabel, fname_suffix in [
-        ("coverage", "Coverage per scenario", "coverage_violin"),
-        ("score", "Interval score per scenario", "score_violin"),
+        ("coverage", "Coverage per scenario", "by_n_violin_coverage"),
+        ("score", "Interval score per scenario", "by_n_violin_score"),
     ]:
-        fig, ax = plt.subplots(figsize=(1.1 * len(ns) + 2.5, 5.5))
-        sns.violinplot(
-            data=df, x="n_label", y=metric, order=n_order, hue="method", hue_order=method_names,
-            palette=palette, cut=0, inner="quartile", linewidth=0.8, dodge=True, alpha=0.35, ax=ax,
-        )
-        sns.stripplot(
-            data=df, x="n_label", y=metric, order=n_order, hue="method", hue_order=method_names,
-            palette=palette, size=4, alpha=0.6, dodge=True, jitter=0.15,
-            linewidth=0.4, edgecolor="white", legend=False, ax=ax,
-        )
+        n_cols = max(len(eval_types_present), 1)
+        fig, axes = plt.subplots(1, n_cols, figsize=((1.1 * len(ns) + 2.5) * n_cols, 5.5), squeeze=False)
+        for col_idx, et in enumerate(eval_types_present):
+            ax = axes[0][col_idx]
+            et_df = df[df["eval_type"] == et]
+            et_methods = [m for m in method_names if m in et_df["method"].values]
+            sns.violinplot(
+                data=et_df, x="n_label", y=metric, order=n_order, hue="method", hue_order=et_methods,
+                palette=palette, cut=0, inner="quartile", linewidth=0.8, dodge=True, alpha=0.35, ax=ax,
+            )
+            sns.stripplot(
+                data=et_df, x="n_label", y=metric, order=n_order, hue="method", hue_order=et_methods,
+                palette=palette, size=4, alpha=0.6, dodge=True, jitter=0.15,
+                linewidth=0.4, edgecolor="white", legend=False, ax=ax,
+            )
 
-        if metric == "coverage":
-            ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            if metric == "coverage":
+                ax.axhline(target, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
 
-        handles, _ = ax.get_legend_handles_labels()
-        method_handles = handles[:len(method_names)]
-        ax.legend(
-            handles=method_handles, title="Method", fontsize=8, title_fontsize=9,
-            loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
-        )
+            handles, _ = ax.get_legend_handles_labels()
+            method_handles = handles[:len(et_methods)]
+            ax.legend(
+                handles=method_handles, title="Method", fontsize=8, title_fontsize=9,
+                loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+            )
 
-        ax.set_xlabel("Sample size (n)")
-        ax.set_ylabel(ylabel)
-        ax.set_title(f"{ylabel} vs. Sample Size\nci_paired | reps={n_reps} | alpha={alpha}")
+            ax.set_xlabel("Sample size (n)")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper())
+
+        fig.suptitle(f"{ylabel} vs. Sample Size\n{run_stem} | reps={n_reps} | alpha={alpha}", fontsize=12)
         with warnings.catch_warnings():
             warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
             fig.tight_layout()
@@ -1725,13 +1734,14 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--plots-dir", default=None)
     parser.add_argument("--latex", action="store_true", default=False,
                          help="Append a LaTeX booktabs overall-summary table to the saved summary .log file.")
-    parser.add_argument("--violin-plot", action="store_true", default=False,
+    parser.add_argument("--by-n-violin-plot", action="store_true", default=False,
                          help="Also save grouped violin plots of per-scenario coverage and interval "
-                              "score vs. sample size (binary eval type only) -- one violin per method "
-                              "at each n, with extreme-discordance scenarios (lopsided or near-zero "
-                              "discordant split) marked with a distinct 'X' marker. Built for comparing tango_score vs. "
-                              "tango_scc vs. bayes_paired_comp across N (see "
-                              "discordant_comparison_args() for the recommended invocation); not part "
+                              "score vs. sample size -- one violin per method at each n (one column "
+                              "per eval type present). Originally built for comparing tango_score vs. "
+                              "tango_scc vs. bayes_paired_comp across N on binary data (see "
+                              "discordant_comparison_args() for that invocation), but works for any "
+                              "eval type/method set, e.g. logit_t vs. another continuous method via "
+                              "--eval-types continuous --methods logit_t <other>; not part "
                               "of --official-tests, and cheapest combined with --methods to skip the "
                               "methods you aren't plotting. Ignored in --nested-mode.")
     parser.add_argument("--nested-mode", action="store_true", default=False,
@@ -1915,10 +1925,10 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
 
 def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
     """tango_score vs. tango_scc vs. bayes_paired_comp across N=10..125, for
-    the coverage/interval-score violin plots (--violin-plot). Not wired into
-    --official-tests (this exists to make a specific method-choice argument
-    visible in a figure, not as a general calibration check); invoke
-    manually:
+    the coverage/interval-score violin plots (--by-n-violin-plot). Not wired
+    into --official-tests (this exists to make a specific method-choice
+    argument visible in a figure, not as a general calibration check);
+    invoke manually:
 
     python -m simulations.harness.cli ci_paired --data-source synthetic
       --scenario-suite expanded --eval-types binary
@@ -1926,7 +1936,7 @@ def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
       --reps 300 --bootstrap-n 10000 --bayes-n 10000 --alpha 0.05
       --sizes 10 15 20 30 40 50 60 70 80 90 100 110 125
       --icc-values 0.05 0.20 0.40 0.60 0.80 --cohens-d-values 0.2 0.4
-      --include-null --seed 46 --violin-plot
+      --include-null --seed 46 --by-n-violin-plot
       --progress bar --save-results save --out-dir simulations/out --latex
 
     --methods scopes computation to just the three methods being compared
@@ -1946,7 +1956,7 @@ def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
         no_bootstrap_binary=False,
         pairwise_noise_grid=False, pairwise_noise_grid_max=None, pairwise_noise_grid_seed=42, cross_item_rho=0.7,
-        latex=True, workers=max(1, (os.cpu_count() or 2) - 1), violin_plot=True,
+        latex=True, workers=max(1, (os.cpu_count() or 2) - 1), by_n_violin_plot=True,
     )
 
 
@@ -2040,8 +2050,8 @@ def run(args: argparse.Namespace) -> CaseResult:
                     output_paths.append(run_noise_path)
                 print(f"Saved plots: {output_paths[-4:] if run_noise_path else output_paths[-3:]}")
 
-            if getattr(args, "violin_plot", False):
-                violin_paths = save_discordant_comparison_violin_plots(
+            if getattr(args, "by_n_violin_plot", False):
+                violin_paths = save_by_n_violin_plot(
                     results=results, alpha=args.alpha, n_reps=args.reps,
                     out_dir=plots_dir, run_stem=run_stem,
                 )
@@ -2123,8 +2133,8 @@ def run(args: argparse.Namespace) -> CaseResult:
             output_paths += [cov_path, width_path, cost_path, reliability_path]
             print(f"Saved plots: {cov_path}, {width_path}, {cost_path}, {reliability_path}")
 
-        if getattr(args, "violin_plot", False):
-            violin_paths = save_discordant_comparison_violin_plots(
+        if getattr(args, "by_n_violin_plot", False):
+            violin_paths = save_by_n_violin_plot(
                 results=results, alpha=args.alpha, n_reps=args.reps,
                 out_dir=plots_dir, run_stem=run_stem,
             )

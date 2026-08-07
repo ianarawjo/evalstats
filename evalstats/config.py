@@ -246,31 +246,30 @@ PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
     ),
     PPIAutoMethodRule(
         data_kind="bounded_01",
-        pairwise_method="bootstrap_t",
-        robustness_method="bootstrap_t",
+        pairwise_method="ppi_logit_t",
+        robustness_method="ppi_logit_t",
         reason=(
-            "Numeric [0, 1]-bounded data: PPI-corrected studentized bootstrap "
-            "(see evalstats.tests._ppi_paired_bootstrap_t / "
-            "_ppi_single_bootstrap_t). TEMPORARY: the non-aligned default for "
-            "this data_kind is logit_t (see AUTO_ANALYZE_METHOD_TABLE), not "
-            "bootstrap_t -- there is currently no PPI-corrected logit_t, so "
-            "this row silently downgrades bounded data to a less-preferred "
-            "method under alignment=. This is the known gap to close, not an "
-            "intentional choice; once a PPI-corrected logit_t exists, this "
-            "row should route here instead."
+            "Numeric [0, 1]-bounded data: closed-form (no-bootstrap) PPI-corrected "
+            "logit-t (see evalstats.tests._ppi_paired_logit_t / "
+            "_ppi_single_logit_t, wrapping evalstats.ppi._analytic_logit_t_correct), "
+            "matching the non-aligned default's own logit_t choice for this "
+            "data_kind (see AUTO_ANALYZE_METHOD_TABLE). RESOLVED 2026-08-05: this "
+            "row previously routed to bootstrap_t as a TEMPORARY stand-in, since no "
+            "PPI-corrected logit_t existed -- that gap is now closed."
         ),
     ),
     PPIAutoMethodRule(
         data_kind="unbounded",
-        pairwise_method="bootstrap_t",
-        robustness_method="bootstrap_t",
+        pairwise_method="ppi_t_interval",
+        robustness_method="ppi_t_interval",
         reason=(
-            "Numeric data with no reliable [lo, hi] range: same PPI-corrected "
-            "studentized bootstrap as bounded_01. Unlike the bounded_01 row "
-            "above, this one is NOT a gap -- logit_t requires known bounds to "
-            "do the logit transform at all, so a bounds-agnostic bootstrap is "
-            "the correct choice here, matching the non-aligned default's own "
-            "fallback to t_interval for the same reason."
+            "Numeric data with no reliable [lo, hi] range: closed-form "
+            "(no-bootstrap) PPI-corrected t-interval (see evalstats.tests."
+            "_ppi_paired_t_interval / _ppi_single_t_interval, wrapping "
+            "evalstats.ppi._analytic_mean_correct), matching the non-aligned "
+            "default's own t_interval fallback for this data_kind (see "
+            "AUTO_ANALYZE_METHOD_TABLE) -- logit_t requires known bounds to do "
+            "the logit transform at all, which this data_kind by definition lacks."
         ),
     ),
 )
