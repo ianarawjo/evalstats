@@ -3466,6 +3466,62 @@ def _ppi_friedman_f_stat(
     subject's own scores), so ranking commutes with row selection: ranking
     the full matrix once and then slicing the labeled-subject rows gives the
     same result as ranking the labeled subset directly.
+
+    KNOWN, OPEN LIMITATION under MNAR labeling (root-caused 2026-08-07, via
+    simulations/investigate_friedman_mnar.py -- NOT a bootstrap issue, since
+    this whole function is already closed-form/analytic and never touches
+    evalstats.ppi.correct's bootstrap; confirmed empirically that
+    friedman()'s corrected_p_value/_estimate/_ci are bit-for-bit identical
+    across n_boot=100..8000). Full factorial sweep (reps=200) found Type-I
+    error up to 0.585 (nominal 0.05) at n=400/n_lab=80/mnar_strong/
+    bm=moderate; a targeted re-run (reps=2000, continuous eval type,
+    n=400/n_lab=30/mnar_strong/bm=severe/noise=0.025) reproduced 0.333-0.359.
+    The failure is NOT small-n_lab degeneracy (unlike wilcoxon()'s own
+    documented residual) -- it is roughly FLAT across n_lab in {15, 30, 80}
+    and GROWS WITH N (population size) at fixed n_lab: 0.095 (N=60) ->
+    0.148 (N=100) -> 0.276 (N=200) -> 0.350 (N=400) in that same targeted
+    check. likert shows the identical N-scaling pattern but much milder in
+    magnitude (up to ~0.15 at the worst N=400 cell checked, vs. continuous's
+    ~0.53 in the original factorial sweep).
+
+    Root cause: `sigma_llm_sq` above is a PLAIN (unweighted) mean of the
+    LLM-minus-human rank-contrast residual over only the n_lab labeled
+    subjects. `mnar_mode="high"` labeling (see
+    simulations/harness/scenarios/synthetic.py's _jb_label_indices)
+    preferentially labels subjects with a high mean truth level across
+    conditions; such subjects' within-subject TRUE condition scores tend to
+    be more spread apart (less tied), making their rank pattern more
+    "decisive" and less prone to being flipped by additive LLM noise --
+    their own rank-contrast residual is smaller than a typical population
+    subject's. Averaging `sigma_llm_sq` over only this MNAR-enriched
+    subsample therefore UNDERESTIMATES the population's true rank-contrast
+    noise variance by a roughly constant ~35-40% (confirmed against an
+    oracle full-census estimate, flat across N: labeled-subsample estimate
+    ~0.126-0.138 vs. oracle ~0.204 at every N in {60,100,200,400}). Because
+    this underestimate feeds `denom = ms_null + sigma_llm_sq *
+    (n_subjects/n_lab - 1)`, whose second term's multiplier grows LINEARLY
+    with N at fixed n_lab, a roughly CONSTANT relative bias in sigma_llm_sq
+    produces a Type-I inflation that mechanically WORSENS with N -- exactly
+    the observed pattern, and the opposite N-dependence from a bootstrap- or
+    small-sample-degeneracy story.
+
+    A candidate fix (inverse-propensity-weighting sigma_llm_sq/
+    ms_null_human by each subject's own mean-LLM-score, a fully observable
+    proxy for the unobservable MNAR selection driver, via a logistic-
+    regression-estimated labeling propensity) was prototyped and tested
+    head-to-head (simulations/investigate_friedman_mnar_fix.py, reps=1500):
+    it did not regress MCAR calibration, but it also did NOT reliably fix
+    the worst (large-N) corner -- roughly a wash for continuous at N=400
+    (0.333->0.355) and a clear REGRESSION for likert at N=400
+    (0.119->0.151). Not shipped. Left as a documented, open limitation
+    (like wilcoxon()'s own small-n_lab residual) rather than an
+    "*_mnar_experimental" opt-in, since -- unlike
+    _ppi_kruskal_wallis_pairwise_mnar_experimental, which DID fix its
+    target problem at the cost of MCAR calibration -- this prototype didn't
+    even reliably fix the target problem. MNAR is a documented,
+    out-of-scope limitation for this package generally (see
+    evalstats.ppi.correct's main docstring); this is one more instance of
+    that, not a bug specific to a fixable implementation detail.
     """
     n_subjects = len(groups[0])
     labels_mat = np.column_stack(groups_lab)
@@ -4697,6 +4753,14 @@ def friedman(
     ANOVA correction works on raw condition means), since the plain
     ``2 * min(P(θ̂* ≤ 0), P(θ̂* ≥ 0))`` bootstrap trick is invalid for a
     variance-like estimand that's bounded below by zero.
+
+    KNOWN, OPEN LIMITATION under MNAR labeling (root-caused 2026-08-07):
+    Type-I error can inflate well above nominal (up to ~0.585 in a targeted
+    check) when the labeled subset is a non-representative (MNAR) sample of
+    subjects AND N (population size) is large -- the failure GROWS WITH N at
+    fixed n_lab, unlike wilcoxon()'s own documented small-n_lab residual.
+    See :func:`_ppi_friedman_f_stat`'s docstring for the full root-cause
+    writeup and why a prototyped fix wasn't shipped.
 
     Parameters
     ----------
