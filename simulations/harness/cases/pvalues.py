@@ -8853,7 +8853,8 @@ def save_results_artifacts_ppi_effect(*, results: list[PPIEffectResult], alpha: 
 
 
 def save_ppi_effect_plot(
-    *, results: list[PPIEffectResult], alpha: float, out_path: str, ci_comparison: bool = False, regime: str = "",
+    *, results: list[PPIEffectResult], alpha: float, out_path: str, ci_comparison: bool = False,
+    nonstandard: bool = False, regime: str = "",
     width_norm: dict[str, float] | None = None,
 ) -> str:
     """Bias-z / CI-coverage / CI-width scatter, one jittered column per test
@@ -8870,6 +8871,19 @@ def save_ppi_effect_plot(
         PPI logit-t, PPI t-interval -- see _PPI_CI_COMPARISON_TESTS for
         why exactly these four (and not the broader bootstrap/CI-based
         set _ppi_tests_present(nonstandard=True) would return).
+
+    nonstandard : bool
+        Ignored when ci_comparison=True (that branch has its own fixed
+        4-method set). Otherwise, False (default) plots the standard/
+        textbook tests as above; True plots the complementary broader
+        bootstrap/CI-based set instead (_ppi_tests_present(nonstandard=
+        True) -- everything ci_comparison's curated 4 are a subset of).
+        Added 2026-08-07: this parameter existed in _ppi_tests_present
+        (the helper this function already calls) but was never actually
+        threaded through here -- ppi_real.py's official-test pathway
+        called save_ppi_effect_plot(..., nonstandard=True) assuming it
+        was, which raised TypeError (unexpected keyword argument) on
+        every --official-tests run that reached it.
 
     width_norm : dict[str, float] | None
         Optional ``{scenario_name: divisor}`` map (typically each
@@ -8901,7 +8915,7 @@ def save_ppi_effect_plot(
     if not results:
         raise ValueError("save_ppi_effect_plot: no PPI effect-check results to plot.")
 
-    tests = _ppi_ci_comparison_tests_present(results) if ci_comparison else _ppi_tests_present(results, nonstandard=False)
+    tests = _ppi_ci_comparison_tests_present(results) if ci_comparison else _ppi_tests_present(results, nonstandard=nonstandard)
     target_cov = 1.0 - alpha
     fig, (ax1, ax2, ax3) = plt.subplots(1, 3, figsize=(16.0, 5.5))
     rng = np.random.default_rng(0)
@@ -8953,7 +8967,12 @@ def save_ppi_effect_plot(
     ax3.grid(axis="y", alpha=0.25, lw=0.8)
 
     handles, labels = ax1.get_legend_handles_labels()
-    title_suffix = " -- PPI-Corrected CI Methods (Tango / Wilson / Logit-t / t-interval)" if ci_comparison else ""
+    if ci_comparison:
+        title_suffix = " -- PPI-Corrected CI Methods (Tango / Wilson / Logit-t / t-interval)"
+    elif nonstandard:
+        title_suffix = " -- Nonstandard (Bootstrap/CI-Based) Tests"
+    else:
+        title_suffix = ""
     title_suffix += f" ({regime})" if regime else ""
     fig.suptitle(f"PPI-Corrected Effect-Size Calibration: Bias, Coverage, and Width{title_suffix}", fontsize=12)
     fig.legend(handles, labels, loc="center left", bbox_to_anchor=(1.0, 0.5), fontsize=8, borderaxespad=0.5)
