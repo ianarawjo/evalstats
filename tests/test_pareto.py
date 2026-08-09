@@ -542,6 +542,49 @@ def test_executive_summary_verdict_header_scoped_to_metric_when_pareto_shown():
     assert "On score" not in header_line2
 
 
+def test_executive_summary_tradeoff_header_names_secondary_metric():
+    """The Trade-off column header should name the secondary metric too
+    (paired with "On {metric}"), so the two headers alone state both axes
+    without needing the Pareto section above -- and truncate a long
+    secondary column name rather than blowing out the table width."""
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=64)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(65),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    header_line = buf.getvalue()[buf.getvalue().index("Executive Summary"):].splitlines()[1]
+    assert "Trade-off vs latency_ms" in header_line
+
+    # Long secondary column name gets truncated, not left to stretch the table.
+    long_col = "average_response_latency_milliseconds_p99"
+    rng2 = _rng(66)
+    rows = [
+        {
+            "model": m, "item": f"q{i}",
+            "score": float(np.clip(rng2.normal(_ACC[m], 0.08), 0, 1)),
+            long_col: float(np.clip(rng2.normal(_LAT[m], 0.4), 0.05, None)),
+        }
+        for m in _MODELS for i in range(150)
+    ]
+    evaldata2 = es.load_from(pd.DataFrame(rows), col_map={"model": "model", "item": "item"})
+    result2 = es.compare(
+        evaldata2, factors="model", metric="score",
+        secondary={long_col: "min"}, rng=_rng(67),
+    )
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        result2.summary()
+    header_line2 = buf2.getvalue()[buf2.getvalue().index("Executive Summary"):].splitlines()[1]
+    assert long_col not in header_line2
+    assert "Trade-off vs average" in header_line2
+
+
 def test_pareto_status_phrase_merges_status_and_detail():
     from evalstats.core.summary import _pareto_status_phrase
     from evalstats.core.pareto import ParetoStatus

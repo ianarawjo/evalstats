@@ -2965,7 +2965,16 @@ def _print_executive_summary(
     mean_w = 6
     ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
     stab_w = 16
-    pareto_w = max([len("Trade-off")] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
+    # "Trade-off vs {secondary}" names the second axis explicitly (truncated
+    # -- an arbitrary column name shouldn't be able to blow out this table's
+    # width), pairing with "On {metric}" below so the two columns' headers
+    # alone state both axes without needing the Pareto section above.
+    tradeoff_secondary = pareto.get("secondary_metric") if has_pareto else None
+    tradeoff_header = (
+        f"Trade-off vs {_truncate_label(tradeoff_secondary, 16)}"
+        if tradeoff_secondary else "Trade-off"
+    )
+    pareto_w = max([len(tradeoff_header)] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
     ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
@@ -2980,7 +2989,7 @@ def _print_executive_summary(
     if has_stability:
         header_parts.append(f"  {'Stability':<{stab_w}s}")
     if has_pareto:
-        header_parts.append(f"  {'Trade-off':<{pareto_w}s}")
+        header_parts.append(f"  {tradeoff_header:<{pareto_w}s}")
     verdict_header = f"On {metric or 'primary metric'}" if has_pareto else "Verdict"
     header_parts.append(f"  {verdict_header}")
     header = "".join(header_parts)
