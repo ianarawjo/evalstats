@@ -2945,6 +2945,9 @@ def _print_executive_summary(
 
     # Significance group letters via CD groups.
     label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+    verdict_by_label = {
+        label: _exec_verdict(label, label_to_group, labels_sorted) for label in labels_sorted
+    }
 
     # Seed variance for stability column (optional).
     sv = bundle.seed_variance
@@ -2988,10 +2991,22 @@ def _print_executive_summary(
     ]
     if has_stability:
         header_parts.append(f"  {'Stability':<{stab_w}s}")
-    if has_pareto:
-        header_parts.append(f"  {tradeoff_header:<{pareto_w}s}")
     verdict_header = f"On {metric or 'primary metric'}" if has_pareto else "Verdict"
-    header_parts.append(f"  {verdict_header}")
+    # Only needs padding when it's no longer the last (unpadded) column,
+    # i.e. once Trade-off follows it -- computed from the actual verdict
+    # strings, which vary a lot ("Likely best" vs. "Tied with X as best").
+    verdict_w = (
+        max([len(verdict_header)] + [len(v) for v in verdict_by_label.values()])
+        if has_pareto else 0
+    )
+    if has_pareto:
+        # "On {metric}" first (echoes the Mean/CI columns just shown), then
+        # "Trade-off vs {secondary}" -- reads as "here's the primary-metric
+        # call, and here's how that changes once the other axis counts too."
+        header_parts.append(f"  {verdict_header:<{verdict_w}s}")
+        header_parts.append(f"  {tradeoff_header}")
+    else:
+        header_parts.append(f"  {verdict_header}")
     header = "".join(header_parts)
     sep = "  " + "─" * (len(header) - 2)
     print(header)
@@ -3006,19 +3021,20 @@ def _print_executive_summary(
         ci_str = f"[{ci_lo:.3f}, {ci_hi:.3f}]"
 
         group = label_to_group.get(label, "?")
-        verdict = _exec_verdict(label, label_to_group, labels_sorted)
+        verdict = verdict_by_label[label]
 
         # Pre-format fixed-width parts, then optionally wrap with ANSI.
         plain_label = f"{_truncate_label(label, tpl_w):<{tpl_w}s}"
         plain_grp = f"{group:^{grp_w}s}"
+        plain_verdict = f"{verdict:<{verdict_w}s}" if has_pareto else verdict
         if group == "#1" and _ANSI:
             label_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_label}{_RESET}"
             grp_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_grp}{_RESET}"
-            verdict_str = f"{_BRIGHT_GREEN}{verdict}{_RESET}"
+            verdict_str = f"{_BRIGHT_GREEN}{plain_verdict}{_RESET}"
         else:
             label_str = plain_label
             grp_str = plain_grp
-            verdict_str = verdict
+            verdict_str = plain_verdict
 
         row = (
             f"  {label_str}"
@@ -3036,8 +3052,12 @@ def _print_executive_summary(
                 stab_str = "—"
             row += f"  {stab_str:<{stab_w}s}"
 
+        # "On {metric}" (verdict) first, then "Trade-off vs {secondary}" --
+        # matches the header order above.
+        row += f"  {verdict_str}"
+
         if has_pareto:
-            pareto_plain = f"{pareto_phrases.get(label, '—'):<{pareto_w}s}"
+            pareto_plain = pareto_phrases.get(label, "—")
             pareto_color = (
                 _pareto_status_color(pareto_statuses[label].status)
                 if label in pareto_statuses else ""
@@ -3045,7 +3065,6 @@ def _print_executive_summary(
             pareto_str = f"{pareto_color}{pareto_plain}{_RESET}" if pareto_color else pareto_plain
             row += f"  {pareto_str}"
 
-        row += f"  {verdict_str}"
         print(row)
 
     print(sep)
