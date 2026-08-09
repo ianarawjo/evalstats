@@ -323,7 +323,9 @@ def _apply_pvalue_correction(
     results: dict,
     pairs: list,
     correction: str,
-) -> None:
+    *,
+    n_groups: Optional[int] = None,
+) -> str:
     """Apply multiple-comparisons correction to a ``results`` dict in-place.
 
     Parameters
@@ -337,13 +339,32 @@ def _apply_pvalue_correction(
         used to extract and replace p-values in a consistent order.
     correction : str
         Correction method accepted by :func:`correct_pvalues` (e.g.
-        ``'holm'``, ``'bonferroni'``, ``'fdr_bh'``, ``'none'``).
-        When ``'none'`` or ``len(pairs) <= 1`` the function is a no-op.
+        ``'holm'``, ``'bonferroni'``, ``'fdr_bh'``, ``'shaffer'``,
+        ``'none'``), or ``'auto'``. ``'auto'`` always resolves to
+        ``'shaffer'`` here -- unlike :func:`~evalstats.core.paired.all_pairwise`'s
+        N-threshold-routed "auto" (which can pick Romano-Wolf step-down at
+        N>=30), the LMM path's Wald p-values have no raw bootstrap
+        distribution to build a step-down from, so this always picks the
+        one auto-table method that doesn't need one -- still a real
+        improvement on the previous unconditional ``'fdr_bh'`` (FDR, not
+        FWER) default. When ``'none'`` or ``len(pairs) <= 1`` the function
+        is a no-op (returns the resolved method without correcting anything).
+    n_groups : int, optional
+        Number of arms/groups being compared -- forwarded to
+        :func:`correct_pvalues` (required for ``'shaffer'``).
+
+    Returns
+    -------
+    str
+        The resolved correction method actually applied (e.g. ``'auto'``
+        resolves to ``'shaffer'``) -- callers should store this, not the
+        original *correction* argument, in ``PairwiseMatrix.correction_method``.
     """
-    if correction == "none" or len(pairs) <= 1:
-        return
+    resolved = "shaffer" if correction == "auto" else correction
+    if resolved == "none" or len(pairs) <= 1:
+        return resolved
     p_values = np.array([results[p].p_value for p in pairs])
-    adjusted = correct_pvalues(p_values, correction)
+    adjusted = correct_pvalues(p_values, resolved, n_groups=n_groups)
     for pair, adj_p in zip(pairs, adjusted):
         r = results[pair]
         results[pair] = PairedDiffResult(
@@ -354,12 +375,13 @@ def _apply_pvalue_correction(
             ci_low=r.ci_low,
             ci_high=r.ci_high,
             p_value=float(adj_p),
-            test_method=f"{r.test_method} ({correction}-corrected)",
+            test_method=f"{r.test_method} ({resolved}-corrected)",
             n_inputs=r.n_inputs,
             per_input_diffs=r.per_input_diffs,
             n_runs=r.n_runs,
             statistic=r.statistic,
         )
+    return resolved
 
 
 def _compute_raw_advantages_and_spread(
@@ -504,8 +526,8 @@ def _lmm_to_pairwise(
             "Check that template labels are simple strings without ' - '."
         )
 
-    _apply_pvalue_correction(results, pairs, correction)
-    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+    _resolved_correction = _apply_pvalue_correction(results, pairs, correction, n_groups=len(labels))
+    return PairwiseMatrix(labels=labels, results=results, correction_method=_resolved_correction)
 
 
 # ---------------------------------------------------------------------------
@@ -921,8 +943,8 @@ def _lmm_to_pairwise_sm(
     if not results:
         raise RuntimeError("statsmodels LMM returned no usable contrasts.")
 
-    _apply_pvalue_correction(results, pairs, correction)
-    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+    _resolved_correction = _apply_pvalue_correction(results, pairs, correction, n_groups=len(labels))
+    return PairwiseMatrix(labels=labels, results=results, correction_method=_resolved_correction)
 
 
 def _build_lmm_info_sm(sm_result: Any, n_obs: int) -> LMMInfo:
@@ -1587,8 +1609,8 @@ def _lmm_to_pairwise_factorial_sm(
     if not results:
         raise RuntimeError("Factorial LMM produced no usable pairwise contrasts.")
 
-    _apply_pvalue_correction(results, pairs, correction)
-    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+    _resolved_correction = _apply_pvalue_correction(results, pairs, correction, n_groups=len(labels))
+    return PairwiseMatrix(labels=labels, results=results, correction_method=_resolved_correction)
 
 
 def _lmm_analyze_factorial_sm(
@@ -1988,8 +2010,8 @@ def _lmm_to_pairwise_factorial_pymer4(
     if not results:
         raise RuntimeError("Factorial LMM (pymer4) produced no usable pairwise contrasts.")
 
-    _apply_pvalue_correction(results, pairs, correction)
-    return PairwiseMatrix(labels=labels, results=results, correction_method=correction)
+    _resolved_correction = _apply_pvalue_correction(results, pairs, correction, n_groups=len(labels))
+    return PairwiseMatrix(labels=labels, results=results, correction_method=_resolved_correction)
 
 
 def _lmm_analyze_factorial_pymer4(

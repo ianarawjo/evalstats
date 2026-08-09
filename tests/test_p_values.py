@@ -132,9 +132,11 @@ class TestAnalyzeStoresPValueMethod:
         bundle = self._bundle()
         assert bundle.p_value_method is None
 
-    def test_p_values_true_stores_auto(self):
+    def test_p_values_true_stores_wsr_for_k2(self):
+        """k=2 is a single pairwise comparison (fig:fwer-decision-tree):
+        auto always resolves to Wilcoxon signed-ranks, unconditionally."""
         bundle = self._bundle(p_values=True)
-        assert bundle.p_value_method == "auto"
+        assert bundle.p_value_method == "wsr"
 
     def test_p_values_true_omnibus_stores_wsr(self):
         bundle = self._bundle(p_values=True, omnibus=True)
@@ -180,11 +182,13 @@ class TestComparePropagatesPValueMethod:
         report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
         assert report.p_value_method is None
 
-    def test_p_values_true_report_stores_auto(self):
+    def test_p_values_true_report_stores_wsr_for_k2(self):
+        """k=2 is a single pairwise comparison (fig:fwer-decision-tree):
+        auto always resolves to Wilcoxon signed-ranks, unconditionally."""
         report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), p_values=True
         )
-        assert report.p_value_method == "auto"
+        assert report.p_value_method == "wsr"
 
     @pytest.mark.parametrize("test,expected", [
         ("bootstrap", "boot"),
@@ -198,12 +202,13 @@ class TestComparePropagatesPValueMethod:
         assert report.p_value_method == expected
 
     def test_compare_models_propagates(self):
+        """k=2 models -> single pairwise comparison -> Wilcoxon, unconditionally."""
         scores = {
             "M1": _scores_2prompt(n=40, seed=0)["A"],
             "M2": _scores_2prompt(n=40, seed=1)["B"],
         }
         report = es.compare_models(scores, n_bootstrap=200, rng=_rng(), p_values=True)
-        assert report.p_value_method == "auto"
+        assert report.p_value_method == "wsr"
 
 
 # ---------------------------------------------------------------------------

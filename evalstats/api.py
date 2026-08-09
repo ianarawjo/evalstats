@@ -1040,17 +1040,27 @@ def _run_alignment_ppi(
     correction: str,
     method: str,
     rng,
-    prefer: str = "bonferroni",
+    prefer: str = "auto",
 ) -> None:
     """Override CIs/p-values in ``cr._analysis`` in-place using Prediction-Powered
     Inference (PPI), by dispatching to the specific PPI-corrected implementation
     of whichever pairwise/robustness method applies (see
     ``_ppi_pairwise_dispatch``/``_ppi_robustness_dispatch`` above).
 
-    ``prefer`` mirrors ``_simultaneous_cis_router``'s knob of the same name:
-    Bonferroni is the default simultaneous-CI construction (faster, simpler,
-    and more robust at small N), and the joint bootstrap max-T correction is
-    only attempted when ``prefer="max_t"`` is passed explicitly.
+    ``prefer`` mirrors ``_simultaneous_cis_router``'s knob of the same name,
+    but PPI only ever has two constructions available (Bonferroni or its own
+    joint-bootstrap max-T) -- there is no PPI-corrected Sidak or joint-
+    bootstrap-with-effective-alpha the way the non-PPI path has (building and
+    validating one is real new work the cited simulations don't cover, since
+    they validate the raw/non-PPI tree only). ``prefer="auto"`` (default)
+    still follows fig:fwer-decision-tree's N-threshold logic -- Bonferroni
+    for small N (or a lopsided binary split regardless of N), else the
+    joint-bootstrap max-T -- just choosing between PPI's own two options
+    instead of Sidak/boot. Because of that narrower method roster, this is a
+    weaker guarantee than the non-PPI fix, and its calibration at the tree's
+    exact thresholds has not been independently simulated for the PPI-
+    corrected case (see TODO.md). Pass ``prefer="max_t"``/``"bonferroni"``
+    to force one directly, as before.
 
     For ``method="auto"`` the PPI-specific auto table
     (``evalstats.config.resolve_ppi_auto_methods``) picks a method validated
@@ -1272,10 +1282,22 @@ def _run_alignment_ppi(
     # when it succeeds, the per-pair loop can skip its redundant headline +
     # per-gradient-alpha dispatch calls entirely instead of computing them
     # only to immediately overwrite them.
+    #
+    # prefer="auto" resolves via the same N-threshold table the non-PPI path
+    # uses (see this function's docstring for why the *methods* chosen from
+    # that table differ -- Bonferroni/max-T here, not Sidak/boot).
+    resolved_prefer = prefer
+    if prefer == "auto":
+        from evalstats.core.resampling import is_lopsided_binary
+        from evalstats.config import resolve_auto_simultaneous_ci_method
+        _lopsided = data_kind == "binary" and is_lopsided_binary(scores_2d)
+        _tree_choice = resolve_auto_simultaneous_ci_method(data_kind, n_all, lopsided_binary=_lopsided)
+        resolved_prefer = "max_t" if _tree_choice == "boot" else "bonferroni"
+
     used_max_t = False
     joint = None
     if (
-        prefer == "max_t"
+        resolved_prefer == "max_t"
         and pairwise_method == "bootstrap_t"
         and use_simultaneous
         and not fallback_pairs
@@ -1395,7 +1417,7 @@ def _run_alignment_ppi(
     # a max-T p-value supersedes rather than stacks with this correction.
     if correction != "none" and n_pairs > 1:
         if not used_max_t:
-            pair_pvals = correct_pvalues(pair_pvals, correction)
+            pair_pvals = correct_pvalues(pair_pvals, correction, n_groups=len(labels))
 
         # Companion Wilcoxon p-values always get this correction as their own
         # family, regardless of max-T — matching all_pairwise()'s uncorrected
@@ -1403,7 +1425,15 @@ def _run_alignment_ppi(
         wsr_keys = [key for key in pair_keys if pair_wilcoxon_p[key] is not None]
         if len(wsr_keys) > 1:
             wsr_vals = np.array([pair_wilcoxon_p[key] for key in wsr_keys], dtype=float)
-            wsr_adj = correct_pvalues(wsr_vals, correction)
+            # Shaffer's needs the complete n_groups*(n_groups-1)/2 all-pairs
+            # set; wsr_keys can be a strict subset (e.g. no validated PPI
+            # Wilcoxon for an unpaired-fallback pair -- see above). Holm has
+            # no such requirement and is still FWER-valid for any subset.
+            _wsr_correction = (
+                "holm" if correction == "shaffer" and len(wsr_keys) != len(labels) * (len(labels) - 1) // 2
+                else correction
+            )
+            wsr_adj = correct_pvalues(wsr_vals, _wsr_correction, n_groups=len(labels))
             for key, adj_p in zip(wsr_keys, wsr_adj):
                 pair_wilcoxon_p[key] = float(adj_p)
 
@@ -1544,7 +1574,14 @@ def _run_judge_alignment_if_needed(
         alignment_result=ar,
         alpha=alpha,
         n_boot=max(n_mc, 1000),
-        correction=engine_kwargs.get("correction", "fdr_bh"),
+        # Default "shaffer", not "auto": PPI-corrected p-values are a flat
+        # array here (no raw per-item diffs matrix in scope the way
+        # all_pairwise() has), so romano_wolf_stepdown_pvalues (which needs
+        # that matrix) isn't reachable from this path -- see
+        # _run_alignment_ppi's docstring. Shaffer's applies at any N and is
+        # already a real improvement on the previous "fdr_bh" (FDR, not
+        # FWER) default.
+        correction=engine_kwargs.get("correction", "shaffer"),
         method=engine_kwargs.get("method", "auto"),
         rng=engine_kwargs.get("rng"),
     )
@@ -1613,6 +1650,9 @@ def compare(
         Also PPI-corrected when ``alignment=`` is passed.
     pairwise_test : {"auto", "bootstrap", "wilcoxon", "nemenyi"}
         Which p-value to show in the pairwise table. ``"auto"`` (default)
+        picks Wilcoxon signed-ranks when comparing exactly 2 entities (a
+        single pairwise comparison, per fig:fwer-decision-tree --
+        unconditionally, not just when ``omnibus=True``); with 3+ entities,
         picks bootstrap, or Wilcoxon when ``omnibus=True``. ``"nemenyi"``
         requires ``omnibus=True`` and is not supported together with
         ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).

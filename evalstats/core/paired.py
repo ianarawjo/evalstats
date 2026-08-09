@@ -40,18 +40,23 @@ from .resampling import (
     resolve_resampling_method,
     newcombe_paired_ci,
     tango_paired_ci,
+    tango_paired_ci_from_diffs,
     tango_paired_ci_multirun_effective,
     t_interval_ci_1d,
     logit_t_ci_1d,
     bayes_paired_diff_ci,
     is_binary_scores,
+    is_lopsided_binary,
     _stat,
     _nested_cell_mean_diffs,
     _reduce_rows,
     _weighted_medians_rows,
 )
 from .stats_utils import correct_pvalues, rescaled_ci
-from ..config import get_alpha_ci, GRADIENT_CI_ALPHAS, MAX_T_AUTO_METHOD
+from ..config import (
+    get_alpha_ci, GRADIENT_CI_ALPHAS, MAX_T_AUTO_METHOD,
+    resolve_auto_simultaneous_ci_method, resolve_auto_pvalue_correction_method,
+)
 
 
 BAYES_BINARY_LARGE_N_THRESHOLD = 200
@@ -1764,6 +1769,115 @@ def _joint_bootstrap_scaled_simultaneous_cis(
     return {pair: ci_func(results[pair].per_input_diffs, alpha_eff) for pair in pairs}
 
 
+def romano_wolf_stepdown_pvalues(
+    results: dict[tuple[str, str], "PairedDiffResult"],
+    pairs: list[tuple[str, str]],
+    n_bootstrap: int,
+    rng: "np.random.Generator",
+    *,
+    statistic: Literal["mean", "median"] = "mean",
+    batch_size: int = 256,
+) -> dict[tuple[str, str], float]:
+    """Romano & Wolf (2005)'s bootstrap step-down FWER-adjusted p-values.
+
+    Unlike single-step max-T (one joint critical value for every pair, see
+    :func:`_max_stat_simultaneous_cis`) or Sidak/Bonferroni (independence-
+    assuming, closed-form), the step-down refinement here recomputes the max
+    only over pairs not yet rejected at each step -- starting from the pair
+    with the largest observed studentized statistic and working down -- which
+    strictly dominates single-step corrections in power for the same strong
+    FWER guarantee. This is exactly the "recover power lost to a
+    correlation-blind correction" case repeated-measures eval designs create,
+    since shared items make every pair's diffs correlated. Per
+    fig:fwer-decision-tree, this is the recommended p-value-correction
+    procedure for k>=3 comparisons at N>=30 (see
+    :func:`~evalstats.config.resolve_auto_pvalue_correction_method`).
+
+    Ported from (and structurally identical to -- same shared-index,
+    per-replicate-studentized bootstrap-t construction, same step-down
+    reduction) the implementation in
+    ``simulations/harness/cases/pvalues.py``'s
+    ``_bootstrap_t_matrix``/``_stepdown_max_t_pvalues``, used to generate
+    this method's own validation numbers. Omits that version's Monte-Carlo-
+    throughput micro-optimizations (a BLAS-matmul resampling trick, RNG-draw
+    sharing with other corrections computed in the same simulation sweep) --
+    unnecessary at :func:`compare`'s scale -- in favor of a plain gather-
+    based resample, which the harness's own docstring notes its optimized
+    form was independently verified bit-close against. Only the "mean"/
+    per-item-bootstrap construction the auto-routing table selects is
+    implemented here, not the harness's permutation-based Westfall-Young
+    variant.
+
+    Parameters
+    ----------
+    results : dict[tuple[str, str], PairedDiffResult]
+        Already-computed pairwise results (as built by :func:`all_pairwise`);
+        only ``per_input_diffs`` is used, so this works regardless of which
+        *method* produced the raw pairwise matrix.
+    pairs : list[tuple[str, str]]
+        All pairs to jointly step down over, in the canonical
+        ``(label_a, label_b)`` storage order.
+    n_bootstrap : int
+        Number of bootstrap replicates.
+    rng : np.random.Generator
+    statistic : {"mean", "median"}
+        Central-tendency statistic each pair's point estimate uses.
+    batch_size : int
+        Bootstrap replicates processed per chunk (bounds peak memory for
+        large ``k * n_bootstrap * n_items`` -- mirrors the chunking already
+        used elsewhere in this module, e.g. :func:`_ppi_bootstrap_t_joint_stats`).
+
+    Returns
+    -------
+    dict[tuple[str, str], float]
+        Maps each pair to its Romano-Wolf FWER-adjusted p-value, monotonized
+        via a running max along the testing order (the same reformulation
+        Holm's own adjusted p-values use) so they are directly comparable to
+        alpha. Returns an empty dict when there are no pairs.
+    """
+    k = len(pairs)
+    if k == 0:
+        return {}
+
+    diffs_mat = np.stack([results[pair].per_input_diffs for pair in pairs], axis=0)  # (k, m)
+    m = diffs_mat.shape[1]
+
+    means = diffs_mat.mean(axis=1) if statistic == "mean" else np.median(diffs_mat, axis=1)
+    ses = diffs_mat.std(axis=1, ddof=1) / np.sqrt(m)
+    ses_safe = np.where(ses > 1e-12, ses, 1.0)
+    t_obs = np.abs(means) / ses_safe
+
+    b_means = np.empty((k, n_bootstrap))
+    b_ses_safe = np.empty((k, n_bootstrap))
+    start = 0
+    while start < n_bootstrap:
+        stop = min(start + batch_size, n_bootstrap)
+        b = stop - start
+        idx = rng.integers(0, m, size=(b, m))  # shared across all pairs
+        resampled = diffs_mat[:, idx]  # (k, b, m)
+        chunk_means = resampled.mean(axis=2) if statistic == "mean" else np.median(resampled, axis=2)
+        chunk_ses = resampled.std(axis=2, ddof=1) / np.sqrt(m)
+        b_means[:, start:stop] = chunk_means
+        b_ses_safe[:, start:stop] = np.where(chunk_ses > 1e-12, chunk_ses, 1.0)
+        start = stop
+
+    t_abs = np.abs((b_means - means[:, np.newaxis]) / b_ses_safe)  # (k, B)
+
+    order = np.argsort(-t_obs)  # descending observed |t|: tested first
+    t_abs_sorted = t_abs[order]  # (k, B)
+    # suffix_max[step] = max over pairs tested at or after `step` -- the
+    # step-down "remaining hypotheses" set, per bootstrap draw.
+    suffix_max = np.maximum.accumulate(t_abs_sorted[::-1], axis=0)[::-1]  # (k, B)
+    t_obs_sorted = t_obs[order]
+    extreme_counts = (suffix_max >= t_obs_sorted[:, np.newaxis]).sum(axis=1)  # (k,)
+    raw_step_p_sorted = (extreme_counts + 1) / (n_bootstrap + 1)
+    adjusted_sorted = np.minimum(np.maximum.accumulate(raw_step_p_sorted), 1.0)
+
+    adjusted = np.empty(k)
+    adjusted[order] = adjusted_sorted
+    return {pair: float(adjusted[i]) for i, pair in enumerate(pairs)}
+
+
 # Methods for which _max_stat_simultaneous_cis can produce bootstrap CIs.
 _SIMULTANEOUS_CI_BOOTSTRAP_METHODS = {
     "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
@@ -1782,43 +1896,55 @@ def _simultaneous_cis_router(
     rng: "np.random.Generator",
     statistic: str,
     *,
-    prefer: str = "bonferroni",
+    prefer: str = "auto",
+    score_range: Optional[tuple[float, float]] = None,
 ) -> tuple[dict[tuple[str, str], tuple[float, float]], str, dict]:
     """Route simultaneous CI computation to the requested construction.
 
-    Defaults to Bonferroni t-intervals (:func:`_bonferroni_simultaneous_cis`)
-    for every *method*, including bootstrap-compatible ones. This used to
-    default to the studentized bootstrap max-T method
-    (:func:`_max_stat_simultaneous_cis`) for bootstrap-compatible methods, on
-    the theory that accounting for correlation between comparisons would
-    make it less conservative than Bonferroni. Real-eval-data comparisons
-    (``simulations/harness/cases/pvalues.py``'s ``--mode simultaneous_ci``)
-    found that gain to be small and inconsistent in practice, while max-T's
-    ``bootstrap_t`` studentization has a documented instability at small N
-    combined with many simultaneous comparisons: resampling just N points to
-    re-estimate a per-replicate SE gets noisy, and taking a max over
-    k(k-1)/2 pairs multiplies the chances of hitting a near-zero denominator
-    on any one replicate. In that regime it becomes wildly wasteful (over-
-    covering at large width, not unsafe -- it never under-covers) rather
-    than the more powerful alternative it was meant to be. Bonferroni is
-    also a closed-form t-interval -- no bootstrap resampling at all -- so
-    it's cheaper and doesn't require the point-estimate method to be
-    bootstrap-compatible in the first place.
+    ``prefer="auto"`` (default) follows fig:fwer-decision-tree: Sidak for
+    small N (binary N<50, numeric N<30) or a lopsided binary split
+    regardless of N (see :func:`~evalstats.config.resolve_auto_simultaneous_ci_method`),
+    else joint bootstrap with an effective alpha (``"boot"``,
+    :func:`_joint_bootstrap_scaled_simultaneous_cis`). Both widen whichever
+    canonical closed-form pairwise CI formula the data resolves to -- Tango
+    for binary data, logit-t for a known-bounded numeric range (*score_range*),
+    plain t-interval as the bounds-agnostic fallback for everything else --
+    the same per-data-kind formula :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`
+    already uses for the *non*-simultaneous pairwise CI, so Sidak/boot always
+    widen the formula that would otherwise have been shown, regardless of
+    which resampling *method* (bootstrap, bca, ...) the point estimate
+    itself used.
 
-    Pass ``prefer="max_t"`` to opt back into the studentized bootstrap
-    construction for bootstrap-compatible methods (falls back to Bonferroni
-    regardless if the bootstrap path returns an empty/degenerate result, or
-    if *method* isn't bootstrap-compatible to begin with -- analytical
-    methods such as ``'newcombe'``, ``'tango'``, ``'bayes_binary'`` always
-    use Bonferroni).
+    Historical note: this used to default unconditionally to Bonferroni
+    (with the studentized bootstrap max-T method as the sole opt-in
+    alternative via ``prefer="max_t"``) -- max-T's ``bootstrap_t``
+    studentization has a documented instability at small N combined with
+    many simultaneous comparisons (resampling just N points to re-estimate
+    a per-replicate SE gets noisy, and taking a max over k(k-1)/2 pairs
+    multiplies the chances of hitting a near-zero denominator on any one
+    replicate), which is why it stayed opt-in rather than becoming this
+    table's default. Sidak/boot are unrelated to that instability -- they
+    don't restudentize per replicate -- and are validated in
+    ``simulations/harness/cases/pvalues.py`` (``--mode simultaneous_ci``,
+    ``CORR_SIDAK``/``CORR_BOOT``), which imports
+    :func:`_sidak_simultaneous_cis`/:func:`_joint_bootstrap_scaled_simultaneous_cis`
+    directly to generate the paper's fig:fwer-decision-tree numbers.
+
+    Pass ``prefer="max_t"`` to opt into the (separate, tree-unrelated)
+    studentized bootstrap construction for bootstrap-compatible methods, or
+    ``prefer="bonferroni"``/``"sidak"``/``"boot"`` to force one specific
+    construction directly. Any requested construction falls back to
+    Bonferroni if it returns an empty/degenerate result (e.g. max-T on a
+    non-bootstrap-compatible *method*, or a joint bootstrap with zero
+    variance on every pair).
 
     Returns
     -------
     tuple[dict, str, dict]
-        ``(cis, method_used, max_t_pvalues)`` where *method_used* is
-        ``'max_t'`` or ``'bonferroni'``.  *max_t_pvalues* maps each pair to
-        its max-T p-value when *method_used* is ``'max_t'``; empty dict
-        otherwise.
+        ``(cis, method_used, max_t_pvalues)`` where *method_used* is one of
+        ``'sidak'``, ``'boot'``, ``'max_t'``, or ``'bonferroni'`` (fallback).
+        *max_t_pvalues* maps each pair to its max-T p-value only when
+        *method_used* is ``'max_t'``; empty dict otherwise.
     """
     if prefer == "max_t" and method in _SIMULTANEOUS_CI_BOOTSTRAP_METHODS:
         cis, max_t_pvalues = _max_stat_simultaneous_cis(
@@ -1834,8 +1960,60 @@ def _simultaneous_cis_router(
         if cis:
             return cis, "max_t", max_t_pvalues
 
-    # Default (and fallback if the bootstrap path above returned empty):
-    # Bonferroni t-intervals work for any method.
+    elif prefer in ("auto", "sidak", "boot") and len(pairs) > 1:
+        # fig:fwer-decision-tree's Sidak/boot branch is explicitly scoped to
+        # "Family of comparisons (k>=3)" -- with a single pair (k=2, one
+        # comparison), there's no family to control FWER across, and
+        # Bonferroni/Sidak's adjustment is already an exact no-op at k=1
+        # (alpha_adj = 1-(1-alpha)**(1/1) = alpha). "boot" doesn't degenerate
+        # as cleanly (it studentizes via a joint bootstrap max, then
+        # translates the resulting critical value back through the normal
+        # CDF to get alpha_eff -- a step that can materially misestimate
+        # alpha_eff, and therefore over- or under-widen the interval, for
+        # non-normal single-pair resampling distributions, e.g. a heavily
+        # outlier-contaminated median), so route k=1 through the plain
+        # Bonferroni fallback below rather than attempting the k>=3-only
+        # constructions at all.
+        is_binary = is_binary_scores(scores)
+        if is_binary:
+            data_kind = "binary"
+        elif score_range is not None:
+            data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
+
+        resolved = prefer
+        if prefer == "auto":
+            n_items = scores.shape[1]
+            lopsided = is_binary and is_lopsided_binary(scores)
+            resolved = resolve_auto_simultaneous_ci_method(
+                data_kind, n_items, lopsided_binary=lopsided,
+            )
+
+        if data_kind == "binary":
+            ci_func = tango_paired_ci_from_diffs
+        elif data_kind == "bounded_01":
+            diff_span = score_range[1] - score_range[0]
+            diff_lo, diff_hi = -diff_span, diff_span
+
+            def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi):
+                return rescaled_ci(logit_t_ci_1d, diffs, alpha, _lo, _hi)
+        else:
+            ci_func = t_interval_ci_1d
+
+        if resolved == "sidak":
+            cis = _sidak_simultaneous_cis(results=results, pairs=pairs, ci=ci, ci_func=ci_func)
+            if cis:
+                return cis, "sidak", {}
+        elif resolved == "boot":
+            cis = _joint_bootstrap_scaled_simultaneous_cis(
+                scores=scores, results=results, pairs=pairs, labels=labels,
+                ci=ci, n_bootstrap=n_bootstrap, rng=rng, ci_func=ci_func, statistic=statistic,
+            )
+            if cis:
+                return cis, "boot", {}
+
+    # Fallback (and prefer="bonferroni"): Bonferroni t-intervals work for any method.
     cis = _bonferroni_simultaneous_cis(results=results, pairs=pairs, ci=ci)
     return cis, "bonferroni", {}
 
@@ -1846,7 +2024,7 @@ def all_pairwise(
     method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "auto",
     rng: Optional[np.random.Generator] = None,
     statistic: Literal["mean", "median"] = "mean",
     simultaneous_ci: bool = True,
@@ -1854,6 +2032,7 @@ def all_pairwise(
     multi_ci: bool = False,
     compute_wilcoxon: bool = True,
     score_range: Optional[tuple[float, float]] = None,
+    prefer: str = "auto",
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -1871,8 +2050,23 @@ def all_pairwise(
     n_bootstrap : int
         Number of bootstrap resamples.
     correction : str
-        Multiple comparisons correction: ``'fdr_bh'`` (default),
-        ``'holm'``, ``'bonferroni'``, or ``'none'``.
+        p-value correction across the k(k-1)/2 pairwise comparisons.
+        ``'auto'`` (default) follows fig:fwer-decision-tree: Shaffer's
+        modified step-down Holm procedure for N < 30 (or a lopsided binary
+        split regardless of N -- see
+        :func:`~evalstats.config.resolve_auto_pvalue_correction_method`),
+        else Romano-Wolf bootstrap step-down. Explicit alternatives:
+        ``'shaffer'``, ``'romano_wolf'``, ``'holm'``, ``'bonferroni'``,
+        ``'fdr_bh'`` (Benjamini-Hochberg FDR control, not FWER -- use when
+        the false discovery rate rather than the family-wise error rate is
+        the actual target), ``'hochberg'``, or ``'none'``.
+
+        ``'romano_wolf'`` needs genuine per-pair resampling (see
+        :func:`romano_wolf_stepdown_pvalues`) and so only corrects the
+        primary bootstrap-derived p-value; the companion Wilcoxon p-value
+        (``PairedDiffResult.wilcoxon_p``) falls back to Shaffer's for that
+        one field, since there's no validated Romano-Wolf-on-Wilcoxon
+        construction.
     rng : np.random.Generator, optional
         Random number generator for reproducibility.
     statistic : str
@@ -1880,27 +2074,23 @@ def all_pairwise(
         ``'mean'``.
     simultaneous_ci : bool
         When ``True``, replace individual pairwise CIs with simultaneous
-        (family-wise) CIs.  Defaults to Bonferroni t-intervals at the
-        ``1 − (1−α)/k`` level (computed from ``per_input_diffs``) for every
-        *method*, including bootstrap-compatible ones (``'bootstrap'``,
-        ``'bca'``, ``'bayes_bootstrap'``, ``'smooth_bootstrap'``,
-        ``'bootstrap_t'``, ``'permutation'``, ``'sign_test'``, ``'auto'``).
-
-        This used to default to the studentized bootstrap max-T method
-        (Romano-Wolf) for those bootstrap-compatible methods instead -- all
-        pairs share the same bootstrap resamples so the joint distribution
-        of ``max_{(i,j)} |T_ij^b|`` accounts for the correlation between
-        comparisons, in principle making it less conservative than
-        Bonferroni. Real-eval-data comparisons found that gain to be small
-        and inconsistent in practice, while its studentization has a
-        documented instability at small N combined with many simultaneous
-        comparisons (see :func:`_simultaneous_cis_router`'s docstring) --
-        so Bonferroni is now the default there too, and is also simpler and
-        cheaper (a closed-form t-interval, no bootstrap resampling at all).
+        (family-wise) CIs. Routes through :func:`_simultaneous_cis_router`
+        with ``prefer="auto"``, which follows fig:fwer-decision-tree: Sidak
+        for small N (binary N<50, numeric N<30) or a lopsided binary split
+        regardless of N, else joint bootstrap with an effective alpha
+        (``'boot'``) -- see that function's docstring for the full
+        rationale and the (separate, tree-unrelated) studentized bootstrap
+        max-T alternative available via a direct ``prefer="max_t"`` call.
 
         The method actually used is recorded in
-        :attr:`PairwiseMatrix.simultaneous_ci_method` (``'bonferroni'`` or
-        ``'max_t'``).
+        :attr:`PairwiseMatrix.simultaneous_ci_method` (``'sidak'``,
+        ``'boot'``, ``'max_t'``, or ``'bonferroni'`` as the ultimate
+        fallback).
+    prefer : str
+        Passed through to :func:`_simultaneous_cis_router`'s ``prefer=``
+        knob to force a specific simultaneous-CI construction instead of
+        the ``"auto"`` (default) table lookup: ``"sidak"``, ``"boot"``,
+        ``"max_t"``, or ``"bonferroni"``.
     omnibus : bool
         When ``True``, run the Friedman omnibus test (with Nemenyi post-hoc)
         alongside the pairwise comparisons.  Requires k ≥ 3.  Defaults to
@@ -1938,17 +2128,53 @@ def all_pairwise(
             pairs.append((labels[i], labels[j]))
 
     # Apply multiple comparisons correction to bootstrap p-values (and Wilcoxon if available).
-    if correction != "none" and len(pairs) > 1:
-        p_values = np.array([results[p].p_value for p in pairs])
-        adjusted = correct_pvalues(p_values, correction)
+    resolved_correction = correction
+    if correction == "auto":
+        _is_binary = is_binary_scores(scores)
+        _lopsided = _is_binary and is_lopsided_binary(scores)
+        resolved_correction = resolve_auto_pvalue_correction_method(
+            scores.shape[1], lopsided_binary=_lopsided,
+        )
 
-        # Correct Wilcoxon p-values independently (only for pairs where the test ran).
+    if resolved_correction != "none" and len(pairs) > 1:
+        p_values = np.array([results[p].p_value for p in pairs])
         wsr_pairs = [p for p in pairs if results[p].wilcoxon_p is not None]
-        if len(wsr_pairs) > 1:
-            wsr_pvals = np.array([results[p].wilcoxon_p for p in wsr_pairs], dtype=float)
-            wsr_adj_map = dict(zip(wsr_pairs, correct_pvalues(wsr_pvals, correction)))
+        wsr_pvals = (
+            np.array([results[p].wilcoxon_p for p in wsr_pairs], dtype=float)
+            if len(wsr_pairs) > 1 else None
+        )
+        # Shaffer's needs the *complete* n_groups*(n_groups-1)/2 all-pairs
+        # set -- the companion Wilcoxon field can be a strict subset of that
+        # (e.g. undefined for a pair with zero-variance identical diffs),
+        # in which case Shaffer's own count check would raise. Holm has no
+        # such requirement and is still FWER-valid for any subset, so it's
+        # the safe fallback specifically for that partial set.
+        _wsr_is_complete = len(wsr_pairs) == n * (n - 1) // 2
+        _wsr_method = lambda m: m if (m != "shaffer" or _wsr_is_complete) else "holm"
+
+        if resolved_correction == "romano_wolf":
+            # Needs genuine per-pair resampling (see
+            # romano_wolf_stepdown_pvalues), so only the primary bootstrap-
+            # derived p-value gets the validated step-down correction. The
+            # companion Wilcoxon p-value falls back to Shaffer's for that
+            # one field -- there's no validated Romano-Wolf-on-Wilcoxon
+            # construction (see all_pairwise's correction= docstring).
+            _rw_adj = romano_wolf_stepdown_pvalues(
+                results, pairs, n_bootstrap, rng, statistic=statistic,
+            )
+            adjusted = np.array([_rw_adj[p] for p in pairs])
+            wsr_adj_map = (
+                dict(zip(wsr_pairs, correct_pvalues(wsr_pvals, _wsr_method("shaffer"), n_groups=n)))
+                if wsr_pvals is not None
+                else {p: results[p].wilcoxon_p for p in wsr_pairs}
+            )
         else:
-            wsr_adj_map = {p: results[p].wilcoxon_p for p in wsr_pairs}
+            adjusted = correct_pvalues(p_values, resolved_correction, n_groups=n)
+            wsr_adj_map = (
+                dict(zip(wsr_pairs, correct_pvalues(wsr_pvals, _wsr_method(resolved_correction), n_groups=n)))
+                if wsr_pvals is not None
+                else {p: results[p].wilcoxon_p for p in wsr_pairs}
+            )
 
         for pair, adj_p in zip(pairs, adjusted):
             r = results[pair]
@@ -1972,8 +2198,8 @@ def all_pairwise(
                 multi_ci=r.multi_ci,
             )
 
-    # Simultaneous CIs: Bonferroni by default (see _simultaneous_cis_router's
-    # docstring for why max-T is no longer the default).
+    # Simultaneous CIs: Sidak/joint-bootstrap by default, per
+    # fig:fwer-decision-tree (see _simultaneous_cis_router's docstring).
     applied_simultaneous_ci = False
     applied_simultaneous_ci_method: Optional[str] = None
     if simultaneous_ci and len(pairs) > 0:
@@ -1987,15 +2213,17 @@ def all_pairwise(
             n_bootstrap=n_bootstrap,
             rng=rng,
             statistic=statistic,
+            score_range=score_range,
+            prefer=prefer,
         )
         if sim_cis:
             applied_simultaneous_ci = True
             applied_simultaneous_ci_method = sim_method
-            ci_label = (
-                "simultaneous CIs computed with max-T"
-                if sim_method == "max_t"
-                else "simultaneous CIs computed with Bonferroni"
-            )
+            ci_label = {
+                "max_t": "simultaneous CIs computed with max-T",
+                "sidak": "simultaneous CIs computed with Sidak's procedure",
+                "boot": "simultaneous CIs computed with a joint bootstrap (effective alpha)",
+            }.get(sim_method, "simultaneous CIs computed with Bonferroni")
             for pair, (ci_low, ci_high) in sim_cis.items():
                 r = results[pair]
                 results[pair] = PairedDiffResult(
@@ -2034,7 +2262,7 @@ def all_pairwise(
     return PairwiseMatrix(
         labels=labels,
         results=results,
-        correction_method=correction,
+        correction_method=resolved_correction,
         friedman=friedman,
         simultaneous_ci=applied_simultaneous_ci,
         simultaneous_ci_method=applied_simultaneous_ci_method,

@@ -293,6 +293,152 @@ def resolve_ppi_auto_methods(data_kind: DataKind) -> tuple[str, str]:
     )
 
 
+# ---------------------------------------------------------------------------
+# FWER correction auto-routing (fig:fwer-decision-tree)
+# ---------------------------------------------------------------------------
+# Governs the k>=3 "family of comparisons" branch of the paper's FWER
+# decision tree: which simultaneous-CI construction (widens each pairwise
+# CI) and which p-value-correction procedure (adjusts each pairwise p-value)
+# evalstats picks automatically. The k=2 "single pairwise comparison" branch
+# (Wilcoxon signed-ranks, unconditionally -- no FWER control needed) is a
+# separate fix in compare()'s pairwise_test="auto" resolution, not covered
+# by either table here.
+#
+# Both tables key off a *lopsided_binary* flag (see
+# core.resampling.is_lopsided_binary: any compared group has fewer than 5
+# observed instances of its rarer 0/1 outcome) which forces the small-N
+# branch regardless of N or k -- resampling-based corrections (joint
+# bootstrap, Romano-Wolf) can misbehave when one outcome is that sparse,
+# while Sidak/Shaffer's closed-form adjustments stay reliable.
+#
+# The tree only distinguishes "binary" vs "numeric" data (not bounded_01 vs
+# unbounded separately) for the simultaneous-CI table -- both non-binary
+# DataKind values map to the "numeric" row below.
+
+
+@dataclass(frozen=True)
+class AutoSimultaneousCIRule:
+    """One row of the simultaneous-CI ``prefer="auto"`` routing matrix."""
+    data_kind: Literal["binary", "numeric"]
+    max_n: Optional[int]
+    method: str  # "sidak" or "boot" (joint bootstrap with effective alpha)
+    reason: str
+
+
+AUTO_SIMULTANEOUS_CI_METHOD_TABLE: tuple[AutoSimultaneousCIRule, ...] = (
+    AutoSimultaneousCIRule(
+        data_kind="binary", max_n=50,
+        method="sidak",
+        reason=(
+            "Binary data, N < 50: Sidak's closed-form, independence-based "
+            "adjustment stays well-calibrated and avoids the joint "
+            "bootstrap's small-N instability."
+        ),
+    ),
+    AutoSimultaneousCIRule(
+        data_kind="binary", max_n=None,
+        method="boot",
+        reason=(
+            "Binary data, N >= 50: joint bootstrap with an effective alpha "
+            "(_joint_bootstrap_scaled_simultaneous_cis) accounts for "
+            "correlation between comparisons that Sidak cannot."
+        ),
+    ),
+    AutoSimultaneousCIRule(
+        data_kind="numeric", max_n=30,
+        method="sidak",
+        reason="Numeric data, N < 30: Sidak.",
+    ),
+    AutoSimultaneousCIRule(
+        data_kind="numeric", max_n=None,
+        method="boot",
+        reason="Numeric data, N >= 30: joint bootstrap with effective alpha.",
+    ),
+)
+
+
+def resolve_auto_simultaneous_ci_method(
+    data_kind: DataKind, n: int, *, lopsided_binary: bool = False,
+) -> str:
+    """Resolve simultaneous-CI ``prefer="auto"`` to a concrete method.
+
+    Parameters
+    ----------
+    data_kind : "binary", "bounded_01", or "unbounded"
+        Detected data type. The FWER tree only distinguishes "binary" vs
+        "numeric" -- ``"bounded_01"``/``"unbounded"`` both map to the
+        "numeric" row.
+    n : int
+        Per-entity sample size (number of items).
+    lopsided_binary : bool
+        When True, forces ``"sidak"`` regardless of N -- the tree's
+        exception for a heavily skewed binary split, which applies
+        "regardless of n or k".
+
+    Returns
+    -------
+    str
+        ``"sidak"`` or ``"boot"``.
+    """
+    tree_kind = "binary" if data_kind == "binary" else "numeric"
+    if tree_kind == "binary" and lopsided_binary:
+        return "sidak"
+    for rule in AUTO_SIMULTANEOUS_CI_METHOD_TABLE:
+        if rule.data_kind != tree_kind:
+            continue
+        if rule.max_n is not None and n >= rule.max_n:
+            continue
+        return rule.method
+    raise AssertionError(
+        f"no AUTO_SIMULTANEOUS_CI_METHOD_TABLE rule matched data_kind={tree_kind!r}, n={n}"
+    )
+
+
+@dataclass(frozen=True)
+class AutoPValueCorrectionRule:
+    """One row of the k>=3 p-value-correction ``correction="auto"`` routing matrix."""
+    max_n: Optional[int]
+    method: str  # "shaffer" or "romano_wolf"
+    reason: str
+
+
+AUTO_PVALUE_CORRECTION_METHOD_TABLE: tuple[AutoPValueCorrectionRule, ...] = (
+    AutoPValueCorrectionRule(
+        max_n=30, method="shaffer",
+        reason="N < 30: Shaffer's modified step-down Holm procedure.",
+    ),
+    AutoPValueCorrectionRule(
+        max_n=None, method="romano_wolf",
+        reason=(
+            "N >= 30: Romano-Wolf bootstrap step-down, which strictly "
+            "dominates single-step corrections in power under positive "
+            "correlation between comparisons -- the common case for "
+            "repeated-measures/shared-item eval designs."
+        ),
+    ),
+)
+
+
+def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = False) -> str:
+    """Resolve k>=3 p-value ``correction="auto"`` to a concrete method.
+
+    ``lopsided_binary`` forces ``"shaffer"`` regardless of N -- the tree's
+    binary-data exception for the p-value-correction branch.
+
+    Returns
+    -------
+    str
+        ``"shaffer"`` or ``"romano_wolf"``.
+    """
+    if lopsided_binary:
+        return "shaffer"
+    for rule in AUTO_PVALUE_CORRECTION_METHOD_TABLE:
+        if rule.max_n is not None and n >= rule.max_n:
+            continue
+        return rule.method
+    raise AssertionError(f"no AUTO_PVALUE_CORRECTION_METHOD_TABLE rule matched n={n}")
+
+
 def set_alpha_ci(alpha: float) -> None:
     """Set the default significance level used across all CI analyses.
 

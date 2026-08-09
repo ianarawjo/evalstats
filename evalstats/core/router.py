@@ -42,6 +42,8 @@ def _resolve_p_value_method(
     p_values: bool,
     pairwise_test: str,
     omnibus: bool,
+    *,
+    k: Optional[int] = None,
 ) -> Optional[str]:
     """Resolve the effective p-value display method for the bundle.
 
@@ -53,7 +55,16 @@ def _resolve_p_value_method(
     - ``pairwise_test='bootstrap'``  → ``'boot'``
     - ``pairwise_test='wilcoxon'``   → ``'wsr'``
     - ``pairwise_test='nemenyi'``    → ``'nem'``
-    - ``pairwise_test='auto'`` with ``p_values=True``:
+    - ``pairwise_test='auto'`` with ``p_values=True`` and ``k == 2`` (a
+      single pairwise comparison -- no family, no FWER correction to speak
+      of): always ``'wsr'`` (Wilcoxon signed-ranks), per
+      fig:fwer-decision-tree's "single pairwise comparison" branch --
+      unconditionally, not just when ``omnibus=True``. ``k`` is the number
+      of entities being compared; ``None`` when unknown (e.g. the
+      multi-model path, which has no single well-defined ``k``) falls
+      through to the ``k != 2`` rule below.
+    - ``pairwise_test='auto'`` with ``p_values=True`` and ``k != 2`` (or
+      unknown):
         - ``omnibus=True``  → ``'wsr'`` (Wilcoxon is the standard Friedman post-hoc)
         - otherwise        → ``'auto'`` (display layer picks: boot for bootstrap
           paths, Wilcoxon for LMM/other paths)
@@ -68,6 +79,8 @@ def _resolve_p_value_method(
     if pairwise_test == "nemenyi":
         return "nem"
     # pairwise_test == 'auto' with p_values=True
+    if k == 2:
+        return "wsr"
     if omnibus:
         return "wsr"
     return "auto"
@@ -82,7 +95,7 @@ def analyze(
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: Optional[float] = None,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "auto",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
@@ -183,8 +196,15 @@ def analyze(
         ``method='lmm'`` this controls the number of parametric
         simulations used for the rank distribution.
     correction : str
-        Multiple comparisons correction: ``'fdr_bh'`` (default),
-        ``'holm'``, ``'bonferroni'``, or ``'none'``.
+        Multiple comparisons correction across pairwise p-values.
+        ``'auto'`` (default) follows fig:fwer-decision-tree: Shaffer's
+        step-down Holm procedure for N<30 (or a lopsided binary split
+        regardless of N), else Romano-Wolf bootstrap step-down. Explicit
+        alternatives: ``'shaffer'``, ``'romano_wolf'``, ``'holm'``,
+        ``'bonferroni'``, ``'fdr_bh'`` (FDR, not FWER control -- use when
+        that's the actual target), ``'hochberg'``, or ``'none'``. See
+        :func:`~evalstats.core.paired.all_pairwise`'s ``correction=``
+        docstring for the full routing rationale.
     simultaneous_ci : bool
         When ``True``, pairwise CIs are simultaneous (family-wise) rather
         than marginal. Bonferroni correction is used by default for all
@@ -325,7 +345,12 @@ def analyze(
             stacklevel=2,
         )
 
-    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test, omnibus)
+    # k is only well-defined for a plain single-factor comparison -- the
+    # multi-model path has no single "k" (it has separate model/template/
+    # cross-model views), so it falls through to _resolve_p_value_method's
+    # k != 2 rule unchanged.
+    _k = result.n_templates if isinstance(result, BenchmarkResult) else None
+    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test, omnibus, k=_k)
 
     kwargs = dict(
         reference=reference,
@@ -453,7 +478,7 @@ def analyze_factorial(
     run_col: Optional[str] = None,
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: Optional[float] = None,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "fdr_bh",
     reference: str = "grand_mean",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
@@ -732,7 +757,7 @@ def _analyze_single(
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"],
     spread_percentiles: tuple[float, float],
     failure_threshold: Optional[float],
     rng: np.random.Generator,
@@ -1009,7 +1034,7 @@ def _analyze_multi_model(
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"],
     spread_percentiles: tuple[float, float],
     failure_threshold: Optional[float],
     rng: np.random.Generator,
