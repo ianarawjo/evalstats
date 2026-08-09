@@ -490,7 +490,7 @@ def test_executive_summary_has_pareto_column():
         result.summary()
     out = buf.getvalue()
     exec_section = out[out.index("Executive Summary"):]
-    assert "Pareto" in exec_section.splitlines()[1]  # header row has the column
+    assert "Trade-off" in exec_section.splitlines()[1]  # header row has the column
     # claude-sonnet is dominated by gpt-4o in this fixture -- its row should say so.
     for line in exec_section.splitlines():
         if line.strip().startswith("claude-sonnet"):
@@ -508,7 +508,7 @@ def test_executive_summary_no_pareto_column_without_secondary():
         result.summary()
     out = buf.getvalue()
     exec_section = out[out.index("Executive Summary"):]
-    assert "Pareto" not in exec_section.splitlines()[1]
+    assert "Trade-off" not in exec_section.splitlines()[1]
 
 
 def test_pareto_status_phrase_merges_status_and_detail():
@@ -566,7 +566,7 @@ def test_pareto_callout_names_frontier_alternatives():
     # the bootstrap confidence threshold at this particular seed can vary,
     # so just check at least one frontier alternative is actually named.
     assert "llama-70b" in between or "gpt-4o-mini" in between
-    assert "competitive tradeoff" in between  # singular or plural
+    assert "competitive trade-off" in between  # singular or plural
 
 
 def test_pareto_callout_absent_without_secondary():

@@ -2831,7 +2831,7 @@ def _print_pareto_section(
     dir_label = "lower is better" if direction == "min" else "higher is better"
     metric_label = metric or "primary metric"
     _print_subsection(
-        f"--- {metric_label} vs. {secondary_col} Tradeoff "
+        f"--- {metric_label} vs. {secondary_col} Trade-off "
         f"(Pareto Front, {dir_label}) ---"
     )
     print(
@@ -2961,7 +2961,7 @@ def _print_executive_summary(
     mean_w = 6
     ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
     stab_w = 16
-    pareto_w = max([len("Pareto")] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
+    pareto_w = max([len("Trade-off")] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
     ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
@@ -2976,7 +2976,7 @@ def _print_executive_summary(
     if has_stability:
         header_parts.append(f"  {'Stability':<{stab_w}s}")
     if has_pareto:
-        header_parts.append(f"  {'Pareto':<{pareto_w}s}")
+        header_parts.append(f"  {'Trade-off':<{pareto_w}s}")
     header_parts.append("  Verdict")
     header = "".join(header_parts)
     sep = "  " + "─" * (len(header) - 2)
@@ -3041,7 +3041,7 @@ def _print_executive_summary(
 def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
     """One-line bridge from the Executive Summary's primary-metric-only
     leader to the Pareto Front's holistic view, e.g. "'gpt-4o' leads on
-    accuracy, but 'gpt-4o-mini' is a competitive tradeoff on latency_s" --
+    accuracy, but 'gpt-4o-mini' is a competitive trade-off on latency_s" --
     mirrors the existing "-> Evidence suggests a clear best option" callout
     used after Pairwise Comparisons, giving a skimming reader the "so what"
     without having to cross-reference the table above.
@@ -3063,8 +3063,8 @@ def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
     if other_frontier:
         names = ", ".join(f"'{lbl}'" for lbl in other_frontier)
         is_are, article_or_plural = (
-            ("is", "a competitive tradeoff") if len(other_frontier) == 1
-            else ("are", "competitive tradeoffs")
+            ("is", "a competitive trade-off") if len(other_frontier) == 1
+            else ("are", "competitive trade-offs")
         )
         print(
             f"  -> '{leader}' leads on {metric_label}, but {names} {is_are} "
@@ -3073,7 +3073,7 @@ def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
     else:
         print(
             f"  -> '{leader}' is also the best choice on {secondary_col} "
-            "— no real tradeoff here."
+            "— no real trade-off here."
         )
     print()
 
