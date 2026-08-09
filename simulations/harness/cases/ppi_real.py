@@ -32,20 +32,16 @@ Nine checks:
       independent-samples tests (ttest/ttest_welch/mwu/
       mwu_mnar_experimental) PPI correction is supposed to keep calibrated,
       with real noise/skew/judge-bias characteristics instead of synthetic
-      ones. Cross-judge is a deliberate redesign (2026-07-23) from an
-      original same-judge-reads-both version: since a single judge reading
-      two random halves of the SAME population applies its bias identically
-      to both, the bias cancels out of the A-vs-B difference regardless of
-      its magnitude -- making "uncorrected" (a classical test on raw judge
-      scores, no human labels) structurally unable to fail, which is
-      uninformative about whether skipping PPI correction is actually
-      risky. Two DIFFERENT judges reintroduces a genuine asymmetry
-      (confirmed on real data: judges commonly differ by several
-      percentage points of mean bias on a [0,1]-rescaled scale) an
-      uncorrected test IS vulnerable to -- see
+      ones. Deliberately cross-judge, not same-judge-reads-both: a single
+      judge reading two random halves of the same population applies its
+      bias identically to both, so the bias cancels out of the A-vs-B
+      difference regardless of its magnitude -- making "uncorrected" (a
+      classical test on raw judge scores, no human labels) structurally
+      unable to fail, which is uninformative about whether skipping PPI
+      correction is actually risky. Two different judges reintroduces a
+      genuine asymmetry an uncorrected test is vulnerable to -- see
       scenarios/real_judge_bias.py's generate_real_twogroup_null_cell for
-      the full reasoning and the specific real-data evidence that
-      motivated it.
+      the full reasoning.
 
   paired Type-I null (cross-judge)
       For every unique PAIR of judge models scoring the SAME items: an
@@ -417,30 +413,14 @@ def _run_real_paired_cell(
                     uncorrected[WILCOXON.name] += int(p_u < _ALPHA)
                     # paired_walsh_midrank_theta (evalstats.ppi -- a Hodges-Lehmann
                     # Walsh-average midrank-sign statistic, matched estimator/
-                    # rectifier), NOT np.median (superseded 2026-07-25) and NOT the
-                    # intermediate per-item sign proportion (superseded 2026-07-26)
-                    # -- see that function's docstring for the full history. The
-                    # original median/median+jitter combo (see git history for the
-                    # 2026-07-23 rationale) was re-verified as fixing Type-I
-                    # calibration, but was never checked against a real, known
-                    # effect -- under heavy ties (e.g. real Likert-like human
-                    # ratings, appstore's 1-5 stars), the population MEDIAN of a
-                    # paired difference can stay locked at exactly 0 even under a
-                    # large, real, classical-Wilcoxon-detectable shift, a wrong-
-                    # estimand problem no jitter fixes. The sign-proportion fix
-                    # that replaced it fixed THAT, but was itself found to have
-                    # severely inflated Type-I error (up to 28%) at small n_lab
-                    # against real, extremely-tied judge pairs (88% exact
-                    # agreement on one real appstore pair). This Walsh-average
-                    # construction was hypothesized (but NOT confirmed) to fix
-                    # that too -- see paired_walsh_midrank_theta's docstring in
-                    # evalstats/ppi.py: on that same extreme-tie data, its raw
-                    # value turned out to be a near-exact constant rescaling of
-                    # the sign proportion's, so it gives statistically identical
-                    # (still-inflated) Type-I there. Kept anyway as the
-                    # theoretically correct signed-rank construction and a real
-                    # improvement over the median-based power collapse; the
-                    # extreme-tie small-n_lab Type-I inflation remains OPEN.
+                    # rectifier), not a plain median: under heavy ties (e.g. real
+                    # Likert-like human ratings, appstore's 1-5 stars), the
+                    # population median of a paired difference can stay locked at
+                    # exactly 0 even under a large, real, classical-Wilcoxon-
+                    # detectable shift -- a wrong-estimand problem the Walsh-average
+                    # construction avoids, though a known small-n_lab extreme-tie
+                    # Type-I residual remains -- see that function's docstring in
+                    # evalstats/ppi.py.
                     r = _ppi_paired_arrays(llm_x, llm_y, lab_x, lab_y, paired_walsh_midrank_theta, _ALPHA, n_boot, _rng_seed(), rectifier_func=paired_walsh_midrank_theta)
                     corrected[WILCOXON.name] += int(r.p_value < _ALPHA)
                 except Exception:
@@ -808,18 +788,16 @@ def _run_real_wmt_paired_power_cell(
 
 
 _WMT_PAIRED_BIAS_METHODS = [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
-"""_paired_methods_for("continuous") minus BAYES_BOOTSTRAP/BOOTSTRAP_T
-(removed 2026-08-07, no longer part of ppi_real's official CI-comparison
-set -- see _paired_methods_for). PPI_T_INTERVAL/PPI_LOGIT_T are both safe
-to include here as of 2026-08-07: the single-sample bias/coverage check
-now uses the distinct PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method
-identities (split from these paired ones in methods.py, the same way
-PPI_BOOTSTRAP_T_SINGLE is split from BOOTSTRAP_T) instead of reusing these
-paired ones, so there's no more test-name collision in
-print_ppi_effect_report's by-test-name pooling -- see PPI_T_INTERVAL_
-SINGLE/PPI_LOGIT_T_SINGLE's docstrings for the full reasoning (this is the
-same collision class BOOTSTRAP_T used to create here). TANGO excluded for
-the same eval_type restriction _paired_methods_for applies (this corpus is
+"""_paired_methods_for("continuous") minus BAYES_BOOTSTRAP/BOOTSTRAP_T --
+not part of ppi_real's official CI-comparison set (see
+_paired_methods_for). PPI_T_INTERVAL/PPI_LOGIT_T are safe to include here
+because the single-sample bias/coverage check uses the distinct
+PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method identities (split from
+these paired ones in methods.py, the same way PPI_BOOTSTRAP_T_SINGLE is
+split from BOOTSTRAP_T), so there's no test-name collision in
+print_ppi_effect_report's by-test-name pooling -- see those Methods'
+docstrings in methods.py for the full reasoning. TANGO excluded for the
+same eval_type restriction _paired_methods_for applies (this corpus is
 always eval_type="continuous_paired")."""
 
 _WMT_PAIRED_POWER_METHODS = [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
@@ -849,17 +827,13 @@ def _run_real_wmt_paired_bias_cell(
     function, the correct null value differs PER TEST (corpus.
     true_paired_walsh_midrank_theta for wilcoxon's Walsh-average midrank-sign
     estimand, corpus.true_paired_mean for the other three's mean estimand) --
-    see run()'s _consume for where that per-test split happens. wilcoxon
-    switched from corpus.true_paired_median (and np.median) to
-    true_paired_walsh_midrank_theta (and evalstats.ppi.paired_walsh_
-    midrank_theta) 2026-07-25/26 -- see that function's docstring for the
-    full history: under heavy ties, the population MEDIAN of a paired
-    difference can stay locked at exactly 0 even under a large, real,
-    classical-Wilcoxon-detectable shift, so median was no longer a valid
-    target once wilcoxon's PPI-corrected estimate itself was switched away
-    from it (which the OTHER wilcoxon call sites in this file/pvalues.py
-    already were, to fix a corresponding power collapse under likert-like
-    ties, then a separate Type-I inflation under extremely-tied real data)."""
+    see run()'s _consume for where that per-test split happens. wilcoxon's
+    null target is corpus.true_paired_walsh_midrank_theta (evalstats.ppi.
+    paired_walsh_midrank_theta), not a plain median: under heavy ties, the
+    population median of a paired difference can stay locked at exactly 0
+    even under a large, real, classical-Wilcoxon-detectable shift, so
+    median isn't a valid target for the estimand wilcoxon's PPI correction
+    actually uses -- see that function's docstring in evalstats/ppi.py."""
     rng = np.random.default_rng(seed)
     out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
 
@@ -906,18 +880,17 @@ def _run_real_wmt_paired_bias_cell(
                 except Exception:
                     pass
 
-            # BOOTSTRAP_T deliberately NOT included here -- see
+            # BOOTSTRAP_T deliberately not included here -- see
             # _WMT_PAIRED_BIAS_METHODS' docstring (its test name collides
             # with the single-sample check's own bootstrap_t branch, which
             # targets a totally different estimand, and print_ppi_effect_
             # report pools by test name only). PPI_T_INTERVAL/PPI_LOGIT_T
-            # above are safe now that the single-sample check uses the
-            # distinct PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method
-            # identities instead of reusing these paired ones (2026-08-07 --
-            # see those Methods' docstrings in methods.py). BOOTSTRAP_T is
-            # not wired up at all, rather than left reachable-but-unused,
-            # since nothing calls this function with a methods list that
-            # would ever hit it.
+            # above are safe since the single-sample check uses the distinct
+            # PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method identities
+            # instead of reusing these paired ones -- see those Methods'
+            # docstrings in methods.py. BOOTSTRAP_T is not wired up at all,
+            # rather than left reachable-but-unused, since nothing calls
+            # this function with a methods list that would ever hit it.
 
     return dict(out)
 
@@ -1048,24 +1021,23 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
 
 
 def _single_methods_for(eval_type: str) -> list[str]:
-    # Removed 2026-08-07: _SINGLE_METHOD_BOOTSTRAP_T is no longer part of
-    # the official set (matches pvalues.py's synthetic ppi official test,
-    # which validates the curated 4-method PPI-corrected CI comparison --
-    # Tango, Wilson, logit-t, t-interval -- not the bootstrap-based
-    # alternatives; see _PPI_CI_COMPARISON_TESTS). PPI_LOGIT_T_SINGLE/
-    # PPI_T_INTERVAL_SINGLE are PPI_AUTO_METHOD_TABLE's "bounded_01"/
-    # "unbounded" robustness methods (every real dataset here is already
-    # rescaled to [0, 1] -- see RealJudgeBiasCorpus -- so both apply, not
-    # just logit-t's "correct" bounded_01 pick; this is a validation
-    # comparison, not production auto-routing, same convention
-    # _paired_methods_for uses), the non-binary counterpart to Wilson's
-    # binary role. NOT PPI_LOGIT_T/PPI_T_INTERVAL (unsuffixed) -- those
-    # names are reserved for the PAIRED estimand elsewhere in this file
-    # (_paired_methods_for/_WMT_PAIRED_BIAS_METHODS/_WMT_PAIRED_POWER_
-    # METHODS); reusing them for this single-sample MEAN estimand would
-    # silently pool two different estimands' stats together in
-    # print_ppi_effect_report -- see PPI_T_INTERVAL_SINGLE/
-    # PPI_LOGIT_T_SINGLE's docstrings in methods.py.
+    # _SINGLE_METHOD_BOOTSTRAP_T is not part of the official set: it matches
+    # pvalues.py's synthetic ppi official test, which validates the curated
+    # 4-method PPI-corrected CI comparison -- Tango, Wilson, logit-t,
+    # t-interval -- not the bootstrap-based alternatives; see
+    # _PPI_CI_COMPARISON_TESTS. PPI_LOGIT_T_SINGLE/PPI_T_INTERVAL_SINGLE are
+    # PPI_AUTO_METHOD_TABLE's "bounded_01"/"unbounded" robustness methods
+    # (every real dataset here is already rescaled to [0, 1] -- see
+    # RealJudgeBiasCorpus -- so both apply, not just logit-t's "correct"
+    # bounded_01 pick; this is a validation comparison, not production
+    # auto-routing, the same convention _paired_methods_for uses), the
+    # non-binary counterpart to Wilson's binary role. Not PPI_LOGIT_T/
+    # PPI_T_INTERVAL (unsuffixed) -- those names are reserved for the paired
+    # estimand elsewhere in this file (_paired_methods_for/
+    # _WMT_PAIRED_BIAS_METHODS/_WMT_PAIRED_POWER_METHODS); reusing them for
+    # this single-sample mean estimand would silently pool two different
+    # estimands' stats together in print_ppi_effect_report -- see
+    # PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE's docstrings in methods.py.
     # _ppi_single_bootstrap_t/_SINGLE_METHOD_BOOTSTRAP_T remain fully
     # implemented and runnable via _run_real_single_cell for anyone who
     # wants them back -- only the official roster changed.
@@ -1080,24 +1052,20 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # there, same restriction applies here.
     #
     # MWU_MNAR_EXPERIMENTAL (the local-rectifier MWU variant) deliberately
-    # NOT included (as of 2026-07-24) -- it exists specifically to trade
-    # some MCAR calibration for MNAR robustness (see methods.py's
-    # MWU_MNAR_EXPERIMENTAL comment for the full history), but this check's
-    # real-data labeling is MCAR by construction (generate_real_twogroup_
-    # null_cell's _reveal_labels call), so there's no MNAR risk here for the
-    # local rectifier to buy anything against -- it would only ever look
-    # worse than plain MWU on this check, never better, for reasons that
-    # have nothing to do with either method's actual quality.
+    # not included: it exists specifically to trade some MCAR calibration
+    # for MNAR robustness (see evalstats.tests.mannwhitney's method
+    # docstring), but this check's real-data labeling is MCAR by
+    # construction (generate_real_twogroup_null_cell's _reveal_labels
+    # call), so there's no MNAR risk here for the local rectifier to buy
+    # anything against -- it would only ever look worse than plain MWU on
+    # this check, never better, for reasons that have nothing to do with
+    # either method's actual quality.
     #
-    # MWU_ADAPTIVE/MWU_RIDGE EXCLUDED as of 2026-08-03 (were briefly
-    # included 2026-08-02 while under active investigation -- see
-    # evalstats.tests.mannwhitney's method docstring for the full history
-    # of both, ultimately not adopted as mannwhitney()'s default). This
-    # official pathway now shows only the actual default (plain MWU,
-    # method="global"), matching PPI_OFFICIAL_TEST_METHODS' own exclusion
-    # of every non-default MWU variant in methods.py. Both remain fully
-    # runnable via this same function for anyone deliberately re-running
-    # that investigation -- only the OFFICIAL set changed.
+    # MWU_ADAPTIVE/MWU_RIDGE excluded here too, matching
+    # PPI_OFFICIAL_TEST_METHODS' own exclusion of every non-default MWU
+    # variant in methods.py -- this pathway shows only the actual default
+    # (plain MWU, method="global"). Both remain fully runnable via this
+    # same function for anyone who wants them.
     base = [TTEST.name, TTEST_WELCH.name]
     return base if eval_type == "binary" else base + [MWU.name]
 
@@ -1111,9 +1079,9 @@ def _has_nonstandard_test(results: list) -> bool:
 
 
 def _paired_methods_for(eval_type: str) -> list[str]:
-    # BAYES_BOOTSTRAP/BOOTSTRAP_T removed 2026-08-07 (no longer part of the
-    # official CI-comparison set -- see _single_methods_for's matching
-    # note). Binary keeps TANGO (PPI_AUTO_METHOD_TABLE's binary pairwise
+    # BAYES_BOOTSTRAP/BOOTSTRAP_T are not part of the official CI-comparison
+    # set -- see _single_methods_for's matching note. Binary keeps TANGO
+    # (PPI_AUTO_METHOD_TABLE's binary pairwise
     # method); non-binary gets PPI_T_INTERVAL and PPI_LOGIT_T
     # (PPI_AUTO_METHOD_TABLE's "unbounded"/"bounded_01" pairwise methods --
     # both tested, not just the "correct" one per data_kind, since this is
