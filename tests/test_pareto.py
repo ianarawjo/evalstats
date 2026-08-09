@@ -511,6 +511,37 @@ def test_executive_summary_no_pareto_column_without_secondary():
     assert "Trade-off" not in exec_section.splitlines()[1]
 
 
+def test_executive_summary_verdict_header_scoped_to_metric_when_pareto_shown():
+    """"Verdict" alone would read as the final word once a second axis
+    (Trade-off) exists in the same row -- it should be relabeled to make
+    clear it's scoped to the primary metric only. Without secondary=, the
+    plain "Verdict" header is unambiguous and should stay as-is."""
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=60)
+    with_secondary = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(61),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        with_secondary.summary()
+    out = buf.getvalue()
+    header_line = out[out.index("Executive Summary"):].splitlines()[1]
+    assert "On score" in header_line
+    assert "Verdict" not in header_line
+
+    without_secondary = es.compare(evaldata, factors="model", metric="score", rng=_rng(63))
+    buf2 = io.StringIO()
+    with redirect_stdout(buf2):
+        without_secondary.summary()
+    out2 = buf2.getvalue()
+    header_line2 = out2[out2.index("Executive Summary"):].splitlines()[1]
+    assert "Verdict" in header_line2
+    assert "On score" not in header_line2
+
+
 def test_pareto_status_phrase_merges_status_and_detail():
     from evalstats.core.summary import _pareto_status_phrase
     from evalstats.core.pareto import ParetoStatus

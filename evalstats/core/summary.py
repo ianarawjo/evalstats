@@ -1518,7 +1518,7 @@ def _print_bundle_summary(
 
     # Executive summary leaderboard (near the end — immediately visible in terminal).
     print()
-    _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto)
+    _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto, metric=metric)
     if pareto is not None:
         _print_pareto_callout(pareto, metric=metric)
 
@@ -2917,17 +2917,21 @@ def _print_executive_summary(
     *,
     item_singular: str = "template",
     pareto: Optional[dict] = None,
+    metric: Optional[str] = None,
 ) -> None:
     """Print a concise executive leaderboard after the stats-heavy blocks.
 
     Shows each template's significance group, mean score, bootstrap CI,
-    optional stability (when seed data is present), optional Pareto status
-    (when ``compare(..., secondary=...)`` was passed -- see
+    optional stability (when seed data is present), optional Trade-off
+    status (when ``compare(..., secondary=...)`` was passed -- see
     ``_print_pareto_section``), and a plain-language verdict so the user can
-    assess results at a glance without scrolling up. The Pareto column
+    assess results at a glance without scrolling up. The Trade-off column
     surfaces the secondary-metric verdict right next to the primary-metric
     one, e.g. an entity that's "Likely best" on the primary metric but
-    "Worse than X on both" once the secondary metric is considered.
+    "Worse than X on both" once the secondary metric is considered -- and
+    when Trade-off is shown, the last column is relabeled "On {metric}"
+    (instead of the bare "Verdict") so it reads as scoped to the primary
+    metric alone, rather than as the final word once a second axis exists.
     """
     labels = list(bundle.rank_dist.labels)
     n = len(labels)
@@ -2977,7 +2981,8 @@ def _print_executive_summary(
         header_parts.append(f"  {'Stability':<{stab_w}s}")
     if has_pareto:
         header_parts.append(f"  {'Trade-off':<{pareto_w}s}")
-    header_parts.append("  Verdict")
+    verdict_header = f"On {metric or 'primary metric'}" if has_pareto else "Verdict"
+    header_parts.append(f"  {verdict_header}")
     header = "".join(header_parts)
     sep = "  " + "─" * (len(header) - 2)
     print(header)
