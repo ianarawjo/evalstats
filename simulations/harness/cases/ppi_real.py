@@ -922,6 +922,44 @@ def _run_real_wmt_paired_bias_cell(
     return dict(out)
 
 
+def _run_real_paired_bias_cell(
+    corpus: RealJudgeBiasCorpus, methods: list[str], n: int, label_frac: float,
+    judge_a: str, judge_b: str, n_reps: int, n_boot: int, seed: int,
+) -> dict[str, list[tuple[float, float, float, float]]]:
+    """Tuple-collecting sibling of _run_real_paired_cell, using the SAME
+    generate_real_paired_null_cell (same items read through two DIFFERENT
+    judges, so the true paired difference is EXACTLY 0 by construction -- no
+    gold-reference estimation needed, unlike _run_real_wmt_paired_bias_
+    cell's genuine two-condition data). Exists because TANGO is a genuine
+    point-estimate/CI construction (a Wilson-style score interval for the
+    paired binary discordant-pair-rate difference -- see
+    evalstats.tests._ppi_paired_tango's docstring) restricted to binary
+    corpora by _paired_methods_for, but _run_real_paired_cell only ever
+    reports corrected/uncorrected REJECTION COUNTS (a Type-I check) -- it
+    never had anywhere to report (estimate, ci_low, ci_high, llm_estimate)
+    tuples, so a binary corpus like arena had no path into the bias/
+    coverage view (print_ppi_effect_report / ci_methods_comparison_real.png)
+    even though it has exactly the paired binary data Tango needs. Currently
+    only TANGO uses this; null_value is always 0.0 for every test reachable
+    here (see run()'s _consume)."""
+    rng = np.random.default_rng(seed)
+    out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
+
+    for _ in range(n_reps):
+        llm_x, llm_y, lab_x, lab_y = generate_real_paired_null_cell(corpus, rng, n, label_frac, judge_a, judge_b)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+
+            if TANGO.name in methods:
+                try:
+                    r = _ppi_paired_tango(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+    return dict(out)
+
+
 _REAL_CORPORA: list[RealJudgeBiasCorpus] = []
 """Set by run() right before creating the worker Pool (fork context), so
 worker processes inherit it via copy-on-write instead of the (potentially
@@ -939,13 +977,13 @@ been collected yet (see run()'s try/except around load_real_wmt_paired_corpus)."
 
 
 def _run_ppi_real_cell_worker(args: tuple) -> dict:
-    """Runs ONE (single|twogroup|paired|omnibus_independent|omnibus_repeated|
-    wmt_paired_bias|twogroup_power|omnibus_independent_power|
-    wmt_paired_power) cell and returns everything run() needs to fold it
-    into effect_results/twogroup_results/paired_results/omnibus_results/
-    power_results, with no dependency on the original work-item's position
-    -- required since pool.imap_unordered does not preserve submission
-    order."""
+    """Runs ONE (single|twogroup|paired|paired_bias|omnibus_independent|
+    omnibus_repeated|wmt_paired_bias|twogroup_power|
+    omnibus_independent_power|wmt_paired_power) cell and returns everything
+    run() needs to fold it into effect_results/twogroup_results/
+    paired_results/omnibus_results/power_results, with no dependency on the
+    original work-item's position -- required since pool.imap_unordered
+    does not preserve submission order."""
     check_type, corpus_idx, name, dataset, methods, n, label_frac, judge_or_group, n_reps, n_boot, seed = args
 
     if check_type in ("wmt_paired_bias", "wmt_paired_power"):
@@ -971,6 +1009,14 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
         return {
             "check_type": check_type, "name": name, "dataset": dataset, "n": n,
             "corpus_mean": corpus.corpus_mean, "samples_by_test": samples_by_test,
+        }
+
+    if check_type == "paired_bias":
+        judge_a, judge_b = judge_or_group
+        samples_by_test = _run_real_paired_bias_cell(corpus, methods, n, label_frac, judge_a, judge_b, n_reps, n_boot, seed)
+        return {
+            "check_type": check_type, "name": name, "dataset": dataset, "n": n,
+            "samples_by_test": samples_by_test,
         }
 
     if check_type in ("omnibus_independent", "omnibus_repeated", "omnibus_independent_power"):
@@ -1929,6 +1975,24 @@ def run(args: argparse.Namespace) -> CaseResult:
                                     n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
                                 ))
 
+                            # Binary-only bias/coverage sibling of the check
+                            # above: TANGO is a genuine point-estimate/CI
+                            # construction, but _run_real_paired_cell only
+                            # ever reports corrected/uncorrected rejection
+                            # COUNTS (a Type-I check), so Tango had no path
+                            # into the bias/coverage view even on a binary
+                            # corpus like arena that has exactly the paired
+                            # binary data it needs. Reuses the SAME exact
+                            # null (generate_real_paired_null_cell) as the
+                            # Type-I check above -- see
+                            # _run_real_paired_bias_cell.
+                            if not args.no_paired_check and corpus.eval_type == "binary":
+                                seed_counter += 1
+                                work_items.append((
+                                    "paired_bias", corpus_idx, name, corpus.dataset, [TANGO.name],
+                                    n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
+                                ))
+
                     # omnibus-independent/omnibus-repeated both need judge
                     # TRIPLES (cross-judge, same reasoning as twogroup/paired
                     # above, just extended to 3 groups/conditions), so both
@@ -2027,6 +2091,22 @@ def run(args: argparse.Namespace) -> CaseResult:
                     effect_results.append(PPIEffectResult(
                         name=result["name"], tag=f"real_{result['dataset']}", test=t, n=result["n"], n_samples=n_ok,
                         null_value=null_value, mean_bias=bias_mean, bias_z=z,
+                        coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
+                    ))
+            elif ct == "paired_bias":
+                # Same PPIEffectResult shape as "single"/"wmt_paired_bias"
+                # above, but null_value is always 0.0 for every test reached
+                # here -- generate_real_paired_null_cell is an EXACT null by
+                # construction (same items, two different judges), unlike
+                # wmt_paired_bias's genuine two-condition paired data.
+                for t, samples in result["samples_by_test"].items():
+                    bias_mean, z, coverage, mean_width, n_ok = _effect_cell_stats(samples, 0.0)
+                    if n_ok == 0:
+                        continue
+                    unc_z = _uncorrected_bias_z(samples, 0.0)
+                    effect_results.append(PPIEffectResult(
+                        name=result["name"], tag=f"real_{result['dataset']}", test=t, n=result["n"], n_samples=n_ok,
+                        null_value=0.0, mean_bias=bias_mean, bias_z=z,
                         coverage=coverage, mean_ci_width=mean_width, uncorrected_bias_z=unc_z,
                     ))
             else:
