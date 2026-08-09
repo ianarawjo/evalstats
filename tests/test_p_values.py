@@ -82,31 +82,29 @@ def _make_benchmark(scores_dict: dict) -> BenchmarkResult:
 
 class TestResolvePValueMethod:
     def test_default_suppresses(self):
-        assert _resolve_p_value_method(False, "auto", False) is None
+        assert _resolve_p_value_method(False, "auto") is None
 
-    def test_p_values_true_no_omnibus_returns_auto(self):
-        assert _resolve_p_value_method(True, "auto", False) == "auto"
-
-    def test_p_values_true_omnibus_returns_wsr(self):
-        # Wilcoxon is the standard Friedman post-hoc.
-        assert _resolve_p_value_method(True, "auto", True) == "wsr"
+    def test_p_values_true_returns_auto_sentinel(self):
+        # Final resolution (Wilcoxon by default, or Romano-Wolf's own
+        # p-value when that's the fired FWER correction) happens at print
+        # time in core.summary, since it depends on which correction
+        # actually resolved for this bundle -- not known until
+        # all_pairwise() has run. See TestAutoPValueColumnResolution below
+        # for that resolution logic.
+        assert _resolve_p_value_method(True, "auto") == "auto"
 
     def test_explicit_bootstrap_enables_without_flag(self):
-        assert _resolve_p_value_method(False, "bootstrap", False) == "boot"
+        assert _resolve_p_value_method(False, "bootstrap") == "boot"
 
     def test_explicit_wilcoxon_enables_without_flag(self):
-        assert _resolve_p_value_method(False, "wilcoxon", False) == "wsr"
+        assert _resolve_p_value_method(False, "wilcoxon") == "wsr"
 
     def test_explicit_nemenyi_enables_without_flag(self):
-        assert _resolve_p_value_method(False, "nemenyi", False) == "nem"
+        assert _resolve_p_value_method(False, "nemenyi") == "nem"
 
     def test_explicit_wilcoxon_overrides_bootstrap_path(self):
         # Explicitly choosing wilcoxon should work even when using bootstrap CIs.
-        assert _resolve_p_value_method(True, "wilcoxon", False) == "wsr"
-
-    def test_explicit_bootstrap_overrides_omnibus(self):
-        # Explicit pairwise_test wins over omnibus-driven auto selection.
-        assert _resolve_p_value_method(True, "bootstrap", True) == "boot"
+        assert _resolve_p_value_method(True, "wilcoxon") == "wsr"
 
     @pytest.mark.parametrize("test,expected", [
         ("bootstrap", "boot"),
@@ -114,7 +112,7 @@ class TestResolvePValueMethod:
         ("nemenyi", "nem"),
     ])
     def test_explicit_tests_map_correctly(self, test, expected):
-        assert _resolve_p_value_method(True, test, False) == expected
+        assert _resolve_p_value_method(True, test) == expected
 
 
 # ---------------------------------------------------------------------------
@@ -132,15 +130,17 @@ class TestAnalyzeStoresPValueMethod:
         bundle = self._bundle()
         assert bundle.p_value_method is None
 
-    def test_p_values_true_stores_wsr_for_k2(self):
-        """k=2 is a single pairwise comparison (fig:fwer-decision-tree):
-        auto always resolves to Wilcoxon signed-ranks, unconditionally."""
+    def test_p_values_true_stores_auto(self):
+        """Stores the 'auto' sentinel -- final resolution (Wilcoxon by
+        default, or Romano-Wolf's own p-value when that's the fired FWER
+        correction) happens at print time, not storage time, since it
+        depends on which correction actually resolved for this bundle."""
         bundle = self._bundle(p_values=True)
-        assert bundle.p_value_method == "wsr"
+        assert bundle.p_value_method == "auto"
 
-    def test_p_values_true_omnibus_stores_wsr(self):
+    def test_p_values_true_omnibus_stores_auto(self):
         bundle = self._bundle(p_values=True, omnibus=True)
-        assert bundle.p_value_method == "wsr"
+        assert bundle.p_value_method == "auto"
 
     @pytest.mark.parametrize("test,expected", [
         ("bootstrap", "boot"),
@@ -182,13 +182,13 @@ class TestComparePropagatesPValueMethod:
         report = es.compare_prompts(_scores_2prompt(), n_bootstrap=200, rng=_rng())
         assert report.p_value_method is None
 
-    def test_p_values_true_report_stores_wsr_for_k2(self):
-        """k=2 is a single pairwise comparison (fig:fwer-decision-tree):
-        auto always resolves to Wilcoxon signed-ranks, unconditionally."""
+    def test_p_values_true_report_stores_auto(self):
+        """Stores the 'auto' sentinel -- resolved to Wilcoxon (or
+        Romano-Wolf's own p-value) at print time, see TestAutoPValueColumnResolution."""
         report = es.compare_prompts(
             _scores_2prompt(), n_bootstrap=200, rng=_rng(), p_values=True
         )
-        assert report.p_value_method == "wsr"
+        assert report.p_value_method == "auto"
 
     @pytest.mark.parametrize("test,expected", [
         ("bootstrap", "boot"),
@@ -202,13 +202,12 @@ class TestComparePropagatesPValueMethod:
         assert report.p_value_method == expected
 
     def test_compare_models_propagates(self):
-        """k=2 models -> single pairwise comparison -> Wilcoxon, unconditionally."""
         scores = {
             "M1": _scores_2prompt(n=40, seed=0)["A"],
             "M2": _scores_2prompt(n=40, seed=1)["B"],
         }
         report = es.compare_models(scores, n_bootstrap=200, rng=_rng(), p_values=True)
-        assert report.p_value_method == "wsr"
+        assert report.p_value_method == "auto"
 
 
 # ---------------------------------------------------------------------------
@@ -248,10 +247,37 @@ class TestPrintAnalysisSummaryOutput:
         out = self._run_analyze(pairwise_test="nemenyi")
         assert "p (nem)" in out
 
-    def test_p_values_true_omnibus_shows_wsr(self):
-        # With omnibus=True, auto resolves to wsr.
+    def test_p_values_true_omnibus_shows_rw_at_n_ge_30(self):
+        # _scores_3prompt defaults to N=40 (bounded_01) -> Romano-Wolf is the
+        # resolved FWER correction, which has no Wilcoxon-compatible joint
+        # construction, so its own p-value is shown instead of wsr.
         out = self._run_analyze(p_values=True, omnibus=True)
+        assert "p (RW)" in out
+        assert "p (wsr)" not in out
+
+    def test_p_values_true_shows_wsr_at_n_lt_30(self):
+        # N=20 -> Shaffer's is the resolved correction, which does apply to
+        # Wilcoxon's own p-value -- so wsr stays the default here.
+        bench = _make_benchmark(_scores_3prompt(n=20))
+        bundle = es.analyze(bench, n_bootstrap=300, rng=_rng(), p_values=True)
+        import io
+        from contextlib import redirect_stdout
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            es.print_analysis_summary(bundle)
+        out = buf.getvalue()
         assert "p (wsr)" in out
+        assert "p (RW)" not in out
+
+    def test_explicit_wilcoxon_stays_wsr_even_at_n_ge_30(self):
+        # An explicit pairwise_test="wilcoxon" request is never silently
+        # swapped for Romano-Wolf's different (non-Wilcoxon) statistic --
+        # it keeps Wilcoxon's own p-value, corrected via Shaffer's (the only
+        # valid correction for that statistic at any N, since Romano-Wolf
+        # has no Wilcoxon-compatible form).
+        out = self._run_analyze(pairwise_test="wilcoxon")
+        assert "p (wsr)" in out
+        assert "p (RW)" not in out
 
 
 # ---------------------------------------------------------------------------

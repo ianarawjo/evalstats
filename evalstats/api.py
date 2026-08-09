@@ -1650,11 +1650,14 @@ def compare(
         Also PPI-corrected when ``alignment=`` is passed.
     pairwise_test : {"auto", "bootstrap", "wilcoxon", "nemenyi"}
         Which p-value to show in the pairwise table. ``"auto"`` (default)
-        picks Wilcoxon signed-ranks when comparing exactly 2 entities (a
-        single pairwise comparison, per fig:fwer-decision-tree --
-        unconditionally, not just when ``omnibus=True``); with 3+ entities,
-        picks bootstrap, or Wilcoxon when ``omnibus=True``. ``"nemenyi"``
-        requires ``omnibus=True`` and is not supported together with
+        always picks Wilcoxon signed-ranks, for any number of entities --
+        the standard workflow fig:fwer-decision-tree assumes throughout:
+        Friedman omnibus first when requested (``omnibus=True``), then
+        Wilcoxon for every pairwise comparison, then FWER-corrected as
+        post-hoc (see ``correction=`` on the underlying analysis engine).
+        Pass ``pairwise_test="bootstrap"`` explicitly for the CI-construction
+        method's own p-value instead. ``"nemenyi"`` requires ``omnibus=True``
+        and is not supported together with
         ``alignment=`` (no validated PPI-corrected Nemenyi exists yet).
     show_rank_probabilities : bool
         When ``True``, include the bootstrap "Rank Probabilities" block

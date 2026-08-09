@@ -41,9 +41,6 @@ from ..config import get_alpha_ci, resolve_auto_analyze_methods
 def _resolve_p_value_method(
     p_values: bool,
     pairwise_test: str,
-    omnibus: bool,
-    *,
-    k: Optional[int] = None,
 ) -> Optional[str]:
     """Resolve the effective p-value display method for the bundle.
 
@@ -52,22 +49,28 @@ def _resolve_p_value_method(
 
     Resolution rules:
     - If ``p_values=False`` and ``pairwise_test='auto'``: suppress (``None``).
-    - ``pairwise_test='bootstrap'``  → ``'boot'``
-    - ``pairwise_test='wilcoxon'``   → ``'wsr'``
+    - ``pairwise_test='bootstrap'``  → ``'boot'`` (explicit: always the
+      CI-construction method's own p-value, never redirected).
+    - ``pairwise_test='wilcoxon'``   → ``'wsr'`` (explicit: always Wilcoxon,
+      even when Romano-Wolf is the resolved FWER correction -- an explicit
+      request is never silently swapped for a different statistic; it just
+      keeps whatever valid correction Wilcoxon's own p-value got, which is
+      Shaffer's in that case since Romano-Wolf has no Wilcoxon-compatible
+      form).
     - ``pairwise_test='nemenyi'``    → ``'nem'``
-    - ``pairwise_test='auto'`` with ``p_values=True`` and ``k == 2`` (a
-      single pairwise comparison -- no family, no FWER correction to speak
-      of): always ``'wsr'`` (Wilcoxon signed-ranks), per
-      fig:fwer-decision-tree's "single pairwise comparison" branch --
-      unconditionally, not just when ``omnibus=True``. ``k`` is the number
-      of entities being compared; ``None`` when unknown (e.g. the
-      multi-model path, which has no single well-defined ``k``) falls
-      through to the ``k != 2`` rule below.
-    - ``pairwise_test='auto'`` with ``p_values=True`` and ``k != 2`` (or
-      unknown):
-        - ``omnibus=True``  → ``'wsr'`` (Wilcoxon is the standard Friedman post-hoc)
-        - otherwise        → ``'auto'`` (display layer picks: boot for bootstrap
-          paths, Wilcoxon for LMM/other paths)
+    - ``pairwise_test='auto'`` with ``p_values=True``: ``'auto'`` -- final
+      resolution deferred to print time (see ``core.summary``'s p-value-
+      column logic), since it depends on which FWER correction actually
+      fired for this bundle (Shaffer's vs. Romano-Wolf), which in turn
+      depends on N/data-kind and isn't known until :func:`~evalstats.core.paired.all_pairwise`
+      has run. The default is Wilcoxon signed-ranks for *any* k >= 2 (per
+      fig:fwer-decision-tree's standard workflow: Friedman omnibus first
+      when requested, then Wilcoxon pairwise, then FWER-corrected as
+      post-hoc), except when Romano-Wolf step-down is what actually
+      resolved -- it has no Wilcoxon-compatible joint construction (see
+      :func:`~evalstats.core.paired.romano_wolf_stepdown_pvalues`'s
+      docstring), so its own mean-based bootstrap-t p-value is shown
+      instead in that one case.
     """
     explicit = pairwise_test != "auto"
     if not p_values and not explicit:
@@ -78,11 +81,7 @@ def _resolve_p_value_method(
         return "wsr"
     if pairwise_test == "nemenyi":
         return "nem"
-    # pairwise_test == 'auto' with p_values=True
-    if k == 2:
-        return "wsr"
-    if omnibus:
-        return "wsr"
+    # pairwise_test == 'auto' with p_values=True -- resolved at print time.
     return "auto"
 
 
@@ -345,12 +344,7 @@ def analyze(
             stacklevel=2,
         )
 
-    # k is only well-defined for a plain single-factor comparison -- the
-    # multi-model path has no single "k" (it has separate model/template/
-    # cross-model views), so it falls through to _resolve_p_value_method's
-    # k != 2 rule unchanged.
-    _k = result.n_templates if isinstance(result, BenchmarkResult) else None
-    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test, omnibus, k=_k)
+    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test)
 
     kwargs = dict(
         reference=reference,

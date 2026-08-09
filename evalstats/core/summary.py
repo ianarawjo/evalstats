@@ -995,15 +995,28 @@ def _print_pairwise_section(
     # Whether simultaneous max-T CIs were used (affects p-value source for bootstrap paths).
     using_max_t = bundle.pairwise.simultaneous_ci_method == "max_t"
 
+    # Whether Romano-Wolf step-down was the FWER correction that actually
+    # fired for this bundle (only known post-hoc, once all_pairwise() has
+    # run -- see _resolve_p_value_method's docstring). Guarded on
+    # len(results) > 1 because all_pairwise() still resolves and reports
+    # correction_method="romano_wolf" for a single-pair (k=2) bundle even
+    # though nothing is actually corrected there (no family to correct
+    # across) -- Wilcoxon must stay the default at k=2 regardless of N.
+    is_romano_wolf_active = (
+        bundle.pairwise.correction_method == "romano_wolf"
+        and len(bundle.pairwise.results) > 1
+    )
+
     # Resolve the effective p-value source and column header.
     if p_value_method == "auto":
-        if is_newcombe_pairwise:
-            eff_p_source, p_col_header = "boot", "p (McNemar)"
-        elif is_sign_pairwise:
-            eff_p_source, p_col_header = "boot", "p (sign)"
-        elif is_bootstrap_path:
-            eff_p_source = "max_t" if using_max_t else "boot"
-            p_col_header = "p (boot)"
+        # Wilcoxon signed-ranks is the default pairwise test for any k >= 2
+        # (fig:fwer-decision-tree's standard workflow), *except* when
+        # Romano-Wolf step-down is the resolved correction -- it has no
+        # Wilcoxon-compatible joint construction (see
+        # romano_wolf_stepdown_pvalues's docstring) and produces its own
+        # mean-based bootstrap-t p-value instead, which is what's shown here.
+        if is_romano_wolf_active:
+            eff_p_source, p_col_header = "boot", "p (RW)"
         else:
             eff_p_source, p_col_header = "wsr", "p (wsr)"
     elif p_value_method == "boot":
@@ -1230,7 +1243,9 @@ def _print_pairwise_section(
     elif max_pairs > 0:
         print(f"{_DIM}  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5){_RESET}")
         if eff_p_source in {"max_t", "boot"}:
-            if is_newcombe_pairwise:
+            if is_romano_wolf_active and eff_p_source == "boot":
+                print(f"  {p_col_header} = Romano-Wolf bootstrap step-down (FWER-controlled; no Wilcoxon-compatible joint form exists, see romano_wolf_stepdown_pvalues)")
+            elif is_newcombe_pairwise:
                 print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
             elif is_sign_pairwise:
                 print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")
