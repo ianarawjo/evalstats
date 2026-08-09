@@ -2645,6 +2645,18 @@ def _pareto_status_color(status: str) -> str:
     return _YELLOW  # ambiguous
 
 
+def _join_names_capped(names: list[str], *, max_names: int = 2) -> str:
+    """Join entity names for a status phrase, capping how many get spelled
+    out -- an entity dominated by half a dozen others would otherwise blow
+    up the Status column (and the whole table) with a name list as wide as
+    the table itself. Mirrors the existing "Tied with N others as best"
+    capping already used in the Executive Summary's Verdict column."""
+    if len(names) <= max_names:
+        return ", ".join(names)
+    shown = ", ".join(names[:max_names])
+    return f"{shown} and {len(names) - max_names} more"
+
+
 def _pareto_status_phrase(status: "ParetoStatus", *, verbose: bool = True) -> str:
     """One-cell phrase combining a ParetoStatus's glyph with plain-language
     wording and its detail (dominated_by / ambiguous_vs), e.g.
@@ -2653,10 +2665,10 @@ def _pareto_status_phrase(status: "ParetoStatus", *, verbose: bool = True) -> st
     Executive Summary's narrower Pareto column (verbose=False, drops it)."""
     glyph = _pareto_status_glyph(status.status)
     if status.status == "dominated":
-        text = f"Worse than {', '.join(status.dominated_by)} on both"
+        text = f"Worse than {_join_names_capped(status.dominated_by)} on both"
     elif status.status == "ambiguous":
         suffix = " (not confirmed)" if verbose else ""
-        text = f"Unclear vs {', '.join(status.ambiguous_vs)}{suffix}"
+        text = f"Unclear vs {_join_names_capped(status.ambiguous_vs)}{suffix}"
     else:
         text = "Best trade-off"
     return f"{glyph} {text}"
@@ -2744,6 +2756,24 @@ def _print_pareto_scatter(
         f"{x_axis_label:^{max(width - 12, 4)}}"
         f"{x_max_str}"
     )
+
+    # The plot always stretches to fill its width/height regardless of how
+    # small the real spread is -- flag it explicitly when an axis's true
+    # range is tiny relative to its scale, so a reader doesn't mistake
+    # bootstrap noise blown up to fill the plot for a real difference.
+    def _near_degenerate(lo: float, hi: float) -> bool:
+        return (hi - lo) < 0.02 * max(abs(hi), abs(lo), 1e-9)
+
+    flat_axes = []
+    if _near_degenerate(x_min, x_max):
+        flat_axes.append(f"{secondary_col} ({x_min_str}–{x_max_str})")
+    if _near_degenerate(y_min, y_max):
+        flat_axes.append(f"{metric_label} ({y_min:.3g}–{y_max:.3g})")
+    if flat_axes:
+        print(
+            f"  Note: {' and '.join(flat_axes)} barely varies across entities "
+            "-- the spread above is mostly noise, not a real difference."
+        )
     print()
 
     legend_cells = []
@@ -2812,8 +2842,10 @@ def _print_pareto_section(
     _print_pareto_scatter(pareto, metric_label=metric_label)
 
     sorted_labels = _pareto_sorted_labels(pareto)
-    label_w = max((len(lbl) for lbl in result.labels), default=6)
-    label_w = max(label_w, len("Entity"))
+    # Capped the same way every other table's entity/model column is
+    # (see e.g. _print_executive_summary's tpl_w) -- long entity names would
+    # otherwise stretch this table arbitrarily wide.
+    label_w = min(28, max(len("Entity"), max((len(lbl) for lbl in result.labels), default=6)))
     phrases = {lbl: _pareto_status_phrase(statuses[lbl], verbose=True) for lbl in result.labels}
     status_w = max([len("Status")] + [len(p) for p in phrases.values()])
     mean_w = 7
@@ -2860,12 +2892,12 @@ def _print_pareto_section(
                 if secondary_rob.ci_low is not None else "--"
             )
             print(
-                f"  {label:<{label_w}}  {status_str}  "
+                f"  {_truncate_label(label, label_w):<{label_w}}  {status_str}  "
                 f"{p_mean:>{mean_w}.3g} {p_ci:<{ci_w}s}  "
                 f"{s_mean:>{mean_w}.3g} {s_ci:<{ci_w}s}"
             )
         else:
-            print(f"  {label:<{label_w}}  {status_str}")
+            print(f"  {_truncate_label(label, label_w):<{label_w}}  {status_str}")
     print("  " + "-" * (len(header) - 2))
     if show_rank_probabilities:
         print()
@@ -2876,7 +2908,7 @@ def _print_pareto_section(
             p = float(result.p_frontier[result.labels.index(label)])
             color = _p_best_color(p)
             reset = _RESET if color else ""
-            print(f"    {label:<{label_w}}  {p:>6.1%} {color}{_ratio_bar(p, width=bar_w)}{reset}")
+            print(f"    {_truncate_label(label, label_w):<{label_w}}  {p:>6.1%} {color}{_ratio_bar(p, width=bar_w)}{reset}")
     print()
 
 

@@ -593,6 +593,83 @@ def test_pareto_status_glyphs_are_distinct():
     assert len(glyphs) == 3
 
 
+def test_join_names_capped_truncates_long_dominator_lists():
+    from evalstats.core.summary import _join_names_capped
+
+    assert _join_names_capped(["A"]) == "A"
+    assert _join_names_capped(["A", "B"]) == "A, B"
+    # Entities dominated by many others would otherwise blow up the Status
+    # column (and the whole table) with a name list as wide as the table.
+    assert _join_names_capped(["A", "B", "C"]) == "A, B and 1 more"
+    assert _join_names_capped(["A", "B", "C", "D", "E"]) == "A, B and 3 more"
+
+
+def test_pareto_table_entity_column_capped_for_long_names():
+    import io
+    from contextlib import redirect_stdout
+
+    models = [
+        "gpt-4o-2024-11-20-high-reasoning-effort-and-then-some-more-text",
+        "claude-opus-4-5-extended-thinking-mode-with-a-very-long-suffix",
+    ]
+    acc = {models[0]: 0.85, models[1]: 0.70}
+    lat = {models[0]: 2.0, models[1]: 0.5}
+    evaldata = _make_evaldata(models, acc, lat, seed=54)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(55),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    pareto_section = out[out.index("Pareto Front"):out.index("Executive Summary")]
+    # No line in the table should run away to the full untruncated name length.
+    table_lines = [
+        l for l in pareto_section.splitlines()
+        if l.strip().startswith(models[0][:10]) or l.strip().startswith(models[1][:10])
+    ]
+    assert table_lines
+    for line in table_lines:
+        assert len(line) < len(models[0]) + 40
+
+
+def test_pareto_scatter_flags_near_degenerate_axis():
+    import io
+    from contextlib import redirect_stdout
+
+    # All entities share the ~same latency (tight noise, same true mean) --
+    # the secondary axis is essentially flat, and the scatterplot should say
+    # so rather than silently stretching sampling noise to fill the plot
+    # width. Built directly (not via _make_evaldata) because that helper's
+    # fixed noise std isn't tight enough relative to a mean of 1.0 to land
+    # inside the "near-degenerate" threshold.
+    rng = _rng(58)
+    models = ["a", "b", "c", "d", "e"]
+    acc = {"a": 0.60, "b": 0.68, "c": 0.75, "d": 0.82, "e": 0.90}
+    rows = []
+    for m in models:
+        for i in range(150):
+            rows.append({
+                "model": m,
+                "item": f"q{i}",
+                "score": float(np.clip(rng.normal(acc[m], 0.08), 0, 1)),
+                "latency_ms": float(rng.normal(1.0, 0.01)),
+            })
+    evaldata = es.load_from(pd.DataFrame(rows), col_map={"model": "model", "item": "item"})
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(59),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    pareto_section = out[out.index("Pareto Front"):out.index("Executive Summary")]
+    assert "barely varies" in pareto_section
+    assert "latency_ms" in pareto_section
+
+
 def test_pareto_section_has_definition_line_and_scatterplot():
     import io
     from contextlib import redirect_stdout
