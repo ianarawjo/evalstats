@@ -160,6 +160,8 @@ with warnings.catch_warnings():
     from evalstats.tests import (
         _ppi_single_bootstrap_t,
         _ppi_single_wilson,
+        _ppi_single_logit_t,
+        _ppi_single_t_interval,
         _ppi_two_sample,
         _ppi_two_sample_midrank_corrected,
         _ppi_two_sample_adaptive,
@@ -168,6 +170,8 @@ with warnings.catch_warnings():
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
         _ppi_paired_tango,
+        _ppi_paired_t_interval,
+        _ppi_paired_logit_t,
         _p_x_gt_y_midrank,
         paired_walsh_midrank_theta,
         _ppi_anova_independent_p_value,
@@ -178,6 +182,7 @@ with warnings.catch_warnings():
 
 from ..methods import (
     TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
+    PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
 from ..scenarios.real_judge_bias import (
@@ -272,6 +277,36 @@ def _run_real_single_cell(
                 except Exception:
                     pass
 
+            if PPI_LOGIT_T_SINGLE.name in methods:
+                try:
+                    # Closed-form logit-t, PPI_AUTO_METHOD_TABLE's "bounded_01"
+                    # robustness method (both judge and human are already
+                    # rescaled to [0, 1] -- see RealJudgeBiasCorpus) -- the
+                    # non-binary counterpart to the Wilson branch above.
+                    # PPI_LOGIT_T_SINGLE, NOT PPI_LOGIT_T -- this is a
+                    # single-sample mean estimand, a different quantity from
+                    # PPI_LOGIT_T's PAIRED mean-difference role in
+                    # _run_real_paired_cell/_run_real_wmt_paired_bias_cell;
+                    # using the same test name here would silently pool two
+                    # different estimands' bias/coverage stats together in
+                    # print_ppi_effect_report (name-only pooling) -- see
+                    # PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE's docstrings.
+                    r = _ppi_single_logit_t(judge, lab, _ALPHA)
+                    out[PPI_LOGIT_T_SINGLE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_T_INTERVAL_SINGLE.name in methods:
+                try:
+                    # Closed-form t-interval, PPI_AUTO_METHOD_TABLE's
+                    # "unbounded" robustness method -- see PPI_LOGIT_T_SINGLE
+                    # branch above for the naming-collision reasoning
+                    # (same applies here vs. paired PPI_T_INTERVAL).
+                    r = _ppi_single_t_interval(judge, lab, _ALPHA)
+                    out[PPI_T_INTERVAL_SINGLE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
     return dict(out)
 
 
@@ -361,7 +396,7 @@ def _run_real_paired_cell(
 ) -> tuple[dict[str, int], dict[str, int]]:
     """n_reps replicates of the paired Type-I null check (same items,
     scored by two DIFFERENT judges) -- mirrors pvalues.py's _run_ppi_cell
-    paired-groups branches (wilcoxon/paired_t/bayes_bootstrap/bootstrap_t/
+    paired-groups branches (wilcoxon/paired_t/ppi_t_interval/ppi_logit_t/
     tango). See generate_real_paired_null_cell for why this is an exact
     null rather than merely an equal-in-distribution one."""
     rng = np.random.default_rng(seed)
@@ -444,6 +479,24 @@ def _run_real_paired_cell(
                     uncorrected[TANGO.name] += int(p_u < _ALPHA)
                     r = _ppi_paired_tango(llm_x, llm_y, lab_x, lab_y, _ALPHA)
                     corrected[TANGO.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if PPI_T_INTERVAL.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(llm_x, llm_y).pvalue)
+                    uncorrected[PPI_T_INTERVAL.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_t_interval(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[PPI_T_INTERVAL.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if PPI_LOGIT_T.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(llm_x, llm_y).pvalue)
+                    uncorrected[PPI_LOGIT_T.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_logit_t(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[PPI_LOGIT_T.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -679,7 +732,7 @@ def _run_real_wmt_paired_power_cell(
     detection) instead of collecting (estimate, ci_low, ci_high,
     llm_estimate) tuples for a bias/coverage check like _run_real_wmt_
     paired_bias_cell does. Test battery mirrors _run_real_paired_cell's
-    paired-samples family (wilcoxon/paired_t/bayes_bootstrap/bootstrap_t;
+    paired-samples family (wilcoxon/paired_t/ppi_t_interval/ppi_logit_t;
     no tango -- see _WMT_PAIRED_POWER_METHODS)."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
@@ -733,30 +786,54 @@ def _run_real_wmt_paired_power_cell(
                 except Exception:
                     pass
 
+            if PPI_T_INTERVAL.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(llm_x, llm_y).pvalue)
+                    uncorrected[PPI_T_INTERVAL.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_t_interval(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[PPI_T_INTERVAL.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if PPI_LOGIT_T.name in methods:
+                try:
+                    p_u = float(scipy_stats.ttest_rel(llm_x, llm_y).pvalue)
+                    uncorrected[PPI_LOGIT_T.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_logit_t(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[PPI_LOGIT_T.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
     return corrected, uncorrected
 
 
-_WMT_PAIRED_BIAS_METHODS = [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name]
-"""_paired_methods_for("continuous") minus BOOTSTRAP_T -- its test name
-("bootstrap_t") is IDENTICAL to _SINGLE_METHOD_BOOTSTRAP_T, which the
-single-sample bias/coverage check already uses for a totally different
-estimand (a population MEAN, not a population MEAN PAIRED DIFFERENCE).
-print_ppi_effect_report pools rows by test name only (not tag), so
-including it here would silently merge two unrelated checks' bias/
-coverage stats into one misleading "bootstrap_t" row. TANGO excluded for
-the same reason it's excluded from _paired_methods_for("continuous")."""
+_WMT_PAIRED_BIAS_METHODS = [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
+"""_paired_methods_for("continuous") minus BAYES_BOOTSTRAP/BOOTSTRAP_T
+(removed 2026-08-07, no longer part of ppi_real's official CI-comparison
+set -- see _paired_methods_for). PPI_T_INTERVAL/PPI_LOGIT_T are both safe
+to include here as of 2026-08-07: the single-sample bias/coverage check
+now uses the distinct PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method
+identities (split from these paired ones in methods.py, the same way
+PPI_BOOTSTRAP_T_SINGLE is split from BOOTSTRAP_T) instead of reusing these
+paired ones, so there's no more test-name collision in
+print_ppi_effect_report's by-test-name pooling -- see PPI_T_INTERVAL_
+SINGLE/PPI_LOGIT_T_SINGLE's docstrings for the full reasoning (this is the
+same collision class BOOTSTRAP_T used to create here). TANGO excluded for
+the same eval_type restriction _paired_methods_for applies (this corpus is
+always eval_type="continuous_paired")."""
 
-_WMT_PAIRED_POWER_METHODS = [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name]
-"""Unlike _WMT_PAIRED_BIAS_METHODS, BOOTSTRAP_T is safe to include here --
+_WMT_PAIRED_POWER_METHODS = [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
+"""Unlike _WMT_PAIRED_BIAS_METHODS, PPI_LOGIT_T is safe to include here --
 power_results (a PPIResult bucket keyed by rejection COUNTS, not
-PPIEffectResult's bias/coverage stats) never mixes this check's "bootstrap_t"
-with the single-sample check's differently-estimand "bootstrap_t" the way
-print_ppi_effect_report's by-test-name pooling would; every "bootstrap_t"
-row across twogroup_power/paired power/omnibus power/this check already
-means the same thing (a paired- or independent-samples bootstrap-t test),
-same as hypothesis_results already does for the Type-I null checks. TANGO
-still excluded, for the same eval_type restriction _paired_methods_for
-applies (this corpus is always eval_type="continuous_paired")."""
+PPIEffectResult's bias/coverage stats) never mixes this check's
+"ppi_logit_t" with the single-sample check's differently-estimand
+"ppi_logit_t" the way print_ppi_effect_report's by-test-name pooling
+would; every "ppi_logit_t" row across twogroup_power/paired power/
+omnibus power/this check already means the same thing (a paired- or
+independent-samples logit-t test), same as hypothesis_results already
+does for the Type-I null checks. TANGO still excluded, for the same
+eval_type restriction _paired_methods_for applies (this corpus is
+always eval_type="continuous_paired")."""
 
 
 def _run_real_wmt_paired_bias_cell(
@@ -815,13 +892,32 @@ def _run_real_wmt_paired_bias_cell(
                 except Exception:
                     pass
 
+            if PPI_T_INTERVAL.name in methods:
+                try:
+                    r = _ppi_paired_t_interval(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    out[PPI_T_INTERVAL.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_LOGIT_T.name in methods:
+                try:
+                    r = _ppi_paired_logit_t(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    out[PPI_LOGIT_T.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
             # BOOTSTRAP_T deliberately NOT included here -- see
             # _WMT_PAIRED_BIAS_METHODS' docstring (its test name collides
-            # with the single-sample check's _SINGLE_METHOD_BOOTSTRAP_T,
-            # which would silently pool two different estimands' stats
-            # together in print_ppi_effect_report). Not wired up at all,
-            # rather than left reachable-but-unused, since nothing calls
-            # this function with a methods list that would ever hit it.
+            # with the single-sample check's own bootstrap_t branch, which
+            # targets a totally different estimand, and print_ppi_effect_
+            # report pools by test name only). PPI_T_INTERVAL/PPI_LOGIT_T
+            # above are safe now that the single-sample check uses the
+            # distinct PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method
+            # identities instead of reusing these paired ones (2026-08-07 --
+            # see those Methods' docstrings in methods.py). BOOTSTRAP_T is
+            # not wired up at all, rather than left reachable-but-unused,
+            # since nothing calls this function with a methods list that
+            # would ever hit it.
 
     return dict(out)
 
@@ -906,7 +1002,30 @@ def _run_ppi_real_cell_worker(args: tuple) -> dict:
 
 
 def _single_methods_for(eval_type: str) -> list[str]:
-    return [_SINGLE_METHOD_BOOTSTRAP_T] + ([_SINGLE_METHOD_WILSON] if eval_type == "binary" else [])
+    # Removed 2026-08-07: _SINGLE_METHOD_BOOTSTRAP_T is no longer part of
+    # the official set (matches pvalues.py's synthetic ppi official test,
+    # which validates the curated 4-method PPI-corrected CI comparison --
+    # Tango, Wilson, logit-t, t-interval -- not the bootstrap-based
+    # alternatives; see _PPI_CI_COMPARISON_TESTS). PPI_LOGIT_T_SINGLE/
+    # PPI_T_INTERVAL_SINGLE are PPI_AUTO_METHOD_TABLE's "bounded_01"/
+    # "unbounded" robustness methods (every real dataset here is already
+    # rescaled to [0, 1] -- see RealJudgeBiasCorpus -- so both apply, not
+    # just logit-t's "correct" bounded_01 pick; this is a validation
+    # comparison, not production auto-routing, same convention
+    # _paired_methods_for uses), the non-binary counterpart to Wilson's
+    # binary role. NOT PPI_LOGIT_T/PPI_T_INTERVAL (unsuffixed) -- those
+    # names are reserved for the PAIRED estimand elsewhere in this file
+    # (_paired_methods_for/_WMT_PAIRED_BIAS_METHODS/_WMT_PAIRED_POWER_
+    # METHODS); reusing them for this single-sample MEAN estimand would
+    # silently pool two different estimands' stats together in
+    # print_ppi_effect_report -- see PPI_T_INTERVAL_SINGLE/
+    # PPI_LOGIT_T_SINGLE's docstrings in methods.py.
+    # _ppi_single_bootstrap_t/_SINGLE_METHOD_BOOTSTRAP_T remain fully
+    # implemented and runnable via _run_real_single_cell for anyone who
+    # wants them back -- only the official roster changed.
+    if eval_type == "binary":
+        return [_SINGLE_METHOD_WILSON]
+    return [PPI_LOGIT_T_SINGLE.name, PPI_T_INTERVAL_SINGLE.name]
 
 
 def _twogroup_methods_for(eval_type: str) -> list[str]:
@@ -946,12 +1065,21 @@ def _has_nonstandard_test(results: list) -> bool:
 
 
 def _paired_methods_for(eval_type: str) -> list[str]:
-    # Same _PPI_BINARY_COMPATIBLE_TESTS restriction, intersected with the
-    # paired-samples family: {ttest, ttest_welch, paired_t, bayes_bootstrap,
-    # tango} ∩ {wilcoxon, paired_t, bayes_bootstrap, bootstrap_t, tango}.
+    # BAYES_BOOTSTRAP/BOOTSTRAP_T removed 2026-08-07 (no longer part of the
+    # official CI-comparison set -- see _single_methods_for's matching
+    # note). Binary keeps TANGO (PPI_AUTO_METHOD_TABLE's binary pairwise
+    # method); non-binary gets PPI_T_INTERVAL and PPI_LOGIT_T
+    # (PPI_AUTO_METHOD_TABLE's "unbounded"/"bounded_01" pairwise methods --
+    # both tested, not just the "correct" one per data_kind, since this is
+    # a validation comparison, not production auto-routing -- matching
+    # pvalues.py's own _PPI_CI_COMPARISON_TESTS convention). This function
+    # feeds count-based (PPIResult-style) results only, never
+    # PPIEffectResult tuples, so unlike _WMT_PAIRED_BIAS_METHODS there is
+    # no test-name-collision risk between PPI_LOGIT_T here and the
+    # single-sample check's own PPI_LOGIT_T branch.
     if eval_type == "binary":
-        return [PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name]
-    return [WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name]
+        return [PAIRED_T.name, TANGO.name]
+    return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
 def _omnibus_independent_methods_for(eval_type: str) -> list[str]:

@@ -136,6 +136,48 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def is_lopsided_binary(scores: np.ndarray, threshold: int = 5) -> bool:
+    """Return True if any compared group has fewer than *threshold* observed
+    instances of its rarer binary outcome (e.g. only 2 ones out of 40).
+
+    Small-sample binary comparisons with a heavily skewed 0/1 split are the
+    regime where resampling-based FWER corrections (joint bootstrap,
+    Romano-Wolf step-down) can misbehave -- too few of the rarer outcome
+    makes the bootstrap's resampled distribution degenerate or lumpy -- while
+    Sidak's closed-form, independence-based adjustment stays reliable. Used
+    to force the small-N branch of the FWER auto-routing tables regardless
+    of the overall sample size N or number of comparisons k (see
+    fig:fwer-decision-tree).
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Score array of shape ``(N_groups, M)`` or ``(N_groups, M, R)`` --
+        one row per compared entity/group. Assumed already known to be
+        binary (call :func:`is_binary_scores` first); non-binary values are
+        ignored rather than raising.
+    threshold : int
+        Minimum required observed count of the rarer outcome per group
+        (default 5, matching the "<5 expected observations" rule of thumb).
+
+    Returns
+    -------
+    bool
+        True if ANY group has ``min(n_ones, n_zeros) < threshold``.
+    """
+    n_groups = scores.shape[0]
+    for i in range(n_groups):
+        flat = scores[i].ravel()
+        finite = flat[np.isfinite(flat)]
+        if len(finite) == 0:
+            continue
+        n_ones = int(np.sum(finite == 1.0))
+        n_zeros = int(np.sum(finite == 0.0))
+        if min(n_ones, n_zeros) < threshold:
+            return True
+    return False
+
+
 def is_bounded_01_scores(scores: np.ndarray) -> bool:
     """Return True if all finite values in *scores* lie within [0, 1].
 

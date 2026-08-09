@@ -650,17 +650,22 @@ def _print_multi_model_summary(
     print()
     _print_loud_section("Cross-Model Ranking (all model/template pairs)")
     _print_model_template_matrix(bundle)
+
+    # Shared by the (optional) P(Best) block below and the unconditional
+    # "Mean Performance" listing further down -- computed once here so the
+    # latter doesn't depend on show_rank_probabilities being True.
+    p_best = bundle.cross_model.rank_dist.p_best
+    expected_ranks = bundle.cross_model.rank_dist.expected_ranks
+    rank_labels = bundle.cross_model.rank_dist.labels
+    rank_pairs = [_split_model_template_label(label) for label in rank_labels]
+    rank_bar_width = 14
+    n_ranked_items = len(rank_labels)
+    model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
+    template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
+    top_indices = np.argsort(-p_best)
+    n_show = len(top_indices)
+
     if show_rank_probabilities:
-        p_best = bundle.cross_model.rank_dist.p_best
-        expected_ranks = bundle.cross_model.rank_dist.expected_ranks
-        rank_labels = bundle.cross_model.rank_dist.labels
-        rank_pairs = [_split_model_template_label(label) for label in rank_labels]
-        rank_bar_width = 14
-        n_ranked_items = len(rank_labels)
-        model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
-        template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
-        top_indices = np.argsort(-p_best)
-        n_show = len(top_indices)
         _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
         print(
             f"  {'Model':<{model_col_width}s} "
@@ -773,13 +778,14 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     """Print a model × template score matrix (mean ±std, heat encoding)."""
     model_labels = bundle.benchmark.model_labels
     template_labels = bundle.benchmark.template_labels
+    cross = bundle.cross_model
 
     # Build (model, template) -> mean from the flat cross_model bundle.
     # Labels are formatted as "model / template" by get_flat_result().
     cell_mean: dict[tuple[str, str], float] = {}
     for label, m in zip(
-        bundle.cross_model.rank_dist.labels,
-        bundle.cross_model.robustness.mean,
+        cross.rank_dist.labels,
+        cross.robustness.mean,
     ):
         parts = label.split(" / ", 1)
         if len(parts) == 2:
@@ -787,8 +793,29 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 
     all_means = list(cell_mean.values())
     mn, mx = min(all_means), max(all_means)
-    best_mean = mx
     heat_chars = "·░▒▓█"
+
+    # Cells statistically tied for best -- the same CD-style significance-
+    # group analysis used by the executive summary below (group "#1"),
+    # rather than the single highest raw mean. A marginally higher point
+    # estimate should not read as a decisive winner when the pairwise CIs
+    # show it isn't distinguishable from its neighbors; that would defeat
+    # the point of reporting calibrated intervals in the first place.
+    cross_labels_all = list(cross.rank_dist.labels)
+    cross_means_all = cross.robustness.mean
+    sort_idx = list(np.argsort(-cross_means_all))
+    labels_sorted = [cross_labels_all[i] for i in sort_idx]
+    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
+    best_cells: set[tuple[str, str]] = set()
+    for label, group in label_to_group.items():
+        if group == "#1":
+            parts = label.split(" / ", 1)
+            if len(parts) == 2:
+                best_cells.add((parts[0], parts[1]))
+    if not best_cells:
+        # Fallback so a winner is still shown if group detection finds
+        # nothing (e.g. degenerate pairwise matrix).
+        best_cells = {max(cell_mean, key=cell_mean.get)}
 
     def _heat(v: float) -> str:
         if mx == mn:
@@ -806,9 +833,10 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
             return f"{'N/A':^{CELL_W}}"
         m = cell_mean[(mdl, t)]
         h = _heat(m)
-        marker = "*" if m == best_mean else " "
+        is_best = (mdl, t) in best_cells
+        marker = "*" if is_best else " "
         plain = f"{m:.3f} {h}{marker}".rjust(CELL_W)
-        if m == best_mean:
+        if is_best:
             return f"{_BOLD}{_BRIGHT_GREEN}{plain}{_RESET}"
         return plain
 
@@ -829,7 +857,10 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 
     # Footer
     print(div)
-    print(f"  * = best pair by mean  |  heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]")
+    print(
+        f"  * = statistically tied for best (95% CI, not significantly beaten)  |  "
+        f"heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]"
+    )
     print()
 
 
@@ -964,15 +995,28 @@ def _print_pairwise_section(
     # Whether simultaneous max-T CIs were used (affects p-value source for bootstrap paths).
     using_max_t = bundle.pairwise.simultaneous_ci_method == "max_t"
 
+    # Whether Romano-Wolf step-down was the FWER correction that actually
+    # fired for this bundle (only known post-hoc, once all_pairwise() has
+    # run -- see _resolve_p_value_method's docstring). Guarded on
+    # len(results) > 1 because all_pairwise() still resolves and reports
+    # correction_method="romano_wolf" for a single-pair (k=2) bundle even
+    # though nothing is actually corrected there (no family to correct
+    # across) -- Wilcoxon must stay the default at k=2 regardless of N.
+    is_romano_wolf_active = (
+        bundle.pairwise.correction_method == "romano_wolf"
+        and len(bundle.pairwise.results) > 1
+    )
+
     # Resolve the effective p-value source and column header.
     if p_value_method == "auto":
-        if is_newcombe_pairwise:
-            eff_p_source, p_col_header = "boot", "p (McNemar)"
-        elif is_sign_pairwise:
-            eff_p_source, p_col_header = "boot", "p (sign)"
-        elif is_bootstrap_path:
-            eff_p_source = "max_t" if using_max_t else "boot"
-            p_col_header = "p (boot)"
+        # Wilcoxon signed-ranks is the default pairwise test for any k >= 2
+        # (fig:fwer-decision-tree's standard workflow), *except* when
+        # Romano-Wolf step-down is the resolved correction -- it has no
+        # Wilcoxon-compatible joint construction (see
+        # romano_wolf_stepdown_pvalues's docstring) and produces its own
+        # mean-based bootstrap-t p-value instead, which is what's shown here.
+        if is_romano_wolf_active:
+            eff_p_source, p_col_header = "boot", "p (RW)"
         else:
             eff_p_source, p_col_header = "wsr", "p (wsr)"
     elif p_value_method == "boot":
@@ -1199,7 +1243,9 @@ def _print_pairwise_section(
     elif max_pairs > 0:
         print(f"{_DIM}  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5){_RESET}")
         if eff_p_source in {"max_t", "boot"}:
-            if is_newcombe_pairwise:
+            if is_romano_wolf_active and eff_p_source == "boot":
+                print(f"  {p_col_header} = Romano-Wolf bootstrap step-down (FWER-controlled; no Wilcoxon-compatible joint form exists, see romano_wolf_stepdown_pvalues)")
+            elif is_newcombe_pairwise:
                 print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
             elif is_sign_pairwise:
                 print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")

@@ -436,23 +436,25 @@ def test_all_pairwise_simultaneous_ci_true_by_default():
 
 
 def test_all_pairwise_test_method_string_annotated():
-    """PairwiseMatrix.simultaneous_ci_method should record the variant used
-    ('bonferroni' by default, even for bootstrap methods); the CI annotation
-    is no longer baked into each PairedDiffResult.test_method."""
+    """PairwiseMatrix.simultaneous_ci_method should record the variant used;
+    the CI annotation is no longer baked into each PairedDiffResult.test_method.
+    Explicitly requests prefer="bonferroni" -- fig:fwer-decision-tree's
+    auto default no longer picks Bonferroni (see test_router_returns_boot_
+    by_default_for_bootstrap for that)."""
     scores = _rng(11).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
 
     mat = all_pairwise(
         scores, labels, method="bootstrap", ci=0.95,
         n_bootstrap=200, correction="none", rng=_rng(11),
-        simultaneous_ci=True,
+        simultaneous_ci=True, prefer="bonferroni",
     )
 
     assert mat.simultaneous_ci_method == "bonferroni"
 
 
 def test_all_pairwise_p_values_valid_with_simultaneous_ci_bonferroni():
-    """When simultaneous_ci=True (the default construction is now Bonferroni),
+    """When simultaneous_ci=True with prefer="bonferroni" explicitly requested,
     p_value stays the original marginal p-value — Bonferroni here only adjusts
     the CI bounds, not the p-values — and must still be a valid probability.
     """
@@ -462,7 +464,7 @@ def test_all_pairwise_p_values_valid_with_simultaneous_ci_bonferroni():
     mat_sim = all_pairwise(
         scores, labels, method="bootstrap", ci=0.95,
         n_bootstrap=300, correction="holm", rng=_rng(12),
-        simultaneous_ci=True,
+        simultaneous_ci=True, prefer="bonferroni",
     )
 
     assert mat_sim.simultaneous_ci_method == "bonferroni"
@@ -511,10 +513,14 @@ def test_compare_models_simultaneous_ci_propagates():
     assert report.simultaneous_ci is True
 
 
-def test_unsupported_method_falls_back_to_bonferroni():
-    """When method='newcombe' (no bootstrap CIs), simultaneous_ci=True should
-    fall back to Bonferroni t-intervals rather than silently ignoring the flag.
-    The report should have simultaneous_ci=True and method='bonferroni'."""
+def test_newcombe_uses_auto_simultaneous_ci_default():
+    """method='newcombe' has no bootstrap CIs, but Sidak/joint-bootstrap
+    simultaneous CIs are ci_func-based, not tied to whether the point-
+    estimate method is bootstrap-compatible -- so the "auto" default
+    (fig:fwer-decision-tree) applies normally here rather than falling back
+    to Bonferroni. That max-T-specific fallback for non-bootstrap methods is
+    still real and covered by test_router_falls_back_to_bonferroni_for_newcombe
+    (prefer="max_t")."""
     rng = _rng(40)
     scores = {
         "A": [int(x > 0.5) for x in rng.random(50)],
@@ -526,7 +532,8 @@ def test_unsupported_method_falls_back_to_bonferroni():
         rng=_rng(40), n_bootstrap=200,
     )
     assert report.simultaneous_ci is True
-    assert report.pairwise.simultaneous_ci_method == "bonferroni"
+    # binary, N=50 -> "boot" row of AUTO_SIMULTANEOUS_CI_METHOD_TABLE
+    assert report.pairwise.simultaneous_ci_method == "boot"
 
 
 def test_seeded_compare_prompts_simultaneous_ci():
@@ -541,8 +548,10 @@ def test_seeded_compare_prompts_simultaneous_ci():
         scores, simultaneous_ci=True, rng=_rng(50), n_bootstrap=300,
     )
     assert report.simultaneous_ci is True
-    # t_interval is analytical → falls back to Bonferroni simultaneous CIs
-    assert report.pairwise.simultaneous_ci_method in {"max_t", "bonferroni"}
+    # Any construction is acceptable here -- this test is about seeded (R>=3)
+    # data not crashing the simultaneous-CI pipeline, not about which
+    # specific auto-routed method fires for this N/data-kind.
+    assert report.pairwise.simultaneous_ci_method in {"sidak", "boot", "max_t", "bonferroni"}
     for a, b in [("A", "B"), ("A", "C"), ("B", "C")]:
         lo, hi = report.pairwise.get(a, b).ci_low, report.pairwise.get(a, b).ci_high
         assert lo <= hi and np.isfinite(lo) and np.isfinite(hi)
@@ -633,9 +642,10 @@ def test_bonferroni_degenerate_zero_variance():
 
 # --- Router tests ---
 
-def test_router_returns_bonferroni_by_default_for_bootstrap():
-    """Router should choose 'bonferroni' by default, even for a
-    bootstrap-compatible method (Bonferroni is the default construction)."""
+def test_router_returns_boot_by_default_for_unbounded_n_ge_30():
+    """Router's "auto" default (fig:fwer-decision-tree) picks the joint
+    bootstrap ("boot") for unbounded numeric data at N>=30, regardless of
+    whether the point-estimate method is bootstrap-compatible."""
     scores = _rng(70).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
     results, pairs = _make_results(scores, labels)
@@ -643,6 +653,21 @@ def test_router_returns_bonferroni_by_default_for_bootstrap():
         scores, results, pairs, labels,
         method="bootstrap", ci=0.95, n_bootstrap=300,
         rng=_rng(70), statistic="mean",
+    )
+    assert used == "boot"
+    assert len(cis) == len(pairs)
+
+
+def test_router_returns_bonferroni_when_explicitly_preferred():
+    """prefer="bonferroni" still forces the closed-form fallback directly."""
+    scores = _rng(70).normal(0, 1, (3, 40))
+    labels = ["a", "b", "c"]
+    results, pairs = _make_results(scores, labels)
+    cis, used, _ = _simultaneous_cis_router(
+        scores, results, pairs, labels,
+        method="bootstrap", ci=0.95, n_bootstrap=300,
+        rng=_rng(70), statistic="mean",
+        prefer="bonferroni",
     )
     assert used == "bonferroni"
     assert len(cis) == len(pairs)
@@ -665,7 +690,10 @@ def test_router_returns_max_stat_for_bootstrap_when_preferred():
 
 
 def test_router_falls_back_to_bonferroni_for_newcombe():
-    """Router should fall back to 'bonferroni' for analytical methods."""
+    """Router should fall back to 'bonferroni' for analytical methods when
+    prefer="max_t" is requested (max_t needs a bootstrap distribution;
+    Sidak/boot -- the auto default -- are ci_func-based and don't need this
+    fallback at all, see test_router_returns_boot_by_default_for_unbounded_n_ge_30)."""
     # Use continuous scores but force method='newcombe' to trigger the fallback.
     scores = _rng(71).normal(0, 1, (3, 40))
     labels = ["a", "b", "c"]
@@ -674,6 +702,7 @@ def test_router_falls_back_to_bonferroni_for_newcombe():
         scores, results, pairs, labels,
         method="newcombe", ci=0.95, n_bootstrap=300,
         rng=_rng(71), statistic="mean",
+        prefer="max_t",
     )
     assert used == "bonferroni"
     assert len(cis) == len(pairs)
@@ -699,10 +728,11 @@ def test_router_max_stat_for_all_bootstrap_methods_when_preferred(method):
     assert used == "max_t", f"Expected max_t for method={method!r}, got {used!r}"
 
 
-def test_simultaneous_ci_method_field_bonferroni_for_bootstrap():
-    """PairwiseMatrix.simultaneous_ci_method is 'bonferroni' by default, even
-    for bootstrap methods, since all_pairwise has no public prefer='max_t'
-    knob and Bonferroni is now the default construction."""
+def test_simultaneous_ci_method_field_boot_for_bootstrap():
+    """PairwiseMatrix.simultaneous_ci_method follows the "auto" table by
+    default (fig:fwer-decision-tree) -- unbounded numeric, N=30 -> "boot".
+    Pass prefer="bonferroni"/"max_t" to all_pairwise() to force a specific
+    construction instead."""
     scores = _rng(80).normal(0, 1, (3, 30))
     labels = ["a", "b", "c"]
     mat = all_pairwise(
@@ -710,11 +740,13 @@ def test_simultaneous_ci_method_field_bonferroni_for_bootstrap():
         rng=_rng(80), simultaneous_ci=True, correction="none",
     )
     assert mat.simultaneous_ci is True
-    assert mat.simultaneous_ci_method == "bonferroni"
+    assert mat.simultaneous_ci_method == "boot"
 
 
-def test_simultaneous_ci_method_field_bonferroni():
-    """PairwiseMatrix.simultaneous_ci_method is 'bonferroni' for analytical methods."""
+def test_simultaneous_ci_method_field_sidak():
+    """PairwiseMatrix.simultaneous_ci_method is 'sidak' for binary data
+    below the N=50 auto-routing threshold, regardless of the point-estimate
+    method (Sidak is ci_func-based, not tied to bootstrap-compatibility)."""
     scores = (_rng(81).random((3, 40)) > 0.5).astype(float)
     labels = ["a", "b", "c"]
     mat = all_pairwise(
@@ -722,7 +754,7 @@ def test_simultaneous_ci_method_field_bonferroni():
         rng=_rng(81), simultaneous_ci=True, correction="none",
     )
     assert mat.simultaneous_ci is True
-    assert mat.simultaneous_ci_method == "bonferroni"
+    assert mat.simultaneous_ci_method == "sidak"
 
 
 def test_simultaneous_ci_method_field_none_when_not_requested():
@@ -735,12 +767,14 @@ def test_simultaneous_ci_method_field_none_when_not_requested():
 
 
 def test_bonferroni_annotation_in_test_method():
-    """PairwiseMatrix.simultaneous_ci_method should be 'bonferroni' for the fallback."""
+    """PairwiseMatrix.simultaneous_ci_method reflects the explicitly
+    requested construction when prefer="bonferroni" is passed."""
     scores = (_rng(83).random((3, 40)) > 0.5).astype(float)
     labels = ["a", "b", "c"]
     mat = all_pairwise(
         scores, labels, method="newcombe", n_bootstrap=200,
         rng=_rng(83), simultaneous_ci=True, correction="none",
+        prefer="bonferroni",
     )
     assert mat.simultaneous_ci_method == "bonferroni"
 

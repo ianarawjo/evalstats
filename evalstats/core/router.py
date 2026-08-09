@@ -41,7 +41,6 @@ from ..config import get_alpha_ci, resolve_auto_analyze_methods
 def _resolve_p_value_method(
     p_values: bool,
     pairwise_test: str,
-    omnibus: bool,
 ) -> Optional[str]:
     """Resolve the effective p-value display method for the bundle.
 
@@ -50,13 +49,28 @@ def _resolve_p_value_method(
 
     Resolution rules:
     - If ``p_values=False`` and ``pairwise_test='auto'``: suppress (``None``).
-    - ``pairwise_test='bootstrap'``  → ``'boot'``
-    - ``pairwise_test='wilcoxon'``   → ``'wsr'``
+    - ``pairwise_test='bootstrap'``  → ``'boot'`` (explicit: always the
+      CI-construction method's own p-value, never redirected).
+    - ``pairwise_test='wilcoxon'``   → ``'wsr'`` (explicit: always Wilcoxon,
+      even when Romano-Wolf is the resolved FWER correction -- an explicit
+      request is never silently swapped for a different statistic; it just
+      keeps whatever valid correction Wilcoxon's own p-value got, which is
+      Shaffer's in that case since Romano-Wolf has no Wilcoxon-compatible
+      form).
     - ``pairwise_test='nemenyi'``    → ``'nem'``
-    - ``pairwise_test='auto'`` with ``p_values=True``:
-        - ``omnibus=True``  → ``'wsr'`` (Wilcoxon is the standard Friedman post-hoc)
-        - otherwise        → ``'auto'`` (display layer picks: boot for bootstrap
-          paths, Wilcoxon for LMM/other paths)
+    - ``pairwise_test='auto'`` with ``p_values=True``: ``'auto'`` -- final
+      resolution deferred to print time (see ``core.summary``'s p-value-
+      column logic), since it depends on which FWER correction actually
+      fired for this bundle (Shaffer's vs. Romano-Wolf), which in turn
+      depends on N/data-kind and isn't known until :func:`~evalstats.core.paired.all_pairwise`
+      has run. The default is Wilcoxon signed-ranks for *any* k >= 2 (per
+      fig:fwer-decision-tree's standard workflow: Friedman omnibus first
+      when requested, then Wilcoxon pairwise, then FWER-corrected as
+      post-hoc), except when Romano-Wolf step-down is what actually
+      resolved -- it has no Wilcoxon-compatible joint construction (see
+      :func:`~evalstats.core.paired.romano_wolf_stepdown_pvalues`'s
+      docstring), so its own mean-based bootstrap-t p-value is shown
+      instead in that one case.
     """
     explicit = pairwise_test != "auto"
     if not p_values and not explicit:
@@ -67,9 +81,7 @@ def _resolve_p_value_method(
         return "wsr"
     if pairwise_test == "nemenyi":
         return "nem"
-    # pairwise_test == 'auto' with p_values=True
-    if omnibus:
-        return "wsr"
+    # pairwise_test == 'auto' with p_values=True -- resolved at print time.
     return "auto"
 
 
@@ -82,7 +94,7 @@ def analyze(
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: Optional[float] = None,
     n_bootstrap: int = 10_000,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "auto",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
     rng: Optional[np.random.Generator] = None,
@@ -183,8 +195,15 @@ def analyze(
         ``method='lmm'`` this controls the number of parametric
         simulations used for the rank distribution.
     correction : str
-        Multiple comparisons correction: ``'fdr_bh'`` (default),
-        ``'holm'``, ``'bonferroni'``, or ``'none'``.
+        Multiple comparisons correction across pairwise p-values.
+        ``'auto'`` (default) follows fig:fwer-decision-tree: Shaffer's
+        step-down Holm procedure for N<30 (or a lopsided binary split
+        regardless of N), else Romano-Wolf bootstrap step-down. Explicit
+        alternatives: ``'shaffer'``, ``'romano_wolf'``, ``'holm'``,
+        ``'bonferroni'``, ``'fdr_bh'`` (FDR, not FWER control -- use when
+        that's the actual target), ``'hochberg'``, or ``'none'``. See
+        :func:`~evalstats.core.paired.all_pairwise`'s ``correction=``
+        docstring for the full routing rationale.
     simultaneous_ci : bool
         When ``True``, pairwise CIs are simultaneous (family-wise) rather
         than marginal. Bonferroni correction is used by default for all
@@ -325,7 +344,7 @@ def analyze(
             stacklevel=2,
         )
 
-    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test, omnibus)
+    resolved_p_value_method = _resolve_p_value_method(p_values, pairwise_test)
 
     kwargs = dict(
         reference=reference,
@@ -453,7 +472,7 @@ def analyze_factorial(
     run_col: Optional[str] = None,
     backend: Literal["statsmodels", "pymer4"] = "statsmodels",
     ci: Optional[float] = None,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "fdr_bh",
     reference: str = "grand_mean",
     spread_percentiles: tuple[float, float] = (10, 90),
     failure_threshold: Optional[float] = None,
@@ -732,7 +751,7 @@ def _analyze_single(
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"],
     spread_percentiles: tuple[float, float],
     failure_threshold: Optional[float],
     rng: np.random.Generator,
@@ -1009,7 +1028,7 @@ def _analyze_multi_model(
     backend: Literal["statsmodels", "pymer4"],
     ci: float,
     n_bootstrap: int,
-    correction: Literal["holm", "bonferroni", "fdr_bh", "none"],
+    correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"],
     spread_percentiles: tuple[float, float],
     failure_threshold: Optional[float],
     rng: np.random.Generator,

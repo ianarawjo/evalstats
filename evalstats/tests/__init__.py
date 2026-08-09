@@ -3663,9 +3663,9 @@ def _ppi_friedman_ci(
 def ttest(
     a,
     b,
-    *,
     a_lab=None,
     b_lab=None,
+    *,
     paired: bool = False,
     equal_var: bool = False,
     alpha: float = 0.05,
@@ -3729,6 +3729,7 @@ def ttest(
     --------
     >>> result = es.tests.ttest(llm_a, llm_b)                          # prints
     >>> result = es.tests.ttest(llm_a, llm_b, print_result=False)      # silent
+    >>> result = es.tests.ttest(llm_a, llm_b, human_a, human_b)     # positional
     >>> result = es.tests.ttest(llm_a, llm_b, a_lab=human_a, b_lab=human_b)
     """
     a = _coerce(a)
@@ -3879,9 +3880,9 @@ def ttest(
 def mannwhitney(
     x,
     y,
-    *,
     x_lab=None,
     y_lab=None,
+    *,
     alpha: float = 0.05,
     n_boot: int = 2000,
     rng=None,
@@ -4153,6 +4154,7 @@ def mannwhitney(
     --------
     >>> result = es.tests.mannwhitney(llm_x, llm_y)                    # prints
     >>> result = es.tests.mannwhitney(llm_x, llm_y, print_result=False) # silent
+    >>> result = es.tests.mannwhitney(llm_x, llm_y, human_x, human_y)  # positional
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
     if method not in ("ridge", "adaptive", "local", "global", "mnar_experimental"):
@@ -4244,9 +4246,9 @@ def mannwhitney(
 def wilcoxon(
     x,
     y,
-    *,
     x_lab=None,
     y_lab=None,
+    *,
     alpha: float = 0.05,
     n_boot: int = 2000,
     rng=None,
@@ -4418,6 +4420,7 @@ def wilcoxon(
     --------
     >>> result = es.tests.wilcoxon(llm_x, llm_y)                      # prints
     >>> result = es.tests.wilcoxon(llm_x, llm_y, print_result=False)  # silent
+    >>> result = es.tests.wilcoxon(llm_x, llm_y, human_x, human_y)    # positional
     >>> result = es.tests.wilcoxon(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
     if method not in ("current", "hajek_experimental"):
