@@ -68,6 +68,7 @@ class ComparisonResult:
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
         self._min_meaningful_diff = min_meaningful_diff
         self._variance_components: Optional[dict] = None  # set by MC alignment loop
+        self._pareto: Optional[dict] = None  # set by _run_pareto_if_needed when secondary= is passed
         # Bootstrap P(Best)/E[Rank] output is opt-in, not opt-out: it reads as
         # a confident, almost authoritative verdict (e.g. "63.6% probability
         # of being best") even when the underlying CIs overlap heavily and the
@@ -133,6 +134,8 @@ class ComparisonResult:
             min_meaningful_diff=self._min_meaningful_diff,
             item_singular=item_singular,
             item_plural=item_plural,
+            pareto=self._pareto,
+            metric=self._metric,
         )
 
     def brief(self) -> None:
@@ -406,6 +409,44 @@ class ComparisonResult:
                     top_pairs.append((parts[0], parts[1]))
         return top_pairs or None
 
+    @property
+    def pareto_status(self) -> Optional[dict]:
+        """Per-entity three-state Pareto classification, or ``None``.
+
+        Populated only when ``compare(..., secondary=...)`` was passed.
+        Keys are entity labels, values are
+        :class:`~evalstats.core.pareto.ParetoStatus` (``.status`` is one of
+        ``"frontier"``, ``"dominated"``, ``"ambiguous"`` -- see that class's
+        docstring for what distinguishes them). This is the calibrated
+        default view: an entity is only ever reported ``"dominated"`` when
+        the joint bootstrap actually supports it (FWER-aware across its
+        possible dominators), not merely because its point estimate lost on
+        both axes -- that weaker case is ``"ambiguous"`` instead of a false
+        "dominates" call.
+        """
+        return self._pareto["statuses"] if self._pareto is not None else None
+
+    @property
+    def pareto_frontier_probability(self) -> Optional[dict]:
+        """Per-entity ``P(entity is Pareto-optimal)``, or ``None``.
+
+        Populated only when ``compare(..., secondary=...)`` was passed. Keys
+        are entity labels, values are the fraction of joint bootstrap
+        replicates in which that entity was non-dominated -- a continuous
+        probability, not the calibrated three-state label
+        :attr:`pareto_status` gives. Exists for the same reason
+        ``show_rank_probabilities``/P(Best) is opt-in rather than the
+        default view elsewhere in evalstats: a raw probability like "82%
+        Pareto-optimal" reads as more decisive than it is when the
+        underlying joint CIs actually overlap heavily. Prefer
+        :attr:`pareto_status` for reporting; use this for downstream
+        numeric work.
+        """
+        if self._pareto is None:
+            return None
+        result = self._pareto["result"]
+        return dict(zip(result.labels, result.p_frontier.tolist()))
+
     # ── data access ──────────────────────────────────────────────────────────
 
     def to_dict(self, *, show_rank_probabilities: Optional[bool] = None) -> dict:
@@ -488,6 +529,22 @@ class ComparisonResult:
         }
         if self._variance_components is not None:
             result["variance_components"] = self._variance_components
+        if self._pareto is not None:
+            pareto_entities: dict[str, dict] = {}
+            for label, st in self._pareto["statuses"].items():
+                entry: dict[str, Any] = {"status": st.status}
+                if st.dominated_by:
+                    entry["dominated_by"] = list(st.dominated_by)
+                if st.ambiguous_vs:
+                    entry["ambiguous_vs"] = list(st.ambiguous_vs)
+                if show_rank:
+                    entry["p_pareto_optimal"] = float(self.pareto_frontier_probability[label])
+                pareto_entities[str(label)] = entry
+            result["pareto"] = {
+                "secondary_metric": self._pareto["secondary_metric"],
+                "direction": self._pareto["direction"],
+                "entities": pareto_entities,
+            }
         return result
 
     def to_frame(self, *, show_rank_probabilities: Optional[bool] = None) -> dict[str, pd.DataFrame]:
@@ -545,6 +602,20 @@ class ComparisonResult:
                 row_pw["p_value"] = float(pair_result.p_value)
             pw_rows.append(row_pw)
         frames["pairwise"] = pd.DataFrame(pw_rows)
+
+        if self._pareto is not None:
+            pareto_rows: list[dict] = []
+            for label, st in self._pareto["statuses"].items():
+                row_p: dict[str, Any] = {
+                    "entity": str(label),
+                    "status": st.status,
+                    "dominated_by": ", ".join(st.dominated_by) or None,
+                    "ambiguous_vs": ", ".join(st.ambiguous_vs) or None,
+                }
+                if show_rank:
+                    row_p["p_pareto_optimal"] = float(self.pareto_frontier_probability[label])
+                pareto_rows.append(row_p)
+            frames["pareto"] = pd.DataFrame(pareto_rows)
 
         return frames
 
@@ -1587,6 +1658,160 @@ def _run_judge_alignment_if_needed(
     )
 
 
+def _run_pareto_if_needed(
+    cr: "ComparisonResult",
+    *,
+    secondary,
+    df: pd.DataFrame,
+    factor_col: str,
+    item_col: str,
+    alpha: float,
+    n_boot: int,
+    rng,
+) -> None:
+    """Run uncertainty-aware Pareto-front analysis and store it on *cr*, if
+    ``secondary=`` was passed.
+
+    Mirrors ``_run_judge_alignment_if_needed``'s validate-and-dispatch shape:
+    warns and no-ops on a malformed ``secondary=``, and is only supported for
+    a single-factor result (a plain ``AnalysisBundle`` -- multi-model and
+    factorial results are not yet supported, same restriction as
+    ``alignment=``).
+    """
+    if secondary is None:
+        return
+    if not isinstance(secondary, dict):
+        warnings.warn(
+            "secondary= must be a dict mapping a metric column name to "
+            "'min' or 'max', e.g. secondary={'latency_ms': 'min'}. "
+            "secondary= will be ignored.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return
+    if len(secondary) != 1:
+        raise NotImplementedError(
+            f"secondary= currently supports exactly one secondary metric "
+            f"(bivariate Pareto fronts only); got {len(secondary)}: "
+            f"{list(secondary.keys())}. N-way Pareto fronts are not yet "
+            "implemented."
+        )
+    (secondary_col, direction), = secondary.items()
+    if direction not in ("min", "max"):
+        raise ValueError(
+            f"secondary={{'{secondary_col}': {direction!r}}} -- direction "
+            "must be 'min' or 'max'."
+        )
+    if secondary_col not in df.columns:
+        raise EvalLoadError(
+            f"secondary metric column '{secondary_col}' not found in data. "
+            f"Available columns: {list(df.columns)}"
+        )
+
+    if not isinstance(cr._analysis, AnalysisBundle):
+        # cr._primary_bundle() always unwraps a MultiModelBundle down to some
+        # single AnalysisBundle view (e.g. .model_level) -- checking that
+        # would never actually catch the multi-model case. Must check
+        # cr._analysis itself, same as _run_judge_alignment_if_needed does.
+        warnings.warn(
+            "Pareto-front analysis (secondary=) is not yet supported for "
+            "multi-model or factorial analyses. secondary= will be ignored "
+            "for this comparison.",
+            UserWarning,
+            stacklevel=4,
+        )
+        return
+    bundle = cr._primary_bundle()
+    if bundle.benchmark.is_seeded:
+        raise ValueError(
+            "Pareto-front analysis (secondary=) does not yet support seeded "
+            "benchmarks (R >= 3 repeated runs). Aggregate runs to a single "
+            "score per (template, input) cell before passing secondary=."
+        )
+
+    from evalstats.core.pareto import pareto_bootstrap, classify_pareto_status, orient_higher_is_better
+
+    labels = list(bundle.benchmark.template_labels)
+    input_labels = list(bundle.benchmark.input_labels)
+    n_entities = len(labels)
+    n_items = len(input_labels)
+    entity_idx = {e: i for i, e in enumerate(labels)}
+    item_idx = {it: j for j, it in enumerate(input_labels)}
+
+    # Primary metric's item-aligned score matrix (already computed by the
+    # main analysis) -- averaged over runs/evaluators the same way PPI's
+    # scores_2d is, so both metrics share the exact same (entity, item) grid.
+    scores_primary = bundle.benchmark.get_2d_scores()
+
+    # Secondary metric's item-aligned score matrix, built directly from the
+    # filtered dataframe the same way _run_alignment_ppi builds lab_matrix --
+    # more robust than re-deriving via from_dataframe() a second time, since
+    # it guarantees identical (entity, item) index alignment with scores_primary.
+    scores_secondary = np.full((n_entities, n_items), np.nan)
+    sec_rows = df[[factor_col, item_col, secondary_col]].dropna(subset=[secondary_col])
+    for e_val, it_val, s_val in zip(
+        sec_rows[factor_col].astype(str).to_numpy(),
+        sec_rows[item_col].astype(str).to_numpy(),
+        sec_rows[secondary_col].to_numpy(dtype=float),
+    ):
+        ei = entity_idx.get(e_val)
+        ij = item_idx.get(it_val)
+        if ei is not None and ij is not None:
+            scores_secondary[ei, ij] = s_val
+
+    if np.any(np.isnan(scores_secondary)):
+        n_missing = int(np.sum(np.isnan(scores_secondary)))
+        raise ValueError(
+            f"secondary='{secondary_col}' has {n_missing} missing (entity, item) "
+            f"cell(s) out of {n_entities * n_items} -- Pareto-front analysis "
+            "currently requires a complete design (every entity scored on "
+            "every item for the secondary metric too)."
+        )
+
+    scores_secondary_oriented = orient_higher_is_better(scores_secondary, direction)
+    rng_gen = np.random.default_rng(rng)
+
+    result = pareto_bootstrap(
+        scores_primary, scores_secondary_oriented, labels,
+        n_bootstrap=n_boot, rng=rng_gen,
+    )
+    statuses = classify_pareto_status(result, alpha=alpha)
+
+    # Secondary metric's own calibrated marginal CI, in its real (un-oriented)
+    # units -- same auto data-kind/N routing analyze() uses for the primary
+    # metric (see router.py's _analyze_single), not a cheap percentile CI off
+    # the joint dominance bootstrap: that bootstrap is built for the
+    # dominance question, and reusing it here would quietly ship an
+    # uncalibrated shortcut for the one number this library is otherwise
+    # careful never to show uncalibrated.
+    from evalstats.core.resampling import is_binary_scores, resolve_score_bounds
+    from evalstats.core.variance import robustness_metrics
+    from evalstats.config import resolve_auto_analyze_methods
+
+    if is_binary_scores(scores_secondary):
+        sec_data_kind = "binary"
+        sec_score_range = None
+    else:
+        sec_score_range = resolve_score_bounds(scores_secondary, None, stacklevel=5)
+        sec_data_kind = "bounded_01" if sec_score_range is not None else "unbounded"
+    _, sec_robustness_method = resolve_auto_analyze_methods(sec_data_kind, n_items, seeded=False)
+    secondary_robustness = robustness_metrics(
+        scores_secondary, labels,
+        n_bootstrap=n_boot, rng=rng_gen, alpha=alpha,
+        marginal_method=sec_robustness_method,
+        score_range=sec_score_range,
+    )
+
+    cr._pareto = {
+        "secondary_metric": secondary_col,
+        "direction": direction,
+        "result": result,
+        "statuses": statuses,
+        "primary_robustness": bundle.robustness,
+        "secondary_robustness": secondary_robustness,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # compare()
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1599,7 +1824,7 @@ def compare(
     baseline: Optional[str] = None,
     block: Union[str, list[str], Literal["auto"]] = "auto",
     slices=None,         # deferred
-    secondary=None,      # deferred
+    secondary: Optional[dict[str, Literal["min", "max"]]] = None,
     alignment=None,
     n_mc: int = 200,
     min_meaningful_diff=None,  # deferred
@@ -1633,6 +1858,22 @@ def compare(
     block : str, list[str], or "auto"
         Blocking variable(s) — typically ``"item"`` or ``"input"``.
         ``"auto"`` (default) uses the item column detected by ``load_from``.
+    secondary : dict[str, {"min", "max"}], optional
+        Run an uncertainty-aware Pareto-front analysis against a second
+        metric, e.g. ``secondary={"latency_ms": "min"}`` to find the
+        accuracy/latency frontier (``"min"`` for a cost-like metric where
+        lower is better, ``"max"`` for a benefit-like one). Currently
+        supports exactly one secondary metric, a complete design (every
+        entity scored on every item for it too), and a single-factor result
+        (not yet supported for multi-model/factorial comparisons or seeded
+        R>=3 benchmarks). Both metrics are resampled *jointly* (a shared
+        per-item bootstrap draw, not two independent marginal bootstraps)
+        so that correlation between them (e.g. harder items being both
+        slower and less accurate) is preserved rather than dropped, and a
+        marginally-better point estimate on both axes isn't reported as a
+        confident "dominates" call when the data can't actually support it.
+        See :attr:`ComparisonResult.pareto_status` /
+        :attr:`ComparisonResult.pareto_frontier_probability`.
     alpha : float, optional
         Significance level / CI width: ``alpha=0.05`` → 95 % CIs.
         When ``None`` (default), uses the global value set by
@@ -1701,8 +1942,6 @@ def compare(
     """
     if slices is not None:
         warnings.warn("slices= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
-    if secondary is not None:
-        warnings.warn("secondary= is not yet implemented and will be ignored.", UserWarning, stacklevel=2)
     # ── resolve alpha (explicit > global default) ─────────────────────────────
     if alpha is None:
         alpha = get_alpha_ci()
@@ -1877,6 +2116,11 @@ def compare(
             alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
+        _run_pareto_if_needed(
+            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
+            rng=engine_kwargs.get("rng"),
+        )
         return cr
 
     # ── path B: prompt/template comparison ───────────────────────────────────
@@ -1926,6 +2170,11 @@ def compare(
             alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
+        _run_pareto_if_needed(
+            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
+            rng=engine_kwargs.get("rng"),
+        )
         return cr
 
     # ── path C: arbitrary single factor column ────────────────────────────────
@@ -1957,6 +2206,11 @@ def compare(
             cr, alignment=alignment, metric_col=metric_col, n_mc=n_mc,
             alpha=alpha, ci_level=ci_level, engine_kwargs=engine_kwargs,
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
+        )
+        _run_pareto_if_needed(
+            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
+            rng=engine_kwargs.get("rng"),
         )
         return cr
 

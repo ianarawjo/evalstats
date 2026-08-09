@@ -215,6 +215,8 @@ def print_analysis_summary(
     item_singular: str = "template",
     item_plural: str = "templates",
     show_rank_probabilities: bool = False,
+    pareto: Optional[dict] = None,
+    metric: Optional[str] = None,
 ) -> None:
     """Print a concise console summary of analyze() results.
 
@@ -256,6 +258,8 @@ def print_analysis_summary(
             item_singular=item_singular,
             item_plural=item_plural,
             show_rank_probabilities=show_rank_probabilities,
+            pareto=pareto,
+            metric=metric,
         )
         return
 
@@ -1417,6 +1421,8 @@ def _print_bundle_summary(
     guidance: bool = True,
     min_meaningful_diff: Optional[float] = None,
     show_rank_probabilities: bool = False,
+    pareto: Optional[dict] = None,
+    metric: Optional[str] = None,
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
@@ -1502,9 +1508,19 @@ def _print_bundle_summary(
         print()
         _print_factorial_lmm_summary(bundle, item_singular=item_singular, style=style)
 
-    # Executive summary leaderboard (always last — immediately visible in terminal).
+    # Pareto front (primary metric vs. a secondary metric), when present --
+    # printed right before the executive summary so the secondary-metric-
+    # corrected, holistic verdict sits next to the primary-metric-only
+    # leaderboard rather than trailing after everything else.
+    if pareto is not None:
+        print()
+        _print_pareto_section(pareto, metric=metric, show_rank_probabilities=show_rank_probabilities)
+
+    # Executive summary leaderboard (near the end — immediately visible in terminal).
     print()
-    _print_executive_summary(bundle, item_singular=item_singular)
+    _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto, metric=metric)
+    if pareto is not None:
+        _print_pareto_callout(pareto, metric=metric)
 
     if guidance:
         _print_next_steps_guidance(
@@ -2588,16 +2604,334 @@ def _exec_verdict(
     return f"Tied with {len(others)} others as best"
 
 
+# Sort priority for Pareto status groups: frontier first (the calibrated
+# "safe" verdict), then ambiguous (can't rule dominance in or out), then
+# dominated last.
+_PARETO_STATUS_ORDER = {"frontier": 0, "ambiguous": 1, "dominated": 2}
+
+
+def _pareto_sorted_labels(pareto: dict) -> list[str]:
+    """Entity order for the Pareto Front table: status group, then primary
+    metric mean descending within each group."""
+    result = pareto["result"]
+    statuses = pareto["statuses"]
+    point_primary = dict(zip(result.labels, result.point_primary))
+    return sorted(
+        result.labels,
+        key=lambda lbl: (
+            _PARETO_STATUS_ORDER.get(statuses[lbl].status, 3),
+            -point_primary[lbl],
+        ),
+    )
+
+
+# Glyph + color per Pareto status, shared by the table's merged Status
+# column, the Executive Summary's Pareto column, and the scatterplot below --
+# one visual vocabulary across every place a status shows up.
+_PARETO_STATUS_GLYPH = {"frontier": "★", "ambiguous": "◌", "dominated": "×"}
+
+
+def _pareto_status_glyph(status: str) -> str:
+    return _PARETO_STATUS_GLYPH.get(status, "?")
+
+
+def _pareto_status_color(status: str) -> str:
+    if not _ANSI:
+        return ""
+    if status == "frontier":
+        return _BRIGHT_GREEN
+    if status == "dominated":
+        return _DIM
+    return _YELLOW  # ambiguous
+
+
+def _join_names_capped(names: list[str], *, max_names: int = 2) -> str:
+    """Join entity names for a status phrase, capping how many get spelled
+    out -- an entity dominated by half a dozen others would otherwise blow
+    up the Status column (and the whole table) with a name list as wide as
+    the table itself. Mirrors the existing "Tied with N others as best"
+    capping already used in the Executive Summary's Verdict column."""
+    if len(names) <= max_names:
+        return ", ".join(names)
+    shown = ", ".join(names[:max_names])
+    return f"{shown} and {len(names) - max_names} more"
+
+
+def _pareto_status_phrase(status: "ParetoStatus", *, verbose: bool = True) -> str:
+    """One-cell phrase combining a ParetoStatus's glyph with plain-language
+    wording and its detail (dominated_by / ambiguous_vs), e.g.
+    "× Worse than gpt-4o on both" -- used by both the Pareto Front table
+    (verbose=True, includes the "(not confirmed)" qualifier) and the
+    Executive Summary's narrower Pareto column (verbose=False, drops it)."""
+    glyph = _pareto_status_glyph(status.status)
+    if status.status == "dominated":
+        text = f"Worse than {_join_names_capped(status.dominated_by)} on both"
+    elif status.status == "ambiguous":
+        suffix = " (not confirmed)" if verbose else ""
+        text = f"Unclear vs {_join_names_capped(status.ambiguous_vs)}{suffix}"
+    else:
+        text = "Best trade-off"
+    return f"{glyph} {text}"
+
+
+def _print_pareto_scatter(
+    pareto: dict,
+    *,
+    metric_label: str,
+    width: int = 44,
+    height: int = 9,
+) -> None:
+    """Print a compact ASCII scatterplot of primary vs. secondary metric,
+    one point per entity, marked with its Pareto status glyph (see
+    ``_pareto_status_glyph``) so the trade-off shape between metrics is
+    visible at a glance, before the reader has to parse the numeric table
+    below. Points are numbered (1, 2, 3, ...) rather than labeled by name
+    to sidestep collisions when entities sit close together on the plot;
+    a legend below maps each number back to its entity name.
+    """
+    result = pareto["result"]
+    statuses = pareto["statuses"]
+    secondary_col = pareto["secondary_metric"]
+    direction = pareto["direction"]
+    primary_rob = pareto.get("primary_robustness")
+    secondary_rob = pareto.get("secondary_robustness")
+    if primary_rob is None or secondary_rob is None or len(result.labels) < 2:
+        return
+
+    sorted_labels = _pareto_sorted_labels(pareto)
+    prim_idx = {lbl: i for i, lbl in enumerate(primary_rob.labels)}
+    sec_idx = {lbl: i for i, lbl in enumerate(secondary_rob.labels)}
+    xs = [float(secondary_rob.mean[sec_idx[lbl]]) for lbl in sorted_labels]
+    ys = [float(primary_rob.mean[prim_idx[lbl]]) for lbl in sorted_labels]
+
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    x_pad = max((x_max - x_min) * 0.08, abs(x_max) * 1e-6, 1e-9)
+    y_pad = max((y_max - y_min) * 0.08, abs(y_max) * 1e-6, 1e-9)
+    x_lo, x_hi = x_min - x_pad, x_max + x_pad
+    y_lo, y_hi = y_min - y_pad, y_max + y_pad
+
+    markers = "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    def _marker(i: int) -> str:
+        return markers[i] if i < len(markers) else "#"
+
+    grid = [[" "] * width for _ in range(height)]
+    occupied: dict[tuple[int, int], list[int]] = {}
+    for i, (x, y) in enumerate(zip(xs, ys)):
+        col = int(round((x - x_lo) / (x_hi - x_lo) * (width - 1)))
+        row = int(round((y_hi - y) / (y_hi - y_lo) * (height - 1)))
+        col = min(max(col, 0), width - 1)
+        row = min(max(row, 0), height - 1)
+        occupied.setdefault((row, col), []).append(i)
+
+    for (row, col), idxs in occupied.items():
+        # The first entity claiming a cell gets the glyph; cells shared by
+        # more than one entity are flagged in a note below rather than
+        # silently overwritten.
+        lead = idxs[0]
+        status = statuses[sorted_labels[lead]].status
+        color = _pareto_status_color(status)
+        reset = _RESET if color else ""
+        grid[row][col] = f"{color}{_marker(lead)}{reset}"
+
+    y_label_w = 9
+    print(f"  {metric_label:>{y_label_w}}")
+    for row in range(height):
+        if row == 0:
+            y_tick = f"{y_hi:>{y_label_w}.3g}"
+        elif row == height - 1:
+            y_tick = f"{y_lo:>{y_label_w}.3g}"
+        else:
+            y_tick = " " * y_label_w
+        print(f"  {y_tick} │{''.join(grid[row])}│")
+    border = "─" * width
+    print(f"  {'':>{y_label_w}} └{border}┘")
+    dir_arrow = "→ better" if direction == "max" else "← better"
+    x_axis_label = f"{secondary_col} ({dir_arrow})"
+    x_min_str = f"{x_min:.3g}"
+    x_max_str = f"{x_max:.3g}"
+    print(
+        f"  {'':>{y_label_w}}  {x_min_str}"
+        f"{x_axis_label:^{max(width - 12, 4)}}"
+        f"{x_max_str}"
+    )
+
+    # The plot always stretches to fill its width/height regardless of how
+    # small the real spread is -- flag it explicitly when an axis's true
+    # range is tiny relative to its scale, so a reader doesn't mistake
+    # bootstrap noise blown up to fill the plot for a real difference.
+    def _near_degenerate(lo: float, hi: float) -> bool:
+        return (hi - lo) < 0.02 * max(abs(hi), abs(lo), 1e-9)
+
+    flat_axes = []
+    if _near_degenerate(x_min, x_max):
+        flat_axes.append(f"{secondary_col} ({x_min_str}–{x_max_str})")
+    if _near_degenerate(y_min, y_max):
+        flat_axes.append(f"{metric_label} ({y_min:.3g}–{y_max:.3g})")
+    if flat_axes:
+        print(
+            f"  Note: {' and '.join(flat_axes)} barely varies across entities "
+            "-- the spread above is mostly noise, not a real difference."
+        )
+    print()
+
+    legend_cells = []
+    for i, lbl in enumerate(sorted_labels):
+        status = statuses[lbl].status
+        color = _pareto_status_color(status)
+        reset = _RESET if color else ""
+        legend_cells.append(f"{color}{_marker(i)}{reset}={_truncate_label(lbl, 20)}")
+    # Wrap the legend at a reasonable width instead of one long line.
+    line = "  "
+    for cell in legend_cells:
+        plain_len = len(re.sub(r"\033\[[0-9;]*m", "", cell))
+        if len(re.sub(r"\033\[[0-9;]*m", "", line)) + plain_len + 3 > 78 and line.strip():
+            print(line.rstrip())
+            line = "  "
+        line += cell + "   "
+    if line.strip():
+        print(line.rstrip())
+
+    collisions = [idxs for idxs in occupied.values() if len(idxs) > 1]
+    for idxs in collisions:
+        names = ", ".join(_marker(i) for i in idxs)
+        print(f"  ({names} sit at nearly the same spot on this plot)")
+    print()
+
+
+def _print_pareto_section(
+    pareto: dict,
+    *,
+    metric: Optional[str],
+    show_rank_probabilities: bool,
+) -> None:
+    """Print the Pareto Front section (frontier/dominated/ambiguous per
+    entity against a secondary metric) -- see ``ComparisonResult.pareto_status``.
+
+    Printed immediately before the executive summary (see
+    ``_print_bundle_summary``) so the secondary-metric-corrected, holistic
+    verdict sits right next to the primary-metric-only leaderboard, rather
+    than trailing after everything else where it's easy to miss.
+
+    Shows each metric's own calibrated mean + CI side by side (not just the
+    status label) -- ``pareto["primary_robustness"]``/``["secondary_robustness"]``
+    are the same kind of :class:`~evalstats.core.variance.RobustnessResult`
+    the rest of evalstats already shows for a single metric, so the numbers
+    here carry the same guarantees. Sorted frontier -> ambiguous -> dominated
+    (see :func:`_pareto_sorted_labels`), not raw entity order.
+    """
+    secondary_col = pareto["secondary_metric"]
+    direction = pareto["direction"]
+    statuses = pareto["statuses"]
+    result = pareto["result"]
+    primary_rob = pareto.get("primary_robustness")
+    secondary_rob = pareto.get("secondary_robustness")
+
+    dir_label = "lower is better" if direction == "min" else "higher is better"
+    metric_label = metric or "primary metric"
+    _print_subsection(
+        f"--- {metric_label} vs. {secondary_col} Trade-off "
+        f"(Pareto Front, {dir_label}) ---"
+    )
+    print(
+        f"  A model has the 'best trade-off' when no other option beats it "
+        f"on both {metric_label} and {secondary_col} at once."
+    )
+    print()
+    _print_pareto_scatter(pareto, metric_label=metric_label)
+
+    sorted_labels = _pareto_sorted_labels(pareto)
+    # Capped the same way every other table's entity/model column is
+    # (see e.g. _print_executive_summary's tpl_w) -- long entity names would
+    # otherwise stretch this table arbitrarily wide.
+    label_w = min(28, max(len("Entity"), max((len(lbl) for lbl in result.labels), default=6)))
+    phrases = {lbl: _pareto_status_phrase(statuses[lbl], verbose=True) for lbl in result.labels}
+    status_w = max([len("Status")] + [len(p) for p in phrases.values()])
+    mean_w = 7
+    ci_w = 17
+
+    have_stats = primary_rob is not None and secondary_rob is not None
+    if have_stats:
+        prim_idx = {lbl: i for i, lbl in enumerate(primary_rob.labels)}
+        sec_idx = {lbl: i for i, lbl in enumerate(secondary_rob.labels)}
+        # Left-aligned (not centered) so each metric name reads as a label
+        # spanning its own "Mean 95% CI" pair starting directly above the
+        # Mean column, rather than visually drifting toward the wider CI
+        # sub-column when centered over the combined width.
+        metric_row = (
+            f"  {'':<{label_w}}  {'':<{status_w}}  "
+            f"{_truncate_label(metric_label, mean_w + ci_w + 1):<{mean_w + ci_w + 1}s}  "
+            f"{_truncate_label(secondary_col, mean_w + ci_w + 1):<{mean_w + ci_w + 1}s}"
+        )
+        print(metric_row)
+        header = (
+            f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  "
+            f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}  "
+            f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}"
+        )
+    else:
+        header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+
+    for label in sorted_labels:
+        status_disp = f"{phrases[label]:<{status_w}}"
+        color = _pareto_status_color(statuses[label].status)
+        status_str = f"{color}{status_disp}{_RESET}" if color else status_disp
+        if have_stats:
+            pi, si = prim_idx[label], sec_idx[label]
+            p_mean = float(primary_rob.mean[pi])
+            p_ci = (
+                f"[{primary_rob.ci_low[pi]:.3g}, {primary_rob.ci_high[pi]:.3g}]"
+                if primary_rob.ci_low is not None else "--"
+            )
+            s_mean = float(secondary_rob.mean[si])
+            s_ci = (
+                f"[{secondary_rob.ci_low[si]:.3g}, {secondary_rob.ci_high[si]:.3g}]"
+                if secondary_rob.ci_low is not None else "--"
+            )
+            print(
+                f"  {_truncate_label(label, label_w):<{label_w}}  {status_str}  "
+                f"{p_mean:>{mean_w}.3g} {p_ci:<{ci_w}s}  "
+                f"{s_mean:>{mean_w}.3g} {s_ci:<{ci_w}s}"
+            )
+        else:
+            print(f"  {_truncate_label(label, label_w):<{label_w}}  {status_str}")
+    print("  " + "-" * (len(header) - 2))
+    if show_rank_probabilities:
+        print()
+        print("  How confident are we in each trade-off call?")
+        print("  (P(Pareto-optimal): share of bootstrap resamples this entity wasn't beaten on both axes in)")
+        bar_w = 20
+        for label in sorted_labels:
+            p = float(result.p_frontier[result.labels.index(label)])
+            color = _p_best_color(p)
+            reset = _RESET if color else ""
+            print(f"    {_truncate_label(label, label_w):<{label_w}}  {p:>6.1%} {color}{_ratio_bar(p, width=bar_w)}{reset}")
+    print()
+
+
 def _print_executive_summary(
     bundle: AnalysisBundle,
     *,
     item_singular: str = "template",
+    pareto: Optional[dict] = None,
+    metric: Optional[str] = None,
 ) -> None:
     """Print a concise executive leaderboard after the stats-heavy blocks.
 
     Shows each template's significance group, mean score, bootstrap CI,
-    optional stability (when seed data is present), and a plain-language
-    verdict so the user can assess results at a glance without scrolling up.
+    optional stability (when seed data is present), optional Trade-off
+    status (when ``compare(..., secondary=...)`` was passed -- see
+    ``_print_pareto_section``), and a plain-language verdict so the user can
+    assess results at a glance without scrolling up. The Trade-off column
+    surfaces the secondary-metric verdict right next to the primary-metric
+    one, e.g. an entity that's "Likely best" on the primary metric but
+    "Worse than X on both" once the secondary metric is considered -- and
+    when Trade-off is shown, the last column is relabeled "On {metric}"
+    (instead of the bare "Verdict") so it reads as scoped to the primary
+    metric alone, rather than as the final word once a second axis exists.
     """
     labels = list(bundle.rank_dist.labels)
     n = len(labels)
@@ -2611,10 +2945,19 @@ def _print_executive_summary(
 
     # Significance group letters via CD groups.
     label_to_group = _assign_significance_groups(bundle.pairwise, labels_sorted)
+    verdict_by_label = {
+        label: _exec_verdict(label, label_to_group, labels_sorted) for label in labels_sorted
+    }
 
     # Seed variance for stability column (optional).
     sv = bundle.seed_variance
     has_stability = sv is not None
+    has_pareto = pareto is not None
+    pareto_statuses = pareto["statuses"] if has_pareto else None
+    pareto_phrases: dict[str, str] = (
+        {lbl: _pareto_status_phrase(st, verbose=False) for lbl, st in pareto_statuses.items()}
+        if has_pareto else {}
+    )
 
     item_title = item_singular.capitalize()
     _print_subsection(f"--- Executive Summary ({item_title} leaderboard) ---")
@@ -2625,6 +2968,16 @@ def _print_executive_summary(
     mean_w = 6
     ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
     stab_w = 16
+    # "Trade-off vs {secondary}" names the second axis explicitly (truncated
+    # -- an arbitrary column name shouldn't be able to blow out this table's
+    # width), pairing with "On {metric}" below so the two columns' headers
+    # alone state both axes without needing the Pareto section above.
+    tradeoff_secondary = pareto.get("secondary_metric") if has_pareto else None
+    tradeoff_header = (
+        f"Trade-off vs {_truncate_label(tradeoff_secondary, 16)}"
+        if tradeoff_secondary else "Trade-off"
+    )
+    pareto_w = max([len(tradeoff_header)] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
     ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
@@ -2638,7 +2991,22 @@ def _print_executive_summary(
     ]
     if has_stability:
         header_parts.append(f"  {'Stability':<{stab_w}s}")
-    header_parts.append("  Verdict")
+    verdict_header = f"On {metric or 'primary metric'}" if has_pareto else "Verdict"
+    # Only needs padding when it's no longer the last (unpadded) column,
+    # i.e. once Trade-off follows it -- computed from the actual verdict
+    # strings, which vary a lot ("Likely best" vs. "Tied with X as best").
+    verdict_w = (
+        max([len(verdict_header)] + [len(v) for v in verdict_by_label.values()])
+        if has_pareto else 0
+    )
+    if has_pareto:
+        # "On {metric}" first (echoes the Mean/CI columns just shown), then
+        # "Trade-off vs {secondary}" -- reads as "here's the primary-metric
+        # call, and here's how that changes once the other axis counts too."
+        header_parts.append(f"  {verdict_header:<{verdict_w}s}")
+        header_parts.append(f"  {tradeoff_header}")
+    else:
+        header_parts.append(f"  {verdict_header}")
     header = "".join(header_parts)
     sep = "  " + "─" * (len(header) - 2)
     print(header)
@@ -2653,19 +3021,20 @@ def _print_executive_summary(
         ci_str = f"[{ci_lo:.3f}, {ci_hi:.3f}]"
 
         group = label_to_group.get(label, "?")
-        verdict = _exec_verdict(label, label_to_group, labels_sorted)
+        verdict = verdict_by_label[label]
 
         # Pre-format fixed-width parts, then optionally wrap with ANSI.
         plain_label = f"{_truncate_label(label, tpl_w):<{tpl_w}s}"
         plain_grp = f"{group:^{grp_w}s}"
+        plain_verdict = f"{verdict:<{verdict_w}s}" if has_pareto else verdict
         if group == "#1" and _ANSI:
             label_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_label}{_RESET}"
             grp_str = f"{_BOLD}{_BRIGHT_GREEN}{plain_grp}{_RESET}"
-            verdict_str = f"{_BRIGHT_GREEN}{verdict}{_RESET}"
+            verdict_str = f"{_BRIGHT_GREEN}{plain_verdict}{_RESET}"
         else:
             label_str = plain_label
             grp_str = plain_grp
-            verdict_str = verdict
+            verdict_str = plain_verdict
 
         row = (
             f"  {label_str}"
@@ -2683,10 +3052,62 @@ def _print_executive_summary(
                 stab_str = "—"
             row += f"  {stab_str:<{stab_w}s}"
 
+        # "On {metric}" (verdict) first, then "Trade-off vs {secondary}" --
+        # matches the header order above.
         row += f"  {verdict_str}"
+
+        if has_pareto:
+            pareto_plain = pareto_phrases.get(label, "—")
+            pareto_color = (
+                _pareto_status_color(pareto_statuses[label].status)
+                if label in pareto_statuses else ""
+            )
+            pareto_str = f"{pareto_color}{pareto_plain}{_RESET}" if pareto_color else pareto_plain
+            row += f"  {pareto_str}"
+
         print(row)
 
     print(sep)
+    print()
+
+
+def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
+    """One-line bridge from the Executive Summary's primary-metric-only
+    leader to the Pareto Front's holistic view, e.g. "'gpt-4o' leads on
+    accuracy, but 'gpt-4o-mini' is a competitive trade-off on latency_s" --
+    mirrors the existing "-> Evidence suggests a clear best option" callout
+    used after Pairwise Comparisons, giving a skimming reader the "so what"
+    without having to cross-reference the table above.
+    """
+    result = pareto["result"]
+    statuses = pareto["statuses"]
+    secondary_col = pareto["secondary_metric"]
+    if len(result.labels) < 2:
+        return
+
+    leader_idx = int(np.argmax(result.point_primary))
+    leader = result.labels[leader_idx]
+    metric_label = metric or "the primary metric"
+
+    other_frontier = [
+        lbl for lbl in _pareto_sorted_labels(pareto)
+        if lbl != leader and statuses[lbl].status == "frontier"
+    ]
+    if other_frontier:
+        names = ", ".join(f"'{lbl}'" for lbl in other_frontier)
+        is_are, article_or_plural = (
+            ("is", "a competitive trade-off") if len(other_frontier) == 1
+            else ("are", "competitive trade-offs")
+        )
+        print(
+            f"  -> '{leader}' leads on {metric_label}, but {names} {is_are} "
+            f"{article_or_plural} on {secondary_col} — see Pareto Front above."
+        )
+    else:
+        print(
+            f"  -> '{leader}' is also the best choice on {secondary_col} "
+            "— no real trade-off here."
+        )
     print()
 
 
