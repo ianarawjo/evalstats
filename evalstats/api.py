@@ -23,7 +23,12 @@ from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS
 from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
 from evalstats.core.stats_utils import correct_pvalues
-from evalstats.core.summary import print_analysis_summary, print_brief_summary, _UNSET as _SUMMARY_UNSET
+from evalstats.core.summary import (
+    print_analysis_summary,
+    print_brief_summary,
+    _assign_significance_groups,
+    _UNSET as _SUMMARY_UNSET,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -350,6 +355,56 @@ class ComparisonResult:
     def full_analysis(self):
         """Underlying AnalysisBundle (for vis function compatibility)."""
         return self._primary_bundle()
+
+    @property
+    def cross_model(self):
+        """Flat ranking over every (model, template) pair, or ``None``.
+
+        Populated only for two-factor comparisons (e.g.
+        ``factors=["model", "prompt"]``, or ``factors="model"`` when a
+        prompt column is also present). ``None`` for single-factor
+        comparisons. Call ``.summary()`` on the returned
+        :class:`~evalstats.core.bundles.AnalysisBundle` for the full
+        cross-model comparison — every (model, template) cell with its own
+        CI, ranked and grouped into statistically-indistinguishable bands,
+        the same "unbeaten" logic :attr:`unbeaten` applies within a single
+        factor, extended across both.
+        """
+        if isinstance(self._analysis, MultiModelBundle):
+            return self._analysis.cross_model
+        return None
+
+    @property
+    def best_pairs(self) -> Optional[list]:
+        """(model, template) pairs statistically tied for best, or ``None``.
+
+        This is the top significance group (``"#1"``) of :attr:`cross_model`
+        — every cell whose CI is not distinguishable from the top
+        performer's — not a single "best pair by mean". A higher point
+        estimate alone does not make one cell the winner over another it
+        isn't significantly different from; use this instead of manually
+        picking the row with the highest mean out of :attr:`cross_model`.
+        Mirrors :attr:`unbeaten` for the two-factor case: ``None`` when this
+        isn't a two-factor comparison, or when there are fewer than two
+        pairs to compare.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        cross = self._analysis.cross_model
+        labels = list(cross.rank_dist.labels)
+        if len(labels) < 2:
+            return None
+        means = cross.robustness.mean
+        sort_idx = list(np.argsort(-means))
+        labels_sorted = [labels[i] for i in sort_idx]
+        label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted, alpha=self._alpha)
+        top_pairs: list = []
+        for label in labels_sorted:
+            if label_to_group.get(label) == "#1":
+                parts = label.split(" / ", 1)
+                if len(parts) == 2:
+                    top_pairs.append((parts[0], parts[1]))
+        return top_pairs or None
 
     # ── data access ──────────────────────────────────────────────────────────
 

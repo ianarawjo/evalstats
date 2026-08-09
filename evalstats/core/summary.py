@@ -650,17 +650,22 @@ def _print_multi_model_summary(
     print()
     _print_loud_section("Cross-Model Ranking (all model/template pairs)")
     _print_model_template_matrix(bundle)
+
+    # Shared by the (optional) P(Best) block below and the unconditional
+    # "Mean Performance" listing further down -- computed once here so the
+    # latter doesn't depend on show_rank_probabilities being True.
+    p_best = bundle.cross_model.rank_dist.p_best
+    expected_ranks = bundle.cross_model.rank_dist.expected_ranks
+    rank_labels = bundle.cross_model.rank_dist.labels
+    rank_pairs = [_split_model_template_label(label) for label in rank_labels]
+    rank_bar_width = 14
+    n_ranked_items = len(rank_labels)
+    model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
+    template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
+    top_indices = np.argsort(-p_best)
+    n_show = len(top_indices)
+
     if show_rank_probabilities:
-        p_best = bundle.cross_model.rank_dist.p_best
-        expected_ranks = bundle.cross_model.rank_dist.expected_ranks
-        rank_labels = bundle.cross_model.rank_dist.labels
-        rank_pairs = [_split_model_template_label(label) for label in rank_labels]
-        rank_bar_width = 14
-        n_ranked_items = len(rank_labels)
-        model_col_width = min(24, max(len(model) for model, _ in rank_pairs) + 2)
-        template_col_width = min(24, max(len(template) for _, template in rank_pairs) + 2)
-        top_indices = np.argsort(-p_best)
-        n_show = len(top_indices)
         _print_subsection(f"--- Rank Probabilities: All {n_show} by P(Best) ({_rank_method_label(bundle.cross_model)}) ---")
         print(
             f"  {'Model':<{model_col_width}s} "
@@ -773,13 +778,14 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
     """Print a model × template score matrix (mean ±std, heat encoding)."""
     model_labels = bundle.benchmark.model_labels
     template_labels = bundle.benchmark.template_labels
+    cross = bundle.cross_model
 
     # Build (model, template) -> mean from the flat cross_model bundle.
     # Labels are formatted as "model / template" by get_flat_result().
     cell_mean: dict[tuple[str, str], float] = {}
     for label, m in zip(
-        bundle.cross_model.rank_dist.labels,
-        bundle.cross_model.robustness.mean,
+        cross.rank_dist.labels,
+        cross.robustness.mean,
     ):
         parts = label.split(" / ", 1)
         if len(parts) == 2:
@@ -787,8 +793,29 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 
     all_means = list(cell_mean.values())
     mn, mx = min(all_means), max(all_means)
-    best_mean = mx
     heat_chars = "·░▒▓█"
+
+    # Cells statistically tied for best -- the same CD-style significance-
+    # group analysis used by the executive summary below (group "#1"),
+    # rather than the single highest raw mean. A marginally higher point
+    # estimate should not read as a decisive winner when the pairwise CIs
+    # show it isn't distinguishable from its neighbors; that would defeat
+    # the point of reporting calibrated intervals in the first place.
+    cross_labels_all = list(cross.rank_dist.labels)
+    cross_means_all = cross.robustness.mean
+    sort_idx = list(np.argsort(-cross_means_all))
+    labels_sorted = [cross_labels_all[i] for i in sort_idx]
+    label_to_group = _assign_significance_groups(cross.pairwise, labels_sorted)
+    best_cells: set[tuple[str, str]] = set()
+    for label, group in label_to_group.items():
+        if group == "#1":
+            parts = label.split(" / ", 1)
+            if len(parts) == 2:
+                best_cells.add((parts[0], parts[1]))
+    if not best_cells:
+        # Fallback so a winner is still shown if group detection finds
+        # nothing (e.g. degenerate pairwise matrix).
+        best_cells = {max(cell_mean, key=cell_mean.get)}
 
     def _heat(v: float) -> str:
         if mx == mn:
@@ -806,9 +833,10 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
             return f"{'N/A':^{CELL_W}}"
         m = cell_mean[(mdl, t)]
         h = _heat(m)
-        marker = "*" if m == best_mean else " "
+        is_best = (mdl, t) in best_cells
+        marker = "*" if is_best else " "
         plain = f"{m:.3f} {h}{marker}".rjust(CELL_W)
-        if m == best_mean:
+        if is_best:
             return f"{_BOLD}{_BRIGHT_GREEN}{plain}{_RESET}"
         return plain
 
@@ -829,7 +857,10 @@ def _print_model_template_matrix(bundle: MultiModelBundle) -> None:
 
     # Footer
     print(div)
-    print(f"  * = best pair by mean  |  heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]")
+    print(
+        f"  * = statistically tied for best (95% CI, not significantly beaten)  |  "
+        f"heat: · (low) → █ (high), range [{mn:.3f}, {mx:.3f}]"
+    )
     print()
 
 
