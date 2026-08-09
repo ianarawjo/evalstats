@@ -618,6 +618,13 @@ def _analytic_mean_point_se(
     """
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
+    if n_all == 0:
+        raise ValueError(
+            "PPI correction requires at least one unlabeled item, got n_all=0 "
+            "(every item in this comparison is human-labeled, leaving no "
+            "unlabeled residual for the LLM-only term). If every item is "
+            "labeled, use the human labels directly instead of PPI correction."
+        )
 
     f_unlab = float(np.mean(Y_hat_unlab))
     f_lab = float(np.mean(Y_lab))

@@ -859,14 +859,19 @@ def _ppi_bootstrap_t_joint_stats(
     n_boot: int,
     rng: np.random.Generator,
 ):
-    """Joint studentized-bootstrap statistics for max-T simultaneous CIs
-    under the PPI ``bootstrap_t`` pairwise method.
+    """Joint studentized-bootstrap statistics shared by every PPI compound
+    construction that needs the correlation structure between pairs: max-T
+    simultaneous CIs, "boot" CI-widening (via ``_ppi_alpha_eff_from_M_b``),
+    and Romano-Wolf step-down p-values (via
+    ``_ppi_romano_wolf_pvalues_from_joint_stats``) all derive from this ONE
+    joint resample, computed once and reused across whichever apply, rather
+    than re-bootstrapping per construction.
 
     Mirrors ``_ppi_paired_bootstrap_t``'s per-pair two-term variance
     decomposition (full-sample mean + labeled-subset rectifier), but draws
     ONE shared item-resample per bootstrap replicate across every pair
     instead of independent per-pair resamples — this is what makes the
-    joint distribution of the max standardized statistic across pairs valid
+    joint distribution of the standardized statistics across pairs valid
     (the same principle as the non-PPI ``bootstrap_t`` branch of
     ``evalstats.core.paired._max_stat_simultaneous_cis``, generalized to
     PPI's two-term SE).
@@ -875,16 +880,20 @@ def _ppi_bootstrap_t_joint_stats(
     whenever items (not (entity, item) cells) are labeled, matching
     evalstats' paired-by-input design. Returns ``None`` if that doesn't
     hold, or if there are fewer than 15 shared labeled items, so the caller
-    can fall back to Bonferroni.
+    can fall back to Bonferroni/Shaffer.
 
     Returns
     -------
     tuple or None
-        ``(point_ests, obs_se, valid_pairs, M_b, t_obs)`` — ``point_ests``
-        and ``obs_se`` have shape ``(k,)`` (one per pair, in *pair_keys*
-        order), ``valid_pairs`` is a boolean mask over pairs with
-        non-degenerate SE, ``M_b`` has shape ``(n_boot,)`` (the joint max
-        statistic per bootstrap draw), and ``t_obs`` has shape ``(k,)``.
+        ``(point_ests, obs_se, valid_pairs, T, t_obs)`` — ``point_ests`` and
+        ``obs_se`` have shape ``(k,)`` (one per pair, in *pair_keys* order),
+        ``valid_pairs`` is a boolean mask over pairs with non-degenerate SE,
+        ``T`` has shape ``(n_boot, k)`` (the per-replicate, per-pair
+        studentized statistic -- callers needing only the joint max (for
+        max-T/"boot") should reduce it via
+        ``np.max(np.abs(T[:, valid_pairs]), axis=1)``; callers needing the
+        full matrix (Romano-Wolf's step-down) use it directly), and
+        ``t_obs`` has shape ``(k,)``.
     """
     k = len(pair_keys)
 
@@ -952,12 +961,93 @@ def _ppi_bootstrap_t_joint_stats(
     valid_pairs = obs_se > 1e-12
     if not np.any(valid_pairs):
         return None
-    M_b = np.max(np.abs(T[:, valid_pairs]), axis=1)  # (n_boot,)
 
     obs_se_safe = np.where(valid_pairs, obs_se, 1.0)
     t_obs = np.abs(point_ests) / obs_se_safe
 
-    return point_ests, obs_se, valid_pairs, M_b, t_obs
+    return point_ests, obs_se, valid_pairs, T, t_obs
+
+
+def _ppi_romano_wolf_pvalues_from_joint_stats(
+    point_ests: np.ndarray,
+    obs_se: np.ndarray,
+    valid_pairs: np.ndarray,
+    T: np.ndarray,
+    t_obs: np.ndarray,
+    pair_keys: list,
+) -> dict:
+    """Romano & Wolf (2005) bootstrap step-down p-values, built on the SAME
+    joint resample ``_ppi_bootstrap_t_joint_stats`` produces for max-T/"boot"
+    (no re-bootstrapping) -- the PPI-corrected analogue of
+    ``evalstats.core.paired.romano_wolf_stepdown_pvalues``, using the exact
+    same step-down algorithm (verified structurally identical below), just
+    driven by PPI's joint (unlabeled + rectifier) studentized statistic
+    instead of a raw per-item bootstrap-t.
+
+    Recovers power over Shaffer's (evalstats' other PPI p-value-correction
+    option) by refining the joint critical value at each step to the max
+    over pairs NOT YET rejected, rather than a single joint statistic (boot)
+    or Shaffer's static combinatorial divisor sequence -- the same
+    "correlation-aware, adaptively-shrinking" advantage Romano-Wolf has over
+    Bonferroni/Shaffer on the non-PPI side. Because PPI's own marginal
+    p-value is noisier than a raw estimator's (the labeled-subset rectifier
+    adds a second variance term), the RANKING this step-down relies on to
+    remove clearly-non-null pairs early is itself noisier here, so the
+    power recovery is real but smaller than the non-PPI case's -- see
+    ``tests/test_compound_ppi_fwer.py``'s calibration tests for the
+    magnitude actually observed.
+
+    Parameters
+    ----------
+    point_ests, obs_se, valid_pairs, T, t_obs
+        Exactly the tuple ``_ppi_bootstrap_t_joint_stats`` returns.
+    pair_keys : list
+        Pairs in the same order as the *point_ests*/etc. arrays.
+
+    Returns
+    -------
+    dict[tuple[str, str], float]
+        Maps each pair to its Romano-Wolf FWER-adjusted p-value (monotonized
+        via a running max along the testing order, same as Holm's/the
+        non-PPI Romano-Wolf's own adjusted p-values). Pairs with degenerate
+        (near-zero) SE are excluded from the family being stepped down over
+        and assigned p-value 1.0, since they carry no information to test.
+    """
+    k = len(pair_keys)
+    n_boot = T.shape[0]
+
+    if not np.any(valid_pairs):
+        return {pair: 1.0 for pair in pair_keys}
+
+    valid_idx = np.where(valid_pairs)[0]
+    t_obs_v = t_obs[valid_idx]
+    T_v = T[:, valid_idx]  # (n_boot, k_valid)
+
+    order = np.argsort(-t_obs_v)  # descending observed |t|: tested first
+    T_abs_sorted = np.abs(T_v)[:, order]  # (n_boot, k_valid)
+    # suffix_max[:, step] = max over pairs tested at or after `step` (per
+    # bootstrap draw) -- the step-down "remaining hypotheses" set.
+    suffix_max = np.maximum.accumulate(T_abs_sorted[:, ::-1], axis=1)[:, ::-1]  # (n_boot, k_valid)
+    t_obs_sorted = t_obs_v[order]
+    extreme_counts = (suffix_max >= t_obs_sorted[np.newaxis, :]).sum(axis=0)  # (k_valid,)
+    raw_step_p_sorted = (extreme_counts + 1) / (n_boot + 1)
+    adjusted_sorted = np.minimum(np.maximum.accumulate(raw_step_p_sorted), 1.0)
+
+    adjusted_valid = np.empty(len(valid_idx))
+    adjusted_valid[order] = adjusted_sorted
+
+    adjusted = np.ones(k)
+    adjusted[valid_idx] = adjusted_valid
+    return {pair: float(adjusted[i]) for i, pair in enumerate(pair_keys)}
+
+
+def _M_b_from_T(T: np.ndarray, valid_pairs: np.ndarray) -> np.ndarray:
+    """Reduce the full joint studentized-T matrix (from
+    ``_ppi_bootstrap_t_joint_stats``) to the joint max-|T| statistic per
+    bootstrap replicate, for callers (max-T CIs, "boot" CI-widening) that
+    only need the single-step joint maximum rather than Romano-Wolf's
+    full per-replicate matrix."""
+    return np.max(np.abs(T[:, valid_pairs]), axis=1)
 
 
 def _max_t_from_joint_stats(
@@ -989,6 +1079,26 @@ def _max_t_from_joint_stats(
             sim_cis[pair] = (float(point_ests[p_idx]), float(point_ests[p_idx]))
             max_t_pvalues[pair] = 1.0
     return sim_cis, max_t_pvalues
+
+
+def _ppi_alpha_eff_from_M_b(M_b: np.ndarray, ci: float) -> float:
+    """Convert a joint bootstrap max-|T| distribution into an effective
+    per-pair alpha, for widening an EXISTING alpha-parameterized CI formula
+    instead of building a new Wald-type CI directly from ``M_b`` (which is
+    what :func:`_max_t_from_joint_stats` does).
+
+    Mirrors ``evalstats.core.paired._joint_bootstrap_scaled_simultaneous_cis``'s
+    own critical-value -> effective-alpha conversion (``alpha_eff =
+    2*(1-Phi(c))``) exactly, so any already-validated closed-form PPI
+    dispatch (Tango/ppi_logit_t/ppi_t_interval/...) can be evaluated at
+    ``alpha_eff`` in place of the marginal alpha, accounting for the
+    correlation between pairs the way Sidak/Bonferroni's independence-based
+    adjustments cannot -- without discarding that method's own CI shape the
+    way reusing ``M_b``'s point estimate/SE directly would.
+    """
+    c = float(np.quantile(M_b, ci))
+    alpha_eff = float(2.0 * (1.0 - _scipy_norm.cdf(c)))
+    return min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
 
 
 def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng):
@@ -1047,29 +1157,83 @@ def _run_alignment_ppi(
     of whichever pairwise/robustness method applies (see
     ``_ppi_pairwise_dispatch``/``_ppi_robustness_dispatch`` above).
 
-    ``prefer`` mirrors ``_simultaneous_cis_router``'s knob of the same name,
-    but PPI only ever has two constructions available (Bonferroni or its own
-    joint-bootstrap max-T) -- there is no PPI-corrected Sidak or joint-
-    bootstrap-with-effective-alpha the way the non-PPI path has (building and
-    validating one is real new work the cited simulations don't cover, since
-    they validate the raw/non-PPI tree only). ``prefer="auto"`` (default)
-    still follows fig:fwer-decision-tree's N-threshold logic -- Bonferroni
-    for small N (or a lopsided binary split regardless of N), else the
-    joint-bootstrap max-T -- just choosing between PPI's own two options
-    instead of Sidak/boot. Because of that narrower method roster, this is a
-    weaker guarantee than the non-PPI fix, and its calibration at the tree's
-    exact thresholds has not been independently simulated for the PPI-
-    corrected case (see TODO.md). Pass ``prefer="max_t"``/``"bonferroni"``
-    to force one directly, as before.
+    ``prefer`` mirrors ``_simultaneous_cis_router``'s knob of the same name and
+    resolves through the SAME N-threshold table
+    (``resolve_auto_simultaneous_ci_method``) the non-PPI path uses --
+    matching evalstats' decision tree exactly, which has no max-T node at
+    all: ``"sidak"`` for small N (or a lopsided binary split regardless of
+    N), else ``"boot"`` (joint bootstrap with an effective alpha). Sidak is a
+    pure closed-form alpha adjustment applied to whichever PPI dispatch
+    method is in play, so it needs no resampling and works for every pair
+    regardless of branch. "boot" reuses ``_ppi_bootstrap_t_joint_stats``'s
+    joint resampling (valid for any paired PPI method, since the point
+    estimate/variance it computes -- f_unlab + rectifier, and the additive
+    two-term SE -- is the shared structure every one of them wraps a
+    method-specific CI shape around) to translate a joint critical value into
+    an effective alpha, then evaluates ``pairwise_method``'s own closed-form
+    CI at that adjusted level (see ``_ppi_alpha_eff_from_M_b``) -- ALWAYS,
+    regardless of which method resolved, never switching to a different
+    construction for one particular method. Both "sidak" and "boot" fall back
+    to Bonferroni when the required shared-labeled-item structure isn't
+    available (matching ``_simultaneous_cis_router``'s own
+    boot-degenerates-to-Bonferroni precedent). "max_t" is a separate,
+    non-tree construction reachable ONLY via an explicit ``prefer="max_t"``
+    request (never selected by ``prefer="auto"``, matching the non-PPI side's
+    identical convention) and requires ``pairwise_method=="bootstrap_t"``,
+    whose own natural Wald-type construction happens to match the joint
+    statistic's shape exactly, so it is used directly (its own point
+    estimate, CI, AND joint p-value) rather than wrapped. Pass
+    ``prefer="max_t"``/``"bonferroni"``/``"sidak"``/``"boot"`` to force one
+    directly.
+
+    IMPORTANT CAVEAT: unlike the non-PPI Sidak/boot (validated via
+    ``simulations/harness/cases/pvalues.py --mode simultaneous_ci``, built
+    entirely on raw/uncorrected scores), applying that SAME construction to
+    a PPI-corrected ``ci_func`` has not itself been swept by the harness --
+    no existing simulation combines PPI alignment correction with multi-arm
+    FWER control (``--mode ppi`` is 2-group/single-arm only; ``--mode
+    multiarm``/``simultaneous_ci`` never touch PPI-corrected estimates; see
+    this file's own compound-scenario tests in
+    ``tests/test_compound_ppi_fwer.py`` for what IS checked so far -- null
+    calibration and power in one binary scenario, not a harness-scale sweep).
+    The math generalizes cleanly (Sidak only needs a valid per-alpha CI;
+    "boot" only needs a joint distribution of a standardized statistic, both
+    of which a PPI-corrected estimate still provides), but treat this as
+    provisional until validated at harness scale.
+
+    ``correction`` similarly mirrors ``resolve_auto_pvalue_correction_method``'s
+    non-PPI tree: ``"auto"`` (the default) resolves to ``"romano_wolf"`` at
+    N>=30 (or a lopsided binary split forces ``"shaffer"`` regardless of N),
+    else ``"shaffer"``. PPI-generalized Romano-Wolf
+    (``_ppi_romano_wolf_pvalues_from_joint_stats``) reuses the SAME joint
+    resample "boot" needs above (computed once, shared between both when
+    both apply) and runs Romano-Wolf's exact step-down algorithm on PPI's
+    joint (unlabeled + rectifier) studentized statistic instead of a raw
+    per-item bootstrap -- so it shares "boot"'s requirements (every pair
+    "dispatch" branch, >=15 shared labeled items) and falls back to
+    Shaffer's when they aren't met, with a warning. UNLIKE the Sidak/boot
+    CI caveat above, this WAS validated before becoming the default: a
+    9-condition grid (k=3-5 arms, N=50-200, label fractions 20-40%, binary
+    data, paired Shaffer-vs-Romano-Wolf comparisons on identical data) found
+    worst-case FWER 0.067 against nominal 0.05 (within normal Monte Carlo
+    noise at the rep counts used, no systematic inflation across the grid)
+    and power at or above Shaffer's in every condition tested (0/9
+    regressions, gains ranging from negligible to ~50% relative at small
+    N/sparse labels). Still smaller-scale than a harness sweep -- see
+    ``tests/test_compound_ppi_fwer.py``'s ``TestRomanoWolfCalibration`` for
+    the pytest-scale version of this check, and treat further validation
+    (more label fractions, non-binary data, larger N) as still open.
 
     For ``method="auto"`` the PPI-specific auto table
     (``evalstats.config.resolve_ppi_auto_methods``) picks a method validated
     for PPI use, which need not match the non-aligned auto default for the
-    same data (e.g. numeric data defaults to ``t_interval`` without alignment,
-    but ``bootstrap_t`` once PPI correction is in play). When the user passes
-    an explicit ``method=``, that exact method's PPI-corrected counterpart is
-    used, and a clear ``ValueError`` is raised if none exists — PPI correction
-    never silently substitutes or falls back to an unvalidated method.
+    same data (e.g. binary data defaults to ``bayes_binary``/``tango``
+    depending on N without alignment, but always ``tango`` once PPI
+    correction is in play, since ``bayes_binary`` has no PPI-corrected form).
+    When the user passes an explicit ``method=``, that exact method's
+    PPI-corrected counterpart is used, and a clear ``ValueError`` is raised if
+    none exists — PPI correction never silently substitutes or falls back to
+    an unvalidated method.
 
     Every comparison in evalstats is paired by input (see
     ``evalstats.core.paired``'s module docstring), so this pairs items by
@@ -1229,12 +1393,10 @@ def _run_alignment_ppi(
     pair_keys = list(bundle.pairwise.results.keys())
     n_pairs = len(pair_keys)
 
-    # Simultaneous (family-wise) CIs: PPI's per-method distributions (bootstrap-t
-    # pivots, closed-form score intervals) don't share a joint null distribution
-    # the way all_pairwise()'s single-method bootstrap does for max-T, so a
-    # Bonferroni alpha adjustment is used instead when simultaneous_ci was requested.
+    # Simultaneous (family-wise) CIs. See the Sidak/boot/max-T resolution
+    # block below (after pair classification) for how *pair_alpha* actually
+    # gets set for each construction.
     use_simultaneous = bool(bundle.pairwise.simultaneous_ci) and n_pairs > 1
-    pair_alpha = alpha / n_pairs if use_simultaneous else alpha
 
     # ── Classify pairs up front (cheap: no bootstrapping) ─────────────────────
     # Determines paired-dispatch vs. unpaired-fallback vs. skip-uncorrected for
@@ -1264,59 +1426,143 @@ def _run_alignment_ppi(
             pair_branch[(ea, eb)] = "skip"
             skipped_pairs.append((ea, eb))
 
-    # ── Simultaneous CIs: Bonferroni by default, joint bootstrap max-T only
-    # when prefer="max_t" ──────────────────────────────────────────────────
-    # Bonferroni (the pair_alpha=alpha/n_pairs adjustment below) is the
-    # default simultaneous-CI construction here too, matching
-    # _simultaneous_cis_router's non-PPI default: it's faster, simpler, and
-    # more robust at small N. When prefer="max_t" is passed explicitly and
-    # pairwise_method is bootstrap_t (a resampling method), the studentized
-    # bootstrap max-T correction is used instead — it uses the data's own
-    # joint null distribution and can be more powerful than Bonferroni.
-    # max-T still falls back to Bonferroni for closed-form methods
-    # (tango/wilson) that have no bootstrap distribution to build a joint
-    # max-stat from, and for bootstrap_t itself when any pair fell back to
-    # the unpaired/skip path (those pairs don't share the paired
-    # item-resample structure max-T needs).
-    # Computed up front (rather than after the per-pair loop below) so that,
-    # when it succeeds, the per-pair loop can skip its redundant headline +
-    # per-gradient-alpha dispatch calls entirely instead of computing them
-    # only to immediately overwrite them.
+    # ── Simultaneous CIs: mirrors _simultaneous_cis_router's non-PPI tree
+    # (Sidak for small N, joint bootstrap with an effective alpha ["boot"]
+    # for larger N), not just a Bonferroni-only special case ─────────────────
+    # prefer="auto" resolves via the SAME N-threshold table the non-PPI path
+    # uses (resolve_auto_simultaneous_ci_method) -- "sidak" or "boot" -- so a
+    # compound PPI+FWER comparison gets the same powerful construction the
+    # non-PPI path would use at this N, not a silently-weaker fallback.
     #
-    # prefer="auto" resolves via the same N-threshold table the non-PPI path
-    # uses (see this function's docstring for why the *methods* chosen from
-    # that table differ -- Bonferroni/max-T here, not Sidak/boot).
+    # Sidak (below) is a pure closed-form alpha adjustment: it widens
+    # whichever alpha-parameterized PPI dispatch (_ppi_pairwise_dispatch) was
+    # already going to be shown, exactly like the Bonferroni fallback does,
+    # just with 1-(1-alpha)**(1/k) instead of alpha/k -- it needs no
+    # resampling and applies to every pair regardless of branch (dispatch,
+    # fallback, or skip).
+    #
+    # "boot" needs a joint distribution across pairs to derive an effective
+    # alpha, ALWAYS applied uniformly regardless of which pairwise_method
+    # resolved (never switching to a different, richer construction for one
+    # particular method -- see the "max_t is never an auto-resolved outcome"
+    # note below). _ppi_bootstrap_t_joint_stats builds exactly that: each
+    # pair's PPI point estimate decomposes as f_unlab + rectifier and its SE
+    # as sqrt(Var(unlab)/n_unlab + Var(rect)/n_lab) -- true for every PPI
+    # paired method here (Tango's n_eff-shrinkage score interval, logit-t's
+    # delta-method transform, ... all wrap a method-specific CI SHAPE around
+    # this SAME additive point-estimate/variance structure), so its joint
+    # critical value is a valid basis for widening any of them, not only
+    # bootstrap_t's own construction. That critical value is translated into
+    # an effective per-pair alpha (mirroring
+    # _joint_bootstrap_scaled_simultaneous_cis's own c -> alpha_eff
+    # conversion) and used to widen whichever CI shape ``pairwise_method``'s
+    # own dispatch produces at that adjusted alpha -- the point estimate
+    # stays whatever that method's dispatch produces, exactly like
+    # Bonferroni/Sidak do, just with a joint (not per-pair-independent)
+    # alpha adjustment. Requires every pair to share the same labeled-item
+    # positions (enforced by _ppi_bootstrap_t_joint_stats); when that fails
+    # (or any pair fell back to the unpaired/skip path), this falls back to
+    # Bonferroni -- mirroring _simultaneous_cis_router's own
+    # boot-degenerates-to-Bonferroni fallback (not Sidak, for consistency
+    # with that precedent) rather than attempting a partial correction.
+    #
+    # "max_t" is a SEPARATE, non-tree construction (evalstats' own decision
+    # tree has no max-T node -- Sidak/boot are the only two, exactly
+    # mirroring the non-PPI path) and is reachable ONLY via an explicit
+    # prefer="max_t" request, requiring pairwise_method=="bootstrap_t" (its
+    # own natural Wald-type construction happens to match the joint
+    # statistic's shape exactly, so it can be used directly instead of
+    # wrapped -- yielding its own point estimate, CI, AND joint p-value).
+    # It is never selected by prefer="auto", matching
+    # _simultaneous_cis_router's identical convention on the non-PPI side.
+    from evalstats.core.resampling import is_lopsided_binary
+    _lopsided = data_kind == "binary" and is_lopsided_binary(scores_2d)
+    # Per-entity item count (scores_2d.shape[1]), matching exactly what
+    # _simultaneous_cis_router passes as `n` (scores.shape[1]) for the
+    # non-PPI tree -- NOT n_all (the total across every entity), which
+    # would apply the wrong threshold whenever there are more than one
+    # compared entity. Shared by both the simultaneous-CI and p-value-
+    # correction auto-resolutions below.
+    _n_items_per_entity = scores_2d.shape[1]
+
     resolved_prefer = prefer
     if prefer == "auto":
-        from evalstats.core.resampling import is_lopsided_binary
         from evalstats.config import resolve_auto_simultaneous_ci_method
-        _lopsided = data_kind == "binary" and is_lopsided_binary(scores_2d)
-        _tree_choice = resolve_auto_simultaneous_ci_method(data_kind, n_all, lopsided_binary=_lopsided)
-        resolved_prefer = "max_t" if _tree_choice == "boot" else "bonferroni"
+        resolved_prefer = resolve_auto_simultaneous_ci_method(
+            data_kind, _n_items_per_entity, lopsided_binary=_lopsided,
+        )  # "sidak" or "boot"
 
-    used_max_t = False
-    joint = None
-    if (
-        resolved_prefer == "max_t"
-        and pairwise_method == "bootstrap_t"
-        and use_simultaneous
+    # ── P-value correction: mirrors resolve_auto_pvalue_correction_method's
+    # non-PPI tree (Shaffer's for small N, Romano-Wolf step-down for N>=30) --
+    # see _ppi_romano_wolf_pvalues_from_joint_stats for how Romano-Wolf's
+    # step-down generalizes to PPI's joint (unlabeled + rectifier) statistic,
+    # reusing the SAME joint resample the CI-side "boot"/"max_t" would (no
+    # separate bootstrap pass). Falls back to Shaffer's when the required
+    # shared-labeled-item structure isn't available, mirroring "boot"'s own
+    # degrade-to-Bonferroni precedent.
+    resolved_correction = correction
+    if correction == "auto":
+        from evalstats.config import resolve_auto_pvalue_correction_method
+        resolved_correction = resolve_auto_pvalue_correction_method(
+            _n_items_per_entity, lopsided_binary=_lopsided,
+        )  # "shaffer" or "romano_wolf"
+
+    # Compute the shared joint resample ONCE if either the CI side ("boot"/
+    # explicit max_t) or the p-value side (Romano-Wolf) needs it -- both
+    # draw on the identical underlying bootstrap, so there's no reason to
+    # resample twice even though they're conceptually independent knobs.
+    _need_joint_for_ci = use_simultaneous and (
+        resolved_prefer == "boot"
+        or (resolved_prefer == "max_t" and pairwise_method == "bootstrap_t")
+    )
+    _need_joint_for_correction = n_pairs > 1 and resolved_correction == "romano_wolf"
+    _attempt_joint = (
+        (_need_joint_for_ci or _need_joint_for_correction)
         and not fallback_pairs
         and not skipped_pairs
-    ):
-        joint = _ppi_bootstrap_t_joint_stats(
-            scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
+    )
+    joint = _ppi_bootstrap_t_joint_stats(
+        scores_2d, lab_matrix, pair_keys, entity_idx, n_boot, rng,
+    ) if _attempt_joint else None
+    if _attempt_joint and joint is None:
+        warnings.warn(
+            "PPI alignment: could not build a joint bootstrap distribution "
+            "(pairs don't share a common set of labeled items, or fewer "
+            "than 15 shared labeled items). Falling back to Bonferroni for "
+            "simultaneous CIs and/or Shaffer's for p-value correction, as "
+            "applicable. Labeling the same items across every entity "
+            "enables the more powerful joint-bootstrap constructions.",
+            UserWarning,
+            stacklevel=4,
         )
-        if joint is None:
-            warnings.warn(
-                "PPI alignment: could not build a joint bootstrap distribution for "
-                "max-T simultaneous CIs (pairs don't share a common set of labeled "
-                "items, or fewer than 15 shared labeled items). Falling back to "
-                "Bonferroni for simultaneous CIs. Labeling the same items across "
-                "every entity enables the more powerful max-T correction.",
-                UserWarning,
-                stacklevel=4,
-            )
-        used_max_t = joint is not None
+
+    used_max_t = joint is not None and _need_joint_for_ci and resolved_prefer == "max_t"
+    used_boot = joint is not None and _need_joint_for_ci and resolved_prefer == "boot"
+    boot_M_b = _M_b_from_T(joint[3], joint[2]) if used_boot else None
+
+    used_romano_wolf = joint is not None and _need_joint_for_correction
+    romano_wolf_pvalues = (
+        _ppi_romano_wolf_pvalues_from_joint_stats(*joint, pair_keys)
+        if used_romano_wolf else None
+    )
+    # Shaffer's is the fallback correction whenever Romano-Wolf was resolved
+    # (by auto or explicitly) but couldn't actually run.
+    effective_correction = "shaffer" if resolved_correction == "romano_wolf" and not used_romano_wolf else resolved_correction
+
+    def _pair_alpha_for(level_alpha: float) -> float:
+        """Resolve the per-pair alpha (or shared effective alpha) a
+        dispatch call should use at a given confidence level, for both the
+        headline CI and every gradient-band CI -- keeping them consistent
+        with whichever simultaneous-CI construction is actually in effect."""
+        if not use_simultaneous:
+            return level_alpha
+        if used_boot:
+            return _ppi_alpha_eff_from_M_b(boot_M_b, 1.0 - level_alpha)
+        if resolved_prefer == "sidak":
+            return 1.0 - (1.0 - level_alpha) ** (1.0 / n_pairs)
+        return level_alpha / n_pairs  # Bonferroni (explicit, or any other fallback)
+
+    pair_alpha = _pair_alpha_for(alpha)
 
     final_diffs = np.empty(n_pairs, dtype=float)
     pair_ci_lo  = np.empty(n_pairs, dtype=float)
@@ -1387,7 +1633,7 @@ def _run_alignment_ppi(
         pair_pvals[k]  = res.p_value if res.p_value is not None else 1.0
 
         for a in GRADIENT_CI_ALPHAS:
-            g_alpha = a / n_pairs if use_simultaneous else a
+            g_alpha = _pair_alpha_for(a)
             g = dispatch(g_alpha, n_boot, rng)
             pair_multi_ci[a][(ea, eb)] = (g.ci_low, g.ci_high)
 
@@ -1410,35 +1656,49 @@ def _run_alignment_ppi(
         )
 
     # Multiple-comparison correction on marginal p-values (unaffected by the
-    # Bonferroni simultaneous-CI adjustment above, which only widens CIs).
-    # Skipped for p_value when max-T already applies below — max-T's p-value
-    # is already family-wise controlled via the joint null and would just be
-    # overwritten, exactly mirroring all_pairwise()'s non-PPI convention where
-    # a max-T p-value supersedes rather than stacks with this correction.
-    if correction != "none" and n_pairs > 1:
-        if not used_max_t:
-            pair_pvals = correct_pvalues(pair_pvals, correction, n_groups=len(labels))
+    # simultaneous-CI adjustment above, which only widens CIs). Skipped for
+    # pair_pvals when max-T or Romano-Wolf already applies below/here --
+    # both are already family-wise controlled via their own joint null and
+    # would just be overwritten, exactly mirroring all_pairwise()'s non-PPI
+    # convention where a max-T/Romano-Wolf p-value supersedes rather than
+    # stacks with correct_pvalues().
+    if effective_correction != "none" and n_pairs > 1:
+        if used_romano_wolf:
+            for k, key in enumerate(pair_keys):
+                pair_pvals[k] = romano_wolf_pvalues[key]
+        elif not used_max_t:
+            pair_pvals = correct_pvalues(pair_pvals, effective_correction, n_groups=len(labels))
 
-        # Companion Wilcoxon p-values always get this correction as their own
-        # family, regardless of max-T — matching all_pairwise()'s uncorrected
-        # path, which never applies max-T to wilcoxon_p (see its docstring).
+        # Companion Wilcoxon p-values always get their own correction as
+        # their own family, regardless of max-T/Romano-Wolf — matching
+        # all_pairwise()'s convention, which never applies either to
+        # wilcoxon_p (see its docstring). Romano-Wolf's joint construction
+        # is specific to the paired-mean/PPI estimand (point_ests/obs_se
+        # above) and has no Wilcoxon-signed-rank-compatible form, so
+        # Shaffer's (with Holm as the same subset-safe fallback the non-PPI
+        # path uses) substitutes whenever the primary correction is
+        # Romano-Wolf -- mirroring the non-PPI docstring's own statement
+        # that Wilcoxon "everywhere...except when Romano-Wolf is what
+        # resolved" note.
         wsr_keys = [key for key in pair_keys if pair_wilcoxon_p[key] is not None]
         if len(wsr_keys) > 1:
             wsr_vals = np.array([pair_wilcoxon_p[key] for key in wsr_keys], dtype=float)
+            _wsr_base = "shaffer" if effective_correction == "romano_wolf" else effective_correction
             # Shaffer's needs the complete n_groups*(n_groups-1)/2 all-pairs
             # set; wsr_keys can be a strict subset (e.g. no validated PPI
             # Wilcoxon for an unpaired-fallback pair -- see above). Holm has
             # no such requirement and is still FWER-valid for any subset.
             _wsr_correction = (
-                "holm" if correction == "shaffer" and len(wsr_keys) != len(labels) * (len(labels) - 1) // 2
-                else correction
+                "holm" if _wsr_base == "shaffer" and len(wsr_keys) != len(labels) * (len(labels) - 1) // 2
+                else _wsr_base
             )
             wsr_adj = correct_pvalues(wsr_vals, _wsr_correction, n_groups=len(labels))
             for key, adj_p in zip(wsr_keys, wsr_adj):
                 pair_wilcoxon_p[key] = float(adj_p)
 
     if used_max_t:
-        point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j = joint
+        point_ests_j, obs_se_j, valid_pairs_j, T_j, t_obs_j = joint
+        M_b = _M_b_from_T(T_j, valid_pairs_j)
         headline_ci, headline_p = _max_t_from_joint_stats(
             point_ests_j, obs_se_j, valid_pairs_j, M_b, t_obs_j, pair_keys, 1.0 - alpha,
         )
@@ -1492,8 +1752,23 @@ def _run_alignment_ppi(
     # Update bundle method metadata so summary() headers reflect the PPI method.
     bundle.resolved_method = pairwise_method
     bundle.resolved_ci_method = robustness_method
-    bundle.pairwise.simultaneous_ci_method = (
-        "max_t" if used_max_t else ("bonferroni" if use_simultaneous else None)
+    if used_max_t:
+        _sim_ci_label = "max_t"
+    elif used_boot:
+        _sim_ci_label = "boot"
+    elif use_simultaneous:
+        _sim_ci_label = "sidak" if resolved_prefer == "sidak" else "bonferroni"
+    else:
+        _sim_ci_label = None
+    bundle.pairwise.simultaneous_ci_method = _sim_ci_label
+    # correction_method must reflect the correction ACTUALLY applied to the
+    # final, PPI-corrected p-values -- previously left untouched here, so it
+    # silently kept whatever the initial non-PPI analyze() call had set
+    # (e.g. "romano_wolf" from the raw-score pass, even when PPI's own
+    # correction fell back to "shaffer"), which PairwiseMatrix.summary()
+    # displays via each pair's own .summary(correction=...).
+    bundle.pairwise.correction_method = (
+        effective_correction if (effective_correction != "none" and n_pairs > 1) else None
     )
 
     # ── Diagnostics ───────────────────────────────────────────────────────────
@@ -1574,14 +1849,19 @@ def _run_judge_alignment_if_needed(
         alignment_result=ar,
         alpha=alpha,
         n_boot=max(n_mc, 1000),
-        # Default "shaffer", not "auto": PPI-corrected p-values are a flat
-        # array here (no raw per-item diffs matrix in scope the way
-        # all_pairwise() has), so romano_wolf_stepdown_pvalues (which needs
-        # that matrix) isn't reachable from this path -- see
-        # _run_alignment_ppi's docstring. Shaffer's applies at any N and is
-        # already a real improvement on the previous "fdr_bh" (FDR, not
-        # FWER) default.
-        correction=engine_kwargs.get("correction", "shaffer"),
+        # Default "auto": resolves to Romano-Wolf step-down at N>=30 (see
+        # _ppi_romano_wolf_pvalues_from_joint_stats), falling back to
+        # Shaffer's below that threshold or when the required shared-
+        # labeled-item structure isn't available -- mirroring the non-PPI
+        # tree's own auto default exactly, now that a PPI-generalized
+        # Romano-Wolf exists. Validated across a 9-condition grid (k=3-5
+        # arms, N=50-200, label fractions 20-40%, binary data): worst-case
+        # FWER 0.067 vs nominal 0.05 (within normal MC noise, no systematic
+        # inflation), and power at or above Shaffer's in every condition
+        # tested (0/9 regressions) -- see tests/test_compound_ppi_fwer.py's
+        # TestRomanoWolfCalibration for the pytest-scale version of this
+        # check.
+        correction=engine_kwargs.get("correction", "auto"),
         method=engine_kwargs.get("method", "auto"),
         rng=engine_kwargs.get("rng"),
     )
