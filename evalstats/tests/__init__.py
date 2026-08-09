@@ -2190,6 +2190,27 @@ def _ppi_paired_bayes_bootstrap(
     )
 
 
+def _ppi_require_unlabeled(n_all: int) -> None:
+    """Guard against a zero-length disjoint-unlabeled sample.
+
+    The two-term additive variance these ``_ppi_paired_*``/``_ppi_single_*``
+    functions use (``Var(unlabeled)/n_all + Var(rectifier)/n_lab``) divides
+    by ``n_all`` directly; without this check, an alignment set covering
+    every item (n_all=0) raises a bare ``ZeroDivisionError`` instead of an
+    actionable message. PPI's benefit comes from a large unlabeled pool plus
+    a small labeled subset -- if every item is labeled, there is no
+    LLM-only term left to correct and the human labels should be used
+    directly instead.
+    """
+    if n_all == 0:
+        raise ValueError(
+            "PPI correction requires at least one unlabeled item, got n_all=0 "
+            "(every item in this comparison is human-labeled, leaving no "
+            "unlabeled residual for the LLM-only term). If every item is "
+            "labeled, use the human labels directly instead of PPI correction."
+        )
+
+
 def _ppi_paired_bootstrap_t(
     a: np.ndarray,
     b: np.ndarray,
@@ -2248,6 +2269,7 @@ def _ppi_paired_bootstrap_t(
 
     n_all = len(diffs_unlab)
     n_lab = len(rect_items)
+    _ppi_require_unlabeled(n_all)
 
     # Below _MIN_LAB_RECOMMENDED, this function's own bootstrap-t is subject
     # to the SAME small-n_lab undercoverage as evalstats.ppi.correct's
@@ -2411,6 +2433,7 @@ def _ppi_paired_tango(
 
     n_all = len(diffs_unlab)
     n_lab = len(rect_items)
+    _ppi_require_unlabeled(n_all)
 
     f_unlab = float(np.mean(diffs_unlab))
     f_lab = float(np.mean(diffs_lab_true))
@@ -2487,6 +2510,7 @@ def _ppi_single_bootstrap_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, n_bo
 
     n_all = len(values_unlab)
     n_lab = len(rect_items)
+    _ppi_require_unlabeled(n_all)
 
     f_unlab = float(np.mean(values_unlab))
     f_lab = float(np.mean(values_lab_true))
@@ -2624,6 +2648,7 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
 
     n_all = len(values_unlab)
     n_lab = len(rect_items)
+    _ppi_require_unlabeled(n_all)
 
     f_unlab = float(np.mean(values_unlab))
     f_lab = float(np.mean(values_lab_true))

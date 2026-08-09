@@ -941,6 +941,39 @@ class TestPPISampleSizeChecks:
             es.compare(evaldata, factors="model", metric="llm_score",
                        alignment={"llm_score": ar})
 
+    def test_raises_clear_error_when_entity_is_100pct_labeled(self):
+        """An entity with EVERY item human-labeled has zero unlabeled
+        residual left for the LLM-only term (n_all=0 in the PPI variance
+        decomposition Var(unlab)/n_all + Var(rectifier)/n_lab). This used to
+        raise a bare ZeroDivisionError from deep inside
+        evalstats.tests._ppi_single_wilson/_ppi_paired_tango; it should now
+        raise a clear, actionable ValueError instead."""
+        rng = np.random.default_rng(7)
+        n_items = 60
+        df = pd.DataFrame({
+            "model": ["A"] * n_items + ["B"] * n_items,
+            "item": list(range(n_items)) * 2,
+            "llm_score": np.concatenate([
+                rng.binomial(1, 0.70, n_items),
+                rng.binomial(1, 0.45, n_items),
+            ]).astype(float),
+        })
+        human = np.full(len(df), np.nan)
+        # Every item for model A is labeled (n_all=0 for A); model B stays
+        # fully unlabeled so this isolates the single-arm (robustness) path.
+        a_mask = df["model"] == "A"
+        human[a_mask] = df.loc[a_mask, "llm_score"]
+        df["human_score"] = human
+        evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            ar = validate_alignment(evaldata, llm_metric="llm_score",
+                                    human_groundtruth="human_score")
+        with pytest.raises(ValueError, match="at least one unlabeled item"):
+            es.compare(evaldata, factors="model", metric="llm_score",
+                       alignment={"llm_score": ar})
+
     def test_no_size_warnings_above_thresholds(self):
         """No size warnings when n_labeled ≥ 30 and N ≥ 100."""
         evaldata, metric = _make_binary_evaldata(n_items=60, n_labeled=35)
