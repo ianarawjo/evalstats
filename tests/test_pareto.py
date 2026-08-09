@@ -386,8 +386,8 @@ def test_summary_prints_pareto_section():
         result.summary()
     out = buf.getvalue()
     assert "Pareto Front" in out
-    assert "Frontier" in out
-    assert "Dominated" in out
+    assert "Best trade-off" in out
+    assert "Worse than" in out
 
 
 def test_summary_pareto_shows_probability_only_when_requested():
@@ -494,7 +494,7 @@ def test_executive_summary_has_pareto_column():
     # claude-sonnet is dominated by gpt-4o in this fixture -- its row should say so.
     for line in exec_section.splitlines():
         if line.strip().startswith("claude-sonnet"):
-            assert "Dominated" in line
+            assert "Worse than" in line
 
 
 def test_executive_summary_no_pareto_column_without_secondary():
@@ -519,11 +519,11 @@ def test_pareto_status_phrase_merges_status_and_detail():
     dominated = ParetoStatus(label="B", status="dominated", dominated_by=["A"])
     ambiguous = ParetoStatus(label="C", status="ambiguous", ambiguous_vs=["A"])
 
-    assert _pareto_status_phrase(frontier) == "Frontier"
-    assert _pareto_status_phrase(dominated) == "Dominated by A"
-    assert _pareto_status_phrase(ambiguous, verbose=True) == "Ambiguous vs A (not confirmed)"
+    assert _pareto_status_phrase(frontier) == "★ Best trade-off"
+    assert _pareto_status_phrase(dominated) == "× Worse than A on both"
+    assert _pareto_status_phrase(ambiguous, verbose=True) == "◌ Unclear vs A (not confirmed)"
     # Executive Summary's narrower column drops the "(not confirmed)" qualifier.
-    assert _pareto_status_phrase(ambiguous, verbose=False) == "Ambiguous vs A"
+    assert _pareto_status_phrase(ambiguous, verbose=False) == "◌ Unclear vs A"
 
 
 def test_pareto_table_has_single_merged_status_column():
@@ -541,7 +541,7 @@ def test_pareto_table_has_single_merged_status_column():
     out = buf.getvalue()
     pareto_section = out[out.index("Pareto Front"):out.index("Executive Summary")]
     assert "Detail" not in pareto_section
-    assert "Dominated by gpt-4o" in pareto_section
+    assert "Worse than gpt-4o on both" in pareto_section
 
 
 def test_pareto_callout_names_frontier_alternatives():
@@ -580,3 +580,55 @@ def test_pareto_callout_absent_without_secondary():
         result.summary()
     out = buf.getvalue()
     assert "leads on" not in out
+
+
+# ---------------------------------------------------------------------------
+# Scatterplot + glyph/definition line (design follow-up: visual trade-off view)
+# ---------------------------------------------------------------------------
+
+def test_pareto_status_glyphs_are_distinct():
+    from evalstats.core.summary import _pareto_status_glyph
+
+    glyphs = {_pareto_status_glyph(s) for s in ("frontier", "dominated", "ambiguous")}
+    assert len(glyphs) == 3
+
+
+def test_pareto_section_has_definition_line_and_scatterplot():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=50)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(51),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    pareto_section = out[out.index("Pareto Front"):out.index("Executive Summary")]
+    assert "best trade-off" in pareto_section
+    # Scatterplot axis box (└...┘) and a numbered legend mapping back to names.
+    assert "└" in pareto_section and "┘" in pareto_section
+    assert "1=" in pareto_section
+    for label in _MODELS:
+        assert label in pareto_section
+
+
+def test_pareto_scatter_handles_two_entities():
+    """A minimal 2-entity case shouldn't crash the scatterplot renderer
+    (degenerate axis ranges, single frontier/dominated pair)."""
+    import io
+    from contextlib import redirect_stdout
+
+    models = _MODELS[:2]
+    evaldata = _make_evaldata(models, {k: _ACC[k] for k in models}, {k: _LAT[k] for k in models}, seed=52)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(53),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    assert "Pareto Front" in out

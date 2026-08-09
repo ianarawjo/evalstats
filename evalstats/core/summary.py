@@ -2625,19 +2625,149 @@ def _pareto_sorted_labels(pareto: dict) -> list[str]:
     )
 
 
+# Glyph + color per Pareto status, shared by the table's merged Status
+# column, the Executive Summary's Pareto column, and the scatterplot below --
+# one visual vocabulary across every place a status shows up.
+_PARETO_STATUS_GLYPH = {"frontier": "★", "ambiguous": "◌", "dominated": "×"}
+
+
+def _pareto_status_glyph(status: str) -> str:
+    return _PARETO_STATUS_GLYPH.get(status, "?")
+
+
+def _pareto_status_color(status: str) -> str:
+    if not _ANSI:
+        return ""
+    if status == "frontier":
+        return _BRIGHT_GREEN
+    if status == "dominated":
+        return _DIM
+    return _YELLOW  # ambiguous
+
+
 def _pareto_status_phrase(status: "ParetoStatus", *, verbose: bool = True) -> str:
-    """One-cell phrase combining a ParetoStatus's status word with its
-    detail (dominated_by / ambiguous_vs), e.g. "Dominated by gpt-4o" --
-    used by both the Pareto Front table (verbose=True, includes the
-    "(not confirmed)" qualifier) and the Executive Summary's narrower
-    Pareto column (verbose=False, drops it)."""
-    label = status.status.capitalize()
+    """One-cell phrase combining a ParetoStatus's glyph with plain-language
+    wording and its detail (dominated_by / ambiguous_vs), e.g.
+    "× Worse than gpt-4o on both" -- used by both the Pareto Front table
+    (verbose=True, includes the "(not confirmed)" qualifier) and the
+    Executive Summary's narrower Pareto column (verbose=False, drops it)."""
+    glyph = _pareto_status_glyph(status.status)
     if status.status == "dominated":
-        return f"{label} by {', '.join(status.dominated_by)}"
-    if status.status == "ambiguous":
+        text = f"Worse than {', '.join(status.dominated_by)} on both"
+    elif status.status == "ambiguous":
         suffix = " (not confirmed)" if verbose else ""
-        return f"{label} vs {', '.join(status.ambiguous_vs)}{suffix}"
-    return label
+        text = f"Unclear vs {', '.join(status.ambiguous_vs)}{suffix}"
+    else:
+        text = "Best trade-off"
+    return f"{glyph} {text}"
+
+
+def _print_pareto_scatter(
+    pareto: dict,
+    *,
+    metric_label: str,
+    width: int = 44,
+    height: int = 9,
+) -> None:
+    """Print a compact ASCII scatterplot of primary vs. secondary metric,
+    one point per entity, marked with its Pareto status glyph (see
+    ``_pareto_status_glyph``) so the trade-off shape between metrics is
+    visible at a glance, before the reader has to parse the numeric table
+    below. Points are numbered (1, 2, 3, ...) rather than labeled by name
+    to sidestep collisions when entities sit close together on the plot;
+    a legend below maps each number back to its entity name.
+    """
+    result = pareto["result"]
+    statuses = pareto["statuses"]
+    secondary_col = pareto["secondary_metric"]
+    direction = pareto["direction"]
+    primary_rob = pareto.get("primary_robustness")
+    secondary_rob = pareto.get("secondary_robustness")
+    if primary_rob is None or secondary_rob is None or len(result.labels) < 2:
+        return
+
+    sorted_labels = _pareto_sorted_labels(pareto)
+    prim_idx = {lbl: i for i, lbl in enumerate(primary_rob.labels)}
+    sec_idx = {lbl: i for i, lbl in enumerate(secondary_rob.labels)}
+    xs = [float(secondary_rob.mean[sec_idx[lbl]]) for lbl in sorted_labels]
+    ys = [float(primary_rob.mean[prim_idx[lbl]]) for lbl in sorted_labels]
+
+    x_min, x_max = min(xs), max(xs)
+    y_min, y_max = min(ys), max(ys)
+    x_pad = max((x_max - x_min) * 0.08, abs(x_max) * 1e-6, 1e-9)
+    y_pad = max((y_max - y_min) * 0.08, abs(y_max) * 1e-6, 1e-9)
+    x_lo, x_hi = x_min - x_pad, x_max + x_pad
+    y_lo, y_hi = y_min - y_pad, y_max + y_pad
+
+    markers = "123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    def _marker(i: int) -> str:
+        return markers[i] if i < len(markers) else "#"
+
+    grid = [[" "] * width for _ in range(height)]
+    occupied: dict[tuple[int, int], list[int]] = {}
+    for i, (x, y) in enumerate(zip(xs, ys)):
+        col = int(round((x - x_lo) / (x_hi - x_lo) * (width - 1)))
+        row = int(round((y_hi - y) / (y_hi - y_lo) * (height - 1)))
+        col = min(max(col, 0), width - 1)
+        row = min(max(row, 0), height - 1)
+        occupied.setdefault((row, col), []).append(i)
+
+    for (row, col), idxs in occupied.items():
+        # The first entity claiming a cell gets the glyph; cells shared by
+        # more than one entity are flagged in a note below rather than
+        # silently overwritten.
+        lead = idxs[0]
+        status = statuses[sorted_labels[lead]].status
+        color = _pareto_status_color(status)
+        reset = _RESET if color else ""
+        grid[row][col] = f"{color}{_marker(lead)}{reset}"
+
+    y_label_w = 9
+    print(f"  {metric_label:>{y_label_w}}")
+    for row in range(height):
+        if row == 0:
+            y_tick = f"{y_hi:>{y_label_w}.3g}"
+        elif row == height - 1:
+            y_tick = f"{y_lo:>{y_label_w}.3g}"
+        else:
+            y_tick = " " * y_label_w
+        print(f"  {y_tick} │{''.join(grid[row])}│")
+    border = "─" * width
+    print(f"  {'':>{y_label_w}} └{border}┘")
+    dir_arrow = "→ better" if direction == "max" else "← better"
+    x_axis_label = f"{secondary_col} ({dir_arrow})"
+    x_min_str = f"{x_min:.3g}"
+    x_max_str = f"{x_max:.3g}"
+    print(
+        f"  {'':>{y_label_w}}  {x_min_str}"
+        f"{x_axis_label:^{max(width - 12, 4)}}"
+        f"{x_max_str}"
+    )
+    print()
+
+    legend_cells = []
+    for i, lbl in enumerate(sorted_labels):
+        status = statuses[lbl].status
+        color = _pareto_status_color(status)
+        reset = _RESET if color else ""
+        legend_cells.append(f"{color}{_marker(i)}{reset}={_truncate_label(lbl, 20)}")
+    # Wrap the legend at a reasonable width instead of one long line.
+    line = "  "
+    for cell in legend_cells:
+        plain_len = len(re.sub(r"\033\[[0-9;]*m", "", cell))
+        if len(re.sub(r"\033\[[0-9;]*m", "", line)) + plain_len + 3 > 78 and line.strip():
+            print(line.rstrip())
+            line = "  "
+        line += cell + "   "
+    if line.strip():
+        print(line.rstrip())
+
+    collisions = [idxs for idxs in occupied.values() if len(idxs) > 1]
+    for idxs in collisions:
+        names = ", ".join(_marker(i) for i in idxs)
+        print(f"  ({names} sit at nearly the same spot on this plot)")
+    print()
 
 
 def _print_pareto_section(
@@ -2674,6 +2804,12 @@ def _print_pareto_section(
         f"--- {metric_label} vs. {secondary_col} Tradeoff "
         f"(Pareto Front, {dir_label}) ---"
     )
+    print(
+        f"  A model has the 'best trade-off' when no other option beats it "
+        f"on both {metric_label} and {secondary_col} at once."
+    )
+    print()
+    _print_pareto_scatter(pareto, metric_label=metric_label)
 
     sorted_labels = _pareto_sorted_labels(pareto)
     label_w = max((len(lbl) for lbl in result.labels), default=6)
@@ -2708,7 +2844,9 @@ def _print_pareto_section(
     print("  " + "-" * (len(header) - 2))
 
     for label in sorted_labels:
-        status_disp = phrases[label]
+        status_disp = f"{phrases[label]:<{status_w}}"
+        color = _pareto_status_color(statuses[label].status)
+        status_str = f"{color}{status_disp}{_RESET}" if color else status_disp
         if have_stats:
             pi, si = prim_idx[label], sec_idx[label]
             p_mean = float(primary_rob.mean[pi])
@@ -2722,18 +2860,23 @@ def _print_pareto_section(
                 if secondary_rob.ci_low is not None else "--"
             )
             print(
-                f"  {label:<{label_w}}  {status_disp:<{status_w}}  "
+                f"  {label:<{label_w}}  {status_str}  "
                 f"{p_mean:>{mean_w}.3g} {p_ci:<{ci_w}s}  "
                 f"{s_mean:>{mean_w}.3g} {s_ci:<{ci_w}s}"
             )
         else:
-            print(f"  {label:<{label_w}}  {status_disp:<{status_w}}")
+            print(f"  {label:<{label_w}}  {status_str}")
     print("  " + "-" * (len(header) - 2))
     if show_rank_probabilities:
-        print("\n  P(Pareto-optimal):")
+        print()
+        print("  How confident are we in each trade-off call?")
+        print("  (P(Pareto-optimal): share of bootstrap resamples this entity wasn't beaten on both axes in)")
+        bar_w = 20
         for label in sorted_labels:
             p = float(result.p_frontier[result.labels.index(label)])
-            print(f"    {label:<{label_w}}  {p:>6.1%}")
+            color = _p_best_color(p)
+            reset = _RESET if color else ""
+            print(f"    {label:<{label_w}}  {p:>6.1%} {color}{_ratio_bar(p, width=bar_w)}{reset}")
     print()
 
 
@@ -2752,7 +2895,7 @@ def _print_executive_summary(
     assess results at a glance without scrolling up. The Pareto column
     surfaces the secondary-metric verdict right next to the primary-metric
     one, e.g. an entity that's "Likely best" on the primary metric but
-    "Dominated" once the secondary metric is considered.
+    "Worse than X on both" once the secondary metric is considered.
     """
     labels = list(bundle.rank_dist.labels)
     n = len(labels)
@@ -2848,8 +2991,13 @@ def _print_executive_summary(
             row += f"  {stab_str:<{stab_w}s}"
 
         if has_pareto:
-            pareto_str = pareto_phrases.get(label, "—")
-            row += f"  {pareto_str:<{pareto_w}s}"
+            pareto_plain = f"{pareto_phrases.get(label, '—'):<{pareto_w}s}"
+            pareto_color = (
+                _pareto_status_color(pareto_statuses[label].status)
+                if label in pareto_statuses else ""
+            )
+            pareto_str = f"{pareto_color}{pareto_plain}{_RESET}" if pareto_color else pareto_plain
+            row += f"  {pareto_str}"
 
         row += f"  {verdict_str}"
         print(row)
