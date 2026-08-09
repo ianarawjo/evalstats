@@ -15,6 +15,7 @@ from evalstats.core.pareto import (
     classify_pareto_status,
     orient_higher_is_better,
 )
+from evalstats.core.summary import _pareto_sorted_labels
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -408,3 +409,103 @@ def test_summary_pareto_shows_probability_only_when_requested():
     with redirect_stdout(buf2):
         result.summary(show_rank_probabilities=True)
     assert "P(Pareto-optimal)" in buf2.getvalue()
+
+
+# ---------------------------------------------------------------------------
+# Section ordering, sorting, and richer statistics (design follow-up)
+# ---------------------------------------------------------------------------
+
+def test_pareto_sorted_labels_groups_by_status_then_primary_mean():
+    labels = ["A", "B", "C", "D"]
+    result = ParetoBootstrapResult(
+        labels=labels,
+        point_primary=np.array([0.60, 0.90, 0.70, 0.50]),  # B > C > A > D
+        point_secondary=np.zeros(4),
+        p_frontier=np.zeros(4),
+        p_dominated_by=np.zeros((4, 4)),
+        n_bootstrap=1000,
+    )
+    statuses = {
+        "A": type("S", (), {"status": "frontier"})(),
+        "B": type("S", (), {"status": "dominated"})(),
+        "C": type("S", (), {"status": "frontier"})(),
+        "D": type("S", (), {"status": "ambiguous"})(),
+    }
+    pareto = {"result": result, "statuses": statuses}
+    # frontier group (C, A by primary desc), then ambiguous (D), then dominated (B).
+    assert _pareto_sorted_labels(pareto) == ["C", "A", "D", "B"]
+
+
+def test_pareto_front_precedes_executive_summary():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=36)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(37),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    pareto_idx = out.index("Pareto Front")
+    exec_idx = out.index("Executive Summary")
+    assert pareto_idx < exec_idx
+
+
+def test_pareto_table_shows_secondary_metric_statistics():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=38)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(39),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    assert "latency_ms" in out
+    assert "95% CI" in out
+    # Secondary metric's calibrated CI is actually computed and stored.
+    sec_rob = result._pareto["secondary_robustness"]
+    assert sec_rob.ci_low is not None and sec_rob.ci_high is not None
+    for lo, hi in zip(sec_rob.ci_low, sec_rob.ci_high):
+        assert lo <= hi
+
+
+def test_executive_summary_has_pareto_column():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=40)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(41),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    exec_section = out[out.index("Executive Summary"):]
+    assert "Pareto" in exec_section.splitlines()[1]  # header row has the column
+    # claude-sonnet is dominated by gpt-4o in this fixture -- its row should say so.
+    for line in exec_section.splitlines():
+        if line.strip().startswith("claude-sonnet"):
+            assert "Dominated" in line
+
+
+def test_executive_summary_no_pareto_column_without_secondary():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=42)
+    result = es.compare(evaldata, factors="model", metric="score", rng=_rng(43))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    exec_section = out[out.index("Executive Summary"):]
+    assert "Pareto" not in exec_section.splitlines()[1]

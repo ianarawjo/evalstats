@@ -1518,7 +1518,7 @@ def _print_bundle_summary(
 
     # Executive summary leaderboard (near the end — immediately visible in terminal).
     print()
-    _print_executive_summary(bundle, item_singular=item_singular)
+    _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto)
 
     if guidance:
         _print_next_steps_guidance(
@@ -2602,6 +2602,27 @@ def _exec_verdict(
     return f"Tied with {len(others)} others as best"
 
 
+# Sort priority for Pareto status groups: frontier first (the calibrated
+# "safe" verdict), then ambiguous (can't rule dominance in or out), then
+# dominated last.
+_PARETO_STATUS_ORDER = {"frontier": 0, "ambiguous": 1, "dominated": 2}
+
+
+def _pareto_sorted_labels(pareto: dict) -> list[str]:
+    """Entity order for the Pareto Front table: status group, then primary
+    metric mean descending within each group."""
+    result = pareto["result"]
+    statuses = pareto["statuses"]
+    point_primary = dict(zip(result.labels, result.point_primary))
+    return sorted(
+        result.labels,
+        key=lambda lbl: (
+            _PARETO_STATUS_ORDER.get(statuses[lbl].status, 3),
+            -point_primary[lbl],
+        ),
+    )
+
+
 def _print_pareto_section(
     pareto: dict,
     *,
@@ -2615,35 +2636,90 @@ def _print_pareto_section(
     ``_print_bundle_summary``) so the secondary-metric-corrected, holistic
     verdict sits right next to the primary-metric-only leaderboard, rather
     than trailing after everything else where it's easy to miss.
+
+    Shows each metric's own calibrated mean + CI side by side (not just the
+    status label) -- ``pareto["primary_robustness"]``/``["secondary_robustness"]``
+    are the same kind of :class:`~evalstats.core.variance.RobustnessResult`
+    the rest of evalstats already shows for a single metric, so the numbers
+    here carry the same guarantees. Sorted frontier -> ambiguous -> dominated
+    (see :func:`_pareto_sorted_labels`), not raw entity order.
     """
     secondary_col = pareto["secondary_metric"]
     direction = pareto["direction"]
     statuses = pareto["statuses"]
     result = pareto["result"]
+    primary_rob = pareto.get("primary_robustness")
+    secondary_rob = pareto.get("secondary_robustness")
 
     dir_label = "lower is better" if direction == "min" else "higher is better"
     metric_label = metric or "primary metric"
     _print_subsection(f"--- Pareto Front ({metric_label} vs {secondary_col}, {dir_label}) ---")
+
+    sorted_labels = _pareto_sorted_labels(pareto)
     label_w = max((len(lbl) for lbl in result.labels), default=6)
     label_w = max(label_w, len("Entity"))
     status_w = max(len("Ambiguous"), len("Dominated"), len("Frontier"))
-    header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  Detail"
+    mean_w = 7
+    ci_w = 17
+
+    have_stats = primary_rob is not None and secondary_rob is not None
+    if have_stats:
+        prim_idx = {lbl: i for i, lbl in enumerate(primary_rob.labels)}
+        sec_idx = {lbl: i for i, lbl in enumerate(secondary_rob.labels)}
+        # Left-aligned (not centered) so each metric name reads as a label
+        # spanning its own "Mean 95% CI" pair starting directly above the
+        # Mean column, rather than visually drifting toward the wider CI
+        # sub-column when centered over the combined width.
+        metric_row = (
+            f"  {'':<{label_w}}  {'':<{status_w}}  "
+            f"{_truncate_label(metric_label, mean_w + ci_w + 1):<{mean_w + ci_w + 1}s}  "
+            f"{_truncate_label(secondary_col, mean_w + ci_w + 1):<{mean_w + ci_w + 1}s}"
+        )
+        print(metric_row)
+        header = (
+            f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  "
+            f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}  "
+            f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}  Detail"
+        )
+    else:
+        header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  Detail"
     print(header)
     print("  " + "-" * (len(header) - 2))
-    for label in result.labels:
+
+    for label in sorted_labels:
         st = statuses[label]
         status_disp = st.status.capitalize()
         if st.status == "dominated":
             detail = f"by {', '.join(st.dominated_by)}"
         elif st.status == "ambiguous":
-            detail = f"vs {', '.join(st.ambiguous_vs)} (not statistically confirmed)"
+            detail = f"vs {', '.join(st.ambiguous_vs)} (not confirmed)"
         else:
             detail = ""
-        print(f"  {label:<{label_w}}  {status_disp:<{status_w}}  {detail}")
+
+        if have_stats:
+            pi, si = prim_idx[label], sec_idx[label]
+            p_mean = float(primary_rob.mean[pi])
+            p_ci = (
+                f"[{primary_rob.ci_low[pi]:.3g}, {primary_rob.ci_high[pi]:.3g}]"
+                if primary_rob.ci_low is not None else "--"
+            )
+            s_mean = float(secondary_rob.mean[si])
+            s_ci = (
+                f"[{secondary_rob.ci_low[si]:.3g}, {secondary_rob.ci_high[si]:.3g}]"
+                if secondary_rob.ci_low is not None else "--"
+            )
+            print(
+                f"  {label:<{label_w}}  {status_disp:<{status_w}}  "
+                f"{p_mean:>{mean_w}.3g} {p_ci:<{ci_w}s}  "
+                f"{s_mean:>{mean_w}.3g} {s_ci:<{ci_w}s}  {detail}"
+            )
+        else:
+            print(f"  {label:<{label_w}}  {status_disp:<{status_w}}  {detail}")
     print("  " + "-" * (len(header) - 2))
     if show_rank_probabilities:
         print("\n  P(Pareto-optimal):")
-        for label, p in zip(result.labels, result.p_frontier):
+        for label in sorted_labels:
+            p = float(result.p_frontier[result.labels.index(label)])
             print(f"    {label:<{label_w}}  {p:>6.1%}")
     print()
 
@@ -2652,12 +2728,18 @@ def _print_executive_summary(
     bundle: AnalysisBundle,
     *,
     item_singular: str = "template",
+    pareto: Optional[dict] = None,
 ) -> None:
     """Print a concise executive leaderboard after the stats-heavy blocks.
 
     Shows each template's significance group, mean score, bootstrap CI,
-    optional stability (when seed data is present), and a plain-language
-    verdict so the user can assess results at a glance without scrolling up.
+    optional stability (when seed data is present), optional Pareto status
+    (when ``compare(..., secondary=...)`` was passed -- see
+    ``_print_pareto_section``), and a plain-language verdict so the user can
+    assess results at a glance without scrolling up. The Pareto column
+    surfaces the secondary-metric verdict right next to the primary-metric
+    one, e.g. an entity that's "Likely best" on the primary metric but
+    "Dominated" once the secondary metric is considered.
     """
     labels = list(bundle.rank_dist.labels)
     n = len(labels)
@@ -2675,6 +2757,8 @@ def _print_executive_summary(
     # Seed variance for stability column (optional).
     sv = bundle.seed_variance
     has_stability = sv is not None
+    has_pareto = pareto is not None
+    pareto_statuses = pareto["statuses"] if has_pareto else None
 
     item_title = item_singular.capitalize()
     _print_subsection(f"--- Executive Summary ({item_title} leaderboard) ---")
@@ -2685,6 +2769,7 @@ def _print_executive_summary(
     mean_w = 6
     ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
     stab_w = 16
+    pareto_w = max(len("Ambiguous"), len("Dominated"), len("Frontier"), len("Pareto"))
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
     ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
@@ -2698,6 +2783,8 @@ def _print_executive_summary(
     ]
     if has_stability:
         header_parts.append(f"  {'Stability':<{stab_w}s}")
+    if has_pareto:
+        header_parts.append(f"  {'Pareto':<{pareto_w}s}")
     header_parts.append("  Verdict")
     header = "".join(header_parts)
     sep = "  " + "─" * (len(header) - 2)
@@ -2742,6 +2829,11 @@ def _print_executive_summary(
             else:
                 stab_str = "—"
             row += f"  {stab_str:<{stab_w}s}"
+
+        if has_pareto:
+            pareto_status = pareto_statuses.get(label)
+            pareto_str = pareto_status.status.capitalize() if pareto_status is not None else "—"
+            row += f"  {pareto_str:<{pareto_w}s}"
 
         row += f"  {verdict_str}"
         print(row)

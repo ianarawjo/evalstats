@@ -1769,18 +1769,46 @@ def _run_pareto_if_needed(
         )
 
     scores_secondary_oriented = orient_higher_is_better(scores_secondary, direction)
+    rng_gen = np.random.default_rng(rng)
 
     result = pareto_bootstrap(
         scores_primary, scores_secondary_oriented, labels,
-        n_bootstrap=n_boot, rng=np.random.default_rng(rng),
+        n_bootstrap=n_boot, rng=rng_gen,
     )
     statuses = classify_pareto_status(result, alpha=alpha)
+
+    # Secondary metric's own calibrated marginal CI, in its real (un-oriented)
+    # units -- same auto data-kind/N routing analyze() uses for the primary
+    # metric (see router.py's _analyze_single), not a cheap percentile CI off
+    # the joint dominance bootstrap: that bootstrap is built for the
+    # dominance question, and reusing it here would quietly ship an
+    # uncalibrated shortcut for the one number this library is otherwise
+    # careful never to show uncalibrated.
+    from evalstats.core.resampling import is_binary_scores, resolve_score_bounds
+    from evalstats.core.variance import robustness_metrics
+    from evalstats.config import resolve_auto_analyze_methods
+
+    if is_binary_scores(scores_secondary):
+        sec_data_kind = "binary"
+        sec_score_range = None
+    else:
+        sec_score_range = resolve_score_bounds(scores_secondary, None, stacklevel=5)
+        sec_data_kind = "bounded_01" if sec_score_range is not None else "unbounded"
+    _, sec_robustness_method = resolve_auto_analyze_methods(sec_data_kind, n_items, seeded=False)
+    secondary_robustness = robustness_metrics(
+        scores_secondary, labels,
+        n_bootstrap=n_boot, rng=rng_gen, alpha=alpha,
+        marginal_method=sec_robustness_method,
+        score_range=sec_score_range,
+    )
 
     cr._pareto = {
         "secondary_metric": secondary_col,
         "direction": direction,
         "result": result,
         "statuses": statuses,
+        "primary_robustness": bundle.robustness,
+        "secondary_robustness": secondary_robustness,
     }
 
 
