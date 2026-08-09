@@ -1546,20 +1546,19 @@ EVAL_TYPE_POPULATION_SD: dict[str, float] = {
     "grades": 19.719146,
     "binary": 0.5,
 }
-"""Population standard deviation of each eval type's REPRESENTATIVE shape's
-TRUTH distribution (see _PPI_REPRESENTATIVE_SHAPE_LABEL), measured at
+"""Population standard deviation of each eval type's representative shape's
+truth distribution (see _PPI_REPRESENTATIVE_SHAPE_LABEL), measured at
 icc=1.0 (pure signal, no measurement-noise attenuation) -- the denominator
 _jb_bias_magnitude/_jb_effect_magnitude use to express bias/noise/effect
-severity as a Cohen's-d-style STANDARDIZED effect size (frac = "how many
+severity as a Cohen's-d-style standardized effect size (frac = "how many
 population SDs"), not a raw fraction of the eval type's scale span. This is
-what makes "frac=0.30" mean the SAME real severity for continuous, likert,
-and grades -- see those two functions' docstrings for the full history of
-why the old span-based convention did NOT (FIXED 2026-08-03).
+what makes "frac=0.30" mean the same real severity for continuous, likert,
+and grades -- see those two functions' docstrings.
 
-continuous: EXACT closed form -- cont-right-skew is Beta(2, 8) on [0, 1],
+continuous: exact closed form -- cont-right-skew is Beta(2, 8) on [0, 1],
 Var = ab/((a+b)^2(a+b+1)) = 16/1100, SD = sqrt(16/1100).
 
-binary: EXACT closed form -- the representative shape is p=0.50, so the
+binary: exact closed form -- the representative shape is p=0.50, so the
 {0, 1} truth outcome is Bernoulli(0.5), SD = sqrt(0.5*0.5) = 0.5.
 
 likert/grades: no closed form (the underlying Normal-latent construction is
@@ -1567,19 +1566,14 @@ rounded-to-nearest-integer (likert only) and clamped to the eval type's
 scale bounds before use -- see sample_group_truth -- and clamping/rounding
 have no simple closed-form variance). Measured by direct Monte Carlo
 simulation of sample_group_truth itself (not a separate model): N=5,000,000
-draws, seed=20260803, icc=1.0. likert-mid is latent Normal(mu=3.0,
-total_std=1.2) rounded+clamped to [1, 5] -> realized SD=1.144685 (SE
-0.00036, vs. the raw unclamped total_std=1.2 -- clamping trims ~4.6% of the
-variance). grades-mid is latent Normal(mu=55.0, total_std=20.0) clamped
-(not rounded) to [0, 100] -> realized SD=19.719146 (SE 0.0062, ~1.4% below
-the raw total_std=20.0). Reproducible: ``sample_group_truth(_ppi_shape(et),
+draws, icc=1.0. Reproducible: ``sample_group_truth(_ppi_shape(et),
 5_000_000, 1, 1, 1.0, np.random.default_rng(20260803))[0,:,0].std()``.
 
-Deliberately NOT the raw shape.params total_std for likert/grades -- the
+Deliberately not the raw shape.params total_std for likert/grades -- the
 realized (post-rounding/clamping) SD is what actually reaches
 generate_judge_bias_cell downstream, and using the unclamped parameter
-would reintroduce a small but real bias in the same "unit mismatch"
-direction this whole fix exists to close."""
+would reintroduce a small but real bias in the "raw parameter vs. realized
+value" direction."""
 
 
 @functools.lru_cache(maxsize=None)
@@ -1615,80 +1609,58 @@ def _eval_type_population_sd(eval_type: str, *, scale_bounds: tuple[float, float
 
 
 def _jb_bias_magnitude(eval_type: str, frac: float = 0.30, *, scale_bounds: tuple[float, float] | None = None) -> float:
-    """`frac` population STANDARD DEVIATIONS of `eval_type`'s own truth
+    """`frac` population standard deviations of `eval_type`'s own truth
     distribution (EVAL_TYPE_POPULATION_SD), as an absolute bias_delta value
     -- a Cohen's-d-style standardized effect size, not a raw fraction of
     the eval type's scale span.
 
-    `bias_delta`/`bias_const` are RAW additive offsets on the eval type's
+    `bias_delta`/`bias_const` are raw additive offsets on the eval type's
     own native scale (see _jb_llm: ``pred = anchor + slope*(truth-anchor)
-    + bias``), NOT normalized to a common [0, 1] fraction -- so reusing the
-    same absolute number (e.g. the historical default of 0.30) across eval
-    types gives wildly different real severities. This was originally fixed
-    (pre-2026-08-03) by scaling `frac` to the eval type's SCALE SPAN instead
-    of reusing it as a raw absolute number: "30% of range" for continuous
-    ([0, 1]), "30% of range" for grades ([0, 100]) rather than a flat 0.30
-    for both. That fix was itself INCOMPLETE, discovered 2026-08-02/03 while
-    investigating why continuous and grades showed very different PPI power
-    profiles in cross-eval-type comparisons (the 5-way estimator comparison,
-    the label-efficiency check): "fraction of span" is not the same
-    statistic as "fraction of population SD" whenever different eval types'
-    representative truth SHAPES have different span-to-SD ratios, which they
-    do (continuous's Beta(2,8): span/SD=8.30; grades' Normal-based shape:
-    span/SD=5.07; likert's: span/SD=3.49) -- so a nominal frac=0.30 was
-    ALREADY silently 2.4x more severe (in real, standardized terms) for
-    continuous than for likert even after the span-based fix, e.g. bias
-    (frac=0.30, OLD span convention): continuous=0.30 (2.49 population SDs),
-    likert=1.20 (1.05 population SDs). Confirmed this fully explained
-    several apparent "PPI behaves very differently by eval type" findings
-    that were actually just this unit mismatch (see EVAL_TYPE_POPULATION_SD's
-    docstring and this fix's commit message for the full numbers). FIXED
-    2026-08-03: `frac` now multiplies population SD directly, so the SAME
-    frac value is the SAME standardized (Cohen's-d) severity for every eval
-    type, by construction -- this is the convention every "mild"/"moderate"/
-    "severe" bias tier, every effect_size grid point, and every llm_noise
-    level throughout this harness now shares. Binary is not meant to be
-    passed here: its bias model (_jb_llm_binary) works via flip-
-    probabilities, not an additive offset on a continuous/graded/Likert
-    scale, so this framing doesn't apply to it at all (see
-    PPI_BINARY_BIAS_MAGNITUDES instead, an already-standardized
-    misclassification-probability convention that never went through this
+    + bias``), not normalized to a common [0, 1] fraction -- so reusing the
+    same absolute number across eval types would give wildly different real
+    severities, and even scaling to the eval type's scale span instead of a
+    raw number isn't enough: different eval types' representative truth
+    shapes have different span-to-SD ratios (continuous's Beta(2,8):
+    span/SD=8.30; grades' Normal-based shape: span/SD=5.07; likert's:
+    span/SD=3.49), so "fraction of span" and "fraction of population SD"
+    aren't the same statistic across eval types. `frac` multiplies
+    population SD directly instead, so the same frac value is the same
+    standardized (Cohen's-d) severity for every eval type, by construction
+    -- the convention every "mild"/"moderate"/"severe" bias tier, every
+    effect_size grid point, and every llm_noise level throughout this
+    harness shares. Binary is not meant to be passed here: its bias model
+    (_jb_llm_binary) works via flip-probabilities, not an additive offset on
+    a continuous/graded/Likert scale, so this framing doesn't apply to it at
+    all (see PPI_BINARY_BIAS_MAGNITUDES instead, an already-standardized
+    misclassification-probability convention that never goes through this
     function).
 
     scale_bounds : (lo, hi), optional
         Overrides the EVAL_TYPE_POPULATION_SD[eval_type] lookup with the
         likert_max-specific SD instead -- e.g. pass (1.0, 7.0) when building
         a JudgeBiasSource with likert_max=7, so "frac" keeps meaning the
-        same STANDARDIZED severity on the wider scale (see
-        _eval_type_population_sd/_likert_population_sd). The parameter name
-        is unchanged from the pre-2026-08-03 span-based convention for
-        call-site compatibility -- it's still an (lo, hi) tuple, just
-        interpreted as "derive the likert_max-specific population SD" now
-        instead of "use this span directly."
+        same standardized severity on the wider scale (see
+        _eval_type_population_sd/_likert_population_sd).
     """
     sd = _eval_type_population_sd(eval_type, scale_bounds=scale_bounds)
     return frac * sd
 
 
 def _jb_effect_magnitude(eval_type: str, frac: float, *, scale_bounds: tuple[float, float] | None = None) -> float:
-    """`frac` population STANDARD DEVIATIONS of `eval_type`'s own truth
+    """`frac` population standard deviations of `eval_type`'s own truth
     distribution (EVAL_TYPE_POPULATION_SD), as an absolute
     JudgeBiasSource.effect_size value -- the same standardized-effect-size
     convention _jb_bias_magnitude uses for bias_delta (see that function's
-    docstring for the full 2026-08-03 fix history: "fraction of span" is
-    NOT the same statistic as "fraction of population SD" across eval types
-    with different span-to-SD ratios, and the older span-based convention
-    silently gave the SAME nominal frac a 2.4x-different real, standardized
-    severity for continuous vs. likert). So "how big a real effect" and
-    "how big a judge bias" are now expressed on a directly, RIGOROUSLY
-    comparable scale -- e.g. frac=0.08 is 0.08 population SDs of real
-    separation between groups, for every eval type. Binary does NOT share
-    EVAL_TYPE_POPULATION_SD's continuous/likert/grades convention directly
-    -- see _jb_effect_magnitude_binary, which pre-compensates frac for
-    binary's own boundary-clipping dynamics on top of this same standardized
-    base, re-derived under the new SD convention (the compensation factor
-    changed from 2.0 to 1.75 -- see that function's docstring for why).
-    generate_judge_bias_cell's `_marginal` shifts the base pass rate BEFORE
+    docstring for why "fraction of span" isn't the same statistic as
+    "fraction of population SD" across eval types with different
+    span-to-SD ratios). So "how big a real effect" and "how big a judge
+    bias" are expressed on a directly comparable scale -- e.g. frac=0.08 is
+    0.08 population SDs of real separation between groups, for every eval
+    type. Binary does not share EVAL_TYPE_POPULATION_SD's
+    continuous/likert/grades convention directly -- see
+    _jb_effect_magnitude_binary, which pre-compensates frac for binary's own
+    boundary-clipping dynamics on top of this same standardized base.
+    generate_judge_bias_cell's `_marginal` shifts the base pass rate before
     the Bernoulli draw (via sample_group_truth's effects parameter) rather
     than adding to the realized {0, 1} outcome afterward, so any frac is
     valid there; the caller (e.g. build_ppi_power_sources_binary) is still
@@ -1789,26 +1761,16 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # with nothing in between, which can look artificially bimodal/extreme
     # to a reader skimming the plot.
     #
-    # `bias_delta`/`bias_const` are RAW additive offsets on each eval type's
+    # `bias_delta`/`bias_const` are raw additive offsets on each eval type's
     # own native scale (see _jb_llm: `pred = anchor + slope*(truth-anchor) +
-    # bias`), NOT normalized to a common [0, 1] fraction -- see
+    # bias`), not normalized to a common [0, 1] fraction -- see
     # _jb_bias_magnitude's docstring for why every differential-bias
     # scenario above (eval_type.*/shape.*) uses it instead of a bare
-    # number. This sweep expresses magnitude in POPULATION-SD units (see
-    # EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude's 2026-08-03 fix), so
-    # "mild"/"moderate"/"severe" mean the same STANDARDIZED severity
-    # everywhere. Re-verified under that fix (n=100/icc=0.20, uncorrected
-    # ttest rejection rate, alpha=0.05, 300 reps): mild (0.03 SD) ->
-    # continuous 0.040/likert 0.063/grades 0.047 (all barely above nominal,
-    # tightly clustered); moderate (0.07 SD) -> 0.067/0.083/0.090 (mild
-    # inflation, tightly clustered); severe (0.30 SD) -> 0.590/0.573/0.570
-    # (strong, near-IDENTICAL inflation -- not saturated at 100% the way
-    # the pre-fix span-based convention's continuous cell was). The
-    # pre-2026-08-03 span-based version of this same check reported "3% of
-    # span -> ~12-24%, 7% -> ~45-74%, 30% -> 100%" -- a 2x-6x spread within
-    # each nominal tier across eval types, which the fix closes to a
-    # tight, consistent cluster at every tier, exactly the comparability
-    # this convention is supposed to provide. Binary is excluded -- its
+    # number. This sweep expresses magnitude in population-SD units (see
+    # EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude), so "mild"/"moderate"/
+    # "severe" mean the same standardized severity everywhere -- confirmed
+    # by matching uncorrected rejection rates across eval types at each
+    # tier (n=100/icc=0.20, ttest, alpha=0.05). Binary is excluded -- its
     # bias model (_jb_llm_binary) works via flip-probabilities, not an
     # additive offset on a continuous scale, so this framing doesn't apply
     # to it at all (see PPI_BINARY_BIAS_MAGNITUDES instead).
@@ -1832,16 +1794,11 @@ def build_judge_bias_sources() -> list[JudgeBiasSource]:
     # Per-group differential bias+slope miscalibration ("strong" below is
     # the base pattern -- group a over-scored/expanded, b under-scored/
     # compressed, c mildly over, d moderately under -- everything else is
-    # that SAME pattern scaled by a fraction f). The historical "mild"
-    # (f=0.5 of "strong") already saturates to ~100% uncorrected rejection,
-    # identically to "strong" itself -- not actually milder in practice, the
-    # same magnitude-labeling problem build_judge_bias_sources' bias_magnitude
-    # sweep found and fixed for bias_delta. Verified empirically (n=100,
-    # icc=0.20, uncorrected anova_ind rejection rate, alpha=0.05): f=0.05 ->
-    # ~6%, f=0.10 -> ~21%, f=0.20 -> ~58%, f=0.30 -> ~91%, f=0.40+ -> ~100%
-    # (saturated) -- so f=0.05/0.10/0.20 are the fractions that actually
-    # land in between "none" (f=0) and "strong" (f=1, kept at its original
-    # values since it's already a validated saturated-severity reference).
+    # that same pattern scaled by a fraction f). f values are chosen to land
+    # between "none" (f=0) and "strong" (f=1) without saturating uncorrected
+    # rejection to ~100% before reaching "strong" -- the same
+    # magnitude-labeling concern build_judge_bias_sources' bias_magnitude
+    # sweep addresses for bias_delta.
     def _gcal_kwargs(frac: float) -> dict:
         pattern = {"a": 0.30, "b": -0.10, "c": 0.10, "d": -0.20}
         kwargs: dict = {}
@@ -2031,61 +1988,21 @@ PPI_POWER_EFFECT_FRACS = (
     0.0, 0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.50, 0.60, 0.70, 0.80, 0.874, 1.00, 1.20,
 )
 """Effect-size grid for build_ppi_power_sources/build_ppi_comparison_*, as a
-POPULATION-SD fraction of each eval type's own truth distribution (see
-EVAL_TYPE_POPULATION_SD / _jb_bias_magnitude's 2026-08-03 fix -- same
-standardized convention _jb_bias_magnitude's bias_delta fractions use). 0.0
-is kept as a Type-I cross-check against build_judge_bias_sources'
-"eval_type.*" scenarios (same settings, same expected ~alpha rejection
-rate) rather than dropped, since it anchors the left edge of the power
-curve at the correct floor.
+population-SD fraction of each eval type's own truth distribution (see
+EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude -- the same standardized
+convention _jb_bias_magnitude's bias_delta fractions use). 0.0 is kept as
+a Type-I cross-check against build_judge_bias_sources' "eval_type.*"
+scenarios (same settings, same expected ~alpha rejection rate) rather than
+dropped, since it anchors the left edge of the power curve at the correct
+floor.
 
-RE-DERIVED 2026-08-03 (widened, not just re-labeled): the pre-2026-08-03
-grid (10 points, 0.0-0.40) was tuned under the span-based convention,
-where its max (frac=0.40) meant wildly different real severities by eval
-type -- 3.32 population SDs for continuous (guaranteed saturation),
-0.35 SD for likert, a negligible 0.02 SD for grades (see
-_jb_bias_magnitude's docstring). Under the new SD convention the SAME
-0.0-0.40 range no longer reaches saturation for ANY eval type -- power
-curves were being cut off before their interesting/high-power region,
-confirmed both via the oracle (full n=100 truth, plain ttest, effect-
-size-only, no judge noise/PPI correction) and the actual PPI-corrected
-power at baseline settings (n=100, n_lab=20, default bias/noise severity,
-150-300 reps per point):
-
-Oracle power (identical across eval types now, exactly as standardization
-should give -- a clean confirming check on its own): frac=0.0 -> ~0.06,
-0.20 -> ~0.30, 0.40 -> ~0.79, 0.60 -> ~0.99, 0.80 -> 1.00 (saturated by
-~0.8 SD).
-
-PPI-corrected power (global rectifier, mid-rank estimand, n_lab=20):
-continuous and grades climb smoothly and saturate by ~0.80-0.90 SD
-(continuous: 0.06/0.19/0.44/0.72/0.83/0.98/1.00 at frac=0/0.20/0.30/0.40/
-0.50/0.60/0.80; grades: similar shape, saturates ~0.80).
-
-RESOLVED 2026-08-03 (same day, a few hours after this grid was widened):
-likert's non-monotonic "wobble" this grid's resolution first made visible
--- power jumping to ~0.71 already at frac=0.10, dipping to ~0.61 at 0.20,
-wobbling 0.63-0.77 through 0.30-0.80 -- was NOT a deep discrete-rank-
-invariance mystery. Root-caused to a genuine BUG in generate_judge_bias_
-cell's _marginal() helper: effect_size was being added to the truth value
-AFTER sample_group_truth's internal rounding, not before, so likert's
-integer-valued truth ended up "integer + effect" (a non-integer value)
-instead of properly re-rounded -- an ARTIFICIAL, near-perfect tie-
-breaking pattern between groups for ANY nonzero effect, however tiny.
-Confirmed on pure oracle truth data (zero PPI machinery involved) --
-see _marginal's docstring for the full mechanism and fix. Post-fix,
-likert's PPI-corrected power climbs smoothly too (0.04/0.21/0.34/0.63/
-0.91/1.00 at frac=0/0.20/0.30/0.40/0.60/0.80), matching continuous/
-grades' shape. This grid's 0.874 landmark (likert's exact integer-
-crossing boundary under the SD convention) remains worth keeping for the
-SEPARATE, still-real "cancellation dip"/crossover phenomenon below, even
-though it turned out not to be what was causing the wobble.
-
-16 points (up from 10), spanning roughly 3x the old range (SD-comparable
-severity now needs a wider frac range than span-comparable severity did)
--- still denser than sparse through the climbing 0.05-0.80 region, where
-save_ppi_power_direction_plot's "cancellation dip"/crossover phenomenon
-lives, with 1.00/1.20 as saturation-confirming tail points."""
+16 points spanning 0.0-1.20 population SDs, dense through the climbing
+0.05-0.80 region where save_ppi_power_direction_plot's "cancellation
+dip"/crossover phenomenon lives, with 1.00/1.20 as saturation-confirming
+tail points. Power under this grid saturates for every eval type by
+roughly 0.80-0.90 SD; 0.874 lands exactly on likert's integer-crossing
+boundary under the SD convention, which is where the cancellation-dip
+phenomenon needs resolution."""
 PPI_COMPARISON_LABEL_FRACS = (0.15, 0.20, 0.30, 0.40)
 """Label-fraction grid for build_ppi_comparison_label_frac_sources, at
 _ppi_power_baseline's fixed n=100. Deliberately NOT build_judge_bias_sources'
@@ -2101,71 +2018,33 @@ resolve to distinct actual n_lab (15/20/30/40) at n=100 -- see
 PPIComparisonResult.n_lab, which reports the REALIZED count rather than
 the nominal fraction for exactly this reason."""
 PPI_COMPARISON_MODERATE_EFFECT_FRAC = 0.30
-"""Fixed effect-size fraction for build_ppi_comparison_label_frac_sources/
-build_ppi_nlab_grid_sources' power variant/their binary analogues -- every
-consumer of this constant holds effect_size fixed and varies label_frac/
-N_lab instead (never the "vs effect_size" sweeps, which use their own
-PPI_POWER_EFFECT_FRACS grid), so this is specifically "the effect size used
-whenever we're looking at the label-budget axis instead."
-
-History: was 0.20 ("moderate") until 2026-08-01 (span-based convention;
-saturated near 1.0 across most of PPI_NLAB_GRID_NLAB_VALUES' N_lab range,
-flattening the "does PPI beat human_subset" comparison into visual parity
-for reasons unrelated to PPI's actual value-add), then 0.10 (still
-span-based). RE-DERIVED 2026-08-03 for the SD-standardized convention
-(see EVAL_TYPE_POPULATION_SD/_jb_bias_magnitude's fix): 0.10 population
-SDs turned out to sit almost entirely at floor -- verified directly,
-PPI-corrected power at n=100/n_lab=15-40 stayed 0.06-0.10 (essentially
-the null rate) across continuous/likert/grades, giving this sweep no
-real power signal to show growing with N_lab at all. Re-scanned frac in
-{0.20, 0.30, 0.40, 0.50}: 0.30 gives a clear, non-floor, non-saturated
-climb across n_lab=15-40 for every eval type (continuous ~0.43->0.54,
-likert ~0.32->0.43, grades ~0.32->0.52 -- 200 reps per point), the best
-balance of "genuinely moderate" and "still has headroom to show N_lab
-mattering" of the fracs tested. PPI_LABEL_EFF_EFFECT_FRAC was checked too
-at the time (0.08, its value then) using this constant's own baseline
-(non-alignment-calibrated) noise and appeared fine -- that check turned
-out to be misleading (see PPI_LABEL_EFF_EFFECT_FRAC's own docstring): its
-sweep actually uses ALIGNMENT-CALIBRATED noise, not this constant's
-baseline, and DID need the same kind of fix once checked against the real
-noise values -- re-derived to 0.15 in a follow-up pass the same day."""
+"""Fixed effect-size fraction (population SDs, see EVAL_TYPE_POPULATION_SD)
+for build_ppi_comparison_label_frac_sources/build_ppi_nlab_grid_sources'
+power variant/their binary analogues -- every consumer of this constant
+holds effect_size fixed and varies label_frac/N_lab instead (never the "vs
+effect_size" sweeps, which use their own PPI_POWER_EFFECT_FRACS grid), so
+this is specifically "the effect size used whenever we're looking at the
+label-budget axis instead." 0.30 gives a clear, non-floor, non-saturated
+power climb across n_lab=15-40 for every eval type -- large enough to show
+real signal, small enough to leave headroom for N_lab to matter."""
 
 
 def _ppi_power_baseline(eval_type: str) -> dict:
     """`llm_noise` is `_jb_bias_magnitude(eval_type, 0.20)` -- 0.20
-    POPULATION SDs of `eval_type`'s own truth distribution (see
+    population SDs of `eval_type`'s own truth distribution (see
     EVAL_TYPE_POPULATION_SD), matching the standardized convention
     `bias_delta` below already uses (and the convention
-    `build_ppi_factorial_sources` already independently applied to its own
+    `build_ppi_factorial_sources` independently applies to its own
     llm_noise grid, anchored at this same 0.20 baseline -- see
-    PPI_FACTORIAL_NOISE_LEVELS' docstring).
-
-    Two-stage fix history: FIXED 2026-08-02 (was previously a literal,
-    unscaled `llm_noise=0.20` applied identically to every eval type,
-    regardless of scale) -- confirmed via simulation this was the root
-    cause of a "continuous data's PPI-corrected power barely beats
-    human_subset-only, but grades doesn't show this" finding in the 5-way
-    estimator comparison: a flat SD of 0.20 gave continuous's default shape
-    a signal-to-noise ratio of only ~0.6 (noise EXCEEDING signal) but
-    grades' an SNR~100 (an essentially noiseless judge), fully explaining
-    the asymmetry. That fix made `llm_noise` a fraction of each eval type's
-    SCALE SPAN (matching `bias_delta`'s then-convention). FIXED AGAIN
-    2026-08-03: "fraction of span" turned out to be an INCOMPLETE fix --
-    span-to-population-SD ratios differ by eval type (continuous 8.30,
-    grades 5.07, likert 3.49), so even the span-based version silently gave
-    the SAME nominal frac a different real, standardized severity per eval
-    type. `_jb_bias_magnitude`/`_jb_effect_magnitude` (what this function
-    calls) now use population SD directly -- see their docstrings and
-    EVAL_TYPE_POPULATION_SD's for the full derivation and re-verification.
-    This changes the REALIZED llm_noise/bias_delta AGAIN for every caller
-    that doesn't explicitly override it (build_ppi_power_sources/
-    _reinforcing/_nobias, build_ppi_comparison_label_frac_sources,
-    build_ppi_power_nlab_grid_*, and -- via its own default noise_by_
-    eval_type dict, which also routes through _jb_bias_magnitude as of the
-    2026-08-02 label-efficiency fix -- build_ppi_label_efficiency_sources
-    too, automatically, with no further code change needed there). Not a
-    side effect to overlook when comparing against ANY pre-2026-08-03
-    saved run."""
+    PPI_FACTORIAL_NOISE_LEVELS' docstring). Standardizing to population SD
+    rather than a flat raw number or a fraction of scale span matters
+    because both alternatives give a different real signal-to-noise ratio
+    per eval type for the same nominal value -- see _jb_bias_magnitude's
+    docstring. Every caller that doesn't explicitly override llm_noise/
+    bias_delta (build_ppi_power_sources/_reinforcing/_nobias,
+    build_ppi_comparison_label_frac_sources, build_ppi_power_nlab_grid_*,
+    build_ppi_label_efficiency_sources) inherits this standardized
+    baseline."""
     return dict(
         eval_type=eval_type, icc=0.20, n=100, label_frac=0.20,
         llm_noise=_jb_bias_magnitude(eval_type, 0.20), bias_type="differential",
@@ -2386,32 +2265,20 @@ redundant with continuous (same convention _PPI_NLAB_GRID_EVAL_TYPES
 already uses); binary gets its own _binary builder/grid instead of being
 folded in here, since it's restricted to _COMPARISON_METHODS_BINARY."""
 PPI_LABEL_EFF_NOISE_LEVELS = (0.05, 0.20, 0.40)
-"""Three llm_noise FRACTIONS ("good"/"baseline"/"poor" judge
-informativeness, each a POPULATION-SD fraction consumed via
+"""Three llm_noise fractions ("good"/"baseline"/"poor" judge
+informativeness, each a population-SD fraction consumed via
 _jb_bias_magnitude -- see build_ppi_label_efficiency_sources' default
 noise_by_eval_type) for build_ppi_label_efficiency_sources' judge-quality
 axis -- picked from PPI_FACTORIAL_NOISE_LEVELS' existing, already-vetted
 grid rather than introducing new magnitudes. 0.20 matches
 _ppi_power_baseline's own default frac, so the middle tier reproduces
 build_ppi_comparison_label_frac_sources' judge severity exactly; the other
-two bracket it at roughly 4x apart.
-
-FIXED 2026-08-02 (same bug/fix as _ppi_power_baseline's llm_noise, applied
-here too): build_ppi_label_efficiency_sources' DEFAULT path previously
-reused this tuple as literal RAW absolute llm_noise values, identically
-across every eval type in PPI_LABEL_EFF_EVAL_TYPES -- continuous's span is
-1.0 so that happened to be correct there, but likert's 1-5 span (4.0) meant
-the SAME raw tiers were only 1.25%/5%/10% of its own scale (vs.
-continuous's correctly-scaled 5%/20%/40%), making likert's judge look far
-better than continuous's at every matched nominal "good/baseline/poor"
-label -- confounding any cross-eval-type comparison this sweep produces.
-FIXED AGAIN 2026-08-03 (automatically, no code change needed here): once
-_jb_bias_magnitude itself switched from span-based to population-SD-based
-(see EVAL_TYPE_POPULATION_SD), this tuple's default path inherited the fix
-for free, since it already routed through that shared function. Does
-NOT affect the explicit noise_by_eval_type override path (used by
+two bracket it at roughly 4x apart. This tuple's default path is
+population-SD-standardized (via _jb_bias_magnitude), so a matched nominal
+"good/baseline/poor" tier means the same real severity across eval types.
+Does not affect the explicit noise_by_eval_type override path (used by
 cases/pvalues.py's alignment-calibrated caller via
-_calibrate_noise_for_alignment, which bisects a RAW llm_noise value
+_calibrate_noise_for_alignment, which bisects a raw llm_noise value
 directly per eval type already -- correctly scaled by construction, not
 this tuple)."""
 PPI_LABEL_EFF_NOISE_LEVELS_BINARY = (0.025, 0.10, 0.40)
@@ -2423,71 +2290,53 @@ PPI_LABEL_EFF_EFFECT_FRAC = 0.15
 than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.30) deliberately: continuous's
 classical (human-only) test power grows faster with N_lab at that
 constant's own scale, so both PPI's and the reference curve's power would
-saturate near 1.0 at the good-judge noise tier -- inverting a power
-that's AT a flat curve's plateau is ill-posed and previously produced a
-spurious "500 labels" (cases/pvalues.py's n_grid cap) equivalent-N for
-those cells, blowing up save_ppi_label_efficiency_plot's shared per-panel
-axis scale.
+saturate near 1.0 at the good-judge noise tier -- inverting a power that's
+at a flat curve's plateau is ill-posed and produces a spurious equivalent-N
+for those cells, blowing up save_ppi_label_efficiency_plot's shared
+per-panel axis scale.
 
-RE-DERIVED 2026-08-03 (was 0.08, confirmed 2026-07-23 to keep power inside
-~0.13-0.64 under the then-current span-based convention). That earlier
-spot check, and a same-day 2026-08-03 re-check at ONLY the baseline
-(non-alignment-calibrated) noise tier, both missed the actual problem:
-this sweep's noise comes from _calibrate_noise_for_alignment, bisecting
-llm_noise to hit a TARGET ALIGNMENT level per (eval_type, target) cell --
-NOT a fixed multiple of EVAL_TYPE_POPULATION_SD the way the rest of this
-file's llm_noise values are. Confirmed directly on the actual official run
-(official_20260803_013611): at frac=0.08, EVEN THE BEST-judge tier
-(target alignment=0.80, continuous's calibrated noise=0.0909) gave
-PPI-corrected power stuck at 0.05-0.20 across the ENTIRE n_lab=15-200
-range -- not the "0.13-0.64, enough headroom" the historical confirmation
-claimed. Near-floor power makes the equiv_N_lab/multiplier column (a
-ratio-of-ratios, inverting through the ALSO near-floor human_subset
-curve) extremely noise-sensitive -- this is what actually produced the
-jittery, spiky label-efficiency plot for continuous (and, equally,
-likert) in that run, not a plotting bug. Re-scanned frac in
-{0.08, 0.15, 0.25, 0.35, 0.50} at the REAL alignment-calibrated noise for
-both the best-judge (target=0.80) and worst-judge (target=0.30) tiers:
-0.15 gives non-floor, non-saturated growth at BOTH ends -- best-judge
-continuous 0.09->0.60 across n_lab=15->200, worst-judge continuous
-0.06->0.37 -- while 0.25+ saturates too early at the best-judge tier
-(continuous already at 0.93 by n_lab=200) and 0.08 sits at floor
-throughout. See LabelEfficiencyPoint.saturated in cases/pvalues.py for
-the defensive check that still applies regardless (a sufficiently good
-judge could saturate power at ANY fixed effect size)."""
+This sweep's noise comes from _calibrate_noise_for_alignment, bisecting
+llm_noise to hit a target alignment level per (eval_type, target) cell --
+not a fixed multiple of EVAL_TYPE_POPULATION_SD the way the rest of this
+file's llm_noise values are, so the effect_frac needed here isn't
+transferable from a baseline-noise spot check: at the best-judge tier the
+calibrated noise is small enough that a too-small effect_frac leaves power
+stuck near floor across the entire n_lab range, which in turn makes the
+equiv_N_lab/multiplier column (a ratio-of-ratios inverting through the
+also-near-floor human_subset curve) extremely noise-sensitive, producing a
+jittery, spiky label-efficiency plot. 0.15 gives non-floor, non-saturated
+power growth at both the best- and worst-judge alignment tiers. See
+LabelEfficiencyPoint.saturated in cases/pvalues.py for the defensive check
+that still applies regardless (a sufficiently good judge could saturate
+power at any fixed effect size)."""
 PPI_LABEL_EFF_N = 1000
-"""Total item count (N) for build_ppi_label_efficiency_sources -- NOT 100
-(the ORIGINAL choice, inherited from _ppi_power_baseline's default without
-reconsidering it for this specific check), and raised again from an
-intermediate 400 (2026-07-23): the whole motivation for using an LLM judge
-at all is that judge-scored items are cheap and plentiful while human
-labels are the expensive, scarce resource, so a realistic label-efficiency
-comparison should hold N_lab at a small ABSOLUTE count (still well under a
+"""Total item count (N) for build_ppi_label_efficiency_sources -- large
+relative to N_lab, since the whole motivation for using an LLM judge at
+all is that judge-scored items are cheap and plentiful while human labels
+are the expensive, scarce resource, so a realistic label-efficiency
+comparison should hold N_lab at a small absolute count (still well under a
 few hundred real labels) while N -- the pool of additional judge-only data
-PPI gets to lean on -- is large, not the other way around. 1000 (rather
-than 400) exists specifically to let PPI_LABEL_EFF_NLAB_TARGETS extend out
-to 200 while staying at only 20% of N -- at N=400, the same absolute
-targets would have pushed the top of the range to 50% of N, no longer a
-"labels are the scarce resource" regime. See PPI_LABEL_EFF_NLAB_TARGETS --
-label_frac is back-solved from these ABSOLUTE N_lab targets at this N, the
-same pattern build_ppi_nlab_grid_sources already uses, rather than reusing
-PPI_COMPARISON_LABEL_FRACS (tuned for N=100 -- the SAME label_frac values
+PPI gets to lean on -- is large. 1000 (rather than a smaller N) lets
+PPI_LABEL_EFF_NLAB_TARGETS extend out to 200 while staying at only 20% of
+N -- a smaller N would push the top of that range to a much larger
+fraction of N, no longer a "labels are the scarce resource" regime. See
+PPI_LABEL_EFF_NLAB_TARGETS -- label_frac is back-solved from these
+absolute N_lab targets at this N, the same pattern
+build_ppi_nlab_grid_sources already uses, rather than reusing
+PPI_COMPARISON_LABEL_FRACS (tuned for N=100 -- the same label_frac values
 at N=1000 would scale N_lab up into the hundreds, a much bigger absolute
 labeling budget, not the "small number of labels, lots of judge data
 around them" comparison this check is for)."""
 PPI_LABEL_EFF_NLAB_TARGETS = (15, 20, 30, 40, 60, 90, 130, 200)
 """Absolute labeled-item-count targets for build_ppi_label_efficiency_
-sources. Widened (2026-07-25) from the original 4-point (15, 20, 30, 40)
-grid, which only ever produced 4 x-axis values on save_ppi_label_
-efficiency_plot regardless of PPI_LABEL_EFF_N -- 8 points, roughly
-log-spaced from 15 (a "couple dozen labels") up to 200 (20% of
-PPI_LABEL_EFF_N=1000, still a labeled minority), gives the flagship plot
-enough points to actually show curve shape/diminishing-returns behavior
-instead of 4 sparse dots clustered in a narrow 15-40 window. Every target
-divides PPI_LABEL_EFF_N=1000 exactly (label_frac = target / 1000, e.g.
-90/1000 = 0.09), so round(N * label_frac) hits each target exactly with no
-floor-rounding distortion -- confirmed for all eight targets at N=1000. 15
-still sits exactly at _JB_MIN_LAB's floor."""
+sources -- 8 points, roughly log-spaced from 15 (a "couple dozen labels")
+up to 200 (20% of PPI_LABEL_EFF_N=1000, still a labeled minority), giving
+the flagship plot enough points to show curve shape/diminishing-returns
+behavior instead of a few sparse dots clustered in a narrow window. Every
+target divides PPI_LABEL_EFF_N=1000 exactly (label_frac = target / 1000,
+e.g. 90/1000 = 0.09), so round(N * label_frac) hits each target exactly
+with no floor-rounding distortion. 15 sits exactly at _JB_MIN_LAB's
+floor."""
 
 PPI_NFORMULA_N_VALUES = (250, 500, 1000, 2000)
 """Total-item (N) grid for build_ppi_nformula_sources(_binary) -- a clean
@@ -2517,14 +2366,14 @@ throughout."""
 PPI_NFORMULA_EFFECT_FRACS = (0.10, 0.15, 0.30)
 """Effect-size-fraction grid for build_ppi_nformula_sources(_binary) --
 reuses two already-established, independently-justified constants
-(PPI_LABEL_EFF_EFFECT_FRAC=0.15, this sweep's own baseline; PPI_COMPARISON_
-MODERATE_EFFECT_FRAC=0.30, this paper's OTHER primary "moderate effect"
-convention) as two of three points, plus 0.10 to bracket below, rather
-than inventing new magnitudes for this check specifically -- the whole
-point of this grid is testing whether the label-efficiency multiplier is
-effect-size-INDEPENDENT, so its own points should be ones already
-independently meaningful elsewhere in the paper, not picked to make the
-fit look clean."""
+(PPI_LABEL_EFF_EFFECT_FRAC=0.15, this sweep's own baseline;
+PPI_COMPARISON_MODERATE_EFFECT_FRAC=0.30, this harness's other primary
+"moderate effect" convention) as two of three points, plus 0.10 to bracket
+below, rather than inventing new magnitudes for this check specifically --
+the whole point of this grid is testing whether the label-efficiency
+multiplier is effect-size-independent, so its own points should be ones
+already independently meaningful elsewhere in this harness, not picked to
+make the fit look clean."""
 
 
 def build_ppi_label_efficiency_sources(
@@ -2768,13 +2617,11 @@ PPI_FACTORIAL_BIAS_MAGNITUDES: dict[str, float] = {"none": 0.0, "moderate": 0.07
 biasmag.*.moderate/biasmag.*.severe labels exactly, so factorial results are
 comparable to the existing OFAT bias_magnitude sweep."""
 PPI_FACTORIAL_N_VALUES = (60, 100, 200, 400)
-"""Widened 2026-08-05 to include 100, matching build_judge_bias_sources'
-own N sweep ([60, 100, 200, 400]) exactly -- previously (60, 200, 400)
-left an unexplained gap relative to that OFAT catalog, flagged when
-writing up the paper's data-generation appendix. No collision with
-PPI_FACTORIAL_NLAB_VALUES (15, 30, 80): every N_lab value stays strictly
-below every N value, so the n_lab>=n skip in build_ppi_factorial_sources
-still never binds."""
+"""Matches build_judge_bias_sources' own N sweep ([60, 100, 200, 400])
+exactly, so factorial results are directly comparable to the existing OFAT
+catalog. No collision with PPI_FACTORIAL_NLAB_VALUES (15, 30, 80): every
+N_lab value stays strictly below every N value, so the n_lab>=n skip in
+build_ppi_factorial_sources never binds."""
 PPI_FACTORIAL_NLAB_VALUES = (15, 30, 80)
 PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
     "mcar": dict(label_mnar=False, mnar_strength=0.0, mnar_mode="high"),
@@ -2782,23 +2629,17 @@ PPI_FACTORIAL_LABEL_MECHANISMS: dict[str, dict] = {
     "mnar_strong": dict(label_mnar=True, mnar_strength=1.6, mnar_mode="high"),
 }
 PPI_FACTORIAL_EFFECT_FRACS: dict[str, float] = {"null": 0.0, "moderate": 0.50, "large": 0.80}
-"""RE-DERIVED 2026-08-03: now that `frac` is a population-SD-standardized
-effect size (see EVAL_TYPE_POPULATION_SD / _jb_bias_magnitude's fix), these
-match Cohen's (1988) own conventional "medium" (0.5) and "large" (0.8)
-standardized-effect-size benchmarks directly, rather than an arbitrary
-pair of numbers -- 0.20/0.40 were tuned under the old span-based
-convention, where their real, standardized severity varied wildly by eval
-type (see PPI_POWER_EFFECT_FRACS' docstring for the exact numbers of that
-mismatch) and neither reliably reached high power at this factorial grid's
-N/N_lab combinations. Verified at PPI_POWER_EFFECT_FRACS' own baseline
-settings (n=100, n_lab=20): frac=0.50 gives PPI-corrected power ~0.83
-(continuous)/~0.82 (grades) -- solidly powered but not saturated, a
-genuine "moderate" cell; frac=0.80 gives ~1.00 for both -- saturated, a
-genuine "large" cell. (likert's power is non-monotonic across this whole
-range for reasons not yet understood -- see PPI_POWER_EFFECT_FRACS'
-docstring -- so "moderate"/"large" don't carry quite the same clean
-interpretation for likert specifically; still the best available
-standardized choice.)"""
+"""Population-SD-standardized effect sizes (see EVAL_TYPE_POPULATION_SD /
+_jb_bias_magnitude) matching Cohen's (1988) conventional "medium" (0.5) and
+"large" (0.8) standardized-effect-size benchmarks directly, rather than an
+arbitrary pair of numbers. At PPI_POWER_EFFECT_FRACS' own baseline settings
+(n=100, n_lab=20): frac=0.50 gives PPI-corrected power ~0.82-0.83 for
+continuous/grades -- solidly powered but not saturated, a genuine
+"moderate" cell; frac=0.80 gives ~1.00 for both -- saturated, a genuine
+"large" cell. (likert's power is non-monotonic across this whole range for
+reasons not yet understood -- see PPI_POWER_EFFECT_FRACS' docstring -- so
+"moderate"/"large" don't carry quite the same clean interpretation for
+likert specifically; still the best available standardized choice.)"""
 PPI_FACTORIAL_BIAS_DIRECTIONS = ("opposing", "reinforcing")
 _PPI_FACTORIAL_EVAL_TYPES = ("continuous", "likert")
 PPI_FACTORIAL_NOISE_LEVELS = (
@@ -2806,101 +2647,53 @@ PPI_FACTORIAL_NOISE_LEVELS = (
     0.2828, 0.3605, 0.4595, 0.5856, 0.7464, 0.9514, 1.2126, 1.5455, 1.9698, 2.5107,
     3.2, 4.0786, 5.1984, 6.6257, 8.4449, 10.7635, 13.7187, 17.4853, 22.2861, 28.405,
 )
-"""llm_noise FRACTIONS of the eval type's own POPULATION SD (see
+"""llm_noise fractions of the eval type's own population SD (see
 EVAL_TYPE_POPULATION_SD -- same standardized convention _jb_bias_magnitude
 already applies to this function's bias_delta/effect_size -- see
 build_ppi_factorial_sources). A geometric sequence, ratio 2**0.35 (~1.275),
-anchored at 0.025 (this constant's own original low end), PLUS one
-deliberate, non-geometric extra point: 0.20 (inserted 2026-08-03, between
-0.1741 and 0.2219 -- see "REQUIRED: 0.20" below for why). This is the one
-sanctioned exception to this file's "clean geometric sequence, no
-per-value tuning" design principle (see the 2026-08-03 widening note
-below) -- it isn't picked to hit an alignment bucket, it's a hard
-structural requirement of a downstream consumer, not an aesthetic choice.
+spanning 0.025 to ~28.4 (wide enough to sweep judge alignment from near-
+perfect down to near-zero for both continuous's Pearson r and likert's
+weighted kappa), plus one deliberate, non-geometric extra point: 0.20
+(inserted between 0.1741 and 0.2219 -- see "REQUIRED: 0.20" below for why).
+That's the one sanctioned exception to this file's "clean geometric
+sequence, no per-value tuning" design principle elsewhere -- it isn't
+picked to hit an alignment bucket, it's a hard structural requirement of a
+downstream consumer.
 
 REQUIRED: 0.20 -- build_ppi_factorial_sources hardcodes es!="null" cells
-(moderate/large effect) at a literal noise=0.20, INDEPENDENT of this
-tuple (only es="null" cells sweep this grid at all -- see that function's
-docstring). cases/pvalues.py's run() filters BOTH down to `noise == 0.20`
+(moderate/large effect) at a literal noise=0.20, independent of this tuple
+(only es="null" cells sweep this grid at all -- see that function's
+docstring). cases/pvalues.py's run() filters both down to `noise == 0.20`
 for fit_ppi_factorial_model/save_ppi_factorial_heatmap_plot's baseline
-subset. If 0.20 isn't an EXACT member of this tuple, that baseline subset
-silently ends up with zero es="null" rows (moderate/large still land at
-0.20; null cells land wherever this grid actually put them, which is
-nowhere near 0.20 without this fix) -- and the GLM's `C(es,
-Treatment('null'))` term then crashes with patsy's "specified level
-'null' not found", since the reference level literally isn't present in
-the data. CONFIRMED the hard way (2026-08-03): the 2026-08-03 widening
-below dropped 0.20 from the grid without noticing, and a real official
---factorial-check run (4800 scenarios x 4 methods, ~50 min compute) hit
-exactly this crash at the report-generation stage, AFTER the simulation
-finished but BEFORE any results were saved -- see cases/pvalues.py's
-run()/fit_ppi_factorial_model for the accompanying defensive check and
-save-ordering fix. Do not remove 0.20 from this grid without also
+subset. If 0.20 isn't an exact member of this tuple, that baseline subset
+silently ends up with zero es="null" rows, and the GLM's `C(es,
+Treatment('null'))` term then crashes with patsy's "specified level 'null'
+not found" -- after the full sweep has already run, at the
+report-generation stage. Do not remove 0.20 from this grid without also
 re-deriving build_ppi_factorial_sources' hardcoded baseline (or vice
 versa) -- they must always agree.
 
-RE-DERIVED 2026-08-03 (widened, not just re-labeled -- same day as, but
-after, the SD-standardization fix that made this necessary): the previous
-11-point grid (ratio sqrt(2), 0.025-0.80, capped there because "a noise SD
-can't meaningfully exceed the whole scale SPAN" under the old span-based
-convention) turned out to badly under-range once frac became a
-population-SD fraction. Confirmed directly: even this grid's OLD maximum
-(frac=0.80, i.e. 0.80 population SDs of noise) only brought continuous's
-Pearson r down to 0.772 and likert's weighted kappa down to 0.731 -- both
-still in the SAME (0.7-0.8) top alignment bucket. Every alignment-bucketed
-plot built from the old grid was therefore only ever populating the
-highest 2-3 of 10 buckets (confirmed in a real official run,
-official_20260803_013611) -- not a plotting bug, a genuine noise-range
-gap. Re-measured how far frac needs to go to reach near-zero alignment:
-~frac=16-24 for both continuous (r~0.04-0.06) and likert (kappa~0.03-0.05).
-
-Widened to 30 geometric points (31 counting the 0.20 insertion above,
-ratio 2**0.35, spanning 0.025 to ~28.4 -- roughly 36x the old grid's
-range) by simply extending the same "clean geometric
-sequence, no per-value tuning" design principle the original grid used,
-not by hand-picking values to hit specific buckets (which the original
-grid's own docstring explicitly rejected as "defensible for exploration,
-but not for a design a reviewer might ask 'why these specific numbers'
-about" -- that principle is preserved here, just extended further and at
-a finer ratio). VERIFIED (2026-08-03, n_mc=2000 per point): this grid
-achieves full 10/10 alignment-bucket coverage for BOTH continuous's
-Pearson r and likert's weighted kappa -- a real improvement on the
-original grid's own historical claim of 9/10 and 8/10 respectively (which
-was itself never actually achieved after the SD-standardization fix, per
-above). A coarser ratio (2**0.4, 26 points) got 10/10 for continuous but
-only 9/10 for likert (missing the 0.6-0.7 bucket); an even coarser ratio-2
-(11 points, same count as the original grid) only reached 6/10 for both --
-confirming genuine resolution, not just range, was needed through the
-"transition zone" (~frac=0.8-6.4) where alignment changes fastest.
-
-binary's own noise grid (PPI_BINARY_NOISE_LEVELS, below) is a SEPARATE,
-PRE-EXISTING gap (5/10 kappa buckets, unrelated to this SD-standardization
-work -- binary's noise is a flip-probability rate, never routed through
-_jb_bias_magnitude/EVAL_TYPE_POPULATION_SD at all) -- not fixed here,
-flagged for a separate pass. See measure_judge_alignment/cases/pvalues.py's
-alignment-bucket plots for how this grid gets consumed once crossed into
-the factorial."""
+binary's own noise grid (PPI_BINARY_NOISE_LEVELS, below) has a separate,
+narrower alignment-bucket range -- binary's noise is a flip-probability
+rate, never routed through _jb_bias_magnitude/EVAL_TYPE_POPULATION_SD at
+all. See measure_judge_alignment/cases/pvalues.py's alignment-bucket plots
+for how this grid gets consumed once crossed into the factorial."""
 PPI_FACTORIAL_NOISE_LEVELS_FAST = PPI_FACTORIAL_NOISE_LEVELS[::3]
 """Every third point of PPI_FACTORIAL_NOISE_LEVELS -- 11 points instead of
-31 (was every OTHER point, 6 of 11, before the 2026-08-03 widening -- with
-~3x as many points in the full grid now, skipping 2 instead of 1 keeps the
-"fast" variant's own point count roughly the same as before, rather than
-tripling it too). Mostly a clean geometric subsequence (ratio 2**1.05,
-~2.07, from the same 0.025 starting point) EXCEPT it also happens to land
-squarely on the one non-geometric point, 0.20 -- verified by the assertion
-below, not by construction, since 0.20's insertion index (9) happening to
-be a multiple of 3 is coincidental, not derived. Passed as build_ppi_
-factorial_sources' noise_levels argument by cases/pvalues.py's
---factorial-fast-noise / official_args_ppi_factorial_fast_noise, for a
-quicker factorial+alignment pass before committing to the full grid's
-longer runtime."""
+31. Mostly a clean geometric subsequence (ratio 2**1.05, ~2.07, from the
+same 0.025 starting point) except it also happens to land squarely on the
+one non-geometric point, 0.20 -- verified by the assertion below, not by
+construction. Passed as build_ppi_factorial_sources' noise_levels argument
+by cases/pvalues.py's --factorial-fast-noise /
+official_args_ppi_factorial_fast_noise, for a quicker factorial+alignment
+pass before committing to the full grid's longer runtime."""
 assert 0.20 in PPI_FACTORIAL_NOISE_LEVELS, (
     "PPI_FACTORIAL_NOISE_LEVELS must contain 0.20 exactly -- build_ppi_factorial_sources hardcodes "
     "es!=\"null\" cells at noise=0.20 independent of this grid, and cases/pvalues.py's run() filters "
     "BOTH down to noise==0.20 for the GLM/heatmap baseline. Missing this silently produces zero "
     "es=\"null\" rows in that baseline and crashes fit_ppi_factorial_model's C(es, Treatment('null')) "
     "with patsy's \"specified level 'null' not found\" -- AFTER the full sweep has already run. See "
-    "this constant's own docstring for the 2026-08-03 incident this assertion guards against."
+    "this constant's own docstring for why."
 )
 assert 0.20 in PPI_FACTORIAL_NOISE_LEVELS_FAST, (
     "PPI_FACTORIAL_NOISE_LEVELS_FAST must also contain 0.20 exactly -- see PPI_FACTORIAL_NOISE_LEVELS' "
@@ -2912,114 +2705,74 @@ def build_ppi_factorial_sources(
     likert_max: int = 5, noise_levels: Sequence[float] = PPI_FACTORIAL_NOISE_LEVELS,
 ) -> list[JudgeBiasSource]:
     """Full factorial cross of the seven factors most likely to compound in
-    ways this harness's one-factor-at-a-time sweeps (build_judge_bias_sources,
-    and this session's effect_size/bias_direction/N_lab additions -- each
-    checked one axis at a time against a fixed baseline) can't reveal:
-    bias_magnitude x N x N_lab x label_mechanism x effect_size x
-    bias_direction x llm_noise, ALSO crossed with eval_type (continuous,
-    likert). llm_noise joined the cross so this same grid can drive the
-    judge-human ALIGNMENT-bucketed plots (cases/pvalues.py's
+    ways this harness's one-factor-at-a-time sweeps (build_judge_bias_sources
+    and friends, each checking one axis against a fixed baseline) can't
+    reveal: bias_magnitude x N x N_lab x label_mechanism x effect_size x
+    bias_direction x llm_noise, also crossed with eval_type (continuous,
+    likert). llm_noise is included in the cross so this same grid can drive
+    the judge-human alignment-bucketed plots (cases/pvalues.py's
     build_ppi_alignment_results_from_factorial/save_ppi_alignment_sweep_plot)
-    directly off the factorial's own es="null" cells, instead of a separate,
-    narrower 2D noise x bias grid at one fixed (N, N_lab, label_mechanism)
-    baseline -- realized alignment (measure_judge_alignment) depends only on
-    (eval_type, llm_noise, bias_delta, likert_max), so every es="null" cell
-    at the SAME (eval_type, llm_noise, bias_magnitude) lands in the SAME
-    alignment bucket regardless of its N/N_lab/label_mechanism, meaning each
-    bucket in that plot now pools over many (N, N_lab, label_mechanism)
-    combinations instead of just one -- a strictly richer, still
-    apples-to-apples slice of the SAME data used for the rest of this
-    factorial's reporting, rather than a second simulation engine.
+    directly off the factorial's own es="null" cells, instead of needing a
+    separate, narrower 2D noise x bias grid at one fixed (N, N_lab,
+    label_mechanism) baseline -- realized alignment (measure_judge_alignment)
+    depends only on (eval_type, llm_noise, bias_delta, likert_max), so every
+    es="null" cell at the same (eval_type, llm_noise, bias_magnitude) lands
+    in the same alignment bucket regardless of its N/N_lab/label_mechanism,
+    pooling over many (N, N_lab, label_mechanism) combinations per bucket
+    instead of just one.
 
-    Two eval types, not the same scoping build_ppi_comparison_label_frac_
-    sources/build_ppi_nlab_grid_sources use for label_frac/N_lab sweeps (an
-    earlier version of this docstring claimed "same scoping" as a
-    justification for continuous-only -- that was a documentation error:
-    build_ppi_comparison_label_frac_sources already sweeps all three
-    non-binary eval types, so there was never a real precedent for
-    continuous-only here). Likert is included because it's arguably the
-    most common real-world LLM-as-judge output format; grades is
-    deliberately excluded as redundant with continuous (grades is just
-    continuous rescaled to a [0, 100] span). One representative estimand
-    (paired_t). Consumed via _run_ppi_comparison_cell/
-    run_ppi_comparison_simulation (unchanged -- this is just a new source
-    list, not a new execution path), analyzed via cases/pvalues.py's
-    fit_ppi_factorial_model (pooled binomial GLM) and a curated set of 2D
-    heatmap slices (both of which fix llm_noise at its 0.20 baseline level,
-    same as before this factor was added, so those outputs stay comparable
-    to earlier runs -- llm_noise varies only in the alignment-bucketed view).
+    Two eval types (continuous, likert) -- grades is deliberately excluded
+    as redundant with continuous (grades is just continuous rescaled to a
+    [0, 100] span). One representative estimand (paired_t). Consumed via
+    _run_ppi_comparison_cell/run_ppi_comparison_simulation (this is just a
+    new source list, not a new execution path), analyzed via
+    cases/pvalues.py's fit_ppi_factorial_model (pooled binomial GLM) and a
+    curated set of 2D heatmap slices (both fix llm_noise at its 0.20
+    baseline level -- llm_noise varies only in the alignment-bucketed view).
 
     Three skips, one for infeasibility and two for redundancy:
     - n_lab >= n is infeasible: n_lab > n can't be labeled at all, and
       n_lab == n (100% labeled) leaves no unlabeled pool for
       evalstats.ppi.correct to extrapolate to (same constraint as
-      build_ppi_nlab_grid_sources; PPI_FACTORIAL_NLAB_VALUES/
-      PPI_FACTORIAL_N_VALUES don't currently collide on an equal value, so
-      this skip is presently a no-op safety net rather than an active
-      exclusion, but keeps the grid correct if those value sets ever change).
-    - bias_direction="reinforcing" is SKIPPED (not just de-prioritized) when
-      bias_magnitude="none" OR effect_size="null": bias_direction only flips
-      the SIGN of the fixed judge-bias offset (see
+      build_ppi_nlab_grid_sources).
+    - bias_direction="reinforcing" is skipped (not just de-prioritized) when
+      bias_magnitude="none" or effect_size="null": bias_direction only flips
+      the sign of the fixed judge-bias offset (see
       build_ppi_power_reinforcing_sources), and every test here is
       two-sided, so its rejection rate depends only on the offset's
-      MAGNITUDE -- "opposing" and "reinforcing" are exact mirror images
-      (statistically equivalent) whenever there's no bias to have a
-      direction, or no real effect for that direction to interact with.
-      Generating both would waste compute on literally redundant cells
-      instead of covering new ground.
-    - llm_noise is only swept across PPI_FACTORIAL_NOISE_LEVELS' full 31
-      points for es="null" cells (where the alignment-bucketed plots draw
-      their data); es != "null" cells (power, not the alignment view's
-      concern) hold llm_noise at its single, literal 0.20 baseline, same as
-      every other non-alignment factorial output -- NOT drawn from this
-      grid, which is why 0.20 must remain an exact member of it (see
-      PPI_FACTORIAL_NOISE_LEVELS' own docstring: cases/pvalues.py's GLM/
-      heatmap baseline filters BOTH down to noise==0.20, and a mismatch
-      here crashes that filter's es="null" side silently, not loudly, until
-      the GLM fit itself). Skipping the other 30 noise levels for non-null
-      cells keeps the power-focused majority of the grid at its original
-      size instead of multiplying it 31x for no analytical benefit.
-      ~429 cells per eval type survive the direction-redundancy + n_lab>=n
-      skips at the 0.20 noise baseline (4x3x3x3x3x2 minus n_lab>n
-      infeasibility, up from ~312 before PPI_FACTORIAL_N_VALUES gained its
-      4th point, 100, on 2026-08-05 -- see that constant's own docstring)
-      -- 99 of those 429 are the "null"-effect subset (at noise=0.20
-      specifically), which additionally gets the OTHER 30 noise levels,
-      adding 99*30=2970 more per eval type. Total: (429 + 2970) * 2 eval
-      types = 6,798 cells. (Verified directly against build_ppi_factorial_
-      sources' actual output, not hand-computed.)
+      magnitude -- "opposing" and "reinforcing" are exact mirror images
+      whenever there's no bias to have a direction, or no real effect for
+      that direction to interact with. Generating both would waste compute
+      on literally redundant cells.
+    - llm_noise is only swept across PPI_FACTORIAL_NOISE_LEVELS' full grid
+      for es="null" cells (where the alignment-bucketed plots draw their
+      data); es != "null" cells (power, not the alignment view's concern)
+      hold llm_noise at its single 0.20 baseline, same as every other
+      non-alignment factorial output -- 0.20 must remain an exact member of
+      the grid, since cases/pvalues.py's GLM/heatmap baseline filters both
+      down to noise==0.20 (see PPI_FACTORIAL_NOISE_LEVELS' own docstring).
+      Skipping the other noise levels for non-null cells keeps the
+      power-focused majority of the grid at its original size instead of
+      multiplying it out for no analytical benefit.
 
-    Small enough, per eval type/paired_t, for a TRUE full factorial (every
+    Small enough, per eval type/paired_t, for a true full factorial (every
     main effect and interaction directly estimable, no confounding to
     reason about) rather than a fractional design -- made tractable by the
     PPI bootstrap's existing vectorized fast path (evalstats.ppi.correct);
     see the harness README's efficiency note. cases/pvalues.py's
     _run_ppi_comparison_cell reads every scenario via generate_judge_bias_
-    cell (the full generator -- there's no longer a leaner variant; it was
-    retired once _COMPARISON_METHODS_OMNIBUS' 3-group tests needed the same
-    structures generate_judge_bias_cell already draws for _run_ppi_cell).
-    Scenario names are "fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
+    cell. Scenario names are "fact.<eval_type>.bm=<bm>.n=<n>.nlab=<n_lab>.
     lm=<lm>.es=<es>.bd=<bd>.noise=<noise_frac>", the same "<prefix>.
     <eval_type>.<field>=<value>..." shape build_ppi_power_sources/
     build_ppi_nlab_grid_sources use -- see cases/pvalues.py's
     _PPI_FACTORIAL_NAME_RE/_parse_ppi_factorial_name for the corresponding
     parser.
 
-    llm_noise itself is computed the SAME standardized way bias_delta/
+    llm_noise itself is computed the same standardized way bias_delta/
     effect_size already are (_jb_bias_magnitude(et, noise_frac,
-    scale_bounds=et_scale_bounds) -- as of 2026-08-03, `frac` population SDs
-    of the eval type's own truth distribution, see EVAL_TYPE_POPULATION_SD;
-    originally, until 2026-08-02, a flat raw 0.20 (rescaled only for
-    non-default likert_max, via _likert_scale_factor); from 2026-08-02 a
-    fraction of scale span, which the same 2026-08-03 fix superseded again).
-    Two historical inconsistencies this progression fixed: the pre-2026-08-02
-    flat convention was actually frac=0.20 on continuous's span but frac=
-    0.05 on likert_max=5's 4x-wider span (PPI_FACTORIAL_NOISE_LEVELS'
-    docstring); the 2026-08-02 through 2026-08-03 span-based convention was
-    itself frac=0.20 on continuous's span/SD ratio (8.30) but a
-    proportionally different real severity on likert's (3.49) -- see
-    _jb_bias_magnitude's docstring for the full derivation. Not a side
-    effect to overlook when comparing against pre-2026-08-03 factorial runs.
+    scale_bounds=et_scale_bounds): `frac` population SDs of the eval type's
+    own truth distribution, see EVAL_TYPE_POPULATION_SD) -- see
+    _jb_bias_magnitude's docstring for the full derivation.
 
     likert_max : int, default 5
         Forwarded to every likert JudgeBiasSource's own likert_max field
@@ -3162,42 +2915,26 @@ def _jb_effect_magnitude_binary(frac: float) -> float:
     0.5 -- see EVAL_TYPE_POPULATION_SD -- so target realized diff = frac *
     0.5).
 
-    generate_judge_bias_cell's `_marginal` shifts binary truth's base PASS
-    RATE before its Bernoulli draw (see _marginal's docstring), but that
+    generate_judge_bias_cell's `_marginal` shifts binary truth's base pass
+    rate before its Bernoulli draw (see _marginal's docstring), but that
     draw's own per-item pass-probability comes from a Beta distribution at
-    icc=1.0 -- the LOWEST concentration `_marginal` ever uses (icc=1.0
+    icc=1.0 -- the lowest concentration `_marginal` ever uses (icc=1.0
     means "no noise layered on top of the true per-item variation," and for
     binary that variation itself is modeled as a U-shaped, near-bimodal
     spread of per-item pass probabilities). Most items already sit close to
     0 or 1 before any effect is added, so a raw shift clips against that
-    boundary for roughly half of them -- confirmed by direct simulation
-    (unchanged mechanism from before the 2026-08-03 SD-standardization fix,
-    since it depends on the ABSOLUTE input magnitude, not which convention
-    produced it): an UNCOMPENSATED `_jb_effect_magnitude("binary", frac)`
-    input realizes as only ~55-59% of its nominal value in the actual
-    realized group-mean difference (e.g. frac=0.40 -> input 0.2000 ->
-    realized ~0.1105, a 55% realization).
+    boundary for roughly half of them: an uncompensated
+    `_jb_effect_magnitude("binary", frac)` input realizes as only ~55-59%
+    of its nominal value in the actual realized group-mean difference.
 
-    RE-DERIVED 2026-08-03 (the compensation factor itself, not just the
-    base convention it corrects): the pre-2026-08-03 version multiplied
-    frac by a flat 2.0 before the (then span-based) lookup, calibrated so
-    binary's realized proportion difference matched continuous's OWN
-    (then-also-span-based, so numerically equal to frac on continuous's
-    [0, 1] span) absolute effect_size. That calibration doesn't carry over
-    unchanged: switching _jb_effect_magnitude's underlying convention from
-    span-based to population-SD-based changes the ABSOLUTE magnitude fed in
-    per unit of `frac` for EVERY eval type, including binary, which shifts
-    how much clipping attenuates it. Re-measured directly (this function's
-    target definition above, 300k-draw Monte Carlo per frac, frac in
-    [0.05, 0.40]): a compensation factor of 1.75 (replacing 2.0) lands the
-    REALIZED standardized effect within 6% of the target `frac` across that
-    whole range, and within 1% at frac=0.08/0.10 specifically (
-    PPI_LABEL_EFF_EFFECT_FRAC / PPI_COMPARISON_MODERATE_EFFECT_FRAC, the two
-    fracs this function is actually called with most). Like the pre-fix
-    2.0 constant, 1.75 is a single-point approximation, not a perfect
-    correction at every frac (the true needed factor drifts from ~1.70 at
-    frac=0.05 to ~1.81 at frac=0.40, since the clipping mechanism isn't
-    perfectly linear) -- documented, not silently assumed exact."""
+    A compensation factor of 1.75 lands the realized standardized effect
+    within about 6% of the target `frac` across frac in [0.05, 0.40], and
+    within 1% at the fracs this function is actually called with most
+    (PPI_LABEL_EFF_EFFECT_FRAC / PPI_COMPARISON_MODERATE_EFFECT_FRAC). It is
+    a single-point approximation, not a perfect correction at every frac
+    (the true needed factor drifts slightly across that range, since the
+    clipping mechanism isn't perfectly linear) -- documented, not silently
+    assumed exact."""
     return _jb_effect_magnitude("binary", 1.75 * frac)
 
 
@@ -3660,15 +3397,13 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
 
 
 PPI_ALIGNMENT_HUMAN_NOISE_LEVELS = (0.05, 0.15, 0.30)
-"""A small range of plausible inter-annotator noise FRACTIONS (of the eval
-type's own POPULATION SD -- same standardized convention PPI_ALIGNMENT_
+"""A small range of plausible inter-annotator noise fractions (of the eval
+type's own population SD -- same standardized convention PPI_ALIGNMENT_
 NOISE_LEVELS/_jb_bias_magnitude use, see EVAL_TYPE_POPULATION_SD, for the
 same reason: a raw noise value isn't comparably disruptive across eval
 types with different population SDs) for measure_human_human_alignment's
-companion sweep -- deliberately a RANGE, not one anchored value, since
-there's no canonical "true" human-human noise level to assert (that would
-be the same overfitting-to-one-number problem as anchoring the main sweep
-to one paper's reported figures)."""
+companion sweep -- deliberately a range, not one anchored value, since
+there's no canonical "true" human-human noise level to assert."""
 
 
 def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc: int = 20_000, seed: int = 0) -> dict:
@@ -3835,37 +3570,26 @@ def generate_judge_bias_cell(
         mechanism _repeated (below) already uses correctly for every eval
         type.
 
-        BUG FIXED 2026-08-03: the non-binary branch used to compute
-        sample_group_truth(effect=0) (i.e. the fully rounded/clamped
-        REALIZED value) and add `effect` to THAT afterward, instead of
-        threading it through `effects` like the binary branch already did.
-        For continuous/grades (clamp-only, no rounding) this was nearly
-        harmless -- clamping is a no-op away from the [0,1]/[0,100]
-        boundary, so post-clamp shift almost always equals pre-clamp shift.
-        For LIKERT it was NOT harmless: rounding-to-nearest-integer touches
-        EVERY draw, not just boundary cases, so adding `effect` to an
-        ALREADY-ROUNDED integer produces a non-integer "integer + effect"
-        value (confirmed directly: group B's realized truth values were
-        exactly {1, 2, 3, 4, 5} + a constant fractional offset, not
-        properly re-rounded integers) -- creating an ARTIFICIAL, near-
-        perfect tie-breaking pattern between the two groups at every
-        shared "level" for ANY nonzero effect, however tiny. This is what
-        was actually behind a severe MWU/Kruskal-specific (independent-
-        groups rank tests; wilcoxon/friedman use the unaffected _repeated
-        path) power discontinuity on likert data: power jumping from a
-        correctly-nominal ~6% at the true null straight to ~60-85% at the
-        smallest tested nonzero effect_size, then plateauing instead of
-        climbing -- confirmed to reproduce on PURE ORACLE TRUTH data (a
-        plain scipy.stats.mannwhitneyu on the dense truth arrays, zero PPI
-        machinery, zero judge noise involved), which is what pinned this
-        down as a truth-GENERATION bug rather than anything in the PPI
-        correction code (the "global"/"local"/"ridge"/"adaptive" rectifier
-        investigations earlier this session were all built on top of a
-        test statistic that already had this artifact baked in beneath
-        it). Binary was already unaffected (see its own reasoning above,
-        now shared by every eval type): adding effect to a REALIZED {0,1}
-        outcome would push it outside {0,1}, so it always routed through
-        `effects` correctly."""
+        `effect` must be threaded through `effects` rather than added to an
+        already-rounded/clamped realized value afterward. For
+        continuous/grades (clamp-only, no rounding) this distinction barely
+        matters, since clamping is a no-op away from the [0,1]/[0,100]
+        boundary. For likert it matters a great deal: rounding-to-nearest-
+        integer touches every draw, so adding `effect` to an already-
+        rounded integer produces a non-integer "integer + effect" value,
+        creating an artificial, near-perfect tie-breaking pattern between
+        groups at every shared "level" for any nonzero effect, however
+        tiny -- this shows up as a severe power discontinuity specific to
+        independent-groups rank tests (MWU/Kruskal; wilcoxon/friedman use
+        the unaffected _repeated path) on likert data, jumping from nominal
+        Type-I straight to high power at the smallest tested nonzero
+        effect_size and then plateauing instead of climbing smoothly. It
+        reproduces on pure oracle truth data (a plain scipy.stats.
+        mannwhitneyu on the dense truth arrays, zero PPI machinery, zero
+        judge noise involved), confirming it's a truth-generation property,
+        not a PPI-correction one. Binary is naturally unaffected: adding
+        effect to a realized {0,1} outcome would push it outside {0,1}, so
+        it must always route through `effects`."""
         return sample_group_truth(
             shape, n, 1, 1, 1.0, rng, effects=np.array([effect]), likert_max=scenario.likert_max,
         )[0, :, 0]
@@ -4042,63 +3766,34 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     by simulation, rather than assuming 0, avoids baking in a wrong
     assumption about what "no effect" looks like for that particular test.
 
-    anova_ind's and anova_rep's gold values are both the known-exact
-    constant 0.0 (see bv_gold/rv_gold below), not re-derived by
-    simulation. This wasn't always true and is worth explaining, since an
-    earlier version of both got this wrong in two successive ways:
+    anova_ind's, anova_rep's, and friedman's gold values are all the
+    known-exact constant 0.0 (see bv_gold/rv_gold/frv_gold below), not
+    re-derived by simulation: since _repeated/_marginal above never inject
+    a condition/group effect (this function only ever computes the
+    null-hypothesis baseline), and all three estimators are debiased
+    (subtracting the expected-under-H0 floor so they target the clean
+    population theta), the correct target is exactly 0.0 -- no simulation
+    needed. A raw (undebiased) closed-form null variance, or a
+    Monte-Carlo-on-pure-truth re-derivation, are both wrong comparison
+    targets once the estimators themselves are debiased: the former
+    overstates gold for scenarios with a substantial true effect, and the
+    latter can produce pure MC noise around 0 that a noncentral-F-inverted
+    CI's lower bound (constrained >= 0) can never cover, manufacturing
+    artificially bad coverage. For friedman specifically, calling
+    _ppi_friedman_ci with groups_lab=groups (zero noise) makes its
+    shrinkage-blend ms_null collapse to a no-op, since the "human" and
+    "LLM" rank matrices become identical -- so it degenerates cleanly to
+    0.0 too, the same as the other two.
 
-    (1) Originally these gold values used the RAW (undebiased) closed-form
-    null variance. Root-caused 2026-07-25: once the corrected estimators
-    (evalstats.tests' anova_independent_ci/anova_repeated_ci) were
-    debiased -- subtracting the expected-under-H0 floor so they target the
-    clean population theta instead -- an undebiased gold reference became
-    the wrong comparison target. It happened to look fine for near-null
-    scenarios (where the floor dominates gold and swamps the now-fixed
-    estimator too) but badly under-stated gold for scenarios with a
-    substantial true effect (confirmed on "eval_type.likert": raw gold
-    0.0089 vs the debiased estimator's own mean of ~0.0038). The fix at
-    the time was to re-derive gold via Monte Carlo using the SAME debiased
-    _ci functions (called with groups_lab=groups, i.e. treating the
-    pure-truth draw as "fully labeled," which makes noise=g-g_lab=0
-    everywhere and degenerates their correction machinery to the classical
-    F-stat on truth alone, while still applying the debiasing step).
-
-    (2) That Monte Carlo re-derivation itself broke 2026-07-31, when
-    anova_independent_ci/anova_repeated_ci's point estimates ALSO had a
-    max(.,0) floor removed (a separate fix, for the estimators' own bias
-    -- see _ppi_anova_independent_ci's docstring). Re-deriving gold via
-    this same Monte-Carlo-on-pure-truth approach then started producing a
-    slightly-negative estimate in ~50% of scenarios (pure MC noise around
-    the true, exactly-known value of 0.0), which the CI's lower bound --
-    mathematically constrained to be >= 0, since it comes from inverting a
-    noncentral-F test -- could then never cover, manufacturing exactly 0%
-    coverage in those scenarios despite coverage against the true 0.0
-    measuring 97.4% (anova_ind) in the same check. Since _repeated/
-    _marginal above never inject a condition/group effect (this function
-    only ever computes the null-hypothesis baseline), the debiased target
-    for both is simply, exactly 0.0 -- no simulation needed at all.
-
-    friedman's frv is NOT given this treatment -- its ms_null is a
-    shrinkage blend (see _ppi_friedman_f_stat's docstring) that does NOT
-    cleanly degenerate to the correct closed-form null variance even at
-    full labeling (its tie-degeneracy handling is deliberately non-trivial
-    there), so reusing _ppi_friedman_ci the same way produced a
-    still-wrong gold value in testing; friedman's gold-consistency gap
-    remains open.
-
-    "wilcoxon"'s gold value switched (2026-07-25) from the population
-    MEDIAN of the paired truth difference to a population midrank-sign
-    quantity, and (2026-07-26) from a per-item sign proportion to the
-    Hodges-Lehmann Walsh-average midrank-sign statistic
-    (evalstats.ppi.paired_walsh_midrank_theta) -- see that function's
-    docstring for the full history: under heavy ties (e.g. likert's
+    "wilcoxon"'s gold value is a population midrank-sign quantity (the
+    Hodges-Lehmann Walsh-average midrank-sign statistic,
+    evalstats.ppi.paired_walsh_midrank_theta), not the population median of
+    the paired truth difference -- under heavy ties (e.g. likert's
     integer-rounded truth), the population median can stay locked at
     exactly 0 even under a large, real, classical-Wilcoxon-detectable
-    shift, so it stopped being a valid comparison target once wilcoxon's
-    own PPI-corrected estimator switched away from it (to fix a
-    corresponding power collapse under likert-like ties, then a separate
-    Type-I inflation under extremely-tied real data -- see
-    cases/pvalues.py's WILCOXON blocks).
+    shift, so it isn't a valid comparison target for the estimand
+    wilcoxon's own PPI-corrected estimator actually targets -- see that
+    function's docstring for the full rationale.
 
     "ppi_wilson"/"bootstrap_t_single"'s gold value is the single-arm
     population mean of the "a2" marginal -- the same distribution
@@ -4106,11 +3801,11 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     thetas2 loop's own `a` draw rather than a separate MC loop, since it's
     already exactly that quantity.
 
-    "ppi_t_interval"/"ppi_logit_t" (added 2026-08-05) target the SAME
-    paired mean-difference estimand as "paired_t"/"tango_score" (both are
-    closed-form PPI corrections for mean(a_i - b_i), differing only in
-    the CI's shape -- raw vs. logit-transformed -- not the point
-    estimate/null itself), so they reuse means_paired.mean() directly."""
+    "ppi_t_interval"/"ppi_logit_t" target the same paired mean-difference
+    estimand as "paired_t"/"tango_score" (both are closed-form PPI
+    corrections for mean(a_i - b_i), differing only in the CI's shape --
+    raw vs. logit-transformed -- not the point estimate/null itself), so
+    they reuse means_paired.mean() directly."""
     from evalstats.tests import (
         _p_x_gt_y_midrank,
         paired_walsh_midrank_theta,
@@ -4143,7 +3838,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         a_means2[i] = a.mean()
 
     meds = np.empty(n_mc)  # median paired difference -- kept for reference, no longer wilcoxon's target
-    wilcoxon_thetas = np.empty(n_mc)  # P_mid(D>0)-0.5 paired difference (wilcoxon, since 2026-07-25)
+    wilcoxon_thetas = np.empty(n_mc)  # P_mid(D>0)-0.5 paired difference (wilcoxon's estimand)
     means_paired = np.empty(n_mc)  # mean paired difference (paired_t)
     for i in range(n_mc):
         x, y = _repeated(n1, 2)
@@ -4152,59 +3847,22 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         wilcoxon_thetas[i] = paired_walsh_midrank_theta(d)
         means_paired[i] = float(np.mean(d))
 
-    # anova_ind's gold value used to be re-derived by Monte Carlo (calling
-    # _ppi_anova_independent_ci on pure-truth draws, exactly like the other
-    # estimands below), which was NECESSARY before 2026-07-25's debiasing
-    # fix, since the undebiased quantity's true null-value wasn't 0 (see
-    # docstring). Now that the debiasing subtraction targets the clean
-    # population theta directly, that target IS exactly 0.0 whenever
-    # a3/b3/c3 are drawn from identical distributions (always true here --
-    # this function only ever computes the null-hypothesis baseline, never
-    # a real-effect target). Re-deriving it by Monte Carlo instead of using
-    # the known-exact value is not just redundant but actively harmful:
-    # confirmed 2026-07-31, after also removing the max(.,0) floor from
-    # _ppi_anova_independent_ci's point estimate (a separate, correct fix
-    # for that estimator's own bias -- see that function's docstring), this
-    # MC re-derivation started landing slightly negative in ~50% of
-    # scenarios purely from its own n_mc-sample noise around the true 0.
-    # Since the CI's lower bound can never go negative (it comes from
-    # inverting a noncentral-F test, whose noncentrality parameter is
-    # mathematically >= 0), any scenario where this noisy "gold" value
-    # landed negative showed EXACTLY 0% coverage -- not a real coverage
-    # failure (coverage against the true, exact value of 0.0 measured
-    # 97.4% in the same check), just this MC re-derivation's own sampling
-    # noise colliding with a boundary it can never legitimately cross.
+    # See this function's docstring: a3/b3/c3 are always drawn from
+    # identical distributions here (null-hypothesis baseline only), and the
+    # debiased estimator targets the clean population theta directly, so
+    # the correct gold value is exactly 0.0 -- no Monte Carlo re-derivation
+    # needed (and re-deriving it would reintroduce sampling noise that a
+    # non-negative CI lower bound can't legitimately absorb).
     bv_gold = 0.0
 
-    # anova_rep's gold value gets the identical treatment as anova_ind's
-    # bv_gold above, for the identical reason: _ppi_anova_repeated_ci had
-    # the same max(.,0) floor (removed 2026-07-31, same fix), _repeated
-    # here never injects a condition effect (this function only ever
-    # computes the null-hypothesis baseline), so the debiased target is
-    # exactly 0.0 -- re-deriving it by Monte Carlo would reintroduce the
-    # same noisy-negative-vs-non-negative-CI-floor mismatch bv_gold's
-    # comment describes.
+    # anova_rep gets the identical treatment as bv_gold above, for the
+    # identical reason.
     rv_gold = 0.0
 
-    # friedman's gold value gets the same treatment too, as of 2026-07-31 --
-    # contrary to this function's older docstring note (kept below, now
-    # historical) claiming the "fully labeled" _ppi_friedman_ci approach
-    # gave "a still-wrong gold value in testing": re-verified directly
-    # after removing _ppi_friedman_ci's own max(.,0) floor (same fix as
-    # anova_ind/anova_rep) -- calling it with groups_lab=groups on 3000
-    # pure-truth draws converged to -0.000034 (SE 0.000108, z=-0.31), not
-    # distinguishable from the true, exactly-known value of 0.0. That
-    # degeneracy is expected on inspection: with groups_lab=groups (zero
-    # noise), _ppi_friedman_f_stat's "human" and "LLM" rank matrices are
-    # computed from IDENTICAL data (row-local ranking, same rows selected),
-    # so its shrinkage blend collapses to a no-op (both halves equal) and
-    # its noise/delta terms vanish exactly -- the "doesn't cleanly
-    # degenerate" concern the old note raised doesn't actually apply here.
-    # The raw (undebiased) _friedman_rank_variance this replaced was
-    # comparing the now-debiased corrected estimator against the WRONG,
-    # undebiased target (measured 0.0059 vs the debiased estimator's true
-    # ~0.0 target on "eval_type.continuous") -- the same mismatch
-    # anova_ind/anova_rep's raw gold had before 2026-07-25's debiasing fix.
+    # friedman gets the same treatment too: calling _ppi_friedman_ci with
+    # groups_lab=groups (zero noise) makes its "human" and "LLM" rank
+    # matrices identical, so its shrinkage-blend ms_null collapses to a
+    # no-op and degenerates cleanly to 0.0 as well.
     frv_gold = 0.0
 
     return {
