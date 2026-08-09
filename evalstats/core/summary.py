@@ -215,6 +215,8 @@ def print_analysis_summary(
     item_singular: str = "template",
     item_plural: str = "templates",
     show_rank_probabilities: bool = False,
+    pareto: Optional[dict] = None,
+    metric: Optional[str] = None,
 ) -> None:
     """Print a concise console summary of analyze() results.
 
@@ -256,6 +258,8 @@ def print_analysis_summary(
             item_singular=item_singular,
             item_plural=item_plural,
             show_rank_probabilities=show_rank_probabilities,
+            pareto=pareto,
+            metric=metric,
         )
         return
 
@@ -1417,6 +1421,8 @@ def _print_bundle_summary(
     guidance: bool = True,
     min_meaningful_diff: Optional[float] = None,
     show_rank_probabilities: bool = False,
+    pareto: Optional[dict] = None,
+    metric: Optional[str] = None,
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
@@ -1502,7 +1508,15 @@ def _print_bundle_summary(
         print()
         _print_factorial_lmm_summary(bundle, item_singular=item_singular, style=style)
 
-    # Executive summary leaderboard (always last — immediately visible in terminal).
+    # Pareto front (primary metric vs. a secondary metric), when present --
+    # printed right before the executive summary so the secondary-metric-
+    # corrected, holistic verdict sits next to the primary-metric-only
+    # leaderboard rather than trailing after everything else.
+    if pareto is not None:
+        print()
+        _print_pareto_section(pareto, metric=metric, show_rank_probabilities=show_rank_probabilities)
+
+    # Executive summary leaderboard (near the end — immediately visible in terminal).
     print()
     _print_executive_summary(bundle, item_singular=item_singular)
 
@@ -2586,6 +2600,52 @@ def _exec_verdict(
     if len(others) == 1:
         return f"Tied with {_truncate_label(others[0], 20)} as best"
     return f"Tied with {len(others)} others as best"
+
+
+def _print_pareto_section(
+    pareto: dict,
+    *,
+    metric: Optional[str],
+    show_rank_probabilities: bool,
+) -> None:
+    """Print the Pareto Front section (frontier/dominated/ambiguous per
+    entity against a secondary metric) -- see ``ComparisonResult.pareto_status``.
+
+    Printed immediately before the executive summary (see
+    ``_print_bundle_summary``) so the secondary-metric-corrected, holistic
+    verdict sits right next to the primary-metric-only leaderboard, rather
+    than trailing after everything else where it's easy to miss.
+    """
+    secondary_col = pareto["secondary_metric"]
+    direction = pareto["direction"]
+    statuses = pareto["statuses"]
+    result = pareto["result"]
+
+    dir_label = "lower is better" if direction == "min" else "higher is better"
+    metric_label = metric or "primary metric"
+    _print_subsection(f"--- Pareto Front ({metric_label} vs {secondary_col}, {dir_label}) ---")
+    label_w = max((len(lbl) for lbl in result.labels), default=6)
+    label_w = max(label_w, len("Entity"))
+    status_w = max(len("Ambiguous"), len("Dominated"), len("Frontier"))
+    header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  Detail"
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for label in result.labels:
+        st = statuses[label]
+        status_disp = st.status.capitalize()
+        if st.status == "dominated":
+            detail = f"by {', '.join(st.dominated_by)}"
+        elif st.status == "ambiguous":
+            detail = f"vs {', '.join(st.ambiguous_vs)} (not statistically confirmed)"
+        else:
+            detail = ""
+        print(f"  {label:<{label_w}}  {status_disp:<{status_w}}  {detail}")
+    print("  " + "-" * (len(header) - 2))
+    if show_rank_probabilities:
+        print("\n  P(Pareto-optimal):")
+        for label, p in zip(result.labels, result.p_frontier):
+            print(f"    {label:<{label_w}}  {p:>6.1%}")
+    print()
 
 
 def _print_executive_summary(

@@ -134,41 +134,9 @@ class ComparisonResult:
             min_meaningful_diff=self._min_meaningful_diff,
             item_singular=item_singular,
             item_plural=item_plural,
+            pareto=self._pareto,
+            metric=self._metric,
         )
-        if self._pareto is not None:
-            self._print_pareto_summary(show_rank_probabilities=show_rank)
-
-    def _print_pareto_summary(self, *, show_rank_probabilities: bool) -> None:
-        secondary_col = self._pareto["secondary_metric"]
-        direction = self._pareto["direction"]
-        statuses = self._pareto["statuses"]
-        result = self._pareto["result"]
-
-        dir_label = "lower is better" if direction == "min" else "higher is better"
-        print()
-        print(f"--- Pareto Front ({self._metric} vs {secondary_col}, {dir_label}) ---")
-        label_w = max((len(lbl) for lbl in result.labels), default=6)
-        label_w = max(label_w, len("Entity"))
-        status_w = max(len("Ambiguous"), len("Dominated"), len("Frontier"))
-        header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  Detail"
-        print(header)
-        print("  " + "-" * (len(header) - 2))
-        for label in result.labels:
-            st = statuses[label]
-            status_disp = st.status.capitalize()
-            if st.status == "dominated":
-                detail = f"by {', '.join(st.dominated_by)}"
-            elif st.status == "ambiguous":
-                detail = f"vs {', '.join(st.ambiguous_vs)} (not statistically confirmed)"
-            else:
-                detail = ""
-            print(f"  {label:<{label_w}}  {status_disp:<{status_w}}  {detail}")
-        print("  " + "-" * (len(header) - 2))
-        if show_rank_probabilities:
-            print("\n  P(Pareto-optimal):")
-            for label, p in zip(result.labels, result.p_frontier):
-                print(f"    {label:<{label_w}}  {p:>6.1%}")
-        print()
 
     def brief(self) -> None:
         """Print a compact one-line-per-entity summary."""
