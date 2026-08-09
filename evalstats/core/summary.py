@@ -1519,6 +1519,8 @@ def _print_bundle_summary(
     # Executive summary leaderboard (near the end — immediately visible in terminal).
     print()
     _print_executive_summary(bundle, item_singular=item_singular, pareto=pareto)
+    if pareto is not None:
+        _print_pareto_callout(pareto, metric=metric)
 
     if guidance:
         _print_next_steps_guidance(
@@ -2623,6 +2625,21 @@ def _pareto_sorted_labels(pareto: dict) -> list[str]:
     )
 
 
+def _pareto_status_phrase(status: "ParetoStatus", *, verbose: bool = True) -> str:
+    """One-cell phrase combining a ParetoStatus's status word with its
+    detail (dominated_by / ambiguous_vs), e.g. "Dominated by gpt-4o" --
+    used by both the Pareto Front table (verbose=True, includes the
+    "(not confirmed)" qualifier) and the Executive Summary's narrower
+    Pareto column (verbose=False, drops it)."""
+    label = status.status.capitalize()
+    if status.status == "dominated":
+        return f"{label} by {', '.join(status.dominated_by)}"
+    if status.status == "ambiguous":
+        suffix = " (not confirmed)" if verbose else ""
+        return f"{label} vs {', '.join(status.ambiguous_vs)}{suffix}"
+    return label
+
+
 def _print_pareto_section(
     pareto: dict,
     *,
@@ -2653,12 +2670,16 @@ def _print_pareto_section(
 
     dir_label = "lower is better" if direction == "min" else "higher is better"
     metric_label = metric or "primary metric"
-    _print_subsection(f"--- Pareto Front ({metric_label} vs {secondary_col}, {dir_label}) ---")
+    _print_subsection(
+        f"--- {metric_label} vs. {secondary_col} Tradeoff "
+        f"(Pareto Front, {dir_label}) ---"
+    )
 
     sorted_labels = _pareto_sorted_labels(pareto)
     label_w = max((len(lbl) for lbl in result.labels), default=6)
     label_w = max(label_w, len("Entity"))
-    status_w = max(len("Ambiguous"), len("Dominated"), len("Frontier"))
+    phrases = {lbl: _pareto_status_phrase(statuses[lbl], verbose=True) for lbl in result.labels}
+    status_w = max([len("Status")] + [len(p) for p in phrases.values()])
     mean_w = 7
     ci_w = 17
 
@@ -2679,23 +2700,15 @@ def _print_pareto_section(
         header = (
             f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  "
             f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}  "
-            f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}  Detail"
+            f"{'Mean':>{mean_w}s} {'95% CI':<{ci_w}s}"
         )
     else:
-        header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}  Detail"
+        header = f"  {'Entity':<{label_w}}  {'Status':<{status_w}}"
     print(header)
     print("  " + "-" * (len(header) - 2))
 
     for label in sorted_labels:
-        st = statuses[label]
-        status_disp = st.status.capitalize()
-        if st.status == "dominated":
-            detail = f"by {', '.join(st.dominated_by)}"
-        elif st.status == "ambiguous":
-            detail = f"vs {', '.join(st.ambiguous_vs)} (not confirmed)"
-        else:
-            detail = ""
-
+        status_disp = phrases[label]
         if have_stats:
             pi, si = prim_idx[label], sec_idx[label]
             p_mean = float(primary_rob.mean[pi])
@@ -2711,10 +2724,10 @@ def _print_pareto_section(
             print(
                 f"  {label:<{label_w}}  {status_disp:<{status_w}}  "
                 f"{p_mean:>{mean_w}.3g} {p_ci:<{ci_w}s}  "
-                f"{s_mean:>{mean_w}.3g} {s_ci:<{ci_w}s}  {detail}"
+                f"{s_mean:>{mean_w}.3g} {s_ci:<{ci_w}s}"
             )
         else:
-            print(f"  {label:<{label_w}}  {status_disp:<{status_w}}  {detail}")
+            print(f"  {label:<{label_w}}  {status_disp:<{status_w}}")
     print("  " + "-" * (len(header) - 2))
     if show_rank_probabilities:
         print("\n  P(Pareto-optimal):")
@@ -2759,6 +2772,10 @@ def _print_executive_summary(
     has_stability = sv is not None
     has_pareto = pareto is not None
     pareto_statuses = pareto["statuses"] if has_pareto else None
+    pareto_phrases: dict[str, str] = (
+        {lbl: _pareto_status_phrase(st, verbose=False) for lbl, st in pareto_statuses.items()}
+        if has_pareto else {}
+    )
 
     item_title = item_singular.capitalize()
     _print_subsection(f"--- Executive Summary ({item_title} leaderboard) ---")
@@ -2769,7 +2786,7 @@ def _print_executive_summary(
     mean_w = 6
     ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
     stab_w = 16
-    pareto_w = max(len("Ambiguous"), len("Dominated"), len("Frontier"), len("Pareto"))
+    pareto_w = max([len("Pareto")] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
     ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
@@ -2831,14 +2848,53 @@ def _print_executive_summary(
             row += f"  {stab_str:<{stab_w}s}"
 
         if has_pareto:
-            pareto_status = pareto_statuses.get(label)
-            pareto_str = pareto_status.status.capitalize() if pareto_status is not None else "—"
+            pareto_str = pareto_phrases.get(label, "—")
             row += f"  {pareto_str:<{pareto_w}s}"
 
         row += f"  {verdict_str}"
         print(row)
 
     print(sep)
+    print()
+
+
+def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
+    """One-line bridge from the Executive Summary's primary-metric-only
+    leader to the Pareto Front's holistic view, e.g. "'gpt-4o' leads on
+    accuracy, but 'gpt-4o-mini' is a competitive tradeoff on latency_s" --
+    mirrors the existing "-> Evidence suggests a clear best option" callout
+    used after Pairwise Comparisons, giving a skimming reader the "so what"
+    without having to cross-reference the table above.
+    """
+    result = pareto["result"]
+    statuses = pareto["statuses"]
+    secondary_col = pareto["secondary_metric"]
+    if len(result.labels) < 2:
+        return
+
+    leader_idx = int(np.argmax(result.point_primary))
+    leader = result.labels[leader_idx]
+    metric_label = metric or "the primary metric"
+
+    other_frontier = [
+        lbl for lbl in _pareto_sorted_labels(pareto)
+        if lbl != leader and statuses[lbl].status == "frontier"
+    ]
+    if other_frontier:
+        names = ", ".join(f"'{lbl}'" for lbl in other_frontier)
+        is_are, article_or_plural = (
+            ("is", "a competitive tradeoff") if len(other_frontier) == 1
+            else ("are", "competitive tradeoffs")
+        )
+        print(
+            f"  -> '{leader}' leads on {metric_label}, but {names} {is_are} "
+            f"{article_or_plural} on {secondary_col} — see Pareto Front above."
+        )
+    else:
+        print(
+            f"  -> '{leader}' is also the best choice on {secondary_col} "
+            "— no real tradeoff here."
+        )
     print()
 
 

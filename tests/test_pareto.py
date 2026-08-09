@@ -509,3 +509,74 @@ def test_executive_summary_no_pareto_column_without_secondary():
     out = buf.getvalue()
     exec_section = out[out.index("Executive Summary"):]
     assert "Pareto" not in exec_section.splitlines()[1]
+
+
+def test_pareto_status_phrase_merges_status_and_detail():
+    from evalstats.core.summary import _pareto_status_phrase
+    from evalstats.core.pareto import ParetoStatus
+
+    frontier = ParetoStatus(label="A", status="frontier")
+    dominated = ParetoStatus(label="B", status="dominated", dominated_by=["A"])
+    ambiguous = ParetoStatus(label="C", status="ambiguous", ambiguous_vs=["A"])
+
+    assert _pareto_status_phrase(frontier) == "Frontier"
+    assert _pareto_status_phrase(dominated) == "Dominated by A"
+    assert _pareto_status_phrase(ambiguous, verbose=True) == "Ambiguous vs A (not confirmed)"
+    # Executive Summary's narrower column drops the "(not confirmed)" qualifier.
+    assert _pareto_status_phrase(ambiguous, verbose=False) == "Ambiguous vs A"
+
+
+def test_pareto_table_has_single_merged_status_column():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=44)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(45),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    pareto_section = out[out.index("Pareto Front"):out.index("Executive Summary")]
+    assert "Detail" not in pareto_section
+    assert "Dominated by gpt-4o" in pareto_section
+
+
+def test_pareto_callout_names_frontier_alternatives():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=46)
+    result = es.compare(
+        evaldata, factors="model", metric="score",
+        secondary={"latency_ms": "min"}, rng=_rng(47),
+    )
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    exec_idx = out.index("Executive Summary")
+    next_idx = out.index("What to do next")
+    between = out[exec_idx:next_idx]
+    assert "leads on score" in between
+    # llama-70b and gpt-4o-mini are both genuine tradeoffs against gpt-4o in
+    # this fixture (see test_compare_secondary_end_to_end); which ones clear
+    # the bootstrap confidence threshold at this particular seed can vary,
+    # so just check at least one frontier alternative is actually named.
+    assert "llama-70b" in between or "gpt-4o-mini" in between
+    assert "competitive tradeoff" in between  # singular or plural
+
+
+def test_pareto_callout_absent_without_secondary():
+    import io
+    from contextlib import redirect_stdout
+
+    evaldata = _make_evaldata(_MODELS, _ACC, _LAT, seed=48)
+    result = es.compare(evaldata, factors="model", metric="score", rng=_rng(49))
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        result.summary()
+    out = buf.getvalue()
+    assert "leads on" not in out
