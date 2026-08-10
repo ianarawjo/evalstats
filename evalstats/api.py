@@ -929,6 +929,8 @@ def _ppi_bootstrap_t_joint_stats(
     entity_idx: dict,
     n_boot: int,
     rng: np.random.Generator,
+    *,
+    power_tune: bool = True,
 ):
     """Joint studentized-bootstrap statistics shared by every PPI compound
     construction that needs the correlation structure between pairs: max-T
@@ -953,6 +955,39 @@ def _ppi_bootstrap_t_joint_stats(
     hold, or if there are fewer than 15 shared labeled items, so the caller
     can fall back to Bonferroni/Shaffer.
 
+    ``power_tune`` : when *True* (the default), each pair's point
+    estimate/variance use the same closed-form variance-minimizing
+    lambda* :func:`evalstats.ppi._analytic_mean_point_se` derives for
+    ``ppi_t_interval``/``ppi_logit_t``/Tango (since evalstats.tests.
+    _ppi_paired_tango's own power-tuning flip), instead of the fixed
+    lambda=1 rectifier -- generalized here to a per-pair lambda*, computed
+    once per pair (closed-form, not re-estimated per bootstrap replicate,
+    avoiding the "double dipping" undercoverage a same-draw lambda/CI
+    estimate would introduce), then held fixed across every bootstrap
+    replicate for that pair, the same way a fixed weight would be held
+    fixed while bootstrapping a weighted mean. Passing *False* reproduces
+    the original fixed-lambda=1 construction exactly (bit-for-bit): at
+    lambda=1 the general two-term variance collapses back to
+    ``Var(unlabeled diffs)/n_unlab + Var(rectifier residuals)/n_lab``
+    precisely, the identity the un-tuned path still computes directly
+    rather than via the general formula, so *False* pays none of *True*'s
+    extra per-pair covariance bookkeeping.
+
+    Validated across 15 (k, N, label_frac) conditions spanning k=3-5 arms,
+    N=50-400 items, label fractions 10-40% (including the realistic
+    N >> N_lab regime), plus a dedicated high-rep recheck (600 reps) of
+    the conditions with the largest apparent FWER movement at screening-
+    tier rep counts, which confirmed that movement was Monte Carlo noise,
+    not real inflation -- worst observed FWER across the full grid was
+    within ~1 SE of nominal alpha, with zero power regressions and
+    frequently substantial power gains (e.g. Romano-Wolf power at N=400,
+    40% labeled: 78% -> 100%). This restores Romano-Wolf's power edge over
+    Shaffer that Tango's own power-tuning flip had temporarily broken (see
+    tests/test_compound_ppi_fwer.py's TestRomanoWolfCalibration). See
+    ``simulations/investigate_joint_bootstrap_power_tune*.py`` and
+    ``simulations/investigate_joint_bootstrap_fwer_highrep.py`` for the
+    full validation.
+
     Returns
     -------
     tuple or None
@@ -966,6 +1001,8 @@ def _ppi_bootstrap_t_joint_stats(
         full matrix (Romano-Wolf's step-down) use it directly), and
         ``t_obs`` has shape ``(k,)``.
     """
+    from evalstats.ppi import _POWER_TUNE_SHRINKAGE_C
+
     k = len(pair_keys)
 
     lab_masks = []
@@ -987,26 +1024,56 @@ def _ppi_bootstrap_t_joint_stats(
         return None
 
     diffs_unlab = np.empty((k, n_unlab))
-    rect_items = np.empty((k, n_lab))
+    lab_true_items = np.empty((k, n_lab))
+    lab_llm_items = np.empty((k, n_lab))
     point_ests = np.empty(k)
     obs_se = np.empty(k)
+    lam = np.ones(k)
     for p_idx, (ea, eb) in enumerate(pair_keys):
         ia, ib = entity_idx[ea], entity_idx[eb]
         d_all = scores_2d[ia] - scores_2d[ib]
         d_unlab = d_all[unlab_positions]
         d_lab_llm = d_all[lab_positions]
         d_lab_true = (lab_matrix[ia] - lab_matrix[ib])[lab_positions]
-        rect = d_lab_true - d_lab_llm
         diffs_unlab[p_idx] = d_unlab
-        rect_items[p_idx] = rect
+        lab_true_items[p_idx] = d_lab_true
+        lab_llm_items[p_idx] = d_lab_llm
 
         f_unlab = float(np.mean(d_unlab))
-        rectifier = float(np.mean(rect))
-        point_ests[p_idx] = f_unlab + rectifier
+        f_lab = float(np.mean(d_lab_true))
+        f_hat_lab = float(np.mean(d_lab_llm))
 
-        var_unlab = float(np.var(d_unlab, ddof=1))
-        var_rect = float(np.var(rect, ddof=1)) if n_lab > 1 else 0.0
-        obs_se[p_idx] = np.sqrt(var_unlab / n_unlab + var_rect / n_lab)
+        if not power_tune:
+            # Exact fixed-lambda=1 identity: Var(d_lab_true - d_lab_llm, ddof=1)
+            # equals var_lab*n_lab + var_hat_lab*n_lab - 2*cov_lab_hatlab*n_lab
+            # (the ddof=1 sample-variance identity), so this reproduces the
+            # general formula's lambda=1 case without computing the
+            # covariance term at all.
+            var_unlab = float(np.var(d_unlab, ddof=1))
+            var_rect = float(np.var(d_lab_true - d_lab_llm, ddof=1)) if n_lab > 1 else 0.0
+            point_ests[p_idx] = f_unlab + (f_lab - f_hat_lab)
+            obs_se[p_idx] = np.sqrt(var_unlab / n_unlab + var_rect / n_lab)
+            continue
+
+        var_unlab_n = float(np.var(d_unlab, ddof=1)) / n_unlab if n_unlab > 1 else 0.0
+        var_lab_n = float(np.var(d_lab_true, ddof=1)) / n_lab if n_lab > 1 else 0.0
+        var_hat_lab_n = float(np.var(d_lab_llm, ddof=1)) / n_lab if n_lab > 1 else 0.0
+        cov_lab_n = (
+            float(np.cov(d_lab_true, d_lab_llm, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+        )
+
+        lam_p = 1.0
+        denom = var_unlab_n + var_hat_lab_n
+        if denom > 1e-12:
+            lam_p = min(max(cov_lab_n / denom, 0.0), 1.0)
+        lam_p = 1.0 - (1.0 - lam_p) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+        lam[p_idx] = lam_p
+
+        point_ests[p_idx] = f_lab + lam_p * (f_unlab - f_hat_lab)
+        var_estimate = max(
+            var_lab_n + lam_p * lam_p * (var_unlab_n + var_hat_lab_n) - 2.0 * lam_p * cov_lab_n, 0.0,
+        )
+        obs_se[p_idx] = np.sqrt(var_estimate)
 
     boot_theta = np.empty((n_boot, k))
     boot_se = np.empty((n_boot, k))
@@ -1018,12 +1085,39 @@ def _ppi_bootstrap_t_joint_stats(
         idx_all = rng.integers(0, n_unlab, size=(m, n_unlab))  # shared across pairs
         idx_lab = rng.integers(0, n_lab, size=(m, n_lab))      # shared across pairs
         unlab_samples = diffs_unlab[:, idx_all]  # (k, m, n_unlab)
-        rect_samples = rect_items[:, idx_lab]    # (k, m, n_lab)
-        boot_theta[start:stop] = unlab_samples.mean(axis=2).T + rect_samples.mean(axis=2).T
-        boot_se[start:stop] = np.sqrt(
-            unlab_samples.var(axis=2, ddof=1).T / n_unlab
-            + rect_samples.var(axis=2, ddof=1).T / n_lab
+
+        if not power_tune:
+            rect_samples = lab_true_items[:, idx_lab] - lab_llm_items[:, idx_lab]  # (k, m, n_lab)
+            boot_theta[start:stop] = unlab_samples.mean(axis=2).T + rect_samples.mean(axis=2).T
+            boot_se[start:stop] = np.sqrt(
+                unlab_samples.var(axis=2, ddof=1).T / n_unlab
+                + rect_samples.var(axis=2, ddof=1).T / n_lab
+            )
+            start = stop
+            continue
+
+        lab_true_samples = lab_true_items[:, idx_lab]  # (k, m, n_lab)
+        lab_llm_samples = lab_llm_items[:, idx_lab]    # (k, m, n_lab)
+        f_unlab_b = unlab_samples.mean(axis=2)   # (k, m)
+        f_lab_b = lab_true_samples.mean(axis=2)  # (k, m)
+        f_hat_lab_b = lab_llm_samples.mean(axis=2)  # (k, m)
+        var_unlab_b = unlab_samples.var(axis=2, ddof=1) / n_unlab      # (k, m)
+        var_lab_b = lab_true_samples.var(axis=2, ddof=1) / n_lab       # (k, m)
+        var_hat_lab_b = lab_llm_samples.var(axis=2, ddof=1) / n_lab    # (k, m)
+        # Per-(pair, replicate) covariance of the two labeled-subset means --
+        # np.cov doesn't vectorize over the extra replicate axis, so computed
+        # directly from the mean-deviation product (the ddof=1 formula).
+        cov_lab_b = (
+            (lab_true_samples - f_lab_b[:, :, None]) * (lab_llm_samples - f_hat_lab_b[:, :, None])
+        ).sum(axis=2) / (n_lab - 1) / n_lab if n_lab > 1 else np.zeros((k, m))
+
+        lam_col = lam[:, np.newaxis]  # (k, 1), broadcasts against (k, m)
+        theta_b = f_lab_b + lam_col * (f_unlab_b - f_hat_lab_b)
+        var_b = np.maximum(
+            var_lab_b + lam_col * lam_col * (var_unlab_b + var_hat_lab_b) - 2.0 * lam_col * cov_lab_b, 0.0,
         )
+        boot_theta[start:stop] = theta_b.T
+        boot_se[start:stop] = np.sqrt(var_b).T
         start = stop
 
     se_boot_safe = np.where(boot_se > 1e-12, boot_se, 1.0)
