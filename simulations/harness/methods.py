@@ -87,6 +87,10 @@ variant, not a distinct recommended method)."""
 # ---------------------------------------------------------------------------
 NEWCOMBE = Method("newcombe_score", "#aec7e8")
 TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
+"""evalstats.tests._ppi_paired_tango's default construction -- PPI++ closed-
+form power-tuned lambda* since the validation documented at
+TANGO_FIXED_LAMBDA (below); see that Method's docstring for the legacy
+fixed-lambda=1 construction and the comparison it's kept for."""
 PPI_WILSON = Method("ppi_wilson", "#c49c94")
 """PPI-corrected single-sample Wilson score interval (evalstats.tests.
 _ppi_single_wilson) -- a binary-proportion analogue of TANGO's paired
@@ -378,6 +382,22 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#1f77b4")
 TTEST_WELCH = Method("ttest_welch", "#d62728")
+# TANGO_FIXED_LAMBDA (evalstats.tests._ppi_paired_tango(..., power_tune=False)):
+# the legacy fixed-lambda=1 rectifier TANGO itself used before PPI++'s
+# closed-form variance-minimizing lambda* became the default -- the same
+# derivation _analytic_mean_correct/_analytic_logit_t_correct already use
+# for ppi_t_interval/ppi_logit_t (this estimand, mean(a_i - b_i), is
+# identical to theirs; only Tango's Wilson-style effective-n CI shape
+# differs). Kept selectable for direct comparison and for reproducing
+# pre-flip results, not because it's still recommended: a harness-scale
+# validation (--mode ppi --eval-types binary, 65 scenarios, two seeds)
+# found zero Holm-confirmed miscalibrated cells at either setting, with
+# power_tune=True giving ~13-17% narrower mean CI width and no coverage
+# cost at MCAR or MNAR labeling -- see simulations/investigate_tango_ppi_
+# plus_plus*.py and simulations/investigate_compound_ppi_fwer_power.py
+# (the compound PPI+FWER path's own detection-power measurement) for the
+# validation behind the flip.
+TANGO_FIXED_LAMBDA = Method("tango_fixed_lambda", "#41b6c4")  # teal -- distinct from TANGO's default grey
 # MWU family: five PPI corrections for the same classical test (Mann-Whitney
 # U / independent two-group mid-rank estimand P_mid(A>B)-0.5), matching
 # evalstats.tests.mannwhitney's "method" values one-to-one -- see that
@@ -413,7 +433,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, TANGO_FIXED_LAMBDA, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -424,7 +444,7 @@ PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
         MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL,
-        LMM, LMM_FACTORIAL, LMM_RUNS,
+        LMM, LMM_FACTORIAL, LMM_RUNS, TANGO_FIXED_LAMBDA,
     )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
@@ -461,7 +481,8 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, TANGO_FIXED_LAMBDA,
+    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 

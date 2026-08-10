@@ -785,13 +785,21 @@ class TestRomanoWolfCalibration:
         )
 
     def test_romano_wolf_power_not_worse_than_shaffer(self):
-        """Romano-Wolf should recover SOME power over Shaffer on the same
-        data (paired comparison, same seeds) -- not dramatically, since
-        PPI's own p-value noise degrades the rank-reliability step-down
-        needs to gain from (see the compound-scenario investigation this
-        test file's docstring references), but it shouldn't be WORSE.
-        Loose bound (not requiring strict per-rep improvement) to avoid MC
-        noise false failures at this rep count."""
+        """Romano-Wolf's step-down p-values come from
+        ``_ppi_bootstrap_t_joint_stats``, a fixed-lambda=1 joint bootstrap
+        that mirrors ``_ppi_paired_bootstrap_t`` -- a separate construction
+        from Shaffer's, which corrects the canonical per-pair p-value
+        (Tango for binary data, via ``evalstats.tests._ppi_paired_tango``,
+        PPI++ power-tuned by default). Since Tango's power-tuning flip,
+        Shaffer legitimately gets a power boost Romano-Wolf's own joint
+        bootstrap doesn't share yet, so this test's tolerance is wider than
+        it used to be -- not just Monte Carlo noise headroom, but real
+        headroom for that structural asymmetry. Generalizing
+        ``_ppi_bootstrap_t_joint_stats`` to PPI++ power-tuning (restoring
+        Romano-Wolf's edge) is flagged as follow-up work, not done here.
+        Still guards against a genuine collapse (e.g. a sign error or a
+        mis-wired bootstrap), just not against the documented,
+        now-expected gap."""
         alpha = 0.05
         n_detect_shaffer = 0
         n_detect_rw = 0
@@ -824,12 +832,15 @@ class TestRomanoWolfCalibration:
 
         power_shaffer = n_detect_shaffer / self.N_REPS_POWER
         power_rw = n_detect_rw / self.N_REPS_POWER
-        # Binomial SE at ~0.3 over 150 reps is ~0.037; allow Romano-Wolf to
-        # be up to ~2 SEs below Shaffer before treating it as a regression,
-        # since the two are correlated (paired on the same data) and the
-        # theoretical expectation is Romano-Wolf >= Shaffer, not <.
-        assert power_rw >= power_shaffer - 0.08, (
-            f"Romano-Wolf power ({power_rw:.3f}) is meaningfully worse than "
-            f"Shaffer's ({power_shaffer:.3f}) on the same data -- Romano-Wolf "
-            "should recover power, not lose it."
+        # Observed gap post-power-tuning-flip: power_rw ~0.33 vs power_shaffer
+        # ~0.48 (a ~0.15 gap) -- the structural asymmetry documented in this
+        # test's docstring, not MC noise (binomial SE at these rates over 150
+        # reps is ~0.04). 0.25 clears that gap with real margin while still
+        # catching a genuine collapse (e.g. Romano-Wolf's power dropping
+        # toward its own null rate).
+        assert power_rw >= power_shaffer - 0.25, (
+            f"Romano-Wolf power ({power_rw:.3f}) is far worse than "
+            f"Shaffer's ({power_shaffer:.3f}) on the same data -- beyond the "
+            "documented power_tune asymmetry, this suggests something is "
+            "actually broken."
         )

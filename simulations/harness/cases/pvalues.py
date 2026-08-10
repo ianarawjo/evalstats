@@ -259,6 +259,7 @@ from ..methods import (
     WILCOXON,
     PAIRED_T,
     TANGO,
+    TANGO_FIXED_LAMBDA,
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
     CORR_SIDAK,
@@ -3415,7 +3416,10 @@ _ALPHA = ALPHA_DEFAULT
 # judgment for those structures either. PPI_WILSON is the single-arm
 # analogue of TANGO here -- same binary-only Wilson-style effective-n trick,
 # just for a one-sample (not paired) proportion.
-_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name, PPI_WILSON.name}
+_PPI_BINARY_COMPATIBLE_TESTS = {
+    TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name,
+    TANGO_FIXED_LAMBDA.name, PPI_WILSON.name,
+}
 
 # The mirror-image restriction: tests whose estimand/formula is specific to
 # paired/single-arm BINARY data (Tango's discordant-pair-rate score interval
@@ -3424,7 +3428,7 @@ _PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAY
 # be excluded everywhere else, the same way BOOTSTRAP_T/BOOTSTRAP_T_SINGLE
 # (numeric-only, see their Method-registry comments) are excluded FROM binary
 # by simply never being added to _PPI_BINARY_COMPATIBLE_TESTS above.
-_PPI_BINARY_ONLY_TESTS = {TANGO.name, PPI_WILSON.name}
+_PPI_BINARY_ONLY_TESTS = {TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name}
 
 # ppi_wilson/bootstrap_t_single are single-ARM estimation methods (one
 # group's mean, via cell.llm_a2/lab_a2) with no two-group/paired rejection
@@ -3608,6 +3612,15 @@ def _run_ppi_cell(
                     corrected[TANGO.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[TANGO.name] += 1
+
+            if TANGO_FIXED_LAMBDA.name in active_tests:
+                try:
+                    p_u = _uncorrected_tango_paired_p_value(cell.llm_x - cell.llm_y)
+                    uncorrected[TANGO_FIXED_LAMBDA.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
+                    corrected[TANGO_FIXED_LAMBDA.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[TANGO_FIXED_LAMBDA.name] += 1
 
             if PPI_T_INTERVAL.name in active_tests:
                 try:
@@ -3869,7 +3882,7 @@ def run_ppi_simulation(
 
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, MWU_RIDGE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
-    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
+    BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
     PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
 )
 
@@ -3897,7 +3910,7 @@ _PPI_EFFECT_TESTS = (
 # purely on "reads like a CI construction, not a textbook test" grounds,
 # the same criterion already applied to tango/bootstrap_t.
 _PPI_NONSTANDARD_TESTS = {
-    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, PPI_WILSON.name,
+    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name,
     PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
     PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 }
@@ -4072,6 +4085,13 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
                     out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if TANGO_FIXED_LAMBDA.name in active_tests:
+                try:
+                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
+                    out[TANGO_FIXED_LAMBDA.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -7898,7 +7918,8 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     MWU_RIDGE.name: "Mann-Whitney U (ridge)",
     MWU.name: "Mann-Whitney U",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
-    BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
+    BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score",
+    TANGO_FIXED_LAMBDA.name: "Tango score (fixed lambda)", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
     KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
