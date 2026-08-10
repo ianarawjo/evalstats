@@ -3874,6 +3874,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "tango_fixed_lambda": float(means_paired.mean()),  # same estimand as tango_score, fixed lambda=1
         "ppi_t_interval": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "ppi_logit_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,
