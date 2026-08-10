@@ -571,6 +571,42 @@ def _stability_emoji_label(instability: float) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Consistency (ICC) helpers
+# ---------------------------------------------------------------------------
+
+def _consistency_label(icc: float) -> str:
+    """Map an ICC value to a plain-language description, per Koo & Li (2016) bands.
+
+    <0.50 poor, 0.50-0.75 moderate, 0.75-0.90 good, >0.90 excellent. These
+    bands are a commonly cited psychometrics convention, not separately
+    validated for LLM evals.
+    """
+    if np.isnan(icc):
+        return "—"
+    if icc >= 0.90:
+        return "excellent"
+    if icc >= 0.75:
+        return "good"
+    if icc >= 0.50:
+        return "moderate"
+    return "poor"
+
+
+def _consistency_color(icc: float) -> str:
+    """Return an ANSI color for an ICC value (empty string when colors off).
+
+    Inverted relative to ``_instability_color``: here low is concerning.
+    """
+    if not _ANSI or np.isnan(icc):
+        return ""
+    if icc < 0.50:
+        return _BRIGHT_RED
+    if icc < 0.75:
+        return _YELLOW
+    return ""  # neutral — no color applied
+
+
+# ---------------------------------------------------------------------------
 # Multi-model summary
 # ---------------------------------------------------------------------------
 
@@ -1578,6 +1614,7 @@ def _print_seed_variance(
         f"(globally scaled; █ = {global_cell_max:.4f})"
     )
     num_w = 10
+    consistency_w = 18
     print(
         f"  {item_singular.capitalize():<{template_col_width}s}  "
         f"{'Per-input noise':<{strip_width}s}  "
@@ -1585,6 +1622,7 @@ def _print_seed_variance(
         f"{'input_std':>{num_w}s}  "
         f"{'total_std':>{num_w}s}  "
         f"{'instability':>{num_w}s}  "
+        f"{'Consistency (ICC)':<{consistency_w}s}  "
         f"Verdict"
     )
     for i, label in enumerate(sv.labels):
@@ -1594,6 +1632,9 @@ def _print_seed_variance(
         instability = float(sv.instability[i])
         verdict = _instability_label(instability)
         verdict_color = _instability_color(instability)
+        icc = float(sv.icc[i])
+        icc_str = "—" if np.isnan(icc) else f"{icc:.2f} ({_consistency_label(icc)})"
+        icc_color = _consistency_color(icc)
         print(
             f"  {_truncate_label(label, template_col_width):<{template_col_width}s}  "
             f"{strip:<{strip_width}s}  "
@@ -1601,8 +1642,19 @@ def _print_seed_variance(
             f"{np.sqrt(sv.input_var[i]):>{num_w}.4f}  "
             f"{np.sqrt(sv.total_var[i]):>{num_w}.4f}  "
             f"{instability:>{num_w}.4f}  "
+            f"{icc_color}{icc_str:<{consistency_w}s}{_RESET}  "
             f"{verdict_color}{verdict}{_RESET}"
         )
+    print(
+        f"{_DIM}  instability = mean std across repeated runs, in score units "
+        f"(how many points a score typically moves between runs){_RESET}"
+    )
+    print(
+        f"{_DIM}  Consistency (ICC) = intraclass correlation = input_var / "
+        f"(input_var + seed_var) — share of total variation that's real "
+        f"input-level signal rather than run noise (bands: <0.50 poor, "
+        f"0.50-0.75 moderate, 0.75-0.90 good, >0.90 excellent; Koo & Li 2016){_RESET}"
+    )
     print()
 
 

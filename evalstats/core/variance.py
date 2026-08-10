@@ -127,9 +127,21 @@ class SeedVarianceResult:
                        between inputs   within cells
                        (cell means)     (across runs)
 
-    ``instability`` is the fraction of total variance attributable to LLM
-    stochasticity (seed draws), ranging from 0 (fully deterministic given
-    the input) to 1 (output is pure noise independent of the input).
+    This decomposition supports two complementary, non-interchangeable
+    reliability metrics — the classical-test-theory distinction between an
+    *absolute* measurement-error statistic (standard error of measurement)
+    and a *relative* reliability coefficient (intraclass correlation):
+
+    * ``instability`` (absolute, score-scale units) — how many points does
+      the score typically move between runs? Unaffected by how spread-out
+      the inputs happen to be, so it stays meaningful even when the input
+      pool is homogeneous or a model is near a ceiling/floor (where
+      ``icc`` becomes unstable or undefined).
+    * ``icc`` (relative, unitless, bounded [0, 1]) — of all the variation
+      you see across inputs, what fraction is genuine input-level signal
+      rather than run-to-run noise? Depends on the input pool's
+      heterogeneity as well as the noise level, so it is not directly
+      comparable across benchmarks with differently-spread input sets.
 
     Attributes
     ----------
@@ -148,14 +160,22 @@ class SeedVarianceResult:
         Shape ``(N,)``.  ``per_cell_seed_std.mean(axis=1)``: the mean over
         inputs of the within-cell seed standard deviation.  Directly answers
         "on average across inputs, how much does the score vary across
-        repeated runs?" in the same units as the score.  Unlike
+        repeated runs?" in the same units as the score.  Unlike ``icc``/
         ``seed_fraction`` this does not inflate when total variance is near
         zero (e.g. a near-perfect template with one bad run).
     seed_fraction : np.ndarray
         Shape ``(N,)``.  ``seed_var / total_var``: the ANOVA partition of
         variance attributable to LLM stochasticity.  Ranges from 0 to 1, but
         becomes unreliable when ``total_var`` is near zero.  NaN when
-        ``total_var == 0``.
+        ``total_var == 0``.  ``1 - seed_fraction == icc``.
+    icc : np.ndarray
+        Shape ``(N,)``.  ``input_var / total_var`` — the intraclass
+        correlation coefficient (Shrout & Fleiss 1979; a one-way random-
+        effects reliability coefficient), i.e. ``1 - seed_fraction``.
+        Interpretation bands from Koo & Li (2016), a commonly cited
+        convention (borrowed from psychometrics, not separately validated
+        for LLM evals): <0.50 poor, 0.50-0.75 moderate, 0.75-0.90 good,
+        >0.90 excellent reliability. NaN when ``total_var == 0``.
     per_cell_seed_std : np.ndarray
         Shape ``(N, M)``.  Within-cell standard deviation for every
         (template, input) pair, useful for spotting which inputs are
@@ -169,6 +189,7 @@ class SeedVarianceResult:
     total_var: np.ndarray
     instability: np.ndarray
     seed_fraction: np.ndarray
+    icc: np.ndarray
     per_cell_seed_std: np.ndarray
 
     def summary_table(self):
@@ -182,6 +203,7 @@ class SeedVarianceResult:
             "total_std": np.sqrt(self.total_var),
             "instability": self.instability,
             "seed_fraction": self.seed_fraction,
+            "icc": self.icc,
         }
         return pd.DataFrame(data).set_index("template")
 
@@ -487,10 +509,13 @@ def seed_variance_decomposition(
 
     with np.errstate(divide="ignore", invalid="ignore"):
         seed_fraction = np.where(total_var > 0, seed_var / total_var, np.nan)
+        # Intraclass correlation (Shrout & Fleiss 1979): share of total
+        # variance that's real input-level signal rather than run noise.
+        icc = np.where(total_var > 0, input_var / total_var, np.nan)
 
     # Mean over inputs of within-cell seed std: "on average across inputs,
     # how much do scores vary run-to-run?"  Does not inflate when total_var
-    # is near zero, unlike the seed_fraction ratio.
+    # is near zero, unlike the seed_fraction/icc ratios.
     instability = np.nanmean(per_cell_seed_std, axis=1)          # (N,)
 
     return SeedVarianceResult(
@@ -501,5 +526,6 @@ def seed_variance_decomposition(
         total_var=total_var,
         instability=instability,
         seed_fraction=seed_fraction,
+        icc=icc,
         per_cell_seed_std=per_cell_seed_std,
     )
