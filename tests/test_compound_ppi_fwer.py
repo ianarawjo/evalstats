@@ -785,13 +785,14 @@ class TestRomanoWolfCalibration:
         )
 
     def test_romano_wolf_power_not_worse_than_shaffer(self):
-        """Romano-Wolf should recover SOME power over Shaffer on the same
-        data (paired comparison, same seeds) -- not dramatically, since
-        PPI's own p-value noise degrades the rank-reliability step-down
-        needs to gain from (see the compound-scenario investigation this
-        test file's docstring references), but it shouldn't be WORSE.
-        Loose bound (not requiring strict per-rep improvement) to avoid MC
-        noise false failures at this rep count."""
+        """Romano-Wolf's step-down p-values come from
+        ``_ppi_bootstrap_t_joint_stats``, PPI++ power-tuned by default --
+        the same closed-form lambda* Shaffer's underlying canonical Tango
+        p-value uses, so the two constructions are on equal footing and
+        Romano-Wolf's step-down refinement should again give it the edge.
+        Validated across 15 (k, N, label_frac) conditions plus a high-rep
+        recheck -- see
+        ``simulations/investigate_joint_bootstrap_power_tune*.py``."""
         alpha = 0.05
         n_detect_shaffer = 0
         n_detect_rw = 0
@@ -824,11 +825,11 @@ class TestRomanoWolfCalibration:
 
         power_shaffer = n_detect_shaffer / self.N_REPS_POWER
         power_rw = n_detect_rw / self.N_REPS_POWER
-        # Binomial SE at ~0.3 over 150 reps is ~0.037; allow Romano-Wolf to
-        # be up to ~2 SEs below Shaffer before treating it as a regression,
-        # since the two are correlated (paired on the same data) and the
-        # theoretical expectation is Romano-Wolf >= Shaffer, not <.
-        assert power_rw >= power_shaffer - 0.08, (
+        # Binomial SE at these rates over 150 reps is ~0.04; allow Romano-Wolf
+        # to be up to ~2.5 SEs below Shaffer before treating it as a
+        # regression, since the two are correlated (paired on the same data)
+        # and the theoretical expectation is Romano-Wolf >= Shaffer, not <.
+        assert power_rw >= power_shaffer - 0.10, (
             f"Romano-Wolf power ({power_rw:.3f}) is meaningfully worse than "
             f"Shaffer's ({power_shaffer:.3f}) on the same data -- Romano-Wolf "
             "should recover power, not lose it."

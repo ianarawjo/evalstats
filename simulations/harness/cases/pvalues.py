@@ -259,6 +259,7 @@ from ..methods import (
     WILCOXON,
     PAIRED_T,
     TANGO,
+    TANGO_FIXED_LAMBDA,
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
     CORR_SIDAK,
@@ -2723,7 +2724,7 @@ def latex_simultaneous_ci_by_eval_type_summary(results: list[SimultaneousCIResul
 
 def latex_simultaneous_ci_full_report(results: list[SimultaneousCIResult], alpha: float) -> str:
     """All simultaneous_ci LaTeX tables for this run, concatenated and ready
-    to paste into a paper: the pooled overall summary, the same summary
+    to paste into a report: the pooled overall summary, the same summary
     split into low-N (n<=30) / high-N (n>=30) subsets (the mode's headline
     max-T-crossover finding -- see print_simultaneous_ci_report's LOW N /
     HIGH N split), and the by-eval-type facet (showing sidak/boot's effect
@@ -3415,7 +3416,10 @@ _ALPHA = ALPHA_DEFAULT
 # judgment for those structures either. PPI_WILSON is the single-arm
 # analogue of TANGO here -- same binary-only Wilson-style effective-n trick,
 # just for a one-sample (not paired) proportion.
-_PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name, PPI_WILSON.name}
+_PPI_BINARY_COMPATIBLE_TESTS = {
+    TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name,
+    TANGO_FIXED_LAMBDA.name, PPI_WILSON.name,
+}
 
 # The mirror-image restriction: tests whose estimand/formula is specific to
 # paired/single-arm BINARY data (Tango's discordant-pair-rate score interval
@@ -3424,7 +3428,7 @@ _PPI_BINARY_COMPATIBLE_TESTS = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAY
 # be excluded everywhere else, the same way BOOTSTRAP_T/BOOTSTRAP_T_SINGLE
 # (numeric-only, see their Method-registry comments) are excluded FROM binary
 # by simply never being added to _PPI_BINARY_COMPATIBLE_TESTS above.
-_PPI_BINARY_ONLY_TESTS = {TANGO.name, PPI_WILSON.name}
+_PPI_BINARY_ONLY_TESTS = {TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name}
 
 # ppi_wilson/bootstrap_t_single are single-ARM estimation methods (one
 # group's mean, via cell.llm_a2/lab_a2) with no two-group/paired rejection
@@ -3608,6 +3612,15 @@ def _run_ppi_cell(
                     corrected[TANGO.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[TANGO.name] += 1
+
+            if TANGO_FIXED_LAMBDA.name in active_tests:
+                try:
+                    p_u = _uncorrected_tango_paired_p_value(cell.llm_x - cell.llm_y)
+                    uncorrected[TANGO_FIXED_LAMBDA.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
+                    corrected[TANGO_FIXED_LAMBDA.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    failed[TANGO_FIXED_LAMBDA.name] += 1
 
             if PPI_T_INTERVAL.name in active_tests:
                 try:
@@ -3804,24 +3817,22 @@ def run_ppi_simulation(
     # specifically (long individual cells + imap_unordered's coarse
     # per-cell-only progress signal).
     #
-    # ctx.Manager() (NOT the bare _mp.Manager()) -- a bare Manager() spawns
-    # its server process using the platform's DEFAULT start method
+    # ctx.Manager() (not the bare _mp.Manager()) -- a bare Manager() spawns
+    # its server process using the platform's default start method
     # regardless of what context the Pool below explicitly requests, which
-    # is "spawn" on macOS. Confirmed 2026-07-31: running this function's
-    # caller as a plain top-level script (no `if __name__ == "__main__":`
-    # guard, e.g. a script fed via `python - <<EOF` or executed directly)
-    # crashed two different ways under the bare Manager() -- a
-    # FileNotFoundError when spawn's bootstrap tried to re-import a script
-    # with no real file backing it (piped via stdin), and, once given a
-    # real file, "An attempt has been made to start a new process before
-    # the current process has finished its bootstrapping phase" (spawn's
-    # safety check against exactly this recursive-reimport hazard, since
-    # the un-guarded script re-executes the Manager()/Pool()-creating code
-    # on every re-import). Pinning the Manager to the SAME fork context the
-    # Pool already uses avoids the re-import step entirely (fork duplicates
-    # the current process directly), matching run_ppi_comparison_simulation
-    # and every other pool in this file, none of which hit this because
-    # none of them also create a Manager.
+    # is "spawn" on macOS. Running this function's caller as a plain
+    # top-level script (no `if __name__ == "__main__":` guard) can crash
+    # under the bare Manager() -- a FileNotFoundError when spawn's
+    # bootstrap tries to re-import a script with no real file backing it
+    # (piped via stdin), or, given a real file, "An attempt has been made
+    # to start a new process before the current process has finished its
+    # bootstrapping phase" (spawn's safety check against the un-guarded
+    # script re-executing the Manager()/Pool()-creating code on every
+    # re-import). Pinning the Manager to the same fork context the Pool
+    # already uses avoids the re-import step entirely (fork duplicates the
+    # current process directly), matching run_ppi_comparison_simulation and
+    # every other pool in this file, none of which hit this because none of
+    # them also create a Manager.
     ctx = _mp.get_context("fork")
     manager = ctx.Manager()
     progress_dict = manager.dict()
@@ -3871,7 +3882,7 @@ def run_ppi_simulation(
 
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, MWU_RIDGE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
-    BOOTSTRAP_T.name, TANGO.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
+    BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
     PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
 )
 
@@ -3893,20 +3904,20 @@ _PPI_EFFECT_TESTS = (
 # NO CI-coverage analogue in the Type-I rejection sweep (unlike tango/
 # bootstrap_t, which are also PAIRWISE_METHODS entries there) -- they only
 # ever appear via this effect-check pass, since there's no single-arm
-# rejection decision to test Type-I error on. ppi_t_interval/ppi_logit_t
-# (added 2026-08-05) DO have a Type-I analogue (see _run_ppi_cell) and run
-# across the full non-binary catalog like BOOTSTRAP_T/PAIRED_T -- they're
-# grouped here purely on "reads like a CI construction, not a textbook
-# test" grounds, the same criterion already applied to tango/bootstrap_t.
+# rejection decision to test Type-I error on. ppi_t_interval/ppi_logit_t do
+# have a Type-I analogue (see _run_ppi_cell) and run across the full
+# non-binary catalog like BOOTSTRAP_T/PAIRED_T -- they're grouped here
+# purely on "reads like a CI construction, not a textbook test" grounds,
+# the same criterion already applied to tango/bootstrap_t.
 _PPI_NONSTANDARD_TESTS = {
-    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, PPI_WILSON.name,
+    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name,
     PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
     PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 }
 
 _PPI_CI_COMPARISON_TESTS = {TANGO.name, PPI_WILSON.name, PPI_LOGIT_T.name, PPI_T_INTERVAL.name}
 """The curated CI-coverage/width comparison methods for save_ppi_effect_plot's
-ci_comparison=True figure -- REPLACES the paper's old 5-method "nonstandard"
+ci_comparison=True figure -- replaces an older 5-method "nonstandard"
 comparison ({bayes_bootstrap, bootstrap_t, tango, ppi_wilson,
 bootstrap_t_single}, still available via _ppi_tests_present(nonstandard=True))
 with exactly these four closed-form PPI-corrected CI methods: Tango (binary
@@ -3955,14 +3966,12 @@ def _run_ppi_effect_cell(
     completely unchanged, at the cost of redrawing ttest/ttest_welch/mwu/
     wilcoxon/kruskal's bootstrap a second time (cheap at the smaller
     effect-reps count this is meant to run at). anova_ind/anova_rep/friedman
-    use the SAME closed-form noncentral-F test-inversion CI functions
+    use the same closed-form noncentral-F test-inversion CI functions
     (_ppi_anova_independent_ci/_ppi_anova_repeated_ci/_ppi_friedman_ci) that
     evalstats.tests.anova_oneway/friedman use for their corrected_estimate/
-    corrected_ci -- previously this used a separate bootstrap-based scalar
-    estimator (_ppi_anova_independent/_ppi_anova_repeated/_ppi_friedman),
-    which was an oversight left over from before the closed-form CI fix and
-    caused anova_ind's bias-z/coverage checks to flag incorrectly (see
-    git history around 2026-07-22). llm_estimate is recomputed here on the
+    corrected_ci, not a separate bootstrap-based scalar estimator, so
+    anova_ind's bias-z/coverage checks are computed the same way the public
+    API reports them. llm_estimate is recomputed here on the
     disjoint unlabeled-only complement, matching the convention documented
     in anova_oneway/friedman's rectifier comments.
 
@@ -4076,6 +4085,13 @@ def _run_ppi_effect_cell(
                 try:
                     r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
                     out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if TANGO_FIXED_LAMBDA.name in active_tests:
+                try:
+                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
+                    out[TANGO_FIXED_LAMBDA.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -4403,44 +4419,40 @@ paired_t alone. ttest/ttest_welch/paired_t (mean-based) and mwu/wilcoxon
 all five test the SAME two-group mean/location-shift question via different
 classical machinery, so averaging their rejection rates is a coherent
 summary of "does this hold across reasonable test choices." ttest (plain
-Student's, equal_var=True) was added 2026-08-05 alongside ttest_welch
-(Welch's, equal_var=False) -- both share the IDENTICAL PPI correction (the
+Student's, equal_var=True) sits alongside ttest_welch (Welch's,
+equal_var=False) -- both share the identical PPI correction (the
 mean-difference estimator; PPI correction doesn't depend on the classical
 equal-variance assumption at all), differing only in which classical
-uncorrected test computes the "uncorrected" arm's p-value -- so this was a
-one-line addition (_classical_pvalue's uncorrected branch), not a new PPI
-estimand. Added specifically so save_ppi_typeI_plot's 9-test roster (the
-main Type-I sweep, build_judge_bias_sources) and _COMPARISON_METHODS +
-_COMPARISON_METHODS_OMNIBUS (9 = 5 + 4) line up exactly, letting the
-factorial-sourced Type-I-by-test violin plot (save_ppi_factorial_typeI_
-violin_plot) show the same 9 tests the OFAT-sourced one does. Uses MWU
-(evalstats.tests._ppi_two_sample's single-global-rectifier midrank
-correction), not MWU_MNAR_EXPERIMENTAL (evalstats.tests.
-_ppi_two_sample_midrank_corrected's per-group, per-score-bin LOCAL
-rectifier) -- the local rectifier fixes real MNAR-labeling miscalibration
-MWU has, but was confirmed (2026-07-22, controlled naive-vs-corrected
-comparison on matched draws) to cost real MCAR calibration doing so: worst
-found cells show a ~2x multiplier (e.g. 3.6% -> 7.2% at small n_lab, real
-bias present, MCAR labeling) -- see MWU/MWU_MNAR_EXPERIMENTAL's Method
-docstring in methods.py for the full writeup. Given this project's stance
-that PPI requires MCAR labeling and treats MNAR as a documented,
-out-of-scope limitation, paying that MCAR cost for MNAR robustness is the
-wrong trade here too -- same reasoning _COMPARISON_METHODS_OMNIBUS already
-applies to kruskal vs. kruskal_mnar_experimental. Deliberately
-excludes the omnibus/multi-group tests (anova_ind/anova_rep/friedman/
-kruskal/lmm*) and the non-standard bootstrap-CI constructions
-(bayes_bootstrap/bootstrap_t/tango_score) -- those answer different
-questions (multi-group omnibus effects, CI-based constructions), so
-folding them into the SAME "pooled false-positive rate" would blend
-apples with oranges rather than checking robustness across reasonable
-alternatives, the same way build_ppi_factorial_sources/build_ppi_nlab_
-grid_sources' paired_t-only scoping was never meant to claim the OTHER
-PPI_TEST_METHODS behave identically."""
+uncorrected test computes the "uncorrected" arm's p-value. Both are kept
+so save_ppi_typeI_plot's 9-test roster (the main Type-I sweep,
+build_judge_bias_sources) and _COMPARISON_METHODS + _COMPARISON_METHODS_
+OMNIBUS (9 = 5 + 4) line up exactly, letting the factorial-sourced
+Type-I-by-test violin plot (save_ppi_factorial_typeI_violin_plot) show the
+same 9 tests the OFAT-sourced one does. Uses MWU (evalstats.tests.
+_ppi_two_sample's single-global-rectifier midrank correction), not
+MWU_MNAR_EXPERIMENTAL (evalstats.tests._ppi_two_sample_midrank_corrected's
+per-group, per-score-bin local rectifier) -- the local rectifier fixes
+real MNAR-labeling miscalibration MWU has, but costs real MCAR calibration
+doing so -- see MWU/MWU_MNAR_EXPERIMENTAL's Method docstring in
+methods.py for the full writeup. Given this project's stance that PPI
+requires MCAR labeling and treats MNAR as a documented, out-of-scope
+limitation, paying that MCAR cost for MNAR robustness is the wrong trade
+here too -- same reasoning _COMPARISON_METHODS_OMNIBUS already applies to
+kruskal vs. kruskal_mnar_experimental. Deliberately excludes the
+omnibus/multi-group tests (anova_ind/anova_rep/friedman/kruskal/lmm*) and
+the non-standard bootstrap-CI constructions (bayes_bootstrap/bootstrap_t/
+tango_score) -- those answer different questions (multi-group omnibus
+effects, CI-based constructions), so folding them into the same "pooled
+false-positive rate" would blend apples with oranges rather than checking
+robustness across reasonable alternatives, the same way
+build_ppi_factorial_sources/build_ppi_nlab_grid_sources' paired_t-only
+scoping was never meant to claim the other PPI_TEST_METHODS behave
+identically."""
 _COMPARISON_METHODS_OMNIBUS = (ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name)
 """The four omnibus/multi-group tests -- run alongside _COMPARISON_METHODS
-against the SAME factorial sources (build_ppi_factorial_sources), using the
-SAME 5-way (all_human/human_subset/llm_only/llm_impute/ppi) machinery, but
-NEVER pooled together with _COMPARISON_METHODS into one averaged rate: these
+against the same factorial sources (build_ppi_factorial_sources), using the
+same 5-way (all_human/human_subset/llm_only/llm_impute/ppi) machinery, but
+never pooled together with _COMPARISON_METHODS into one averaged rate: these
 answer a genuinely different question (are the 3 groups/conditions
 different at all, vs. _COMPARISON_METHODS' specific two-group location-shift
 question) -- see _COMPARISON_METHODS' own docstring for why blending the two
@@ -4451,21 +4463,17 @@ repeated-3-group structure (A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's
 _ppi_kruskal_wallis_pairwise's single-global-rectifier Wald test), not
 KRUSKAL_MNAR_EXPERIMENTAL (evalstats.tests.
 _ppi_kruskal_wallis_pairwise_mnar_experimental's per-group, per-score-bin
-LOCAL rectifier) -- the SAME choice _COMPARISON_METHODS makes for MWU vs.
+local rectifier) -- the same choice _COMPARISON_METHODS makes for MWU vs.
 MWU_MNAR_EXPERIMENTAL, and for a documented reason, not an oversight: the
 local rectifier fixes the same combined bias x MNAR-labeling x coarse-scale
-x large-N miscalibration MWU/kruskal's global rectifier both have, but was
-confirmed (2026-07-22) to cost real MCAR calibration doing so in both cases
--- a regression it introduces, not one it inherits (kruskal's worst found
-cell: 7.9% -> 11.1% at small n_lab + high llm_noise; MWU's worst found cell:
-3.6% -> 7.2% at small n_lab + real bias present, a smaller absolute jump
-but the same ~2x multiplier, purely from switching rectifiers on matched
-draws). A shrinkage/partial-pooling variant meant to recover kruskal's MCAR
-cost without losing the MNAR fix made both worse instead. Given this
-project's stance that PPI requires MCAR labeling and treats MNAR as a
-documented, out-of-scope limitation rather than something to actively
-correct for, paying an MCAR cost for MNAR robustness users are already
-told not to rely on is the wrong trade -- see KRUSKAL/
+x large-N miscalibration MWU/kruskal's global rectifier both have, but
+costs real MCAR calibration doing so in both cases -- a regression it
+introduces, not one it inherits. A shrinkage/partial-pooling variant meant
+to recover kruskal's MCAR cost without losing the MNAR fix made both worse
+instead. Given this project's stance that PPI requires MCAR labeling and
+treats MNAR as a documented, out-of-scope limitation rather than something
+to actively correct for, paying an MCAR cost for MNAR robustness users are
+already told not to rely on is the wrong trade -- see KRUSKAL/
 KRUSKAL_MNAR_EXPERIMENTAL's Method docstrings in methods.py for the full
 writeup. KRUSKAL_MNAR_EXPERIMENTAL remains selectable via --tests
 kruskal_mnar_experimental for anyone deliberately studying the MNAR
@@ -4552,7 +4560,7 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
             return _ppi_two_sample_ridge_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
         # MWU (global rectifier): what _COMPARISON_METHODS actually uses --
         # see that constant's docstring for why it's the default over
-        # mwu_mnar_experimental's local rectifier as of 2026-07-22.
+        # mwu_mnar_experimental's local rectifier.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune).p_value
     # paired_t: np.mean. wilcoxon: paired_walsh_midrank_theta (evalstats.ppi --
@@ -5124,8 +5132,7 @@ def save_ppi_comparison_plot(
         # bbox_to_anchor=(1.0, ...) already puts the legend flush against the
         # rightmost subplot; savefig's bbox_inches="tight" grows the canvas
         # to include it. Narrowing rect's right edge below 1 here reserves
-        # BLANK figure space between the subplots and the legend instead
-        # (confirmed as the cause of a visible gap -- 2026-07-25).
+        # blank figure space between the subplots and the legend instead.
         fig.tight_layout()
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
@@ -5172,9 +5179,9 @@ def save_ppi_null_comparison_plot(
     grid, ALSO pre-pooled across methods, now itself crossing continuous/
     likert) pools a SECOND axis on top, per eval type: every N x N_lab cell
     in that eval type's slice of the grid, not just the single (N=100,
-    N_lab=20) baseline scenario `results` alone would give -- the
-    "defensible for a paper" version of this chart, an average over 4 tests
-    x ~22 (N, N_lab) conditions rather than one arbitrarily-chosen scenario.
+    N_lab=20) baseline scenario `results` alone would give -- a more robust
+    version of this chart, averaging over 4 tests x ~22 (N, N_lab)
+    conditions rather than one arbitrarily-chosen scenario.
     grades has no such sweep available (build_ppi_nlab_grid_sources
     deliberately excludes it as redundant with continuous), so it falls
     back to `results`' single scenario -- still pooled across the 4
@@ -5436,23 +5443,17 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
 
 
 _LABEL_EFF_ALIGNMENT_TARGETS = (0.8, 0.7, 0.6, 0.5, 0.4, 0.3)
-"""Round, reviewer-legible judge-quality targets the label-efficiency
-check's noise axis is CALIBRATED to hit, per eval type -- six points
+"""Round, reader-legible judge-quality targets the label-efficiency
+check's noise axis is calibrated to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
 (1977) kappa scale (also read loosely against Cohen 1988's "large"/"medium"/
 "small" correlation bands for continuous's Pearson r -- see _kappa_band/
-_corr_band). Widened from an earlier 3-point (0.8/0.5/0.2) version for a
-more complete picture of how the label-efficiency curve moves across the
-alignment range -- 0.2 dropped in favor of 0.3 (a small step below "fair"
-was judged less informative than one more point in the 0.5-0.8 range where
-the curve moves the most). 0.4 added 2026-08-03 to pin down the practical
-"don't bother running stats over judge scores" cutoff for the paper's
-guidance section -- the 0.5-0.3 gap was the widest in the original 5-point
-grid and straddles where the label-efficiency multiplier is expected to
-approach 1x (no benefit over human-only testing). Chosen so a reader can
-ask "how would this look with a kappa=0.8 judge" and get a direct answer,
-rather than an uninterpretable llm_noise dial that means something
-different in every eval type."""
+_corr_band), dense enough in the 0.3-0.8 range to show where the
+label-efficiency multiplier approaches 1x (no benefit over human-only
+testing) as well as where it's largest. Chosen so a reader can ask "how
+would this look with a kappa=0.8 judge" and get a direct answer, rather
+than an uninterpretable llm_noise dial that means something different in
+every eval type."""
 _LABEL_EFF_ALIGNMENT_METRIC = {
     "continuous": ("pearson_r", "r"),
     "likert": ("weighted_kappa", "κ"),
@@ -5500,9 +5501,9 @@ def _calibrate_noise_for_alignment(
     long as the target is actually reachable in that range -- not asserted
     here; a target outside [measure(hi), measure(lo)] just converges to
     whichever endpoint is closer, which callers should read as "unreachable
-    at this bias severity," not a precise calibration. Confirmed
-    (2026-07-23) this genuinely happens, not just a too-narrow [lo, hi]:
-    likert's target=0.8 caps out around weighted_kappa~=0.71 even at
+    at this bias severity," not a precise calibration. This genuinely
+    happens, not just from a too-narrow [lo, hi]: likert's target=0.8 caps
+    out around weighted_kappa~=0.71 even at
     noise->0, because _ppi_power_baseline's SEVERE bias_delta alone (a
     purely systematic, non-noise miscalibration) already costs kappa more
     than a "target 0.8" judge could have -- quadratic-weighted kappa
@@ -5666,30 +5667,28 @@ def run_ppi_nformula_check(
 ) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float]]]:
     """N x N_lab x effect_size x judge-quality label-efficiency sweep --
     extends run_ppi_label_efficiency_check (which holds N=PPI_LABEL_EFF_N
-    and effect_size=PPI_LABEL_EFF_EFFECT_FRAC fixed) by ALSO sweeping those
+    and effect_size=PPI_LABEL_EFF_EFFECT_FRAC fixed) by also sweeping those
     two axes, via build_ppi_nformula_sources(_binary)/PPI_NFORMULA_N_VALUES/
     PPI_NFORMULA_NLAB_VALUES/PPI_NFORMULA_EFFECT_FRACS. Exists to derive
     (and check) a closed-form rule-of-thumb formula for the label-
-
-    ref_n_mc/align_n_mc default HIGHER than run_ppi_label_efficiency_check's
-    matching defaults (3000/20_000) -- deliberately, not an oversight: this
-    check's whole output feeds a regression (fit_nformula_rule_of_thumb.py)
-    whose coefficient standard errors are sensitive to per-cell noise in
-    `multiplier` (a ratio-of-ratios inversion, worst for continuous's
-    steep classical power curve -- confirmed 2026-08-03: continuous's
-    fitted c1 SE was visibly larger than binary/likert's at these
-    functions' shared old defaults), unlike the original label-efficiency
-    check's per-cell table/plot use, which tolerates more per-cell noise.
-    Both knobs are cheap to raise here regardless: each is evaluated only
-    ONCE per (eval_type, effect_frac) or (eval_type, target) combination
-    -- 9 calibration draws, 9 reference curves -- not once per (N, N_lab)
-    grid cell, so raising them doesn't scale with the 432-cell grid the
-    way n_reps/n_boot do.
     efficiency multiplier that includes N explicitly and holds across
     effect sizes -- the base asymptotic PPI++ formula N_lab' ~= N_lab /
     (1 - rho^2) drops N because it assumes N is large relative to N_lab,
     which run_ppi_label_efficiency_check's own fixed (N=1000, N_lab<=200,
     ratio>=5) design never tested outside of.
+
+    ref_n_mc/align_n_mc default higher than run_ppi_label_efficiency_check's
+    matching defaults (3000/20_000) -- deliberately, not an oversight: this
+    check's whole output feeds a regression (fit_nformula_rule_of_thumb.py)
+    whose coefficient standard errors are sensitive to per-cell noise in
+    `multiplier` (a ratio-of-ratios inversion, worst for continuous's
+    steep classical power curve), unlike the original label-efficiency
+    check's per-cell table/plot use, which tolerates more per-cell noise.
+    Both knobs are cheap to raise here regardless: each is evaluated only
+    once per (eval_type, effect_frac) or (eval_type, target) combination
+    -- 9 calibration draws, 9 reference curves -- not once per (N, N_lab)
+    grid cell, so raising them doesn't scale with the 432-cell grid the
+    way n_reps/n_boot do.
 
     Same alignment-calibration convention as run_ppi_label_efficiency_check
     (_calibrate_noise_for_alignment, over _NFORMULA_ALIGNMENT_TARGETS -- a
@@ -6029,14 +6028,13 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     the one axis a reader can compare panels against directly (a "kappa=0.8
     judge" means the same thing in every panel; a "noise=0.2 judge" does
     not). The target~0.7 tier is drawn bolder as a visual anchor (no shaded
-    region -- an earlier fill-between to the diagonal was removed as visual
-    clutter, see git history); the other tiers show how that benefit moves
-    with judge quality on the SAME axes. N (the total item count, fixed
-    throughout -- see
-    run_ppi_label_efficiency_check and PPI_LABEL_EFF_N's docstring) is left
-    out of the title/axis text deliberately -- the paper states it in the
-    caption instead, so this figure carries no on-plot annotations or N
-    callouts beyond the axis labels and legend.
+    region to the diagonal, to avoid visual clutter); the other tiers show
+    how that benefit moves with judge quality on the same axes. N (the
+    total item count, fixed throughout -- see run_ppi_label_efficiency_check
+    and PPI_LABEL_EFF_N's docstring) is left out of the title/axis text
+    deliberately -- callers state it in the caption instead, so this figure
+    carries no on-plot annotations or N callouts beyond the axis labels and
+    legend.
 
     Each panel gets its OWN legend immediately to its right (not one
     legend shared across the whole figure) -- unlike a plot where every
@@ -6323,8 +6321,8 @@ def save_ppi_nlab_grid_plot(
 # (which factors/interactions actually move the PPI-corrected rejection
 # rate, with real coefficients/p-values, fit at the llm_noise=0.20 baseline
 # -- see _PPI_FACTORIAL_FORMULA's docstring for why noise isn't itself a GLM
-# term), a curated set of 2D heatmap slices (visual, for the paper's main
-# figure, also at the noise=0.20 baseline), and the judge-human alignment-
+# term), a curated set of 2D heatmap slices (visual summary, also at the
+# noise=0.20 baseline), and the judge-human alignment-
 # bucketed false-positive-rate view (build_ppi_alignment_results_from_
 # factorial/save_ppi_alignment_sweep_plot, further down this section), which
 # is the one place llm_noise's other 10 levels get used. Reuses
@@ -6416,13 +6414,13 @@ _PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS = {
 """Every Treatment() reference level _PPI_FACTORIAL_FORMULA depends on --
 checked up front by fit_ppi_factorial_model before handing `df` to patsy,
 so a missing level fails with a clear, actionable message pointing at
-WHICH column/level is missing, rather than patsy's generic (and, for a
+which column/level is missing, rather than patsy's generic (and, for a
 run that just spent 30-60 minutes of compute, very unwelcome) "specified
-level 'x' not found" with no indication of why. Added after exactly this
-happened for real (2026-08-03): PPI_FACTORIAL_NOISE_LEVELS briefly lost
-its required 0.20 anchor point during a widening, silently emptying the
-es="null" rows out of the noise==0.20 baseline subset this formula is
-always fit on -- see that constant's docstring for the full incident."""
+level 'x' not found" with no indication of why. This guards specifically
+against PPI_FACTORIAL_NOISE_LEVELS losing its required 0.20 anchor point,
+which would silently empty the es="null" rows out of the noise==0.20
+baseline subset this formula is always fit on -- see that constant's
+docstring."""
 
 
 def fit_ppi_factorial_model(results: list[PPIComparisonResult]) -> tuple[str, pd.DataFrame]:
@@ -6472,18 +6470,14 @@ def _print_ppi_factorial_lm_noise_table(null_rows: pd.DataFrame, alpha: float) -
     for why THAT restriction is real: llm_noise is collinear with es="null"
     once non-null cells, which only exist at the baseline noise, join the
     regression). That confound has no bearing on a null-cells-only table
-    like this one, and confirmed via the saved official runs
-    (official_20260722_003107 binary, official_20260719_214931 fastnoise
-    continuous/likert) that restricting to baseline noise was hiding the
+    like this one, and restricting to baseline noise alone would hide the
     worst of the problem: mnar_strong looks mild to nonexistent at the
-    baseline noise level (binary: mean 8.7% at noise=0.10) but is far worse
-    at LOW noise -- i.e. a more accurate-looking judge (binary: mean 14.2%,
-    worst cell 43.5% at noise=0.025) -- because low noise makes the judge's
-    score track truth closely enough that MNAR-on-truth selection is
-    effectively selecting on the judge's own score too, maximizing the
-    rectifier's selection bias. mcar stays flat and near-nominal across the
-    whole noise range in both datasets. See the module docstring / PR
-    history around 2026-07-22 for the full writeup."""
+    baseline noise level but is far worse at low noise -- i.e. a more
+    accurate-looking judge -- because low noise makes the judge's score
+    track truth closely enough that MNAR-on-truth selection is effectively
+    selecting on the judge's own score too, maximizing the rectifier's
+    selection bias. mcar stays flat and near-nominal across the whole noise
+    range."""
     if null_rows.empty:
         return
     lm_order = ["mcar", "mnar_mild", "mnar_strong"]
@@ -6555,9 +6549,9 @@ def print_ppi_factorial_report(
     """Regression summary (fit_ppi_factorial_model) plus two quotable
     headline numbers: the worst observed Type-I inflation (among es="null"
     cells) and the largest all_human-vs-ppi power gap (among non-null
-    cells) -- the single-number "worst case across N x N_lab" claims a
-    paper would want, pulled directly from the factorial grid rather than
-    eyeballed off a table.
+    cells) -- the single-number "worst case across N x N_lab" summary
+    figures, pulled directly from the factorial grid rather than eyeballed
+    off a table.
 
     `label` names the estimand(s) `results` was pooled across in the header
     (default "paired_t", the original single-estimand factorial) -- pass
@@ -6843,9 +6837,8 @@ class PPIAlignmentSweepResult:
     depend on label_mechanism) -- carried through purely so callers can
     split the sweep into separate MCAR-only/MNAR-only views (see run()'s
     factorial_check block), since pooling every label_mechanism into one
-    plot was hiding that MNAR's false-positive rate at a GIVEN alignment
-    level can be much worse than MCAR's at that same level -- see this
-    module's docstring/PR history around 2026-07-22."""
+    plot hides that MNAR's false-positive rate at a given alignment level
+    can be much worse than MCAR's at that same level."""
     alignment_metrics: dict[str, float]
     """Raw (not rescaled) alignment metrics from measure_judge_alignment --
     e.g. {"pearson_r": ..., "spearman_r": ...} for continuous, or
@@ -6873,23 +6866,17 @@ def _alignment_regime(bias_label: str) -> str:
     alignment_sweep_plot's regime loops entirely (both only ever iterate
     ("no_bias", "bias_present")), not shown as a third regime.
 
-    RE-DERIVED 2026-08-03 (was: any nonzero bias_delta, moderate+severe
-    pooled together into one "bias_present" regime): pooling both
-    magnitudes averaged away the sharpest version of this view's own
-    point. Confirmed on a real run (factorial_alignment_recheck_
-    20260803_135105, likert/weighted kappa): at the SAME 90-100%
-    ("almost perfect") alignment bucket, severe bias alone gives an
-    UNCORRECTED false-positive rate of 0.852, vs. moderate bias alone's
-    0.300 at that same bucket -- pooled, this read as a much less
-    alarming ~0.55. The rhetorical point this view exists to make -- a
-    judge can read as near-perfectly aligned by IRR while still being
-    catastrophically miscalibrated if used naively -- comes through far
-    more sharply using severe alone than the pooled average. Moderate-
-    bias cells are NOT dropped from the underlying data (they still run
-    as part of the full factorial grid, feed fit_ppi_factorial_model/
+    "bias_present" uses severe bias alone, not moderate+severe pooled
+    together: pooling both magnitudes averages away the sharpest version of
+    this view's own point -- the point being that a judge can read as
+    near-perfectly aligned by IRR while still being catastrophically
+    miscalibrated if used naively, which comes through far more sharply
+    using severe alone than a pooled average would. Moderate-bias cells are
+    not dropped from the underlying data (they still run as part of the
+    full factorial grid, feed fit_ppi_factorial_model/
     save_ppi_factorial_heatmap_plot/save_results_artifacts_ppi_alignment_
-    sweep's raw per-cell CSV as before) -- only excluded from THIS
-    bucketed print/plot view's two-regime comparison."""
+    sweep's raw per-cell CSV as before) -- only excluded from this bucketed
+    print/plot view's two-regime comparison."""
     if bias_label == "none":
         return "no_bias"
     if bias_label == "severe":
@@ -7121,11 +7108,10 @@ def save_results_artifacts_ppi_alignment_sweep(
     out_base = Path(out_dir)
     out_base.mkdir(parents=True, exist_ok=True)
     # "kappa" (binary's own unweighted Cohen's kappa -- see measure_judge_
-    # alignment's docstring) was missing here despite the docstring above
-    # claiming "one column per possible metric" -- silently dropped binary's
-    # primary alignment metric from every saved CSV, discovered 2026-08-03
-    # while trying to re-derive save_ppi_alignment_sweep_plot's binary/kappa
-    # view from an already-saved CSV without rerunning the simulation.
+    # alignment's docstring) must stay in this column list -- it's binary's
+    # primary alignment metric, and omitting it would silently break any
+    # attempt to re-derive save_ppi_alignment_sweep_plot's binary/kappa view
+    # from an already-saved CSV without rerunning the simulation.
     metric_cols = ["pearson_r", "spearman_r", "weighted_kappa", "kappa", "icc_21", "percent_agreement"]
     csv_path = out_base / f"{run_stem}_ppi_alignment_sweep_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
@@ -7191,9 +7177,9 @@ def save_ppi_alignment_sweep_plot(
     rejects/n_reps (same convention/caveat as save_ppi_null_comparison_plot:
     exact for a truly homogeneous pool, a standard mild simplification if the
     (noise, bias) cells landing in the same bucket/regime aren't perfectly
-    identically calibrated). The WITHIN-bucket-vs-across-bucket reading
+    identically calibrated). The within-bucket-vs-across-bucket reading
     caveat (see measure_judge_alignment's docstring) is deliberately left out
-    of the figure itself -- that belongs in the paper's caption/prose, not
+    of the figure itself -- that belongs in the surrounding write-up, not
     baked into the image."""
     import matplotlib.pyplot as plt
 
@@ -7919,10 +7905,10 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
 # _pretty_factorial_level the same way -- but its per-panel "what's held
 # fixed" annotation deliberately stays in short raw-code form (bm=severe,
 # not "Bias magnitude = Severe"): spelled out, four of those wrap across
-# several lines and read as MORE cluttered, not less: the terse form
-# assumes the paper's caption/main text defines what bm/n/nlab/lm/es/bd
-# mean once, which is the same assumption the codes bm/lm/es/bd already
-# require in cases/pvalues.py itself.
+# several lines and read as more cluttered, not less -- the terse form
+# assumes the surrounding write-up defines what bm/n/nlab/lm/es/bd mean
+# once, which is the same assumption the codes bm/lm/es/bd already require
+# in cases/pvalues.py itself.
 # ---------------------------------------------------------------------------
 
 _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
@@ -7932,7 +7918,8 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     MWU_RIDGE.name: "Mann-Whitney U (ridge)",
     MWU.name: "Mann-Whitney U",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
-    BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score", ANOVA_IND.name: "ANOVA (indep.)",
+    BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score",
+    TANGO_FIXED_LAMBDA.name: "Tango score (fixed lambda)", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
     KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
@@ -8098,28 +8085,26 @@ def save_ppi_factorial_typeI_violin_plot(
     PPIComparisonResult's (factorial sweep) fields and, via lm_filter, to a
     single labeling-mechanism regime.
 
-    UNIFIED 2026-08-05 (was: two side-by-side panels, two-group | omnibus)
-    -- specifically to give the factorial sweep's much denser scenario
-    grid (every N x N_lab x bias x label_mechanism x noise combination,
-    vs. build_judge_bias_sources' curated ~130-scenario OFAT catalog) the
-    same single-panel, all-9-tests-together comparability save_ppi_typeI_
-    plot already has, so the two plots read as directly comparable views
-    of the same 9 tests rather than differently-shaped figures. Requires
-    _COMPARISON_METHODS to include ttest (added the same day, alongside
-    ttest_welch, specifically so this 9-test parity would hold) -- without
-    it this panel would only ever show 8 of save_ppi_typeI_plot's 9 tests.
+    A single panel (not two side-by-side panels, two-group | omnibus) gives
+    the factorial sweep's much denser scenario grid (every N x N_lab x
+    bias x label_mechanism x noise combination, vs. build_judge_bias_
+    sources' curated ~130-scenario OFAT catalog) the same single-panel,
+    all-9-tests-together comparability save_ppi_typeI_plot already has, so
+    the two plots read as directly comparable views of the same 9 tests
+    rather than differently-shaped figures. Requires _COMPARISON_METHODS to
+    include ttest alongside ttest_welch for this 9-test parity to hold --
+    without it this panel would only ever show 8 of save_ppi_typeI_plot's 9
+    tests.
 
-    Added (pre-unification) because pooling MCAR and MNAR null cells into
-    one violin hid that most of the mass sits right at nominal alpha under
+    lm_filter exists because pooling MCAR and MNAR null cells into one
+    violin hides that most of the mass sits right at nominal alpha under
     MCAR, with only a handful of MNAR cells (concentrated in mwu/kruskal,
     under mnar_strong/mnar_mild + opposing bias direction + low noise)
     producing a long right tail -- see run()'s factorial-check block for
     the two-call (mcar + mnar) convention this establishes, intended to
     make MCAR the headline figure and MNAR an explicit, separately-labeled
     stress test rather than a silent contributor to one pooled
-    distribution. That MCAR/MNAR split is unaffected by the panel
-    unification above -- still two separate saved figures, one per
-    lm_filter value.
+    distribution: two separate saved figures, one per lm_filter value.
 
     lm_filter : {"mcar", "mnar", None}
         "mcar" keeps only MCAR-labeled null cells. "mnar" pools
@@ -8882,12 +8867,6 @@ def save_ppi_effect_plot(
         textbook tests as above; True plots the complementary broader
         bootstrap/CI-based set instead (_ppi_tests_present(nonstandard=
         True) -- everything ci_comparison's curated 4 are a subset of).
-        Added 2026-08-07: this parameter existed in _ppi_tests_present
-        (the helper this function already calls) but was never actually
-        threaded through here -- ppi_real.py's official-test pathway
-        called save_ppi_effect_plot(..., nonstandard=True) assuming it
-        was, which raised TypeError (unexpected keyword argument) on
-        every --official-tests run that reached it.
 
     width_norm : dict[str, float] | None
         Optional ``{scenario_name: divisor}`` map (typically each
@@ -8897,22 +8876,17 @@ def save_ppi_effect_plot(
         eval_type field of its own (see its docstring), so callers that
         want normalized widths must build this from the JudgeBiasSource
         list that produced ``results`` and pass it in -- see run()'s call
-        site. None (the default) plots raw, un-normalized widths,
-        unchanged from before this parameter existed.
+        site. None (the default) plots raw, un-normalized widths.
 
-        Added 2026-08-05: without this, t-interval/logit-t's shared CI
-        Width panel plots grades (0-100 scale), likert (1-5), and
-        continuous/binary (0-1) scenarios' raw widths on one shared axis
-        -- e.g. grades widths cluster around 8-16.6, continuous around
-        0.4-1.6, purely because grades' scale is 100x continuous's, not
-        because grades is worse-calibrated (coverage stays nominal, 95-97%,
-        across all of them; confirmed directly by generating actual data
-        for the widest case, shape.grades-mixture: its truth SD is ~1.9x
-        the grades baseline's, matching its ~2x-wider CI almost exactly --
-        an intentionally extreme 3-cluster stress-test shape, not a bug).
-        Dividing by each scenario's own scale span turns "raw score units"
-        into "fraction of that eval type's natural range," which IS
-        directly comparable across eval types.
+        Without this, t-interval/logit-t's shared CI Width panel plots
+        grades (0-100 scale), likert (1-5), and continuous/binary (0-1)
+        scenarios' raw widths on one shared axis -- e.g. grades widths
+        would cluster far above continuous's purely because grades' scale
+        is 100x continuous's, not because grades is worse-calibrated
+        (coverage stays nominal across all of them). Dividing by each
+        scenario's own scale span turns "raw score units" into "fraction
+        of that eval type's natural range," which is directly comparable
+        across eval types.
     """
     import matplotlib.pyplot as plt
 
@@ -9172,8 +9146,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--factorial-no-power-tune", action="store_true", default=False,
                          help="ppi mode: disable PPI++ power-tuning (power_tune=False, i.e. fixed lambda=1, the "
                               "original 2023 PPI estimator) for --factorial-check's two-group methods (ttest_welch/"
-                              "paired_t/mwu/wilcoxon), instead of the evalstats.ppi.correct() default (power_tune=True "
-                              "as of 2026-07-23). Exists to isolate whether PPI++ power-tuning is the cause of "
+                              "paired_t/mwu/wilcoxon), instead of the evalstats.ppi.correct() default (power_tune=True). "
+                              "Exists to isolate whether PPI++ power-tuning is the cause of "
                               "'corrected worse than uncorrected' null cells reappearing in the two-group family -- "
                               "run once with and once without this flag on the same seed/sources and diff the two "
                               "results' zero-bias null cells. Ignored by --factorial-omnibus' 4 omnibus methods, "
@@ -9891,15 +9865,15 @@ def run(args: argparse.Namespace) -> CaseResult:
 
             # MNAR (label_mnar=True -- the "label.*mnar-*"/"label.binary.
             # mnar-*" scenarios and their bias-magnitude companions) is kept
-            # OUT of the paper's primary results: the paper assumes an MCAR
+            # out of the headline results: this project assumes an MCAR
             # labeling regime, and MNAR is a known-adversarial condition for
             # PPI's rectifier (label selection depends on the outcome itself,
             # violating the missing-completely-at-random assumption the
-            # simple rectifier relies on -- see the 2026-08-05 finding that
-            # label.*.mnar-strong drives Tango/Wilson's worst bias_z on
-            # binary data while continuous/likert/grades stay well-calibrated
-            # under the same mechanism). Reported separately, as an explicit
-            # limitation, rather than pooled into the headline MCAR numbers.
+            # simple rectifier relies on -- label.*.mnar-strong drives
+            # Tango/Wilson's worst bias_z on binary data while
+            # continuous/likert/grades stay well-calibrated under the same
+            # mechanism). Reported separately, as an explicit limitation,
+            # rather than pooled into the headline MCAR numbers.
             mnar_names = {s.name for s in jb_sources if s.label_mnar}
 
             # {scenario_name: eval-type scale span} -- turns save_ppi_effect_plot's
@@ -9924,7 +9898,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 ppi_results_mnar = [r for r in ppi_results if r.name in mnar_names]
                 print_ppi_report(ppi_results_mcar, alpha=args.alpha, regime="MCAR")
                 if ppi_results_mnar:
-                    print_ppi_report(ppi_results_mnar, alpha=args.alpha, regime="MNAR -- adversarial to PPI, reported as a known limitation, not part of the paper's primary MCAR results")
+                    print_ppi_report(ppi_results_mnar, alpha=args.alpha, regime="MNAR -- adversarial to PPI, reported as a known limitation, not part of the primary MCAR results")
 
                 run_stem = f"pvalues_ppi_reps{args.reps}_{stamp}"
                 if args.save_results == "save":
@@ -9981,7 +9955,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                 effect_results_mnar = [r for r in effect_results if r.name in mnar_names]
                 print_ppi_effect_report(effect_results_mcar, alpha=args.alpha, regime="MCAR")
                 if effect_results_mnar:
-                    print_ppi_effect_report(effect_results_mnar, alpha=args.alpha, regime="MNAR -- adversarial to PPI, reported as a known limitation, not part of the paper's primary MCAR results")
+                    print_ppi_effect_report(effect_results_mnar, alpha=args.alpha, regime="MNAR -- adversarial to PPI, reported as a known limitation, not part of the primary MCAR results")
 
                 effect_stem = f"pvalues_ppi_effect_reps{effect_reps}_{stamp}"
                 if effect_results_mcar:
@@ -10496,12 +10470,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             # self-contained (builds its own continuous/likert/binary
             # sources internally, no dependency on comparison_sources/
             # power_sources above), so it gets its own opt-out flag rather
-            # than riding along with --no-comparison-check. Was added
-            # 2026-07-23 (commit 1e33e9b) but never actually wired into
-            # run() until now -- the functions existed and were fully
-            # implemented, just never called, so this check (and its
-            # flagship "labels saved" plot) silently never ran as part of
-            # ANY --mode ppi invocation, official-test or otherwise.
+            # than riding along with --no-comparison-check.
             if not getattr(args, "no_label_efficiency_check", False):
                 label_eff_reps = getattr(args, "effect_reps", 200)
                 print(f"\npvalues simulation (PPI-corrected, label efficiency) -- "

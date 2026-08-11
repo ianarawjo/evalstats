@@ -68,14 +68,10 @@ LOGIT_T_2ND = Method("logit_t_2nd", "#bd5b17")
 """evalstats.core.resampling.logit_t_ci_1d(..., order=2) -- the optional
 2nd-order (curvature) bias-corrected variant, registered here purely for
 direct comparison against the order=1 default (LOGIT_T, used everywhere --
-both ci_single.py and ci_paired.py). A 2026-08-04 investigation (see
-logit_t_boundary_investigation memory) found order=2 gives a real, if
-modest, coverage improvement on boundary-hugging/right-skewed single-sample
-data at negligible width cost -- ci_single.py briefly defaulted LOGIT_T to
-order=2 over that finding, then reverted (2026-08-04) since the gain wasn't
-judged worth re-running the paper's simulations/rewriting results over.
-Kept here as an opt-in comparison variant in case that tradeoff is
-revisited later; order=2 was also confirmed to NOT help ci_paired's use of
+both ci_single.py and ci_paired.py). Gives a modest coverage improvement on
+boundary-hugging/right-skewed single-sample data at negligible width cost,
+but not part of the default battery: the gain wasn't judged worth changing
+recorded results over. Does not help ci_paired's use of
 logit_t (rescaled_ci recentres a paired diff near 0.5 regardless of raw
 skew, where order=2's boundary-only correction never activates)."""
 
@@ -91,18 +87,21 @@ variant, not a distinct recommended method)."""
 # ---------------------------------------------------------------------------
 NEWCOMBE = Method("newcombe_score", "#aec7e8")
 TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
+"""evalstats.tests._ppi_paired_tango's default construction -- PPI++ closed-
+form power-tuned lambda* since the validation documented at
+TANGO_FIXED_LAMBDA (below); see that Method's docstring for the legacy
+fixed-lambda=1 construction and the comparison it's kept for."""
 PPI_WILSON = Method("ppi_wilson", "#c49c94")
 """PPI-corrected single-sample Wilson score interval (evalstats.tests.
 _ppi_single_wilson) -- a binary-proportion analogue of TANGO's paired
 Wilson-style effective-n trick, for a single-sample (not two/paired-group)
-mean estimand. Deliberately NOT named "wilson" -- that name is already
+mean estimand. Deliberately not named "wilson" -- that name is already
 BINARY_SINGLE_EXTRA_METHODS' plain (non-PPI-corrected) Wilson CI for
 ci_single.py, a different statistical procedure that happens to share the
-same textbook name; reusing the same Method name here would have silently
-overwritten that entry (same module-level name, last assignment wins).
-Exercised both by cases/ppi_real.py's real-data single-sample bias/coverage
-check and (as of the single-sample effect-check addition) pvalues.py's
-synthetic PPI sweep -- see PPI_BOOTSTRAP_T_SINGLE below and
+same textbook name; reusing it here would silently overwrite that entry
+(same module-level name, last assignment wins). Exercised by both
+cases/ppi_real.py's real-data single-sample bias/coverage check and
+pvalues.py's synthetic PPI sweep -- see PPI_BOOTSTRAP_T_SINGLE below and
 cases/pvalues.py's _run_ppi_effect_cell single-arm blocks."""
 PPI_BOOTSTRAP_T_SINGLE = Method("bootstrap_t_single", "#9edae5")
 """PPI-corrected single-sample studentized-bootstrap CI (evalstats.tests.
@@ -113,59 +112,57 @@ BOOTSTRAP_T (the paired/two-sample PPI method of the same underlying
 construction) -- same reason PPI_WILSON isn't named "wilson": different
 estimand, would silently collide if given the same Method name."""
 PPI_T_INTERVAL = Method("ppi_t_interval", "#08519c")
-"""PPI-corrected closed-form (no-bootstrap) t-interval for an UNBOUNDED
+"""PPI-corrected closed-form (no-bootstrap) t-interval for an unbounded
 numeric mean/mean-difference estimand (evalstats.tests._ppi_single_t_interval
 / _ppi_paired_t_interval, both thin wrappers around evalstats.ppi.
 _analytic_mean_correct). The closed-form replacement for BOOTSTRAP_T's role
-in PPI_AUTO_METHOD_TABLE's "unbounded" row (see evalstats.config) --
-resolved 2026-08-05, closing a previously-documented gap. Uses the analytic
-construction at EVERY n_lab, not just below _MIN_LAB_RECOMMENDED,
+in PPI_AUTO_METHOD_TABLE's "unbounded" row (see evalstats.config). Uses the
+analytic construction at every n_lab, not just below _MIN_LAB_RECOMMENDED,
 mirroring the precedent evalstats.ppi._ANALYTIC_ALWAYS_PREFERRED set for
-the Wilcoxon estimand (analytic beat bootstrap at every n_lab tested,
-30-200). Run as a PAIRED mean-difference test in this harness (cell.llm_x/
-llm_y/lab_x/lab_y), the same structural role BOOTSTRAP_T/PAIRED_T occupy --
-see PPI_LOGIT_T below for its [0,1]-bounded sibling. Deliberately NOT named
-"t_interval" -- that's already the plain (non-PPI-corrected) classical
-T_INTERVAL method above, a different statistical procedure that happens to
-share the textbook name (same reason PPI_WILSON isn't named "wilson").
+the Wilcoxon estimand. Run as a paired mean-difference test in this harness
+(cell.llm_x/llm_y/lab_x/lab_y), the same structural role BOOTSTRAP_T/PAIRED_T
+occupy -- see PPI_LOGIT_T below for its [0,1]-bounded sibling. Deliberately
+not named "t_interval" -- that's already the plain (non-PPI-corrected)
+classical T_INTERVAL method above, a different statistical procedure that
+happens to share the textbook name (same reason PPI_WILSON isn't named
+"wilson").
 
-PAIRED estimand only, as of ppi_real.py's real-data check gaining a
-single-sample robustness-CI check that ALSO wants closed-form t-interval/
-logit-t coverage (2026-08-07) -- see PPI_T_INTERVAL_SINGLE below for the
-single-sample sibling, split out the same way PPI_BOOTSTRAP_T_SINGLE was
-split from BOOTSTRAP_T: this Method's name is pooled across every paired-
-family check that uses it (print_ppi_effect_report groups by test name
-only, not by estimand), so a single-sample usage under the SAME name would
-silently merge two different estimands' bias/coverage stats together."""
+Paired estimand only -- see PPI_T_INTERVAL_SINGLE below for the
+single-sample sibling, split out for the same reason PPI_BOOTSTRAP_T_SINGLE
+is split from BOOTSTRAP_T: this Method's name is pooled across every
+paired-family check that uses it (print_ppi_effect_report groups by test
+name only, not by estimand), so a single-sample usage under the same name
+would silently merge two different estimands' bias/coverage stats
+together."""
 PPI_T_INTERVAL_SINGLE = Method("ppi_t_interval_single", "#6baed6")  # lighter tint of PPI_T_INTERVAL
 """Single-sample sibling of PPI_T_INTERVAL (evalstats.tests.
-_ppi_single_t_interval), split out 2026-08-07 for the same reason
+_ppi_single_t_interval), split out for the same reason
 PPI_BOOTSTRAP_T_SINGLE is split from BOOTSTRAP_T -- see PPI_T_INTERVAL's
-docstring. Targets an UNBOUNDED numeric single-sample mean estimand, the
+docstring. Targets an unbounded numeric single-sample mean estimand, the
 non-binary/non-[0,1]-bounded counterpart to PPI_WILSON's role."""
 PPI_LOGIT_T = Method("ppi_logit_t", "#8dd3c7")
-"""PPI-corrected closed-form (no-bootstrap) logit-t CI for a [lo, hi]-BOUNDED
+"""PPI-corrected closed-form (no-bootstrap) logit-t CI for a [lo, hi]-bounded
 numeric mean/mean-difference estimand (evalstats.tests._ppi_single_logit_t /
 _ppi_paired_logit_t, wrapping evalstats.ppi._analytic_logit_t_correct -- the
 PPI analogue of evalstats.core.resampling.logit_t_ci_1d's delta-method construction,
-reusing the SAME point estimate/p-value as PPI_T_INTERVAL and differing
+reusing the same point estimate/p-value as PPI_T_INTERVAL and differing
 only in the CI's shape). The closed-form replacement for BOOTSTRAP_T's
-role in PPI_AUTO_METHOD_TABLE's "bounded_01" row -- resolved 2026-08-05.
-Run as a PAIRED mean-difference test here, rescaled onto [0, 1] via this
-harness's own EVAL_TYPE_SCALE_BOUNDS[eval_type] (continuous/likert/grades;
-excluded from binary scenarios the same way BOOTSTRAP_T is). Deliberately
-NOT named "logit_t" -- see PPI_T_INTERVAL's docstring for why.
+role in PPI_AUTO_METHOD_TABLE's "bounded_01" row. Run as a paired
+mean-difference test here, rescaled onto [0, 1] via this harness's own
+EVAL_TYPE_SCALE_BOUNDS[eval_type] (continuous/likert/grades; excluded from
+binary scenarios the same way BOOTSTRAP_T is). Deliberately not named
+"logit_t" -- see PPI_T_INTERVAL's docstring for why.
 
-PAIRED estimand only -- see PPI_LOGIT_T_SINGLE below and PPI_T_INTERVAL's
+Paired estimand only -- see PPI_LOGIT_T_SINGLE below and PPI_T_INTERVAL's
 matching docstring addendum for why (same name-pooling collision risk)."""
 PPI_LOGIT_T_SINGLE = Method("ppi_logit_t_single", "#ccebc5")  # lighter tint of PPI_LOGIT_T
 """Single-sample sibling of PPI_LOGIT_T (evalstats.tests._ppi_single_logit_t),
-split out 2026-08-07 for the same reason PPI_BOOTSTRAP_T_SINGLE is split
-from BOOTSTRAP_T -- see PPI_T_INTERVAL_SINGLE's docstring (identical
-reasoning, [0,1]-bounded instead of unbounded). PPI_AUTO_METHOD_TABLE's
-"bounded_01" robustness method -- the non-binary counterpart to PPI_WILSON's
-binary role; every real dataset ppi_real.py checks is already rescaled to
-[0, 1] (see RealJudgeBiasCorpus), so this applies uniformly there."""
+split out for the same reason PPI_BOOTSTRAP_T_SINGLE is split from
+BOOTSTRAP_T -- see PPI_T_INTERVAL_SINGLE's docstring (identical reasoning,
+[0,1]-bounded instead of unbounded). PPI_AUTO_METHOD_TABLE's "bounded_01"
+robustness method -- the non-binary counterpart to PPI_WILSON's binary
+role; every real dataset ppi_real.py checks is already rescaled to [0, 1]
+(see RealJudgeBiasCorpus), so this applies uniformly there."""
 TANGO_SCC = Method("tango_scc", "#b15928")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
@@ -385,210 +382,58 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#1f77b4")
 TTEST_WELCH = Method("ttest_welch", "#d62728")
-# MWU/MWU_MNAR_EXPERIMENTAL: two PPI corrections for the SAME classical test
-# (Mann-Whitney U / independent two-group mid-rank estimand P_mid(A>B)-0.5),
-# not two different classical tests. MWU applies evalstats.tests.
-# _ppi_two_sample's single GLOBAL rectifier -- exactly correct for a MEAN,
-# but simulation (simulations/harness/cases/pvalues.py --mode ppi,
-# judge-bias sweep, tag "label_mechanism" x "eval_type") showed it badly
-# miscalibrated for this rank estimand specifically when labeling is
-# non-uniform with respect to score (e.g. "double-check the highest-
-# scoring items") combined with real judge bias and a coarse/discrete
-# (Likert) scale: Type-I error 3-9x nominal in the worst identified cell
-# (likert, severe bias, strong such labeling: 0.36-0.41 vs nominal 0.05).
-# MWU_MNAR_EXPERIMENTAL (evalstats.tests._ppi_two_sample_midrank_corrected)
-# fixes this with a per-group, per-score-bin LOCAL rectifier instead (see
-# that function's docstring for the full mechanism/validation) -- and WAS
-# the official PPI test sweep's default (as "mwu_corr") until 2026-07-22,
-# when a controlled naive-vs-corrected comparison on matched draws (the
-# same methodology that caught kruskal_corr's analogous regression -- see
-# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL below) found the SAME failure mode here
-# at a smaller magnitude: under MCAR labeling with real judge bias present
-# and a small labeled sample, Type-I climbed from ~3.6-5.6% (global) to
-# ~5.4-7.2% (local) -- worst cells showing a clean 2x multiplier (e.g. 3.6%
-# -> 7.2% at n_lab=15, severe bias, noise=0.025), replicated across two
-# noise levels with the same n_lab/bias combination (not sampling noise:
-# ~5 SEs at n_reps=1000). Given this project's stance that PPI requires
-# MCAR labeling and treats MNAR as a documented, out-of-scope limitation
-# (see evalstats.ppi.correct's docstring) rather than something to actively
-# correct for, paying an MCAR cost for MNAR robustness in a regime users
-# are already told not to rely on is the wrong trade -- so MWU (the global
-# rectifier) is the default/official method again, and MWU_MNAR_EXPERIMENTAL
-# is kept (not deleted) for direct comparison, reproducing pre-2026-07-22
-# results, or anyone deliberately studying MNAR robustness, selectable
-# explicitly via --tests mwu_mnar_experimental. cases/ppi_real.py's twogroup
-# check dropped it entirely as of 2026-07-24 (real-data judge bias isn't
-# MNAR, so there's nothing there for the local rectifier to buy over MWU --
-# see _twogroup_methods_for's docstring), so it no longer needs to share a
-# same-hue "Blues family" with ttest/ttest_welch/mwu the way it did when all
-# four were expected to appear together in one plot (that family made a
-# same-hue-different-shade grouping hard to tell apart at a glance, which is
-# why ttest/ttest_welch/mwu moved to distinct tab10 hues instead) -- kept
-# distinct here too so it isn't left visually stranded wherever it's still
-# selected explicitly.
+# TANGO_FIXED_LAMBDA (evalstats.tests._ppi_paired_tango(..., power_tune=False)):
+# the legacy fixed-lambda=1 rectifier TANGO itself used before PPI++'s
+# closed-form variance-minimizing lambda* became the default -- the same
+# derivation _analytic_mean_correct/_analytic_logit_t_correct already use
+# for ppi_t_interval/ppi_logit_t (this estimand, mean(a_i - b_i), is
+# identical to theirs; only Tango's Wilson-style effective-n CI shape
+# differs). Kept selectable for direct comparison and for reproducing
+# pre-flip results, not because it's still recommended: a harness-scale
+# validation (--mode ppi --eval-types binary, 65 scenarios, two seeds)
+# found zero Holm-confirmed miscalibrated cells at either setting, with
+# power_tune=True giving ~13-17% narrower mean CI width and no coverage
+# cost at MCAR or MNAR labeling -- see simulations/investigate_tango_ppi_
+# plus_plus*.py and simulations/investigate_compound_ppi_fwer_power.py
+# (the compound PPI+FWER path's own detection-power measurement) for the
+# validation behind the flip.
+TANGO_FIXED_LAMBDA = Method("tango_fixed_lambda", "#41b6c4")  # teal -- distinct from TANGO's default grey
+# MWU family: five PPI corrections for the same classical test (Mann-Whitney
+# U / independent two-group mid-rank estimand P_mid(A>B)-0.5), matching
+# evalstats.tests.mannwhitney's "method" values one-to-one -- see that
+# function's docstring for the full mechanism/tradeoff of each. MWU="global"
+# (the default), MWU_MNAR_EXPERIMENTAL="mnar_experimental",
+# MWU_MNAR_POOLED (not directly selectable via mannwhitney(), the pooled-
+# resampling variant "local" is built on), MWU_ADAPTIVE="adaptive",
+# MWU_RIDGE="ridge". cases/ppi_real.py's twogroup check dropped
+# MWU_MNAR_EXPERIMENTAL from its default plots since real-data judge bias
+# isn't MNAR, so there's nothing there for the local rectifier to buy over
+# MWU -- see _twogroup_methods_for's docstring.
 MWU = Method("mwu", "#2ca02c")
 MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
-# MWU_MNAR_POOLED (evalstats.tests._ppi_two_sample_midrank_corrected_pooled):
-# a candidate replacement for MWU_MNAR_EXPERIMENTAL's bootstrap, NOT its
-# rectifier. Investigated 2026-08-01 after tracing MWU_MNAR_EXPERIMENTAL's
-# MCAR cost to something other than the local-vs-global rectifier choice:
-# even at n_strata=1 (mathematically the SAME point estimate as MWU's
-# global rectifier), MWU_MNAR_EXPERIMENTAL's bootstrap still ran hotter
-# than MWU under MCAR, and isolating power-tuning (MWU defaults to it,
-# MWU_MNAR_EXPERIMENTAL has none) didn't explain the gap either (MWU with
-# power_tune=False stayed close to nominal, unlike the local rectifier at
-# n_strata=1). The remaining difference: MWU_MNAR_EXPERIMENTAL draws FOUR
-# separate bootstrap resamples (group A/B x labeled/unlabeled, each fixing
-# that group's own count every replicate); evalstats.ppi.correct (what MWU
-# actually uses) instead pools group A + B's unlabeled items into ONE
-# array and draws a SINGLE resample from the pool (likewise for labeled
-# items), letting the group split vary replicate-to-replicate. Switching
-# ONLY that (same rectifier, same truth-binning collider fix, same hard
-# min_lab_per_bin cutoff) improved BOTH axes on matched draws across 5
-# MCAR + 4 MNAR corners (n_reps=1500, likert): mean MCAR |gap to naive|
-# 0.0113 -> 0.0092, mean MNAR-corner rate (vs. nominal 0.05) 0.072 -> 0.056
-# -- better than MWU_MNAR_EXPERIMENTAL in every corner tested, not just on
-# average. Confirmed at harness scale (2064-scenario factorial grid,
-# reps=300/n_boot=500, zero bootstrap failures): MCAR-only mean Type-I
-# 0.0486 (vs. MWU's 0.0518, MWU_MNAR_EXPERIMENTAL's 0.0517), by-label-
-# mechanism mean 0.049/0.048/0.048 (mcar/mnar_mild/mnar_strong, essentially
-# flat) vs. 0.052/0.067/0.096 (MWU) and 0.052/0.056/0.067 (MWU_MNAR_
-# EXPERIMENTAL), worst cell across the whole grid 0.097 vs. 0.630 (MWU) /
-# 0.200 (MWU_MNAR_EXPERIMENTAL). Promoted to evalstats.tests.mannwhitney's
-# default (method="local") 2026-08-01. See MWU_ADAPTIVE below, however --
-# a follow-up 5-way estimator comparison (all_human/human_subset/llm_only/
-# llm_impute/ppi) found this rectifier costs real POWER for CONTINUOUS
-# data specifically (corrected power falls BELOW human_subset-only at
-# every effect size tested, e.g. es=0.10: human_subset=0.730 vs. this=
-# 0.417) -- inherited from the local rectifier's construction itself
-# (shared identically by MWU_MNAR_EXPERIMENTAL), not something this
-# resampling change introduced, and not fixable by tuning n_strata (the
-# deficit persists even at n_strata=1). Selectable via --tests
-# mwu_mnar_pooled; not part of PPI_OFFICIAL_TEST_METHODS (kept for direct
-# comparison against MWU_ADAPTIVE, which is expected to supersede it as
-# the recommended choice pending its own harness-scale validation).
 MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MNAR_EXPERIMENTAL's purple
-# MWU_ADAPTIVE (evalstats.tests._ppi_two_sample_adaptive): dispatches
-# between MWU_MNAR_POOLED's local rectifier and MWU's global one based on
-# how discrete the LABELED (truth) values look (unique_fraction =
-# n_unique/n_labeled on the combined group A+B labeled sample; below 0.7
-# -> local, at or above -> global -- see _ADAPTIVE_DISCRETENESS_THRESHOLD's
-# docstring for the empirical separation, essentially deterministic:
-# continuous always exactly 1.0, grades always >=0.967, likert always
-# <=0.333). Exists because MWU_MNAR_POOLED's continuous-data power deficit
-# (see its comment above) is real but avoidable: the deficit is specific
-# to continuous/smooth data, where the global rectifier was already
-# theoretically sufficient and the local one's per-bin/combine-then-rank
-# construction only adds cost; Likert genuinely needs the local
-# construction. Validated (matched draws, continuous + likert, vs.
-# effect_size AND vs. n_lab, plus a small-n_lab MCAR/MNAR Type-I stress
-# check): branch choice correct in every condition tested, "adaptive"
-# exactly matching whichever of MWU/MWU_MNAR_POOLED was actually better --
-# e.g. continuous es=0.10: adaptive=MWU=0.847 (vs. MWU_MNAR_POOLED alone
-# at 0.433); likert es=0.20: adaptive=MWU_MNAR_POOLED=0.967 (vs. MWU alone
-# at 0.620); likert MNAR Type-I: adaptive=MWU_MNAR_POOLED=0.047 (vs. MWU
-# alone at 0.180, badly miscalibrated). See evalstats.tests.mannwhitney's
-# method="adaptive" docstring for the full validation.
-#
-# Was briefly promoted to mannwhitney's default (method="adaptive")
-# 2026-08-01/02, REVERTED to MWU (method="global") a few hours later: the
-# validation above is synthetic-only. Running MWU_ADAPTIVE against
-# cases/ppi_real.py's real judge-bias data (wmt_da dataset specifically)
-# found a severe real-data MCAR calibration failure the synthetic grid
-# never caught -- real (rounded/averaged) continuous truth values land at
-# unique_fraction ~0.4-0.5, below the 0.7 threshold, so adaptive dispatches
-# to the local rectifier; on real biased-judge data that rectifier's Type-I
-# cost (0.25, isolated 300-rep check on one wmt_da cell) far exceeds the
-# 0.093 synthetic worst-case above. A correctness regression, not a tuning
-# nitpick -- see evalstats.tests._ppi_two_sample_adaptive's docstring for
-# the full account. Kept available via --tests mwu_adaptive; not the
-# default pending a better discreteness signal.
 MWU_ADAPTIVE = Method("mwu_adaptive", "#98df8a")  # light tint of MWU's green
-# MWU_RIDGE (evalstats.tests._ppi_two_sample_ridge_corrected): the user's
-# requested next step
-# after MWU_ADAPTIVE's revert (2026-08-02): "mix the ideas from global and
-# local... dynamic adaptation of the pooling to the data" instead of a hard
-# threshold dispatch. Root-caused MWU_ADAPTIVE's wmt_da failure precisely:
-# MWU_MNAR_POOLED's per-bin STEP-FUNCTION rectifier has a real point-
-# estimate BIAS on that cell (+0.042 under a true null, vs. MWU's +0.0003 --
-# confirmed it's bias, not bootstrap variance-underestimation), because
-# within a bin the judge's bias (truth-llm) is strongly correlated with the
-# item's own score (corr -0.8 to -0.99 on that cell) -- a real slope a flat
-# per-bin mean can't capture, and the STEP boundary amplifies it (bias jumps
-# from -0.011 at n_strata=1 to +0.04-0.05 the moment n_strata>=2, and does
-# NOT improve with finer bins). MWU_RIDGE replaces the step function with a
-# ridge-shrunk LINEAR rectifier (fit per group: diff=truth-llm ~ beta0 +
-# beta1*llm_score, ridge penalty lam=ridge_k*Sxx, ridge_k dimensionless) --
-# on the exact failing wmt_da cell this brings Type-I from 0.25 (local) down
-# to 0.047 (nominal, beating MWU's own 0.07). ridge_k=2.0 was picked from
-# that ONE cell's bias/variance tradeoff curve (not a fully-automatic
-# selection rule -- two candidates, empirical-Bayes/SE-based and closed-form
-# LOOCV, were tried and rejected, both barely shrinking since they only see
-# IN-SAMPLE/interpolation risk, not the EXTRAPOLATION risk to wherever
-# unlabeled items' scores actually sit), but generalizes well: validated at
-# full factorial-grid scale (2064 scenarios/8256 cells, reps=150/n_boot=300)
-# -- MCAR mean/worst 0.056/0.113 (matches MWU's 0.054/0.113, no regression);
-# MNAR-mild/strong worst-case 0.107/0.127, close to MWU_MNAR_POOLED's
-# 0.107/0.120, vs. MWU's catastrophic 0.467/0.613 or MWU_ADAPTIVE's
-# 0.520/0.440; power at moderate effect: continuous 0.975 (near MWU's 0.996
-# ceiling), likert 0.871 -- the BEST of all four methods, beating even
-# MWU_MNAR_POOLED's own 0.827 -- and against REAL data (cases/ppi_real.py,
-# all 5 datasets): Type-I max 0.120 (== MWU's own max, vs. MWU_ADAPTIVE's
-# 0.380), zero NEW Holm-confirmed cells, fixes wmt_da across multiple judge
-# pairs (not just the tuning cell), real power unchanged at 1.000. See
-# evalstats.tests._ppi_two_sample_ridge_corrected's docstring and
-# simulations/out/mwu_ridge_validation/VALIDATION_SUMMARY.md for full
-# numbers. NOT wired into mannwhitney() yet -- selectable via --tests
-# mwu_ridge; pending a decision on whether/how to expose it as a method.
 MWU_RIDGE = Method("mwu_ridge", "#c49c94")  # muted brown -- distinct from the MWU family's greens/purples
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
-# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the SAME
-# omnibus test, generalizing the MWU/MWU_MNAR_EXPERIMENTAL story one level up (k
-# independent groups instead of 2) -- and, as of 2026-07-22, the SAME
-# conclusion. KRUSKAL applies evalstats.tests._ppi_kruskal_wallis_pairwise's
-# single GLOBAL rectifier per pairwise dominance estimate theta_ab =
-# theta_unlab + (theta_lab_human - theta_lab_llm) -- the SAME global-
-# rectifier pattern that broke MWU, just extended from one pair to all
-# C(k,2) pairs, and genuinely miscalibrated the same way under severe judge
-# bias x MNAR-like labeling x coarse/discrete scale x large N (Type-I
-# 0.32-0.49 vs nominal 0.05 in the worst identified cells). A per-group,
-# per-score-bin LOCAL rectifier (evalstats.tests.
-# _ppi_kruskal_wallis_pairwise_mnar_experimental, generalizing MW_MNAR_
-# EXPERIMENTAL's fix from 2 groups to k) was built and validated to fix
-# that MNAR regime (down to ~0.09-0.11 in the same cells) -- but was
-# confirmed (2026-07-22 screening + a controlled naive-vs-corrected
-# comparison on matched draws) to cost real MCAR calibration in exchange:
-# worst found cell went from 7.9% (global, already-imperfect) to 11.1%
-# (local) at small n_lab + high llm_noise, a regression the fix itself
-# introduces, not one it inherits. A shrinkage/partial-pooling variant was
-# prototyped to try to recover that MCAR cost without losing the MNAR fix
-# and made BOTH worse, not just MCAR (see scratch prototypes in the
-# ppi-welch-paired-t-calibration worktree). The SAME controlled comparison
-# run against MWU/MWU_MNAR_EXPERIMENTAL (same day) found the identical
-# failure mode at a smaller magnitude (~2x multiplier in the worst cells,
-# e.g. 3.6% -> 7.2%, vs. kruskal's ~1.4x) -- see MWU/MWU_MNAR_EXPERIMENTAL's
-# comment above for that data. Given this project's stance that PPI
-# requires random (MCAR) label sampling and treats MNAR as a documented,
-# out-of-scope limitation rather than something to actively correct for
-# (see evalstats.ppi.correct's docstring), paying an MCAR cost to partially
-# fix a regime users are already told not to rely on is the wrong trade for
-# either -- so KRUSKAL (the global rectifier) is the default/official
-# method as of 2026-07-22, and the local rectifier is demoted to
-# KRUSKAL_MNAR_EXPERIMENTAL: kept for direct comparison and for anyone
-# deliberately studying the MNAR-robustness question, selectable explicitly
-# via --tests kruskal_mnar_experimental, but not part of the official/
-# validated result set. Same color convention as MWU/MWU_MNAR_EXPERIMENTAL:
-# the default occupies the original primary shade, the alternate gets a
-# lighter tint.
+# KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the same
+# omnibus test, the MWU/MWU_MNAR_EXPERIMENTAL story generalized one level up
+# (k independent groups instead of 2) -- see
+# evalstats.tests.kruskalwallis's "method" docstring for the full
+# mechanism/tradeoff. KRUSKAL="global" (the default, global rectifier),
+# KRUSKAL_MNAR_EXPERIMENTAL="mnar_experimental" (local rectifier: fixes MNAR
+# labeling at the cost of MCAR calibration, kept for direct comparison and
+# for anyone deliberately studying MNAR robustness). Same color convention
+# as MWU/MWU_MNAR_EXPERIMENTAL: the default occupies the original primary
+# shade, the alternate gets a lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, TANGO_FIXED_LAMBDA, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -599,31 +444,29 @@ PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
         MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL,
-        LMM, LMM_FACTORIAL, LMM_RUNS,
+        LMM, LMM_FACTORIAL, LMM_RUNS, TANGO_FIXED_LAMBDA,
     )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
 PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
 (both fix real MNAR-labeling miscalibration in their global-rectifier
-sibling, but were found to cost real MCAR calibration doing so -- see
-MWU/MWU_MNAR_EXPERIMENTAL's and KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL's comments
-above). Both remain selectable via --tests mwu_mnar_experimental / --tests
-kruskal_mnar_experimental for direct comparison, reproducing pre-2026-07-22
-results, or studying MNAR robustness deliberately.
+sibling, but cost real MCAR calibration doing so -- see
+evalstats.tests.mannwhitney's and kruskalwallis's "method" docstrings).
+Both remain selectable via --tests mwu_mnar_experimental / --tests
+kruskal_mnar_experimental for direct comparison or studying MNAR robustness
+deliberately.
 
-lmm/lmm_factorial/lmm_runs EXCLUDED from the official set as of 2026-08-03
-at the user's explicit request: not being reported in the current paper
-iteration (may be added back for a later one) -- no point paying their
-runtime cost (and reviewing their output) in every official pass while
-that's true. Still fully selectable via --tests lmm/lmm_factorial/
-lmm_runs for anyone who wants them.
+lmm/lmm_factorial/lmm_runs are excluded from the official set: not
+currently part of the reported result set, so there's no point paying their
+runtime cost (and reviewing their output) in every official pass. Still
+fully selectable via --tests lmm/lmm_factorial/lmm_runs for anyone who
+wants them.
 
-PPI_WILSON/
-PPI_BOOTSTRAP_T_SINGLE (the single-sample robustness-CI methods
-PPI_AUTO_METHOD_TABLE routes to) are now part of the default set too --
-pvalues.py's synthetic PPI sweep gained a single-arm effect-check scenario
-(see cases/pvalues.py's _run_ppi_effect_cell single-arm blocks) precisely so
-these wouldn't be validated ONLY by cases/ppi_real.py's real-data check."""
+PPI_WILSON/PPI_BOOTSTRAP_T_SINGLE (the single-sample robustness-CI methods
+PPI_AUTO_METHOD_TABLE routes to) are part of the default set too --
+pvalues.py's synthetic PPI sweep has a single-arm effect-check scenario
+(see cases/pvalues.py's _run_ppi_effect_cell single-arm blocks) so these
+aren't validated only by cases/ppi_real.py's real-data check."""
 
 # ---------------------------------------------------------------------------
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
@@ -638,7 +481,8 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
+    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, TANGO_FIXED_LAMBDA,
+    ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]
 
