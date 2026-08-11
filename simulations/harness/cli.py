@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from .cases import ci_single, ci_paired, pvalues, ppi_real
+from .cases import ci_single, ci_paired, pvalues, ppi_real, compare_e2e
 from .manifest import write_manifest
 
 CASES = {
@@ -24,6 +24,7 @@ CASES = {
     ci_paired.CASE_NAME: ci_paired,
     pvalues.CASE_NAME: pvalues,
     ppi_real.CASE_NAME: ppi_real,
+    compare_e2e.CASE_NAME: compare_e2e,
 }
 
 
