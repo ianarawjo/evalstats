@@ -370,6 +370,80 @@ def _detect_dither_halfwidth(pooled: np.ndarray) -> float:
     return step / 2.0
 
 
+def _debiased_dither(x: np.ndarray, half: float, lo: float, hi: float, rng: np.random.Generator) -> np.ndarray:
+    """Add U(-half, half) jitter to x, clip to [lo, hi], then subtract the
+    EXACT closed-form bias that clipping introduces near the boundaries.
+
+    Naive clip(x + jitter, lo, hi) is NOT mean-preserving for x within
+    `half` of a boundary: jitter that would push x below lo (or above hi)
+    piles up exactly at the boundary instead of continuing past it, pulling
+    E[clipped] toward the interior. For x exactly at a hard boundary with
+    jitter ~ U(-h, h), E[clip] = x +/- h/4 (derived below) -- NOT x. This
+    doesn't average away with N (it's a fixed per-item shift, not noise),
+    and because two paired arms generally have DIFFERENT boundary-mass
+    compositions (that's what makes them differ), the bias doesn't cancel
+    in the arms' difference either -- it contaminates the estimated diff
+    directly. Confirmed as a real regression: on likert "bimodal-extreme"
+    data (icc=0.95, d=0.4, heavy mass at both the floor AND ceiling, more
+    at the ceiling), logit_t_dither's coverage fell from 0.953 (n=15) to
+    0.870 (n=100) -- degrading WITH N, the signature of a persistent bias
+    rather than added variance -- while plain logit_t stayed flat (~0.94-
+    0.97) on the identical scenario. Root cause confirmed directly: the
+    dithered point estimate was shifted by -0.044 relative to the
+    undithered one, consistent with the ceiling (39.5% of mass) pulling the
+    difference down more than the floor (20.3% of mass) pulled it up.
+
+    Derivation: for x with distance d = x - lo from the lower bound
+    (d < half means boundary-adjacent) and jitter j ~ U(-half, half),
+    E[max(x+j, lo)] - x = E[max(j, -d)] = (half - d)^2 / (4*half) for
+    d < half (0 otherwise) -- a standard truncated-uniform expectation.
+    The upper-bound case is the mirror image. Subtracting these exactly
+    recenters the expectation back on x regardless of boundary proximity
+    (verified numerically: reduces a 0.125 bias at h=0.5 to ~0.0005,
+    Monte-Carlo-noise level, if left un-clipped). Reflection or rejection-
+    resampling were tried first and are WORSE, not better, here: for
+    jitter straddling a hard boundary symmetrically, both fold the entire
+    out-of-bounds half onto an exact duplicate of the in-bounds half
+    (rather than restoring symmetry around x), giving twice clip's bias
+    (0.25 vs 0.125 at h=0.5).
+
+    The correction is finally re-clipped to [lo, hi] -- NOT left
+    unclipped as an earlier version of this function did. That version's
+    docstring claimed the resulting per-item excursions past [lo, hi]
+    (up to half/4) were harmless because they "only ever feed a per-item
+    mean" -- that was wrong: pair_diffs_dither/cell_diffs_dither are
+    per-ITEM arrays (n entries), passed directly into logit_t_ci_1d,
+    which raises ValueError on inputs meaningfully outside [0, 1] after
+    rescaling (see that function's docstring re: a near-identical past
+    incident). With n independent items, the chance that AT LEAST ONE
+    exceeds the tolerance grows with n (~1-(1-p)^n), not shrinks -- a
+    max-of-n effect, invisible in small samples, that produced the exact
+    same "coverage falls with N" symptom this whole fix targets, just
+    from a different mechanism (an exception being silently swallowed
+    into a zero-width interval by the `except Exception:` fallback below,
+    not lost variance). Confirmed via direct measurement on likert
+    "uniform" data (heavy floor+ceiling mass, so most prone to
+    floor-vs-ceiling item pairs before any jitter): the unclipped version's
+    ValueError rate rose from 2.3% (n=10) to 22.3% (n=100). Re-clipping
+    trades away some of the bias correction for boundary-adjacent items
+    (residual ~0.070 vs clip-alone's 0.125 at h=0.5 -- a ~44% reduction,
+    not a full fix) in exchange for guaranteed validity; a value exactly
+    at a hard boundary can't be made simultaneously unbiased AND
+    contained in [lo, hi] by any deterministic remapping of a jitter
+    that spans past that boundary -- containment was chosen as the
+    non-negotiable constraint since violating it doesn't degrade
+    gracefully, it corrupts the whole interval for that rep."""
+    if half <= 0:
+        return x
+    jitter = rng.uniform(-half, half, size=x.shape)
+    raw = np.clip(x + jitter, lo, hi)
+    d_lo = x - lo
+    d_hi = hi - x
+    bias_lo = np.where(d_lo < half, (half - d_lo) ** 2 / (4 * half), 0.0)
+    bias_hi = np.where(d_hi < half, (half - d_hi) ** 2 / (4 * half), 0.0)
+    return np.clip(raw - bias_lo + bias_hi, lo, hi)
+
+
 def _run_cell(
     source_obj: CIPairSource, n: int, n_reps: int, n_bootstrap: int, bayes_n: int,
     alpha: float, runs: int, statistic: str, seed, method_names: frozenset[str] | None = None,
@@ -498,18 +572,17 @@ def _run_cell(
 
         if add_dither_extras:
             # Independent U(-half, +half) jitter per arm (not on the diff
-            # directly) then clip back to the scale, where half is detected
-            # per rep from the data's own quantization grid (0.0 -- i.e. no
-            # jitter -- if none is detected) -- see LOGIT_T_DITHER's
-            # docstring for why this specifically targets the paired-diff
-            # rounding-cancellation pathology, not just "add some noise."
+            # directly), clip back to the scale, then subtract the exact
+            # boundary-clipping bias (see _debiased_dither's docstring) --
+            # half is detected per rep from the data's own quantization
+            # grid (0.0 -- i.e. no jitter -- if none is detected). See
+            # LOGIT_T_DITHER's docstring for why this specifically targets
+            # the paired-diff rounding-cancellation pathology, not just
+            # "add some noise."
             _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
             _half = _detect_dither_halfwidth(np.concatenate([a.ravel(), b.ravel()]))
-            if _half > 0:
-                a_dither = np.clip(a + rng.uniform(-_half, _half, size=a.shape), _scale_lo, _scale_hi)
-                b_dither = np.clip(b + rng.uniform(-_half, _half, size=b.shape), _scale_lo, _scale_hi)
-            else:
-                a_dither, b_dither = a, b
+            a_dither = _debiased_dither(a, _half, _scale_lo, _scale_hi, rng)
+            b_dither = _debiased_dither(b, _half, _scale_lo, _scale_hi, rng)
             pair_diffs_dither = a_dither.mean(axis=1) - b_dither.mean(axis=1)
             obs_dither = float(np.mean(pair_diffs_dither))
             diff_span_dither = _scale_hi - _scale_lo
@@ -841,11 +914,8 @@ def _run_nested_pairwise_cell(
         # diffs, just computed from independently dithered a/b first.
         if not is_binary:
             _half = _detect_dither_halfwidth(np.concatenate([a.ravel(), b.ravel()]))
-            if _half > 0:
-                a_dither = np.clip(a + rng.uniform(-_half, _half, size=a.shape), _scale_lo, _scale_hi)
-                b_dither = np.clip(b + rng.uniform(-_half, _half, size=b.shape), _scale_lo, _scale_hi)
-            else:
-                a_dither, b_dither = a, b
+            a_dither = _debiased_dither(a, _half, _scale_lo, _scale_hi, rng)
+            b_dither = _debiased_dither(b, _half, _scale_lo, _scale_hi, rng)
             cell_diffs_dither = a_dither.mean(axis=1) - b_dither.mean(axis=1)
             obs_diff_dither = float(np.mean(cell_diffs_dither))
             for method in (LOGIT_T_DITHER, SMOOTH_BOOTSTRAP_DITHER):
