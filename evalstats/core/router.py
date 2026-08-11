@@ -742,6 +742,84 @@ def analyze_factorial(
 # Internal analysis runners
 # ---------------------------------------------------------------------------
 
+def resolve_auto_robustness_method(
+    run_scores: np.ndarray,
+    *,
+    score_range: Optional[tuple[float, float]] = None,
+    stacklevel: int = 2,
+) -> tuple[str, str, Optional[tuple[float, float]]]:
+    """Auto-detect data kind (binary / bounded_01 / unbounded) and resolve
+    it to concrete (pairwise_method, robustness_method, resolved_score_range).
+
+    This is the exact "method='auto'" routing logic ``analyze()``/``compare()``
+    use internally, factored out so the quick-primitive functions
+    (``mean_ci``/``summarize`` in ``evalstats.quick``) can reuse it directly
+    rather than re-deriving calibration choices in a second place that could
+    silently drift out of sync with ``compare()``'s.
+
+    Parameters
+    ----------
+    run_scores : np.ndarray
+        Shape ``(N, M)`` or ``(N, M, R)``. Only the shape and values matter
+        here (dtype/range/binary-ness detection and R for seeded routing) --
+        not which entity is which.
+    score_range : (float, float), optional
+        Explicit ``[lo, hi]`` bounds, forwarded to :func:`resolve_score_bounds`.
+    stacklevel : int
+        Forwarded to any ``UserWarning`` raised here, so it points at the
+        caller's caller appropriately regardless of how many wrapper frames
+        sit between the actual user call and this function.
+
+    Returns
+    -------
+    tuple[str, str, tuple[float, float] or None]
+        ``(pairwise_method, robustness_method, resolved_score_range)``.
+    """
+    from .resampling import is_binary_scores, resolve_score_bounds
+
+    if run_scores.ndim == 3:
+        R = run_scores.shape[2]
+        N = run_scores.shape[1]
+    else:
+        R = 1
+        N = run_scores.shape[1]
+
+    resolved_score_range: Optional[tuple[float, float]] = None
+    if is_binary_scores(run_scores):
+        data_kind = "binary"
+    else:
+        # resolve_score_bounds returns a [lo, hi] range (with a
+        # UserWarning if it had to auto-detect [0, 1] rather than being
+        # told explicitly) when one can be reliably established, or None
+        # when the data falls outside [0, 1] and no score_range was
+        # given -- there's no safe way to infer a metric's true bounds
+        # from an arbitrary numeric sample's own min/max. In the None
+        # case, auto silently downgrades to the bounds-agnostic
+        # "unbounded" (t_interval) row below, but says so loudly.
+        resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=stacklevel + 1)
+        if resolved_score_range is not None:
+            data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
+            warnings.warn(
+                "Numeric evaluation data outside [0, 1] was auto-detected "
+                "with no explicit score_range, so evalstats is using "
+                "method='t_interval' (a bounds-agnostic default) rather "
+                "than the better-calibrated logit-t method. If you know "
+                "this eval metric's true (min, max) range, pass it "
+                "explicitly, e.g. score_range=(1, 5) for a Likert scale "
+                "or score_range=(0, 100) for a percentage grade.",
+                UserWarning,
+                stacklevel=stacklevel + 1,
+            )
+    # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
+    # (which method is chosen for which data kind / N / seeded combination).
+    pairwise_method, robustness_method = resolve_auto_analyze_methods(
+        data_kind, N, seeded=R >= 3,
+    )
+    return pairwise_method, robustness_method, resolved_score_range
+
+
 def _analyze_single(
     result: BenchmarkResult,
     shape: BenchmarkShape,
@@ -851,40 +929,8 @@ def _analyze_single(
     robustness_method = method
     resolved_score_range: Optional[tuple[float, float]] = None
     if method == "auto":
-        from .resampling import is_binary_scores, resolve_score_bounds
-        R = run_scores.shape[2]
-        N = run_scores.shape[1]
-        if is_binary_scores(run_scores):
-            data_kind = "binary"
-        else:
-            # resolve_score_bounds returns a [lo, hi] range (with a
-            # UserWarning if it had to auto-detect [0, 1] rather than being
-            # told explicitly) when one can be reliably established, or None
-            # when the data falls outside [0, 1] and no score_range was
-            # given -- there's no safe way to infer a metric's true bounds
-            # from an arbitrary numeric sample's own min/max. In the None
-            # case, auto silently downgrades to the bounds-agnostic
-            # "unbounded" (t_interval) row below, but says so loudly.
-            resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=2)
-            if resolved_score_range is not None:
-                data_kind = "bounded_01"
-            else:
-                data_kind = "unbounded"
-                warnings.warn(
-                    "Numeric evaluation data outside [0, 1] was auto-detected "
-                    "with no explicit score_range, so evalstats is using "
-                    "method='t_interval' (a bounds-agnostic default) rather "
-                    "than the better-calibrated logit-t method. If you know "
-                    "this eval metric's true (min, max) range, pass it "
-                    "explicitly, e.g. score_range=(1, 5) for a Likert scale "
-                    "or score_range=(0, 100) for a percentage grade.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
-        # (which method is chosen for which data kind / N / seeded combination).
-        pairwise_method, robustness_method = resolve_auto_analyze_methods(
-            data_kind, N, seeded=R >= 3,
+        pairwise_method, robustness_method, resolved_score_range = resolve_auto_robustness_method(
+            run_scores, score_range=score_range, stacklevel=2,
         )
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
