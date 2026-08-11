@@ -1945,13 +1945,26 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     [0, 1]-scale case well (grades is just continuous rescaled to 0-100),
     while "likert" is kept as a genuinely distinct limiting case (integer-
     valued, few levels). Dropping grades cuts a third eval type out of the
-    official sweep's runtime for no real loss of coverage."""
+    official sweep's runtime for no real loss of coverage.
+
+    icc_values matched to nested_official_args()'s range (was stale here --
+    this preset never received the 2026-07-14 reweighting nested_official_args()
+    got, see that docstring for the full writeup: measuring actual per-item
+    ICC on 48 real (model, benchmark) corpora gave mean 0.739, median 0.748,
+    IQR [0.644, 0.873], i.e. concentrated well above this preset's old cap of
+    0.80, not spread evenly across [0, 1]. Concretely surfaced by checking
+    whether logit_t_dither's likert numbers here could be justified against
+    plain logit_t: at this preset's old max icc=0.80, logit_t showed no
+    coverage degradation at all (0.9463 at n=10) -- the pairwise battery
+    literally couldn't reach the regime (icc -> 1, small N) where the
+    rounding-cancellation pathology dithering fixes actually bites, so it
+    was untestable here by construction, not merely untested."""
     return argparse.Namespace(
         data_source="synthetic", scenario_suite="expanded", eval_types=["binary", "continuous", "likert"],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100],
-        seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
+        seed=base_seed, icc_values=[0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="save", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,
         no_bootstrap_binary=False,
@@ -2233,7 +2246,7 @@ def run(args: argparse.Namespace) -> CaseResult:
 
         print(f"\nci_paired simulation -- data_source={args.data_source}, statistic={args.statistic}")
         if args.data_source == "synthetic":
-            icc_values = args.icc_values if args.icc_values is not None else [0.05, 0.20, 0.40, 0.60, 0.80]
+            icc_values = args.icc_values if args.icc_values is not None else [0.01, 0.3, 0.5, 0.65, 0.75, 0.85, 0.95]
             sources = build_pair_sources(
                 suite=args.scenario_suite, icc_values=icc_values,
                 cohens_d_values=args.cohens_d_values, include_null=args.include_null,
