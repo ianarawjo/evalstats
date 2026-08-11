@@ -2389,7 +2389,7 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
     )
 
 
-def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float):
+def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float, power_tune: bool = True):
     """PPI correction for a single-sample mean estimand ``mean(a)`` on an
     unbounded numeric scale, via the closed-form (no-bootstrap) analytic
     construction -- evalstats.ppi._analytic_mean_correct -- applied at
@@ -2403,6 +2403,10 @@ def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float):
 
     A position is included in the labeled set only when ``a_lab[i]`` is
     non-NaN.
+
+    ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
+    same name (see its docstring's "PPI++ power-tuning" section) -- default
+    True, matching every other paired/single PPI wrapper in this module.
     """
     from evalstats.ppi import _analytic_mean_correct
 
@@ -2415,10 +2419,12 @@ def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float):
     values_lab_llm = all_values[mask]
     values_lab_true = np.asarray(a_lab, dtype=float)[mask]
 
-    return _analytic_mean_correct(values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=False)
+    return _analytic_mean_correct(values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=power_tune)
 
 
-def _ppi_paired_t_interval(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, alpha: float):
+def _ppi_paired_t_interval(
+    a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, alpha: float, power_tune: bool = True,
+):
     """PPI correction for a paired mean-difference estimand ``mean(a_i -
     b_i)`` on an unbounded numeric scale, via the closed-form (no-
     bootstrap) analytic construction -- the closed-form analogue of
@@ -2430,6 +2436,10 @@ def _ppi_paired_t_interval(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     Pairing is by array position, matching _ppi_paired_bootstrap_t; a
     position is included in the labeled set only when *both* ``a_lab[i]``
     and ``b_lab[i]`` are non-NaN.
+
+    ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
+    same name -- default True, matching every other paired/single PPI
+    wrapper in this module.
     """
     from evalstats.ppi import _analytic_mean_correct
 
@@ -2444,10 +2454,12 @@ def _ppi_paired_t_interval(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     diffs_lab_llm = all_diffs[mask]
     diffs_lab_true = (a_lab - b_lab)[mask]
 
-    return _analytic_mean_correct(diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=False)
+    return _analytic_mean_correct(diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=power_tune)
 
 
-def _ppi_single_logit_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, lo: float = 0.0, hi: float = 1.0):
+def _ppi_single_logit_t(
+    a: np.ndarray, a_lab: np.ndarray, alpha: float, lo: float = 0.0, hi: float = 1.0, power_tune: bool = True,
+):
     """PPI correction for a single-sample mean estimand on a [lo, hi]-
     bounded numeric scale (continuous/likert/grades), via the closed-form
     logit-t construction -- evalstats.ppi._analytic_logit_t_correct.
@@ -2465,6 +2477,10 @@ def _ppi_single_logit_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, lo: floa
 
     A position is included in the labeled set only when ``a_lab[i]`` is
     non-NaN.
+
+    ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
+    same name -- default True, matching every other paired/single PPI
+    wrapper in this module.
     """
     from evalstats.ppi import _analytic_logit_t_correct
 
@@ -2478,13 +2494,13 @@ def _ppi_single_logit_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, lo: floa
     values_lab_true = np.asarray(a_lab, dtype=float)[mask]
 
     return _analytic_logit_t_correct(
-        values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=False, lo=lo, hi=hi,
+        values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=power_tune, lo=lo, hi=hi,
     )
 
 
 def _ppi_paired_logit_t(
     a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, alpha: float,
-    lo: float = 0.0, hi: float = 1.0,
+    lo: float = 0.0, hi: float = 1.0, power_tune: bool = True,
 ):
     """PPI correction for a paired mean-difference estimand on a [lo, hi]-
     bounded numeric scale, via the closed-form logit-t construction. A
@@ -2497,6 +2513,10 @@ def _ppi_paired_logit_t(
     Pairing is by array position, matching _ppi_paired_t_interval; a
     position is included in the labeled set only when *both* ``a_lab[i]``
     and ``b_lab[i]`` are non-NaN.
+
+    ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
+    same name -- default True, matching every other paired/single PPI
+    wrapper in this module.
     """
     from evalstats.ppi import _analytic_logit_t_correct
 
@@ -2515,7 +2535,7 @@ def _ppi_paired_logit_t(
     diff_lo, diff_hi = -diff_span, diff_span
 
     return _analytic_logit_t_correct(
-        diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=False, lo=diff_lo, hi=diff_hi,
+        diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=power_tune, lo=diff_lo, hi=diff_hi,
     )
 
 

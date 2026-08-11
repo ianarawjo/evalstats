@@ -85,7 +85,7 @@ class TestWrapperEquivalence:
         a_lab = _split_labels(rng, truth, llm, n_lab=30)
         mask = ~np.isnan(a_lab)
 
-        r = _ppi_single_t_interval(llm, a_lab, alpha=0.05)
+        r = _ppi_single_t_interval(llm, a_lab, alpha=0.05, power_tune=False)
         expected = _analytic_mean_correct(
             np.asarray(a_lab, dtype=float)[mask], llm[mask], llm[~mask], alpha=0.05, power_tune=False,
         )
@@ -106,7 +106,7 @@ class TestWrapperEquivalence:
         b_lab[~np.isnan(a_lab)] = truth_b[~np.isnan(a_lab)]
         mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
 
-        r = _ppi_paired_t_interval(llm_a, llm_b, a_lab, b_lab, alpha=0.05)
+        r = _ppi_paired_t_interval(llm_a, llm_b, a_lab, b_lab, alpha=0.05, power_tune=False)
         diffs = llm_a - llm_b
         expected = _analytic_mean_correct(
             (a_lab - b_lab)[mask], diffs[mask], diffs[~mask], alpha=0.05, power_tune=False,
