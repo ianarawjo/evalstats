@@ -330,27 +330,44 @@ def _detect_dither_halfwidth(pooled: np.ndarray) -> float:
     eval_type-driven: labeled "continuous" data that's actually coarse
     (e.g. a judge that only emits a handful of distinct values) gets
     detected and dithered correctly; genuinely continuous data (no
-    recurring gap) returns 0.0, meaning "don't dither" -- unlike a
+    consistent grid) returns 0.0, meaning "don't dither" -- unlike a
     hardcoded width, this can't apply a jitter mismatched to the data's
     real resolution and reintroduce the boundary-clipping bias that broke
     continuous coverage when a flat +-0.5 was tried there (see
-    add_dither_extras's comment)."""
+    add_dither_extras's comment).
+
+    Takes the SMALLEST observed gap between distinct pooled values as the
+    candidate step, then verifies every other gap is (within tolerance) an
+    integer multiple of it -- a GCD-style check, not a "does the dominant
+    gap recur >= N times" frequency threshold. The frequency-threshold
+    version this replaced was blind exactly where dithering matters most:
+    at small N with a peaked/near-boundary distribution (e.g. a likert
+    "near-floor" shape at n=10), pooled values often collapse to just 2-3
+    distinct integers -- too few gap observations for any gap to recur 3+
+    times even though the grid (step=1) is completely unambiguous. This
+    was found via a real regression: at n=10, icc=0.95, the near-floor and
+    near-ceiling likert shapes' logit_t_dither coverage was numerically
+    IDENTICAL to plain logit_t's (0.763, 0.767) -- i.e. dithering silently
+    never activated on exactly the scenarios with the worst collapse.
+    Requiring ALL gaps (not just the most common one) to line up on the
+    candidate grid is deliberately strict: for genuinely continuous data,
+    the smallest of many gaps is essentially arbitrary, and demanding every
+    other gap independently land within tolerance of an integer multiple of
+    it has vanishing false-positive probability (each gap has only a small
+    chance of matching by coincidence, and they must ALL match)."""
     uniq = np.unique(pooled)
-    if uniq.size < 3:
+    if uniq.size < 2:
         return 0.0
     gaps = np.diff(uniq)
     gaps = gaps[gaps > 1e-9]
-    if gaps.size < 2:
+    if gaps.size == 0:
         return 0.0
-    rounded = np.round(gaps, decimals=6)
-    grid_vals, counts = np.unique(rounded, return_counts=True)
-    best = np.argmax(counts)
-    step, count = grid_vals[best], counts[best]
-    # Require the dominant gap to recur often enough to look like a real
-    # grid, not coincidental spacing among genuinely continuous draws.
-    if count < max(3, 0.2 * gaps.size):
+    step = float(np.min(gaps))
+    ratios = gaps / step
+    residuals = np.abs(ratios - np.round(ratios))
+    if np.max(residuals) > 0.05:
         return 0.0
-    return float(step) / 2.0
+    return step / 2.0
 
 
 def _run_cell(
