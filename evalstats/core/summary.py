@@ -923,6 +923,12 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     grp_w = 4
     mean_w = 6
     ci_w = 15
+    stab_w = 16
+
+    # Seed variance for stability column (optional, mirrors _print_executive_summary).
+    sv = cross.seed_variance
+    has_stability = sv is not None
+    sv_labels = list(sv.labels) if has_stability else []
 
     _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
     _cross_ci_header = "Wilson CI" if _uses_wilson_ci(cross) else "CI"
@@ -932,8 +938,10 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
         f"  {'Grp':^{grp_w}s}"
         f"  {'Mean':>{mean_w}s}"
         f"  {_cross_ci_header:<{ci_w}s}"
-        "  Verdict"
     )
+    if has_stability:
+        header += f"  {'Stability':<{stab_w}s}"
+    header += "  Verdict"
     sep = "  " + "─" * (len(header) - 2)
     print(header)
     print(sep)
@@ -964,14 +972,27 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
             grp_str = plain_grp
             verdict_str = verdict
 
-        print(
+        row = (
             f"  {model_str}"
             f"  {template_str}"
             f"  {grp_str}"
             f"  {mean_val:>{mean_w}.3f}"
             f"  {ci_str:<{ci_w}s}"
-            f"  {verdict_str}"
         )
+
+        if has_stability:
+            if label in sv_labels:
+                sv_idx = sv_labels.index(label)
+                instability_val = float(sv.instability[sv_idx])
+                stab_plain = f"{_stability_emoji_label(instability_val):<{stab_w}s}"
+                stab_color = _instability_color(instability_val)
+            else:
+                stab_plain = f"{'—':<{stab_w}s}"
+                stab_color = ""
+            row += f"  {stab_color}{stab_plain}{_RESET}" if stab_color else f"  {stab_plain}"
+
+        row += f"  {verdict_str}"
+        print(row)
 
     print(sep)
 
@@ -3099,10 +3120,13 @@ def _print_executive_summary(
             sv_labels = list(sv.labels)
             if label in sv_labels:
                 sv_idx = sv_labels.index(label)
-                stab_str = _stability_emoji_label(float(sv.instability[sv_idx]))
+                instability_val = float(sv.instability[sv_idx])
+                stab_plain = f"{_stability_emoji_label(instability_val):<{stab_w}s}"
+                stab_color = _instability_color(instability_val)
             else:
-                stab_str = "—"
-            row += f"  {stab_str:<{stab_w}s}"
+                stab_plain = f"{'—':<{stab_w}s}"
+                stab_color = ""
+            row += f"  {stab_color}{stab_plain}{_RESET}" if stab_color else f"  {stab_plain}"
 
         # "On {metric}" (verdict) first, then "Trade-off vs {secondary}" --
         # matches the header order above.
