@@ -42,7 +42,7 @@ presupposing in advance that it's important enough to fully cross.
 
 **Held fixed / out of scope for this sweep** (see the design discussion that
 produced this grid, in conversation history, for the reasoning):
-- Judge-score-correction (PPI/`validate_alignment`) task type -- deferred to
+- Judge-score-correction (PPI/`judge_alignment`) task type -- deferred to
   a separate, smaller sub-sweep with its own axes (judge reliability,
   human-label fraction), since those don't apply to `prompts`/`models`.
 - Correlation structure: paired throughout (`base_corr=1.0` -- the same

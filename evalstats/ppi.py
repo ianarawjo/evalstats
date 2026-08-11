@@ -613,7 +613,7 @@ def resolve_arrays(
     group_col : str
         Column of group labels (factor / condition).
     alignment_result : AlignmentResult
-        From :func:`~evalstats.alignment.validate_alignment`.
+        From :func:`~evalstats.alignment.judge_alignment`.
         Its ``human_col`` attribute identifies the sparse human-label column.
 
     Returns

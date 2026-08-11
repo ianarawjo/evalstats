@@ -17,7 +17,7 @@ import warnings
 sys.path.insert(0, "tests")
 
 import evalstats as es
-from evalstats.alignment import validate_alignment
+from evalstats.alignment import judge_alignment
 from test_compound_ppi_fwer import _make_multiarm_binary, _rng
 
 from simulations.investigate_joint_bootstrap_power_tune import _PowerTuneOverride, _compare_with_max_t
@@ -62,7 +62,7 @@ def measure_romano_wolf_condition(n_entities: int, n_items: int, label_frac: flo
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,
@@ -81,7 +81,7 @@ def measure_romano_wolf_condition(n_entities: int, n_items: int, label_frac: flo
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,
@@ -108,7 +108,7 @@ def measure_max_t_condition(n_entities: int, n_items: int, label_frac: float, po
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = _compare_with_max_t(evaldata, ar, seed_base + i)
             bundle = result._primary_bundle()
             assert bundle.pairwise.simultaneous_ci_method == "max_t"
@@ -123,7 +123,7 @@ def measure_max_t_condition(n_entities: int, n_items: int, label_frac: float, po
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = _compare_with_max_t(evaldata, ar, seed_base + 20000 + i)
             bundle = result._primary_bundle()
             last_pair = last_pair or (f"M0", f"M{n_entities - 1}")

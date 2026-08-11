@@ -248,7 +248,7 @@ import evalstats as es
 evaldata = es.load_from(df)
 
 # Compute alignment between LLM and human judges
-alignment = es.validate_alignment(
+alignment = es.judge_alignment(
     evaldata,
     llm_metric="llm_score",
     human_groundtruth="human_score",

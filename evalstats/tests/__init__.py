@@ -42,7 +42,7 @@ docstring for the full analysis.
 
 Alignment report
 ----------------
-When human labels are supplied, ``validate_alignment()`` is called
+When human labels are supplied, ``judge_alignment()`` is called
 internally and its report is printed before the test result so alignment
 quality is always visible.
 """
@@ -481,7 +481,7 @@ def _run_alignment_report(llm_all: np.ndarray, human_sparse: np.ndarray):
     -------
     AlignmentResult
     """
-    from evalstats.alignment import validate_alignment
+    from evalstats.alignment import judge_alignment
     from evalstats.loader import _detect_score_type
 
     _LLM = "__llm__"
@@ -493,7 +493,7 @@ def _run_alignment_report(llm_all: np.ndarray, human_sparse: np.ndarray):
             self._df = df
             self._score_types = {_LLM: _detect_score_type(pd.Series(llm_all))}
 
-    ar = validate_alignment(_EvalStub(), llm_metric=_LLM, human_groundtruth=_HUM)
+    ar = judge_alignment(_EvalStub(), llm_metric=_LLM, human_groundtruth=_HUM)
     ar.summary()
     return ar
 

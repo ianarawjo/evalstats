@@ -1,6 +1,6 @@
 """Judge alignment validation and MC-based uncertainty propagation.
 
-Provides :func:`validate_alignment` and :class:`AlignmentResult` for
+Provides :func:`judge_alignment` and :class:`AlignmentResult` for
 characterising how well an LLM judge aligns with human graders, and for
 propagating that uncertainty into downstream comparisons via Monte-Carlo
 imputation of latent human labels.
@@ -22,7 +22,7 @@ from scipy.stats import ks_2samp, chi2_contingency, pearsonr, spearmanr
 class AlignmentResult:
     """Carries a fitted calibration model and alignment diagnostics.
 
-    Created by :func:`validate_alignment`.  Pass it to
+    Created by :func:`judge_alignment`.  Pass it to
     ``compare(alignment={metric_col: result})`` to widen confidence intervals
     to account for LLM-judge measurement uncertainty via Monte-Carlo imputation.
 
@@ -593,7 +593,7 @@ def _build_bias_check(
         interpretation = (
             "the judge tracks human relative ordering but disagrees on "
             "absolute scale — treat raw judge scores as biased; consider "
-            "using the Bayesian calibration model fit by validate_alignment "
+            "using the Bayesian calibration model fit by judge_alignment "
             "(e.g. via compare(alignment=...)) to correct for it before "
             "drawing conclusions from raw judge scores"
         )
@@ -978,10 +978,10 @@ def _check_slice_column(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# validate_alignment
+# judge_alignment
 # ─────────────────────────────────────────────────────────────────────────────
 
-def validate_alignment(
+def judge_alignment(
     evaldata,
     *,
     llm_metric: str,

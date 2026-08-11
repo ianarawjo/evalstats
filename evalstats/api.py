@@ -1464,7 +1464,7 @@ def _run_alignment_ppi(
         raise ValueError(
             f"PPI alignment requires at least 15 human-labeled items; "
             f"got n_lab={n_lab}. Expand the alignment set and re-run "
-            "validate_alignment()."
+            "judge_alignment()."
         )
     if n_all < 50:
         raise ValueError(
