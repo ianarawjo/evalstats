@@ -924,11 +924,16 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     mean_w = 6
     ci_w = 15
     stab_w = 16
+    noise_w = 8
 
-    # Seed variance for stability column (optional, mirrors _print_executive_summary).
+    # Seed variance for stability + per-run noise columns (optional, mirrors
+    # _print_executive_summary).  The noise strip uses the same global scale
+    # as the "Per-input Variance Across Runs" table above it, so bar heights
+    # are comparable across rows and across the two tables.
     sv = cross.seed_variance
     has_stability = sv is not None
     sv_labels = list(sv.labels) if has_stability else []
+    global_cell_max = float(sv.per_cell_seed_std.max()) if has_stability else 0.0
 
     _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
     _cross_ci_header = "Wilson CI" if _uses_wilson_ci(cross) else "CI"
@@ -940,6 +945,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
         f"  {_cross_ci_header:<{ci_w}s}"
     )
     if has_stability:
+        header += f"  {'Per-run noise':<{noise_w}s}"
         header += f"  {'Stability':<{stab_w}s}"
     header += "  Verdict"
     sep = "  " + "─" * (len(header) - 2)
@@ -984,12 +990,15 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
             if label in sv_labels:
                 sv_idx = sv_labels.index(label)
                 instability_val = float(sv.instability[sv_idx])
+                noise_plain = f"{_seed_noise_strip(sv.per_cell_seed_std[sv_idx], global_cell_max, max_width=noise_w):<{noise_w}s}"
                 stab_plain = f"{_stability_emoji_label(instability_val):<{stab_w}s}"
-                stab_color = _instability_color(instability_val)
+                row_color = _instability_color(instability_val)
             else:
+                noise_plain = f"{'—':<{noise_w}s}"
                 stab_plain = f"{'—':<{stab_w}s}"
-                stab_color = ""
-            row += f"  {stab_color}{stab_plain}{_RESET}" if stab_color else f"  {stab_plain}"
+                row_color = ""
+            row += f"  {row_color}{noise_plain}{_RESET}" if row_color else f"  {noise_plain}"
+            row += f"  {row_color}{stab_plain}{_RESET}" if row_color else f"  {stab_plain}"
 
         row += f"  {verdict_str}"
         print(row)
@@ -3041,6 +3050,11 @@ def _print_executive_summary(
     mean_w = 6
     ci_w = 15  # e.g. "[0.950, 0.990]" = 14 chars + 1 padding
     stab_w = 16
+    noise_w = 8
+    # Noise strip uses the same global scale as the "Per-input Variance
+    # Across Runs" table above it, so bar heights are comparable across rows
+    # and across the two tables.
+    global_cell_max = float(sv.per_cell_seed_std.max()) if has_stability else 0.0
     # "Trade-off vs {secondary}" names the second axis explicitly (truncated
     # -- an arbitrary column name shouldn't be able to blow out this table's
     # width), pairing with "On {metric}" below so the two columns' headers
@@ -3063,6 +3077,7 @@ def _print_executive_summary(
         f"  {ci_col_header:<{ci_w}s}",
     ]
     if has_stability:
+        header_parts.append(f"  {'Per-run noise':<{noise_w}s}")
         header_parts.append(f"  {'Stability':<{stab_w}s}")
     verdict_header = f"On {metric or 'primary metric'}" if has_pareto else "Verdict"
     # Only needs padding when it's no longer the last (unpadded) column,
@@ -3121,12 +3136,15 @@ def _print_executive_summary(
             if label in sv_labels:
                 sv_idx = sv_labels.index(label)
                 instability_val = float(sv.instability[sv_idx])
+                noise_plain = f"{_seed_noise_strip(sv.per_cell_seed_std[sv_idx], global_cell_max, max_width=noise_w):<{noise_w}s}"
                 stab_plain = f"{_stability_emoji_label(instability_val):<{stab_w}s}"
-                stab_color = _instability_color(instability_val)
+                row_color = _instability_color(instability_val)
             else:
+                noise_plain = f"{'—':<{noise_w}s}"
                 stab_plain = f"{'—':<{stab_w}s}"
-                stab_color = ""
-            row += f"  {stab_color}{stab_plain}{_RESET}" if stab_color else f"  {stab_plain}"
+                row_color = ""
+            row += f"  {row_color}{noise_plain}{_RESET}" if row_color else f"  {noise_plain}"
+            row += f"  {row_color}{stab_plain}{_RESET}" if row_color else f"  {stab_plain}"
 
         # "On {metric}" (verdict) first, then "Trade-off vs {secondary}" --
         # matches the header order above.
