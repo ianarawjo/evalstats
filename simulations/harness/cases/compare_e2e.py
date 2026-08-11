@@ -71,6 +71,7 @@ import pandas as pd
 
 import evalstats as es
 from evalstats.alignment import validate_alignment
+from evalstats.core.stats_utils import interval_score
 
 from ..latex_tables import booktabs_table, escape_latex
 from ..scenarios import EVAL_TYPE_SCALE_BOUNDS
@@ -136,6 +137,31 @@ DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 DEFAULT_K_VALUES = [2, 3, 5, 10]
 DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800]
 DEFAULT_AGREEMENT_RATE = 0.85  # fixed judge quality -- matches this session's one-off investigations
+
+# Oracle/subset-only reference estimators (see CompareE2EResult) feed TRUTH
+# values directly to compare(), with NO noise -- correct in principle (an
+# "oracle" IS the ground truth), but a real bug for CONTINUOUS data
+# specifically: sample_group_truth's icc=1.0 applies `effects=` as a
+# deterministic, per-item-IDENTICAL shift (see that function's own
+# docstring: "icc=1.0 means no noise at all"), so for un-rounded continuous
+# values the per-item PAIRED DIFFERENCE between any two arms is exactly
+# constant across every item (confirmed directly: sample std of diffs was
+# 1.1e-17, i.e. zero) -- any variance-based CI (logit_t, smooth_bootstrap,
+# and evalstats' own default construction) built from that collapses to a
+# near-zero-width interval, giving spuriously ~100% power (a symptom of
+# gross overconfidence, not genuine statistical strength) rather than a
+# real small-vs-large-N story. NOT an issue for binary (each item's {0,1}
+# realization is its own independent Bernoulli draw, not a deterministic
+# shift of a shared latent value) or likert (rounding to the integer scale
+# breaks the exact constancy for items near a rounding boundary) -- both
+# already have genuine non-degenerate per-item diff variance under icc=1.0.
+# Fix: apply a SMALL amount of realistic labeler noise (not the LLM judge's
+# own DEFAULT_AGREEMENT_RATE-level noise -- an "oracle" should still be
+# near-perfect) when building oracle/subset's continuous scores specifically,
+# just enough to break the exact-zero-variance degeneracy. Zero-mean
+# (Gaussian) for continuous, so truth_means stays the correct, unbiased
+# coverage-check reference -- no change needed there.
+ORACLE_NOISE_AGREEMENT_RATE = 0.99
 
 # compare()'s own default is n_bootstrap=10_000 (evalstats/core/router.py's
 # analyze()) -- this dominates per-call cost far more than n_mc (which floors
@@ -205,6 +231,12 @@ class CompareE2EResult:
     marginal_covered/marginal_total's coverage. bundle.robustness's per-arm CI
     is NOT multiplicity-adjusted by k (see CompareE2EResult module notes), so
     unlike pairwise_covered below this needs no k-based split."""
+    marginal_score_sum: float = 0.0
+    """Sum of evalstats.core.stats_utils.interval_score(ci_low, ci_high,
+    true_value, alpha) across the same checks as marginal_total -- the SAME
+    metric ci_single.py/ci_paired.py report as "Score" (width + (2/alpha) *
+    miss-distance when uncovered, lower is better), so this is
+    directly comparable across the harness, not a compare_e2e-only number."""
     pairwise_covered: int = 0
     pairwise_total: int = 0
     """Total pairwise-CI checks across all C(k,2) pairs and all successful
@@ -216,6 +248,13 @@ class CompareE2EResult:
     artifact of FWER widening. k==2 rows report each pair's OWN calibration
     with no correction confound (Sidak's alpha_adj reduces to plain alpha
     when there's only 1 pair)."""
+    pairwise_width_sum: float = 0.0
+    pairwise_score_sum: float = 0.0
+    """Sum of pairwise CI width / interval_score across the same checks as
+    pairwise_total. Same k==2-vs-k>2 split applies: k==2 rows give the
+    uncorrected per-pair width/score baseline; k>2 rows give the FWER-widened
+    per-pair width/score -- the direct "what does simultaneous protection
+    cost in width/score" comparison, on the SAME scale ci_paired.py uses."""
     family_covered: int = 0
     family_total: int = 0
     """Family-wise (simultaneous) coverage: a rep counts as 'covered' only if
@@ -359,22 +398,28 @@ def _score_bundle(bundle, true_means: np.ndarray, k: int, alpha: float, is_null:
 
     marginal_total = marginal_covered = 0
     marginal_width_sum = 0.0
+    marginal_score_sum = 0.0
     for i, lbl in enumerate(labels):
         lbl_s = str(lbl)
         ci_lo, ci_hi = rob.ci_low[i], rob.ci_high[i]
         if np.isfinite(ci_lo) and np.isfinite(ci_hi):
             marginal_total += 1
             marginal_width_sum += ci_hi - ci_lo
+            marginal_score_sum += interval_score(ci_lo, ci_hi, label_to_true[lbl_s], alpha)
             if ci_lo <= label_to_true[lbl_s] <= ci_hi:
                 marginal_covered += 1
 
     pairwise_total = pairwise_covered = 0
+    pairwise_width_sum = 0.0
+    pairwise_score_sum = 0.0
     any_sig = False
     extreme_p = None
     all_pairs_covered = True
     for (a, b), pr in bundle.pairwise.results.items():
         true_diff = label_to_true[str(a)] - label_to_true[str(b)]
         pairwise_total += 1
+        pairwise_width_sum += pr.ci_high - pr.ci_low
+        pairwise_score_sum += interval_score(pr.ci_low, pr.ci_high, true_diff, alpha)
         pair_covered = pr.ci_low <= true_diff <= pr.ci_high
         if pair_covered:
             pairwise_covered += 1
@@ -390,8 +435,9 @@ def _score_bundle(bundle, true_means: np.ndarray, k: int, alpha: float, is_null:
 
     return dict(
         marginal_covered=marginal_covered, marginal_total=marginal_total,
-        marginal_width_sum=marginal_width_sum,
+        marginal_width_sum=marginal_width_sum, marginal_score_sum=marginal_score_sum,
         pairwise_covered=pairwise_covered, pairwise_total=pairwise_total,
+        pairwise_width_sum=pairwise_width_sum, pairwise_score_sum=pairwise_score_sum,
         family_covered=(1 if all_pairs_covered else 0), family_total=1,
         any_reject=any_reject, extreme_reject=extreme_reject,
     )
@@ -498,8 +544,11 @@ def _run_cell(
         result.marginal_covered += sc["marginal_covered"]
         result.marginal_total += sc["marginal_total"]
         result.marginal_width_sum += sc["marginal_width_sum"]
+        result.marginal_score_sum += sc["marginal_score_sum"]
         result.pairwise_covered += sc["pairwise_covered"]
         result.pairwise_total += sc["pairwise_total"]
+        result.pairwise_width_sum += sc["pairwise_width_sum"]
+        result.pairwise_score_sum += sc["pairwise_score_sum"]
         result.family_covered += sc["family_covered"]
         result.family_total += sc["family_total"]
         result.any_reject += sc["any_reject"]
@@ -513,7 +562,16 @@ def _run_cell(
         # oracle_n_ok/subset_n_ok, the denominators _aggregate_group uses.
         if compute_reference and ppi_frac is None:
             try:
-                oracle_bundle = _run_truth_only_compare(truth, rng, score_range, n_bootstrap)
+                # Continuous only: see ORACLE_NOISE_AGREEMENT_RATE's docstring
+                # -- raw truth has an exactly-zero-variance paired diff under
+                # icc=1.0's deterministic shift, degenerating any CI built
+                # from it. Binary/likert don't need this (already
+                # non-degenerate) and stay on raw truth.
+                oracle_scores = (
+                    _apply_judge_noise(truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
+                    if eval_type == "continuous" else truth
+                )
+                oracle_bundle = _run_truth_only_compare(oracle_scores, rng, score_range, n_bootstrap)
                 if oracle_bundle is not None:
                     osc = _score_bundle(oracle_bundle, truth_means, k, alpha, is_null)
                     result.oracle_marginal_covered += osc["marginal_covered"]
@@ -529,7 +587,12 @@ def _run_cell(
                 pass
         elif compute_reference:
             try:
-                subset_bundle = _run_truth_only_compare(truth[:, labeled_items], rng, score_range, n_bootstrap)
+                subset_truth = truth[:, labeled_items]
+                subset_scores = (
+                    _apply_judge_noise(subset_truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
+                    if eval_type == "continuous" else subset_truth
+                )
+                subset_bundle = _run_truth_only_compare(subset_scores, rng, score_range, n_bootstrap)
                 if subset_bundle is not None:
                     ssc = _score_bundle(subset_bundle, truth_means, k, alpha, is_null)
                     result.subset_marginal_covered += ssc["marginal_covered"]
@@ -704,6 +767,12 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
     marg_cov_den = sum(r.marginal_total for r in rows)
     pair_cov_den = sum(r.pairwise_total for r in k2_rows)
     fam_cov_den = sum(r.family_total for r in kgt2_rows)
+    # Width/score are per-PAIR quantities (unlike family_covered/family_total,
+    # the per-REP "ALL pairs held" event) -- k>2's per-pair width/score reuses
+    # pairwise_width_sum/pairwise_total filtered to k>2 rows, giving the
+    # direct "what does FWER widening cost in width/score" comparison against
+    # k==2's own pairwise_width_sum/pairwise_total.
+    fam_pair_den = sum(r.pairwise_total for r in kgt2_rows)
     type1_den = sum(r.n_reps - r.n_errors for r in null_rows)
     power_den = sum(r.n_reps - r.n_errors for r in eff_rows)
     # Reference-estimator power/Type-I: oracle_n_ok is only nonzero on
@@ -717,8 +786,13 @@ def _aggregate_group(rows: list[CompareE2EResult]) -> dict:
     return dict(
         marg_cov=(sum(r.marginal_covered for r in rows) / marg_cov_den) if marg_cov_den else float("nan"),
         marg_width=(sum(r.marginal_width_sum for r in rows) / marg_cov_den) if marg_cov_den else float("nan"),
+        marg_score=(sum(r.marginal_score_sum for r in rows) / marg_cov_den) if marg_cov_den else float("nan"),
         pair_cov=(sum(r.pairwise_covered for r in k2_rows) / pair_cov_den) if pair_cov_den else float("nan"),
+        pair_width=(sum(r.pairwise_width_sum for r in k2_rows) / pair_cov_den) if pair_cov_den else float("nan"),
+        pair_score=(sum(r.pairwise_score_sum for r in k2_rows) / pair_cov_den) if pair_cov_den else float("nan"),
         fam_cov=(sum(r.family_covered for r in kgt2_rows) / fam_cov_den) if fam_cov_den else float("nan"),
+        fam_width=(sum(r.pairwise_width_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
+        fam_score=(sum(r.pairwise_score_sum for r in kgt2_rows) / fam_pair_den) if fam_pair_den else float("nan"),
         type1=(sum(r.any_reject for r in null_rows) / type1_den) if type1_den else float("nan"),
         power=(sum(r.extreme_reject for r in eff_rows) / power_den) if power_den else float("nan"),
         oracle_type1=(sum(r.oracle_any_reject for r in null_rows) / oracle_type1_den) if oracle_type1_den else float("nan"),
@@ -1079,8 +1153,8 @@ def save_results_artifacts(
         writer = csv.writer(handle)
         writer.writerow([
             "eval_type", "shape_label", "k", "n_items", "ppi_config", "is_null", "n_reps", "n_errors",
-            "marginal_covered", "marginal_total", "marginal_coverage", "marginal_mean_width",
-            "pairwise_covered", "pairwise_total", "pairwise_coverage",
+            "marginal_covered", "marginal_total", "marginal_coverage", "marginal_mean_width", "marginal_mean_score",
+            "pairwise_covered", "pairwise_total", "pairwise_coverage", "pairwise_mean_width", "pairwise_mean_score",
             "family_covered", "family_total", "family_coverage",
             "any_reject", "extreme_reject", "type1_rate", "power_rate",
             "oracle_n_ok", "oracle_type1_rate", "oracle_power_rate",
@@ -1090,7 +1164,10 @@ def save_results_artifacts(
             n_ok = r.n_reps - r.n_errors
             marg_cov = r.marginal_covered / r.marginal_total if r.marginal_total else float("nan")
             marg_width = r.marginal_width_sum / r.marginal_total if r.marginal_total else float("nan")
+            marg_score = r.marginal_score_sum / r.marginal_total if r.marginal_total else float("nan")
             pair_cov = r.pairwise_covered / r.pairwise_total if r.pairwise_total else float("nan")
+            pair_width = r.pairwise_width_sum / r.pairwise_total if r.pairwise_total else float("nan")
+            pair_score = r.pairwise_score_sum / r.pairwise_total if r.pairwise_total else float("nan")
             fam_cov = r.family_covered / r.family_total if r.family_total else float("nan")
             type1 = r.any_reject / n_ok if (r.is_null and n_ok) else float("nan")
             power = r.extreme_reject / n_ok if (not r.is_null and n_ok) else float("nan")
@@ -1100,8 +1177,8 @@ def save_results_artifacts(
             subset_power = r.subset_extreme_reject / r.subset_n_ok if (not r.is_null and r.subset_n_ok) else float("nan")
             writer.writerow([
                 r.eval_type, r.shape_label, r.k, r.n_items, r.ppi_config, r.is_null, r.n_reps, r.n_errors,
-                r.marginal_covered, r.marginal_total, f"{marg_cov:.6f}", f"{marg_width:.6f}",
-                r.pairwise_covered, r.pairwise_total, f"{pair_cov:.6f}",
+                r.marginal_covered, r.marginal_total, f"{marg_cov:.6f}", f"{marg_width:.6f}", f"{marg_score:.6f}",
+                r.pairwise_covered, r.pairwise_total, f"{pair_cov:.6f}", f"{pair_width:.6f}", f"{pair_score:.6f}",
                 r.family_covered, r.family_total, f"{fam_cov:.6f}",
                 r.any_reject, r.extreme_reject, f"{type1:.6f}", f"{power:.6f}",
                 r.oracle_n_ok, f"{oracle_type1:.6f}", f"{oracle_power:.6f}",

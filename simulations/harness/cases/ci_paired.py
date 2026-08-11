@@ -96,7 +96,7 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, eval_type_label, eval_type_group
+from ..latex_tables import booktabs_table, escape_latex
 from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -118,6 +118,9 @@ from ..methods import (
     BAYES_PAIR_PAIRED,
     WALD_PAIR_INDEP,
     PAIRWISE_EXTRA_METHODS,
+    LOGIT_T_DITHER,
+    SMOOTH_BOOTSTRAP_DITHER,
+    DITHER_EXTRA_METHODS,
     PAIR_DIFF_NESTED_METHODS,
     BOOTSTRAP_DIFF_NESTED,
     BAYES_DIFF_NESTED,
@@ -318,6 +321,38 @@ def _pairwise_ci(
     return float(np.percentile(boot_stats, 100 * alpha / 2)), float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
 
 
+def _detect_dither_halfwidth(pooled: np.ndarray) -> float:
+    """Auto-detect a rounding/quantization grid step from pooled raw arm
+    values (both arms, one rep) and return half that step -- the dither
+    half-width needed to reconstruct the pre-quantization variance that a
+    paired diff of two highly-correlated arms can lose to rounding
+    cancellation (see LOGIT_T_DITHER's docstring). Data-driven rather than
+    eval_type-driven: labeled "continuous" data that's actually coarse
+    (e.g. a judge that only emits a handful of distinct values) gets
+    detected and dithered correctly; genuinely continuous data (no
+    recurring gap) returns 0.0, meaning "don't dither" -- unlike a
+    hardcoded width, this can't apply a jitter mismatched to the data's
+    real resolution and reintroduce the boundary-clipping bias that broke
+    continuous coverage when a flat +-0.5 was tried there (see
+    add_dither_extras's comment)."""
+    uniq = np.unique(pooled)
+    if uniq.size < 3:
+        return 0.0
+    gaps = np.diff(uniq)
+    gaps = gaps[gaps > 1e-9]
+    if gaps.size < 2:
+        return 0.0
+    rounded = np.round(gaps, decimals=6)
+    grid_vals, counts = np.unique(rounded, return_counts=True)
+    best = np.argmax(counts)
+    step, count = grid_vals[best], counts[best]
+    # Require the dominant gap to recur often enough to look like a real
+    # grid, not coincidental spacing among genuinely continuous draws.
+    if count < max(3, 0.2 * gaps.size):
+        return 0.0
+    return float(step) / 2.0
+
+
 def _run_cell(
     source_obj: CIPairSource, n: int, n_reps: int, n_bootstrap: int, bayes_n: int,
     alpha: float, runs: int, statistic: str, seed, method_names: frozenset[str] | None = None,
@@ -341,6 +376,23 @@ def _run_cell(
     active_bootstrap_methods = [m for m in METHODS if _want(m.name)]
     active_pairwise_extras = [m for m in PAIRWISE_EXTRA_METHODS if _want(m.name)]
     add_pairwise_extras = statistic == "mean" and source_obj.eval_type != "binary" and bool(active_pairwise_extras)
+    active_dither_extras = [m for m in DITHER_EXTRA_METHODS if _want(m.name)]
+    # Non-binary; the actual jitter width is auto-detected per rep from the
+    # data itself (_detect_dither_halfwidth), not hardcoded. The motivating
+    # mechanism (rounding-driven diff cancellation between two paired,
+    # highly-correlated arms) needs a quantization grid to undo -- a fixed
+    # +-0.5 (right for likert's integer rounding) was tried on continuous's
+    # [0,1] scale too and was WRONG there (half the entire range), causing
+    # heavy boundary clipping and a bias that got worse with N (coverage
+    # 0.936 -> 0.800, n=10 -> n=100, nested screening). Detecting the grid
+    # from the data instead of assuming one from eval_type fixes that AND
+    # generalizes: labeled-"continuous" data that's actually coarse (a judge
+    # emitting only a handful of distinct values) gets dithered correctly,
+    # while genuinely continuous data detects no grid and the dither variant
+    # safely reduces to its base method (identical CI, no bias introduced).
+    add_dither_extras = (
+        statistic == "mean" and source_obj.eval_type != "binary" and bool(active_dither_extras)
+    )
     add_newcombe = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE.name)
     add_tango = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO.name)
     add_tango_scc = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_SCC.name)
@@ -351,6 +403,8 @@ def _run_cell(
     active_methods = list(active_bootstrap_methods)
     if add_pairwise_extras:
         active_methods += active_pairwise_extras
+    if add_dither_extras:
+        active_methods += active_dither_extras
     if add_newcombe:
         active_methods.append(NEWCOMBE)
     if add_tango:
@@ -420,6 +474,44 @@ def _run_cell(
                         ci_low, ci_high = fn(pair_diffs, alpha)
                 except Exception:
                     ci_low = ci_high = obs
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                _record(method, ci_low, ci_high)
+
+        if add_dither_extras:
+            # Independent U(-half, +half) jitter per arm (not on the diff
+            # directly) then clip back to the scale, where half is detected
+            # per rep from the data's own quantization grid (0.0 -- i.e. no
+            # jitter -- if none is detected) -- see LOGIT_T_DITHER's
+            # docstring for why this specifically targets the paired-diff
+            # rounding-cancellation pathology, not just "add some noise."
+            _scale_lo, _scale_hi = EVAL_TYPE_SCALE_BOUNDS[source_obj.eval_type]
+            _half = _detect_dither_halfwidth(np.concatenate([a.ravel(), b.ravel()]))
+            if _half > 0:
+                a_dither = np.clip(a + rng.uniform(-_half, _half, size=a.shape), _scale_lo, _scale_hi)
+                b_dither = np.clip(b + rng.uniform(-_half, _half, size=b.shape), _scale_lo, _scale_hi)
+            else:
+                a_dither, b_dither = a, b
+            pair_diffs_dither = a_dither.mean(axis=1) - b_dither.mean(axis=1)
+            obs_dither = float(np.mean(pair_diffs_dither))
+            diff_span_dither = _scale_hi - _scale_lo
+            diff_lo_dither, diff_hi_dither = -diff_span_dither, diff_span_dither
+            for method in active_dither_extras:
+                _t0 = time.perf_counter()
+                try:
+                    if method is LOGIT_T_DITHER:
+                        ci_low, ci_high = rescaled_ci(
+                            logit_t_ci_1d, pair_diffs_dither, alpha, diff_lo_dither, diff_hi_dither,
+                        )
+                    else:  # SMOOTH_BOOTSTRAP_DITHER
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            boot_stats = smooth_bootstrap_means_1d(pair_diffs_dither, n_bootstrap, rng, statistic=statistic)
+                        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+                except Exception:
+                    ci_low = ci_high = obs_dither
                 _el = time.perf_counter() - _t0
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
@@ -642,6 +734,7 @@ def _run_nested_pairwise_cell(
         active_methods += [m for m in BINARY_PAIR_NESTED_METHODS if _want(m.name)]
     else:
         active_methods += [m for m in (LOGIT_T, NIG, EL) if _want(m.name)]
+        active_methods += [m for m in DITHER_EXTRA_METHODS if _want(m.name)]
 
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
@@ -713,6 +806,46 @@ def _run_nested_pairwise_cell(
                         ci_low, ci_high = rescaled_ci(fn, cell_diffs, alpha, diff_lo, diff_hi)
                 except Exception:
                     ci_low = ci_high = obs_diff
+                _el = time.perf_counter() - _t0
+                total_t[method] += _el
+                total_t_sq[method] += _el * _el
+                _record(method, ci_low, ci_high)
+
+        # -- logit_t_dither/smooth_bootstrap_dither on cell-mean diffs,
+        # non-binary -- same fix as _run_cell's flat-mode add_dither_extras
+        # block, see LOGIT_T_DITHER's and _detect_dither_halfwidth's
+        # docstrings: the jitter width is auto-detected per rep from the
+        # data's own quantization grid (0.0, i.e. no jitter, if none is
+        # found), not a hardcoded +-0.5 -- a fixed width calibrated to
+        # likert's integer rounding was tried on continuous's own scale too
+        # and caused a bias that got WORSE with N (coverage 0.936 -> 0.800,
+        # n=10 -> n=100). Like logit_t/nig/el above, these have no full-N-x-R
+        # nested variant -- they operate on the same cell-mean-reduced
+        # diffs, just computed from independently dithered a/b first.
+        if not is_binary:
+            _half = _detect_dither_halfwidth(np.concatenate([a.ravel(), b.ravel()]))
+            if _half > 0:
+                a_dither = np.clip(a + rng.uniform(-_half, _half, size=a.shape), _scale_lo, _scale_hi)
+                b_dither = np.clip(b + rng.uniform(-_half, _half, size=b.shape), _scale_lo, _scale_hi)
+            else:
+                a_dither, b_dither = a, b
+            cell_diffs_dither = a_dither.mean(axis=1) - b_dither.mean(axis=1)
+            obs_diff_dither = float(np.mean(cell_diffs_dither))
+            for method in (LOGIT_T_DITHER, SMOOTH_BOOTSTRAP_DITHER):
+                if not _want(method.name):
+                    continue
+                _t0 = time.perf_counter()
+                try:
+                    if method is LOGIT_T_DITHER:
+                        ci_low, ci_high = rescaled_ci(logit_t_ci_1d, cell_diffs_dither, alpha, diff_lo, diff_hi)
+                    else:
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            boot_stats = smooth_bootstrap_means_1d(cell_diffs_dither, n_bootstrap, rng, statistic="mean")
+                        ci_low = float(np.percentile(boot_stats, 100 * alpha / 2))
+                        ci_high = float(np.percentile(boot_stats, 100 * (1 - alpha / 2)))
+                except Exception:
+                    ci_low = ci_high = obs_diff_dither
                 _el = time.perf_counter() - _t0
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
@@ -1027,10 +1160,18 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
                 row += "  " + (" " * 7 if np.isnan(cov) else f"{cov:.3f}{_cov_marker(cov, target)}".ljust(8))
             print(row)
 
-    # Split into three OVERALL SUMMARY tables -- binary, continuous [0,1], and
-    # numeric (likert + grades averaged together) -- since these data types
-    # are answered by very different method families and a single pooled
-    # table obscures which methods actually perform best for which type.
+    # Split into per-eval-type OVERALL SUMMARY tables -- binary, continuous
+    # [0,1], likert, and grades all separate -- since these data types are
+    # answered by very different method families/scales and a pooled table
+    # obscures which methods actually perform best for which type. Likert
+    # and grades used to be pooled together as one "numeric" table; kept
+    # separate now since likert was found (2026-08-11) to have materially
+    # different small-N paired-diff behavior than continuous/grades (see
+    # LOGIT_T_DITHER's docstring) -- pooling would hide exactly that,
+    # and concretely mixes likert's 1-5-scale widths with grades' 0-100-
+    # scale widths, an even more obviously incomparable pair. Official runs
+    # never include grades (see official_args()), so in practice this only
+    # ever prints 3 tables there.
     sizes_present = sorted({r.n for r in non_null})
     _print_overall_summary_table(
         "OVERALL SUMMARY -- BINARY (averaged across sources)",
@@ -1041,8 +1182,12 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
         ["continuous"], non_null, agg, agg_counts, target, sizes_present,
     )
     _print_overall_summary_table(
-        "OVERALL SUMMARY -- NUMERIC: LIKERT + GRADES (averaged across sources)",
-        ["likert", "grades"], non_null, agg, agg_counts, target, sizes_present,
+        "OVERALL SUMMARY -- LIKERT (averaged across sources)",
+        ["likert"], non_null, agg, agg_counts, target, sizes_present,
+    )
+    _print_overall_summary_table(
+        "OVERALL SUMMARY -- GRADES (averaged across sources)",
+        ["grades"], non_null, agg, agg_counts, target, sizes_present,
     )
 
     null_results = [r for r in results if r.is_null]
@@ -1074,6 +1219,22 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
+def _report_eval_type_group(et: str) -> str:
+    """Short per-eval-type group label for ci_paired.py's own summary/LaTeX
+    tables -- FINER than the shared latex_tables.eval_type_group (which only
+    splits binary vs. a single "numeric" bucket covering continuous+likert+
+    grades together). Likert and continuous were found (2026-08-11,
+    LOGIT_T_DITHER's investigation) to have materially different small-N
+    paired-diff behavior -- pooling them under one "numeric" Cov/Width/Score
+    number hides exactly the distinction that investigation surfaced (and
+    concretely mixes likert's 1-5-scale widths with grades' 0-100-scale
+    widths, an even more obviously incomparable pair). Local to this file
+    rather than changed in latex_tables.py, since that utility is shared
+    with cases/ci_single.py, which hasn't been checked for the same
+    per-numeric-type distinction and shouldn't be changed without that."""
+    return {"binary": "bin", "continuous": "cont", "likert": "lik", "grades": "grades"}.get(et, et)
+
+
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
     """LaTeX booktabs version of print_report's OVERALL SUMMARY block
     (non-null rows only), plus one coverage column per sample size actually
@@ -1081,44 +1242,47 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     collapses across n and can hide miscalibration that only shows up at
     small or large sample sizes.
 
-    Methods that ran on both eval-type groups (binary and numeric) get two
-    rows -- "<method> (binary)" and "<method> (numeric)" -- each computed
-    from only that group's data, rather than one row averaging across both.
-    Averaging Cov/Width/Score across binary and numeric data mixes two
-    different scales/regimes into a number that isn't comparable to any
-    group-pure method's row; an "all" Eval-types value was a symptom of
-    exactly this, not a meaningful category of its own, so no row's Eval
-    types column is ever "all" here. Mirrors cases/ci_single.py's identical
-    fix -- see that module's latex_overall_summary for the full writeup.
-    """
+    Methods that ran on more than one eval type get one row PER eval type --
+    "<method> (bin)"/"<method> (cont)"/"<method> (lik)" -- each computed
+    from only that type's own data, rather than one row averaging across
+    incomparable scales/regimes (see _report_eval_type_group's docstring for
+    why this is now a 3-way split, not the 2-way binary/numeric split an
+    earlier version of this function used)."""
     target = 1.0 - alpha
     non_null = [r for r in results if not r.is_null]
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)}
     method_labels = [m.name for m in order_present_methods({r.method for r in non_null})]
     sizes_present = sorted({r.n for r in non_null})
 
     agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    method_group_types: dict[tuple[str, str], set[str]] = defaultdict(set)
     for r in non_null:
-        g = eval_type_group(r.eval_type)
+        g = _report_eval_type_group(r.eval_type)
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
         agg[(g, r.method, r.n)].append((cov, width, score))
         c_prev, t_prev = agg_counts[(g, r.method, r.n)]
         agg_counts[(g, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
-        method_group_types[(r.method, g)].add(r.eval_type)
 
     method_groups: dict[str, set[str]] = defaultdict(set)
     for (g, m, _n) in agg:
         method_groups[m].add(g)
 
+    group_order = ["bin", "cont", "lik", "grades"]
+    groups_present = sorted(
+        {g for methods in method_groups.values() for g in methods},
+        key=lambda g: group_order.index(g) if g in group_order else len(group_order),
+    )
+
     rows = []
-    for m in method_labels:
-        groups = sorted(method_groups[m])
-        multi_group = len(groups) > 1
-        for g in groups:
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        for m in method_labels:
+            if g not in method_groups[m]:
+                continue
+            multi_group = len(method_groups[m]) > 1
             per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
             all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
             per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
@@ -1135,10 +1299,9 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             c_tot, t_tot = all_counts[m]
             _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
             avg_ms, se_ms = _time_stats(
-                [r for r in non_null if r.method == m and eval_type_group(r.eval_type) == g]
+                [r for r in non_null if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
             time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
-            et_label = eval_type_label(method_group_types[(m, g)], eval_types_present)
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
@@ -1147,7 +1310,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
                 time_str,
-                et_label,
+                g,
             ]
             for n in sizes_present:
                 c_n, t_n = per_n_counts.get((m, n), (0, 0))
@@ -1159,13 +1322,15 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         caption=(
             f"ci\\_paired: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
             "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
-            "Methods tested on both binary and numeric data are reported as two rows, one per eval-type "
-            "group, so no row averages across incomparable scales."
+            "Methods tested on more than one eval type are reported as one row per type "
+            "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
+            "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
         columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 

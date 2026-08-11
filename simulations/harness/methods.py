@@ -75,6 +75,52 @@ recorded results over. Does not help ci_paired's use of
 logit_t (rescaled_ci recentres a paired diff near 0.5 regardless of raw
 skew, where order=2's boundary-only correction never activates)."""
 
+LOGIT_T_DITHER = Method("logit_t_dither", "#ceb483")  # pastel tint of LOGIT_T's #a6761d
+SMOOTH_BOOTSTRAP_DITHER = Method("smooth_bootstrap_dither", "#c4abdb")  # pastel tint of SMOOTH_BOOTSTRAP's #9467bd
+"""ci_paired.py-only, non-binary eval types (see that file's
+add_dither_extras): the SAME logit_t/smooth_bootstrap paired-diff CI, but
+with U(-half, +half) jitter added independently to each arm's raw values
+before differencing (then clipped back to the scale), where half is
+auto-detected per rep from the data's own quantization grid via
+_detect_dither_halfwidth -- 0.0 (no jitter) if none is found. Fixes a real, severe
+small-N pathology distinct from LOGIT_T_2ND's: on a PAIRED diff of two
+highly-correlated (shared-item) LIKERT arms, rounding mostly cancels
+between arms -- most items round to the identical integer in both arms
+(diff=0), and only the rare item whose latent value sits near a rounding
+boundary shows a nonzero diff. At small N it's entirely plausible NONE of
+the sampled items are boundary-adjacent, so the sample's diffs come out
+literally constant, collapsing the sample variance to ~0 regardless of the
+(real, nonzero) population-level diff variance -- any variance-based CI
+built from that is catastrophically overconfident. Confirmed via
+simulations/investigate_likert_family_wise_smalln.py: plain logit_t's
+family-wise (Sidak-widened, k=10 arms) coverage was 14.5% at n=10 (vs. 95%
+nominal); logit_t_dither recovered to a stable ~92% across n=10-60. NOT the
+same mechanism LOGIT_T_2ND targets (that's single-sample boundary-hugging
+skew) and does NOT help ci_single -- see that file's own likert check,
+which showed plain logit_t already well-calibrated there (worst case 93.8%
+at n=10) -- this is a paired-diff-specific pathology. nig_ci_1d fixes the
+SAME failure via a wider prior instead, but was found to cost FAR more:
+near-zero power at small N/moderate k (0.2% at k=3, n=10) vs. dithering's
+much smaller power cost, because nig's conservatism is unconditional while
+dithering targets the actual missing variance directly.
+
+Also tried on CONTINUOUS data with a hardcoded +-0.5 jitter (for
+transparency/direct comparison against likert) and that was BROKEN: +-0.5
+is calibrated to undo exactly one unit of INTEGER rounding, but on
+continuous's own [0, 1]-scale data it's HALF the entire range, causing
+heavy boundary clipping and a systematic bias in the mean. Unlike random
+noise, that bias doesn't shrink with N while the CI does, so coverage got
+WORSE as N grows rather than converging: 0.936 -> 0.800 (n=10 -> n=100) in
+nested-mode screening. Replacing the hardcoded width with
+_detect_dither_halfwidth's data-driven detection fixes this generally: it
+returns 0.0 (no jitter, dither variant reduces exactly to its base method)
+on genuinely continuous data with no recurring gap, so it's now safe to
+run on any non-binary type, and it ALSO catches the case a fixed
+eval_type check never could -- data labeled "continuous" that's actually
+coarse in practice (e.g. a judge that only emits a handful of distinct
+values), which would otherwise silently re-trigger the same rounding-
+cancellation pathology likert has."""
+
 BINARY_SINGLE_EXTRA_METHODS = [WILSON, JEFFREYS, WALD, CLOPPER_PEARSON, BAYES_SINGLE]
 CONTINUOUS_EXTRA_METHODS = [BETA, LOGIT_T, NIG, EL]
 CONTINUOUS_EXTRA_METHODS_WITH_LOGIT_T_2ND = [BETA, LOGIT_T, LOGIT_T_2ND, NIG, EL]
@@ -168,6 +214,17 @@ BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
 WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
 PAIRWISE_EXTRA_METHODS = [T_INTERVAL, LOGIT_T, NIG, EL]
+DITHER_EXTRA_METHODS = [LOGIT_T_DITHER, SMOOTH_BOOTSTRAP_DITHER]
+"""ci_paired.py-only, non-binary eval types -- see LOGIT_T_DITHER's
+docstring. Structurally a SEPARATE list from PAIRWISE_EXTRA_METHODS (not
+folded into it) since the actual jitter is data-gated (auto-detected per
+rep, a no-op when the data shows no quantization grid), but runs BY
+DEFAULT for all non-binary cells whenever --methods doesn't exclude them --
+same default-inclusion behavior as PAIRWISE_EXTRA_METHODS itself
+(ci_paired.py's `_want` returns True for everything when --methods is
+unset), NOT the hidden opt-in-only precedent LOGIT_T_2ND uses. Pass
+--methods without these two names to exclude them if only comparing the
+pre-existing battery."""
 BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
 # ---------------------------------------------------------------------------
@@ -474,7 +531,7 @@ aren't validated only by cases/ppi_real.py's real-data check."""
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
-] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
+] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + DITHER_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
     + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
 ) + [
