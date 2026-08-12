@@ -253,10 +253,24 @@ def plot_ci_forest(
     # Tuned so the gap between a row's own primary/comparison pair is
     # smaller than the gap to the *next* entity's bands -- otherwise the
     # comparison band can read as belonging to the row below it instead of
-    # its own sibling.
-    offset = (0.2 if has_gradient_rows else 0.14) if compare_to is not None else 0.0
+    # its own sibling. The "single" offset also has to clear the vertical
+    # reach of the error-bar end-caps AND the mean tick (see cap_h/tick_h
+    # below), not just the bare line width, or the primary/comparison marks
+    # visually overlap -- hence both a larger offset here and a shrunk
+    # _SINGLE_COMPARE_TICK_SCALE for the mean tick in that combination.
+    offset = (0.2 if has_gradient_rows else 0.22) if compare_to is not None else 0.0
     primary_band_height = _GRADIENT_BAND_HEIGHT * (0.9 if compare_to is not None else 1.0)
     compare_band_height = _GRADIENT_BAND_HEIGHT * 0.45
+    # style="single" mean ticks default to a taller 0.7x scale (see
+    # _draw_ci_row's tick_scale), but that's too tall once compare_to packs
+    # a second row in close by -- shrink it there so the tick doesn't poke
+    # into the neighbouring row's error-bar caps.
+    _SINGLE_COMPARE_TICK_SCALE = 0.45
+    tick_scale = (
+        _SINGLE_COMPARE_TICK_SCALE
+        if (compare_to is not None and not has_gradient_rows)
+        else 0.7
+    )
     # Comparison bands/lines use the SAME hue as their row, lightened
     # (a real tint toward white, not just lower alpha -- see _lighten) so
     # the two read as "same entity, two evals" rather than an unrelated
@@ -287,7 +301,7 @@ def plot_ci_forest(
         y_row: float, lo: float, hi: float, mean_val: float,
         multi_ci_row: Optional[dict], row_color, band_alphas: tuple,
         band_height: float, zorder_base: int, draw_mean: bool,
-        mean_tick_color: str, line_width: float,
+        mean_tick_color: str, line_width: float, tick_scale: float = 0.7,
     ) -> tuple[bool, int]:
         """Draw one CI row (gradient bands, falling back to a single line
         when multi_ci_row is None) plus an optional mean marker. Returns
@@ -312,15 +326,25 @@ def plot_ci_forest(
                 )
             next_z = zorder_base + len(band_alphas)
         else:
+            # Standard error-bar shape ([----|----]): a connecting line
+            # plus a vertical cap at each end, rather than a bare rounded-
+            # cap line (which reads ambiguously -- easy to mistake for an
+            # arbitrary line rather than a CI).
             ax.plot(
                 [lo, hi], [y_row, y_row],
                 color=row_color, lw=line_width,
-                solid_capstyle="round", zorder=zorder_base,
+                solid_capstyle="butt", zorder=zorder_base,
             )
+            cap_h = band_height * 0.3
+            for x_cap in (lo, hi):
+                ax.plot(
+                    [x_cap, x_cap], [y_row - cap_h, y_row + cap_h],
+                    color=row_color, lw=line_width, zorder=zorder_base,
+                )
             next_z = zorder_base + 1
         if draw_mean:
             if mean_marker == "line":
-                tick_h = band_height * 0.7
+                tick_h = band_height * tick_scale
                 ax.plot(
                     [mean_val, mean_val], [y_row - tick_h, y_row + tick_h],
                     color=mean_tick_color, lw=1.5, zorder=next_z + 1,
@@ -350,7 +374,7 @@ def plot_ci_forest(
             used_grad_cmp, _ = _draw_ci_row(
                 y + offset, lo0, hi0, mean0, multi_ci_cmp, light_color,
                 _GRADIENT_BAND_ALPHAS, compare_band_height, 2, show_mean,
-                _PALETTE["text_secondary"], lw * 0.6,
+                _PALETTE["text_secondary"], lw * 0.6, tick_scale,
             )
             any_gradient_used = any_gradient_used or used_grad_cmp
 
@@ -362,7 +386,7 @@ def plot_ci_forest(
         used_grad, top_zorder = _draw_ci_row(
             y_row, lo5, hi5, mean5, multi_ci, color,
             _GRADIENT_BAND_ALPHAS, primary_band_height, 4, show_mean,
-            "black", lw,
+            "black", lw, tick_scale,
         )
         any_gradient_used = any_gradient_used or used_grad
 
@@ -408,6 +432,31 @@ def plot_ci_forest(
 
     # ---- gather methods metadata (for title + caption) --------------------
     bundle = getattr(report, "full_analysis", None)
+
+    # ---- x-axis padding ----------------------------------------------------
+    # barh/plot sticky-edges pin the axis limits exactly to the CI extents,
+    # so autoscale alone can leave a band hugging the left or right spine.
+    # Add a margin, but don't pad past the metric's true floor/ceiling (e.g.
+    # 0% accuracy) -- a CI that already sits at that boundary should still
+    # hug it, since padding there would draw axis space implying impossible
+    # values rather than just fixing a cramped-looking plot.
+    x0, x1 = ax.dataLim.intervalx
+    data_span = x1 - x0
+    if data_span > 0:
+        pad = 0.06 * data_span
+        new_x0, new_x1 = x0 - pad, x1 + pad
+        score_range = getattr(bundle, "resolved_score_range", None)
+        if score_range is not None:
+            floor, ceiling = score_range[0] * scale, score_range[1] * scale
+            new_x0 = max(new_x0, floor)
+            new_x1 = min(new_x1, ceiling)
+        elif as_percent:
+            # No resolved bounds, but percent mode still implies a natural
+            # [0, 100] floor/ceiling.
+            new_x0 = max(new_x0, 0.0)
+            new_x1 = min(new_x1, 100.0)
+        ax.set_xlim(new_x0, new_x1)
+
     n_inputs = getattr(getattr(bundle, "benchmark", None), "n_inputs", None)
     alpha = getattr(report, "alpha", 0.05)
     ci_pct = int(round((1 - alpha) * 100))
