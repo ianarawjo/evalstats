@@ -225,7 +225,9 @@ class ComparisonResult:
               (68/90/95/99% nested confidence bands) by default -- the same
               richer CI picture the terminal's ``.summary()`` gradient plot
               already shows, in matplotlib. Pass ``style="single"`` to fall
-              back to one plain CI band per entity.
+              back to one plain CI band per entity, or ``color_rule="factor"``
+              / a colour name to color by entity identity instead of
+              significance tier.
             * ``"bar"`` — accuracy bar chart via
               :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`. A quick,
               uncorrected view (no CIs) -- useful before statistical

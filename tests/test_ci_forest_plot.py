@@ -190,6 +190,76 @@ def test_plot_ci_forest_legend_includes_band_and_mean_labels():
     assert "mean" in legend_labels
 
 
+# ---------------------------------------------------------------------------
+# color_rule
+# ---------------------------------------------------------------------------
+
+def _bar_colors(ax):
+    from matplotlib.patches import Rectangle
+    # zorder >= 4 excludes the alternating row-background rectangles
+    # (axhspan, zorder=0), which aren't gradient-band bars.
+    return [
+        p.get_facecolor() for p in ax.patches
+        if isinstance(p, Rectangle) and p.get_zorder() >= 4
+    ]
+
+
+def test_color_rule_tier_is_default_and_has_legend():
+    result = _make_result()
+    fig = plot_ci_forest(result)
+    ax = fig.axes[0]
+    legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "Unbeaten" in legend_labels
+    assert "Significantly worse" in legend_labels
+    plt_close(fig)
+
+
+def test_color_rule_factor_gives_each_entity_a_distinct_color():
+    result = _make_result(n_models=3)
+    fig = plot_ci_forest(result, color_rule="factor")
+    ax = fig.axes[0]
+    colors = _bar_colors(ax)
+    # 3 entities x 4 gradient bands each; each entity's 4 bands share one
+    # base color (varying only alpha), and different entities differ.
+    distinct_rgb = {c[:3] for c in colors}
+    assert len(distinct_rgb) == 3
+    legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "Unbeaten" not in legend_labels
+    plt_close(fig)
+
+
+def test_color_rule_factor_is_stable_across_sort_order():
+    result = _make_result(n_models=3)
+    fig_mean = plot_ci_forest(result, color_rule="factor", sort_by="mean")
+    fig_label = plot_ci_forest(result, color_rule="factor", sort_by="label")
+    # Same set of colors used regardless of row order.
+    colors_mean = {c[:3] for c in _bar_colors(fig_mean.axes[0])}
+    colors_label = {c[:3] for c in _bar_colors(fig_label.axes[0])}
+    assert colors_mean == colors_label
+    plt_close(fig_mean)
+    plt_close(fig_label)
+
+
+def test_color_rule_literal_color_used_for_all_entities():
+    result = _make_result(n_models=3)
+    fig = plot_ci_forest(result, color_rule="seagreen")
+    ax = fig.axes[0]
+    colors = _bar_colors(ax)
+    distinct_rgb = {c[:3] for c in colors}
+    assert len(distinct_rgb) == 1
+    import matplotlib.colors as mcolors
+    assert distinct_rgb.pop() == mcolors.to_rgb("seagreen")
+    legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "Unbeaten" not in legend_labels
+    plt_close(fig)
+
+
+def test_color_rule_invalid_raises_clear_error():
+    result = _make_result()
+    with pytest.raises(ValueError, match="not 'tier', 'factor'"):
+        plot_ci_forest(result, color_rule="not_a_real_color")
+
+
 def plt_close(fig):
     import matplotlib.pyplot as plt
     plt.close(fig)

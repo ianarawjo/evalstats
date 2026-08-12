@@ -21,6 +21,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Literal, Optional
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
@@ -67,6 +68,7 @@ def plot_ci_forest(
     sort_by: str = "mean",
     as_percent: bool = True,
     style: Literal["gradient", "single"] = "gradient",
+    color_rule: str = "tier",
     show_mean: bool = True,
     mean_marker: Literal["line", "dot"] = "line",
     show_ci_bracket: bool = False,
@@ -114,6 +116,22 @@ def plot_ci_forest(
         entity when that entity has no ``multi_ci`` data (e.g. a Wald-type
         CI with only one level computed). ``"single"`` always draws one CI
         band at the report's own confidence level.
+    color_rule : str
+        How bars are coloured:
+
+        * ``"tier"`` (default) -- by significance tier: "Unbeaten" vs.
+          "Significantly worse" (or a single neutral colour when nothing
+          is significantly different). This is the only mode with a
+          colour-meaning legend, since it's the only one where colour
+          carries information beyond "which entity is this" (the y-axis
+          labels already say that).
+        * ``"factor"`` -- each entity gets its own distinct colour from a
+          qualitative palette (cycling past 10 entities). Useful when
+          entities are a categorical factor in their own right (e.g.
+          different models) and you want colour to track identity rather
+          than significance.
+        * any matplotlib colour spec (e.g. ``"#4a90d9"``, ``"steelblue"``)
+          -- every bar uses that one colour.
     show_mean : bool
         Draw a marker at the point estimate (default ``True``). Set
         ``False`` to let the CI band(s) speak for themselves.
@@ -157,6 +175,28 @@ def plot_ci_forest(
 
     ordered_labels = [labels[i] for i in order]
     unbeaten = set(report.unbeaten) if report.unbeaten else set()
+
+    # ---- colour rule --------------------------------------------------------
+    if color_rule not in ("tier", "factor") and not mcolors.is_color_like(color_rule):
+        raise ValueError(
+            f"color_rule={color_rule!r} is not 'tier', 'factor', or a "
+            "valid matplotlib colour spec (e.g. '#4a90d9', 'steelblue')."
+        )
+    factor_colors: dict = {}
+    if color_rule == "factor":
+        palette = plt.get_cmap("tab10").colors
+        # Keyed by original label order (not sort-dependent ordered_labels)
+        # so an entity's colour stays stable across different sort_by calls.
+        factor_colors = {lbl: palette[i % len(palette)] for i, lbl in enumerate(labels)}
+
+    def _entity_color(label: str) -> str:
+        if color_rule == "tier":
+            if not unbeaten:
+                return _PALETTE["no_sig"]
+            return _PALETTE["unbeaten"] if label in unbeaten else _PALETTE["lower_tier"]
+        if color_rule == "factor":
+            return factor_colors[label]
+        return color_rule  # a literal colour spec, same for every entity
 
     scale = 100.0 if as_percent else 1.0
 
@@ -218,14 +258,7 @@ def plot_ci_forest(
         y = float(y_positions[i])
         mean5, lo5, hi5 = _ci(report, label)
 
-        # Primary CI tier colour
-        if not unbeaten:
-            # No significant differences — use neutral colour
-            color = _PALETTE["no_sig"]
-        elif label in unbeaten:
-            color = _PALETTE["unbeaten"]
-        else:
-            color = _PALETTE["lower_tier"]
+        color = _entity_color(label)
 
         if compare_to is not None:
             # Comparison report — lighter, offset above
@@ -396,7 +429,10 @@ def plot_ci_forest(
             Line2D([0], [0], color=_PALETTE["unbeaten"], lw=lw,
                    solid_capstyle="round", label=r_label),
         ]
-    elif unbeaten:
+    elif color_rule == "tier" and unbeaten:
+        # Only "tier" mode has a colour-meaning legend -- "factor" and a
+        # literal colour spec both make colour track entity identity (or
+        # nothing at all), which the y-axis labels already convey.
         legend_handles += [
             Line2D([0], [0], color=_PALETTE["unbeaten"], lw=lw,
                    solid_capstyle="round", label="Unbeaten"),
@@ -434,7 +470,33 @@ def plot_ci_forest(
         fig.tight_layout()
         if legend_handles:
             # Legend sits outside the axes (bbox_to_anchor to the right) so
-            # it never overlaps the bars -- reserve room for it.
-            fig.subplots_adjust(right=0.76)
+            # it never overlaps the bars -- reserve room for it with a
+            # generous initial guess, then trim the canvas to hug the
+            # legend's actual rendered width instead of leaving whatever
+            # blank margin that guess didn't use (matters for pasting
+            # straight into a paper without manual cropping).
+            fig.subplots_adjust(right=0.78)
+            fig.canvas.draw()
+            renderer = fig.canvas.get_renderer()
+            legend = ax.get_legend()
+            legend_px = legend.get_window_extent(renderer=renderer)
+            fig_px_width = fig.get_window_extent(renderer=renderer).width
+            pad_px = 8
+            excess_px = fig_px_width - (legend_px.x1 + pad_px)
+            if excess_px > 1:
+                dpi = fig.dpi
+                old_width_in, height_in = fig.get_size_inches()
+                new_width_in = old_width_in - excess_px / dpi
+                if new_width_in > 0:
+                    # Rescale horizontal subplot fractions so the axes and
+                    # legend keep their exact pixel position/size on the
+                    # narrower canvas -- only the wasted margin is trimmed.
+                    sp = fig.subplotpars
+                    scale = old_width_in / new_width_in
+                    fig.set_size_inches(new_width_in, height_in)
+                    fig.subplots_adjust(
+                        left=min(0.99, sp.left * scale),
+                        right=min(1.0, sp.right * scale),
+                    )
 
     return fig
