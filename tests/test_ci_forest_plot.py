@@ -89,6 +89,36 @@ def test_plot_ci_forest_compare_to_still_works_with_gradient_primary():
     plt_close(fig)
 
 
+def test_plot_ci_forest_compare_to_uses_gradient_bands_and_same_hue():
+    from matplotlib.patches import Rectangle
+
+    small = _make_result(n_items=10, seed=1)
+    big = _make_result(n_items=80, seed=2)
+    # color_rule="factor" guarantees each entity gets a distinct hue --
+    # "tier" mode legitimately lets multiple entities share a hue (e.g. two
+    # entities both "significantly worse"), which isn't what this test is
+    # checking for.
+    fig = plot_ci_forest(big, compare_to=small, color_rule="factor")
+    ax = fig.axes[0]
+    bars = [p for p in ax.patches if isinstance(p, Rectangle) and p.get_zorder() >= 2]
+    # 3 entities x (4 primary bands + 4 comparison bands) = 24.
+    assert len(bars) == 3 * 8
+
+    # Group by rounded (row, base RGB) -- primary and comparison bars for
+    # the same entity should share hue, differing only in alpha (muted).
+    by_hue = {}
+    for p in bars:
+        r, g, b, a = p.get_facecolor()
+        by_hue.setdefault((round(r, 2), round(g, 2), round(b, 2)), []).append(round(a, 3))
+    # Exactly 3 distinct hues (one per entity), each hue used by both the
+    # primary (full-scale alphas) and comparison (muted alphas) bands.
+    assert len(by_hue) == 3
+    for hue, alphas in by_hue.items():
+        assert len(alphas) == 8  # 4 primary + 4 muted-comparison alphas
+        assert len(set(alphas)) == 8  # all 8 alphas distinct (no accidental overlap)
+    plt_close(fig)
+
+
 def test_comparison_result_plot_defaults_to_forest_gradient():
     result = _make_result()
     fig = result.plot()

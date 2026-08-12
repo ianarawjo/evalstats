@@ -43,7 +43,6 @@ _PALETTE = {
     "unbeaten":      "#4a90d9",  # medium blue  — in-contention CIs
     "lower_tier":    "#e07b7b",  # muted red    — lower-tier CIs
     "no_sig":        "#8a9bb5",  # gray-blue    — no significant differences
-    "compare":       "#c0d8f0",  # light blue   — background / comparison report
     "ref_line":      "#cccccc",  # light gray   — reference line
     "grid":          "#EEF1F4",  # very light   — x grid
     "row_alt":       "#FAFBFC",  # off-white    — alternating rows
@@ -86,11 +85,13 @@ def plot_ci_forest(
         :func:`evalstats.compare_models`.
     compare_to : CompareReport, optional
         A second report to overlay for comparison (e.g. a smaller or
-        single-run eval).  Its CIs are drawn in a lighter colour offset
-        above each row so both intervals are visible simultaneously.
-        Both reports must contain the same entity labels. Always drawn in
-        the single-band style regardless of *style*, to keep the overlay
-        legible.
+        single-run eval).  Drawn offset above each row, using the *same*
+        colour as that row (muted, via lower alpha) rather than a fixed
+        unrelated colour -- so the two bands read as "same entity, two
+        evals". Renders as gradient bands too when *style* is
+        ``"gradient"`` and *compare_to* has ``multi_ci`` data, for the same
+        consistency reason. Both reports must contain the same entity
+        labels.
     report_label : str, optional
         Legend label for the primary report when *compare_to* is supplied.
         Defaults to ``"primary"``.
@@ -232,7 +233,20 @@ def plot_ci_forest(
     ax.set_facecolor("white")
 
     y_positions = np.arange(n)
-    offset = 0.18 if compare_to is not None else 0.0
+    # More vertical room per row when stacking two bands (primary +
+    # comparison) so thick gradient bars don't heavily overlap; a plain
+    # single line needs much less.
+    has_gradient_rows = style == "gradient"
+    offset = (0.27 if has_gradient_rows else 0.18) if compare_to is not None else 0.0
+    row_band_height = (
+        _GRADIENT_BAND_HEIGHT * 0.85 if (compare_to is not None and has_gradient_rows)
+        else _GRADIENT_BAND_HEIGHT
+    )
+    # Comparison bands/lines use the SAME hue as their row (muted via lower
+    # alpha), not a fixed unrelated colour, so the two bands read as "same
+    # entity, two evals" rather than looking like an unrelated series.
+    _MUTE = 0.55
+    muted_band_alphas = tuple(a * _MUTE for a in _GRADIENT_BAND_ALPHAS)
 
     # ---- alternating row backgrounds --------------------------------------
     for i in range(n):
@@ -254,6 +268,56 @@ def plot_ci_forest(
     ms = 55  # scatter marker size
     any_gradient_used = False
 
+    def _draw_ci_row(
+        y_row: float, lo: float, hi: float, mean_val: float,
+        multi_ci_row: Optional[dict], row_color, band_alphas: tuple,
+        band_height: float, zorder_base: int, draw_mean: bool, mean_alpha: float,
+    ) -> tuple[bool, int]:
+        """Draw one CI row (gradient bands, falling back to a single line
+        when multi_ci_row is None) plus an optional mean marker. Returns
+        (used_gradient, next_free_zorder)."""
+        used_gradient = False
+        if multi_ci_row is not None:
+            used_gradient = True
+            # Widest CI (99%, smallest alpha) drawn first/lowest zorder,
+            # narrowest (68%, largest alpha) drawn last/highest zorder --
+            # same "inner band wins" convention as the terminal's
+            # _gradient_interval_line, via z-order layering instead of
+            # character replacement.
+            sorted_alphas = sorted(multi_ci_row.keys())
+            for band_i, a in enumerate(sorted_alphas):
+                lo_a, hi_a = multi_ci_row[a]
+                band_alpha = band_alphas[min(band_i, len(band_alphas) - 1)]
+                ax.barh(
+                    y_row, width=hi_a - lo_a, left=lo_a,
+                    height=band_height,
+                    color=row_color, alpha=band_alpha,
+                    edgecolor="none", zorder=zorder_base + band_i,
+                )
+            next_z = zorder_base + len(band_alphas)
+        else:
+            ax.plot(
+                [lo, hi], [y_row, y_row],
+                color=row_color, lw=lw, alpha=(mean_alpha if mean_alpha < 1 else 1.0),
+                solid_capstyle="round", zorder=zorder_base,
+            )
+            next_z = zorder_base + 1
+        if draw_mean:
+            if mean_marker == "line":
+                tick_h = band_height * 0.7
+                ax.plot(
+                    [mean_val, mean_val], [y_row - tick_h, y_row + tick_h],
+                    color="black", lw=1.5, alpha=mean_alpha, zorder=next_z + 1,
+                )
+            else:
+                ax.scatter(
+                    [mean_val], [y_row],
+                    color=row_color, s=ms, alpha=mean_alpha, zorder=next_z + 1,
+                    edgecolor="white", linewidth=0.6,
+                )
+            next_z += 1
+        return used_gradient, next_z
+
     for i, label in enumerate(ordered_labels):
         y = float(y_positions[i])
         mean5, lo5, hi5 = _ci(report, label)
@@ -261,50 +325,27 @@ def plot_ci_forest(
         color = _entity_color(label)
 
         if compare_to is not None:
-            # Comparison report — lighter, offset above
+            # Comparison report -- same hue as the primary row, muted, so
+            # the two bands read as "same entity, two evals" rather than an
+            # unrelated fixed colour.
             mean0, lo0, hi0 = _ci(compare_to, label)
-            ax.plot(
-                [lo0, hi0], [y + offset, y + offset],
-                color=_PALETTE["compare"], lw=lw,
-                solid_capstyle="round", zorder=2,
+            multi_ci_cmp = _multi_ci(compare_to, label) if has_gradient_rows else None
+            used_grad_cmp, _ = _draw_ci_row(
+                y + offset, lo0, hi0, mean0, multi_ci_cmp, color,
+                muted_band_alphas, row_band_height, 2, show_mean, 0.55,
             )
-            ax.scatter(
-                [mean0], [y + offset],
-                color=_PALETTE["compare"], s=ms, zorder=3,
-            )
+            any_gradient_used = any_gradient_used or used_grad_cmp
 
         # Primary CI — full colour, offset below when compare_to given.
         # Gradient style falls back to single-band per-entity when this
         # entity has no multi_ci data (e.g. a Wald-type CI).
         multi_ci = _multi_ci(report, label) if style == "gradient" else None
         y_row = y - offset
-        if multi_ci is not None:
-            any_gradient_used = True
-            # Widest CI (99%, smallest alpha) drawn first/lowest zorder,
-            # narrowest (68%, largest alpha) drawn last/highest zorder --
-            # same "inner band wins" convention as the terminal's
-            # _gradient_interval_line, via z-order layering instead of
-            # character replacement.
-            sorted_alphas = sorted(multi_ci.keys())
-            for band_i, a in enumerate(sorted_alphas):
-                lo_a, hi_a = multi_ci[a]
-                band_alpha = _GRADIENT_BAND_ALPHAS[
-                    min(band_i, len(_GRADIENT_BAND_ALPHAS) - 1)
-                ]
-                ax.barh(
-                    y_row, width=hi_a - lo_a, left=lo_a,
-                    height=_GRADIENT_BAND_HEIGHT,
-                    color=color, alpha=band_alpha,
-                    edgecolor="none", zorder=4 + band_i,
-                )
-        else:
-            ax.plot(
-                [lo5, hi5], [y_row, y_row],
-                color=color, lw=lw,
-                solid_capstyle="round", zorder=4,
-            )
-
-        top_zorder = 4 + len(_GRADIENT_BAND_ALPHAS) + 1
+        used_grad, top_zorder = _draw_ci_row(
+            y_row, lo5, hi5, mean5, multi_ci, color,
+            _GRADIENT_BAND_ALPHAS, row_band_height, 4, show_mean, 1.0,
+        )
+        any_gradient_used = any_gradient_used or used_grad
 
         # Optional traditional bracket-style CI overlaid on top of the
         # gradient bands, at the report's own single confidence level --
@@ -315,26 +356,11 @@ def plot_ci_forest(
                 color=_PALETTE["text"], lw=1.3, zorder=top_zorder,
                 solid_capstyle="butt",
             )
-            cap_h = _GRADIENT_BAND_HEIGHT * 0.22
+            cap_h = row_band_height * 0.22
             for x_cap in (lo5, hi5):
                 ax.plot(
                     [x_cap, x_cap], [y_row - cap_h, y_row + cap_h],
                     color=_PALETTE["text"], lw=1.3, zorder=top_zorder,
-                )
-            top_zorder += 1
-
-        if show_mean:
-            if mean_marker == "line":
-                tick_h = _GRADIENT_BAND_HEIGHT * 0.7
-                ax.plot(
-                    [mean5, mean5], [y_row - tick_h, y_row + tick_h],
-                    color="black", lw=1.5, zorder=top_zorder + 1,
-                )
-            else:
-                ax.scatter(
-                    [mean5], [y_row],
-                    color=color, s=ms, zorder=top_zorder + 1,
-                    edgecolor="white", linewidth=0.6,
                 )
 
     # ---- axes styling -----------------------------------------------------
@@ -421,12 +447,15 @@ def plot_ci_forest(
     # a social post) can still read it unaided.
     legend_handles: list = []
     if compare_to is not None:
+        # Primary vs. comparison is now conveyed by opacity alone (each row
+        # keeps its own hue for both) -- a neutral swatch at full vs. muted
+        # alpha represents that distinction regardless of color_rule.
         r_label = report_label or "primary"
         c_label = compare_label or "comparison"
         legend_handles += [
-            Line2D([0], [0], color=_PALETTE["compare"], lw=lw,
+            Line2D([0], [0], color=_PALETTE["text_secondary"], lw=lw, alpha=_MUTE,
                    solid_capstyle="round", label=c_label),
-            Line2D([0], [0], color=_PALETTE["unbeaten"], lw=lw,
+            Line2D([0], [0], color=_PALETTE["text_secondary"], lw=lw,
                    solid_capstyle="round", label=r_label),
         ]
     elif color_rule == "tier" and unbeaten:
