@@ -136,6 +136,58 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def detect_quantization_step(scores: np.ndarray) -> Optional[float]:
+    """Detect whether *scores* sit on a consistent quantization grid (e.g.
+    integer-valued Likert responses, or a percentage grade rounded to whole
+    points), returning the grid step -- or ``None`` if no consistent grid is
+    found (the data looks genuinely continuous).
+
+    Used to auto-detect discrete/ordinal bounded data so :func:`analyze` can
+    route to NIG (calibrated for this case) instead of logit-t. Takes the
+    SMALLEST observed gap between distinct values as a candidate step, then
+    verifies every other gap is (within tolerance) an integer multiple of
+    it -- a GCD-style check, not a "does the most common gap recur >= N
+    times" frequency threshold, which is blind exactly where this matters
+    most: a small, peaked/boundary-heavy sample can collapse to just 2-3
+    distinct values, too few for any gap to recur several times even when
+    the grid (e.g. step=1) is completely unambiguous.
+
+    False-positive risk on genuinely continuous data is close to zero:
+    demanding EVERY gap (not just the most common one) independently land
+    within tolerance of an integer multiple of the candidate step has
+    vanishing probability by chance (verified empirically down to n=6
+    pooled values, 0% false-positive rate up to n=1000). Ported from
+    simulations/harness/cases/ci_paired.py's ``_detect_dither_halfwidth``,
+    which found the same regression this guards against: a frequency-based
+    predecessor of this check went blind on small, peaked Likert samples.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array (raw values, not yet rescaled).
+
+    Returns
+    -------
+    float or None
+        The detected step, or ``None`` if the data doesn't look quantized.
+    """
+    flat = scores.ravel()
+    finite = flat[np.isfinite(flat)]
+    uniq = np.unique(finite)
+    if uniq.size < 2:
+        return None
+    gaps = np.diff(uniq)
+    gaps = gaps[gaps > 1e-9]
+    if gaps.size == 0:
+        return None
+    step = float(np.min(gaps))
+    ratios = gaps / step
+    residuals = np.abs(ratios - np.round(ratios))
+    if np.max(residuals) > 0.05:
+        return None
+    return step
+
+
 def is_lopsided_binary(scores: np.ndarray, threshold: int = 5) -> bool:
     """Return True if any compared group has fewer than *threshold* observed
     instances of its rarer binary outcome (e.g. only 2 ones out of 40).

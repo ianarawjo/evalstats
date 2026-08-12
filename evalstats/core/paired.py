@@ -12,6 +12,7 @@ rather than being silently discarded.
 
 from __future__ import annotations
 
+import functools
 import warnings
 from dataclasses import dataclass
 from typing import Callable, Literal, Optional
@@ -44,6 +45,7 @@ from .resampling import (
     tango_paired_ci_multirun_effective,
     t_interval_ci_1d,
     logit_t_ci_1d,
+    nig_ci_1d,
     bayes_paired_diff_ci,
     is_binary_scores,
     is_lopsided_binary,
@@ -60,6 +62,24 @@ from ..config import (
 
 
 BAYES_BINARY_LARGE_N_THRESHOLD = 200
+
+_NIG_PAIRED_DIFF_B0 = 0.0625 / 4
+"""nig_ci_1d's default b0=0.0625 (prior mean of sigma^2, i.e. prior
+sigma~=0.25) is calibrated for a single-sample rescale onto [lo, hi] --
+see that function's own docstring: "weak knowledge that scores live in
+[0, 1]". A PAIRED diff instead gets rescaled onto [-(hi-lo), hi-lo]
+(needed so a zero diff maps to 0.5, nig's own prior centre) -- twice as
+wide a span as the single-sample case. Reusing b0=0.0625 unchanged on a
+paired diff implies 2^2=4x the intended prior variance in real diff units
+(variance scales with the square of a linear rescale factor), producing
+persistent, substantial over-coverage that isn't a deliberate safety
+margin, just an unpropagated rescale-span change. This restores NIG's
+effective prior to the same absolute variance the single-sample case
+already uses correctly -- verified via simulation
+(simulations/harness/cases/ci_paired.py): on likert paired diffs,
+coverage went from 0.983 (n=10, default b0) to 0.946 (n=10, this
+correction), 23% narrower for the same validity, holding across n=10-500
+and on continuous data too."""
 
 
 def _warn_bayes_binary_large_n(n_inputs: int, *, stacklevel: int = 4) -> None:
@@ -387,7 +407,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -798,6 +818,45 @@ def pairwise_differences(
             ci_high=ci_high,
             p_value=p_value,
             test_name="paired logit-t",
+            values_a=values_a,
+            values_b=values_b,
+            multi_ci_dict=mci,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Paired NIG path (discrete/ordinal bounded data, e.g. Likert)        #
+    # ------------------------------------------------------------------ #
+    if method == "nig":
+        # Same rescale structure as the logit_t path above (paired diff of
+        # two [lo, hi] scores spans [-(hi-lo), hi-lo]), but with the prior
+        # variance corrected for that wider span -- see
+        # _NIG_PAIRED_DIFF_B0's docstring. Recommended over logit_t
+        # specifically for discrete/ordinal data (a Likert scale, an
+        # integer percentage grade): see config.AUTO_ANALYZE_METHOD_TABLE's
+        # "likert" row for the full rationale.
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
+        alpha_val = 1.0 - ci
+        diff_span = (score_range[1] - score_range[0]) if score_range is not None else 1.0
+        diff_lo, diff_hi = -diff_span, diff_span
+        _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
+        ci_low, ci_high = rescaled_ci(_nig_paired, diffs, alpha_val, diff_lo, diff_hi)
+        t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
+        p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
+        mci = (
+            {_a: rescaled_ci(_nig_paired, diffs, _a, diff_lo, diff_hi) for _a in GRADIENT_CI_ALPHAS}
+            if multi_ci else None
+        )
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_name="paired NIG",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
@@ -1898,6 +1957,7 @@ def _simultaneous_cis_router(
     *,
     prefer: str = "auto",
     score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
 ) -> tuple[dict[tuple[str, str], tuple[float, float]], str, dict]:
     """Route simultaneous CI computation to the requested construction.
 
@@ -1907,13 +1967,26 @@ def _simultaneous_cis_router(
     else joint bootstrap with an effective alpha (``"boot"``,
     :func:`_joint_bootstrap_scaled_simultaneous_cis`). Both widen whichever
     canonical closed-form pairwise CI formula the data resolves to -- Tango
-    for binary data, logit-t for a known-bounded numeric range (*score_range*),
+    for binary data, logit-t for any bounded numeric range (*score_range*),
     plain t-interval as the bounds-agnostic fallback for everything else --
     the same per-data-kind formula :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`
-    already uses for the *non*-simultaneous pairwise CI, so Sidak/boot always
-    widen the formula that would otherwise have been shown, regardless of
-    which resampling *method* (bootstrap, bca, ...) the point estimate
-    itself used.
+    already uses for the *non*-simultaneous pairwise CI on genuinely
+    continuous data, so Sidak/boot always widen the formula that would
+    otherwise have been shown, regardless of which resampling *method*
+    (bootstrap, bca, ...) the point estimate itself used.
+
+    ``eval_type`` is accepted but currently NOT used to change which
+    ci_func gets widened here: bounded numeric data always uses logit-t in
+    this function, even when it's discrete/ordinal (Likert-scale) data
+    that :func:`pairwise_differences`'s own ``method="nig"`` path (and
+    :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`'s "likert" row,
+    single-run pairwise only) would use NIG for instead. That's
+    deliberate, not an oversight -- the k>=3 construction built here has
+    only ever been tested with NIG's OLD, buggy prior (before
+    ``_NIG_PAIRED_DIFF_B0`` fixed it), never re-validated post-fix, so it
+    isn't trusted yet. The parameter stays so callers/``analyze()`` don't
+    need reverting too, and so wiring NIG back in here is a small,
+    localized change once that validation exists.
 
     Historical note: this used to default unconditionally to Bonferroni
     (with the studentized bootstrap max-T method as the sole opt-in
@@ -1981,6 +2054,19 @@ def _simultaneous_cis_router(
             data_kind = "bounded_01"
         else:
             data_kind = "unbounded"
+        # NOTE: eval_type is deliberately NOT consulted here (unlike
+        # pairwise_differences()'s method="nig" path, which IS validated
+        # for single-run pairwise likert data -- see
+        # config.AUTO_ANALYZE_METHOD_TABLE's "likert" row). The k>=3
+        # simultaneous/family-wise construction this function builds
+        # (Sidak/joint-bootstrap-widened) has only ever been tested with
+        # NIG's OLD, buggy prior (before core.paired._NIG_PAIRED_DIFF_B0
+        # fixed it) -- never re-validated post-fix -- so likert data still
+        # gets the same logit-t-based ci_func as genuinely continuous
+        # "bounded_01" data here, until that gets its own dedicated
+        # validation. eval_type stays a parameter (rather than being
+        # removed) so callers/analyze() don't need reverting too, and so
+        # re-enabling this is a small, localized change once ready.
 
         resolved = prefer
         if prefer == "auto":
@@ -2021,7 +2107,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "auto",
@@ -2033,6 +2119,7 @@ def all_pairwise(
     compute_wilcoxon: bool = True,
     score_range: Optional[tuple[float, float]] = None,
     prefer: str = "auto",
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
 ) -> PairwiseMatrix:
     """Compute all pairwise comparisons with multiple comparisons correction.
 
@@ -2091,6 +2178,17 @@ def all_pairwise(
         knob to force a specific simultaneous-CI construction instead of
         the ``"auto"`` (default) table lookup: ``"sidak"``, ``"boot"``,
         ``"max_t"``, or ``"bonferroni"``.
+    eval_type : "likert", "continuous", or None
+        Accepted for forward-compatibility with :func:`analyze`, but
+        currently has NO effect on the simultaneous CI this function
+        computes when ``simultaneous_ci=True`` (the default) -- see
+        :func:`_simultaneous_cis_router`'s docstring for why (the k>=3
+        widened construction hasn't been validated for NIG post-fix, so it
+        always widens logit-t for any bounded numeric range regardless of
+        ``eval_type``). It DOES matter for the individual per-pair CI when
+        ``method="nig"`` is requested explicitly, or resolved via
+        ``method="auto"`` + single-run likert data (see
+        ``config.AUTO_ANALYZE_METHOD_TABLE``) -- that path is validated.
     omnibus : bool
         When ``True``, run the Friedman omnibus test (with Nemenyi post-hoc)
         alongside the pairwise comparisons.  Requires k ≥ 3.  Defaults to
@@ -2215,6 +2313,7 @@ def all_pairwise(
             statistic=statistic,
             score_range=score_range,
             prefer=prefer,
+            eval_type=eval_type,
         )
         if sim_cis:
             applied_simultaneous_ci = True
@@ -2273,7 +2372,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",
