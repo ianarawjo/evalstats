@@ -277,13 +277,16 @@ def analyze(
         Only used with ``method='auto'`` and a known/declared
         ``score_range``. Distinguishes discrete/ordinal data (a Likert
         scale, an integer percentage grade) from genuinely continuous
-        data within the same bounded range -- they need different CI
-        formulas (NIG vs logit-t; see ``config.AUTO_ANALYZE_METHOD_TABLE``'s
-        "likert" row for why). When omitted (default), evalstats
-        auto-detects discreteness from the data's own quantization grid
-        and emits a ``UserWarning`` if it switches to the Likert
-        treatment -- pass this explicitly to silence that warning either
-        way.
+        data within the same bounded range. When omitted (default),
+        evalstats auto-detects discreteness from the data's own
+        quantization grid and emits a ``UserWarning`` if it switches to
+        the Likert treatment -- pass this explicitly to silence that
+        warning either way. Currently this only changes the SINGLE-RUN
+        pairwise-comparison CI (NIG instead of logit-t) -- see
+        ``config.AUTO_ANALYZE_METHOD_TABLE``'s "likert" row for exactly
+        what is and isn't yet covered (multi-run pairwise, marginal CIs,
+        and the k>=3 simultaneous-CI construction all still use logit-t
+        for likert data, pending their own dedicated validation).
 
         When omitted, evalstats always prints a ``UserWarning`` announcing
         what it assumed and which method it picked as a result:
@@ -909,14 +912,18 @@ def _analyze_single(
                         warnings.warn(
                             f"Bounded numeric evaluation data was auto-detected "
                             f"as discrete/ordinal (grid step={step:g} within "
-                            f"range {resolved_score_range}), so evalstats is "
-                            "using NIG-based methods calibrated for Likert-"
-                            "style/discrete data instead of the continuous "
-                            "default (logit-t). Pass eval_type='likert' "
-                            "explicitly to silence this warning, or "
-                            "eval_type='continuous' if this discreteness is "
-                            "coincidental (e.g. a metric that happens to only "
-                            "take a few values in your sample).",
+                            f"range {resolved_score_range}). For single-run "
+                            "pairwise comparisons, evalstats uses NIG (validated "
+                            "as better-calibrated than logit-t there for this "
+                            "kind of data); other analyses on this data "
+                            "(marginal CIs, multi-run pairwise comparisons) "
+                            "still use logit-t, the same as continuous data, "
+                            "pending their own validation -- see "
+                            "config.AUTO_ANALYZE_METHOD_TABLE's 'likert' row. "
+                            "Pass eval_type='likert' explicitly to silence this "
+                            "warning, or eval_type='continuous' if this "
+                            "discreteness is coincidental (e.g. a metric that "
+                            "happens to only take a few values in your sample).",
                             UserWarning,
                             stacklevel=2,
                         )

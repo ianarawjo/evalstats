@@ -1967,27 +1967,26 @@ def _simultaneous_cis_router(
     else joint bootstrap with an effective alpha (``"boot"``,
     :func:`_joint_bootstrap_scaled_simultaneous_cis`). Both widen whichever
     canonical closed-form pairwise CI formula the data resolves to -- Tango
-    for binary data, NIG for discrete/ordinal bounded data (a Likert scale,
-    an integer percentage grade), logit-t for genuinely continuous bounded
-    data, plain t-interval as the bounds-agnostic fallback for everything
-    else -- the same per-data-kind formula
-    :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE` already uses for the
-    *non*-simultaneous pairwise CI, so Sidak/boot always widen the formula
-    that would otherwise have been shown, regardless of which resampling
-    *method* (bootstrap, bca, ...) the point estimate itself used.
+    for binary data, logit-t for any bounded numeric range (*score_range*),
+    plain t-interval as the bounds-agnostic fallback for everything else --
+    the same per-data-kind formula :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`
+    already uses for the *non*-simultaneous pairwise CI on genuinely
+    continuous data, so Sidak/boot always widen the formula that would
+    otherwise have been shown, regardless of which resampling *method*
+    (bootstrap, bca, ...) the point estimate itself used.
 
-    ``eval_type`` distinguishes discrete/ordinal ("likert") from genuinely
-    continuous data within a known bounded range -- both would otherwise
-    collapse to the same "bounded_01" treatment, but they need different CI
-    formulas (see the "likert" row of AUTO_ANALYZE_METHOD_TABLE for why).
-    When ``None`` (default) and the data has a known range but no explicit
-    ``eval_type``, this auto-detects via
-    :func:`~evalstats.core.resampling.detect_quantization_step` and emits a
-    ``UserWarning`` if it switches to the likert treatment -- pass
-    ``eval_type`` explicitly to silence that warning either way, or when
-    called from :func:`~evalstats.core.router.analyze` (which does its own
-    detection once and passes the resolved value down here), to avoid
-    re-detecting and re-warning redundantly.
+    ``eval_type`` is accepted but currently NOT used to change which
+    ci_func gets widened here: bounded numeric data always uses logit-t in
+    this function, even when it's discrete/ordinal (Likert-scale) data
+    that :func:`pairwise_differences`'s own ``method="nig"`` path (and
+    :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`'s "likert" row,
+    single-run pairwise only) would use NIG for instead. That's
+    deliberate, not an oversight -- the k>=3 construction built here has
+    only ever been tested with NIG's OLD, buggy prior (before
+    ``_NIG_PAIRED_DIFF_B0`` fixed it), never re-validated post-fix, so it
+    isn't trusted yet. The parameter stays so callers/``analyze()`` don't
+    need reverting too, and so wiring NIG back in here is a small,
+    localized change once that validation exists.
 
     Historical note: this used to default unconditionally to Bonferroni
     (with the studentized bootstrap max-T method as the sole opt-in
@@ -2052,31 +2051,22 @@ def _simultaneous_cis_router(
         if is_binary:
             data_kind = "binary"
         elif score_range is not None:
-            if eval_type == "likert":
-                data_kind = "likert"
-            elif eval_type == "continuous":
-                data_kind = "bounded_01"
-            else:
-                from .resampling import detect_quantization_step
-                step = detect_quantization_step(scores)
-                if step is not None:
-                    data_kind = "likert"
-                    warnings.warn(
-                        f"Bounded numeric data was auto-detected as discrete/"
-                        f"ordinal (grid step={step:g} within range {score_range}), "
-                        f"so evalstats is using NIG-based methods calibrated for "
-                        f"Likert-style/discrete data instead of the continuous "
-                        f"default (logit-t) for the simultaneous CI. Pass "
-                        f"eval_type='likert' to silence this warning, or "
-                        f"eval_type='continuous' if this discreteness is "
-                        f"coincidental.",
-                        UserWarning,
-                        stacklevel=4,
-                    )
-                else:
-                    data_kind = "bounded_01"
+            data_kind = "bounded_01"
         else:
             data_kind = "unbounded"
+        # NOTE: eval_type is deliberately NOT consulted here (unlike
+        # pairwise_differences()'s method="nig" path, which IS validated
+        # for single-run pairwise likert data -- see
+        # config.AUTO_ANALYZE_METHOD_TABLE's "likert" row). The k>=3
+        # simultaneous/family-wise construction this function builds
+        # (Sidak/joint-bootstrap-widened) has only ever been tested with
+        # NIG's OLD, buggy prior (before core.paired._NIG_PAIRED_DIFF_B0
+        # fixed it) -- never re-validated post-fix -- so likert data still
+        # gets the same logit-t-based ci_func as genuinely continuous
+        # "bounded_01" data here, until that gets its own dedicated
+        # validation. eval_type stays a parameter (rather than being
+        # removed) so callers/analyze() don't need reverting too, and so
+        # re-enabling this is a small, localized change once ready.
 
         resolved = prefer
         if prefer == "auto":
@@ -2088,13 +2078,6 @@ def _simultaneous_cis_router(
 
         if data_kind == "binary":
             ci_func = tango_paired_ci_from_diffs
-        elif data_kind == "likert":
-            diff_span = score_range[1] - score_range[0]
-            diff_lo, diff_hi = -diff_span, diff_span
-            _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
-
-            def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi, _fn=_nig_paired):
-                return rescaled_ci(_fn, diffs, alpha, _lo, _hi)
         elif data_kind == "bounded_01":
             diff_span = score_range[1] - score_range[0]
             diff_lo, diff_hi = -diff_span, diff_span
@@ -2196,16 +2179,16 @@ def all_pairwise(
         the ``"auto"`` (default) table lookup: ``"sidak"``, ``"boot"``,
         ``"max_t"``, or ``"bonferroni"``.
     eval_type : "likert", "continuous", or None
-        Distinguishes discrete/ordinal bounded data (a Likert scale, an
-        integer percentage grade) from genuinely continuous bounded data --
-        both share the same ``score_range``-known-bounds treatment
-        otherwise, but need different CI formulas (NIG vs logit-t; see
-        ``config.AUTO_ANALYZE_METHOD_TABLE``'s "likert" row). When ``None``
-        (default), auto-detects via
-        :func:`~evalstats.core.resampling.detect_quantization_step` and
-        warns if it switches to the likert treatment. Only relevant when
-        ``score_range`` is given (or an exact ``[0, 1]`` range is
-        detected) and ``method``/point-estimate data isn't binary.
+        Accepted for forward-compatibility with :func:`analyze`, but
+        currently has NO effect on the simultaneous CI this function
+        computes when ``simultaneous_ci=True`` (the default) -- see
+        :func:`_simultaneous_cis_router`'s docstring for why (the k>=3
+        widened construction hasn't been validated for NIG post-fix, so it
+        always widens logit-t for any bounded numeric range regardless of
+        ``eval_type``). It DOES matter for the individual per-pair CI when
+        ``method="nig"`` is requested explicitly, or resolved via
+        ``method="auto"`` + single-run likert data (see
+        ``config.AUTO_ANALYZE_METHOD_TABLE``) -- that path is validated.
     omnibus : bool
         When ``True``, run the Friedman omnibus test (with Nemenyi post-hoc)
         alongside the pairwise comparisons.  Requires k ≥ 3.  Defaults to

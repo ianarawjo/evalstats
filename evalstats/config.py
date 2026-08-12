@@ -166,8 +166,8 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     AutoAnalyzeRule(
         data_kind="likert", max_n=None,
         pairwise_method="nig",
-        robustness_method_single_run="nig",
-        robustness_method_seeded="nig_nested",
+        robustness_method_single_run="logit_t",
+        robustness_method_seeded="logit_t",
         reason=(
             "Discrete/ordinal bounded data (a Likert scale, an integer "
             "percentage grade, or anything else with a real quantization "
@@ -175,7 +175,9 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
             "an explicit eval_type='likert', or auto-detected via "
             "detect_quantization_step() (core/resampling.py) when no "
             "eval_type is given, with a UserWarning explaining the switch. "
-            "Uses NIG rather than logit-t: a paired diff of two highly "
+            "Uses NIG rather than logit-t for the PAIRWISE, single-run case "
+            "ONLY (see resolve_auto_analyze_methods -- pairwise falls back "
+            "to logit_t when seeded=True): a paired diff of two highly "
             "correlated Likert arms can lose real variance to rounding "
             "cancellation (most items round identically in both arms, only "
             "boundary-adjacent items differ), which at small N can leave "
@@ -193,12 +195,32 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
             "a paired diff's rescale span, which is twice as wide -- see "
             "core.paired._NIG_PAIRED_DIFF_B0), so the historical comparison "
             "that dropped NIG likely made it look needlessly conservative "
-            "compared to logit-t. Re-validated post-fix (reps=300, n=10-500, "
-            "icc=0.01-0.95): NIG beats logit-t on likert score at every N up "
-            "to 500 (17% better at n=10, converging to a tie by n=500), "
-            "while logit-t remains the better (if only marginally) choice "
-            "for genuinely continuous 'bounded_01' data, where NIG's extra "
-            "conservatism buys no corresponding robustness."
+            "compared to logit-t. Re-validated post-fix, single-run only "
+            "(reps=300, n=10-500, icc=0.01-0.95): NIG beats logit-t on "
+            "likert score at every N up to 500 (17% better at n=10, "
+            "converging to a tie by n=500).\n\n"
+            "DELIBERATELY NOT yet extended to: (1) seeded/multi-run "
+            "pairwise -- one nested-mode check looked consistent, but "
+            "hasn't had the same adversarial stress-testing (boundary-"
+            "clipping bias, detector edge cases) the single-run path went "
+            "through before being trusted; (2) marginal/robustness CIs "
+            "(the 'nig'/'nig_nested' single-sample case in "
+            "core/variance.py's robustness_metrics()) -- never directly "
+            "tested; a check of a *different*, harness-only "
+            "reimplementation (simulations/harness/cases/ci_single.py) "
+            "isn't a substitute for testing this actual production code "
+            "path; (3) the simultaneous/family-wise (k>=3) Sidak/joint-"
+            "bootstrap-widened construction in "
+            "core.paired._simultaneous_cis_router -- only tested with the "
+            "OLD, buggy prior (before core.paired._NIG_PAIRED_DIFF_B0), "
+            "never re-validated post-fix, so that router still widens "
+            "logit-t's formula for likert data too (see its own "
+            "docstring). Widen this rule's scope only as each of these "
+            "gets its own dedicated validation -- logit-t remains the "
+            "default everywhere NIG hasn't been proven, including for "
+            "genuinely continuous 'bounded_01' data, where NIG's extra "
+            "conservatism buys no corresponding robustness in the first "
+            "place."
         ),
     ),
     AutoAnalyzeRule(
@@ -248,7 +270,15 @@ def resolve_auto_analyze_methods(
         if rule.max_n is not None and n >= rule.max_n:
             continue
         robustness = rule.robustness_method_seeded if seeded else rule.robustness_method_single_run
-        return rule.pairwise_method, robustness
+        pairwise = rule.pairwise_method
+        if pairwise == "nig" and seeded:
+            # NIG's paired-diff fix is only validated for single-run
+            # (non-seeded) data so far -- see AUTO_ANALYZE_METHOD_TABLE's
+            # "likert" row's reason for exactly what's and isn't verified.
+            # Multi-run pairwise falls back to logit_t until that path gets
+            # its own dedicated validation.
+            pairwise = "logit_t"
+        return pairwise, robustness
     raise AssertionError(
         f"no AUTO_ANALYZE_METHOD_TABLE rule matched data_kind={data_kind!r}, n={n}"
     )
