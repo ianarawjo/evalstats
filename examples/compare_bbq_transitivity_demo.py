@@ -32,7 +32,13 @@ import numpy as np
 import pandas as pd
 
 import evalstats as es
+from evalstats.core.summary import print_analysis_summary
 
+
+# Width (in characters) of the ASCII gradient bars in the terminal output --
+# print_analysis_summary()'s own default (41) renders wide; shrink this if
+# you need the output to fit a narrower terminal or a screenshot crop.
+LINE_WIDTH = 41
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SOURCE_PATH = REPO_ROOT / "simulations" / "out" / "inspect_benchmarks.csv"
@@ -80,7 +86,12 @@ print()
 evaldata = es.load_from(long_df)
 result = es.compare(
     evaldata, factors="model", score_range=(0, 1),
-    correction="fdr_bh",  # matches `evalstats analyze`'s CLI default
+    # correction left at its default ("auto" -- resolves to "shaffer" or
+    # "romano_wolf" depending on N and data shape; matches `evalstats
+    # analyze`'s own default too).
     rng=np.random.default_rng(SEED + 1),
 )
-result.summary(top_pairwise=5, p_value_method="wsr")
+print_analysis_summary(
+    result.full_analysis, top_pairwise=5, p_value_method="wsr",
+    line_width=LINE_WIDTH, item_singular="model", item_plural="models",
+)

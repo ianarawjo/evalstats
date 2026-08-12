@@ -228,6 +228,37 @@ def test_print_summary_multimodel_single_prompt_does_not_crash(capsys):
     assert "Model 2" in out
 
 
+def test_print_summary_multimodel_single_prompt_skips_degenerate_sections(capsys):
+    # With only one prompt, "Cross-model per-template comparison" (nothing
+    # to compare across templates) and the per-model breakdown loop (each
+    # model's "breakdown across templates" is just its one already-shown
+    # number again) are pure noise -- they used to print anyway. The
+    # meaningful "Model-level comparison" (3 models IS something to
+    # compare) should still print.
+    rng = np.random.default_rng(0)
+    n_models, n_inputs = 3, 60
+    target_means = np.array([7.0, 8.0, 6.5])
+    scores = np.empty((n_models, 1, n_inputs), dtype=float)
+    for model_idx in range(n_models):
+        scores[model_idx, 0] = rng.normal(loc=target_means[model_idx], scale=0.8, size=n_inputs)
+    scores = np.clip(scores, 0.0, 10.0)
+    result = es.MultiModelBenchmark(
+        scores=scores,
+        model_labels=["Model 1", "Model 2", "Model 3"],
+        template_labels=["Prompt A"],
+        input_labels=[f"item_{i:03d}" for i in range(n_inputs)],
+    )
+
+    analysis = es.analyze(result, n_bootstrap=300, rng=np.random.default_rng(1))
+    es.print_analysis_summary(analysis, top_pairwise=3)
+
+    out = capsys.readouterr().out
+    assert "Cross-model per-template comparison" not in out
+    assert "Per-Model Summary" not in out
+    # _print_loud_section banner-cases its text.
+    assert "MODEL-LEVEL COMPARISON" in out
+
+
 def test_print_summary_includes_critical_difference_groups(capsys):
     # Three identical templates => Nemenyi should mark all as indistinguishable.
     scores = np.array(

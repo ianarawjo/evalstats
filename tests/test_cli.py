@@ -277,7 +277,7 @@ def test_build_parser_accepts_all_option_permutations():
     cis = ["0.90", "0.99"]
     ci_styles = ["gradient", "line"]
     n_bootstraps = ["100", "2500"]
-    corrections = ["holm", "bonferroni", "fdr_bh", "none"]
+    corrections = ["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"]
     references = ["grand_mean", "Prompt A"]
     failure_thresholds = [None, "0.35"]
     top_pairwise_vals = ["1", "10"]
@@ -349,7 +349,18 @@ def test_build_parser_accepts_all_option_permutations():
         assert args.top_pairwise == int(top_pairwise)
         combos_checked += 1
 
-    assert combos_checked == 3072
+    assert combos_checked == 6144
+
+
+def test_build_parser_correction_defaults_to_auto():
+    # Regression test: --correction used to default to "fdr_bh", which
+    # resolve_auto_pvalue_correction_method() (the actual auto-resolution
+    # logic behind analyze()'s own correction="auto" default) never
+    # produces -- it only ever resolves to "shaffer" or "romano_wolf". The
+    # CLI's default now matches analyze()'s.
+    parser = cli._build_parser()
+    args = parser.parse_args(["analyze", "data.csv"])
+    assert args.correction == "auto"
 
 
 @pytest.mark.parametrize(

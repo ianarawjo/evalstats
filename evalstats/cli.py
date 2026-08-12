@@ -223,9 +223,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     analyze.add_argument(
         "--correction",
-        choices=["holm", "bonferroni", "fdr_bh", "none"],
-        default="fdr_bh",
-        help="Multiple-comparisons p-value correction (default: fdr_bh).",
+        choices=["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"],
+        default="auto",
+        help=(
+            "Multiple-comparisons p-value correction (default: auto, matching "
+            "analyze()'s own default -- resolves to 'shaffer' or 'romano_wolf' "
+            "depending on N and data shape, never 'fdr_bh')."
+        ),
     )
     analyze.add_argument(
         "--reference",

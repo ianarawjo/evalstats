@@ -464,9 +464,10 @@ def print_pairwise_summary(
         multi_ci=pair.multi_ci,
     )
     ci_legend = _legend_ci_label(style, ci_pct, pair.multi_ci is not None)
+    mean_marker = _mean_marker_legend(style, pair.statistic)
     print(
         f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-        f"(· ±1σ spread, {ci_legend}, ● {pair.statistic}, │ zero)"
+        f"(· ±1σ spread, {ci_legend}{mean_marker}, │ zero)"
     )
     print(f"  {b} (<0) {line} (>0) {a}")
     print()
@@ -634,6 +635,12 @@ def _print_multi_model_summary(
     print(f"{_BOLD}Best pair by mean:{_RESET} model='{_BRIGHT_GREEN}{best_model}{_RESET}'  template='{_BRIGHT_GREEN}{best_template}{_RESET}'")
     print()
 
+    # MultiModelBenchmark requires >= 2 models, so this section (comparing
+    # across models) always has something to show. The per-template section
+    # right below it doesn't have the same guarantee -- a single implicit
+    # template is common (e.g. a plain model-only comparison) -- so it, and
+    # the equally-degenerate per-model breakdown loop further down, are
+    # skipped when there's nothing to compare there.
     _print_loud_section("Model-level comparison (across all prompts):")
     _print_bundle_summary(
         bundle.model_level,
@@ -646,23 +653,23 @@ def _print_multi_model_summary(
         min_meaningful_diff=min_meaningful_diff,
         show_rank_probabilities=show_rank_probabilities,
     )
-
     print()
-    _print_loud_section("Cross-model per-template comparison (models collapsed):")
-    _print_bundle_summary(
-        bundle.template_level,
-        top_pairwise=top_pairwise,
-        line_width=line_width,
-        item_singular="template",
-        item_plural="templates",
-        pairwise_sort=pairwise_sort,
-        style=style,
-        min_meaningful_diff=min_meaningful_diff,
-        show_rank_probabilities=show_rank_probabilities,
-    )
-    best_idx = int(np.argmax(bundle.template_level.robustness.mean))
-    best_template = bundle.template_level.benchmark.template_labels[best_idx]
-    
+
+    if bundle.benchmark.n_templates > 1:
+        _print_loud_section("Cross-model per-template comparison (models collapsed):")
+        _print_bundle_summary(
+            bundle.template_level,
+            top_pairwise=top_pairwise,
+            line_width=line_width,
+            item_singular="template",
+            item_plural="templates",
+            pairwise_sort=pairwise_sort,
+            style=style,
+            min_meaningful_diff=min_meaningful_diff,
+            show_rank_probabilities=show_rank_probabilities,
+        )
+        print()
+
     # Instability across runs across models
     instability_rows = _collect_cross_model_seed_instability_rows(bundle)
     if instability_rows:
@@ -674,18 +681,19 @@ def _print_multi_model_summary(
             f"(instability={instability:.4f}, {_instability_label(instability)})"
         )
 
-    for model_label, model_bundle in bundle.per_model.items():
-        print()
-        _print_loud_section(f"Per-Model Summary: {model_label}")
-        _print_bundle_summary(
-            model_bundle,
-            top_pairwise=top_pairwise,
-            line_width=line_width,
-            pairwise_sort=pairwise_sort,
-            style=style,
-            guidance=False,
-            show_rank_probabilities=show_rank_probabilities,
-        )
+    if bundle.benchmark.n_templates > 1:
+        for model_label, model_bundle in bundle.per_model.items():
+            print()
+            _print_loud_section(f"Per-Model Summary: {model_label}")
+            _print_bundle_summary(
+                model_bundle,
+                top_pairwise=top_pairwise,
+                line_width=line_width,
+                pairwise_sort=pairwise_sort,
+                style=style,
+                guidance=False,
+                show_rank_probabilities=show_rank_probabilities,
+            )
 
     print()
     _print_loud_section("Cross-Model Ranking (all model/template pairs)")
@@ -759,9 +767,10 @@ def _print_multi_model_summary(
     print()
     _print_subsection(f"--- {stat_label} Performance: All {n_show} (marginal CIs) ---")
     _ci_legend_mm = _legend_ci_label(style, int(round((1 - get_alpha_ci()) * 100)), cross_rob.multi_ci is not None)
+    _mean_marker_mm = _mean_marker_legend(style, stat_label.lower())
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]  "
-        f"(· ±1σ, {_ci_legend_mm}, ● {stat_label.lower()}, │ {ref_label_str})"
+        f"(· ±1σ, {_ci_legend_mm}{_mean_marker_mm}, │ {ref_label_str})"
     )
     print(
         f"  {'Model':<{model_col_width}s} "
@@ -1106,16 +1115,16 @@ def _print_pairwise_section(
 
     pair_p_col_width = max(10, len(p_col_header)) if p_col_header else 0
 
-    _pairwise_header_method = first_result.test_method
+    # Correction/simultaneous-CI method used to get nested into the section
+    # header itself (e.g. "Pairwise Comparisons (tango (romano_wolf-corrected
+    # p-values) (simultaneous CIs computed with max-T))") -- easy to miss and
+    # hard to parse. Keep the header to just the base test method; the full
+    # methods line prints explicitly below the table instead (see
+    # methods_summary_line below), mirroring the matplotlib forest plot's
+    # subtitle convention.
     corr = bundle.pairwise.correction_method
-    if eff_p_source is not None and corr and corr != "none":
-        _pairwise_header_method += f" ({corr}-corrected p-values)"
     sim_ci_method = bundle.pairwise.simultaneous_ci_method
-    if sim_ci_method == "max_t":
-        _pairwise_header_method += " (simultaneous CIs computed with max-T)"
-    elif sim_ci_method == "bonferroni":
-        _pairwise_header_method += " (simultaneous CIs computed with Bonferroni)"
-    _print_subsection(f"--- Pairwise Comparisons ({_pairwise_header_method}) ---")
+    _print_subsection(f"--- Pairwise Comparisons ({first_result.test_method}) ---")
     pair_results = list(bundle.pairwise.results.values())
 
     # Canonical left/right ordering based on expected-rank order keeps rows
@@ -1256,8 +1265,9 @@ def _print_pairwise_section(
         )
         _pair_ci_pct = int(round((1 - get_alpha_ci()) * 100))
         _pair_ci_legend = _legend_ci_label(style, _pair_ci_pct, _any_multi_ci)
+        _pair_mean_marker = _mean_marker_legend(style, pair_stat_label.lower())
         print(
-            f"  legend: (· ±1σ, {_pair_ci_legend}, ● {pair_stat_label.lower()}, │ zero)    "
+            f"  legend: (· ±1σ, {_pair_ci_legend}{_pair_mean_marker}, │ zero)    "
             f"axis: [{pair_low:+.3f}, {pair_high:+.3f}]    "
             "effect: Left - Right"
         )
@@ -1335,6 +1345,18 @@ def _print_pairwise_section(
             print(f"  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
         if eff_p_source is not None:
             print("  stars: * p<0.01, ** p<0.001, *** p<0.0001")
+        # Explicit methods line (CI method / FWER correction / simultaneous
+        # CIs / alpha), mirroring the matplotlib forest plot's subtitle --
+        # stated plainly here instead of nested into the section header.
+        _methods_parts = [f"CI method: {first_result.test_method}"]
+        if corr and corr != "none":
+            _methods_parts.append(f"FWER correction: {corr}")
+        if sim_ci_method == "max_t":
+            _methods_parts.append("Simultaneous CIs: max-T")
+        elif sim_ci_method == "bonferroni":
+            _methods_parts.append("Simultaneous CIs: Bonferroni")
+        _methods_parts.append(f"α={get_alpha_ci():g}")
+        print(f"  {'  |  '.join(_methods_parts)}")
         print()
         labels_sorted = [
             label
@@ -1447,9 +1469,10 @@ def _print_mean_advantage(
     ref_label = "grand mean"
     ci_pct = int(round((1 - get_alpha_ci()) * 100))
     _ci_legend_ma = _legend_ci_label(style, ci_pct, rob.multi_ci is not None)
+    _mean_marker_ma = _mean_marker_legend(style, stat_label.lower())
     print(
         f"  axis: [{ma_low:.3f}, {ma_high:.3f}]"
-        f"  (· ±1σ, {_ci_legend_ma}, ● {stat_label.lower()}, │ {ref_label})"
+        f"  (· ±1σ, {_ci_legend_ma}{_mean_marker_ma}, │ {ref_label})"
     )
     print(
         f"  {item_singular_title:<{template_col_width}s} {'Interval Plot':<{line_width}s} {stat_label:>8s} "
@@ -1510,7 +1533,7 @@ def _print_bundle_summary(
     )
     print()
 
-    _print_subsection("--- Robustness ---")
+    _print_subsection("--- Descriptive Statistics ---")
     _rob_df = bundle.robustness.summary_table()
     _rob_df.index.name = item_singular
     print(_rob_df.to_string())
@@ -1902,9 +1925,10 @@ def _print_factorial_lmm_summary(
             level_w = min(28, max(len("Level"), max(len(str(v)) for v in mm_sorted["level"]) + 2))
 
             _ci_legend_mm = _legend_ci_label(style, ci_pct, style == "gradient")
+            _mean_marker_lmm = _mean_marker_legend(style, "mean")
             print(
                 f"  axis: [{axis_low:+.3f}, {axis_high:+.3f}]  "
-                f"(· ±SE, {_ci_legend_mm}, ● mean, │ factor mean)"
+                f"(· ±SE, {_ci_legend_mm}{_mean_marker_lmm}, │ factor mean)"
             )
             print(
                 f"  {'Level':<{level_w}s} {'Interval Plot':<{line_width}s} "
@@ -2251,6 +2275,21 @@ def _legend_ci_label(style: str, ci_pct: int, multi_ci_available: bool) -> str:
         )
         return f"░▒▓█ CI gradient [{bands}]"
     return f"─ {ci_pct}% CI"
+
+
+def _mean_marker_legend(style: str, label: str) -> str:
+    """Return the ', ● <label>' legend fragment, or '' when the renderer
+    won't actually draw a '●' anywhere.
+
+    _gradient_interval_line (style="gradient", the default everywhere in
+    this file) computes a mean index but never assigns a '●' character --
+    only _ascii_interval_line (style="line") does. A legend that always
+    said "● mean" regardless of style was misleading readers into looking
+    for a marker that gradient output never draws.
+    """
+    if style == "gradient":
+        return ""
+    return f", ● {label}"
 
 
 def _ascii_interval_line(

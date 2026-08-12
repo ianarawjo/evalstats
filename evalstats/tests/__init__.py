@@ -482,13 +482,18 @@ def _run_alignment_report(llm_all: np.ndarray, human_sparse: np.ndarray):
     AlignmentResult
     """
     from evalstats.alignment import judge_alignment
-    from evalstats.loader import _detect_score_type
+    from evalstats.loader import EvalResults, _detect_score_type
 
     _LLM = "__llm__"
     _HUM = "__human__"
     df = pd.DataFrame({_LLM: llm_all, _HUM: human_sparse})
 
-    class _EvalStub:
+    class _EvalStub(EvalResults):
+        # judge_alignment() dispatches on isinstance(x, EvalResults) -- a
+        # real (if minimal) subclass rather than a duck-typed lookalike, so
+        # it doesn't need EvalResults' full constructor args (metric_cols/
+        # col/factor_cols), none of which _judge_alignment_from_evaldata
+        # actually reads; only ._df and ._score_types are used.
         def __init__(self):
             self._df = df
             self._score_types = {_LLM: _detect_score_type(pd.Series(llm_all))}
