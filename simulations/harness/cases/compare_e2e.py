@@ -443,19 +443,28 @@ def _score_bundle(bundle, true_means: np.ndarray, k: int, alpha: float, is_null:
     )
 
 
-def _run_truth_only_compare(scores: np.ndarray, rng: np.random.Generator, score_range, n_bootstrap: int):
+def _run_truth_only_compare(
+    scores: np.ndarray, rng: np.random.Generator, score_range, n_bootstrap: int,
+    es_eval_type: Optional[str] = None,
+):
     """Run compare() directly on TRUTH values as the score (no judge noise,
     no alignment= needed -- there's no judge bias to correct when every
     point already IS the ground truth). Used for the two reference-estimator
     comparisons: 'oracle' (every item human-labeled, scores=full truth array)
     and 'subset-only' (only the labeled items, scores=truth[:, labeled_items],
     the LLM-scored majority discarded entirely). Returns the bundle, or None
-    if compare() itself failed."""
+    if compare() itself failed.
+
+    es_eval_type : compare()'s own eval_type=("likert"|"continuous"|None)
+        kwarg -- see _run_cell's docstring note on why this is passed
+        explicitly rather than left to auto-detection."""
     df = _build_dataframe(scores, None)
     evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
     kwargs = {"n_bootstrap": n_bootstrap}
     if score_range is not None:
         kwargs["score_range"] = score_range
+    if es_eval_type is not None:
+        kwargs["eval_type"] = es_eval_type
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         cr = es.compare(evaldata, factors="model", metric="score", rng=rng, **kwargs)
@@ -499,6 +508,16 @@ def _run_cell(
 
     n_labeled = max(1, round(n_items * ppi_frac)) if ppi_frac is not None else 0
     score_range = EVAL_TYPE_SCALE_BOUNDS[eval_type] if eval_type == "likert" else None
+    # compare()'s own eval_type=("likert"|"continuous") kwarg -- narrower
+    # than this file's own eval_type (which also has "binary"/"grades",
+    # neither meaningful to compare()'s param). Passed explicitly rather
+    # than left to compare()'s auto-detection (which would otherwise infer
+    # the same thing from the data's own quantization grid) so this test's
+    # intent is pinned down in the code, not implicit -- and so a future
+    # reader isn't left wondering whether a compare() call quietly started
+    # resolving to nig instead of logit_t because of a detection heuristic,
+    # rather than a deliberate choice recorded here.
+    es_eval_type = eval_type if eval_type in ("likert", "continuous") else None
 
     result = CompareE2EResult(
         eval_type=eval_type, shape_label=shape.label, k=k, n_items=n_items,
@@ -528,6 +547,8 @@ def _run_cell(
                     kwargs["alignment"] = {"score": ar}
             if score_range is not None:
                 kwargs["score_range"] = score_range
+            if es_eval_type is not None:
+                kwargs["eval_type"] = es_eval_type
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
                 cr = es.compare(evaldata, factors="model", metric="score", rng=rng, **kwargs)
@@ -571,7 +592,7 @@ def _run_cell(
                     _apply_judge_noise(truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
                     if eval_type == "continuous" else truth
                 )
-                oracle_bundle = _run_truth_only_compare(oracle_scores, rng, score_range, n_bootstrap)
+                oracle_bundle = _run_truth_only_compare(oracle_scores, rng, score_range, n_bootstrap, es_eval_type)
                 if oracle_bundle is not None:
                     osc = _score_bundle(oracle_bundle, truth_means, k, alpha, is_null)
                     result.oracle_marginal_covered += osc["marginal_covered"]
@@ -592,7 +613,7 @@ def _run_cell(
                     _apply_judge_noise(subset_truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
                     if eval_type == "continuous" else subset_truth
                 )
-                subset_bundle = _run_truth_only_compare(subset_scores, rng, score_range, n_bootstrap)
+                subset_bundle = _run_truth_only_compare(subset_scores, rng, score_range, n_bootstrap, es_eval_type)
                 if subset_bundle is not None:
                     ssc = _score_bundle(subset_bundle, truth_means, k, alpha, is_null)
                     result.subset_marginal_covered += ssc["marginal_covered"]
