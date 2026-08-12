@@ -224,28 +224,27 @@ def test_stability_rejects_1d_input():
 
 
 # ---------------------------------------------------------------------------
-# judge_debias_mean_ci
+# judge_debias_mean_ci -- (judge_scores, human_scores) sparse form:
+# same length, human_scores is NaN outside the labeled subset.
 # ---------------------------------------------------------------------------
+
+def _sparse_debias_pair(rng, n_total, n_labeled, *, true_mean=0.55, bias=0.2):
+    human_all = np.clip(rng.normal(true_mean, 0.15, n_total), 0, 1)
+    judge_all = np.clip(human_all + bias + rng.normal(0, 0.05, n_total), 0, 1)
+    idx = rng.choice(n_total, n_labeled, replace=False)
+    human_sparse = np.full(n_total, np.nan)
+    human_sparse[idx] = human_all[idx]
+    return judge_all, human_sparse
+
 
 def test_judge_debias_mean_ci_recovers_true_mean_better_than_raw_judge():
     rng = _rng(30)
-    n_total, n_labeled = 400, 40
-    true_mean = 0.55
-    bias = 0.2
+    n_total, n_labeled, true_mean = 400, 40, 0.55
+    judge, human = _sparse_debias_pair(rng, n_total, n_labeled, true_mean=true_mean)
 
-    human_all = np.clip(rng.normal(true_mean, 0.15, n_total), 0, 1)
-    judge_all = np.clip(human_all + bias + rng.normal(0, 0.05, n_total), 0, 1)
-
-    idx = rng.choice(n_total, n_labeled, replace=False)
-    mask = np.zeros(n_total, dtype=bool)
-    mask[idx] = True
-
-    result = es.judge_debias_mean_ci(
-        unlabeled_judge_scores=judge_all[~mask],
-        labeled_human_scores=human_all[mask],
-        labeled_judge_scores=judge_all[mask],
-        rng=_rng(31),
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = es.judge_debias_mean_ci(judge, human, rng=_rng(31))
     assert isinstance(result, DebiasedMeanCI)
     # Corrected mean must be closer to the true mean than the raw judge mean.
     assert abs(result.mean - true_mean) < abs(result.judge_mean - true_mean)
@@ -257,69 +256,120 @@ def test_judge_debias_mean_ci_recovers_true_mean_better_than_raw_judge():
 
 def test_judge_debias_mean_ci_to_dict():
     rng = _rng(32)
-    human = rng.normal(0.5, 0.1, 20)
-    judge = human + rng.normal(0, 0.05, 20)
-    unlabeled = rng.normal(0.6, 0.1, 100)
-    d = es.judge_debias_mean_ci(unlabeled, human, judge, rng=_rng(1)).to_dict()
+    judge, human = _sparse_debias_pair(rng, n_total=150, n_labeled=20)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        d = es.judge_debias_mean_ci(judge, human, rng=_rng(1)).to_dict()
     assert set(d.keys()) == {
         "mean", "ci_low", "ci_high", "judge_mean", "human_mean",
         "rectifier", "p_value", "n_labeled", "n_unlabeled",
     }
 
 
-def test_judge_debias_mean_ci_rejects_mismatched_labeled_shapes():
+def test_judge_debias_mean_ci_rejects_mismatched_shapes():
     rng = _rng(33)
-    with pytest.raises(ValueError, match="paired, same-shape"):
-        es.judge_debias_mean_ci(
-            unlabeled_judge_scores=rng.normal(0.5, 0.1, 50),
-            labeled_human_scores=rng.normal(0.5, 0.1, 20),
-            labeled_judge_scores=rng.normal(0.5, 0.1, 19),
-        )
+    with pytest.raises(ValueError, match="same length"):
+        es.judge_debias_mean_ci(rng.normal(0.5, 0.1, 60), rng.normal(0.5, 0.1, 59))
 
 
-def test_judge_debias_mean_ci_warns_below_15_labeled():
+def test_judge_debias_mean_ci_rejects_below_15_labeled():
     rng = _rng(34)
-    with pytest.warns(UserWarning, match="labeled items"):
-        es.judge_debias_mean_ci(
-            unlabeled_judge_scores=rng.normal(0.5, 0.1, 50),
-            labeled_human_scores=rng.normal(0.5, 0.1, 10),
-            labeled_judge_scores=rng.normal(0.5, 0.1, 10),
-        )
+    judge, human = _sparse_debias_pair(rng, n_total=100, n_labeled=10)
+    with pytest.raises(ValueError, match="at least 15 human-labeled"):
+        es.judge_debias_mean_ci(judge, human)
+
+
+def test_judge_debias_mean_ci_rejects_below_50_total():
+    rng = _rng(35)
+    judge, human = _sparse_debias_pair(rng, n_total=40, n_labeled=20)
+    with pytest.raises(ValueError, match="at least 50 items total"):
+        es.judge_debias_mean_ci(judge, human)
+
+
+def test_judge_debias_mean_ci_rejects_all_items_labeled():
+    rng = _rng(36)
+    n = 60
+    human_all = np.clip(rng.normal(0.5, 0.1, n), 0, 1)
+    judge_all = np.clip(human_all + rng.normal(0, 0.05, n), 0, 1)
+    with pytest.raises(ValueError, match="no unlabeled portion"):
+        es.judge_debias_mean_ci(judge_all, human_all)  # no NaN at all
+
+
+def test_judge_debias_mean_ci_warns_below_30_labeled_and_100_total():
+    rng = _rng(37)
+    judge, human = _sparse_debias_pair(rng, n_total=80, n_labeled=20)
+    with pytest.warns(UserWarning, match="only 20 human-labeled"):
+        es.judge_debias_mean_ci(judge, human)
+    with pytest.warns(UserWarning, match="only 80 total items"):
+        es.judge_debias_mean_ci(judge, human)
+
+
+def test_judge_debias_mean_ci_always_warns_about_random_sampling():
+    """Even with plenty of labels, the random-sampling assumption reminder
+    should always fire -- it's a modeling assumption, not a sample-size
+    issue, so it shouldn't be silenced just because n is large."""
+    rng = _rng(38)
+    judge, human = _sparse_debias_pair(rng, n_total=300, n_labeled=60)
+    with pytest.warns(UserWarning, match="unbiased sample.*uniformly at random"):
+        es.judge_debias_mean_ci(judge, human)
 
 
 def test_judge_debias_mean_ci_compute_pvalue_opt_in():
-    rng = _rng(35)
-    result = es.judge_debias_mean_ci(
-        unlabeled_judge_scores=rng.normal(0.5, 0.1, 50),
-        labeled_human_scores=rng.normal(0.5, 0.1, 20),
-        labeled_judge_scores=rng.normal(0.5, 0.1, 20),
-        compute_pvalue=True,
-    )
+    rng = _rng(39)
+    judge, human = _sparse_debias_pair(rng, n_total=150, n_labeled=20)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        result = es.judge_debias_mean_ci(judge, human, compute_pvalue=True)
     assert result.p_value is not None
 
 
 # ---------------------------------------------------------------------------
-# judge_alignment -- array-based path
+# judge_alignment -- array-based path (judge_scores, human_scores),
+# human_scores sparse (NaN for unlabeled) or fully dense (no NaN at all).
 # ---------------------------------------------------------------------------
 
-def test_judge_alignment_array_form_basic():
+def _sparse_pair(rng, n_total, n_labeled):
+    """Build a (judge_scores, human_scores) pair in the sparse convention:
+    same length, human_scores is NaN outside the labeled subset."""
+    judge = np.clip(rng.integers(1, 6, n_total).astype(float) + rng.normal(0, 0.5, n_total), 1, 5)
+    human = np.full(n_total, np.nan)
+    idx = rng.choice(n_total, n_labeled, replace=False)
+    human[idx] = rng.integers(1, 6, n_labeled).astype(float)
+    return judge, human
+
+
+def test_judge_alignment_array_form_sparse_basic():
     rng = _rng(40)
+    judge, human = _sparse_pair(rng, n_total=300, n_labeled=40)
+    result = es.judge_alignment(judge, human)
+    assert result.n_labeled == 40
+    assert result.n_total == 300  # derived automatically from judge_scores
+    # Some items are unlabeled -> representativeness check runs for free.
+    assert "score_distribution" in result.representativeness
+
+
+def test_judge_alignment_array_form_dense_no_nan():
+    """When human_scores has no NaN at all (ambiguous: could be '100%
+    labeled' or 'caller already extracted just the labeled subset'), stay
+    conservative and skip the representativeness check rather than
+    silently comparing a set against itself."""
+    rng = _rng(41)
     n = 40
     human = rng.integers(1, 6, n).astype(float)
     judge = np.clip(human + rng.normal(0, 0.5, n), 1, 5)
-    result = es.judge_alignment(human, judge)
+    result = es.judge_alignment(judge, human)
     assert result.n_labeled == n
-    assert result.n_total == n  # no all_judge_scores given
-    assert result.representativeness == {}  # no distribution check without all_judge_scores
+    assert result.n_total == n
+    assert result.representativeness == {}
 
 
-def test_judge_alignment_array_form_with_all_judge_scores():
-    rng = _rng(41)
+def test_judge_alignment_array_form_explicit_all_judge_scores_overrides():
+    rng = _rng(42)
     n_lab, n_total = 35, 250
     human = rng.integers(1, 6, n_lab).astype(float)
     judge = np.clip(human + rng.normal(0, 0.5, n_lab), 1, 5)
     all_judge = np.clip(rng.integers(1, 6, n_total).astype(float) + rng.normal(0, 0.3, n_total), 1, 5)
-    result = es.judge_alignment(human, judge, all_judge_scores=all_judge)
+    result = es.judge_alignment(judge, human, all_judge_scores=all_judge)
     assert result.n_total == n_total
     assert "score_distribution" in result.representativeness
     # No slice-column checks in the array form (no DataFrame).
@@ -327,39 +377,43 @@ def test_judge_alignment_array_form_with_all_judge_scores():
 
 
 def test_judge_alignment_array_form_display_names():
-    rng = _rng(42)
+    rng = _rng(43)
     human = rng.integers(1, 6, 35).astype(float)
     judge = np.clip(human + rng.normal(0, 0.5, 35), 1, 5)
-    result = es.judge_alignment(human, judge, llm_metric="my_judge", human_groundtruth="my_human")
+    result = es.judge_alignment(judge, human, llm_metric="my_judge", human_groundtruth="my_human")
     assert result.llm_metric == "my_judge"
     assert result.human_col == "my_human"
 
 
 def test_judge_alignment_array_form_defaults_display_names():
-    rng = _rng(43)
+    rng = _rng(44)
     human = rng.integers(1, 6, 35).astype(float)
     judge = np.clip(human + rng.normal(0, 0.5, 35), 1, 5)
-    result = es.judge_alignment(human, judge)
+    result = es.judge_alignment(judge, human)
     assert result.llm_metric == "judge"
     assert result.human_col == "human"
 
 
-def test_judge_alignment_array_form_requires_judge_labels():
+def test_judge_alignment_array_form_requires_human_scores():
     with pytest.raises(TypeError, match="requires both arrays"):
         es.judge_alignment(np.array([1.0, 2.0, 3.0]))
 
 
 def test_judge_alignment_array_form_rejects_mismatched_shapes():
-    with pytest.raises(ValueError, match="paired, same-shape"):
+    with pytest.raises(ValueError, match="same length"):
         es.judge_alignment(np.array([1.0, 2.0, 3.0]), np.array([1.0, 2.0]))
 
 
+def test_judge_alignment_array_form_rejects_all_nan_human_scores():
+    with pytest.raises(ValueError, match="No labeled items"):
+        es.judge_alignment(np.array([1.0, 2.0, 3.0]), np.array([np.nan, np.nan, np.nan]))
+
+
 def test_judge_alignment_array_form_warns_below_30():
-    rng = _rng(44)
-    human = rng.integers(1, 6, 10).astype(float)
-    judge = np.clip(human + rng.normal(0, 0.5, 10), 1, 5)
+    rng = _rng(45)
+    judge, human = _sparse_pair(rng, n_total=100, n_labeled=10)
     with pytest.warns(UserWarning, match="fewer than ~30"):
-        es.judge_alignment(human, judge)
+        es.judge_alignment(judge, human)
 
 
 def test_judge_alignment_evaldata_form_still_requires_kwargs():

@@ -1123,8 +1123,8 @@ def _judge_alignment_from_evaldata(
 
 
 def _judge_alignment_from_arrays(
-    human_labels: np.ndarray,
-    judge_labels: np.ndarray,
+    judge_scores: np.ndarray,
+    human_scores: np.ndarray,
     *,
     all_judge_scores: Optional[np.ndarray],
     score_type: Optional[str],
@@ -1132,21 +1132,30 @@ def _judge_alignment_from_arrays(
     human_groundtruth: Optional[str],
     alpha: float,
 ) -> AlignmentResult:
-    human_aligned = np.asarray(human_labels, dtype=float)
-    llm_aligned = np.asarray(judge_labels, dtype=float)
-    if human_aligned.shape != llm_aligned.shape:
+    judge_full = np.asarray(judge_scores, dtype=float)
+    human_full = np.asarray(human_scores, dtype=float)
+    if judge_full.shape != human_full.shape:
         raise ValueError(
-            "human_labels and judge_labels must be paired, same-shape "
-            f"arrays (one human + one judge score per labeled item); got "
-            f"shapes {human_aligned.shape} and {llm_aligned.shape}."
+            "judge_scores and human_scores must be the same length -- one "
+            "judge score + one (possibly NaN) human score per item; got "
+            f"shapes {judge_full.shape} and {human_full.shape}."
         )
-    if human_aligned.ndim != 1:
+    if judge_full.ndim != 1:
         raise ValueError(
-            f"human_labels/judge_labels must be 1-D; got shape {human_aligned.shape}."
+            f"judge_scores/human_scores must be 1-D; got shape {judge_full.shape}."
         )
-    n_labeled = int(human_aligned.size)
+
+    labeled_mask = ~np.isnan(human_full)
+    n_labeled = int(labeled_mask.sum())
     if n_labeled == 0:
-        raise ValueError("human_labels/judge_labels must not be empty.")
+        raise ValueError(
+            "No labeled items -- human_scores is all NaN. It should be "
+            "non-NaN for the alignment subset and NaN elsewhere (or, if "
+            "every item is labeled, contain no NaN at all)."
+        )
+    llm_aligned = judge_full[labeled_mask]
+    human_aligned = human_full[labeled_mask]
+
     if n_labeled < 30:
         warnings.warn(
             f"Only {n_labeled} items have human labels. "
@@ -1156,11 +1165,22 @@ def _judge_alignment_from_arrays(
             stacklevel=3,
         )
 
-    all_llm = None
-    n_total = n_labeled
+    # judge_scores doubles as "every item's judge score" for the
+    # representativeness check for free -- but only when there's actual
+    # evidence it's the full pool (some items weren't labeled). When
+    # n_labeled == judge_full.size (no NaN at all in human_scores), there's
+    # no way to tell "this is the full pool, 100% labeled" apart from "this
+    # is just the labeled subset the caller already extracted" -- stay
+    # conservative and skip the check rather than silently comparing a set
+    # against itself (which would trivially "pass" and could read as false
+    # confidence). An explicit all_judge_scores= always wins either way.
     if all_judge_scores is not None:
         all_llm = np.asarray(all_judge_scores, dtype=float)
-        n_total = int(all_llm.size)
+    elif n_labeled < judge_full.size:
+        all_llm = judge_full
+    else:
+        all_llm = None
+    n_total = int(all_llm.size) if all_llm is not None else n_labeled
 
     if score_type is None:
         from evalstats.loader import _detect_score_type
@@ -1176,8 +1196,8 @@ def _judge_alignment_from_arrays(
 
 
 def judge_alignment(
-    human_labels_or_evaldata,
-    judge_labels=None,
+    judge_scores_or_evaldata,
+    human_scores=None,
     *,
     llm_metric: Optional[str] = None,
     human_groundtruth: Optional[str] = None,
@@ -1197,30 +1217,33 @@ def judge_alignment(
        the full item pool, plus categorical slice-column checks) since the
        full dataset and its other columns are available. The returned
        result can be passed to ``compare(alignment={metric: result})``.
-    2. ``judge_alignment(human_labels, judge_labels)`` -- a quick-primitive
-       form for when you already have the two paired arrays for the
-       labeled subset in hand and don't want to build an ``EvalResults``
-       first. Pass ``all_judge_scores`` (every item's judge score, labeled
-       or not) to also get the score-distribution representativeness
-       check; without it, that check is skipped (not approximated) since
-       there's no full item pool to compare against. The categorical
-       slice-column checks are DataFrame-specific and are always skipped
-       in this form. **The result from this form carries placeholder
-       column names and cannot be passed to ``compare(alignment=...)``**
-       (there's no underlying DataFrame for it to look values up in) --
-       use form 1 for that.
+    2. ``judge_alignment(judge_scores, human_scores)`` -- a quick-primitive
+       form for when you don't want to build an ``EvalResults`` first.
+       ``judge_scores`` is every item's judge score; ``human_scores`` is
+       the *same length*, with ``NaN`` for items that don't have a human
+       label (or no ``NaN`` at all if every item happens to be labeled).
+       This mirrors form 1's sparse-column convention exactly, so you can
+       hand it whatever you already have without pre-splitting anything
+       yourself. When some items are unlabeled, the score-distribution
+       representativeness check runs automatically (``judge_scores`` is
+       already the full pool); pass ``all_judge_scores`` explicitly to
+       override this. The categorical slice-column checks are
+       DataFrame-specific and are always skipped in this form. **The
+       result from this form carries placeholder column names and cannot
+       be passed to ``compare(alignment=...)``** (there's no underlying
+       DataFrame for it to look values up in) -- use form 1 for that.
 
     Either form fits a Bayesian calibration model that can later be used to
     propagate judge uncertainty into downstream comparisons.
 
     Parameters
     ----------
-    human_labels_or_evaldata : EvalResults or array-like
-        Either evaluation data from :func:`load_from` (form 1), or the
-        human-labeled subset's scores (form 2).
-    judge_labels : array-like, optional
-        Judge scores for that same labeled subset, paired with
-        ``human_labels_or_evaldata`` (form 2 only).
+    judge_scores_or_evaldata : EvalResults or array-like
+        Either evaluation data from :func:`load_from` (form 1), or every
+        item's judge score (form 2).
+    human_scores : array-like, optional
+        Same length as ``judge_scores_or_evaldata``, ``NaN`` for unlabeled
+        items (form 2 only).
     llm_metric : str, optional
         Form 1: column name of the LLM judge scores (required). Form 2:
         optional display name for the judge, used only in printed reports.
@@ -1230,12 +1253,13 @@ def judge_alignment(
         subset, ``NaN`` elsewhere). Form 2: optional display name for the
         human rater, used only in printed reports.
     all_judge_scores : array-like, optional
-        Form 2 only: every item's judge score (labeled and unlabeled), to
-        enable the score-distribution representativeness check.
+        Form 2 only: override which array is treated as "every item's
+        judge score" for the representativeness check. Only needed if
+        that shouldn't just be ``judge_scores_or_evaldata`` itself.
     score_type : str, optional
         Form 2 only: override the auto-detected score type (``"binary"``,
         ``"likert"``, ``"continuous"``, or ``"grade"``). Auto-detected from
-        ``judge_labels`` when not given.
+        the labeled judge scores when not given.
     alpha : float
         Significance level for alignment metric CIs.  Default ``0.05``.
 
@@ -1245,15 +1269,15 @@ def judge_alignment(
     """
     from evalstats.loader import EvalResults
 
-    if isinstance(human_labels_or_evaldata, EvalResults):
-        evaldata = human_labels_or_evaldata
-        if judge_labels is not None:
+    if isinstance(judge_scores_or_evaldata, EvalResults):
+        evaldata = judge_scores_or_evaldata
+        if human_scores is not None:
             raise TypeError(
                 "judge_alignment(evaldata, ...) doesn't take a second "
                 "positional argument; pass llm_metric= and "
                 "human_groundtruth= as column names instead. (For the "
                 "raw-array form, pass two arrays: "
-                "judge_alignment(human_labels, judge_labels).)"
+                "judge_alignment(judge_scores, human_scores).)"
             )
         if llm_metric is None or human_groundtruth is None:
             raise TypeError(
@@ -1264,15 +1288,15 @@ def judge_alignment(
             evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
         )
 
-    if judge_labels is None:
+    if human_scores is None:
         raise TypeError(
-            "judge_alignment(human_labels, judge_labels) requires both "
+            "judge_alignment(judge_scores, human_scores) requires both "
             "arrays; or pass an EvalResults (from load_from()) as the "
             "first argument for the column-name-based form: "
             "judge_alignment(evaldata, llm_metric=..., human_groundtruth=...)."
         )
     return _judge_alignment_from_arrays(
-        human_labels_or_evaldata, judge_labels,
+        judge_scores_or_evaldata, human_scores,
         all_judge_scores=all_judge_scores, score_type=score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
     )

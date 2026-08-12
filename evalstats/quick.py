@@ -30,6 +30,33 @@ from .core.router import resolve_auto_robustness_method
 from .core.variance import robustness_metrics, seed_variance_decomposition
 
 
+def _clean_1d(arr: np.ndarray, *, label: str, stacklevel: int) -> np.ndarray:
+    """Drop NaN entries from a 1-D score array, warning if any were found,
+    and raising a clear, attributed error if nothing valid remains.
+
+    Real-world data has gaps -- a failed API call, a skipped item -- and
+    ``compare()`` handles that by rejecting NaN outright with a hard error.
+    That's the right call for a full comparative report, but it would
+    defeat the purpose of a quick primitive: forcing every caller to
+    hand-filter NaN themselves before getting a single number back. Instead,
+    drop it and say so (not silently -- an unflagged NaN CI, which is what
+    happens without this filtering, is worse than either option).
+    """
+    is_nan = np.isnan(arr)
+    n_missing = int(np.sum(is_nan))
+    if n_missing > 0:
+        arr = arr[~is_nan]
+        warnings.warn(
+            f"{label}: dropped {n_missing} NaN (missing) value(s) out of "
+            f"{n_missing + arr.size}; computed from the remaining {arr.size}.",
+            UserWarning,
+            stacklevel=stacklevel,
+        )
+    if arr.size == 0:
+        raise ValueError(f"{label} has no valid (non-NaN) scores.")
+    return arr
+
+
 # ---------------------------------------------------------------------------
 # mean_ci
 # ---------------------------------------------------------------------------
@@ -121,6 +148,7 @@ def mean_ci(
         raise ValueError(f"scores must be a 1-D array; got shape {arr.shape}.")
     if arr.size == 0:
         raise ValueError("scores must not be empty.")
+    arr = _clean_1d(arr, label="scores", stacklevel=3)
 
     if alpha is None:
         alpha = get_alpha_ci()
@@ -140,7 +168,7 @@ def mean_ci(
         mean=float(rob.mean[0]),
         ci_low=float(rob.ci_low[0]) if rob.ci_low is not None else float("nan"),
         ci_high=float(rob.ci_high[0]) if rob.ci_high is not None else float("nan"),
-        n=int(np.sum(~np.isnan(arr))),
+        n=int(arr.size),
         method=robustness_method,
     )
 
@@ -322,6 +350,10 @@ def summarize(
     for lbl, a in zip(labels, arrays):
         if a.size == 0:
             raise ValueError(f"Group '{lbl}' has no scores.")
+    arrays = [
+        _clean_1d(a, label=f"group '{lbl}'" if not single_ungrouped else "scores", stacklevel=3)
+        for lbl, a in zip(labels, arrays)
+    ]
 
     if alpha is None:
         alpha = get_alpha_ci()
@@ -349,7 +381,7 @@ def summarize(
     for i, a in enumerate(arrays):
         a_2d = a.reshape(1, -1)
         _, robustness_method, resolved_score_range = resolve_auto_robustness_method(
-            a_2d, score_range=score_range, stacklevel=4,
+            a_2d, score_range=score_range, stacklevel=3,
         )
         rob = robustness_metrics(
             a_2d, ["_"],
@@ -370,7 +402,7 @@ def summarize(
         p90[i] = rob.percentiles[90][0]
         ci_low[i] = rob.ci_low[0] if rob.ci_low is not None else np.nan
         ci_high[i] = rob.ci_high[0] if rob.ci_high is not None else np.nan
-        n[i] = int(np.sum(~np.isnan(a)))
+        n[i] = a.size  # a is already NaN-cleaned above
         method.append(robustness_method)
 
     return GroupSummary(
@@ -448,7 +480,92 @@ class StabilityResult:
         )
 
 
-def stability(runs: Union[np.ndarray, dict], *, labels: Optional[list[str]] = None) -> StabilityResult:
+def _stability_core(labels: list[str], arrays: list[np.ndarray], *, warn_orientation: bool) -> StabilityResult:
+    """Shared core behind both stability() input forms: validates shapes,
+    pads a ragged run axis with NaN, and runs the seed-variance
+    decomposition. ``warn_orientation`` is only True for the raw-array/dict
+    form -- the DataFrame form has no orientation to get wrong (each row
+    names its own run and item explicitly), so it's skipped there.
+    """
+    for lbl, a in zip(labels, arrays):
+        if a.ndim != 2:
+            raise ValueError(f"runs['{lbl}'] must be 2-D (K runs x M items); got shape {a.shape}.")
+
+    m_values = {a.shape[1] for a in arrays}
+    if len(m_values) != 1:
+        raise ValueError(
+            "All configs must be evaluated on the same number of items (M); "
+            f"got M values {sorted(m_values)} across configs "
+            f"{dict(zip(labels, (a.shape for a in arrays)))}."
+        )
+    m_items = m_values.pop()
+
+    if any(a.shape[0] < 3 for a in arrays):
+        offender = labels[[a.shape[0] for a in arrays].index(min(a.shape[0] for a in arrays))]
+        raise ValueError(
+            f"Seed-variance decomposition requires >= 3 runs per config; "
+            f"config '{offender}' has {min(a.shape[0] for a in arrays)}."
+        )
+
+    if warn_orientation:
+        # A (K runs, M items) array with K > M is unusual for real eval data
+        # (far more items than repeated runs, typically) -- a much more
+        # common mistake is passing an (M, K) array straight out of
+        # df.pivot(index='item', columns='run') without transposing, which
+        # silently swaps which axis is "runs" and which is "items" with no
+        # error, producing a plausible-looking but wrong instability/icc
+        # (confirmed: an (items, runs) mixup can flip "very stable" into
+        # "near-random" on the same data). This heuristic won't catch every
+        # case (K can legitimately exceed M for a heavily-repeated small
+        # item set) -- prefer the DataFrame form below, which has no
+        # orientation ambiguity to get wrong in the first place.
+        for lbl, a in zip(labels, arrays):
+            if a.shape[0] > a.shape[1]:
+                warnings.warn(
+                    f"runs['{lbl}'] has more rows ({a.shape[0]}) than columns "
+                    f"({a.shape[1]}) -- stability() expects (K runs, M items), "
+                    "and most real eval data has far more items than repeated "
+                    "runs. If this came from a pivot table shaped (items, "
+                    "runs), you likely need to transpose it (.T) before "
+                    "calling stability(), or use the DataFrame form "
+                    "(stability(df, config_col=..., run_col=..., item_col=..., "
+                    "value_col=...)) instead, which has no orientation to get "
+                    "wrong.",
+                    UserWarning,
+                    stacklevel=4,
+                )
+
+    # Different configs may have different K (run count); pad the run axis
+    # with NaN -- seed_variance_decomposition's internal nanmean/nanvar
+    # handle that safely (it's a closed-form ANOVA-style computation, not a
+    # resampling procedure, so NaN-tolerant reductions are exact here).
+    max_k = max(a.shape[0] for a in arrays)
+    scores_3d = np.full((len(arrays), m_items, max_k), np.nan)
+    for i, a in enumerate(arrays):
+        scores_3d[i, :, : a.shape[0]] = a.T  # (K, M) -> (M, K)
+
+    from .core.summary import _instability_label
+
+    sv = seed_variance_decomposition(scores_3d, labels)
+    actual_n_runs = np.array([a.shape[0] for a in arrays])
+    return StabilityResult(
+        labels=labels,
+        instability=sv.instability,
+        icc=sv.icc,
+        n_runs=actual_n_runs,
+        label_text=[_instability_label(float(v)) for v in sv.instability],
+    )
+
+
+def stability(
+    runs: Union[np.ndarray, dict, pd.DataFrame],
+    *,
+    labels: Optional[list[str]] = None,
+    config_col: Optional[str] = None,
+    run_col: Optional[str] = None,
+    item_col: Optional[str] = None,
+    value_col: Optional[str] = None,
+) -> StabilityResult:
     """Multi-run reliability: how much does a config's score move across
     repeated runs on the same items?
 
@@ -457,17 +574,29 @@ def stability(runs: Union[np.ndarray, dict], *, labels: Optional[list[str]] = No
     configuration reliable enough to ship" without needing a full
     multi-model comparison.
 
+    Three input forms:
+
+    * A long-format DataFrame plus ``config_col``/``run_col``/``item_col``/
+      ``value_col`` -- **recommended**, since each row names its own run
+      and item explicitly, there's no axis-orientation to get wrong.
+    * A single config's repeated-run scores as a 2-D array of shape
+      ``(K, M)`` (K runs, M items -- note this is *not* what
+      ``df.pivot(index='item', columns='run')`` gives you; that needs a
+      ``.T`` first, or use the DataFrame form directly).
+    * A ``{label: (K, M) array}`` dict of several configs.
+
+    Configs must share the same M (same item set); K (number of runs,
+    >= 3) can differ per config.
+
     Parameters
     ----------
-    runs : array-like or dict
-        A single config's repeated-run scores as a 2-D array of shape
-        ``(K, M)`` (K runs, M items, same M items each run) -- one config;
-        or a ``{label: (K, M) array}`` dict of several configs. Configs
-        must share the same M (same item set); K (number of runs, >= 3) can
-        differ per config.
+    runs : array-like, dict, or DataFrame
+        See above.
     labels : list[str], optional
         Override labels when ``runs`` is a single array (default
-        ``["value"]``). Ignored when ``runs`` is a dict (its keys are used).
+        ``["value"]``). Ignored for the dict/DataFrame forms.
+    config_col, run_col, item_col, value_col : str, optional
+        Required (and only used) when ``runs`` is a DataFrame.
 
     Returns
     -------
@@ -476,9 +605,47 @@ def stability(runs: Union[np.ndarray, dict], *, labels: Optional[list[str]] = No
     Examples
     --------
     >>> import evalstats as es
+    >>> es.stability(df, config_col="config", run_col="run",
+    ...              item_col="item", value_col="score")
     >>> es.stability(rag_config_a_runs)  # shape (5, 200): 5 runs, 200 items
     >>> es.stability({"config_a": runs_a, "config_b": runs_b}).to_frame()
     """
+    if isinstance(runs, pd.DataFrame):
+        missing = [
+            name for name, col in [
+                ("config_col", config_col), ("run_col", run_col),
+                ("item_col", item_col), ("value_col", value_col),
+            ] if col is None
+        ]
+        if missing:
+            raise ValueError(
+                "stability() on a DataFrame requires config_col, run_col, "
+                "item_col, and value_col; missing: " + ", ".join(missing)
+            )
+        for name, col in [
+            ("config_col", config_col), ("run_col", run_col),
+            ("item_col", item_col), ("value_col", value_col),
+        ]:
+            if col not in runs.columns:
+                raise ValueError(f"{name} '{col}' not found in DataFrame columns: {list(runs.columns)}")
+
+        input_labels: list[str] = []
+        arrays: list[np.ndarray] = []
+        item_order = None
+        for config, group in runs.groupby(config_col, sort=False):
+            pivot = group.pivot(index=run_col, columns=item_col, values=value_col)
+            if item_order is None:
+                item_order = list(pivot.columns)
+            elif set(pivot.columns) != set(item_order):
+                raise ValueError(
+                    f"config '{config}' was scored on a different set of items "
+                    "than the others -- stability() requires every config to "
+                    "share the same item set."
+                )
+            input_labels.append(str(config))
+            arrays.append(pivot.reindex(columns=item_order).to_numpy(dtype=float))
+        return _stability_core(input_labels, arrays, warn_orientation=False)
+
     if isinstance(runs, dict):
         if len(runs) == 0:
             raise ValueError("runs dict must not be empty.")
@@ -488,8 +655,9 @@ def stability(runs: Union[np.ndarray, dict], *, labels: Optional[list[str]] = No
         arr = np.asarray(runs, dtype=float)
         if arr.ndim != 2:
             raise ValueError(
-                "runs must be a 2-D array (K runs x M items) or a "
-                f"{{label: array}} dict of such arrays; got shape {arr.shape}."
+                "runs must be a 2-D array (K runs x M items), a "
+                "{label: array} dict of such arrays, or a DataFrame (with "
+                f"config_col/run_col/item_col/value_col); got shape {arr.shape}."
             )
         input_labels = list(labels) if labels is not None else ["value"]
         if len(input_labels) != 1:
@@ -498,45 +666,7 @@ def stability(runs: Union[np.ndarray, dict], *, labels: Optional[list[str]] = No
             )
         arrays = [arr]
 
-    for lbl, a in zip(input_labels, arrays):
-        if a.ndim != 2:
-            raise ValueError(f"runs['{lbl}'] must be 2-D (K runs x M items); got shape {a.shape}.")
-
-    m_values = {a.shape[1] for a in arrays}
-    if len(m_values) != 1:
-        raise ValueError(
-            "All configs must be evaluated on the same number of items (M); "
-            f"got M values {sorted(m_values)} across configs "
-            f"{dict(zip(input_labels, (a.shape for a in arrays)))}."
-        )
-    m_items = m_values.pop()
-
-    # Different configs may have different K (run count); pad the run axis
-    # with NaN -- seed_variance_decomposition's internal nanmean/nanvar
-    # handle that safely (it's a closed-form ANOVA-style computation, not a
-    # resampling procedure, so NaN-tolerant reductions are exact here).
-    max_k = max(a.shape[0] for a in arrays)
-    if any(a.shape[0] < 3 for a in arrays):
-        offender = input_labels[[a.shape[0] for a in arrays].index(min(a.shape[0] for a in arrays))]
-        raise ValueError(
-            f"Seed-variance decomposition requires >= 3 runs per config; "
-            f"config '{offender}' has {min(a.shape[0] for a in arrays)}."
-        )
-    scores_3d = np.full((len(arrays), m_items, max_k), np.nan)
-    for i, a in enumerate(arrays):
-        scores_3d[i, :, : a.shape[0]] = a.T  # (K, M) -> (M, K)
-
-    from .core.summary import _instability_label
-
-    sv = seed_variance_decomposition(scores_3d, input_labels)
-    actual_n_runs = np.array([a.shape[0] for a in arrays])
-    return StabilityResult(
-        labels=input_labels,
-        instability=sv.instability,
-        icc=sv.icc,
-        n_runs=actual_n_runs,
-        label_text=[_instability_label(float(v)) for v in sv.instability],
-    )
+    return _stability_core(input_labels, arrays, warn_orientation=True)
 
 
 # ---------------------------------------------------------------------------
@@ -591,9 +721,8 @@ class DebiasedMeanCI(NamedTuple):
 
 
 def judge_debias_mean_ci(
-    unlabeled_judge_scores,
-    labeled_human_scores,
-    labeled_judge_scores,
+    judge_scores,
+    human_scores,
     *,
     alpha: float = 0.05,
     n_bootstrap: int = 1000,
@@ -616,18 +745,25 @@ def judge_debias_mean_ci(
     with :func:`judge_alignment` instead, which applies the same idea
     per-comparison with the full Friedman/Wilcoxon machinery.
 
+    **The labeled subset must be an unbiased sample of the full dataset --
+    ideally chosen uniformly at random.** This function always warns about
+    this (see below), because it's easy to violate without realizing it:
+    if which items get labeled is itself influenced by their score (e.g.
+    "always double-check the highest-scoring ones"), the correction can
+    stay biased by a large, non-vanishing amount regardless of how many
+    labels you have. See :func:`~evalstats.ppi.correct`'s docstring for the
+    full detail (this wraps it directly).
+
     Parameters
     ----------
-    unlabeled_judge_scores : array-like
-        Judge scores for every item that does NOT also have a human label.
-        Must be disjoint from the labeled items below -- do not pass every
-        item's judge score here if some of them are also in
-        ``labeled_judge_scores``.
-    labeled_human_scores : array-like
-        Human scores for the labeled subset.
-    labeled_judge_scores : array-like
-        Judge scores for that SAME labeled subset, paired (same order,
-        same length) with ``labeled_human_scores``.
+    judge_scores : array-like
+        Judge scores for every item (the full dataset).
+    human_scores : array-like
+        Same length as ``judge_scores``, with ``NaN`` for items that don't
+        have a human label. (Every item must NOT be labeled -- see the
+        "all items labeled" error below; if that's genuinely your
+        situation, use :func:`mean_ci` on ``human_scores`` directly
+        instead of this function.)
     alpha : float
         Significance level (default 0.05, i.e. 95% CI).
     n_bootstrap : int
@@ -645,33 +781,77 @@ def judge_debias_mean_ci(
     Examples
     --------
     >>> import evalstats as es
-    >>> result = es.judge_debias_mean_ci(
-    ...     unlabeled_judge_scores=judge_scores[~has_human_label],
-    ...     labeled_human_scores=human_scores[has_human_label],
-    ...     labeled_judge_scores=judge_scores[has_human_label],
-    ... )
+    >>> result = es.judge_debias_mean_ci(judge_scores, human_scores)
     >>> result.mean, result.ci_low, result.ci_high
     """
     from .ppi import correct as _ppi_correct
 
-    y_hat_unlab = np.asarray(unlabeled_judge_scores, dtype=float)
-    y_lab = np.asarray(labeled_human_scores, dtype=float)
-    y_hat_lab = np.asarray(labeled_judge_scores, dtype=float)
-
-    if y_lab.shape != y_hat_lab.shape:
+    judge_full = np.asarray(judge_scores, dtype=float)
+    human_full = np.asarray(human_scores, dtype=float)
+    if judge_full.shape != human_full.shape:
         raise ValueError(
-            "labeled_human_scores and labeled_judge_scores must be paired, "
-            f"same-shape arrays (one human + one judge score per labeled "
-            f"item); got shapes {y_lab.shape} and {y_hat_lab.shape}."
+            "judge_scores and human_scores must be the same length -- one "
+            "judge score + one (possibly NaN) human score per item; got "
+            f"shapes {judge_full.shape} and {human_full.shape}."
         )
-    if y_lab.size < 15:
+    if judge_full.ndim != 1:
+        raise ValueError(f"judge_scores/human_scores must be 1-D; got shape {judge_full.shape}.")
+
+    labeled_mask = ~np.isnan(human_full)
+    n_labeled = int(labeled_mask.sum())
+    n_total = int(judge_full.size)
+    n_unlabeled = n_total - n_labeled
+
+    # Mirrors the exact thresholds api.py's _run_alignment_ppi already
+    # enforces for compare(alignment=...)'s PPI path -- same underlying
+    # method, same minimum sample sizes for the same reasons.
+    if n_labeled < 15:
+        raise ValueError(
+            f"judge_debias_mean_ci requires at least 15 human-labeled "
+            f"items; got {n_labeled}. Expand the labeled subset."
+        )
+    if n_total < 50:
+        raise ValueError(
+            f"judge_debias_mean_ci requires at least 50 items total; got "
+            f"{n_total}. PPI correction is only beneficial at scale -- for "
+            "small datasets, human-label everything and use mean_ci() on "
+            "the human labels directly."
+        )
+    if n_unlabeled == 0:
+        raise ValueError(
+            "Every item is labeled (human_scores has no NaN) -- there's no "
+            "unlabeled portion for PPI to correct. Use mean_ci() on "
+            "human_scores directly instead."
+        )
+    if n_labeled < 30:
         warnings.warn(
-            f"Only {y_lab.size} labeled items -- PPI correction will be "
-            "imprecise with fewer than ~15 labeled items. Consider "
-            "expanding the labeled subset.",
+            f"judge_debias_mean_ci: only {n_labeled} human-labeled items "
+            "(recommend >= 30). The correction may under-cover at this "
+            "sample size.",
             UserWarning,
             stacklevel=2,
         )
+    if n_total < 100:
+        warnings.warn(
+            f"judge_debias_mean_ci: only {n_total} total items (recommend "
+            ">= 100). The correction may under-cover at this sample size.",
+            UserWarning,
+            stacklevel=2,
+        )
+    warnings.warn(
+        "judge_debias_mean_ci assumes the labeled subset (non-NaN entries "
+        "of human_scores) is an unbiased sample of the full dataset -- "
+        "ideally chosen uniformly at random. If which items got labeled "
+        "was itself influenced by their score (e.g. always double-checking "
+        "the highest-scoring ones), this correction can stay biased "
+        "regardless of how many labels you have.",
+        UserWarning,
+        stacklevel=2,
+    )
+
+    y_hat_unlab = judge_full[~labeled_mask]
+    y_lab = human_full[labeled_mask]
+    y_hat_lab = judge_full[labeled_mask]
 
     result = _ppi_correct(
         np.mean,
@@ -686,6 +866,6 @@ def judge_debias_mean_ci(
         human_mean=result.human_estimate,
         rectifier=result.rectifier,
         p_value=result.p_value,
-        n_labeled=int(y_lab.size),
-        n_unlabeled=int(y_hat_unlab.size),
+        n_labeled=n_labeled,
+        n_unlabeled=n_unlabeled,
     )

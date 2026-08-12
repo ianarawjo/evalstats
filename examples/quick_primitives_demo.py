@@ -64,14 +64,23 @@ print("=" * 70)
 print("4. judge_alignment() -- array-based form, no load_from() needed")
 print("=" * 70)
 
+# The natural shape most real data comes in: a judge score for every item,
+# and a human score that's only filled in for a small labeled subset (NaN
+# elsewhere). No manual masking needed -- pass both arrays as-is.
+n_total = 300
 n_labeled = 40
-human_labels = rng.integers(1, 6, n_labeled).astype(float)  # 1-5 Likert
-judge_labels = np.clip(
-    np.round(human_labels + rng.normal(0.3, 0.6, n_labeled)), 1, 5
-)  # rounded to whole numbers -> also detected as Likert
+judge_all_likert = np.clip(
+    np.round(rng.integers(1, 6, n_total).astype(float) + rng.normal(0.3, 0.6, n_total)), 1, 5
+)
+human_sparse = np.full(n_total, np.nan)
+labeled_idx = rng.choice(n_total, n_labeled, replace=False)
+human_sparse[labeled_idx] = np.clip(
+    np.round(judge_all_likert[labeled_idx] + rng.normal(-0.3, 0.5, n_labeled)), 1, 5
+)
 
-alignment = es.judge_alignment(human_labels, judge_labels)
-print(f"score_type={alignment.score_type}  n_labeled={alignment.n_labeled}")
+alignment = es.judge_alignment(judge_all_likert, human_sparse)
+print(f"score_type={alignment.score_type}  n_labeled={alignment.n_labeled}  n_total={alignment.n_total}")
+print(f"representativeness check ran automatically: {'score_distribution' in alignment.representativeness}")
 kappa = alignment.alignment_metrics.get("weighted_kappa") or alignment.alignment_metrics.get("cohens_kappa")
 if kappa is not None:
     print(f"weighted kappa: {kappa['estimate']:.3f}  95% CI=[{kappa['ci_low']:.3f}, {kappa['ci_high']:.3f}]")
@@ -82,21 +91,26 @@ print("5. judge_debias_mean_ci() -- PPI-corrected mean, judge scores only")
 print("=" * 70)
 
 n_total = 400
+n_labeled = 40
 true_mean = 0.55
 judge_bias = 0.18  # judge systematically overrates
 
 human_all = np.clip(rng.normal(true_mean, 0.15, n_total), 0, 1)
 judge_all = np.clip(human_all + judge_bias + rng.normal(0, 0.05, n_total), 0, 1)
 
-labeled_idx = rng.choice(n_total, 40, replace=False)
-mask = np.zeros(n_total, dtype=bool)
-mask[labeled_idx] = True
+# Same sparse convention as judge_alignment() above: one array per item,
+# human scores NaN outside the labeled subset.
+human_sparse2 = np.full(n_total, np.nan)
+labeled_idx2 = rng.choice(n_total, n_labeled, replace=False)
+human_sparse2[labeled_idx2] = human_all[labeled_idx2]
 
-debiased = es.judge_debias_mean_ci(
-    unlabeled_judge_scores=judge_all[~mask],
-    labeled_human_scores=human_all[mask],
-    labeled_judge_scores=judge_all[mask],
-)
+import warnings
+with warnings.catch_warnings():
+    # judge_debias_mean_ci always reminds you the labeled subset must be a
+    # random sample -- expected here since we did sample uniformly at random.
+    warnings.simplefilter("ignore", UserWarning)
+    debiased = es.judge_debias_mean_ci(judge_all, human_sparse2)
+
 print(f"judge-only mean (biased):   {debiased.judge_mean:.3f}")
 print(f"PPI-corrected mean:         {debiased.mean:.3f}  "
       f"95% CI=[{debiased.ci_low:.3f}, {debiased.ci_high:.3f}]")

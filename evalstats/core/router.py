@@ -801,6 +801,9 @@ def resolve_auto_robustness_method(
             data_kind = "bounded_01"
         else:
             data_kind = "unbounded"
+            # Direct warn() call, one frame shallower than the
+            # resolve_score_bounds() delegation above (no extra frame in
+            # between) -- stacklevel here, not stacklevel + 1.
             warnings.warn(
                 "Numeric evaluation data outside [0, 1] was auto-detected "
                 "with no explicit score_range, so evalstats is using "
@@ -810,7 +813,7 @@ def resolve_auto_robustness_method(
                 "explicitly, e.g. score_range=(1, 5) for a Likert scale "
                 "or score_range=(0, 100) for a percentage grade.",
                 UserWarning,
-                stacklevel=stacklevel + 1,
+                stacklevel=stacklevel,
             )
     # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
     # (which method is chosen for which data kind / N / seeded combination).
