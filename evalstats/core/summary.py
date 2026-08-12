@@ -1046,6 +1046,11 @@ def _print_pairwise_section(
 
     # Determine statistic label from the first result (all share the same statistic).
     first_result = next(iter(bundle.pairwise.results.values()), None)
+    if first_result is None:
+        # Exactly one entity -- there are no pairs to compare, so there's
+        # nothing meaningful to print here (the rest of the bundle summary,
+        # e.g. its single-entity mean/CI, still renders normally).
+        return
     pair_stat_label = first_result.statistic.capitalize() if first_result else "Mean"
 
     # Detect CI method family for auto p-value selection.

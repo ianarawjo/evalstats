@@ -162,7 +162,7 @@ def _apply_x_padding(ax, bundle, scale: float, as_percent: bool) -> None:
     ax.set_xlim(new_x0, new_x1)
 
 
-def _place_legend_and_trim(fig, ax, legend_handles: list, own_fig: bool) -> None:
+def _place_legend_and_trim(fig, ax, legend_handles: list, own_fig: bool, font_scale: float = 1.0) -> None:
     """Place the combined legend outside the axes, then trim the canvas to
     hug its actual rendered width instead of leaving unused margin (matters
     for pasting a figure straight into a paper without manual cropping).
@@ -170,7 +170,7 @@ def _place_legend_and_trim(fig, ax, legend_handles: list, own_fig: bool) -> None
     if legend_handles:
         ax.legend(
             handles=legend_handles,
-            fontsize=7.5, loc="center left", bbox_to_anchor=(1.01, 0.5),
+            fontsize=7.5 * font_scale, loc="center left", bbox_to_anchor=(1.01, 0.5),
             frameon=True, facecolor="white",
             edgecolor=_PALETTE["grid"], framealpha=0.95,
             ncol=1,
@@ -269,6 +269,7 @@ def _plot_ci_forest_grouped(
     reference_line: Optional[float], sort_by: str, as_percent: bool,
     style: str, color_rule: str, show_mean: bool, mean_marker: str,
     figsize: Optional[tuple[float, float]], title: Optional[str], ax,
+    font_scale: float = 1.0,
 ) -> "Figure":
     """Grouped two-factor forest plot: one row per (model, prompt) pair,
     clustered by *outer* (shared colour + shared alternating background),
@@ -388,14 +389,19 @@ def _plot_ci_forest_grouped(
 
     ax.set_yticks([r[0] for r in row_specs])
     ax.set_yticklabels(
-        [f"{o} — {i}" for _, o, i, *_ in row_specs], fontsize=9, color=_PALETTE["text"],
+        [f"{o} — {i}" for _, o, i, *_ in row_specs], fontsize=9 * font_scale, color=_PALETTE["text"],
     )
     ax.invert_yaxis()
 
     if as_percent:
-        ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+        # decimals=0: axis ticks land on round gridline values (e.g. 5%
+        # steps), so whole-number labels read cleaner than the "50.0%"
+        # PercentFormatter(decimals=None) tends to auto-pick due to
+        # floating-point tick spacing -- unrelated to how much precision
+        # per-entity means retain elsewhere (tables, tooltips, etc).
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter(decimals=0))
     ax.set_xlabel(
-        f"{'Accuracy (%)' if as_percent else 'Score'}", fontsize=10,
+        f"{'Accuracy (%)' if as_percent else 'Score'}", fontsize=10 * font_scale,
         color=_PALETTE["text"], labelpad=8,
     )
     ax.xaxis.grid(True, color=_PALETTE["grid"], linewidth=0.8, zorder=0)
@@ -404,7 +410,7 @@ def _plot_ci_forest_grouped(
         spine.set_visible(True)
         spine.set_color("black")
     ax.tick_params(axis="y", length=0, pad=8)
-    ax.tick_params(axis="x", colors=_PALETTE["text_secondary"], labelsize=9)
+    ax.tick_params(axis="x", colors=_PALETTE["text_secondary"], labelsize=9 * font_scale)
 
     _apply_x_padding(ax, cross, scale, as_percent)
 
@@ -434,11 +440,11 @@ def _plot_ci_forest_grouped(
         caption_parts.append("darker band = higher confidence")
     caption = "  |  ".join(caption_parts)
 
-    ax.set_title(title, fontsize=10, color=_PALETTE["text"], pad=24 if caption else 10, loc="center")
+    ax.set_title(title, fontsize=10 * font_scale, color=_PALETTE["text"], pad=24 if caption else 10, loc="center")
     if caption:
         ax.text(
             0.5, 1.02, caption, transform=ax.transAxes, ha="center", va="bottom",
-            fontsize=7.5, color=_PALETTE["text_secondary"],
+            fontsize=7.5 * font_scale, color=_PALETTE["text_secondary"],
         )
 
     legend_handles: list = []
@@ -452,7 +458,7 @@ def _plot_ci_forest_grouped(
     if show_mean and mean_marker == "line":
         legend_handles.append(Line2D([0], [0], color="black", lw=1.5, label="mean"))
 
-    _place_legend_and_trim(fig, ax, legend_handles, own_fig)
+    _place_legend_and_trim(fig, ax, legend_handles, own_fig, font_scale)
 
     return fig
 
@@ -474,6 +480,7 @@ def plot_ci_forest(
     title: Optional[str] = None,
     ax: Optional[Axes] = None,
     factors: Union[str, list, None] = "auto",
+    font_scale: float = 1.0,
 ) -> "Figure":
     """Plot per-entity confidence intervals as a horizontal forest plot.
 
@@ -575,6 +582,14 @@ def plot_ci_forest(
           sub-rows within each cluster, sorted by *sort_by* within the
           group the same way single-axis rows are. ``compare_to`` is not
           yet supported together with this view.
+    font_scale : float
+        Multiplier applied to every text element (tick labels, axis label,
+        title, subtitle caption, legend) -- default ``1.0``. Figures get
+        shrunk to fit a column or ``\\linewidth`` once pasted into a paper
+        or slide, which shrinks all the absolute point-sizes below with it;
+        pass e.g. ``font_scale=1.4`` to compensate so text stays readable
+        at the final printed size, without changing the figure's layout
+        (bar heights, spacing, etc. are unaffected).
 
     Returns
     -------
@@ -598,6 +613,7 @@ def plot_ci_forest(
             reference_line=reference_line, sort_by=sort_by, as_percent=as_percent,
             style=style, color_rule=color_rule, show_mean=show_mean,
             mean_marker=mean_marker, figsize=figsize, title=title, ax=ax,
+            font_scale=font_scale,
         )
     report = resolved
     if color_rule == "auto":
@@ -780,14 +796,15 @@ def plot_ci_forest(
 
     # ---- axes styling -----------------------------------------------------
     ax.set_yticks(y_positions)
-    ax.set_yticklabels(ordered_labels, fontsize=9, color=_PALETTE["text"])
+    ax.set_yticklabels(ordered_labels, fontsize=9 * font_scale, color=_PALETTE["text"])
     ax.invert_yaxis()  # best at top
 
     if as_percent:
-        ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+        # decimals=0: see the matching comment in _plot_ci_forest_grouped.
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter(decimals=0))
     ax.set_xlabel(
         f"{'Accuracy (%)' if as_percent else 'Score'}",
-        fontsize=10,
+        fontsize=10 * font_scale,
         color=_PALETTE["text"],
         labelpad=8,
     )
@@ -800,7 +817,7 @@ def plot_ci_forest(
         spine.set_color("black")
 
     ax.tick_params(axis="y", length=0, pad=8)
-    ax.tick_params(axis="x", colors=_PALETTE["text_secondary"], labelsize=9)
+    ax.tick_params(axis="x", colors=_PALETTE["text_secondary"], labelsize=9 * font_scale)
 
     # ---- gather methods metadata (for title + caption) --------------------
     bundle = getattr(report, "full_analysis", None)
@@ -845,7 +862,7 @@ def plot_ci_forest(
 
     ax.set_title(
         title,
-        fontsize=10,
+        fontsize=10 * font_scale,
         color=_PALETTE["text"],
         pad=24 if caption else 10,
         loc="center",
@@ -854,7 +871,7 @@ def plot_ci_forest(
         ax.text(
             0.5, 1.02, caption,
             transform=ax.transAxes, ha="center", va="bottom",
-            fontsize=7.5, color=_PALETTE["text_secondary"],
+            fontsize=7.5 * font_scale, color=_PALETTE["text_secondary"],
         )
 
     # ---- legend -------------------------------------------------------------
@@ -904,6 +921,6 @@ def plot_ci_forest(
             Line2D([0], [0], color=_PALETTE["text"], lw=1.3, label=f"{ci_pct}% CI (bracket)")
         )
 
-    _place_legend_and_trim(fig, ax, legend_handles, own_fig)
+    _place_legend_and_trim(fig, ax, legend_handles, own_fig, font_scale)
 
     return fig

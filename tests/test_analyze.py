@@ -198,6 +198,36 @@ def test_analyze_multimodel_single_prompt_runs_without_warning():
     assert analysis.best_pair == ("Model 2", "Prompt A")
 
 
+def test_print_summary_multimodel_single_prompt_does_not_crash(capsys):
+    # Regression test: printing a MultiModelBundle's "cross-model
+    # per-template comparison" section used to crash with
+    # AttributeError: 'NoneType' object has no attribute 'test_method'
+    # whenever there was only one prompt (so zero pairwise template
+    # comparisons exist) -- the same degenerate shape also hit inside the
+    # per-model summary loop, since each per-model bundle has exactly one
+    # template too. See _print_pairwise_section's first_result is None guard.
+    rng = np.random.default_rng(0)
+    n_models, n_inputs = 3, 60
+    target_means = np.array([7.0, 8.0, 6.5])
+    scores = np.empty((n_models, 1, n_inputs), dtype=float)
+    for model_idx in range(n_models):
+        scores[model_idx, 0] = rng.normal(loc=target_means[model_idx], scale=0.8, size=n_inputs)
+    scores = np.clip(scores, 0.0, 10.0)
+    result = es.MultiModelBenchmark(
+        scores=scores,
+        model_labels=["Model 1", "Model 2", "Model 3"],
+        template_labels=["Prompt A"],
+        input_labels=[f"item_{i:03d}" for i in range(n_inputs)],
+    )
+
+    analysis = es.analyze(result, n_bootstrap=300, rng=np.random.default_rng(1))
+    es.print_analysis_summary(analysis, top_pairwise=3)
+
+    out = capsys.readouterr().out
+    assert "Executive Summary" in out
+    assert "Model 2" in out
+
+
 def test_print_summary_includes_critical_difference_groups(capsys):
     # Three identical templates => Nemenyi should mark all as indistinguishable.
     scores = np.array(
