@@ -339,7 +339,7 @@ def plot_ci_forest(
     def _pretty(s: Optional[str]) -> Optional[str]:
         return s.replace("_", " ") if s else None
 
-    # ---- title ------------------------------------------------------------
+    # ---- title + methods subtitle ------------------------------------------
     if title is None:
         n_str = f"  |  N={n_inputs} inputs" if n_inputs else ""
         if any_gradient_used:
@@ -348,13 +348,38 @@ def plot_ci_forest(
             ci_label = f"{ci_pct}% confidence intervals"
         title = f"{ci_label} per {report.entity_name_singular}{n_str}"
 
+    # Self-contained methods subtitle -- this figure is meant to stand on
+    # its own once copied out of evalstats (into a paper, a slide, a post),
+    # so the CI method/correction it was computed with travels with it
+    # rather than only living in the surrounding terminal report. Placed
+    # between the title and the axes (not below the plot) so it doesn't
+    # read as a second, redundant caption once a LaTeX \caption{} is added
+    # underneath the whole figure.
+    caption_parts = []
+    pretty_ci_method = _pretty(ci_method)
+    if pretty_ci_method:
+        caption_parts.append(f"CI method: {pretty_ci_method}")
+    pretty_correction = _pretty(correction)
+    if pretty_correction and pretty_correction != "none":
+        caption_parts.append(f"FWER correction: {pretty_correction}")
+    caption_parts.append(f"α={alpha:g}")
+    if any_gradient_used:
+        caption_parts.append("darker band = higher confidence")
+    caption = "  |  ".join(caption_parts)
+
     ax.set_title(
         title,
         fontsize=10,
         color=_PALETTE["text"],
-        pad=10,
+        pad=24 if caption else 10,
         loc="center",
     )
+    if caption:
+        ax.text(
+            0.5, 1.02, caption,
+            transform=ax.transAxes, ha="center", va="bottom",
+            fontsize=7.5, color=_PALETTE["text_secondary"],
+        )
 
     # ---- legend -------------------------------------------------------------
     # One combined legend: entity-tier colours, plus (in gradient mode) a
@@ -408,34 +433,8 @@ def plot_ci_forest(
     if own_fig:
         fig.tight_layout()
         if legend_handles:
-            # Legend now sits outside the axes (bbox_to_anchor to the
-            # right) so it never overlaps the bars -- reserve room for it.
+            # Legend sits outside the axes (bbox_to_anchor to the right) so
+            # it never overlaps the bars -- reserve room for it.
             fig.subplots_adjust(right=0.76)
-
-        # Self-contained methods caption -- this figure is meant to stand on
-        # its own once copied out of evalstats (into a paper, a slide, a
-        # post), so the N/CI method/correction it was computed with travels
-        # with it rather than only living in the surrounding terminal report.
-        caption_parts = []
-        if n_inputs:
-            caption_parts.append(f"N={n_inputs} items")
-        pretty_ci_method = _pretty(ci_method)
-        if pretty_ci_method:
-            caption_parts.append(f"CI method: {pretty_ci_method}")
-        pretty_correction = _pretty(correction)
-        if pretty_correction and pretty_correction != "none":
-            caption_parts.append(f"FWER correction: {pretty_correction}")
-        caption_parts.append(f"α={alpha:g}")
-        if any_gradient_used:
-            caption_parts.append("darker band = higher confidence")
-        caption = "  |  ".join(caption_parts)
-
-        if caption:
-            fig.subplots_adjust(bottom=0.24)
-            fig.text(
-                0.5, 0.02, caption,
-                ha="center", va="bottom",
-                fontsize=7.5, color=_PALETTE["text_secondary"],
-            )
 
     return fig

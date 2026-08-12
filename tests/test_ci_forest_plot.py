@@ -162,14 +162,21 @@ def test_plot_ci_forest_show_ci_bracket_adds_overlay():
     plt_close(fig_with)
 
 
-def test_plot_ci_forest_caption_includes_n_and_method():
+def test_plot_ci_forest_title_includes_n_and_subtitle_includes_method():
+    """N lives in the title; CI method/correction/alpha live in a small
+    subtitle between the title and the axes (not below the plot), so a
+    LaTeX \\caption{} added under the whole figure doesn't read as
+    redundant with a second caption-like line at the bottom."""
     result = _make_result(n_items=30)
     fig = plot_ci_forest(result)
-    texts = [t.get_text() for t in fig.texts]
-    caption = " ".join(texts)
-    assert "N=30 items" in caption
-    assert "CI method:" in caption
-    assert "α=0.05" in caption
+    ax = fig.axes[0]
+    assert "N=30 inputs" in ax.get_title()
+    ax_texts = [t.get_text() for t in ax.texts]
+    subtitle = " ".join(ax_texts)
+    assert "CI method:" in subtitle
+    assert "α=0.05" in subtitle
+    # Nothing placed below the axes as a second, bottom-of-figure caption.
+    assert len(fig.texts) == 0
     plt_close(fig)
 
 
