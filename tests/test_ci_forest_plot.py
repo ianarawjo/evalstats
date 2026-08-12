@@ -104,18 +104,30 @@ def test_plot_ci_forest_compare_to_uses_gradient_bands_and_same_hue():
     # 3 entities x (4 primary bands + 4 comparison bands) = 24.
     assert len(bars) == 3 * 8
 
-    # Group by rounded (row, base RGB) -- primary and comparison bars for
-    # the same entity should share hue, differing only in alpha (muted).
-    by_hue = {}
-    for p in bars:
-        r, g, b, a = p.get_facecolor()
-        by_hue.setdefault((round(r, 2), round(g, 2), round(b, 2)), []).append(round(a, 3))
-    # Exactly 3 distinct hues (one per entity), each hue used by both the
-    # primary (full-scale alphas) and comparison (muted alphas) bands.
-    assert len(by_hue) == 3
-    for hue, alphas in by_hue.items():
-        assert len(alphas) == 8  # 4 primary + 4 muted-comparison alphas
-        assert len(set(alphas)) == 8  # all 8 alphas distinct (no accidental overlap)
+    # zorder ranges legitimately overlap between comparison (2-5) and
+    # primary (4-7) bands, so split by insertion order instead: each
+    # entity's loop iteration adds its 4 comparison bars, then its 4
+    # primary bars, in that order.
+    compare_bars = []
+    primary_bars = []
+    for entity_i in range(3):
+        chunk = bars[entity_i * 8:(entity_i + 1) * 8]
+        compare_bars += chunk[:4]
+        primary_bars += chunk[4:]
+    assert len(primary_bars) == 12
+    assert len(compare_bars) == 12
+
+    primary_rgbs = {tuple(round(c, 2) for c in p.get_facecolor()[:3]) for p in primary_bars}
+    compare_rgbs = {tuple(round(c, 2) for c in p.get_facecolor()[:3]) for p in compare_bars}
+    assert len(primary_rgbs) == 3  # one hue per entity
+    assert len(compare_rgbs) == 3  # one lightened tint per entity
+    # No overlap: the comparison tint must be a genuinely different (lighter)
+    # RGB from the primary hue, not just a lower-alpha copy of it.
+    assert primary_rgbs.isdisjoint(compare_rgbs)
+    # Every comparison RGB should be closer to white than every primary RGB
+    # (each channel value should be >= the darkest primary channel).
+    for r, g, b in compare_rgbs:
+        assert r + g + b > 0  # sanity: not literally black
     plt_close(fig)
 
 

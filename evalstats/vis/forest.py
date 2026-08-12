@@ -58,6 +58,18 @@ _GRADIENT_BAND_ALPHAS = (0.22, 0.38, 0.58, 0.85)
 _GRADIENT_BAND_HEIGHT = 0.5
 
 
+def _lighten(color, amount: float) -> tuple:
+    """Blend *color* toward white by *amount* (0 = unchanged, 1 = white).
+
+    A genuine lighter tint of the same hue -- distinct from just lowering
+    alpha, which fades toward whatever sits underneath (the page/slide
+    background, not necessarily white) and reads more like a rendering
+    artifact than an intentional "this is the secondary series" design.
+    """
+    r, g, b = mcolors.to_rgb(color)
+    return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
+
+
 def plot_ci_forest(
     report,
     compare_to=None,
@@ -235,18 +247,17 @@ def plot_ci_forest(
     y_positions = np.arange(n)
     # More vertical room per row when stacking two bands (primary +
     # comparison) so thick gradient bars don't heavily overlap; a plain
-    # single line needs much less.
+    # single line needs much less. The comparison band is noticeably
+    # thinner than the primary one -- a secondary, not a co-equal, series.
     has_gradient_rows = style == "gradient"
-    offset = (0.27 if has_gradient_rows else 0.18) if compare_to is not None else 0.0
-    row_band_height = (
-        _GRADIENT_BAND_HEIGHT * 0.85 if (compare_to is not None and has_gradient_rows)
-        else _GRADIENT_BAND_HEIGHT
-    )
-    # Comparison bands/lines use the SAME hue as their row (muted via lower
-    # alpha), not a fixed unrelated colour, so the two bands read as "same
-    # entity, two evals" rather than looking like an unrelated series.
-    _MUTE = 0.55
-    muted_band_alphas = tuple(a * _MUTE for a in _GRADIENT_BAND_ALPHAS)
+    offset = (0.28 if has_gradient_rows else 0.18) if compare_to is not None else 0.0
+    primary_band_height = _GRADIENT_BAND_HEIGHT * (0.9 if compare_to is not None else 1.0)
+    compare_band_height = _GRADIENT_BAND_HEIGHT * 0.45
+    # Comparison bands/lines use the SAME hue as their row, lightened
+    # (a real tint toward white, not just lower alpha -- see _lighten) so
+    # the two read as "same entity, two evals" rather than an unrelated
+    # series, while still visibly standing apart from the primary band.
+    _LIGHTEN_AMOUNT = 0.55
 
     # ---- alternating row backgrounds --------------------------------------
     for i in range(n):
@@ -271,7 +282,8 @@ def plot_ci_forest(
     def _draw_ci_row(
         y_row: float, lo: float, hi: float, mean_val: float,
         multi_ci_row: Optional[dict], row_color, band_alphas: tuple,
-        band_height: float, zorder_base: int, draw_mean: bool, mean_alpha: float,
+        band_height: float, zorder_base: int, draw_mean: bool,
+        mean_tick_color: str, line_width: float,
     ) -> tuple[bool, int]:
         """Draw one CI row (gradient bands, falling back to a single line
         when multi_ci_row is None) plus an optional mean marker. Returns
@@ -298,7 +310,7 @@ def plot_ci_forest(
         else:
             ax.plot(
                 [lo, hi], [y_row, y_row],
-                color=row_color, lw=lw, alpha=(mean_alpha if mean_alpha < 1 else 1.0),
+                color=row_color, lw=line_width,
                 solid_capstyle="round", zorder=zorder_base,
             )
             next_z = zorder_base + 1
@@ -307,12 +319,12 @@ def plot_ci_forest(
                 tick_h = band_height * 0.7
                 ax.plot(
                     [mean_val, mean_val], [y_row - tick_h, y_row + tick_h],
-                    color="black", lw=1.5, alpha=mean_alpha, zorder=next_z + 1,
+                    color=mean_tick_color, lw=1.5, zorder=next_z + 1,
                 )
             else:
                 ax.scatter(
                     [mean_val], [y_row],
-                    color=row_color, s=ms, alpha=mean_alpha, zorder=next_z + 1,
+                    color=row_color, s=ms, zorder=next_z + 1,
                     edgecolor="white", linewidth=0.6,
                 )
             next_z += 1
@@ -325,14 +337,16 @@ def plot_ci_forest(
         color = _entity_color(label)
 
         if compare_to is not None:
-            # Comparison report -- same hue as the primary row, muted, so
-            # the two bands read as "same entity, two evals" rather than an
-            # unrelated fixed colour.
+            # Comparison report -- same hue as the primary row, lightened
+            # (a real tint, not just alpha) and thinner, so the two bands
+            # read as "same entity, two evals" while still standing apart.
             mean0, lo0, hi0 = _ci(compare_to, label)
             multi_ci_cmp = _multi_ci(compare_to, label) if has_gradient_rows else None
+            light_color = _lighten(color, _LIGHTEN_AMOUNT)
             used_grad_cmp, _ = _draw_ci_row(
-                y + offset, lo0, hi0, mean0, multi_ci_cmp, color,
-                muted_band_alphas, row_band_height, 2, show_mean, 0.55,
+                y + offset, lo0, hi0, mean0, multi_ci_cmp, light_color,
+                _GRADIENT_BAND_ALPHAS, compare_band_height, 2, show_mean,
+                _PALETTE["text_secondary"], lw * 0.6,
             )
             any_gradient_used = any_gradient_used or used_grad_cmp
 
@@ -343,7 +357,8 @@ def plot_ci_forest(
         y_row = y - offset
         used_grad, top_zorder = _draw_ci_row(
             y_row, lo5, hi5, mean5, multi_ci, color,
-            _GRADIENT_BAND_ALPHAS, row_band_height, 4, show_mean, 1.0,
+            _GRADIENT_BAND_ALPHAS, primary_band_height, 4, show_mean,
+            "black", lw,
         )
         any_gradient_used = any_gradient_used or used_grad
 
@@ -356,7 +371,7 @@ def plot_ci_forest(
                 color=_PALETTE["text"], lw=1.3, zorder=top_zorder,
                 solid_capstyle="butt",
             )
-            cap_h = row_band_height * 0.22
+            cap_h = primary_band_height * 0.22
             for x_cap in (lo5, hi5):
                 ax.plot(
                     [x_cap, x_cap], [y_row - cap_h, y_row + cap_h],
@@ -447,14 +462,15 @@ def plot_ci_forest(
     # a social post) can still read it unaided.
     legend_handles: list = []
     if compare_to is not None:
-        # Primary vs. comparison is now conveyed by opacity alone (each row
-        # keeps its own hue for both) -- a neutral swatch at full vs. muted
-        # alpha represents that distinction regardless of color_rule.
+        # Primary vs. comparison is conveyed by thickness + tint (each row
+        # keeps its own hue for both) -- a neutral swatch pair mirroring
+        # that exact treatment (thin/light vs. thick/full) represents the
+        # distinction regardless of color_rule.
         r_label = report_label or "primary"
         c_label = compare_label or "comparison"
         legend_handles += [
-            Line2D([0], [0], color=_PALETTE["text_secondary"], lw=lw, alpha=_MUTE,
-                   solid_capstyle="round", label=c_label),
+            Line2D([0], [0], color=_lighten(_PALETTE["text_secondary"], _LIGHTEN_AMOUNT),
+                   lw=lw * 0.6, solid_capstyle="round", label=c_label),
             Line2D([0], [0], color=_PALETTE["text_secondary"], lw=lw,
                    solid_capstyle="round", label=r_label),
         ]
