@@ -49,7 +49,7 @@ def supports_ansi_color() -> bool:
 # the input data shape (see BenchmarkResult.is_seeded in core/types.py)
 # rather than a method-selection choice.
 
-DataKind = Literal["binary", "bounded_01", "unbounded"]
+DataKind = Literal["binary", "bounded_01", "likert", "unbounded"]
 
 # --- Bootstrap resampling variant (resolve_resampling_method) --------------
 # Plain (non-binary) bootstrap CIs: sample_size >= this -> "bootstrap"
@@ -150,14 +150,55 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
         robustness_method_single_run="logit_t",
         robustness_method_seeded="logit_t",
         reason=(
-            "Numeric data with a reliable [lo, hi] range (e.g. normalised "
-            "accuracy, ROUGE, or any scale declared via an explicit "
-            "score_range -- a Likert scale, a percentage grade): Logit-t "
-            "pairwise and marginal CIs, per fig:ci-decision-tree. The range "
-            "is either the caller's explicit score_range or an exact [0, 1] "
-            "match -- see resolve_score_bounds() in core/resampling.py. "
-            "Supersedes the earlier t_interval (pairwise) / nig, nig_nested "
-            "(marginal) defaults for data in this range."
+            "Numeric data with a reliable [lo, hi] range and no detected "
+            "quantization grid (e.g. normalised accuracy, ROUGE, or any "
+            "genuinely continuous metric declared via an explicit "
+            "score_range): Logit-t pairwise and marginal CIs, per "
+            "fig:ci-decision-tree. The range is either the caller's "
+            "explicit score_range or an exact [0, 1] match -- see "
+            "resolve_score_bounds() in core/resampling.py. Supersedes the "
+            "earlier t_interval (pairwise) / nig, nig_nested (marginal) "
+            "defaults for data in this range -- except discrete/ordinal "
+            "data (Likert scales, integer percentage grades), which is now "
+            "routed to the separate 'likert' row below instead."
+        ),
+    ),
+    AutoAnalyzeRule(
+        data_kind="likert", max_n=None,
+        pairwise_method="nig",
+        robustness_method_single_run="nig",
+        robustness_method_seeded="nig_nested",
+        reason=(
+            "Discrete/ordinal bounded data (a Likert scale, an integer "
+            "percentage grade, or anything else with a real quantization "
+            "grid within its known [lo, hi] range) -- detected either from "
+            "an explicit eval_type='likert', or auto-detected via "
+            "detect_quantization_step() (core/resampling.py) when no "
+            "eval_type is given, with a UserWarning explaining the switch. "
+            "Uses NIG rather than logit-t: a paired diff of two highly "
+            "correlated Likert arms can lose real variance to rounding "
+            "cancellation (most items round identically in both arms, only "
+            "boundary-adjacent items differ), which at small N can leave "
+            "the *sample's* diffs literally constant even though the true "
+            "population diff variance is nonzero -- collapsing a "
+            "variance-based CI like logit-t's (measured: family-wise "
+            "coverage down to 14.5% at n=10, k=10 comparisons, nominal "
+            "95%). NIG's shrinkage prior protects against this without "
+            "needing dithering/reconstruction. This was in fact the "
+            "original default here (superseded by logit_t in 85df093, "
+            "'Refining the sims for simultaneous cis and pvalue FWER "
+            "correction') -- that decision predates a fix to a real prior-"
+            "scale bug (nig_ci_1d's default b0 is calibrated for a single- "
+            "sample rescale, silently 4x too wide when reused unchanged on "
+            "a paired diff's rescale span, which is twice as wide -- see "
+            "core.paired._NIG_PAIRED_DIFF_B0), so the historical comparison "
+            "that dropped NIG likely made it look needlessly conservative "
+            "compared to logit-t. Re-validated post-fix (reps=300, n=10-500, "
+            "icc=0.01-0.95): NIG beats logit-t on likert score at every N up "
+            "to 500 (17% better at n=10, converging to a tie by n=500), "
+            "while logit-t remains the better (if only marginally) choice "
+            "for genuinely continuous 'bounded_01' data, where NIG's extra "
+            "conservatism buys no corresponding robustness."
         ),
     ),
     AutoAnalyzeRule(
@@ -256,6 +297,18 @@ PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
             "data_kind (see AUTO_ANALYZE_METHOD_TABLE). RESOLVED 2026-08-05: this "
             "row previously routed to bootstrap_t as a TEMPORARY stand-in, since no "
             "PPI-corrected logit_t existed -- that gap is now closed."
+        ),
+    ),
+    PPIAutoMethodRule(
+        data_kind="likert",
+        pairwise_method="ppi_logit_t",
+        robustness_method="ppi_logit_t",
+        reason=(
+            "Discrete/ordinal bounded data: there is no PPI-corrected NIG "
+            "implementation (NIG's win over logit-t for likert is specific "
+            "to the non-aligned/no-labels path -- see AUTO_ANALYZE_METHOD_"
+            "TABLE's 'likert' row), so this falls back to the same "
+            "ppi_logit_t used for 'bounded_01' rather than raising."
         ),
     ),
     PPIAutoMethodRule(
