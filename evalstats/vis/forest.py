@@ -19,7 +19,7 @@ Two styles (mirroring the same split ``print_analysis_summary``'s
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Literal, Optional
+from typing import TYPE_CHECKING, Literal, Optional, Union
 
 import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
@@ -70,6 +70,393 @@ def _lighten(color, amount: float) -> tuple:
     return (r + (1 - r) * amount, g + (1 - g) * amount, b + (1 - b) * amount)
 
 
+def _draw_ci_row(
+    ax, y_row: float, lo: float, hi: float, mean_val: float,
+    multi_ci_row: Optional[dict], row_color, band_alphas: tuple,
+    band_height: float, zorder_base: int, draw_mean: bool,
+    mean_tick_color: str, line_width: float, mean_marker: str,
+    tick_scale: float = 0.7,
+) -> tuple[bool, int]:
+    """Draw one CI row (gradient bands, falling back to a single line
+    when multi_ci_row is None) plus an optional mean marker. Returns
+    (used_gradient, next_free_zorder)."""
+    used_gradient = False
+    if multi_ci_row is not None:
+        used_gradient = True
+        # Widest CI (99%, smallest alpha) drawn first/lowest zorder,
+        # narrowest (68%, largest alpha) drawn last/highest zorder --
+        # same "inner band wins" convention as the terminal's
+        # _gradient_interval_line, via z-order layering instead of
+        # character replacement.
+        sorted_alphas = sorted(multi_ci_row.keys())
+        for band_i, a in enumerate(sorted_alphas):
+            lo_a, hi_a = multi_ci_row[a]
+            band_alpha = band_alphas[min(band_i, len(band_alphas) - 1)]
+            ax.barh(
+                y_row, width=hi_a - lo_a, left=lo_a,
+                height=band_height,
+                color=row_color, alpha=band_alpha,
+                edgecolor="none", zorder=zorder_base + band_i,
+            )
+        next_z = zorder_base + len(band_alphas)
+    else:
+        # Standard error-bar shape ([----|----]): a connecting line
+        # plus a vertical cap at each end, rather than a bare rounded-
+        # cap line (which reads ambiguously -- easy to mistake for an
+        # arbitrary line rather than a CI).
+        ax.plot(
+            [lo, hi], [y_row, y_row],
+            color=row_color, lw=line_width,
+            solid_capstyle="butt", zorder=zorder_base,
+        )
+        cap_h = band_height * 0.3
+        for x_cap in (lo, hi):
+            ax.plot(
+                [x_cap, x_cap], [y_row - cap_h, y_row + cap_h],
+                color=row_color, lw=line_width, zorder=zorder_base,
+            )
+        next_z = zorder_base + 1
+    if draw_mean:
+        if mean_marker == "line":
+            tick_h = band_height * tick_scale
+            ax.plot(
+                [mean_val, mean_val], [y_row - tick_h, y_row + tick_h],
+                color=mean_tick_color, lw=1.5, zorder=next_z + 1,
+            )
+        else:
+            ax.scatter(
+                [mean_val], [y_row],
+                color=row_color, s=55, zorder=next_z + 1,
+                edgecolor="white", linewidth=0.6,
+            )
+        next_z += 1
+    return used_gradient, next_z
+
+
+def _apply_x_padding(ax, bundle, scale: float, as_percent: bool) -> None:
+    """Pad the x-axis so CI bands don't hug the left/right spine.
+
+    barh/plot sticky-edges pin the axis limits exactly to the CI extents,
+    so autoscale alone can leave a band hugging the left or right spine.
+    Add a margin, but don't pad past the metric's true floor/ceiling (e.g.
+    0% accuracy) -- a CI that already sits at that boundary should still
+    hug it, since padding there would draw axis space implying impossible
+    values rather than just fixing a cramped-looking plot.
+    """
+    x0, x1 = ax.dataLim.intervalx
+    data_span = x1 - x0
+    if data_span <= 0:
+        return
+    pad = 0.06 * data_span
+    new_x0, new_x1 = x0 - pad, x1 + pad
+    score_range = getattr(bundle, "resolved_score_range", None)
+    if score_range is not None:
+        floor, ceiling = score_range[0] * scale, score_range[1] * scale
+        new_x0 = max(new_x0, floor)
+        new_x1 = min(new_x1, ceiling)
+    elif as_percent:
+        # No resolved bounds, but percent mode still implies a natural
+        # [0, 100] floor/ceiling.
+        new_x0 = max(new_x0, 0.0)
+        new_x1 = min(new_x1, 100.0)
+    ax.set_xlim(new_x0, new_x1)
+
+
+def _place_legend_and_trim(fig, ax, legend_handles: list, own_fig: bool) -> None:
+    """Place the combined legend outside the axes, then trim the canvas to
+    hug its actual rendered width instead of leaving unused margin (matters
+    for pasting a figure straight into a paper without manual cropping).
+    """
+    if legend_handles:
+        ax.legend(
+            handles=legend_handles,
+            fontsize=7.5, loc="center left", bbox_to_anchor=(1.01, 0.5),
+            frameon=True, facecolor="white",
+            edgecolor=_PALETTE["grid"], framealpha=0.95,
+            ncol=1,
+        )
+
+    if not own_fig:
+        return
+    fig.tight_layout()
+    if not legend_handles:
+        return
+    fig.subplots_adjust(right=0.78)
+    fig.canvas.draw()
+    renderer = fig.canvas.get_renderer()
+    legend = ax.get_legend()
+    legend_px = legend.get_window_extent(renderer=renderer)
+    fig_px_width = fig.get_window_extent(renderer=renderer).width
+    pad_px = 8
+    excess_px = fig_px_width - (legend_px.x1 + pad_px)
+    if excess_px > 1:
+        dpi = fig.dpi
+        old_width_in, height_in = fig.get_size_inches()
+        new_width_in = old_width_in - excess_px / dpi
+        if new_width_in > 0:
+            # Rescale horizontal subplot fractions so the axes and
+            # legend keep their exact pixel position/size on the
+            # narrower canvas -- only the wasted margin is trimmed.
+            sp = fig.subplotpars
+            scale = old_width_in / new_width_in
+            fig.set_size_inches(new_width_in, height_in)
+            fig.subplots_adjust(
+                left=min(0.99, sp.left * scale),
+                right=min(1.0, sp.right * scale),
+            )
+
+
+def _resolve_factors(report, factors):
+    """Decide which entities plot_ci_forest should render.
+
+    Returns either ``("flat", resolved_report)`` -- use the existing
+    single-axis rendering on *resolved_report* (which may be *report*
+    itself, or a marginal view of it via ``.as_view()``) -- or
+    ``("grouped", (outer, inner))`` to render the two-factor grouped view.
+    """
+    model_labels = getattr(report, "model_labels", None)
+    prompt_labels = getattr(report, "prompt_labels", None)
+    is_two_factor = (
+        model_labels is not None and prompt_labels is not None
+        and len(model_labels) > 1 and len(prompt_labels) > 1
+    )
+    if factors is None or factors == "auto":
+        if is_two_factor:
+            return "grouped", ("model", "prompt")
+        return "flat", report
+    if isinstance(factors, str):
+        if factors not in ("model", "prompt"):
+            raise ValueError(
+                f"factors={factors!r} is not 'auto', 'model', 'prompt', or a "
+                "two-item list like ['model', 'prompt']."
+            )
+        if model_labels is None:
+            raise ValueError(
+                f"factors={factors!r} requires a two-factor comparison "
+                "(built with compare(..., factors=['model', 'prompt']), or "
+                "factors='model'/'prompt' when both columns are present) -- "
+                "this report has no (model, prompt) structure to select from."
+            )
+        return "flat", report.as_view(factors)
+    factors_list = list(factors)
+    if len(factors_list) != 2 or set(factors_list) != {"model", "prompt"}:
+        raise ValueError(
+            f"factors={factors!r} must be 'auto', 'model', 'prompt', or a "
+            "two-item permutation of ['model', 'prompt']."
+        )
+    if not is_two_factor:
+        raise ValueError(
+            f"factors={factors!r} requested a grouped two-factor view, but "
+            "this report doesn't have both a model and a prompt axis with "
+            "more than one level each."
+        )
+    return "grouped", tuple(factors_list)
+
+
+# Layout constants for the grouped two-factor view -- tuned separately from
+# the single-axis defaults above since a grouped plot packs many more rows:
+# sibling rows within a group sit closer together (ROW_SPACING < 1.0) and
+# gradient bands are thinner (band_height below), with a smaller gap
+# (GROUP_GAP) between groups than a full row -- large enough to read as a
+# break, small enough not to waste vertical space.
+_GROUPED_ROW_SPACING = 0.8
+_GROUPED_GROUP_GAP = 0.35
+_GROUPED_BAND_HEIGHT = 0.32
+
+
+def _plot_ci_forest_grouped(
+    report, outer: str, inner: str, *,
+    reference_line: Optional[float], sort_by: str, as_percent: bool,
+    style: str, color_rule: str, show_mean: bool, mean_marker: str,
+    figsize: Optional[tuple[float, float]], title: Optional[str], ax,
+) -> "Figure":
+    """Grouped two-factor forest plot: one row per (model, prompt) pair,
+    clustered by *outer* (shared colour + shared alternating background),
+    with *inner* as sub-rows within each cluster. See plot_ci_forest's
+    ``factors=`` docs.
+    """
+    cross = report.cross_model
+    flat_labels = list(cross.benchmark.template_labels)
+    rob = cross.robustness
+    scale = 100.0 if as_percent else 1.0
+
+    # Flat labels are always "<model> / <template>" (model-major -- see
+    # BenchmarkResult.get_flat_result()), regardless of which factor the
+    # caller wants as the outer grouping axis.
+    rows = []  # (outer_val, inner_val, mean, lo, hi, multi_ci)
+    for i, lbl in enumerate(flat_labels):
+        model_val, template_val = lbl.split(" / ", 1)
+        outer_val, inner_val = (
+            (model_val, template_val) if outer == "model" else (template_val, model_val)
+        )
+        mean = (rob.mean[i]) * scale
+        lo = (rob.ci_low[i] if rob.ci_low is not None else 0.0) * scale
+        hi = (rob.ci_high[i] if rob.ci_high is not None else 1.0) * scale
+        multi_ci = None
+        if rob.multi_ci is not None and style == "gradient":
+            multi_ci = {a: (lo_a[i] * scale, hi_a[i] * scale) for a, (lo_a, hi_a) in rob.multi_ci.items()}
+        rows.append((outer_val, inner_val, mean, lo, hi, multi_ci))
+
+    grouped: dict = {}
+    for r in rows:
+        grouped.setdefault(r[0], []).append(r)
+
+    axis_labels = {"model": report.model_labels, "prompt": report.prompt_labels}
+    outer_axis_order = axis_labels[outer]
+    inner_axis_order = axis_labels[inner]
+
+    if sort_by == "mean":
+        outer_marginal_mean = {lbl: s.mean for lbl, s in report.as_view(outer).entity_stats.items()}
+        group_order = sorted(grouped, key=lambda o: -outer_marginal_mean[o])
+        for o in grouped:
+            grouped[o].sort(key=lambda r: -r[2])
+    elif sort_by == "label":
+        group_order = sorted(grouped)
+        for o in grouped:
+            grouped[o].sort(key=lambda r: r[1])
+    elif sort_by == "input_order":
+        group_order = [o for o in outer_axis_order if o in grouped]
+        for o in grouped:
+            grouped[o].sort(key=lambda r: inner_axis_order.index(r[1]))
+    else:
+        raise ValueError(
+            f"Unknown sort_by: {sort_by!r}. "
+            "Expected 'mean', 'label', or 'input_order'."
+        )
+
+    # ---- colour rule ----------------------------------------------------
+    if color_rule == "auto":
+        color_rule = "factor"
+    elif color_rule == "tier":
+        raise ValueError(
+            "color_rule='tier' is not supported for a grouped two-factor "
+            "view (there's no single 'unbeaten' set across a whole grid) -- "
+            "use color_rule='factor' (default) or a literal colour."
+        )
+    elif not mcolors.is_color_like(color_rule):
+        raise ValueError(
+            f"color_rule={color_rule!r} is not 'auto', 'factor', or a "
+            "valid matplotlib colour spec (e.g. '#4a90d9', 'steelblue')."
+        )
+    if color_rule == "factor":
+        palette = plt.get_cmap("tab10").colors
+        group_colors = {o: palette[i % len(palette)] for i, o in enumerate(outer_axis_order)}
+        group_color_fn = lambda o: group_colors[o]  # noqa: E731
+    else:
+        group_color_fn = lambda o: color_rule  # noqa: E731
+
+    # ---- layout -----------------------------------------------------------
+    y = 0.0
+    row_specs = []  # (y, outer_val, inner_val, mean, lo, hi, multi_ci, group_index)
+    group_bounds = []  # (y_top, y_bottom) per group
+    for gi, o in enumerate(group_order):
+        y_start = y
+        for r in grouped[o]:
+            row_specs.append((y, *r, gi))
+            y += _GROUPED_ROW_SPACING
+        group_bounds.append((y_start, y - _GROUPED_ROW_SPACING))
+        y += _GROUPED_GROUP_GAP
+
+    own_fig = ax is None
+    if own_fig:
+        if figsize is None:
+            figsize = (7.5, max(3.0, 0.30 * len(row_specs) + 0.22 * len(group_order) + 1.6))
+        fig, ax = plt.subplots(figsize=figsize)
+        fig.patch.set_facecolor("white")
+    else:
+        fig = ax.get_figure()
+    ax.set_facecolor("white")
+
+    half = _GROUPED_ROW_SPACING / 2
+    for gi, (y_top, y_bottom) in enumerate(group_bounds):
+        if gi % 2 == 1:
+            ax.axhspan(y_top - half, y_bottom + half, color=_PALETTE["row_alt"], zorder=0)
+
+    if reference_line is not None:
+        ax.axvline(reference_line * scale, color=_PALETTE["ref_line"], lw=1.0, ls="--", zorder=1)
+
+    lw = 2.8
+    any_gradient_used = False
+    for y_row, outer_val, inner_val, mean, lo, hi, multi_ci, gi in row_specs:
+        color = group_color_fn(outer_val)
+        used_grad, _ = _draw_ci_row(
+            ax, y_row, lo, hi, mean, multi_ci, color,
+            _GRADIENT_BAND_ALPHAS, _GROUPED_BAND_HEIGHT, 4, show_mean,
+            "black", lw, mean_marker,
+        )
+        any_gradient_used = any_gradient_used or used_grad
+
+    ax.set_yticks([r[0] for r in row_specs])
+    ax.set_yticklabels(
+        [f"{o} — {i}" for _, o, i, *_ in row_specs], fontsize=9, color=_PALETTE["text"],
+    )
+    ax.invert_yaxis()
+
+    if as_percent:
+        ax.xaxis.set_major_formatter(mticker.PercentFormatter())
+    ax.set_xlabel(
+        f"{'Accuracy (%)' if as_percent else 'Score'}", fontsize=10,
+        color=_PALETTE["text"], labelpad=8,
+    )
+    ax.xaxis.grid(True, color=_PALETTE["grid"], linewidth=0.8, zorder=0)
+    ax.yaxis.grid(False)
+    for spine in ax.spines.values():
+        spine.set_visible(True)
+        spine.set_color("black")
+    ax.tick_params(axis="y", length=0, pad=8)
+    ax.tick_params(axis="x", colors=_PALETTE["text_secondary"], labelsize=9)
+
+    _apply_x_padding(ax, cross, scale, as_percent)
+
+    n_inputs = getattr(getattr(cross, "benchmark", None), "n_inputs", None)
+    alpha = report.alpha
+    ci_pct = int(round((1 - alpha) * 100))
+    ci_method = getattr(cross, "resolved_ci_method", None)
+    correction = getattr(getattr(cross, "pairwise", None), "correction_method", None)
+
+    def _pretty(s: Optional[str]) -> Optional[str]:
+        return s.replace("_", " ") if s else None
+
+    if title is None:
+        n_str = f"  |  N={n_inputs} inputs" if n_inputs else ""
+        ci_label = "68-99% confidence gradient" if any_gradient_used else f"{ci_pct}% confidence intervals"
+        title = f"{ci_label} per {outer} / {inner}{n_str}"
+
+    caption_parts = []
+    pretty_ci_method = _pretty(ci_method)
+    if pretty_ci_method:
+        caption_parts.append(f"CI method: {pretty_ci_method}")
+    pretty_correction = _pretty(correction)
+    if pretty_correction and pretty_correction != "none":
+        caption_parts.append(f"FWER correction: {pretty_correction}")
+    caption_parts.append(f"α={alpha:g}")
+    if any_gradient_used:
+        caption_parts.append("darker band = higher confidence")
+    caption = "  |  ".join(caption_parts)
+
+    ax.set_title(title, fontsize=10, color=_PALETTE["text"], pad=24 if caption else 10, loc="center")
+    if caption:
+        ax.text(
+            0.5, 1.02, caption, transform=ax.transAxes, ha="center", va="bottom",
+            fontsize=7.5, color=_PALETTE["text_secondary"],
+        )
+
+    legend_handles: list = []
+    if any_gradient_used:
+        neutral = _PALETTE["text_secondary"]
+        band_labels = ["99% CI", "95% CI", "90% CI", "68% CI"]
+        legend_handles += [
+            Patch(facecolor=neutral, alpha=a, edgecolor="none", label=lbl)
+            for a, lbl in zip(_GRADIENT_BAND_ALPHAS, band_labels)
+        ]
+    if show_mean and mean_marker == "line":
+        legend_handles.append(Line2D([0], [0], color="black", lw=1.5, label="mean"))
+
+    _place_legend_and_trim(fig, ax, legend_handles, own_fig)
+
+    return fig
+
+
 def plot_ci_forest(
     report,
     compare_to=None,
@@ -79,13 +466,14 @@ def plot_ci_forest(
     sort_by: str = "mean",
     as_percent: bool = True,
     style: Literal["gradient", "single"] = "gradient",
-    color_rule: str = "tier",
+    color_rule: str = "auto",
     show_mean: bool = True,
     mean_marker: Literal["line", "dot"] = "line",
     show_ci_bracket: bool = False,
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     ax: Optional[Axes] = None,
+    factors: Union[str, list, None] = "auto",
 ) -> "Figure":
     """Plot per-entity confidence intervals as a horizontal forest plot.
 
@@ -132,17 +520,21 @@ def plot_ci_forest(
     color_rule : str
         How bars are coloured:
 
-        * ``"tier"`` (default) -- by significance tier: "Unbeaten" vs.
+        * ``"auto"`` (default) -- ``"tier"`` for a single-axis plot,
+          ``"factor"`` for a grouped two-factor plot (see *factors*), since
+          "tier" has no single well-defined meaning across a whole grid.
+        * ``"tier"`` -- by significance tier: "Unbeaten" vs.
           "Significantly worse" (or a single neutral colour when nothing
           is significantly different). This is the only mode with a
           colour-meaning legend, since it's the only one where colour
           carries information beyond "which entity is this" (the y-axis
-          labels already say that).
-        * ``"factor"`` -- each entity gets its own distinct colour from a
-          qualitative palette (cycling past 10 entities). Useful when
-          entities are a categorical factor in their own right (e.g.
-          different models) and you want colour to track identity rather
-          than significance.
+          labels already say that). Not valid together with a grouped
+          *factors* view.
+        * ``"factor"`` -- each entity (or, in a grouped view, each outer
+          group) gets its own distinct colour from a qualitative palette
+          (cycling past 10 entities). Useful when entities are a
+          categorical factor in their own right (e.g. different models)
+          and you want colour to track identity rather than significance.
         * any matplotlib colour spec (e.g. ``"#4a90d9"``, ``"steelblue"``)
           -- every bar uses that one colour.
     show_mean : bool
@@ -164,11 +556,53 @@ def plot_ci_forest(
         Plot title.  A descriptive default is generated when omitted.
     ax : Axes, optional
         Existing axes to draw into.  A new figure is created when omitted.
+    factors : str, list, or None
+        Which axis (or axes) to plot, for a two-factor comparison (built
+        with ``compare(evaldata, factors=["model", "prompt"])``, or
+        ``factors="model"``/``"prompt"`` when both columns are present --
+        see :attr:`ComparisonResult.cross_model`):
+
+        * ``"auto"`` (default) -- a grouped two-factor plot when the report
+          genuinely has both a model and a prompt axis with more than one
+          level each; otherwise the existing single-axis plot, unchanged.
+        * ``"model"`` / ``"prompt"`` -- collapse to the marginal view over
+          that one axis (averaging out the other), via
+          :meth:`ComparisonResult.as_view`.
+        * ``["model", "prompt"]`` (or the reverse) -- the grouped
+          two-factor view: one row per (model, prompt) pair, clustered by
+          the *first* factor in the list (its own shared colour and a
+          shared alternating row background), with the second factor as
+          sub-rows within each cluster, sorted by *sort_by* within the
+          group the same way single-axis rows are. ``compare_to`` is not
+          yet supported together with this view.
 
     Returns
     -------
     matplotlib.figure.Figure
     """
+    mode, resolved = _resolve_factors(report, factors)
+    if mode == "grouped":
+        if compare_to is not None:
+            raise ValueError(
+                "compare_to is not yet supported together with a grouped "
+                "two-factor factors= view."
+            )
+        if show_ci_bracket:
+            raise ValueError(
+                "show_ci_bracket is not yet supported together with a "
+                "grouped two-factor factors= view."
+            )
+        outer, inner = resolved
+        return _plot_ci_forest_grouped(
+            report, outer, inner,
+            reference_line=reference_line, sort_by=sort_by, as_percent=as_percent,
+            style=style, color_rule=color_rule, show_mean=show_mean,
+            mean_marker=mean_marker, figsize=figsize, title=title, ax=ax,
+        )
+    report = resolved
+    if color_rule == "auto":
+        color_rule = "tier"
+
     labels = report.labels
     n = len(labels)
 
@@ -294,69 +728,7 @@ def plot_ci_forest(
 
     # ---- draw CIs ---------------------------------------------------------
     lw = 2.8
-    ms = 55  # scatter marker size
     any_gradient_used = False
-
-    def _draw_ci_row(
-        y_row: float, lo: float, hi: float, mean_val: float,
-        multi_ci_row: Optional[dict], row_color, band_alphas: tuple,
-        band_height: float, zorder_base: int, draw_mean: bool,
-        mean_tick_color: str, line_width: float, tick_scale: float = 0.7,
-    ) -> tuple[bool, int]:
-        """Draw one CI row (gradient bands, falling back to a single line
-        when multi_ci_row is None) plus an optional mean marker. Returns
-        (used_gradient, next_free_zorder)."""
-        used_gradient = False
-        if multi_ci_row is not None:
-            used_gradient = True
-            # Widest CI (99%, smallest alpha) drawn first/lowest zorder,
-            # narrowest (68%, largest alpha) drawn last/highest zorder --
-            # same "inner band wins" convention as the terminal's
-            # _gradient_interval_line, via z-order layering instead of
-            # character replacement.
-            sorted_alphas = sorted(multi_ci_row.keys())
-            for band_i, a in enumerate(sorted_alphas):
-                lo_a, hi_a = multi_ci_row[a]
-                band_alpha = band_alphas[min(band_i, len(band_alphas) - 1)]
-                ax.barh(
-                    y_row, width=hi_a - lo_a, left=lo_a,
-                    height=band_height,
-                    color=row_color, alpha=band_alpha,
-                    edgecolor="none", zorder=zorder_base + band_i,
-                )
-            next_z = zorder_base + len(band_alphas)
-        else:
-            # Standard error-bar shape ([----|----]): a connecting line
-            # plus a vertical cap at each end, rather than a bare rounded-
-            # cap line (which reads ambiguously -- easy to mistake for an
-            # arbitrary line rather than a CI).
-            ax.plot(
-                [lo, hi], [y_row, y_row],
-                color=row_color, lw=line_width,
-                solid_capstyle="butt", zorder=zorder_base,
-            )
-            cap_h = band_height * 0.3
-            for x_cap in (lo, hi):
-                ax.plot(
-                    [x_cap, x_cap], [y_row - cap_h, y_row + cap_h],
-                    color=row_color, lw=line_width, zorder=zorder_base,
-                )
-            next_z = zorder_base + 1
-        if draw_mean:
-            if mean_marker == "line":
-                tick_h = band_height * tick_scale
-                ax.plot(
-                    [mean_val, mean_val], [y_row - tick_h, y_row + tick_h],
-                    color=mean_tick_color, lw=1.5, zorder=next_z + 1,
-                )
-            else:
-                ax.scatter(
-                    [mean_val], [y_row],
-                    color=row_color, s=ms, zorder=next_z + 1,
-                    edgecolor="white", linewidth=0.6,
-                )
-            next_z += 1
-        return used_gradient, next_z
 
     for i, label in enumerate(ordered_labels):
         y = float(y_positions[i])
@@ -372,9 +744,9 @@ def plot_ci_forest(
             multi_ci_cmp = _multi_ci(compare_to, label) if has_gradient_rows else None
             light_color = _lighten(color, _LIGHTEN_AMOUNT)
             used_grad_cmp, _ = _draw_ci_row(
-                y + offset, lo0, hi0, mean0, multi_ci_cmp, light_color,
+                ax, y + offset, lo0, hi0, mean0, multi_ci_cmp, light_color,
                 _GRADIENT_BAND_ALPHAS, compare_band_height, 2, show_mean,
-                _PALETTE["text_secondary"], lw * 0.6, tick_scale,
+                _PALETTE["text_secondary"], lw * 0.6, mean_marker, tick_scale,
             )
             any_gradient_used = any_gradient_used or used_grad_cmp
 
@@ -384,9 +756,9 @@ def plot_ci_forest(
         multi_ci = _multi_ci(report, label) if style == "gradient" else None
         y_row = y - offset
         used_grad, top_zorder = _draw_ci_row(
-            y_row, lo5, hi5, mean5, multi_ci, color,
+            ax, y_row, lo5, hi5, mean5, multi_ci, color,
             _GRADIENT_BAND_ALPHAS, primary_band_height, 4, show_mean,
-            "black", lw, tick_scale,
+            "black", lw, mean_marker, tick_scale,
         )
         any_gradient_used = any_gradient_used or used_grad
 
@@ -432,30 +804,7 @@ def plot_ci_forest(
 
     # ---- gather methods metadata (for title + caption) --------------------
     bundle = getattr(report, "full_analysis", None)
-
-    # ---- x-axis padding ----------------------------------------------------
-    # barh/plot sticky-edges pin the axis limits exactly to the CI extents,
-    # so autoscale alone can leave a band hugging the left or right spine.
-    # Add a margin, but don't pad past the metric's true floor/ceiling (e.g.
-    # 0% accuracy) -- a CI that already sits at that boundary should still
-    # hug it, since padding there would draw axis space implying impossible
-    # values rather than just fixing a cramped-looking plot.
-    x0, x1 = ax.dataLim.intervalx
-    data_span = x1 - x0
-    if data_span > 0:
-        pad = 0.06 * data_span
-        new_x0, new_x1 = x0 - pad, x1 + pad
-        score_range = getattr(bundle, "resolved_score_range", None)
-        if score_range is not None:
-            floor, ceiling = score_range[0] * scale, score_range[1] * scale
-            new_x0 = max(new_x0, floor)
-            new_x1 = min(new_x1, ceiling)
-        elif as_percent:
-            # No resolved bounds, but percent mode still implies a natural
-            # [0, 100] floor/ceiling.
-            new_x0 = max(new_x0, 0.0)
-            new_x1 = min(new_x1, 100.0)
-        ax.set_xlim(new_x0, new_x1)
+    _apply_x_padding(ax, bundle, scale, as_percent)
 
     n_inputs = getattr(getattr(bundle, "benchmark", None), "n_inputs", None)
     alpha = getattr(report, "alpha", 0.05)
@@ -555,46 +904,6 @@ def plot_ci_forest(
             Line2D([0], [0], color=_PALETTE["text"], lw=1.3, label=f"{ci_pct}% CI (bracket)")
         )
 
-    if legend_handles:
-        ax.legend(
-            handles=legend_handles,
-            fontsize=7.5, loc="center left", bbox_to_anchor=(1.01, 0.5),
-            frameon=True, facecolor="white",
-            edgecolor=_PALETTE["grid"], framealpha=0.95,
-            ncol=1,
-        )
-
-    if own_fig:
-        fig.tight_layout()
-        if legend_handles:
-            # Legend sits outside the axes (bbox_to_anchor to the right) so
-            # it never overlaps the bars -- reserve room for it with a
-            # generous initial guess, then trim the canvas to hug the
-            # legend's actual rendered width instead of leaving whatever
-            # blank margin that guess didn't use (matters for pasting
-            # straight into a paper without manual cropping).
-            fig.subplots_adjust(right=0.78)
-            fig.canvas.draw()
-            renderer = fig.canvas.get_renderer()
-            legend = ax.get_legend()
-            legend_px = legend.get_window_extent(renderer=renderer)
-            fig_px_width = fig.get_window_extent(renderer=renderer).width
-            pad_px = 8
-            excess_px = fig_px_width - (legend_px.x1 + pad_px)
-            if excess_px > 1:
-                dpi = fig.dpi
-                old_width_in, height_in = fig.get_size_inches()
-                new_width_in = old_width_in - excess_px / dpi
-                if new_width_in > 0:
-                    # Rescale horizontal subplot fractions so the axes and
-                    # legend keep their exact pixel position/size on the
-                    # narrower canvas -- only the wasted margin is trimmed.
-                    sp = fig.subplotpars
-                    scale = old_width_in / new_width_in
-                    fig.set_size_inches(new_width_in, height_in)
-                    fig.subplots_adjust(
-                        left=min(0.99, sp.left * scale),
-                        right=min(1.0, sp.right * scale),
-                    )
+    _place_legend_and_trim(fig, ax, legend_handles, own_fig)
 
     return fig

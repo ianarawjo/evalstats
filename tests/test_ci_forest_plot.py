@@ -34,6 +34,20 @@ def _make_result(n_models=3, n_items=30, seed=0):
     return es.compare(evaldata, factors="model", metric="score", rng=_rng(seed + 100))
 
 
+def _make_two_factor_result(n_models=3, n_templates=2, n_items=25, seed=0):
+    rng = _rng(seed)
+    scores_dict = {
+        f"m{i}": {
+            f"t{j}": np.clip(rng.normal(0.5 + 0.1 * i + 0.03 * j, 0.08, size=n_items), 0, 1)
+            for j in range(n_templates)
+        }
+        for i in range(n_models)
+    }
+    return es.compare_models(
+        scores_dict, statistic="mean", n_bootstrap=500, rng=_rng(seed + 50)
+    )
+
+
 def test_plot_ci_forest_gradient_is_default():
     result = _make_result()
     fig = plot_ci_forest(result)
@@ -300,6 +314,133 @@ def test_color_rule_invalid_raises_clear_error():
     result = _make_result()
     with pytest.raises(ValueError, match="not 'tier', 'factor'"):
         plot_ci_forest(result, color_rule="not_a_real_color")
+
+
+# ---------------------------------------------------------------------------
+# factors= (grouped two-factor view)
+# ---------------------------------------------------------------------------
+
+def test_factors_auto_upgrades_to_grouped_view_for_two_factor_report():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    fig = result.plot()
+    ax = fig.axes[0]
+    assert "per model / prompt" in ax.get_title()
+    # 3 models x 2 templates x 4 gradient bands each = 24 bar patches.
+    from matplotlib.patches import Rectangle
+    bars = [p for p in ax.patches if isinstance(p, Rectangle) and p.get_zorder() >= 4]
+    assert len(bars) == 3 * 2 * 4
+    assert len(ax.get_yticklabels()) == 6
+    plt_close(fig)
+
+
+def test_factors_auto_preserves_flat_view_for_single_factor_report():
+    result = _make_result(n_models=3)
+    fig = result.plot()
+    ax = fig.axes[0]
+    assert " / " not in ax.get_title()
+    assert len(ax.get_yticklabels()) == 3
+    plt_close(fig)
+
+
+def test_factors_explicit_list_matches_auto_for_two_factor_report():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    fig = result.plot(factors=["model", "prompt"])
+    ax = fig.axes[0]
+    assert len(ax.get_yticklabels()) == 6
+    plt_close(fig)
+
+
+def test_factors_reversed_list_swaps_grouping_order():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    fig = result.plot(factors=["prompt", "model"])
+    ax = fig.axes[0]
+    assert "per prompt / model" in ax.get_title()
+    labels = [t.get_text() for t in ax.get_yticklabels()]
+    # Grouped by prompt now, so every label should start with a template id.
+    assert all(lbl.startswith("t0") or lbl.startswith("t1") for lbl in labels)
+    plt_close(fig)
+
+
+def test_factors_model_forces_marginal_flat_view():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    fig = result.plot(factors="model")
+    ax = fig.axes[0]
+    assert len(ax.get_yticklabels()) == 3  # collapsed over prompt
+    plt_close(fig)
+
+
+def test_factors_prompt_forces_marginal_flat_view():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    fig = result.plot(factors="prompt")
+    ax = fig.axes[0]
+    assert len(ax.get_yticklabels()) == 2  # collapsed over model
+    plt_close(fig)
+
+
+def test_factors_grouped_defaults_to_factor_color_rule():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    fig = result.plot()
+    ax = fig.axes[0]
+    legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "Unbeaten" not in legend_labels
+    plt_close(fig)
+
+
+def test_factors_grouped_rejects_tier_color_rule():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    with pytest.raises(ValueError, match="color_rule='tier'"):
+        result.plot(color_rule="tier")
+
+
+def test_factors_grouped_rejects_compare_to():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    other = _make_two_factor_result(n_models=3, n_templates=2, seed=1)
+    with pytest.raises(ValueError, match="compare_to is not yet supported"):
+        result.plot(compare_to=other)
+
+
+def test_factors_grouped_rejects_show_ci_bracket():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    with pytest.raises(ValueError, match="show_ci_bracket is not yet supported"):
+        result.plot(show_ci_bracket=True)
+
+
+def test_factors_invalid_string_raises_clear_error():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    with pytest.raises(ValueError, match="not 'auto', 'model', 'prompt'"):
+        result.plot(factors="template")
+
+
+def test_factors_list_on_single_factor_report_raises_clear_error():
+    result = _make_result(n_models=3)
+    with pytest.raises(ValueError, match="doesn't have both a model and a prompt axis"):
+        result.plot(factors=["model", "prompt"])
+
+
+def test_factors_string_on_single_factor_report_raises_clear_error():
+    result = _make_result(n_models=3)
+    with pytest.raises(ValueError, match="no \\(model, prompt\\) structure"):
+        result.plot(factors="model")
+
+
+def test_as_view_collapses_to_marginal_entities():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    model_view = result.as_view("model")
+    assert sorted(model_view.labels) == ["m0", "m1", "m2"]
+    prompt_view = result.as_view("prompt")
+    assert sorted(prompt_view.labels) == ["t0", "t1"]
+
+
+def test_model_and_prompt_labels_populated_for_two_factor_report():
+    result = _make_two_factor_result(n_models=3, n_templates=2)
+    assert result.model_labels == ["m0", "m1", "m2"]
+    assert result.prompt_labels == ["t0", "t1"]
+
+
+def test_model_and_prompt_labels_none_for_single_factor_report():
+    result = _make_result(n_models=3)
+    assert result.model_labels is None
+    assert result.prompt_labels is None
 
 
 def plt_close(fig):

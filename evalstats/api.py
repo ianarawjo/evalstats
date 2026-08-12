@@ -422,6 +422,57 @@ class ComparisonResult:
         return top_pairs or None
 
     @property
+    def model_labels(self) -> Optional[list]:
+        """Model-axis labels for a two-factor (model, prompt) comparison, or ``None``.
+
+        Populated under the same condition as :attr:`cross_model` — this is
+        that bundle's model axis, in its original (pre-sort) order.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        return list(self._analysis.benchmark.model_labels)
+
+    @property
+    def prompt_labels(self) -> Optional[list]:
+        """Prompt/template-axis labels for a two-factor comparison, or ``None``.
+
+        Populated under the same condition as :attr:`cross_model` — this is
+        that bundle's template axis, in its original (pre-sort) order.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        return list(self._analysis.benchmark.template_labels)
+
+    def as_view(self, factor: Literal["model", "prompt"]) -> "ComparisonResult":
+        """Return this two-factor comparison collapsed onto a single axis.
+
+        E.g. ``result.as_view("model")`` averages over prompts to compare
+        models; ``result.as_view("prompt")`` averages over models to compare
+        prompts. Only valid for a two-factor comparison (see
+        :attr:`cross_model`) — raises otherwise.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            raise ValueError(
+                "as_view() requires a two-factor comparison (built with "
+                "compare(..., factors=['model', 'prompt']), or "
+                "factors='model'/'prompt' when both columns are present)."
+            )
+        view_map = {"model": "model_level", "prompt": "template_level"}
+        if factor not in view_map:
+            raise ValueError(f"factor={factor!r} must be 'model' or 'prompt'.")
+        return ComparisonResult(
+            self._analysis,
+            factors=self._factors,
+            metric=self._metric,
+            baseline=self._baseline,
+            alpha=self._alpha,
+            filtered_df=self._df,
+            _mmb_view=view_map[factor],
+            min_meaningful_diff=self._min_meaningful_diff,
+            show_rank_probabilities=self._show_rank_probabilities,
+        )
+
+    @property
     def pareto_status(self) -> Optional[dict]:
         """Per-entity three-state Pareto classification, or ``None``.
 
