@@ -371,19 +371,13 @@ def plot_ci_forest(
         title,
         fontsize=10,
         color=_PALETTE["text"],
-        pad=28 if caption else 10,
+        pad=24 if caption else 10,
         loc="center",
     )
     if caption:
-        # Points-based offset (not axes-fraction) so the gap from the plot
-        # is consistent regardless of axes height, and sits roughly midway
-        # between the title and the top of the axes rather than hugging
-        # either one.
-        ax.annotate(
-            caption,
-            xy=(0.5, 1.0), xycoords="axes fraction",
-            xytext=(0, 13), textcoords="offset points",
-            ha="center", va="bottom",
+        ax.text(
+            0.5, 1.02, caption,
+            transform=ax.transAxes, ha="center", va="bottom",
             fontsize=7.5, color=_PALETTE["text_secondary"],
         )
 
