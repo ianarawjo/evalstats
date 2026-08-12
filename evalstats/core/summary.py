@@ -1353,38 +1353,40 @@ def _print_pairwise_section(
         # Explicit methods summary, directly above the p-value-method detail
         # line -- mirrors the matplotlib forest plot's subtitle, stated
         # plainly rather than nested into the section header. Two lines:
-        # (1) CI method / p-value method / alpha, (2) FWER corrections,
-        # broken out separately for simultaneous CIs and p-values since
-        # they can use different correction methods.
+        # (1) CI method / p-value method / alpha, (2) simultaneous-CI method
+        # and the FWER correction applied to p-values, broken out separately
+        # since they can use different correction methods. Dimmed along with
+        # the rest of this footnote block (ES=, p-value detail, stars:) --
+        # methods detail, not part of the data itself.
         _line1 = [f"CI method: {_pretty_ci_method}"]
         if p_value_method_label:
             _line1.append(f"p-value method: {p_value_method_label}")
         _line1.append(f"α={get_alpha_ci():g}")
-        print(f"  {'  |  '.join(_line1)}")
+        print(f"{_DIM}  {'  |  '.join(_line1)}{_RESET}")
 
-        _line2 = [f"Simultaneous CIs: {_pretty_simultaneous_ci(sim_ci_method)}"]
+        _line2 = [f"Simultaneous CI method: {_pretty_simultaneous_ci(sim_ci_method)}"]
         if p_value_method_label:
-            _line2.append(f"p-values: {_pretty_correction(corr)}")
-        print(f"  FWER corrections:  {'  |  '.join(_line2)}")
+            _line2.append(f"FWER correction for p-values: {_pretty_correction(corr)}")
+        print(f"{_DIM}  {'  |  '.join(_line2)}{_RESET}")
 
         if eff_p_source in {"max_t", "boot"}:
             if is_romano_wolf_active and eff_p_source == "boot":
-                print(f"  {p_col_header} = Romano-Wolf step-down (FWER-controlled)")
+                print(f"{_DIM}  {p_col_header} = Romano-Wolf step-down (FWER-controlled){_RESET}")
             elif is_newcombe_pairwise:
-                print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
+                print(f"{_DIM}  {p_col_header} = McNemar exact test (two-sided, uncorrected){_RESET}")
             elif is_sign_pairwise:
-                print(f"  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected)")
+                print(f"{_DIM}  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected){_RESET}")
             elif eff_p_source == "max_t":
-                print(f"  {p_col_header} = max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs)")
+                print(f"{_DIM}  {p_col_header} = max-T bootstrap p-value (FWER-controlled, commensurate with simultaneous CIs){_RESET}")
             else:
-                print(f"  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected)")
+                print(f"{_DIM}  {p_col_header} = bootstrap p-value ({bundle.pairwise.correction_method}-corrected){_RESET}")
         elif eff_p_source == "wsr":
             ppi_note = ", PPI-corrected" if getattr(bundle, "ppi_applied", False) else ""
-            print(f"  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected{ppi_note})")
+            print(f"{_DIM}  {p_col_header} = Wilcoxon signed-rank ({bundle.pairwise.correction_method}-corrected{ppi_note}){_RESET}")
         elif eff_p_source == "nem":
-            print(f"  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
+            print(f"{_DIM}  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled){_RESET}")
         if eff_p_source is not None:
-            print("  stars: * p<0.01, ** p<0.001, *** p<0.0001")
+            print(f"{_DIM}  stars: * p<0.01, ** p<0.001, *** p<0.0001{_RESET}")
         print()
         labels_sorted = [
             label
