@@ -250,7 +250,11 @@ def plot_ci_forest(
     # single line needs much less. The comparison band is noticeably
     # thinner than the primary one -- a secondary, not a co-equal, series.
     has_gradient_rows = style == "gradient"
-    offset = (0.28 if has_gradient_rows else 0.18) if compare_to is not None else 0.0
+    # Tuned so the gap between a row's own primary/comparison pair is
+    # smaller than the gap to the *next* entity's bands -- otherwise the
+    # comparison band can read as belonging to the row below it instead of
+    # its own sibling.
+    offset = (0.2 if has_gradient_rows else 0.14) if compare_to is not None else 0.0
     primary_band_height = _GRADIENT_BAND_HEIGHT * (0.9 if compare_to is not None else 1.0)
     compare_band_height = _GRADIENT_BAND_HEIGHT * 0.45
     # Comparison bands/lines use the SAME hue as their row, lightened
