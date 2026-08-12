@@ -33,16 +33,26 @@ from evalstats.config import set_alpha_ci, get_alpha_ci
 # "compare" name if it were imported before the submodule.
 from evalstats.loader import load_from, EvalResults, EvalLoadError
 from evalstats.api import compare, compare_models, compare_prompts, ComparisonResult
-from evalstats.alignment import validate_alignment, AlignmentResult
+from evalstats.alignment import judge_alignment, AlignmentResult
 from evalstats import ppi
 from evalstats import tests
+from evalstats.quick import (
+    mean_ci,
+    MeanCI,
+    summarize,
+    GroupSummary,
+    stability,
+    StabilityResult,
+    judge_debias_mean_ci,
+    DebiasedMeanCI,
+)
 
 __version__ = "0.2.4"
 
 __all__ = [
     # High-level spec API
     "load_from",
-    "validate_alignment",
+    "judge_alignment",
     "AlignmentResult",
     "ppi",
     "tests",
@@ -52,6 +62,15 @@ __all__ = [
     "compare_models",
     "compare_prompts",
     "ComparisonResult",
+    # Quick primitives
+    "mean_ci",
+    "MeanCI",
+    "summarize",
+    "GroupSummary",
+    "stability",
+    "StabilityResult",
+    "judge_debias_mean_ci",
+    "DebiasedMeanCI",
     # Core types
     "BenchmarkResult",
     "MultiModelBenchmark",

@@ -155,7 +155,7 @@ evaldata_ws = es.load_from(
 print("=" * 62)
 print("STEP 1 — LLM judge alignment (between-subjects data)")
 print("=" * 62)
-ar_bs = es.validate_alignment(
+ar_bs = es.judge_alignment(
     evaldata_bs,
     llm_metric="llm_score",
     human_groundtruth="human_score",
@@ -165,7 +165,7 @@ ar_bs.summary()
 print("=" * 62)
 print("STEP 1 — LLM judge alignment (within-subjects data)")
 print("=" * 62)
-ar_ws = es.validate_alignment(
+ar_ws = es.judge_alignment(
     evaldata_ws,
     llm_metric="llm_score",
     human_groundtruth="human_score",

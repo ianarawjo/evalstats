@@ -91,7 +91,7 @@ which no longer holds); --plot switches to a dedicated power heatmap/scatter
 (_plot_power_results) instead of the Type I one.
 
 The internal PPI functions (_ppi_two_sample, _ppi_paired_arrays, etc.) are called
-directly to skip the validate_alignment overhead (~360ms/call) — we are testing
+directly to skip the judge_alignment overhead (~360ms/call) — we are testing
 statistical calibration, not the pipeline UX.
 
 Usage:

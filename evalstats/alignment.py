@@ -1,6 +1,6 @@
 """Judge alignment validation and MC-based uncertainty propagation.
 
-Provides :func:`validate_alignment` and :class:`AlignmentResult` for
+Provides :func:`judge_alignment` and :class:`AlignmentResult` for
 characterising how well an LLM judge aligns with human graders, and for
 propagating that uncertainty into downstream comparisons via Monte-Carlo
 imputation of latent human labels.
@@ -22,7 +22,7 @@ from scipy.stats import ks_2samp, chi2_contingency, pearsonr, spearmanr
 class AlignmentResult:
     """Carries a fitted calibration model and alignment diagnostics.
 
-    Created by :func:`validate_alignment`.  Pass it to
+    Created by :func:`judge_alignment`.  Pass it to
     ``compare(alignment={metric_col: result})`` to widen confidence intervals
     to account for LLM-judge measurement uncertainty via Monte-Carlo imputation.
 
@@ -593,7 +593,7 @@ def _build_bias_check(
         interpretation = (
             "the judge tracks human relative ordering but disagrees on "
             "absolute scale — treat raw judge scores as biased; consider "
-            "using the Bayesian calibration model fit by validate_alignment "
+            "using the Bayesian calibration model fit by judge_alignment "
             "(e.g. via compare(alignment=...)) to correct for it before "
             "drawing conclusions from raw judge scores"
         )
@@ -978,41 +978,99 @@ def _check_slice_column(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# validate_alignment
+# judge_alignment
 # ─────────────────────────────────────────────────────────────────────────────
 
-def validate_alignment(
+def _judge_alignment_core(
+    llm_aligned: np.ndarray,
+    human_aligned: np.ndarray,
+    score_type: str,
+    *,
+    llm_metric: str,
+    human_groundtruth: str,
+    alpha: float,
+    n_total: int,
+    all_llm: Optional[np.ndarray] = None,
+    slice_df: Optional[pd.DataFrame] = None,
+    slice_labeled_mask: Optional[pd.Series] = None,
+    slice_exclude_cols: frozenset = frozenset(),
+    warn_stacklevel: int = 3,
+) -> AlignmentResult:
+    """Shared core behind both :func:`judge_alignment` call forms: fits the
+    calibration model, computes alignment metrics, and (only when the
+    relevant context is available) runs representativeness diagnostics.
+
+    ``all_llm`` enables the score-distribution check; ``slice_df`` +
+    ``slice_labeled_mask`` enable the categorical slice-column checks (both
+    require the full item pool / other columns, so they're skipped
+    entirely -- not silently approximated -- when this is called from raw
+    paired arrays with no further context, see :func:`judge_alignment`).
+    """
+    n_labeled = int(len(llm_aligned))
+
+    calibration = _fit_calibration(llm_aligned, human_aligned, score_type)
+
+    rng = np.random.default_rng(42)
+    alignment_metrics = _compute_alignment_metrics(
+        llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng
+    )
+    bias_check = alignment_metrics.pop("_bias_check", None)
+
+    rep: dict = {}
+    if all_llm is not None:
+        dist_result = _check_score_distribution(all_llm, llm_aligned, score_type)
+        rep["score_distribution"] = dist_result
+        if not dist_result["passed"]:
+            warnings.warn(
+                f"Representativeness warning: the {n_labeled} labeled items appear to have "
+                f"a different {llm_metric} distribution than the full item pool "
+                f"({dist_result['message']}). "
+                "Alignment uncertainty estimates may not generalise to all items. "
+                "Consider sampling human labels more broadly across the score range.",
+                UserWarning,
+                stacklevel=warn_stacklevel,
+            )
+
+    if slice_df is not None and slice_labeled_mask is not None:
+        slice_cols = [
+            c for c in slice_df.columns
+            if c not in slice_exclude_cols
+            and pd.api.types.is_string_dtype(slice_df[c])
+            and 1 < slice_df[c].nunique() <= 20
+        ]
+        for col in slice_cols:
+            col_result = _check_slice_column(slice_df, slice_labeled_mask, col)
+            rep[f"slice_{col}"] = col_result
+            if not col_result["passed"]:
+                warnings.warn(
+                    f"Representativeness warning for column '{col}': the labeled subset "
+                    f"appears unevenly distributed across categories "
+                    f"({col_result['message']}). "
+                    "Consider stratified sampling of human labels.",
+                    UserWarning,
+                    stacklevel=warn_stacklevel,
+                )
+
+    return AlignmentResult(
+        llm_metric=llm_metric,
+        human_col=human_groundtruth,
+        score_type=score_type,
+        n_labeled=n_labeled,
+        n_total=n_total,
+        calibration=calibration,
+        alignment_metrics=alignment_metrics,
+        representativeness=rep,
+        bias_check=bias_check,
+    )
+
+
+def _judge_alignment_from_evaldata(
     evaldata,
     *,
     llm_metric: str,
     human_groundtruth: str,
-    alpha: float = 0.05,
+    alpha: float,
 ) -> AlignmentResult:
-    """Validate how well an LLM judge aligns with human graders.
-
-    Designed for the common case where LLM judge scores exist for all items
-    but human labels are available for only a subset (the alignment set).
-    Fits a Bayesian calibration model that can later be used to propagate
-    judge uncertainty into downstream comparisons via
-    ``compare(alignment={metric: result})``.
-
-    Parameters
-    ----------
-    evaldata : EvalResults
-        Evaluation data from :func:`load_from`.  Must contain both
-        ``llm_metric`` and ``human_groundtruth`` as columns.
-    llm_metric : str
-        Column name of the LLM judge scores.  Must be present for all rows.
-    human_groundtruth : str
-        Column name of the human rater scores.  Expected to be sparsely
-        populated: non-null for the alignment subset, ``NaN`` elsewhere.
-    alpha : float
-        Significance level for alignment metric CIs.  Default ``0.05``.
-
-    Returns
-    -------
-    AlignmentResult
-    """
     df = evaldata._df
 
     if llm_metric not in df.columns:
@@ -1042,10 +1100,9 @@ def validate_alignment(
             "Alignment estimates will be imprecise with fewer than ~30 labeled items; "
             "consider expanding the alignment set for reliable uncertainty propagation.",
             UserWarning,
-            stacklevel=2,
+            stacklevel=3,
         )
 
-    # Resolve score type
     score_type = evaldata._score_types.get(llm_metric)
     if score_type is None:
         from evalstats.loader import _detect_score_type
@@ -1055,59 +1112,191 @@ def validate_alignment(
     human_aligned = df.loc[labeled_mask, human_groundtruth].to_numpy(dtype=float)
     all_llm = df[llm_metric].to_numpy(dtype=float)
 
-    # Fit Bayesian calibration model
-    calibration = _fit_calibration(llm_aligned, human_aligned, score_type)
-
-    # Compute alignment metrics with bootstrap CIs
-    rng = np.random.default_rng(42)
-    alignment_metrics = _compute_alignment_metrics(
-        llm_aligned, human_aligned, score_type, alpha=alpha, rng=rng
+    return _judge_alignment_core(
+        llm_aligned, human_aligned, score_type,
+        llm_metric=llm_metric, human_groundtruth=human_groundtruth,
+        alpha=alpha, n_total=n_total, all_llm=all_llm,
+        slice_df=df, slice_labeled_mask=labeled_mask,
+        slice_exclude_cols=frozenset({llm_metric, human_groundtruth}),
+        warn_stacklevel=4,
     )
-    bias_check = alignment_metrics.pop("_bias_check", None)
 
-    # Representativeness: score distribution
-    rep: dict = {}
-    dist_result = _check_score_distribution(all_llm, llm_aligned, score_type)
-    rep["score_distribution"] = dist_result
-    if not dist_result["passed"]:
-        warnings.warn(
-            f"Representativeness warning: the {n_labeled} labeled items appear to have "
-            f"a different {llm_metric} distribution than the full item pool "
-            f"({dist_result['message']}). "
-            "Alignment uncertainty estimates may not generalise to all items. "
-            "Consider sampling human labels more broadly across the score range.",
-            UserWarning,
-            stacklevel=2,
+
+def _judge_alignment_from_arrays(
+    judge_scores: np.ndarray,
+    human_scores: np.ndarray,
+    *,
+    all_judge_scores: Optional[np.ndarray],
+    score_type: Optional[str],
+    llm_metric: Optional[str],
+    human_groundtruth: Optional[str],
+    alpha: float,
+) -> AlignmentResult:
+    judge_full = np.asarray(judge_scores, dtype=float)
+    human_full = np.asarray(human_scores, dtype=float)
+    if judge_full.shape != human_full.shape:
+        raise ValueError(
+            "judge_scores and human_scores must be the same length -- one "
+            "judge score + one (possibly NaN) human score per item; got "
+            f"shapes {judge_full.shape} and {human_full.shape}."
+        )
+    if judge_full.ndim != 1:
+        raise ValueError(
+            f"judge_scores/human_scores must be 1-D; got shape {judge_full.shape}."
         )
 
-    # Representativeness: categorical slice columns
-    slice_cols = [
-        c for c in df.columns
-        if c not in {llm_metric, human_groundtruth}
-        and pd.api.types.is_string_dtype(df[c])
-        and 1 < df[c].nunique() <= 20
-    ]
-    for col in slice_cols:
-        col_result = _check_slice_column(df, labeled_mask, col)
-        rep[f"slice_{col}"] = col_result
-        if not col_result["passed"]:
-            warnings.warn(
-                f"Representativeness warning for column '{col}': the labeled subset "
-                f"appears unevenly distributed across categories "
-                f"({col_result['message']}). "
-                "Consider stratified sampling of human labels.",
-                UserWarning,
-                stacklevel=2,
-            )
+    labeled_mask = ~np.isnan(human_full)
+    n_labeled = int(labeled_mask.sum())
+    if n_labeled == 0:
+        raise ValueError(
+            "No labeled items -- human_scores is all NaN. It should be "
+            "non-NaN for the alignment subset and NaN elsewhere (or, if "
+            "every item is labeled, contain no NaN at all)."
+        )
+    llm_aligned = judge_full[labeled_mask]
+    human_aligned = human_full[labeled_mask]
 
-    return AlignmentResult(
-        llm_metric=llm_metric,
-        human_col=human_groundtruth,
-        score_type=score_type,
-        n_labeled=n_labeled,
-        n_total=n_total,
-        calibration=calibration,
-        alignment_metrics=alignment_metrics,
-        representativeness=rep,
-        bias_check=bias_check,
+    if n_labeled < 30:
+        warnings.warn(
+            f"Only {n_labeled} items have human labels. "
+            "Alignment estimates will be imprecise with fewer than ~30 labeled items; "
+            "consider expanding the alignment set for reliable uncertainty propagation.",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    # judge_scores doubles as "every item's judge score" for the
+    # representativeness check for free -- but only when there's actual
+    # evidence it's the full pool (some items weren't labeled). When
+    # n_labeled == judge_full.size (no NaN at all in human_scores), there's
+    # no way to tell "this is the full pool, 100% labeled" apart from "this
+    # is just the labeled subset the caller already extracted" -- stay
+    # conservative and skip the check rather than silently comparing a set
+    # against itself (which would trivially "pass" and could read as false
+    # confidence). An explicit all_judge_scores= always wins either way.
+    if all_judge_scores is not None:
+        all_llm = np.asarray(all_judge_scores, dtype=float)
+    elif n_labeled < judge_full.size:
+        all_llm = judge_full
+    else:
+        all_llm = None
+    n_total = int(all_llm.size) if all_llm is not None else n_labeled
+
+    if score_type is None:
+        from evalstats.loader import _detect_score_type
+        score_type = _detect_score_type(pd.Series(llm_aligned))
+
+    return _judge_alignment_core(
+        llm_aligned, human_aligned, score_type,
+        llm_metric=llm_metric or "judge", human_groundtruth=human_groundtruth or "human",
+        alpha=alpha, n_total=n_total, all_llm=all_llm,
+        slice_df=None, slice_labeled_mask=None,
+        warn_stacklevel=4,
+    )
+
+
+def judge_alignment(
+    judge_scores_or_evaldata,
+    human_scores=None,
+    *,
+    llm_metric: Optional[str] = None,
+    human_groundtruth: Optional[str] = None,
+    all_judge_scores=None,
+    score_type: Optional[str] = None,
+    alpha: float = 0.05,
+) -> AlignmentResult:
+    """Validate how well an LLM judge aligns with human graders.
+
+    Two call forms:
+
+    1. ``judge_alignment(evaldata, *, llm_metric=..., human_groundtruth=...)``
+       -- the common case where LLM judge scores exist for all items but
+       human labels are available for only a subset (the alignment set),
+       identified by column name in ``evaldata``. Runs the full
+       representativeness diagnostics (score-distribution check against
+       the full item pool, plus categorical slice-column checks) since the
+       full dataset and its other columns are available. The returned
+       result can be passed to ``compare(alignment={metric: result})``.
+    2. ``judge_alignment(judge_scores, human_scores)`` -- a quick-primitive
+       form for when you don't want to build an ``EvalResults`` first.
+       ``judge_scores`` is every item's judge score; ``human_scores`` is
+       the *same length*, with ``NaN`` for items that don't have a human
+       label (or no ``NaN`` at all if every item happens to be labeled).
+       This mirrors form 1's sparse-column convention exactly, so you can
+       hand it whatever you already have without pre-splitting anything
+       yourself. When some items are unlabeled, the score-distribution
+       representativeness check runs automatically (``judge_scores`` is
+       already the full pool); pass ``all_judge_scores`` explicitly to
+       override this. The categorical slice-column checks are
+       DataFrame-specific and are always skipped in this form. **The
+       result from this form carries placeholder column names and cannot
+       be passed to ``compare(alignment=...)``** (there's no underlying
+       DataFrame for it to look values up in) -- use form 1 for that.
+
+    Either form fits a Bayesian calibration model that can later be used to
+    propagate judge uncertainty into downstream comparisons.
+
+    Parameters
+    ----------
+    judge_scores_or_evaldata : EvalResults or array-like
+        Either evaluation data from :func:`load_from` (form 1), or every
+        item's judge score (form 2).
+    human_scores : array-like, optional
+        Same length as ``judge_scores_or_evaldata``, ``NaN`` for unlabeled
+        items (form 2 only).
+    llm_metric : str, optional
+        Form 1: column name of the LLM judge scores (required). Form 2:
+        optional display name for the judge, used only in printed reports.
+    human_groundtruth : str, optional
+        Form 1: column name of the human rater scores (required),
+        expected to be sparsely populated (non-null for the alignment
+        subset, ``NaN`` elsewhere). Form 2: optional display name for the
+        human rater, used only in printed reports.
+    all_judge_scores : array-like, optional
+        Form 2 only: override which array is treated as "every item's
+        judge score" for the representativeness check. Only needed if
+        that shouldn't just be ``judge_scores_or_evaldata`` itself.
+    score_type : str, optional
+        Form 2 only: override the auto-detected score type (``"binary"``,
+        ``"likert"``, ``"continuous"``, or ``"grade"``). Auto-detected from
+        the labeled judge scores when not given.
+    alpha : float
+        Significance level for alignment metric CIs.  Default ``0.05``.
+
+    Returns
+    -------
+    AlignmentResult
+    """
+    from evalstats.loader import EvalResults
+
+    if isinstance(judge_scores_or_evaldata, EvalResults):
+        evaldata = judge_scores_or_evaldata
+        if human_scores is not None:
+            raise TypeError(
+                "judge_alignment(evaldata, ...) doesn't take a second "
+                "positional argument; pass llm_metric= and "
+                "human_groundtruth= as column names instead. (For the "
+                "raw-array form, pass two arrays: "
+                "judge_alignment(judge_scores, human_scores).)"
+            )
+        if llm_metric is None or human_groundtruth is None:
+            raise TypeError(
+                "judge_alignment(evaldata, ...) requires llm_metric= and "
+                "human_groundtruth= (column names)."
+            )
+        return _judge_alignment_from_evaldata(
+            evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
+        )
+
+    if human_scores is None:
+        raise TypeError(
+            "judge_alignment(judge_scores, human_scores) requires both "
+            "arrays; or pass an EvalResults (from load_from()) as the "
+            "first argument for the column-name-based form: "
+            "judge_alignment(evaldata, llm_metric=..., human_groundtruth=...)."
+        )
+    return _judge_alignment_from_arrays(
+        judge_scores_or_evaldata, human_scores,
+        all_judge_scores=all_judge_scores, score_type=score_type,
+        llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
     )

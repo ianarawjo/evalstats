@@ -3240,7 +3240,7 @@ def save_simultaneous_ci_violin_vs_n_plot(*, results: list[SimultaneousCIResult]
 # wrappers under judge bias/miscalibration, ported from
 # sim_type_i_calibration.py's _run_one. Calls evalstats.tests' internal PPI
 # functions directly (the same functions back the public es.tests.* API) to
-# skip validate_alignment overhead, exactly as the legacy script does.
+# skip judge_alignment overhead, exactly as the legacy script does.
 # ---------------------------------------------------------------------------
 
 
@@ -6910,7 +6910,7 @@ def _kappa_band(x: float) -> str:
     """Landis & Koch (1977) benchmarks for kappa-type statistics -- same
     bands evalstats.alignment._interpret_kappa uses for the public alignment
     report, reused here so a bucket's qualitative label matches what a user
-    would see calling validate_alignment() on the same kind of judge."""
+    would see calling judge_alignment() on the same kind of judge."""
     if x < 0:
         return "poor"
     if x <= 0.20:

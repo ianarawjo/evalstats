@@ -212,7 +212,7 @@ class ComparisonResult:
             return
         pair.summary()
 
-    def plot(self, method: str = "bar", **kwargs):
+    def plot(self, method: str = "forest", **kwargs):
         """Visualize comparison results.
 
         Parameters
@@ -220,10 +220,18 @@ class ComparisonResult:
         method : str
             Plot type:
 
-            * ``"bar"`` (default) — accuracy bar chart via
-              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`.
-            * ``"forest"`` — horizontal CI forest plot via
-              :func:`~evalstats.vis.forest.plot_ci_forest`.
+            * ``"forest"`` (default) — horizontal CI forest plot via
+              :func:`~evalstats.vis.forest.plot_ci_forest`, gradient-banded
+              (68/90/95/99% nested confidence bands) by default -- the same
+              richer CI picture the terminal's ``.summary()`` gradient plot
+              already shows, in matplotlib. Pass ``style="single"`` to fall
+              back to one plain CI band per entity, or ``color_rule="factor"``
+              / a colour name to color by entity identity instead of
+              significance tier.
+            * ``"bar"`` — accuracy bar chart via
+              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`. A quick,
+              uncorrected view (no CIs) -- useful before statistical
+              analysis, not as a substitute for it.
             * ``"cd"`` — critical difference diagram via
               :func:`~evalstats.vis.critical_difference.plot_critical_difference`.
 
@@ -286,6 +294,10 @@ class ComparisonResult:
                 ci_high=float(rob.ci_high[i]) if rob.ci_high is not None else 1.0,
                 median=float(rob.median[i]),
                 std=float(rob.std[i]),
+                multi_ci=(
+                    {a: (float(lo[i]), float(hi[i])) for a, (lo, hi) in rob.multi_ci.items()}
+                    if rob.multi_ci is not None else None
+                ),
             )
             for i, lbl in enumerate(bundle.benchmark.template_labels)
         }
@@ -408,6 +420,57 @@ class ComparisonResult:
                 if len(parts) == 2:
                     top_pairs.append((parts[0], parts[1]))
         return top_pairs or None
+
+    @property
+    def model_labels(self) -> Optional[list]:
+        """Model-axis labels for a two-factor (model, prompt) comparison, or ``None``.
+
+        Populated under the same condition as :attr:`cross_model` — this is
+        that bundle's model axis, in its original (pre-sort) order.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        return list(self._analysis.benchmark.model_labels)
+
+    @property
+    def prompt_labels(self) -> Optional[list]:
+        """Prompt/template-axis labels for a two-factor comparison, or ``None``.
+
+        Populated under the same condition as :attr:`cross_model` — this is
+        that bundle's template axis, in its original (pre-sort) order.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            return None
+        return list(self._analysis.benchmark.template_labels)
+
+    def as_view(self, factor: Literal["model", "prompt"]) -> "ComparisonResult":
+        """Return this two-factor comparison collapsed onto a single axis.
+
+        E.g. ``result.as_view("model")`` averages over prompts to compare
+        models; ``result.as_view("prompt")`` averages over models to compare
+        prompts. Only valid for a two-factor comparison (see
+        :attr:`cross_model`) — raises otherwise.
+        """
+        if not isinstance(self._analysis, MultiModelBundle):
+            raise ValueError(
+                "as_view() requires a two-factor comparison (built with "
+                "compare(..., factors=['model', 'prompt']), or "
+                "factors='model'/'prompt' when both columns are present)."
+            )
+        view_map = {"model": "model_level", "prompt": "template_level"}
+        if factor not in view_map:
+            raise ValueError(f"factor={factor!r} must be 'model' or 'prompt'.")
+        return ComparisonResult(
+            self._analysis,
+            factors=self._factors,
+            metric=self._metric,
+            baseline=self._baseline,
+            alpha=self._alpha,
+            filtered_df=self._df,
+            _mmb_view=view_map[factor],
+            min_meaningful_diff=self._min_meaningful_diff,
+            show_rank_probabilities=self._show_rank_probabilities,
+        )
 
     @property
     def pareto_status(self) -> Optional[dict]:
@@ -1464,7 +1527,7 @@ def _run_alignment_ppi(
         raise ValueError(
             f"PPI alignment requires at least 15 human-labeled items; "
             f"got n_lab={n_lab}. Expand the alignment set and re-run "
-            "validate_alignment()."
+            "judge_alignment()."
         )
     if n_all < 50:
         raise ValueError(

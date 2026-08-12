@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 import evalstats as es
-from evalstats.alignment import validate_alignment
+from evalstats.alignment import judge_alignment
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -150,7 +150,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, seed=10)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -172,7 +172,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, seed=11)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
 
             result_sim = es.compare(
                 evaldata, factors="model", metric="llm_score",
@@ -210,7 +210,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, seed=12)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
 
             # Both calls share a seeded rng: at this N (150/entity, binary),
             # simultaneous_ci=True now resolves to "boot" (joint bootstrap
@@ -248,7 +248,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_continuous(n_entities=3, n_items=200, n_labeled=80, seed=13)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -267,7 +267,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_continuous(n_entities=3, n_items=25, n_labeled=15, seed=131)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -288,7 +288,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, n_items=150, n_labeled=60, seed=14)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=50, method="bootstrap_t",
@@ -315,7 +315,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, n_items=150, n_labeled=60, seed=141)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -344,7 +344,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, n_items=150, n_labeled=60, seed=142)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 method="bootstrap_t", simultaneous_ci=True, correction="shaffer",
@@ -378,7 +378,7 @@ class TestCompoundStructuralPlumbing:
         evaldata, _labels = _make_mixed_branch_binary(seed=15)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
 
         with warnings.catch_warnings(record=True) as caught:
             warnings.simplefilter("always")
@@ -402,7 +402,7 @@ class TestCompoundStructuralPlumbing:
         evaldata, labels = _make_mixed_branch_binary(seed=16)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -423,7 +423,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=2, seed=17)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result_sim = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30, method="tango",
@@ -456,7 +456,7 @@ class TestCompoundStructuralPlumbing:
         evaldata = _make_multiarm_binary(n_entities=3, n_items=150, n_labeled=60, seed=143)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -484,7 +484,7 @@ class TestRomanoWolfPvalues:
         evaldata = _make_multiarm_binary(n_entities=4, n_items=150, n_labeled=60, seed=200)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -503,7 +503,7 @@ class TestRomanoWolfPvalues:
         evaldata = _make_multiarm_binary(n_entities=4, n_items=100, n_labeled=40, seed=201)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -517,7 +517,7 @@ class TestRomanoWolfPvalues:
         evaldata = _make_multiarm_binary(n_entities=4, n_items=25, n_labeled=15, seed=202)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -535,7 +535,7 @@ class TestRomanoWolfPvalues:
         evaldata, _labels = _make_mixed_branch_binary(seed=203)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -557,7 +557,7 @@ class TestRomanoWolfPvalues:
         evaldata = _make_multiarm_binary(n_entities=4, n_items=150, n_labeled=60, seed=204)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -577,7 +577,7 @@ class TestRomanoWolfPvalues:
         evaldata = _make_multiarm_binary(n_entities=4, n_items=150, n_labeled=60, seed=205)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result_none = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -609,7 +609,7 @@ class TestRomanoWolfPvalues:
         evaldata = _make_multiarm_binary(n_entities=4, n_items=150, n_labeled=60, seed=206)
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -652,7 +652,7 @@ class TestCompoundCalibration:
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,
@@ -712,7 +712,7 @@ class TestCompoundCalibration:
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,
@@ -764,7 +764,7 @@ class TestRomanoWolfCalibration:
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result = es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,
@@ -803,7 +803,7 @@ class TestRomanoWolfCalibration:
             )
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore")
-                ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+                ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
                 result_shaffer = es.compare(
                     evaldata, factors="model", metric="llm_score",
                     alignment={"llm_score": ar}, n_mc=30,

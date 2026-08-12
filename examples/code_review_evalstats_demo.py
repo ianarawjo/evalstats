@@ -73,7 +73,7 @@ def main() -> None:
 
     # ── Step 3: validate the judge against the human labels we have ─────────
     _banner("STEP 3 — Validate the judge against the 30-item human gold set")
-    alignment = es.validate_alignment(
+    alignment = es.judge_alignment(
         evaldata,
         llm_metric="review_score",
         human_groundtruth="expert_score",

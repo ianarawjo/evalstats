@@ -7,7 +7,7 @@ Simulates a common real-world scenario:
     model_A, causing it to dramatically overestimate model_A's win rate.
 
 Demonstrates:
-  1. validate_alignment() — quantify LLM-vs-human agreement on the gold set.
+  1. judge_alignment() — quantify LLM-vs-human agreement on the gold set.
   2. compare(..., alignment=...) — PPI-corrected model comparison that uses
      the human labels to debias the LLM-only estimates.
   3. es.ppi.correct() — apply PPI to a custom estimator (win-rate advantage
@@ -111,7 +111,7 @@ print("=" * 62)
 print("STEP 1 — Validate LLM judge alignment")
 print("=" * 62)
 
-ar = es.validate_alignment(
+ar = es.judge_alignment(
     evaldata,
     llm_metric="llm_score",
     human_groundtruth="human_score",

@@ -15,7 +15,7 @@ import warnings
 sys.path.insert(0, "tests")
 
 import evalstats as es
-from evalstats.alignment import validate_alignment
+from evalstats.alignment import judge_alignment
 from test_compound_ppi_fwer import _make_multiarm_binary, _rng
 
 N_REPS_POWER = 150
@@ -32,7 +32,7 @@ def measure_power(seed_base: int = 2000) -> float:
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,
@@ -58,7 +58,7 @@ def measure_null_fwer(seed_base: int = 1000, n_reps: int = N_REPS_NULL) -> float
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
-            ar = validate_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result = es.compare(
                 evaldata, factors="model", metric="llm_score",
                 alignment={"llm_score": ar}, n_mc=30,

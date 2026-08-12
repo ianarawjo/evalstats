@@ -70,7 +70,7 @@ import numpy as np
 import pandas as pd
 
 import evalstats as es
-from evalstats.alignment import validate_alignment
+from evalstats.alignment import judge_alignment
 from evalstats.core.stats_utils import interval_score
 
 from ..latex_tables import booktabs_table, escape_latex
@@ -543,7 +543,7 @@ def _run_cell(
             if ppi_frac is not None:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
-                    ar = validate_alignment(evaldata, llm_metric="score", human_groundtruth="human_score")
+                    ar = judge_alignment(evaldata, llm_metric="score", human_groundtruth="human_score")
                     kwargs["alignment"] = {"score": ar}
             if score_range is not None:
                 kwargs["score_range"] = score_range

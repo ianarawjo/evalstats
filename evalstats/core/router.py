@@ -759,6 +759,140 @@ def analyze_factorial(
 # Internal analysis runners
 # ---------------------------------------------------------------------------
 
+def resolve_auto_robustness_method(
+    run_scores: np.ndarray,
+    *,
+    score_range: Optional[tuple[float, float]] = None,
+    eval_type: Optional[Literal["likert", "continuous"]] = None,
+    stacklevel: int = 2,
+) -> tuple[str, str, Optional[tuple[float, float]], str]:
+    """Auto-detect data kind (binary / likert / bounded_01 / unbounded) and
+    resolve it to concrete (pairwise_method, robustness_method,
+    resolved_score_range, data_kind).
+
+    This is the exact "method='auto'" routing logic ``analyze()``/``compare()``
+    use internally, factored out so the quick-primitive functions
+    (``mean_ci``/``summarize`` in ``evalstats.quick``) can reuse it directly
+    rather than re-deriving calibration choices in a second place that could
+    silently drift out of sync with ``compare()``'s.
+
+    Parameters
+    ----------
+    run_scores : np.ndarray
+        Shape ``(N, M)`` or ``(N, M, R)``. Only the shape and values matter
+        here (dtype/range/binary-ness detection and R for seeded routing) --
+        not which entity is which.
+    score_range : (float, float), optional
+        Explicit ``[lo, hi]`` bounds, forwarded to :func:`resolve_score_bounds`.
+    eval_type : {"likert", "continuous"}, optional
+        Hint disambiguating discrete/ordinal (Likert-style) data from
+        continuous bounded data when both look the same from the raw
+        values alone. When omitted, discrete/ordinal data is auto-detected
+        from its own quantization grid (see :func:`detect_quantization_step`).
+        Ignored (with a warning) for binary data, which always uses the
+        binary methods regardless of this hint.
+    stacklevel : int
+        Forwarded to any ``UserWarning`` raised here, so it points at the
+        caller's caller appropriately regardless of how many wrapper frames
+        sit between the actual user call and this function.
+
+    Returns
+    -------
+    tuple[str, str, tuple[float, float] or None, str]
+        ``(pairwise_method, robustness_method, resolved_score_range, data_kind)``.
+    """
+    from .resampling import is_binary_scores, resolve_score_bounds, detect_quantization_step
+
+    if run_scores.ndim == 3:
+        R = run_scores.shape[2]
+        N = run_scores.shape[1]
+    else:
+        R = 1
+        N = run_scores.shape[1]
+
+    if eval_type not in (None, "likert", "continuous"):
+        raise ValueError(f"eval_type must be 'likert', 'continuous', or None, got {eval_type!r}")
+
+    resolved_score_range: Optional[tuple[float, float]] = None
+    if is_binary_scores(run_scores):
+        data_kind = "binary"
+        if eval_type is not None:
+            warnings.warn(
+                f"eval_type={eval_type!r} was given, but the data was "
+                "auto-detected as binary (0/1) -- binary data always uses "
+                "the binary methods regardless of eval_type, so this hint "
+                "was ignored.",
+                UserWarning,
+                stacklevel=stacklevel,
+            )
+    else:
+        # resolve_score_bounds returns a [lo, hi] range (with a
+        # UserWarning if it had to auto-detect [0, 1] rather than being
+        # told explicitly) when one can be reliably established, or None
+        # when the data falls outside [0, 1] and no score_range was
+        # given -- there's no safe way to infer a metric's true bounds
+        # from an arbitrary numeric sample's own min/max. In the None
+        # case, auto silently downgrades to the bounds-agnostic
+        # "unbounded" (t_interval) row below, but says so loudly.
+        resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=stacklevel + 1)
+        if resolved_score_range is not None:
+            if eval_type == "likert":
+                data_kind = "likert"
+            elif eval_type == "continuous":
+                data_kind = "bounded_01"
+            else:
+                # No explicit hint: auto-detect discrete/ordinal (Likert-
+                # style) data from its own quantization grid rather than
+                # assuming continuous -- see detect_quantization_step's
+                # docstring and config.AUTO_ANALYZE_METHOD_TABLE's
+                # "likert" row for why this matters (NIG vs logit-t).
+                step = detect_quantization_step(run_scores)
+                if step is not None:
+                    data_kind = "likert"
+                    warnings.warn(
+                        f"Bounded numeric evaluation data was auto-detected "
+                        f"as discrete/ordinal (grid step={step:g} within "
+                        f"range {resolved_score_range}). For single-run "
+                        "pairwise comparisons, evalstats uses NIG (validated "
+                        "as better-calibrated than logit-t there for this "
+                        "kind of data); other analyses on this data "
+                        "(marginal CIs, multi-run pairwise comparisons) "
+                        "still use logit-t, the same as continuous data, "
+                        "pending their own validation -- see "
+                        "config.AUTO_ANALYZE_METHOD_TABLE's 'likert' row. "
+                        "Pass eval_type='likert' explicitly to silence this "
+                        "warning, or eval_type='continuous' if this "
+                        "discreteness is coincidental (e.g. a metric that "
+                        "happens to only take a few values in your sample).",
+                        UserWarning,
+                        stacklevel=stacklevel,
+                    )
+                else:
+                    data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
+            # Direct warn() call, one frame shallower than the
+            # resolve_score_bounds() delegation above (no extra frame in
+            # between) -- stacklevel here, not stacklevel + 1.
+            warnings.warn(
+                "Numeric evaluation data outside [0, 1] was auto-detected "
+                "with no explicit score_range, so evalstats is using "
+                "method='t_interval' (a bounds-agnostic default) rather "
+                "than the better-calibrated logit-t/NIG methods. If you "
+                "know this eval metric's true (min, max) range, pass it "
+                "explicitly, e.g. score_range=(1, 5) for a Likert scale "
+                "or score_range=(0, 100) for a percentage grade.",
+                UserWarning,
+                stacklevel=stacklevel,
+            )
+    # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
+    # (which method is chosen for which data kind / N / seeded combination).
+    pairwise_method, robustness_method = resolve_auto_analyze_methods(
+        data_kind, N, seeded=R >= 3,
+    )
+    return pairwise_method, robustness_method, resolved_score_range, data_kind
+
+
 def _analyze_single(
     result: BenchmarkResult,
     shape: BenchmarkShape,
@@ -869,83 +1003,8 @@ def _analyze_single(
     robustness_method = method
     resolved_score_range: Optional[tuple[float, float]] = None
     if method == "auto":
-        from .resampling import is_binary_scores, resolve_score_bounds, detect_quantization_step
-        R = run_scores.shape[2]
-        N = run_scores.shape[1]
-        if eval_type not in (None, "likert", "continuous"):
-            raise ValueError(f"eval_type must be 'likert', 'continuous', or None, got {eval_type!r}")
-        if is_binary_scores(run_scores):
-            data_kind = "binary"
-            if eval_type is not None:
-                warnings.warn(
-                    f"eval_type={eval_type!r} was given, but the data was "
-                    "auto-detected as binary (0/1) -- binary data always uses "
-                    "the binary methods regardless of eval_type, so this hint "
-                    "was ignored.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        else:
-            # resolve_score_bounds returns a [lo, hi] range (with a
-            # UserWarning if it had to auto-detect [0, 1] rather than being
-            # told explicitly) when one can be reliably established, or None
-            # when the data falls outside [0, 1] and no score_range was
-            # given -- there's no safe way to infer a metric's true bounds
-            # from an arbitrary numeric sample's own min/max. In the None
-            # case, auto silently downgrades to the bounds-agnostic
-            # "unbounded" (t_interval) row below, but says so loudly.
-            resolved_score_range = resolve_score_bounds(run_scores, score_range, stacklevel=2)
-            if resolved_score_range is not None:
-                if eval_type == "likert":
-                    data_kind = "likert"
-                elif eval_type == "continuous":
-                    data_kind = "bounded_01"
-                else:
-                    # No explicit hint: auto-detect discrete/ordinal (Likert-
-                    # style) data from its own quantization grid rather than
-                    # assuming continuous -- see detect_quantization_step's
-                    # docstring and config.AUTO_ANALYZE_METHOD_TABLE's
-                    # "likert" row for why this matters (NIG vs logit-t).
-                    step = detect_quantization_step(run_scores)
-                    if step is not None:
-                        data_kind = "likert"
-                        warnings.warn(
-                            f"Bounded numeric evaluation data was auto-detected "
-                            f"as discrete/ordinal (grid step={step:g} within "
-                            f"range {resolved_score_range}). For single-run "
-                            "pairwise comparisons, evalstats uses NIG (validated "
-                            "as better-calibrated than logit-t there for this "
-                            "kind of data); other analyses on this data "
-                            "(marginal CIs, multi-run pairwise comparisons) "
-                            "still use logit-t, the same as continuous data, "
-                            "pending their own validation -- see "
-                            "config.AUTO_ANALYZE_METHOD_TABLE's 'likert' row. "
-                            "Pass eval_type='likert' explicitly to silence this "
-                            "warning, or eval_type='continuous' if this "
-                            "discreteness is coincidental (e.g. a metric that "
-                            "happens to only take a few values in your sample).",
-                            UserWarning,
-                            stacklevel=2,
-                        )
-                    else:
-                        data_kind = "bounded_01"
-            else:
-                data_kind = "unbounded"
-                warnings.warn(
-                    "Numeric evaluation data outside [0, 1] was auto-detected "
-                    "with no explicit score_range, so evalstats is using "
-                    "method='t_interval' (a bounds-agnostic default) rather "
-                    "than the better-calibrated logit-t/NIG methods. If you "
-                    "know this eval metric's true (min, max) range, pass it "
-                    "explicitly, e.g. score_range=(1, 5) for a Likert scale "
-                    "or score_range=(0, 100) for a percentage grade.",
-                    UserWarning,
-                    stacklevel=2,
-                )
-        # See config.AUTO_ANALYZE_METHOD_TABLE for the full auto-routing matrix
-        # (which method is chosen for which data kind / N / seeded combination).
-        pairwise_method, robustness_method = resolve_auto_analyze_methods(
-            data_kind, N, seeded=R >= 3,
+        pairwise_method, robustness_method, resolved_score_range, data_kind = resolve_auto_robustness_method(
+            run_scores, score_range=score_range, eval_type=eval_type, stacklevel=2,
         )
     elif method == "bayes_binary":
         from .resampling import is_binary_scores
