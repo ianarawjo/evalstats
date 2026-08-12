@@ -114,6 +114,75 @@ def test_entity_stats_exposes_multi_ci():
             assert lo <= s.mean <= hi
 
 
+def test_plot_ci_forest_mean_line_is_default():
+    result = _make_result()
+    fig = plot_ci_forest(result, reference_line=None)
+    ax = fig.axes[0]
+    # One simple black tick line per entity.
+    mean_lines = [
+        l for l in ax.get_lines()
+        if l.get_xdata()[0] == l.get_xdata()[1] and len(l.get_xdata()) == 2
+    ]
+    assert len(mean_lines) == 3
+    assert all(l.get_color() == "black" for l in mean_lines)
+    plt_close(fig)
+
+
+def test_plot_ci_forest_show_mean_false_omits_marker():
+    result = _make_result()
+    # reference_line=None to isolate mean-marker lines from the (also
+    # vertical) reference line.
+    fig = plot_ci_forest(result, show_mean=False, reference_line=None)
+    ax = fig.axes[0]
+    vertical_lines = [
+        l for l in ax.get_lines()
+        if len(l.get_xdata()) == 2 and l.get_xdata()[0] == l.get_xdata()[1]
+    ]
+    assert len(vertical_lines) == 0
+    assert len(ax.collections) == 0  # no scatter dots either
+    plt_close(fig)
+
+
+def test_plot_ci_forest_mean_marker_dot_uses_scatter():
+    result = _make_result()
+    fig = plot_ci_forest(result, mean_marker="dot")
+    ax = fig.axes[0]
+    assert len(ax.collections) == 3  # one scatter point per entity
+    plt_close(fig)
+
+
+def test_plot_ci_forest_show_ci_bracket_adds_overlay():
+    result = _make_result()
+    fig_without = plot_ci_forest(result, show_ci_bracket=False)
+    fig_with = plot_ci_forest(result, show_ci_bracket=True)
+    n_lines_without = len(fig_without.axes[0].get_lines())
+    n_lines_with = len(fig_with.axes[0].get_lines())
+    assert n_lines_with > n_lines_without
+    plt_close(fig_without)
+    plt_close(fig_with)
+
+
+def test_plot_ci_forest_caption_includes_n_and_method():
+    result = _make_result(n_items=30)
+    fig = plot_ci_forest(result)
+    texts = [t.get_text() for t in fig.texts]
+    caption = " ".join(texts)
+    assert "N=30 items" in caption
+    assert "CI method:" in caption
+    assert "α=0.05" in caption
+    plt_close(fig)
+
+
+def test_plot_ci_forest_legend_includes_band_and_mean_labels():
+    result = _make_result()
+    fig = plot_ci_forest(result)
+    ax = fig.axes[0]
+    legend_labels = [t.get_text() for t in ax.get_legend().get_texts()]
+    assert "99% CI" in legend_labels
+    assert "68% CI" in legend_labels
+    assert "mean" in legend_labels
+
+
 def plt_close(fig):
     import matplotlib.pyplot as plt
     plt.close(fig)

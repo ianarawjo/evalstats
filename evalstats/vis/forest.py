@@ -67,6 +67,9 @@ def plot_ci_forest(
     sort_by: str = "mean",
     as_percent: bool = True,
     style: Literal["gradient", "single"] = "gradient",
+    show_mean: bool = True,
+    mean_marker: Literal["line", "dot"] = "line",
+    show_ci_bracket: bool = False,
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     ax: Optional[Axes] = None,
@@ -111,6 +114,19 @@ def plot_ci_forest(
         entity when that entity has no ``multi_ci`` data (e.g. a Wald-type
         CI with only one level computed). ``"single"`` always draws one CI
         band at the report's own confidence level.
+    show_mean : bool
+        Draw a marker at the point estimate (default ``True``). Set
+        ``False`` to let the CI band(s) speak for themselves.
+    mean_marker : {"line", "dot"}
+        ``"line"`` (default) draws a short vertical tick crossing the band
+        at the mean -- reads clearly against any band colour or opacity.
+        ``"dot"`` draws the previous circle marker instead.
+    show_ci_bracket : bool
+        When ``True``, overlay a traditional bracket-style CI at the
+        report's own (single) confidence level on top of the gradient
+        bands -- for readers who want the familiar landmark in addition to
+        the richer gradient. Default ``False``. Ignored when *style* is
+        already ``"single"`` (there'd be nothing to add on top of).
     figsize : tuple[float, float], optional
         Figure size.  Defaults to ``(7.5, 0.45 * N + 1.8)``.
     title : str, optional
@@ -254,11 +270,39 @@ def plot_ci_forest(
                 color=color, lw=lw,
                 solid_capstyle="round", zorder=4,
             )
-        ax.scatter(
-            [mean5], [y_row],
-            color=color, s=ms, zorder=4 + len(_GRADIENT_BAND_ALPHAS) + 1,
-            edgecolor="white", linewidth=0.6,
-        )
+
+        top_zorder = 4 + len(_GRADIENT_BAND_ALPHAS) + 1
+
+        # Optional traditional bracket-style CI overlaid on top of the
+        # gradient bands, at the report's own single confidence level --
+        # for readers who want that familiar landmark alongside the gradient.
+        if show_ci_bracket and multi_ci is not None:
+            ax.plot(
+                [lo5, hi5], [y_row, y_row],
+                color=_PALETTE["text"], lw=1.3, zorder=top_zorder,
+                solid_capstyle="butt",
+            )
+            cap_h = _GRADIENT_BAND_HEIGHT * 0.22
+            for x_cap in (lo5, hi5):
+                ax.plot(
+                    [x_cap, x_cap], [y_row - cap_h, y_row + cap_h],
+                    color=_PALETTE["text"], lw=1.3, zorder=top_zorder,
+                )
+            top_zorder += 1
+
+        if show_mean:
+            if mean_marker == "line":
+                tick_h = _GRADIENT_BAND_HEIGHT * 0.7
+                ax.plot(
+                    [mean5, mean5], [y_row - tick_h, y_row + tick_h],
+                    color="black", lw=1.5, zorder=top_zorder + 1,
+                )
+            else:
+                ax.scatter(
+                    [mean5], [y_row],
+                    color=color, s=ms, zorder=top_zorder + 1,
+                    edgecolor="white", linewidth=0.6,
+                )
 
     # ---- axes styling -----------------------------------------------------
     ax.set_yticks(y_positions)
@@ -284,14 +328,23 @@ def plot_ci_forest(
     ax.tick_params(axis="y", length=0, pad=8)
     ax.tick_params(axis="x", colors=_PALETTE["text_secondary"], labelsize=9)
 
+    # ---- gather methods metadata (for title + caption) --------------------
+    bundle = getattr(report, "full_analysis", None)
+    n_inputs = getattr(getattr(bundle, "benchmark", None), "n_inputs", None)
+    alpha = getattr(report, "alpha", 0.05)
+    ci_pct = int(round((1 - alpha) * 100))
+    ci_method = getattr(bundle, "resolved_ci_method", None)
+    correction = getattr(getattr(bundle, "pairwise", None), "correction_method", None)
+
+    def _pretty(s: Optional[str]) -> Optional[str]:
+        return s.replace("_", " ") if s else None
+
     # ---- title ------------------------------------------------------------
     if title is None:
-        n_inputs = report.full_analysis.n_inputs if hasattr(report.full_analysis, "n_inputs") else ""
         n_str = f"  |  N={n_inputs} inputs" if n_inputs else ""
         if any_gradient_used:
-            ci_label = "68–99% confidence gradient"
+            ci_label = "68-99% confidence gradient"
         else:
-            ci_pct = int(getattr(report, "ci", 0.95) * 100)
             ci_label = f"{ci_pct}% confidence intervals"
         title = f"{ci_label} per {report.entity_name_singular}{n_str}"
 
@@ -302,45 +355,85 @@ def plot_ci_forest(
         pad=10,
         loc="center",
     )
-    # ---- legend -----------------------------------------------------------
+
+    # ---- legend -------------------------------------------------------------
+    # One combined legend: entity-tier colours, plus (in gradient mode) a
+    # neutral-colour swatch per confidence band -- so a reader encountering
+    # this figure with no surrounding context (pasted into a paper, a slide,
+    # a social post) can still read it unaided.
+    legend_handles: list = []
     if compare_to is not None:
         r_label = report_label or "primary"
         c_label = compare_label or "comparison"
-        legend_handles = [
+        legend_handles += [
             Line2D([0], [0], color=_PALETTE["compare"], lw=lw,
                    solid_capstyle="round", label=c_label),
             Line2D([0], [0], color=_PALETTE["unbeaten"], lw=lw,
                    solid_capstyle="round", label=r_label),
         ]
-        ax.legend(
-            handles=legend_handles,
-            fontsize=8, loc="lower right",
-            frameon=True, facecolor="white",
-            edgecolor=_PALETTE["grid"], framealpha=0.95,
-        )
     elif unbeaten:
-        legend_handles = [
+        legend_handles += [
             Line2D([0], [0], color=_PALETTE["unbeaten"], lw=lw,
-                   solid_capstyle="round", label="In contention"),
+                   solid_capstyle="round", label="Unbeaten"),
             Line2D([0], [0], color=_PALETTE["lower_tier"], lw=lw,
-                   solid_capstyle="round", label="Outperformed"),
+                   solid_capstyle="round", label="Significantly worse"),
         ]
+    if any_gradient_used:
+        neutral = _PALETTE["text_secondary"]
+        # Same drawing order as the bands themselves: widest/lightest (99%)
+        # first, narrowest/darkest (68%) last.
+        band_labels = ["99% CI", "95% CI", "90% CI", "68% CI"]
+        legend_handles += [
+            Patch(facecolor=neutral, alpha=a, edgecolor="none", label=lbl)
+            for a, lbl in zip(_GRADIENT_BAND_ALPHAS, band_labels)
+        ]
+    if show_mean and mean_marker == "line":
+        legend_handles.append(
+            Line2D([0], [0], color="black", lw=1.5, label="mean")
+        )
+    if show_ci_bracket and any_gradient_used:
+        legend_handles.append(
+            Line2D([0], [0], color=_PALETTE["text"], lw=1.3, label=f"{ci_pct}% CI (bracket)")
+        )
+
+    if legend_handles:
         ax.legend(
             handles=legend_handles,
-            fontsize=8, loc="lower right",
+            fontsize=7.5, loc="center left", bbox_to_anchor=(1.01, 0.5),
             frameon=True, facecolor="white",
             edgecolor=_PALETTE["grid"], framealpha=0.95,
+            ncol=1,
         )
 
     if own_fig:
         fig.tight_layout()
+        if legend_handles:
+            # Legend now sits outside the axes (bbox_to_anchor to the
+            # right) so it never overlaps the bars -- reserve room for it.
+            fig.subplots_adjust(right=0.76)
+
+        # Self-contained methods caption -- this figure is meant to stand on
+        # its own once copied out of evalstats (into a paper, a slide, a
+        # post), so the N/CI method/correction it was computed with travels
+        # with it rather than only living in the surrounding terminal report.
+        caption_parts = []
+        if n_inputs:
+            caption_parts.append(f"N={n_inputs} items")
+        pretty_ci_method = _pretty(ci_method)
+        if pretty_ci_method:
+            caption_parts.append(f"CI method: {pretty_ci_method}")
+        pretty_correction = _pretty(correction)
+        if pretty_correction and pretty_correction != "none":
+            caption_parts.append(f"FWER correction: {pretty_correction}")
+        caption_parts.append(f"α={alpha:g}")
         if any_gradient_used:
-            # fig-level text (not ax.transAxes) + extra bottom margin so this
-            # never collides with the x-axis label above it.
-            fig.subplots_adjust(bottom=0.22)
+            caption_parts.append("darker band = higher confidence")
+        caption = "  |  ".join(caption_parts)
+
+        if caption:
+            fig.subplots_adjust(bottom=0.24)
             fig.text(
-                0.5, 0.02,
-                "darker = narrower / higher-confidence band (68% innermost, 99% outermost)",
+                0.5, 0.02, caption,
                 ha="center", va="bottom",
                 fontsize=7.5, color=_PALETTE["text_secondary"],
             )
