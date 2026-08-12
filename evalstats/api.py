@@ -212,7 +212,7 @@ class ComparisonResult:
             return
         pair.summary()
 
-    def plot(self, method: str = "bar", **kwargs):
+    def plot(self, method: str = "forest", **kwargs):
         """Visualize comparison results.
 
         Parameters
@@ -220,10 +220,16 @@ class ComparisonResult:
         method : str
             Plot type:
 
-            * ``"bar"`` (default) — accuracy bar chart via
-              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`.
-            * ``"forest"`` — horizontal CI forest plot via
-              :func:`~evalstats.vis.forest.plot_ci_forest`.
+            * ``"forest"`` (default) — horizontal CI forest plot via
+              :func:`~evalstats.vis.forest.plot_ci_forest`, gradient-banded
+              (68/90/95/99% nested confidence bands) by default -- the same
+              richer CI picture the terminal's ``.summary()`` gradient plot
+              already shows, in matplotlib. Pass ``style="single"`` to fall
+              back to one plain CI band per entity.
+            * ``"bar"`` — accuracy bar chart via
+              :func:`~evalstats.vis.scoreboard.plot_accuracy_bar`. A quick,
+              uncorrected view (no CIs) -- useful before statistical
+              analysis, not as a substitute for it.
             * ``"cd"`` — critical difference diagram via
               :func:`~evalstats.vis.critical_difference.plot_critical_difference`.
 
@@ -286,6 +292,10 @@ class ComparisonResult:
                 ci_high=float(rob.ci_high[i]) if rob.ci_high is not None else 1.0,
                 median=float(rob.median[i]),
                 std=float(rob.std[i]),
+                multi_ci=(
+                    {a: (float(lo[i]), float(hi[i])) for a, (lo, hi) in rob.multi_ci.items()}
+                    if rob.multi_ci is not None else None
+                ),
             )
             for i, lbl in enumerate(bundle.benchmark.template_labels)
         }

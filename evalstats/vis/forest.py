@@ -4,16 +4,30 @@ Draws one horizontal CI bar per entity (prompt or model), coloured by
 statistical tier, with the best-performing entity at the top.  An optional
 second report can be overlaid for direct before/after comparison (e.g.,
 to show how CI widths change when you double the eval set or add more runs).
+
+Two styles (mirroring the same split ``print_analysis_summary``'s
+``style=`` uses for the terminal's ASCII plots):
+
+* ``"gradient"`` (default) -- nested CI bands at 68/90/95/99% (the same
+  ``multi_ci`` data the terminal's ``░▒▓█`` gradient rendering uses),
+  drawn as increasingly-opaque bars toward the mean, so the reader sees
+  the confidence *gradient* rather than a single somewhat-arbitrary cutoff.
+* ``"single"`` -- one CI band per entity, at whatever confidence level the
+  report was computed with. Always used as the fallback when ``multi_ci``
+  data isn't available (e.g. an LMM/Wald-type report with only one CI).
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Literal, Optional
 
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 import numpy as np
 from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+
+from ..config import GRADIENT_CI_ALPHAS
 
 if TYPE_CHECKING:
     from matplotlib.axes import Axes
@@ -36,6 +50,13 @@ _PALETTE = {
     "text_secondary":"#6B7280",  # muted gray   — secondary text
 }
 
+# Per-band opacity for the gradient style, outermost (widest CI, 99%) to
+# innermost (narrowest, 68%) -- same ordering convention as the terminal's
+# _gradient_interval_line (sorted ascending by alpha = descending by CI
+# width), just alpha-blended bars instead of block-character replacement.
+_GRADIENT_BAND_ALPHAS = (0.22, 0.38, 0.58, 0.85)
+_GRADIENT_BAND_HEIGHT = 0.5
+
 
 def plot_ci_forest(
     report,
@@ -45,6 +66,7 @@ def plot_ci_forest(
     reference_line: Optional[float] = 0.5,
     sort_by: str = "mean",
     as_percent: bool = True,
+    style: Literal["gradient", "single"] = "gradient",
     figsize: Optional[tuple[float, float]] = None,
     title: Optional[str] = None,
     ax: Optional[Axes] = None,
@@ -61,7 +83,9 @@ def plot_ci_forest(
         A second report to overlay for comparison (e.g. a smaller or
         single-run eval).  Its CIs are drawn in a lighter colour offset
         above each row so both intervals are visible simultaneously.
-        Both reports must contain the same entity labels.
+        Both reports must contain the same entity labels. Always drawn in
+        the single-band style regardless of *style*, to keep the overlay
+        legible.
     report_label : str, optional
         Legend label for the primary report when *compare_to* is supplied.
         Defaults to ``"primary"``.
@@ -79,6 +103,14 @@ def plot_ci_forest(
     as_percent : bool
         When ``True`` (default), multiply CI values by 100 and format the
         x-axis as percentages.  Set to ``False`` for raw (0–1) scores.
+    style : {"gradient", "single"}
+        ``"gradient"`` (default) draws nested CI bands at 68/90/95/99%,
+        increasingly opaque toward the mean -- the same ``multi_ci`` data
+        the terminal's ``░▒▓█`` gradient plot uses, just rendered as
+        matplotlib bars. Falls back to ``"single"`` automatically per
+        entity when that entity has no ``multi_ci`` data (e.g. a Wald-type
+        CI with only one level computed). ``"single"`` always draws one CI
+        band at the report's own confidence level.
     figsize : tuple[float, float], optional
         Figure size.  Defaults to ``(7.5, 0.45 * N + 1.8)``.
     title : str, optional
@@ -115,6 +147,13 @@ def plot_ci_forest(
     def _ci(rep, label: str) -> tuple[float, float, float]:
         s = rep.entity_stats[label]
         return s.mean * scale, s.ci_low * scale, s.ci_high * scale
+
+    def _multi_ci(rep, label: str) -> Optional[dict[float, tuple[float, float]]]:
+        s = rep.entity_stats[label]
+        raw = getattr(s, "multi_ci", None)
+        if raw is None or len(raw) < 2:
+            return None
+        return {a: (lo * scale, hi * scale) for a, (lo, hi) in raw.items()}
 
     # ---- validate compare_to ----------------------------------------------
     if compare_to is not None:
@@ -157,6 +196,7 @@ def plot_ci_forest(
     # ---- draw CIs ---------------------------------------------------------
     lw = 2.8
     ms = 55  # scatter marker size
+    any_gradient_used = False
 
     for i, label in enumerate(ordered_labels):
         y = float(y_positions[i])
@@ -184,15 +224,40 @@ def plot_ci_forest(
                 color=_PALETTE["compare"], s=ms, zorder=3,
             )
 
-        # Primary CI — full colour, offset below when compare_to given
-        ax.plot(
-            [lo5, hi5], [y - offset, y - offset],
-            color=color, lw=lw,
-            solid_capstyle="round", zorder=4,
-        )
+        # Primary CI — full colour, offset below when compare_to given.
+        # Gradient style falls back to single-band per-entity when this
+        # entity has no multi_ci data (e.g. a Wald-type CI).
+        multi_ci = _multi_ci(report, label) if style == "gradient" else None
+        y_row = y - offset
+        if multi_ci is not None:
+            any_gradient_used = True
+            # Widest CI (99%, smallest alpha) drawn first/lowest zorder,
+            # narrowest (68%, largest alpha) drawn last/highest zorder --
+            # same "inner band wins" convention as the terminal's
+            # _gradient_interval_line, via z-order layering instead of
+            # character replacement.
+            sorted_alphas = sorted(multi_ci.keys())
+            for band_i, a in enumerate(sorted_alphas):
+                lo_a, hi_a = multi_ci[a]
+                band_alpha = _GRADIENT_BAND_ALPHAS[
+                    min(band_i, len(_GRADIENT_BAND_ALPHAS) - 1)
+                ]
+                ax.barh(
+                    y_row, width=hi_a - lo_a, left=lo_a,
+                    height=_GRADIENT_BAND_HEIGHT,
+                    color=color, alpha=band_alpha,
+                    edgecolor="none", zorder=4 + band_i,
+                )
+        else:
+            ax.plot(
+                [lo5, hi5], [y_row, y_row],
+                color=color, lw=lw,
+                solid_capstyle="round", zorder=4,
+            )
         ax.scatter(
-            [mean5], [y - offset],
-            color=color, s=ms, zorder=5,
+            [mean5], [y_row],
+            color=color, s=ms, zorder=4 + len(_GRADIENT_BAND_ALPHAS) + 1,
+            edgecolor="white", linewidth=0.6,
         )
 
     # ---- axes styling -----------------------------------------------------
@@ -223,8 +288,12 @@ def plot_ci_forest(
     if title is None:
         n_inputs = report.full_analysis.n_inputs if hasattr(report.full_analysis, "n_inputs") else ""
         n_str = f"  |  N={n_inputs} inputs" if n_inputs else ""
-        ci_pct = int(getattr(report, "ci", 0.95) * 100)
-        title = f"95% confidence intervals per {report.entity_name_singular}{n_str}"
+        if any_gradient_used:
+            ci_label = "68–99% confidence gradient"
+        else:
+            ci_pct = int(getattr(report, "ci", 0.95) * 100)
+            ci_label = f"{ci_pct}% confidence intervals"
+        title = f"{ci_label} per {report.entity_name_singular}{n_str}"
 
     ax.set_title(
         title,
@@ -233,7 +302,6 @@ def plot_ci_forest(
         pad=10,
         loc="center",
     )
-
     # ---- legend -----------------------------------------------------------
     if compare_to is not None:
         r_label = report_label or "primary"
@@ -266,5 +334,15 @@ def plot_ci_forest(
 
     if own_fig:
         fig.tight_layout()
+        if any_gradient_used:
+            # fig-level text (not ax.transAxes) + extra bottom margin so this
+            # never collides with the x-axis label above it.
+            fig.subplots_adjust(bottom=0.22)
+            fig.text(
+                0.5, 0.02,
+                "darker = narrower / higher-confidence band (68% innermost, 99% outermost)",
+                ha="center", va="bottom",
+                fontsize=7.5, color=_PALETTE["text_secondary"],
+            )
 
     return fig
