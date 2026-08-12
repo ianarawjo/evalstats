@@ -1124,7 +1124,8 @@ def _print_pairwise_section(
     # subtitle convention.
     corr = bundle.pairwise.correction_method
     sim_ci_method = bundle.pairwise.simultaneous_ci_method
-    _print_subsection(f"--- Pairwise Comparisons ({first_result.test_method}) ---")
+    _pretty_ci_method = first_result.test_method[0].upper() + first_result.test_method[1:]
+    _print_subsection(f"--- Pairwise Comparisons ({_pretty_ci_method} CIs) ---")
     pair_results = list(bundle.pairwise.results.values())
 
     # Canonical left/right ordering based on expected-rank order keeps rows
@@ -1327,9 +1328,48 @@ def _print_pairwise_section(
         print("  (no pairwise comparisons)")
     elif max_pairs > 0:
         print(f"{_DIM}  ES = Effect Size (r_rb) = rank biserial correlation (small≈0.1, medium≈0.3, large≈0.5){_RESET}")
+
+        # Short p-value-method name (no correction detail -- that's stated
+        # separately on the FWER-corrections line below) for the explicit
+        # methods summary. The fuller descriptive line further down (with
+        # correction detail folded in) still prints too.
+        p_value_method_label = None
         if eff_p_source in {"max_t", "boot"}:
             if is_romano_wolf_active and eff_p_source == "boot":
-                print(f"  {p_col_header} = Romano-Wolf bootstrap step-down (FWER-controlled; no Wilcoxon-compatible joint form exists, see romano_wolf_stepdown_pvalues)")
+                p_value_method_label = "Romano-Wolf step-down"
+            elif is_newcombe_pairwise:
+                p_value_method_label = "McNemar exact test"
+            elif is_sign_pairwise:
+                p_value_method_label = "Paired sign test"
+            elif eff_p_source == "max_t":
+                p_value_method_label = "Max-T bootstrap"
+            else:
+                p_value_method_label = "Bootstrap"
+        elif eff_p_source == "wsr":
+            p_value_method_label = "Wilcoxon signed-rank"
+        elif eff_p_source == "nem":
+            p_value_method_label = "Nemenyi post-hoc"
+
+        # Explicit methods summary, directly above the p-value-method detail
+        # line -- mirrors the matplotlib forest plot's subtitle, stated
+        # plainly rather than nested into the section header. Two lines:
+        # (1) CI method / p-value method / alpha, (2) FWER corrections,
+        # broken out separately for simultaneous CIs and p-values since
+        # they can use different correction methods.
+        _line1 = [f"CI method: {_pretty_ci_method}"]
+        if p_value_method_label:
+            _line1.append(f"p-value method: {p_value_method_label}")
+        _line1.append(f"α={get_alpha_ci():g}")
+        print(f"  {'  |  '.join(_line1)}")
+
+        _line2 = [f"Simultaneous CIs: {_pretty_simultaneous_ci(sim_ci_method)}"]
+        if p_value_method_label:
+            _line2.append(f"p-values: {_pretty_correction(corr)}")
+        print(f"  FWER corrections:  {'  |  '.join(_line2)}")
+
+        if eff_p_source in {"max_t", "boot"}:
+            if is_romano_wolf_active and eff_p_source == "boot":
+                print(f"  {p_col_header} = Romano-Wolf step-down (FWER-controlled)")
             elif is_newcombe_pairwise:
                 print(f"  {p_col_header} = McNemar exact test (two-sided, uncorrected)")
             elif is_sign_pairwise:
@@ -1345,18 +1385,6 @@ def _print_pairwise_section(
             print(f"  {p_col_header} = Nemenyi post-hoc (Friedman-based, FWER-controlled)")
         if eff_p_source is not None:
             print("  stars: * p<0.01, ** p<0.001, *** p<0.0001")
-        # Explicit methods line (CI method / FWER correction / simultaneous
-        # CIs / alpha), mirroring the matplotlib forest plot's subtitle --
-        # stated plainly here instead of nested into the section header.
-        _methods_parts = [f"CI method: {first_result.test_method}"]
-        if corr and corr != "none":
-            _methods_parts.append(f"FWER correction: {corr}")
-        if sim_ci_method == "max_t":
-            _methods_parts.append("Simultaneous CIs: max-T")
-        elif sim_ci_method == "bonferroni":
-            _methods_parts.append("Simultaneous CIs: Bonferroni")
-        _methods_parts.append(f"α={get_alpha_ci():g}")
-        print(f"  {'  |  '.join(_methods_parts)}")
         print()
         labels_sorted = [
             label
@@ -2266,6 +2294,40 @@ def _rob_multi_ci_at(
     return {a: (float(lo[idx]), float(hi[idx])) for a, (lo, hi) in rob_multi_ci.items()}
 
 
+_CORRECTION_DISPLAY_NAMES = {
+    "romano_wolf": "Romano-Wolf",
+    "fdr_bh": "FDR (BH)",
+    "bonferroni": "Bonferroni",
+    "holm": "Holm",
+    "hochberg": "Hochberg",
+    "shaffer": "Shaffer",
+    "max_t": "max-T",
+    "none": "none",
+}
+
+
+def _pretty_correction(code: Optional[str]) -> str:
+    """Human-readable name for a FWER correction method code."""
+    if not code:
+        return "none"
+    return _CORRECTION_DISPLAY_NAMES.get(code, code.replace("_", " ").title())
+
+
+_SIMULTANEOUS_CI_DISPLAY_NAMES = {
+    "max_t": "max-T",
+    "sidak": "Šidák",
+    "boot": "Joint bootstrap",
+    "bonferroni": "Bonferroni",
+}
+
+
+def _pretty_simultaneous_ci(code: Optional[str]) -> str:
+    """Human-readable name for a simultaneous-CI method code."""
+    if not code:
+        return "none"
+    return _SIMULTANEOUS_CI_DISPLAY_NAMES.get(code, code.replace("_", " ").title())
+
+
 def _legend_ci_label(style: str, ci_pct: int, multi_ci_available: bool) -> str:
     """Return the CI portion of a legend string for the given style."""
     if style == "gradient" and multi_ci_available:
@@ -2620,7 +2682,7 @@ def _print_critical_difference_groups(
     rank_pos = {label: idx + 1 for idx, label in enumerate(labels_sorted)}
 
     if pairwise.simultaneous_ci_method is not None:
-        source_label = f"{(1-alpha)*100:.0f}% CI, {pairwise.simultaneous_ci_method}-adjusted"
+        source_label = f"{(1-alpha)*100:.0f}% CI"
     else:
         source_label = {
             "bootstrap": "p (boot)",
