@@ -264,12 +264,17 @@ class TestScoreRange:
         return es.analyze(result, n_bootstrap=n_bootstrap, rng=np.random.default_rng(0), **kwargs)
 
     def test_likert_scale_with_score_range_no_warning(self):
+        # Integer 1-5 data triggers evalstats' quantization auto-detection
+        # (detect_quantization_step) when eval_type isn't given -- that's
+        # intentional (see config.AUTO_ANALYZE_METHOD_TABLE's "likert" row),
+        # and it emits a UserWarning explaining the switch. Passing
+        # eval_type="likert" explicitly is the documented way to silence it.
         rng = np.random.default_rng(40)
         scores = rng.integers(1, 6, size=(2, 40)).astype(float)  # 1-5 Likert
         with warnings.catch_warnings():
             warnings.simplefilter("error")
-            bundle = self._bundle(scores, score_range=(1, 5))
-        assert bundle.resolved_ci_method == "logit_t"
+            bundle = self._bundle(scores, score_range=(1, 5), eval_type="likert")
+        assert bundle.resolved_ci_method == "logit_t"  # robustness/marginal CI, unaffected by likert routing
         assert bundle.resolved_score_range == (1.0, 5.0)
         _ci_valid(bundle)
         _ci_brackets_mean(bundle)
@@ -286,11 +291,25 @@ class TestScoreRange:
         _ci_brackets_mean(bundle)
 
     def test_pairwise_ci_uses_logit_t_with_score_range(self):
+        # Genuinely continuous (non-quantized) data within score_range --
+        # a 1-5 integer draw here would trigger the likert quantization
+        # auto-detection and route pairwise to NIG instead (see
+        # test_pairwise_ci_uses_nig_for_auto_detected_likert below).
         rng = np.random.default_rng(42)
-        scores = rng.integers(1, 6, size=(2, 40)).astype(float)
+        scores = rng.uniform(1, 5, size=(2, 40))
         bundle = self._bundle(scores, score_range=(1, 5))
         pair = bundle.pairwise.get("T0", "T1")
         assert "logit-t" in pair.test_method.lower()
+        assert pair.ci_low <= pair.point_diff <= pair.ci_high
+
+    def test_pairwise_ci_uses_nig_for_auto_detected_likert(self):
+        rng = np.random.default_rng(42)
+        scores = rng.integers(1, 6, size=(2, 40)).astype(float)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            bundle = self._bundle(scores, score_range=(1, 5))
+        pair = bundle.pairwise.get("T0", "T1")
+        assert "nig" in pair.test_method.lower()
         assert pair.ci_low <= pair.point_diff <= pair.ci_high
 
     def test_score_range_violated_by_data_raises(self):

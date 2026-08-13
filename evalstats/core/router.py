@@ -281,12 +281,12 @@ def analyze(
         evalstats auto-detects discreteness from the data's own
         quantization grid and emits a ``UserWarning`` if it switches to
         the Likert treatment -- pass this explicitly to silence that
-        warning either way. Currently this only changes the SINGLE-RUN
-        pairwise-comparison CI (NIG instead of logit-t) -- see
-        ``config.AUTO_ANALYZE_METHOD_TABLE``'s "likert" row for exactly
-        what is and isn't yet covered (multi-run pairwise, marginal CIs,
-        and the k>=3 simultaneous-CI construction all still use logit-t
-        for likert data, pending their own dedicated validation).
+        warning either way. This changes every pairwise-comparison CI
+        (NIG instead of logit-t) -- single-run, seeded/multi-run, and the
+        k>=3 simultaneous-CI construction alike -- see
+        ``config.AUTO_ANALYZE_METHOD_TABLE``'s "likert" row for the
+        validation. Marginal/robustness CIs still use logit-t for likert
+        data, pending their own dedicated validation.
 
         When omitted, evalstats always prints a ``UserWarning`` announcing
         what it assumed and which method it picked as a result:
@@ -852,13 +852,13 @@ def resolve_auto_robustness_method(
                     warnings.warn(
                         f"Bounded numeric evaluation data was auto-detected "
                         f"as discrete/ordinal (grid step={step:g} within "
-                        f"range {resolved_score_range}). For single-run "
-                        "pairwise comparisons, evalstats uses NIG (validated "
-                        "as better-calibrated than logit-t there for this "
-                        "kind of data); other analyses on this data "
-                        "(marginal CIs, multi-run pairwise comparisons) "
-                        "still use logit-t, the same as continuous data, "
-                        "pending their own validation -- see "
+                        f"range {resolved_score_range}). For pairwise "
+                        "comparisons (single-run and multi-run alike), "
+                        "evalstats uses NIG (validated as better-calibrated "
+                        "than logit-t there for this kind of data); "
+                        "marginal/robustness CIs on this data still use "
+                        "logit-t, the same as continuous data, pending "
+                        "their own validation -- see "
                         "config.AUTO_ANALYZE_METHOD_TABLE's 'likert' row. "
                         "Pass eval_type='likert' explicitly to silence this "
                         "warning, or eval_type='continuous' if this "

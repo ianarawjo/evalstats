@@ -1975,18 +1975,25 @@ def _simultaneous_cis_router(
     otherwise have been shown, regardless of which resampling *method*
     (bootstrap, bca, ...) the point estimate itself used.
 
-    ``eval_type`` is accepted but currently NOT used to change which
-    ci_func gets widened here: bounded numeric data always uses logit-t in
-    this function, even when it's discrete/ordinal (Likert-scale) data
-    that :func:`pairwise_differences`'s own ``method="nig"`` path (and
-    :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`'s "likert" row,
-    single-run pairwise only) would use NIG for instead. That's
-    deliberate, not an oversight -- the k>=3 construction built here has
-    only ever been tested with NIG's OLD, buggy prior (before
-    ``_NIG_PAIRED_DIFF_B0`` fixed it), never re-validated post-fix, so it
-    isn't trusted yet. The parameter stays so callers/``analyze()`` don't
-    need reverting too, and so wiring NIG back in here is a small,
-    localized change once that validation exists.
+    ``eval_type="likert"`` (or ``method="nig"`` passed directly) widens
+    NIG instead of logit-t for bounded numeric data here, matching
+    :func:`pairwise_differences`'s own ``method="nig"`` path and
+    :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`'s "likert" row.
+    This used to be logit-t-only regardless of ``eval_type`` (the k>=3
+    construction had only ever been tested with NIG's OLD, buggy prior,
+    before ``_NIG_PAIRED_DIFF_B0`` fixed it) -- a real compare_e2e
+    overnight sweep surfaced exactly the failure that scoping predicted:
+    family-wise coverage for likert data collapsing to 10-26% at n=15,
+    k=10 (vs. 93-99% for continuous at the same n, k), because Sidak's
+    shrinking per-pair alpha_adj as k grows drives logit-t straight into
+    the same paired-diff rounding-cancellation failure mode NIG was built
+    to fix in the first place -- this router just hadn't been made to use
+    the fix. See :data:`~evalstats.config.AUTO_ANALYZE_METHOD_TABLE`'s
+    "likert" row for the validation numbers (single-run and nested/multi-
+    run alike -- unlike the pairwise *method* table, this router doesn't
+    vary by seeded= at all, since Sidak/boot here widen whatever
+    ``results[pair].per_input_diffs`` already is, computed identically
+    for single- and multi-run data upstream).
 
     Historical note: this used to default unconditionally to Bonferroni
     (with the studentized bootstrap max-T method as the sole opt-in
@@ -2051,22 +2058,15 @@ def _simultaneous_cis_router(
         if is_binary:
             data_kind = "binary"
         elif score_range is not None:
-            data_kind = "bounded_01"
+            # eval_type="likert" (explicit or auto-resolved upstream via
+            # detect_quantization_step()) or an explicit method="nig" call
+            # both route to the NIG-widened branch below -- see this
+            # function's docstring for why (validated fix for logit-t's
+            # paired-diff rounding-cancellation failure mode, which gets
+            # worse, not better, as Sidak's alpha_adj shrinks with k).
+            data_kind = "likert" if (eval_type == "likert" or method == "nig") else "bounded_01"
         else:
             data_kind = "unbounded"
-        # NOTE: eval_type is deliberately NOT consulted here (unlike
-        # pairwise_differences()'s method="nig" path, which IS validated
-        # for single-run pairwise likert data -- see
-        # config.AUTO_ANALYZE_METHOD_TABLE's "likert" row). The k>=3
-        # simultaneous/family-wise construction this function builds
-        # (Sidak/joint-bootstrap-widened) has only ever been tested with
-        # NIG's OLD, buggy prior (before core.paired._NIG_PAIRED_DIFF_B0
-        # fixed it) -- never re-validated post-fix -- so likert data still
-        # gets the same logit-t-based ci_func as genuinely continuous
-        # "bounded_01" data here, until that gets its own dedicated
-        # validation. eval_type stays a parameter (rather than being
-        # removed) so callers/analyze() don't need reverting too, and so
-        # re-enabling this is a small, localized change once ready.
 
         resolved = prefer
         if prefer == "auto":
@@ -2084,6 +2084,13 @@ def _simultaneous_cis_router(
 
             def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi):
                 return rescaled_ci(logit_t_ci_1d, diffs, alpha, _lo, _hi)
+        elif data_kind == "likert":
+            diff_span = score_range[1] - score_range[0]
+            diff_lo, diff_hi = -diff_span, diff_span
+            _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
+
+            def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi, _fn=_nig_paired):
+                return rescaled_ci(_fn, diffs, alpha, _lo, _hi)
         else:
             ci_func = t_interval_ci_1d
 
@@ -2179,16 +2186,15 @@ def all_pairwise(
         the ``"auto"`` (default) table lookup: ``"sidak"``, ``"boot"``,
         ``"max_t"``, or ``"bonferroni"``.
     eval_type : "likert", "continuous", or None
-        Accepted for forward-compatibility with :func:`analyze`, but
-        currently has NO effect on the simultaneous CI this function
-        computes when ``simultaneous_ci=True`` (the default) -- see
-        :func:`_simultaneous_cis_router`'s docstring for why (the k>=3
-        widened construction hasn't been validated for NIG post-fix, so it
-        always widens logit-t for any bounded numeric range regardless of
-        ``eval_type``). It DOES matter for the individual per-pair CI when
-        ``method="nig"`` is requested explicitly, or resolved via
-        ``method="auto"`` + single-run likert data (see
-        ``config.AUTO_ANALYZE_METHOD_TABLE``) -- that path is validated.
+        ``"likert"`` (explicit, or resolved via ``method="auto"``'s own
+        quantization auto-detection) routes BOTH the per-pair CI (via
+        :func:`pairwise_differences`'s ``method="nig"`` path) AND the
+        ``simultaneous_ci=True`` (default) k>=3 Sidak/joint-bootstrap-
+        widened construction (:func:`_simultaneous_cis_router`) through
+        NIG instead of logit-t -- validated for single-run and nested/
+        multi-run pairwise data alike (see
+        ``config.AUTO_ANALYZE_METHOD_TABLE``'s "likert" row). Continuous
+        (or unspecified) bounded numeric data keeps logit-t throughout.
     omnibus : bool
         When ``True``, run the Friedman omnibus test (with Nemenyi post-hoc)
         alongside the pairwise comparisons.  Requires k ≥ 3.  Defaults to
