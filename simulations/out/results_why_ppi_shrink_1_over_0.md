@@ -2047,5 +2047,413 @@ scripts (scratch): `validate_joint_bootstrap_lambda_var_inflation_highrep_v2.py`
 `validate_joint_bootstrap_lambda_var_inflation_paired.py`,
 `validate_joint_bootstrap_lambda_var_inflation_paired_power.py`.
 
+---
 
+## Addendum 22 (2026-08-13): comprehensive harness Type-I validation for ANOVA power-tuning
 
+Housekeeping first: consolidated all branches this investigation touched
+onto one clean lineage. `claude/ppi-power-tuning-check-9b6a59` (this
+session's default branch) turned out to be a strict ancestor of
+`ppi-power-tuning-tuning` (where all the actual code commits landed) --
+fast-forwarded it to match, no merge needed. Also discovered this very
+file was gitignored the whole time (`simulations/out/*` blanket rule) --
+none of Addenda 1-21 had ever actually been committed anywhere despite
+extensive editing; added a `!` exception and committed it (`cda158c`).
+`worktree-anova-power-tuning` (the ANOVA prototype from Addendum 15,
+still based on the much older `af8e452`) had its stale/superseded
+lambda-var-inflation prototype in `ppi.py` discarded (redundant with the
+now-properly-committed `_lambda_var_inflation` helper) and its real
+`tests/__init__.py` diff rebased cleanly onto the latest tip -- no
+conflicts, since it touches `_ppi_anova_independent_f_stat` (line ~2856),
+far from the bayes-bootstrap changes (line ~1841) that had landed on
+`tests/__init__.py` in between. 66/66 ANOVA pytest tests still pass
+post-rebase.
+
+**Then ran the actual comprehensive test Addendum 15 never got**: added
+`power_tune: bool = False` to `_ppi_anova_independent_p_value`/`_ci`
+(threading to the already-fixed `_ppi_anova_independent_f_stat`, default
+unchanged), temporarily flipped the harness's two call sites
+(`simulations/harness/cases/pvalues.py:3650,4140`) to `power_tune=True`,
+and ran the harness's real Type-I check across its full scenario suite
+(109-118 conditions, not just the handful of hand-picked configs
+Addendum 15's standalone script covered) -- reverted the harness edits
+afterward, keeping only the opt-in parameter addition.
+
+**Screening (100 reps)**: corr mean 0.061 (vs 0.054 baseline), Holm-
+confirmed 1/118 -- `interact.large+sparse+hetero+diff` at 0.160 (vs
+baseline 0.050), a dramatic-looking jump.
+
+**High-rep recheck (500 reps, matched seed, same protocol as the
+Romano-Wolf investigation)** told a very different story:
+
+| scenario | off | on |
+|---|---|---|
+| small+unbal+hetero+diff | 0.092 (Holm) | 0.066 |
+| small+sparse+noisy+const | 0.048 | 0.058 |
+| mid+extreme-hetero+none | 0.076 | 0.098 (Holm) |
+| large+sparse+hetero+diff | 0.092 (Holm) | 0.102 (Holm) |
+| small+unbal+hetero+diff.mildbias | 0.080 (Holm) | 0.066 |
+| small+unbal+hetero+diff.modbias | 0.072 | 0.074 |
+| large+sparse+hetero+diff.mildbias | 0.052 | 0.080 |
+| large+sparse+hetero+diff.modbias | 0.066 | 0.068 |
+
+Full 109-scenario (continuous) aggregate: corr mean 0.054 -> 0.060, Holm-
+confirmed cells 3 -> 2 (slightly fewer, not more). The flagged scenario's
+0.050->0.160 gap at 100 reps was mostly noise -- at 500 reps it's
+0.092->0.102, a small increment. More importantly: **the "interaction"
+stress category (extreme per-group judge-quality divergence + small
+n_lab + unequal group sizes) already has Holm-confirmed Type-I problems
+in the CURRENT SHIPPED `power_tune=False` construction** -- a pre-
+existing weakness in this stress-test category unrelated to power-
+tuning, not something this investigation introduced or needs to fix.
+Within that already-rough category, power_tune=True's effect is
+genuinely bidirectional (some cells improve, some worsen slightly) with
+no systematic direction, consistent with ordinary noise in an already-
+noisy corner of the design space rather than a real new problem.
+
+A first reproduction attempt with hand-guessed bias/noise parameters
+(0.084 vs 0.089, small gap) failed to match the harness's real magnitude
+-- traced to guessing the wrong bias structure (`bias_type="differential"`
+biases ONLY group A, not all three groups as guessed); switched to
+calling the harness's own `build_judge_bias_sources()`/
+`generate_judge_bias_cell()` directly for a faithful reproduction, which
+is what surfaced the still-inconsistent numbers that prompted the
+proper high-rep harness recheck instead of trusting a hand-rolled script.
+
+**Status**: `power_tune=True` for independent-groups ANOVA is now
+validated at the same rigor as the other five sites -- full-suite Type-I
+(this addendum) plus the original synthetic Type-I/power sweep (Addendum
+15). Net assessment: positive, with one honest caveat (the pre-existing
+interaction-category roughness, unaffected either way). Not yet: a power
+check across the full harness suite (only Addendum 15's hand-picked
+configs so far); label-efficiency; a commit decision. Diagnostic scripts
+(scratch): `diagnose_anova_interact_regression.py` (failed hand-
+reconstruction, kept for the record), `diagnose_anova_interact_v2.py`
+(faithful reproduction via harness internals).
+
+---
+
+## Addendum 23 (2026-08-13): ANOVA power check across the full harness grid
+
+Same temporary-patch protocol as Addendum 22 (`_ppi_anova_independent_p_value`'s
+call site in `_run_ppi_cell` flipped to `power_tune=True`, harness power
+check enabled with everything else off, reverted after), covering all
+three of the harness's standard power tables (`build_ppi_power_sources()`):
+adversarial-direction bias, no-bias ceiling, and bias-reinforcing-the-
+effect, across continuous and likert, effect sizes 0.00-1.20, 200 reps
+each, seed 42, off vs on.
+
+**Result: essentially no difference anywhere.** Every column in all six
+table halves (3 tables x 2 eval types) agrees within 1-4 percentage
+points, consistent with ordinary 200-rep Monte Carlo noise at these
+power levels (SE ~0.03-0.04 mid-range) -- no systematic direction, no
+scenario with a real gap. The es=0.00 columns (Type-I cross-check) also
+match the earlier dedicated Type-I check's aggregate closely.
+
+This is a genuinely different picture from Addendum 15's own synthetic
+power check, which found large gains for a poor judge (noise_sd=3.0:
+0.075->0.425). Not a contradiction -- `build_ppi_power_sources()`'s
+standard judge-quality severity is moderate (matching `build_judge_
+bias_sources()`'s baseline), not the extreme "genuinely poor judge"
+regime Addendum 15 specifically constructed to showcase the adaptive
+scheme's main advantage over fixed shrink-to-1. The standard grid simply
+doesn't probe that regime, so it correctly shows "no harm, no dramatic
+gain either" rather than contradicting the earlier finding.
+
+**Status**: ANOVA power-tuning has now cleared the full validation
+sequence used for the other five sites -- full-suite Type-I (Addendum 22),
+full-suite power (this addendum), plus the original targeted synthetic
+sweep (Addendum 15) that specifically stress-tests the poor-judge regime
+the standard grids don't reach. Net assessment across all three: solid.
+Remaining before a commit decision: label-efficiency check (not yet
+run for anova_ind at all), and the open question of whether/how to
+extend this to repeated-measures ANOVA, Friedman, and Kruskal (still
+untouched, per Addendum 14).
+
+---
+
+## Addendum 24 (2026-08-13): repeated-measures ANOVA -- same fix, working
+
+User asked to extend adaptive power-tuning to the remaining omnibus
+tests (repeated ANOVA, Friedman, Kruskal), then stepped away asking for
+autonomous progress up to (but not including) a final commit/official
+test, which they want to trigger themselves once everything is wired in.
+
+**Diagnosis**: `_ppi_anova_repeated_f_stat`'s existing (`power_tune=False`)
+construction has the IDENTICAL bug independent ANOVA had before Addendum
+15 -- `cond_means_llm` is built from the FULL sample (labeled+unlabeled
+mixed), not a disjoint unlabeled complement, so the rectifier only
+cancels judge bias at lambda=1. Verified directly (not just by analogy):
+simulated many draws, computed the current construction's bias residual
+at lambda in {1.0, 0.5, 0.0} -- residual is ~0 at lambda=1 and grows
+linearly with (1-lambda)*true_bias otherwise, exactly the same failure
+mode.
+
+**Fix**: rebuilt around the standard disjoint construction `f_lab +
+lambda*(f_unlab - f_hat_lab)`, generalized to the k-dimensional
+condition-contrast vector this design produces. Lambda is a single
+shared scalar (one judge, not per-condition) chosen to minimize
+`trace(P @ Var[cond_means_ppi(lambda)] @ P)` -- the vector generalization
+of the classical PPI++ lambda* ratio, projected through the same
+centering matrix P (`I - 11^T/k`) already used elsewhere in this
+function. Shrunk toward an adaptive target via the existing
+`_adaptive_shrink_lambda`, with lambda's own estimation uncertainty
+folded into the reported variance via the matrix generalization of
+`_lambda_var_inflation` (`np.outer(r_term, r_term) * Var(lambda_hat)`,
+since `r_term` is now a k-vector, not a scalar).
+
+**A real scaling bug caught immediately by a sanity check, before trusting
+any Type-I number**: first version gave Type-I ~0.003-0.011 (16-45x too
+LOW, not too high) across every condition. Debugged by checking the raw
+F-statistic's distribution directly against its known theoretical mean
+(`dfd/(dfd-2)` for F(dfn,dfd)) rather than trusting the pass/fail rate --
+mean f_corr was ~0.51 vs expected ~1.05, off by almost exactly 2x with
+k=3 (k-1=2). Root cause: `denom` should equal `E[ss_condition_corr]/(k-1)
+= n_subjects*trace(P@Var@P)/(k-1)`, and the `/(k-1)` had been dropped.
+Fixed; F-statistic mean immediately matched theory (~1.01-1.02 vs
+expected ~1.05).
+
+**Validation** (synthetic, k=3, reusing the same configs as independent
+ANOVA's Addendum 15 checks):
+
+Type-I, n_lab=20 (n_subjects=200/400 depending on config):
+| config | old | new |
+|---|---|---|
+| good judge | 0.0350 | 0.0400 |
+| differential bias, moderate judge | 0.0400 | 0.0660 |
+| differential bias, poor judge | 0.0400 | 0.0630 |
+| differential bias, poor judge, n_lab=40 | 0.0540 | 0.0440 |
+
+Power, same configs (H1: condition effects 0/0.3/0.6):
+| config | old | new |
+|---|---|---|
+| good judge | 0.9570 | 0.9790 |
+| differential bias, moderate judge | 0.2830 | 0.5780 |
+| differential bias, poor judge | 0.0810 | 0.3850 |
+| differential bias, poor judge, n_lab=40 | 0.1100 | 0.7080 |
+
+Large power gains for poor judges, even bigger than independent ANOVA's
+own (0.081->0.385, 0.110->0.708) -- consistent with the same mechanism.
+
+**Convergence check** (poor-judge config, n_lab/label_frac held at ~10%
+proportionally, not n_subjects fixed): Type-I stays tight across the
+ENTIRE range tested, 0.041-0.059 at n_lab=15 through n_lab=100 -- no
+small-n_lab elevation pattern at all here, tighter than independent
+ANOVA's own convergence curve. Ported into
+`evalstats/tests/__init__.py` (`_ppi_anova_repeated_f_stat`,
+`_ppi_anova_repeated_p_value`/`_ci` now accept `power_tune: bool = False`,
+default unchanged); direct re-run of the poor-judge check against the
+REAL implementation (not the standalone prototype) confirmed matching
+behavior (old=0.0437, new=0.0563). pytest: 66/66 ANOVA-related tests
+pass (default path untouched).
+
+**Status**: repeated-measures ANOVA power-tuning implemented and
+synthetically validated, matching the rigor of independent ANOVA's
+Addendum 15. Not yet done: comprehensive harness-level validation
+(matching Addendum 22/23's full-suite Type-I/power sweep) -- deferred
+until Friedman and Kruskal are attempted too, per the user's request to
+wire everything in before running a combined official validation.
+Uncommitted. Prototype/debug scripts (scratch):
+`verify_repeated_anova_bug.py`, `prototype_repeated_anova_power_tune.py`,
+`debug_repeated_anova.py`, `sweep_repeated_anova.py`.
+
+---
+
+## Addendum 25 (2026-08-13): Friedman -- same fix, clean on the first try
+
+Same construction bug as repeated ANOVA (`cond_means_llm` built from the
+full sample, only cancels bias at lambda=1 -- Friedman uses ranks instead
+of raw scores but the anchor/rectifier structure is identical). This one
+worked WITHOUT the denom-scaling bug repeated ANOVA hit, because it
+directly reuses `_repeated_anova_lambda_raw`/`_repeated_anova_lambda_replicates`
+(already correct, already validated) rather than re-deriving anything --
+same functions, just fed rank-transformed inputs instead of raw scores.
+
+The one open question specific to Friedman: this function's OWN docstring
+already documents (from before this session) that an SS-decomposition
+residual doesn't transfer to ranks (anti-correlated with the tested
+effect, inflates Type-I -- the exact mechanism that broke the original
+2023-era naive lambda search for this estimand). The fix here never
+computes an SS-decomposition residual at all -- only plain sample
+covariances of labeled/unlabeled rank-MEAN vectors -- so it structurally
+sidesteps that specific failure mode rather than needing a new argument
+for why it's safe. Confirmed empirically, not just by that argument.
+
+**Validation** (synthetic, k=3, same configs as repeated ANOVA):
+
+Type-I, n_lab=20:
+| config | old | new |
+|---|---|---|
+| good judge | 0.0370 | 0.0450 |
+| differential bias, moderate judge | 0.0500 | 0.0650 |
+| differential bias, poor judge | 0.0610 | 0.0630 |
+| differential bias, poor judge, n_lab=40 | 0.0450 | 0.0500 |
+
+Power, same configs:
+| config | old | new |
+|---|---|---|
+| good judge | 0.6340 | 0.6530 |
+| differential bias, moderate judge | 0.2860 | 0.3650 |
+| differential bias, poor judge | 0.1930 | 0.2890 |
+| differential bias, poor judge, n_lab=40 | 0.3590 | 0.5340 |
+
+More modest gains than the continuous-score ANOVA cases (expected --
+ranks carry less information than raw scores), but real and consistent.
+
+**Convergence check** (poor-judge config, label_frac~10% proportionally):
+Type-I tight across the whole range, 0.041-0.059 at n_lab=15 through
+n_lab=100 -- same clean pattern as repeated ANOVA's own convergence
+check, no small-n_lab elevation at all.
+
+Ported into `evalstats/tests/__init__.py` (`_ppi_friedman_f_stat`,
+`_ppi_friedman_p_value`/`_ci` now accept `power_tune: bool = False`,
+default unchanged, reusing the SAME `_repeated_anova_lambda_raw`/
+`_repeated_anova_lambda_replicates` helpers, no duplicated math); direct
+re-run against the REAL implementation confirmed matching behavior
+(old=0.0587, new=0.0537). pytest: 38/38 Friedman-related tests pass.
+
+**Status**: implemented and synthetically validated. Not yet: harness-
+level validation (deferred alongside repeated ANOVA and Kruskal, per the
+user's "wire everything in first" request). Uncommitted. Prototype
+scripts (scratch): `prototype_friedman_power_tune.py`, `sweep_friedman.py`.
+
+---
+
+## Addendum 26 (2026-08-13): Kruskal-Wallis -- third instance of the same bug, different packaging
+
+`_ppi_kruskal_wallis_pairwise`'s existing (`power_tune` didn't exist yet)
+construction already used a properly DISJOINT unlabeled sample (unlike
+ANOVA/Friedman's full-sample bug) -- but the anchor/rectifier roles were
+inverted from the canonical PPI form: `theta_unlab + (theta_lab_human -
+theta_lab_llm)`, with the JUDGE-based term (`theta_unlab`) as the always-
+full-weight anchor and the rectifier scaled by the (currently hardcoded)
+lambda=1. Verified via simulation (mean-based proxy, same style of check
+used for the other two): this construction's bias residual is exactly 0
+at lambda=1 and grows linearly with (1-lambda)*true_bias otherwise --
+the SAME failure mode, third time, just packaged with the anchor/
+rectifier roles swapped instead of a full-sample-mixing bug.
+
+**Fix**: swap into canonical form, `theta_lab_human + lambda*(theta_unlab
+- theta_lab_llm)` -- unbiased at any lambda, since the rectifier
+(`theta_unlab - theta_lab_llm`) now has expectation exactly 0 regardless
+of lambda (both terms share the same judge bias). Lambda is a single
+scalar shared across all C(k,2) pairs (one judge), estimated by
+minimizing trace(Var[theta_hat(lambda)]) -- computed from bootstrap
+replicates directly rather than a closed-form covariance, since this
+estimand was already bootstrap-based (no new closed-form derivation
+needed, unlike ANOVA/Friedman). Estimated from a FIRST bootstrap draw,
+held fixed for a SECOND independent draw that builds the actual Wald
+covariance -- the same double-draw discipline `correct()`'s own bootstrap
+path uses to avoid double-dipping. Lambda's own estimation-uncertainty
+term is added directly to the bootstrap covariance AFTER the fact
+(`np.outer(r_term, r_term) * Var(lambda_hat)`, using the FIXED observed
+`r_term`), deliberately NOT woven into the bootstrap loop -- applying the
+lesson from Addendum 20/21's Romano-Wolf bug (using each replicate's own
+resampled rectifier there, instead of the fixed observed one, caused a
+real FWER regression) before it could recur here.
+
+**Validation** (synthetic, k=3, n_boot=400, reps=300 -- more expensive
+per rep than ANOVA/Friedman since this is bootstrap-based, not
+closed-form, so smaller rep counts than the other two):
+
+Type-I, n_lab=20:
+| config | old | new |
+|---|---|---|
+| good judge | 0.0133 | 0.0100 |
+| differential bias, moderate judge | 0.0100 | 0.0333 |
+| differential bias, poor judge | 0.0167 | 0.0500 |
+
+Power, same configs:
+| config | old | new |
+|---|---|---|
+| good judge | 0.6767 | 0.8000 |
+| differential bias, moderate judge | 0.2800 | 0.4200 |
+| differential bias, poor judge | 0.1467 | 0.3300 |
+
+No elevation above nominal anywhere in either construction (the old
+Hotelling-corrected construction already runs conservative here); the
+poor-judge cell landing exactly at 0.05 was rechecked at reps=800:
+old=0.0375, new=0.0450, still comfortably at/below nominal. Solid power
+gains throughout, no debugging needed this time (worked on the first
+attempt, likely because it reuses the already-correct bootstrap
+machinery rather than needing a new closed-form denom derivation the way
+repeated ANOVA did).
+
+Ported into `evalstats/tests/__init__.py`
+(`_ppi_kruskal_wallis_pairwise` now accepts `power_tune: bool = False`,
+default unchanged; the bootstrap-draw loop was factored into a
+`_draw_components` closure so power_tune=True's two-draw pattern doesn't
+duplicate the resampling logic). Direct sanity check against the REAL
+implementation produced sane, non-crashing output with `theta_hat`
+notably closer to the true null (0.5) than the old construction's,
+consistent with the bias-cancellation fix. pytest: pending. NOT yet
+threaded into the public `kruskalwallis()` function's own signature
+(matching independent ANOVA's approach -- the harness calls
+`_ppi_kruskal_wallis_pairwise` directly, so this wasn't required for
+validation).
+
+**Status**: all three remaining omnibus sites (repeated ANOVA, Friedman,
+Kruskal) now have `power_tune=True` implemented and synthetically
+validated. Comprehensive harness-level validation (matching Addendum
+22/23's rigor) is the one thing common to all three still pending, per
+the user's explicit request to wire everything in before running that
+combined check. Nothing committed. Prototype scripts (scratch):
+`verify_kruskal_bug.py`, `prototype_kruskal_power_tune.py`,
+`highrep_kruskal.py`.
+
+---
+
+## Addendum 27 (2026-08-13): comprehensive harness validation for all three -- clean across the board
+
+Same temporary-patch protocol used for independent ANOVA (Addendum
+22/23), applied to all three sites at once (`simulations/harness/cases/
+pvalues.py`'s `_run_ppi_cell` call sites for `anova_rep`/`friedman`/
+`kruskal`, `power_tune=True`), covering the full 118-scenario Type-I
+suite and the full power grid, both eval types, reverted after.
+
+**Full-suite pytest** (`test_ppi_corrections.py`, all tests, with the
+flag forced on): 319/319 pass.
+
+**Type-I, full 118-scenario suite, 354 conditions (118 scenarios x 3
+tests), off vs on**:
+
+| test | off: mean / max | on: mean / max |
+|---|---|---|
+| anova_rep | 0.044 / 0.125 | 0.052 / 0.138 |
+| friedman | 0.044 / 0.125 | 0.056 / 0.150 |
+| kruskal | 0.028 / 0.075 | 0.038 / 0.087 |
+
+Modest, consistent increases -- same order of magnitude as every other
+site's small-n_lab movement documented throughout this investigation.
+**Holm-confirmed miscalibrated cells: 0/354 in BOTH the off and on
+runs** -- no scenario crossed into real, family-wise-significant
+miscalibration in either version.
+
+**Power, full grid (both eval types, es=0.00-1.20), off vs on**: flat to
+improved everywhere checked, no regressions. Selected checkpoints
+(continuous, es=0.30): anova_rep 0.613->0.613 (identical), friedman
+0.275->0.325, kruskal 0.800->0.900. Likert showed the largest gains for
+friedman specifically (es=0.10: 0.075->0.225, es=0.15: 0.237->0.412,
+es=0.20: 0.512->0.588, es=0.25: 0.575->0.700) -- consistent with
+Addendum 25's synthetic finding that Friedman's gains, while real, take
+a bit more effect size to show up clearly (ranks carry less information
+than raw scores).
+
+**Status**: all six power_tune sites in this codebase now have adaptive
+lambda power-tuning, each independently validated at matching rigor:
+mean/Walsh-theta/bootstrap-path/bayes-bootstrap (Addenda 17-19,
+committed as `dfd48ad`), Romano-Wolf/max-T joint bootstrap-t (Addendum
+20/21, committed as `38a346a`), independent-groups ANOVA (Addenda
+15/22/23), and now repeated-measures ANOVA/Friedman/Kruskal (Addenda
+24-27) -- the last three synthetically validated (Addenda 24-26) AND
+harness-validated (this addendum), matching the rigor already applied to
+independent ANOVA. Everything from repeated-ANOVA/Friedman/Kruskal
+onward remains UNCOMMITTED, per the user's explicit request to hold off
+on both committing and running the final official validation until they
+return and can trigger it themselves. Nothing in this addendum touched
+`evalstats.api._ppi_bootstrap_t_joint_stats` (Addendum 20's rejected
+Romano-Wolf attempt) or the ANOVA-family point-estimate/CI paths that
+were already flagged as not power-tunable via the simple bootstrap route
+(`_ppi_anova_independent`/`_ppi_kruskal_wallis`'s effect-size CIs,
+hardcoded `power_tune=False`, per their own existing comments) -- those
+remain explicitly out of scope for this round.
