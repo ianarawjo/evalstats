@@ -6045,8 +6045,17 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     legend was concatenating three metric-incompatible label sets into
     one list a reader had to mentally re-split by panel. wspace is widened
     to leave each panel room for its own legend without overlapping the
-    next panel; ax.set_aspect("equal") keeps each panel itself square
-    regardless of the wider allocated cell."""
+    next panel.
+
+    Axes are deliberately NOT square/shared: x is capped at the actual
+    N_lab grid tested (the multiplier being consistently > 1x means
+    equiv_n_lab usually runs 1.5-4x higher, so a shared max used to spend
+    most of the panel's width on N_lab values nobody tested, compressing
+    every real point into the bottom-left corner); y expands independently
+    to fit equiv_n_lab. The y=x reference line is still exactly y=x in
+    data coordinates -- it just won't render at a visual 45 degrees
+    anymore, which is an acceptable tradeoff for making the low-N_lab
+    region (the range that matters most in practice) actually readable."""
     import matplotlib.pyplot as plt
 
     if not results:
@@ -6074,20 +6083,26 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
 
         # Axis scale comes from NON-saturated points only -- a single
         # saturated cell's clamped-to-n_grid.max() equiv_n_lab must never be
-        # allowed to dictate the shared panel scale (see
+        # allowed to dictate the panel scale (see
         # LabelEfficiencyPoint.saturated's docstring for the bug this
         # previously caused: one continuous cell's "500 labels" artifact
         # squashed every real point in that panel into an unreadable sliver).
         # Falls back to using every row's n_lab (never equiv_n_lab) if a
         # panel is saturated everywhere, which no current eval_type is.
+        # x and y scale independently (see this function's docstring) --
+        # x caps at the actual N_lab grid tested, y at the largest
+        # equiv_n_lab actually observed.
         unsaturated = [r for r in et_rows if not r.saturated]
+        x_data_max = max(r.n_lab for r in et_rows)
         if unsaturated:
-            max_val = max(max(r.n_lab for r in unsaturated), max(r.equiv_n_lab for r in unsaturated)) * 1.15
+            y_data_max = max(r.equiv_n_lab for r in unsaturated)
         else:
-            max_val = max(r.n_lab for r in et_rows) * 3.0
+            y_data_max = x_data_max * 3.0
+        x_max = x_data_max * 1.05
+        y_max = y_data_max * 1.15
 
         ax.plot(
-            [0, max_val], [0, max_val], color="black", ls="--", lw=1.2, alpha=0.6,
+            [0, x_max], [0, x_max], color="black", ls="--", lw=1.2, alpha=0.6,
             label="No benefit (y = x)", zorder=2,
         )
 
@@ -6097,7 +6112,7 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             # Saturated points are plotted as a lower-bound marker clipped
             # just inside the axis ceiling, never at their raw (meaningless)
             # equiv_n_lab value -- see LabelEfficiencyPoint.saturated.
-            ys = [min(r.equiv_n_lab, max_val * 0.97) if r.saturated else r.equiv_n_lab for r in rows]
+            ys = [min(r.equiv_n_lab, y_max * 0.97) if r.saturated else r.equiv_n_lab for r in rows]
             color = cmap(0.15 + 0.7 * i / max(1, len(targets) - 1))
             is_baseline = target == baseline_target
             achieved = float(np.mean([r.alignment_value for r in rows]))
@@ -6116,12 +6131,11 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
                     label="power saturated" if i == 0 else None, zorder=5,
                 )
 
-        ax.set_xlim(0, max_val)
-        ax.set_ylim(0, max_val)
+        ax.set_xlim(0, x_max)
+        ax.set_ylim(0, y_max)
         ax.set_xlabel("Num human labels used")
         ax.set_ylabel("Num human labels a classical test would need" if col == 0 else "")
         ax.set_title(et.capitalize())
-        ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize=7, borderaxespad=0.3, frameon=True)
 
     fig.suptitle(
