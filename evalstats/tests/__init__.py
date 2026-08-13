@@ -1370,6 +1370,7 @@ def _ppi_kruskal_wallis_pairwise(
     alpha: float,
     n_boot: int,
     rng,
+    power_tune: bool = False,
 ) -> dict:
     """Joint PPI bootstrap of every pairwise dominance effect θ_ab, used for
     the omnibus Wald test (H₀: every θ_ab = 0.5) and for per-pair reporting.
@@ -1403,6 +1404,38 @@ def _ppi_kruskal_wallis_pairwise(
     correction, ν = total labeled observations across groups) rather than a
     plain chi-square, since chi-square is only the large-sample limit and
     is mildly anti-conservative whenever the labeled set is small.
+
+    ``power_tune=True``: EXPERIMENTAL. The fixed-lambda=1 construction
+    above, ``theta_unlab + (theta_lab_human - theta_lab_llm)``, has
+    theta_unlab (the JUDGE-based, biased term) as the always-full-weight
+    anchor and the labeled rectifier as what gets scaled -- backwards from
+    the canonical PPI form, and (verified via simulation) only unbiased at
+    lambda=1 for the identical reason the ANOVA/Friedman constructions
+    were. Fixed by swapping the roles into the canonical form
+    ``theta_lab_human + lambda*(theta_unlab - theta_lab_llm)`` (unbiased at
+    ANY lambda, since the rectifier now has expectation exactly 0 -- both
+    terms share the same judge bias, cancelling regardless of lambda).
+    lambda is a single scalar shared across all pairs (one judge), chosen
+    to minimize trace(Var[theta_hat(lambda)]) -- the same trace-minimizing
+    principle used for the ANOVA/Friedman vector estimands, here applied to
+    the bootstrap covariance directly rather than a closed-form matrix
+    (this estimand was already bootstrap-based, so no new closed-form
+    derivation was needed). Estimated from a FIRST bootstrap draw and held
+    fixed for a SECOND, independent draw that builds the actual Wald
+    covariance -- the same double-draw discipline
+    ``evalstats.ppi.correct``'s bootstrap path uses to avoid double-dipping
+    (estimating lambda and its own uncertainty from the same draw
+    measurably undercovers). The reported covariance also includes the
+    delta-method lambda-uncertainty term (matrix generalization of
+    ``evalstats.ppi._lambda_var_inflation``), added directly to the
+    bootstrap covariance after the fact -- NOT woven into the bootstrap
+    loop itself, learned from a real bug in an earlier fix attempt at the
+    structurally similar Romano-Wolf joint bootstrap-t (see
+    ``evalstats.api._ppi_bootstrap_t_joint_stats`` and
+    simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 20/21):
+    using each bootstrap replicate's own resampled rectifier there (instead
+    of the fixed observed one) made the injected variance data-dependent
+    within the bootstrap itself and caused a real FWER regression.
     """
     rng = np.random.default_rng(rng)
     k = len(groups)
@@ -1422,39 +1455,101 @@ def _ppi_kruskal_wallis_pairwise(
     theta_unlab = _kw_pairwise_thetas(groups_unlab, pairs)
     theta_lab_human = _kw_pairwise_thetas(Y_lab_groups, pairs)
     theta_lab_llm = _kw_pairwise_thetas(Yhat_lab_groups, pairs)
-    theta_hat = theta_unlab + (theta_lab_human - theta_lab_llm)
 
     n_unlab_per_group = [len(g) for g in groups_unlab]
     n_lab_per_group = [len(y) for y in Y_lab_groups]
+    n_lab_total = sum(n_lab_per_group)
 
-    boots = np.empty((n_boot, n_pairs))
-    for bi in range(n_boot):
-        boot_unlab = [
-            groups_unlab[j][rng.integers(0, n_unlab_per_group[j], n_unlab_per_group[j])]
-            for j in range(k)
-        ]
-        # One shared index per group for the labeled resample: the human and
-        # LLM values at a given index are the SAME item's two measurements,
-        # so they must move together across bootstrap draws (highly
-        # correlated in practice) — drawing independent indices for each
-        # would destroy that correlation and grossly inflate the rectifier's
-        # bootstrap variance.
-        lab_idxs = [
-            rng.integers(0, n_lab_per_group[j], n_lab_per_group[j]) if n_lab_per_group[j] > 0
-            else np.arange(n_lab_per_group[j])
-            for j in range(k)
-        ]
-        boot_lab_human = [Y_lab_groups[j][lab_idxs[j]] for j in range(k)]
-        boot_lab_llm = [Yhat_lab_groups[j][lab_idxs[j]] for j in range(k)]
-        b_unlab = _kw_pairwise_thetas(boot_unlab, pairs)
-        b_lab_h = _kw_pairwise_thetas(boot_lab_human, pairs)
-        b_lab_l = _kw_pairwise_thetas(boot_lab_llm, pairs)
-        boots[bi] = b_unlab + (b_lab_h - b_lab_l)
+    def _draw_components(n_draws):
+        """One bootstrap draw's worth of (theta_unlab, theta_lab_human,
+        theta_lab_llm) replicates -- factored out so power_tune=True can
+        call it twice (lambda estimation, then the Wald covariance) without
+        duplicating the resampling logic."""
+        b_unlab_arr = np.empty((n_draws, n_pairs))
+        b_lab_h_arr = np.empty((n_draws, n_pairs))
+        b_lab_l_arr = np.empty((n_draws, n_pairs))
+        for bi in range(n_draws):
+            boot_unlab = [
+                groups_unlab[j][rng.integers(0, n_unlab_per_group[j], n_unlab_per_group[j])]
+                for j in range(k)
+            ]
+            # One shared index per group for the labeled resample: the human
+            # and LLM values at a given index are the SAME item's two
+            # measurements, so they must move together across bootstrap
+            # draws (highly correlated in practice) — drawing independent
+            # indices for each would destroy that correlation and grossly
+            # inflate the rectifier's bootstrap variance.
+            lab_idxs = [
+                rng.integers(0, n_lab_per_group[j], n_lab_per_group[j]) if n_lab_per_group[j] > 0
+                else np.arange(n_lab_per_group[j])
+                for j in range(k)
+            ]
+            boot_lab_human = [Y_lab_groups[j][lab_idxs[j]] for j in range(k)]
+            boot_lab_llm = [Yhat_lab_groups[j][lab_idxs[j]] for j in range(k)]
+            b_unlab_arr[bi] = _kw_pairwise_thetas(boot_unlab, pairs)
+            b_lab_h_arr[bi] = _kw_pairwise_thetas(boot_lab_human, pairs)
+            b_lab_l_arr[bi] = _kw_pairwise_thetas(boot_lab_llm, pairs)
+        return b_unlab_arr, b_lab_h_arr, b_lab_l_arr
 
-    ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
-    ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
+    if power_tune:
+        b1_unlab, b1_lab_h, b1_lab_l = _draw_components(n_boot)
+        # lambda* minimizing trace(Var[theta_hat(lambda)]) -- disjointness
+        # (theta_unlab independent of the labeled quantities) makes this the
+        # same trace(Cov)/trace(Var) ratio used for the ANOVA/Friedman
+        # vector estimands, just estimated from bootstrap replicates instead
+        # of a closed-form covariance (this estimand has no closed form).
+        cov_cross = np.cov(b1_lab_h, b1_lab_l, rowvar=False)[:n_pairs, n_pairs:]
+        var_unlab = np.atleast_2d(np.cov(b1_unlab, rowvar=False))
+        var_lab_l = np.atleast_2d(np.cov(b1_lab_l, rowvar=False))
+        den = np.trace(var_unlab + var_lab_l)
+        lam_raw = np.trace(cov_cross) / den if den > 1e-12 else 1.0
+        lam_raw = min(max(lam_raw, 0.0), 1.0)
 
-    cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
+        # Raw-lambda replicates: split the b1 draw into batches and
+        # recompute the same ratio within each (same idea as
+        # evalstats.ppi._bootstrap_batch_lambda_replicates -- a single
+        # bootstrap draw can't yield a ratio on its own, so pool a few per
+        # batch).
+        n_batches = max(5, min(30, n_boot // 50))
+        batch_size = max(1, n_boot // n_batches)
+        lam_replicates = np.empty(n_batches)
+        for bi in range(n_batches):
+            sl = slice(bi * batch_size, (bi + 1) * batch_size)
+            cc = np.cov(b1_lab_h[sl], b1_lab_l[sl], rowvar=False)[:n_pairs, n_pairs:]
+            vu = np.atleast_2d(np.cov(b1_unlab[sl], rowvar=False))
+            vl = np.atleast_2d(np.cov(b1_lab_l[sl], rowvar=False))
+            d = np.trace(vu + vl)
+            lam_replicates[bi] = min(max(np.trace(cc) / d if d > 1e-12 else 1.0, 0.0), 1.0)
+
+        from evalstats.ppi import _adaptive_shrink_lambda
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab_total)
+
+        # Canonical PPI form: theta_lab_human anchors (always full weight,
+        # always unbiased), the judge-based rectifier is lambda-scaled --
+        # see this function's power_tune=True docstring for why this ordering
+        # (not the fixed-lambda=1 construction's) is unbiased at any lambda.
+        theta_hat = theta_lab_human + lam * (theta_unlab - theta_lab_llm)
+        r_term = theta_unlab - theta_lab_llm
+
+        b2_unlab, b2_lab_h, b2_lab_l = _draw_components(n_boot)
+        boots = b2_lab_h + lam * (b2_unlab - b2_lab_l)
+        ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
+        ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
+        cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
+        # Lambda's own estimation uncertainty, added directly to the
+        # bootstrap covariance (NOT woven into the bootstrap loop) -- see
+        # this function's power_tune=True docstring for why (a real bug in
+        # an earlier attempt at the structurally similar Romano-Wolf fix).
+        var_lam_hat = float(np.var(lam_replicates, ddof=1))
+        cov = cov + np.outer(r_term, r_term) * var_lam_hat
+    else:
+        theta_hat = theta_unlab + (theta_lab_human - theta_lab_llm)
+        b_unlab, b_lab_h, b_lab_l = _draw_components(n_boot)
+        boots = b_unlab + (b_lab_h - b_lab_l)
+        ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
+        ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
+        cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
+
     diff = theta_hat - 0.5
     rcond = 1e-8
     cov_pinv = np.linalg.pinv(cov, rcond=rcond)
@@ -3019,6 +3114,7 @@ def _ppi_anova_independent_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
+    power_tune: bool = False,
 ) -> Optional[float]:
     """Corrected p-value for independent ANOVA via per-group PPI mean corrections.
 
@@ -3040,7 +3136,7 @@ def _ppi_anova_independent_p_value(
 
     See :func:`_ppi_anova_independent_ci` for the CI derived from this same
     F-statistic (guaranteed consistent with this p-value by construction)."""
-    stat = _ppi_anova_independent_f_stat(groups, groups_lab, k)
+    stat = _ppi_anova_independent_f_stat(groups, groups_lab, k, power_tune=power_tune)
     if stat is None:
         return None
     if stat["f_corr"] <= 0.0:
@@ -3050,13 +3146,14 @@ def _ppi_anova_independent_p_value(
 
 def _ppi_anova_independent_ci(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
+    power_tune: bool = False,
 ) -> Optional[tuple[float, float, float]]:
     """(estimate, ci_low, ci_high) for independent ANOVA's between-group
     variance, via test-inversion on the SAME F-statistic
     :func:`_ppi_anova_independent_p_value` uses -- see
     :func:`_noncentral_f_ci_lambda`. Returns None under the same degenerate
     condition the p-value function does."""
-    stat = _ppi_anova_independent_f_stat(groups, groups_lab, k)
+    stat = _ppi_anova_independent_f_stat(groups, groups_lab, k, power_tune=power_tune)
     if stat is None:
         return None
     f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
@@ -3092,12 +3189,51 @@ def _ppi_anova_independent_ci(
     return estimate, lam_L * denom / scale, lam_U * denom / scale
 
 
+def _repeated_anova_lambda_raw(human_lab, llm_lab, llm_unlab, P, k):
+    """Raw (unshrunk) scalar lambda for repeated-measures ANOVA's vector
+    estimand, minimizing trace(P @ Var[cond_means_ppi(lambda)] @ P) over
+    lambda -- the natural vector generalization of the classical PPI++
+    lambda* = Cov(true,llm)/[Var(unlab)+Var(hat_lab)], projected through
+    the same centering matrix P the F-statistic itself uses. Returns
+    (lam_raw, var_unlab, var_lab_llm, cov_cross) so callers can reuse the
+    covariance pieces for the variance formula without recomputing them."""
+    n_lab_, n_unlab_ = len(human_lab), len(llm_unlab)
+    cov_cross = np.cov(human_lab, llm_lab, rowvar=False)[:k, k:] / n_lab_
+    var_lab_llm = np.atleast_2d(np.cov(llm_lab, rowvar=False)) / n_lab_
+    var_unlab = np.atleast_2d(np.cov(llm_unlab, rowvar=False)) / n_unlab_
+    B = var_unlab + var_lab_llm
+    num = np.trace(P @ cov_cross @ P)
+    den = np.trace(P @ B @ P)
+    lam_raw = num / den if den > 1e-12 else 1.0
+    lam_raw = min(max(lam_raw, 0.0), 1.0)
+    return lam_raw, var_unlab, var_lab_llm, cov_cross
+
+
+def _repeated_anova_lambda_replicates(human_lab, llm_lab, llm_unlab, P, k, n_lab, n_boot=500):
+    """Raw-lambda replicates for :func:`evalstats.ppi._adaptive_shrink_lambda`,
+    for repeated-measures ANOVA's vector estimand -- a micro-bootstrap of
+    just the labeled subjects (paired human/llm rows resampled together,
+    same idea as :func:`evalstats.ppi._analytic_mean_lambda_replicates`),
+    holding the large unlabeled sample's covariance fixed (stable, no need
+    to resample it)."""
+    rng = np.random.default_rng(0)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    lam_reps = np.empty(n_boot)
+    for b in range(n_boot):
+        lam_reps[b], _, _, _ = _repeated_anova_lambda_raw(human_lab[idx[b]], llm_lab[idx[b]], llm_unlab, P, k)
+    return lam_reps
+
+
 def _ppi_anova_repeated_f_stat(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
+    power_tune: bool = False,
 ) -> Optional[dict]:
     """Shared F-statistic computation for repeated-measures ANOVA's PPI
     correction -- see :func:`_ppi_anova_independent_f_stat`'s docstring for
     why this is factored out (p-value/CI consistency by construction).
+
+    ``power_tune=False`` (default): fixed lambda=1 rectifier, unchanged
+    from the original implementation --
 
         The inflation factor accounts for rectifier uncertainty.
 
@@ -3114,7 +3250,34 @@ def _ppi_anova_repeated_f_stat(
 
             inflation = [σ̂²_true + σ̂²_eff × (n_subjects/n_lab − 1)] / ms_residual,
             where σ̂²_true = max(ms_residual − σ̂²_eff, 0).
-    """
+
+    ``power_tune=True``: EXPERIMENTAL. The fixed-lambda=1 construction above
+    uses the FULL sample (labeled + unlabeled) for ``cond_means_llm``, which
+    only cancels judge bias at lambda=1 -- the identical construction bug
+    :func:`_ppi_anova_independent_f_stat` had before its own power_tune fix
+    (verified via simulation: residual bias scales as (1-lambda)*bias, zero
+    only at lambda=1). Fixed the same way: rebuilt around the standard
+    disjoint PPI construction ``f_lab + lambda*(f_unlab - f_hat_lab))``,
+    generalized to the k-dimensional condition-contrast vector, with a
+    single SHARED scalar lambda (not per-condition -- the k conditions
+    share one judge, so one lambda) chosen to minimize
+    trace(P @ Var[cond_means_ppi(lambda)] @ P) -- the natural vector
+    generalization of the classical PPI++ lambda* derivation, projected
+    through the same centering matrix P the F-statistic itself uses.
+    lambda is shrunk toward an adaptive target exactly as every other
+    power_tune site in this codebase (see evalstats.ppi._adaptive_shrink_lambda),
+    and the reported variance includes the delta-method lambda-uncertainty
+    term (evalstats.ppi._lambda_var_inflation's rationale, generalized from
+    a scalar r_term**2*Var(lambda_hat) to the matrix outer product
+    np.outer(r_term, r_term)*Var(lambda_hat), since r_term is now a
+    k-vector here).
+
+    Validated via simulation (see
+    simulations/out/results_why_ppi_shrink_1_over_0.md's repeated-ANOVA
+    addendum): Type-I stays controlled (elevated at n_lab~15-20, converging
+    to the fixed-lambda baseline by n_lab~40-60, the same small-sample
+    pattern documented for every other adaptively-shrunk site in this
+    codebase), with large power gains for poor/uninformative judges."""
     n_subjects = len(groups[0])
     labels_mat = np.column_stack(groups_lab)
     overlap = np.all(~np.isnan(labels_mat), axis=1)
@@ -3135,6 +3298,60 @@ def _ppi_anova_repeated_f_stat(
     centered_llm_lab = llm_lab - llm_lab.mean(axis=1, keepdims=True)
     centered_human_lab = human_lab - human_lab.mean(axis=1, keepdims=True)
     delta = centered_human_lab.mean(axis=0) - centered_llm_lab.mean(axis=0)
+
+    if power_tune:
+        unlab_idx = np.where(~overlap)[0]
+        n_unlab = len(unlab_idx)
+        if n_unlab < 2 or n_lab < 2:
+            return None
+        llm_unlab = centered_llm_all[unlab_idx]
+        f_unlab = llm_unlab.mean(axis=0)
+        f_lab_llm = centered_llm_lab.mean(axis=0)
+        f_lab_human = centered_human_lab.mean(axis=0)
+        r_term = f_unlab - f_lab_llm  # (k,) -- disjoint unlabeled minus labeled llm
+
+        P = np.eye(k) - np.ones((k, k), dtype=float) / float(k)
+        lam_raw, var_unlab, var_lab_llm, cov_cross = _repeated_anova_lambda_raw(
+            centered_human_lab, centered_llm_lab, llm_unlab, P, k,
+        )
+        # Degenerate guard, same rationale as every other power_tune site
+        # (evalstats.ppi._analytic_mean_point_se's docstring): a near-
+        # constant labeled sample can't reveal covariance no matter how
+        # it's resampled.
+        raw_var_human = np.var(centered_human_lab, axis=0, ddof=1).sum()
+        raw_var_llm_lab = np.var(centered_llm_lab, axis=0, ddof=1).sum()
+        if n_lab <= 1 or raw_var_human < raw_var_llm_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _repeated_anova_lambda_replicates(
+                centered_human_lab, centered_llm_lab, llm_unlab, P, k, n_lab,
+            )
+        from evalstats.ppi import _adaptive_shrink_lambda
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+
+        cond_means_ppi = f_lab_human + lam * r_term
+        grand_ppi = cond_means_ppi.mean()
+        ss_condition_corr = float(n_subjects * np.sum((cond_means_ppi - grand_ppi) ** 2))
+
+        var_human = np.atleast_2d(np.cov(centered_human_lab, rowvar=False)) / n_lab
+        var_matrix = var_human + lam * lam * (var_unlab + var_lab_llm) - 2.0 * lam * cov_cross
+        if lam_replicates is not None and len(lam_replicates) > 1:
+            var_lam_hat = float(np.var(lam_replicates, ddof=1))
+            var_matrix = var_matrix + np.outer(r_term, r_term) * var_lam_hat
+        var_matrix = (var_matrix + var_matrix.T) / 2.0  # symmetrize away float noise
+
+        # E[ss_condition_corr] = n_subjects * trace(P @ Var[cond_means_ppi] @ P)
+        # for a mean-zero (under H0) k-vector -- see this function's
+        # power_tune=True docstring section; denom is that expectation
+        # divided by (k-1) to match f_corr's convention.
+        denom = float(n_subjects * np.trace(P @ var_matrix @ P) / (k - 1))
+        denom = max(denom, 1e-8)
+        f_corr = (ss_condition_corr / (k - 1)) / denom
+        df_residual_eff = max((n_lab - 1) * (k - 1), 1)
+        return {
+            "f_corr": f_corr, "dfn": k - 1, "dfd": df_residual_eff,
+            "denom": denom, "scale": float(n_subjects * k),
+        }
 
     cond_means_ppi = cond_means_llm + delta
     grand_ppi = cond_means_ppi.mean()
@@ -3190,6 +3407,7 @@ def _ppi_anova_repeated_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
+    power_tune: bool = False,
 ) -> Optional[float]:
     """Corrected p-value for repeated-measures ANOVA via per-condition PPI corrections.
 
@@ -3199,7 +3417,7 @@ def _ppi_anova_repeated_p_value(
     :func:`_ppi_anova_repeated_f_stat` for the full derivation and
     :func:`_ppi_anova_repeated_ci` for the CI derived from this same
     F-statistic (guaranteed consistent with this p-value by construction)."""
-    stat = _ppi_anova_repeated_f_stat(groups, groups_lab, k)
+    stat = _ppi_anova_repeated_f_stat(groups, groups_lab, k, power_tune=power_tune)
     if stat is None:
         return None
     if stat["f_corr"] <= 0.0:
@@ -3209,12 +3427,13 @@ def _ppi_anova_repeated_p_value(
 
 def _ppi_anova_repeated_ci(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
+    power_tune: bool = False,
 ) -> Optional[tuple[float, float, float]]:
     """(estimate, ci_low, ci_high) for repeated-measures ANOVA's condition
     variance, via test-inversion on the SAME F-statistic
     :func:`_ppi_anova_repeated_p_value` uses -- see
     :func:`_noncentral_f_ci_lambda`."""
-    stat = _ppi_anova_repeated_f_stat(groups, groups_lab, k)
+    stat = _ppi_anova_repeated_f_stat(groups, groups_lab, k, power_tune=power_tune)
     if stat is None:
         return None
     f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
@@ -3233,10 +3452,31 @@ def _ppi_anova_repeated_ci(
 
 def _ppi_friedman_f_stat(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
+    power_tune: bool = False,
 ) -> Optional[dict]:
     """Shared F-statistic computation for Friedman's PPI correction -- see
     :func:`_ppi_anova_independent_f_stat`'s docstring for why this is
     factored out (p-value/CI consistency by construction).
+
+    ``power_tune=True``: EXPERIMENTAL, reuses the SAME construction
+    validated for :func:`_ppi_anova_repeated_f_stat` (disjoint unlabeled
+    sample + a single shared scalar lambda minimizing
+    trace(P @ Var[cond_means_ppi(lambda)] @ P), all from plain empirical
+    covariances of rank-mean vectors -- see
+    :func:`_repeated_anova_lambda_raw`/:func:`_repeated_anova_lambda_replicates`,
+    reused here unchanged, just fed rank-transformed inputs instead of raw
+    scores), applied to ranks instead of raw scores. This construction
+    deliberately does NOT use an SS-decomposition residual anywhere (the
+    thing this function's power_tune=False docstring documents as broken
+    for ranks -- point 1 below): it only ever computes plain sample
+    covariances of MEAN vectors (labeled human ranks, labeled/unlabeled
+    llm ranks), which aren't subject to the same "anti-correlated with the
+    tested effect" problem, since they're not residuals left over after
+    removing an estimated condition effect. Validated via simulation (see
+    simulations/out/results_why_ppi_shrink_1_over_0.md's Friedman
+    addendum) -- Type-I stays controlled with real (if more modest than
+    the continuous-score ANOVA cases, expected given ranks carry less
+    information) power gains.
 
     Not a literal mirror of ``_ppi_anova_repeated_f_stat``, despite the
     similar structure. That function estimates its null/residual variance
@@ -3317,6 +3557,50 @@ def _ppi_friedman_f_stat(
     human_lab = _scipy_stats.rankdata(labels_mat[overlap], axis=1, method="average")
     delta = human_lab.mean(axis=0) - llm_lab.mean(axis=0)
 
+    if power_tune:
+        unlab_idx = np.where(~overlap)[0]
+        n_unlab = len(unlab_idx)
+        if n_unlab < 2 or n_lab < 2:
+            return None
+        llm_unlab = llm_mat[unlab_idx]
+        f_unlab = llm_unlab.mean(axis=0)
+        f_lab_llm = llm_lab.mean(axis=0)
+        f_lab_human = human_lab.mean(axis=0)
+        r_term = f_unlab - f_lab_llm
+
+        P = np.eye(k) - np.ones((k, k), dtype=float) / float(k)
+        lam_raw, var_unlab, var_lab_llm, cov_cross = _repeated_anova_lambda_raw(
+            human_lab, llm_lab, llm_unlab, P, k,
+        )
+        raw_var_human = np.var(human_lab, axis=0, ddof=1).sum()
+        raw_var_llm_lab = np.var(llm_lab, axis=0, ddof=1).sum()
+        if n_lab <= 1 or raw_var_human < raw_var_llm_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _repeated_anova_lambda_replicates(human_lab, llm_lab, llm_unlab, P, k, n_lab)
+        from evalstats.ppi import _adaptive_shrink_lambda
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+
+        cond_means_ppi = f_lab_human + lam * r_term
+        grand_ppi = cond_means_ppi.mean()
+        ss_condition_corr = float(n_subjects * np.sum((cond_means_ppi - grand_ppi) ** 2))
+
+        var_human = np.atleast_2d(np.cov(human_lab, rowvar=False)) / n_lab
+        var_matrix = var_human + lam * lam * (var_unlab + var_lab_llm) - 2.0 * lam * cov_cross
+        if lam_replicates is not None and len(lam_replicates) > 1:
+            var_lam_hat = float(np.var(lam_replicates, ddof=1))
+            var_matrix = var_matrix + np.outer(r_term, r_term) * var_lam_hat
+        var_matrix = (var_matrix + var_matrix.T) / 2.0
+
+        denom = float(n_subjects * np.trace(P @ var_matrix @ P) / (k - 1))
+        denom = max(denom, 1e-8)
+        f_corr = (ss_condition_corr / (k - 1)) / denom
+        df_residual_eff = max((n_lab - 1) * (k - 1), 1)
+        return {
+            "f_corr": f_corr, "dfn": k - 1, "dfd": df_residual_eff,
+            "denom": denom, "scale": float(n_subjects * k),
+        }
+
     cond_means_ppi = cond_means_llm + delta
     grand_ppi = cond_means_ppi.mean()
     ss_condition_corr = float(n_subjects * np.sum((cond_means_ppi - grand_ppi) ** 2))
@@ -3387,13 +3671,14 @@ def _ppi_friedman_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
+    power_tune: bool = False,
 ) -> Optional[float]:
     """Corrected p-value for the Friedman test via per-condition PPI
     corrections applied to within-subject ranks -- see
     :func:`_ppi_friedman_f_stat` for the full derivation and
     :func:`_ppi_friedman_ci` for the CI derived from this same F-statistic
     (guaranteed consistent with this p-value by construction)."""
-    stat = _ppi_friedman_f_stat(groups, groups_lab, k)
+    stat = _ppi_friedman_f_stat(groups, groups_lab, k, power_tune=power_tune)
     if stat is None:
         return None
     if stat["f_corr"] <= 0.0:
@@ -3403,11 +3688,12 @@ def _ppi_friedman_p_value(
 
 def _ppi_friedman_ci(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
+    power_tune: bool = False,
 ) -> Optional[tuple[float, float, float]]:
     """(estimate, ci_low, ci_high) for Friedman's within-subject-rank
     condition variance, via test-inversion on the SAME F-statistic
     :func:`_ppi_friedman_p_value` uses -- see :func:`_noncentral_f_ci_lambda`."""
-    stat = _ppi_friedman_f_stat(groups, groups_lab, k)
+    stat = _ppi_friedman_f_stat(groups, groups_lab, k, power_tune=power_tune)
     if stat is None:
         return None
     f_corr, dfn, dfd, denom, scale = stat["f_corr"], stat["dfn"], stat["dfd"], stat["denom"], stat["scale"]
