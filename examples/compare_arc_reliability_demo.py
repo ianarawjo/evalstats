@@ -129,6 +129,6 @@ print("=" * 70)
 print("plot_run_disagreement() -- the same reliability check, as a figure")
 print("=" * 70)
 PLOT_PATH = REPO_ROOT / "examples" / "arc_reliability_plot.png"
-fig = plot_run_disagreement(result.full_analysis, title="Run-to-Run Reliability on ARC")
+fig = plot_run_disagreement(result.full_analysis, title="Run-to-Run Reliability on Agent Decision Scenarios")
 fig.savefig(PLOT_PATH, dpi=150, bbox_inches="tight")
 print(f"Wrote {PLOT_PATH.relative_to(REPO_ROOT)}")
