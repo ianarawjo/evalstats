@@ -22,6 +22,7 @@ simulations/out/*
 !simulations/out/judge_bias_privacy_judge_items.csv
 !simulations/out/judge_bias_iclr_metareview.csv
 !simulations/out/judge_bias_iclr_metareview_items.csv
+!simulations/out/results_why_ppi_shrink_1_over_0.md
 .agent-study-venv-full/
 .agent-study-venv-baseline/
 .agent-study-venv-runner/
