@@ -1114,11 +1114,42 @@ def correct(
         b1_unlab, b1_lab, b1_hat_lab = _draw_replicates()
         denom = float(np.var(b1_unlab - b1_hat_lab, ddof=1))
         if denom > 1e-12:
-            lam = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
-            lam = min(max(lam, 0.0), 1.0)
+            lam_raw = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
+            lam_raw = min(max(lam_raw, 0.0), 1.0)
         else:
-            lam = 1.0  # degenerate bootstrap variance -- fall back, don't divide by ~0.
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = 1.0  # degenerate bootstrap variance -- fall back, don't divide by ~0.
+
+        # EXPERIMENT (isolated worktree investigation): adaptive shrinkage
+        # target instead of a fixed 1. Splits the SAME b1 draw already
+        # computed above into n_batches sub-batches (no extra bootstrap
+        # draws -- just arithmetic on arrays already in memory) to get an
+        # empirical P(lambda_hat < 0.5 | data), and shrinks toward
+        # target = 1 - that probability instead of always toward 1. A
+        # confidently-informative judge still gets target->1 (today's
+        # behavior); a confidently-uninformative judge gets target->0
+        # instead of being dragged back up. Falls back to target=1 when
+        # Y_lab itself is near-degenerate (a near-constant labeled sample
+        # can never reveal covariance no matter how it's resampled, so a
+        # "confidently near 0" signal there is an artifact, not evidence).
+        n_batches = max(5, min(30, n_boot // 50))
+        batch_size = n_boot // n_batches
+        lam_batches = np.empty(n_batches)
+        for k in range(n_batches):
+            sl = slice(k * batch_size, (k + 1) * batch_size)
+            d = float(np.var(b1_unlab[sl] - b1_hat_lab[sl], ddof=1))
+            if d > 1e-12:
+                lb = float(np.cov(b1_lab[sl], b1_hat_lab[sl], ddof=1)[0, 1] / d)
+                lam_batches[k] = min(max(lb, 0.0), 1.0)
+            else:
+                lam_batches[k] = 1.0
+        target = 1.0 - float(np.mean(lam_batches < 0.5))
+        var_lab = float(np.var(Y_lab, ddof=1)) if n_lab > 1 else 0.0
+        var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) if n_lab > 1 else 0.0
+        if var_lab < var_hat_lab * 1e-6:
+            target = 1.0
+
+        w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+        lam = w * lam_raw + (1.0 - w) * target
         b2_unlab, b2_lab, b2_hat_lab = _draw_replicates()
         estimate = f_lab + lam * (f_unlab - f_hat_lab)
         boots = b2_lab + lam * (b2_unlab - b2_hat_lab)
