@@ -284,6 +284,39 @@ def _walsh_theta_analytic_variance(d: np.ndarray) -> float:
     return 4.0 * float(np.var(h1, ddof=1)) / n
 
 
+def _walsh_theta_shrink_target(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
+    n_boot: int = 800,
+) -> float:
+    """Empirical shrinkage TARGET for the Walsh-theta analytic backend --
+    same idea as :func:`_analytic_shrink_target` (the mean backend's
+    version: see that function's docstring for the full rationale), just
+    re-evaluating the Hajek-projection cov/var ratio (not the mean's plain
+    sample cov/var) per resample of the (Y_lab, Y_hat_lab) pair.
+
+    ``_walsh_theta_h1_components``'s O(n log n) sort+searchsorted isn't
+    vectorizable across a batch dimension (see :func:`_walsh_theta_batch`'s
+    docstring) -- stays a Python loop over ``n_boot`` draws, same tradeoff
+    that function already accepts. Fine here: n_lab is small (this
+    backend's whole point is being fast at the small n_lab where it's
+    preferred), so n_boot=800 tiny sorts is cheap in aggregate."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    lam_b = np.empty(n_boot)
+    for b in range(n_boot):
+        h1_lab_b = _walsh_theta_h1_components(Y_lab[idx[b]])
+        h1_hat_lab_b = _walsh_theta_h1_components(Y_hat_lab[idx[b]])
+        var_hat_lab_b = 4.0 * float(np.var(h1_hat_lab_b, ddof=1)) / n_lab
+        denom_b = var_unlab + var_hat_lab_b
+        if denom_b > 1e-12:
+            cov_b = 4.0 * float(np.cov(h1_lab_b, h1_hat_lab_b, ddof=1)[0, 1]) / n_lab
+            lam_b[b] = min(max(cov_b / denom_b, 0.0), 1.0)
+        else:
+            lam_b[b] = 1.0
+    p_low = float(np.mean(lam_b < 0.5))
+    return 1.0 - p_low
+
+
 def _analytic_walsh_theta_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool,
@@ -332,10 +365,23 @@ def _analytic_walsh_theta_correct(
     if power_tune:
         denom = var_unlab + var_hat_lab
         if denom > 1e-12:
-            lam = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
-        # else: degenerate variance -- fall back to lam=1, matching
-        # _analytic_mean_correct and the bootstrap path.
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        else:
+            lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
+
+        # Adaptive shrinkage target -- see _analytic_shrink_target's (the
+        # mean backend's version) docstring for the full rationale, and
+        # _walsh_theta_shrink_target for this estimand's version of the
+        # same idea. var_lab/var_hat_lab are already on the Walsh-theta
+        # variance scale (not raw sample variance), so the degenerate-
+        # Y_lab guard below reuses them directly rather than recomputing a
+        # separate raw variance the way the mean backend needs to.
+        if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
+            target = 1.0
+        else:
+            target = _walsh_theta_shrink_target(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+        lam = w * lam_raw + (1.0 - w) * target
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
