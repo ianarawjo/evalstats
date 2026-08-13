@@ -1550,7 +1550,9 @@ def _print_bundle_summary(
 ) -> None:
     if p_value_method is _UNSET:
         p_value_method = bundle.p_value_method
-    template_col_width = 24
+    template_col_width = min(
+        24, max(len(item_singular), max(len(l) for l in bundle.robustness.labels)) + 2
+    )
 
     print(f"Shape: {bundle.shape}")
     n_runs = bundle.benchmark.n_runs
@@ -1711,35 +1713,42 @@ def _print_seed_variance(
     )
     num_w = 10
     consistency_w = 18
+    verdicts = [_instability_label(float(v)) for v in sv.instability]
+    verdict_w = max(len("Verdict"), max(len(v) for v in verdicts))
+    # The strip is Unicode block characters (▁-█), which render at an
+    # inconsistent visual width across terminal fonts even though they're
+    # a single character each -- putting it after every fixed-width column
+    # (rather than between the label and the numbers) keeps that drift from
+    # throwing off the alignment of everything to its right.
     print(
         f"  {item_singular.capitalize():<{template_col_width}s}  "
-        f"{'Per-input noise':<{strip_width}s}  "
-        f"{'seed_std':>{num_w}s}  "
+        f"{'run_std':>{num_w}s}  "
         f"{'input_std':>{num_w}s}  "
         f"{'total_std':>{num_w}s}  "
         f"{'instability':>{num_w}s}  "
         f"{'Consistency (ICC)':<{consistency_w}s}  "
-        f"Verdict"
+        f"{'Verdict':<{verdict_w}s}  "
+        f"Per-input noise"
     )
     for i, label in enumerate(sv.labels):
         strip = _seed_noise_strip(
             sv.per_cell_seed_std[i], global_cell_max, max_width=strip_width
         )
         instability = float(sv.instability[i])
-        verdict = _instability_label(instability)
+        verdict = verdicts[i]
         verdict_color = _instability_color(instability)
         icc = float(sv.icc[i])
         icc_str = "—" if np.isnan(icc) else f"{icc:.2f} ({_consistency_label(icc)})"
         icc_color = _consistency_color(icc)
         print(
             f"  {_truncate_label(label, template_col_width):<{template_col_width}s}  "
-            f"{strip:<{strip_width}s}  "
             f"{np.sqrt(sv.seed_var[i]):>{num_w}.4f}  "
             f"{np.sqrt(sv.input_var[i]):>{num_w}.4f}  "
             f"{np.sqrt(sv.total_var[i]):>{num_w}.4f}  "
             f"{instability:>{num_w}.4f}  "
             f"{icc_color}{icc_str:<{consistency_w}s}{_RESET}  "
-            f"{verdict_color}{verdict}{_RESET}"
+            f"{verdict_color}{verdict:<{verdict_w}s}{_RESET}  "
+            f"{strip}"
         )
     print(
         f"{_DIM}  instability = how many points a score typically moves "
