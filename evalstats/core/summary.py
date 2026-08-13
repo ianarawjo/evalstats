@@ -1711,24 +1711,22 @@ def _print_seed_variance(
         f"  key: ▁–█ = per-input noise   "
         f"(globally scaled; █ = {global_cell_max:.4f})"
     )
-    num_w = 10
+    # Wide enough for "instability" (11 chars) -- with num_w=10 that header
+    # overflowed its own field by 1 char and dragged every header after it
+    # out of alignment with the data rows below.
+    num_w = len("instability")
     consistency_w = 18
     verdicts = [_instability_label(float(v)) for v in sv.instability]
     verdict_w = max(len("Verdict"), max(len(v) for v in verdicts))
-    # The strip is Unicode block characters (▁-█), which render at an
-    # inconsistent visual width across terminal fonts even though they're
-    # a single character each -- putting it after every fixed-width column
-    # (rather than between the label and the numbers) keeps that drift from
-    # throwing off the alignment of everything to its right.
     print(
         f"  {item_singular.capitalize():<{template_col_width}s}  "
+        f"{'Per-input noise':<{strip_width}s}  "
         f"{'run_std':>{num_w}s}  "
         f"{'input_std':>{num_w}s}  "
         f"{'total_std':>{num_w}s}  "
         f"{'instability':>{num_w}s}  "
         f"{'Consistency (ICC)':<{consistency_w}s}  "
-        f"{'Verdict':<{verdict_w}s}  "
-        f"Per-input noise"
+        f"{'Verdict':<{verdict_w}s}"
     )
     for i, label in enumerate(sv.labels):
         strip = _seed_noise_strip(
@@ -1742,13 +1740,13 @@ def _print_seed_variance(
         icc_color = _consistency_color(icc)
         print(
             f"  {_truncate_label(label, template_col_width):<{template_col_width}s}  "
+            f"{strip:<{strip_width}s}  "
             f"{np.sqrt(sv.seed_var[i]):>{num_w}.4f}  "
             f"{np.sqrt(sv.input_var[i]):>{num_w}.4f}  "
             f"{np.sqrt(sv.total_var[i]):>{num_w}.4f}  "
             f"{instability:>{num_w}.4f}  "
             f"{icc_color}{icc_str:<{consistency_w}s}{_RESET}  "
-            f"{verdict_color}{verdict:<{verdict_w}s}{_RESET}  "
-            f"{strip}"
+            f"{verdict_color}{verdict:<{verdict_w}s}{_RESET}"
         )
     print(
         f"{_DIM}  instability = how many points a score typically moves "
