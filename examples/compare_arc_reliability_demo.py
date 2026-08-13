@@ -1,24 +1,36 @@
 """Real-data demo: matched accuracy does not mean matched reliability.
 
 Two real language models (evaluated via OpenRouter using Inspect AI) on ARC,
-a benchmark of grade-school science exam questions. Llama-3.1-8B and Gemma-3n
-score nearly identically -- 80.0% vs. 78.3%, statistically tied -- so a
-single-run comparison would call them interchangeable. But each model was
-actually run 5 independent times on the same 150 questions, and that repeat
+a benchmark of grade-school science exam questions, each run 5 independent
+times on the same 50 questions -- a deliberately small sample, since
+evalstats is built for exactly this small-N regime. Llama-3.1-8B and
+Gemma-3n score close enough to be statistically tied (75.6% vs. 82.0%), so a
+single-run comparison would call them interchangeable. But the repeat
 structure reveals something a single run cannot: Gemma-3n's answers are
-"effectively deterministic" run to run (ICC = 0.97), while Llama-3.1-8B is
-only "mostly stable" (ICC = 0.73) -- visibly noisier from one run to the
-next, even though its average accuracy is fine. Consistent behavior on
-repeated calls to the same input is itself a real dependability property,
-separate from raw accuracy, and only visible once you look past a single run.
+"effectively deterministic" run to run, while Llama-3.1-8B is only "mostly
+stable" -- visibly noisier from one run to the next, even though its average
+accuracy is in the same range. Consistent behavior on repeated calls to the
+same input is itself a real dependability property, separate from raw
+accuracy, and only visible once you look past a single run.
+
+evalstats surfaces this two ways:
+
+1. compare() includes it automatically whenever it detects a repeated `run`
+   column -- no extra step, it's part of the same analysis used to compare
+   models in the first place.
+2. stability() is a standalone shortcut for when reliability is *all* you
+   want to check -- e.g. "is this one model/config reliable enough to
+   ship?" -- without running a full multi-model comparison.
+
+Both report the same underlying numbers.
 
 Source data: simulations/out/inspect_benchmarks.csv (committed in this
 repo), collected via simulations/collect_inspect_benchmarks.py -- real
 per-question scores for ARC (Clark et al., 2018) from 6 real models run
 over OpenRouter using Inspect AI, 5 independent runs per model. This script
-filters down to 2 of those models and a fixed 150-question random subsample
+filters down to 2 of those models and a fixed 50-question random subsample
 (seed=0, reproducible), writes the result to examples/arc_results.csv, and
-runs the same comparison evalstats' API would.
+runs the same comparisons evalstats' API would.
 
 Usage:
     python examples/compare_arc_reliability_demo.py
@@ -47,8 +59,8 @@ MODEL_RENAME = {
     "openrouter/meta-llama/llama-3.1-8b-instruct": "llama-3.1-8b",
     "openrouter/google/gemma-3n-e4b-it": "gemma-3n",
 }
-N_ITEMS = 150
-SEED = 0
+N_ITEMS = 50
+SEED = 1
 
 df = pd.read_csv(SOURCE_PATH)
 df = df[
@@ -88,3 +100,12 @@ print_analysis_summary(
     result.full_analysis, top_pairwise=5,
     item_singular="model", item_plural="models",
 )
+
+print()
+print("=" * 70)
+print("es.stability() -- the same reliability check, on its own")
+print("=" * 70)
+stability_result = es.stability(
+    long_df, config_col="model", run_col="run", item_col="item", value_col="score",
+)
+print(stability_result.to_frame())
