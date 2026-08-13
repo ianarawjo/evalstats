@@ -1742,14 +1742,12 @@ def _print_seed_variance(
             f"{verdict_color}{verdict}{_RESET}"
         )
     print(
-        f"{_DIM}  instability = mean std across repeated runs, in score units "
-        f"(how many points a score typically moves between runs){_RESET}"
+        f"{_DIM}  instability = how many points a score typically moves "
+        f"between repeated runs{_RESET}"
     )
     print(
-        f"{_DIM}  Consistency (ICC) = intraclass correlation = input_var / "
-        f"(input_var + seed_var) — share of total variation that's real "
-        f"input-level signal rather than run noise (bands: <0.50 poor, "
-        f"0.50-0.75 moderate, 0.75-0.90 good, >0.90 excellent; Koo & Li 2016){_RESET}"
+        f"{_DIM}  Consistency (ICC) = how much of the difference between "
+        f"inputs is real signal, rather than run-to-run noise{_RESET}"
     )
     print()
 
