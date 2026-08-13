@@ -977,15 +977,20 @@ def correct(
         degenerate (≈0). ``PPIResult.lam`` reports the (shrunk) value
         actually used.
 
-        ``kruskal``/``anova``/``friedman``/``bootstrap_t``/``tango_score``/
-        ``lmm*`` and the MNAR-experimental rectifiers do not go through
-        this function (bespoke bootstrap/closed-form code of their own)
-        and are unaffected by ``power_tune``. For kruskal/anova/friedman
-        this is deliberate: power-tuning does not transfer to their
-        variance-like, quadratic-form estimand, whose λ=0 endpoint is the
-        raw, judge-biased estimate rather than a safe classical fallback
-        the way a scalar mean's is -- see ``simulations/harness/README.md``'s
-        "PPI++ power-tuning" section.
+        ``kruskal``/``anova``/``friedman``/``bootstrap_t``/``lmm*`` and the
+        MNAR-experimental rectifiers do not go through this function
+        (bespoke bootstrap/closed-form code of their own) and are
+        unaffected by ``power_tune``. For kruskal/anova/friedman this is
+        deliberate: power-tuning does not transfer to their variance-like,
+        quadratic-form estimand, whose λ=0 endpoint is the raw,
+        judge-biased estimate rather than a safe classical fallback the
+        way a scalar mean's is -- see ``simulations/harness/README.md``'s
+        "PPI++ power-tuning" section. ``tango_score`` does NOT belong on
+        this list (a previous version of this docstring incorrectly
+        included it): ``evalstats.tests._ppi_paired_tango`` delegates its
+        point estimate, variance, AND λ directly to
+        :func:`_analytic_mean_point_se`, so it already gets the same
+        adaptive-target shrinkage as every other caller of that function.
     backend : {"auto", "bootstrap", "analytic"}
         How to build the CI/p-value. "bootstrap" is the percentile-
         resampling method described above, unconditionally. "analytic" is
