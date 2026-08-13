@@ -203,6 +203,21 @@ def test_stability_dict_ragged_run_counts():
     assert frame.loc["noisy", "n_runs"] == 3
 
 
+def test_stability_summary_prints_noise_strip(capsys):
+    rng = _rng(21)
+    M = 60
+    base = rng.normal(0.6, 0.1, M)
+    stable_runs = np.array([np.clip(base + rng.normal(0, 0.01, M), 0, 1) for _ in range(6)])
+    noisy_runs = np.array([np.clip(rng.normal(0.5, 0.2, M), 0, 1) for _ in range(3)])
+    result = es.stability({"stable": stable_runs, "noisy": noisy_runs})
+
+    result.summary()
+    out = capsys.readouterr().out
+    assert "Per-input Variance Across Runs" in out
+    assert "Per-input noise" in out
+    assert "stable" in out and "noisy" in out
+
+
 def test_stability_requires_at_least_3_runs():
     rng = _rng(22)
     runs = rng.normal(0.5, 0.1, (2, 30))
