@@ -27,7 +27,7 @@ import pandas as pd
 
 from .config import get_alpha_ci
 from .core.router import resolve_auto_robustness_method
-from .core.variance import robustness_metrics, seed_variance_decomposition
+from .core.variance import robustness_metrics, seed_variance_decomposition, SeedVarianceResult
 
 
 def _clean_1d(arr: np.ndarray, *, label: str, stacklevel: int) -> np.ndarray:
@@ -452,6 +452,17 @@ class StabilityResult:
     icc: np.ndarray
     n_runs: np.ndarray
     label_text: list[str]
+    _seed_variance: Optional[SeedVarianceResult] = None  # underlying decomposition; powers summary()'s noise strip
+
+    def summary(self, item_singular: str = "config") -> None:
+        """Print the same reliability breakdown ``compare()`` shows in the
+        terminal for multi-run data: a per-input noise strip alongside
+        seed/input/total std, instability, ICC, and a plain-language
+        verdict -- for when reliability is all you want to check, without
+        a full multi-model comparison.
+        """
+        from .core.summary import _print_seed_variance
+        _print_seed_variance(self._seed_variance, item_singular=item_singular)
 
     def _row_dict(self, i: int) -> dict:
         return {
@@ -554,6 +565,7 @@ def _stability_core(labels: list[str], arrays: list[np.ndarray], *, warn_orienta
         icc=sv.icc,
         n_runs=actual_n_runs,
         label_text=[_instability_label(float(v)) for v in sv.instability],
+        _seed_variance=sv,
     )
 
 
