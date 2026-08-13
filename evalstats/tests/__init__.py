@@ -1839,7 +1839,10 @@ def _ppi_paired_bayes_bootstrap(
     to ``correct()``, since the whole point of this function is the
     Dirichlet-weighted resampling ``correct()`` doesn't support.
     """
-    from evalstats.ppi import PPIResult, _POWER_TUNE_SHRINKAGE_C, _analytic_mean_correct, _MIN_LAB_RECOMMENDED
+    from evalstats.ppi import (
+        PPIResult, _adaptive_shrink_lambda, _analytic_mean_correct,
+        _bootstrap_batch_lambda_replicates, _MIN_LAB_RECOMMENDED,
+    )
 
     rng = np.random.default_rng(rng)
 
@@ -1887,11 +1890,23 @@ def _ppi_paired_bayes_bootstrap(
         b1_unlab, b1_lab, b1_hat_lab = _draw(n_boot)
         denom = float(np.var(b1_unlab - b1_hat_lab, ddof=1))
         if denom > 1e-12:
-            lam = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
-            lam = min(max(lam, 0.0), 1.0)
+            lam_raw = float(np.cov(b1_lab, b1_hat_lab, ddof=1)[0, 1] / denom)
+            lam_raw = min(max(lam_raw, 0.0), 1.0)
         else:
-            lam = 1.0
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = 1.0
+        # Adaptive shrinkage (see evalstats.ppi._adaptive_shrink_lambda's
+        # docstring for the shared rationale) -- was previously fixed
+        # toward a target of 1 regardless of what the data supported, like
+        # every other power_tune site in this codebase before this fix.
+        # Falls back to target=1 when diffs_lab_true is near-degenerate,
+        # same guard evalstats.ppi.correct's bootstrap path uses.
+        raw_var_lab_true = float(np.var(diffs_lab_true, ddof=1)) if n_lab > 1 else 0.0
+        raw_var_lab_llm = float(np.var(diffs_lab_llm, ddof=1)) if n_lab > 1 else 0.0
+        if n_lab <= 1 or raw_var_lab_true < raw_var_lab_llm * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _bootstrap_batch_lambda_replicates(b1_lab, b1_hat_lab, b1_unlab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
         b2_unlab, b2_lab, b2_hat_lab = _draw(n_boot)
         estimate = f_lab + lam * (f_unlab - f_hat_lab)
         boots = b2_lab + lam * (b2_unlab - b2_hat_lab)

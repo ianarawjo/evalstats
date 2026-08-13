@@ -25,7 +25,7 @@ _POWER_TUNE_SHRINKAGE_C = 20.0
 """Pseudo-count controlling how much :func:`correct`'s power-tuning weight
 lambda gets shrunk toward an ADAPTIVE target as ``n_lab`` shrinks -- used
 identically by the bootstrap path (below) and the analytic-mean backend
-(:func:`_analytic_mean_point_se`/:func:`_analytic_shrink_target`). The
+(:func:`_analytic_mean_point_se`, via :func:`_adaptive_shrink_lambda`). The
 target itself is estimated from the data (confidently-informative judge ->
 target near 1, confidently-uninformative judge -> target near 0) rather
 than fixed at 1: a raw lambda* from only ``n_lab`` points is a noisy
@@ -34,6 +34,110 @@ estimate should be presumed close to 1 specifically -- see the
 ``power_tune`` parameter docstring for the full rationale and
 simulations/out/results_why_ppi_shrink_1_over_0.md for the investigation
 that motivated moving off a fixed target."""
+
+
+def _adaptive_shrink_lambda(
+    lam_raw: float, lam_replicates: Optional[np.ndarray], n_lab: int,
+) -> float:
+    """Shrink a raw power-tuning weight toward an ADAPTIVE target instead
+    of a fixed target of 1 -- the one shared "final blend" step every
+    power_tune implementation in this codebase uses (see :func:`correct`'s
+    ``power_tune`` parameter docstring for the full rationale). Factored
+    out so the five places that need it (``correct()``'s bootstrap path,
+    :func:`_analytic_mean_point_se`, :func:`_analytic_walsh_theta_correct`,
+    ``evalstats.api._ppi_bootstrap_t_joint_stats``, ``evalstats.tests.
+    _ppi_paired_bayes_bootstrap``) share one implementation rather than
+    each reimplementing the same arithmetic.
+
+    ``lam_replicates`` is an array of independent raw-lambda estimates
+    from resampling -- however the caller constructed them (batching an
+    existing bootstrap draw via :func:`_bootstrap_batch_lambda_replicates`,
+    a cheap micro-bootstrap of just the labeled pair via
+    :func:`_analytic_mean_lambda_replicates`/:func:`_walsh_theta_lambda_replicates`,
+    or an equivalent). Pass ``None`` when a degenerate-labeled-sample guard
+    already fired upstream (a near-constant labeled sample can't reveal
+    covariance no matter how it's resampled, so a "confidently near 0"
+    reading there would be a resampling artifact, not evidence) -- this
+    shrinks toward a target of 1, matching every backend's original
+    degenerate fallback."""
+    target = 1.0 if lam_replicates is None else 1.0 - float(np.mean(lam_replicates < 0.5))
+    w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+    return w * lam_raw + (1.0 - w) * target
+
+
+def _bootstrap_batch_lambda_replicates(
+    b_lab: np.ndarray, b_hat_lab: np.ndarray, b_unlab: np.ndarray,
+) -> np.ndarray:
+    """Turn an existing ``(n_boot,)`` bootstrap draw (each element the
+    per-replicate estimator value, e.g. a bootstrap-resample MEAN -- not
+    the full resampled data) into an array of independent raw-lambda
+    replicates for :func:`_adaptive_shrink_lambda`, by splitting it into
+    batches and recomputing the covariance/variance ratio within each
+    batch. A single element of ``b_lab``/``b_hat_lab`` can't yield a
+    covariance on its own (it's already reduced to one number per
+    replicate), so this pools ``n_boot // n_batches`` of them per batch --
+    unlike :func:`_analytic_mean_lambda_replicates`/:func:`
+    _walsh_theta_lambda_replicates`, which resample the full labeled-pair
+    ARRAY per draw and so can compute one ratio straight from each draw
+    with no pooling needed. Used by ``correct()``'s bootstrap path and
+    ``evalstats.tests._ppi_paired_bayes_bootstrap`` (whose Dirichlet-
+    weighted ``b1_*`` draws have the identical shape/meaning for this
+    purpose, just resampled differently upstream)."""
+    n_boot = len(b_lab)
+    n_batches = max(5, min(30, n_boot // 50))
+    batch_size = n_boot // n_batches
+    lam_batches = np.empty(n_batches)
+    for k in range(n_batches):
+        sl = slice(k * batch_size, (k + 1) * batch_size)
+        d = float(np.var(b_unlab[sl] - b_hat_lab[sl], ddof=1))
+        if d > 1e-12:
+            lb = float(np.cov(b_lab[sl], b_hat_lab[sl], ddof=1)[0, 1] / d)
+            lam_batches[k] = min(max(lb, 0.0), 1.0)
+        else:
+            lam_batches[k] = 1.0
+    return lam_batches
+
+
+_ANALYTIC_TARGET_SEED = 0
+"""Fixed internal seed for :func:`_analytic_mean_lambda_replicates`/
+:func:`_walsh_theta_lambda_replicates`'s micro-bootstrap -- purely an
+implementation detail for cheaply approximating a shrinkage target (see
+:func:`_adaptive_shrink_lambda`), not a source of reported Monte Carlo
+uncertainty a caller would need to control. Fixed (not threaded through
+from callers) so every caller -- there are several, across ``evalstats/``
+-- stays fully deterministic (same inputs -> same outputs) without a
+signature change."""
+
+
+def _analytic_mean_lambda_replicates(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
+    n_boot: int = 800,
+) -> np.ndarray:
+    """Raw-lambda replicates for :func:`_adaptive_shrink_lambda`, for a
+    MEAN-based rectifier (plain sample covariance/variance) -- used by
+    :func:`_analytic_mean_point_se` and (per-pair, in a loop)
+    ``evalstats.api._ppi_bootstrap_t_joint_stats``, since both use the
+    identical mean-based ratio.
+
+    Since ``var_unlab`` is already a closed form from the large unlabeled
+    sample (no resampling needed there), only the small (Y_lab, Y_hat_lab)
+    PAIRED sample needs to be resampled -- cheap regardless of n_lab.
+    Unlike :func:`_bootstrap_batch_lambda_replicates`'s ``b1`` arrays
+    (which store only a bootstrap MEAN per draw, so a group of them has to
+    be pooled before a single ratio can be computed at all), each resample
+    here is the FULL (Y_lab, Y_hat_lab) pair array, so the exact same
+    closed-form ratio the point estimate itself uses can be recomputed
+    directly per draw -- a standard bootstrap-the-statistic distribution,
+    no batching needed. n_boot=800 pairs are cheap regardless of n_lab, so
+    this stays fast even at the small n_lab (~15-30) these callers target."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    Yl_b = Y_lab[idx]
+    Yh_b = Y_hat_lab[idx]
+    var_hat_lab_b = Yh_b.var(axis=1, ddof=1) / n_lab
+    cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
+    denom_b = var_unlab + var_hat_lab_b
+    return np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
 
 
 @dataclass
@@ -284,15 +388,16 @@ def _walsh_theta_analytic_variance(d: np.ndarray) -> float:
     return 4.0 * float(np.var(h1, ddof=1)) / n
 
 
-def _walsh_theta_shrink_target(
+def _walsh_theta_lambda_replicates(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
     n_boot: int = 800,
-) -> float:
-    """Empirical shrinkage TARGET for the Walsh-theta analytic backend --
-    same idea as :func:`_analytic_shrink_target` (the mean backend's
-    version: see that function's docstring for the full rationale), just
-    re-evaluating the Hajek-projection cov/var ratio (not the mean's plain
-    sample cov/var) per resample of the (Y_lab, Y_hat_lab) pair.
+) -> np.ndarray:
+    """Raw-lambda replicates for :func:`_adaptive_shrink_lambda`, for the
+    Walsh-theta rectifier -- same idea as
+    :func:`_analytic_mean_lambda_replicates` (see that function's
+    docstring for the shared rationale), just re-evaluating the
+    Hajek-projection cov/var ratio (not the mean's plain sample cov/var)
+    per resample of the (Y_lab, Y_hat_lab) pair.
 
     ``_walsh_theta_h1_components``'s O(n log n) sort+searchsorted isn't
     vectorizable across a batch dimension (see :func:`_walsh_theta_batch`'s
@@ -313,8 +418,7 @@ def _walsh_theta_shrink_target(
             lam_b[b] = min(max(cov_b / denom_b, 0.0), 1.0)
         else:
             lam_b[b] = 1.0
-    p_low = float(np.mean(lam_b < 0.5))
-    return 1.0 - p_low
+    return lam_b
 
 
 def _analytic_walsh_theta_correct(
@@ -369,19 +473,18 @@ def _analytic_walsh_theta_correct(
         else:
             lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
 
-        # Adaptive shrinkage target -- see _analytic_shrink_target's (the
-        # mean backend's version) docstring for the full rationale, and
-        # _walsh_theta_shrink_target for this estimand's version of the
-        # same idea. var_lab/var_hat_lab are already on the Walsh-theta
-        # variance scale (not raw sample variance), so the degenerate-
-        # Y_lab guard below reuses them directly rather than recomputing a
-        # separate raw variance the way the mean backend needs to.
+        # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _walsh_theta_lambda_replicates for this
+        # estimand's version of the replicate-generation step. var_lab/
+        # var_hat_lab are already on the Walsh-theta variance scale (not
+        # raw sample variance), so the degenerate-Y_lab guard below reuses
+        # them directly rather than recomputing a separate raw variance
+        # the way the mean backend needs to.
         if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
-            target = 1.0
+            lam_replicates = None
         else:
-            target = _walsh_theta_shrink_target(Y_lab, Y_hat_lab, var_unlab, n_lab)
-        w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
-        lam = w * lam_raw + (1.0 - w) * target
+            lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
@@ -401,52 +504,6 @@ def _analytic_walsh_theta_correct(
         llm_estimate=f_unlab, human_estimate=f_lab, rectifier=rectifier,
         p_value=p_value, lam=(lam if power_tune else None),
     )
-
-
-_ANALYTIC_TARGET_SEED = 0
-"""Fixed internal seed for :func:`_analytic_shrink_target`'s micro-bootstrap
--- purely an implementation detail for cheaply approximating a shrinkage
-TARGET (see that function's docstring), not a source of reported Monte
-Carlo uncertainty a caller would need to control. Fixed (not threaded
-through from callers) so every ``_analytic_mean_point_se`` caller -- there
-are several, across ``evalstats/tests/__init__.py`` -- stays fully
-deterministic (same inputs -> same outputs) without a signature change."""
-
-
-def _analytic_shrink_target(
-    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
-    n_boot: int = 800,
-) -> float:
-    """Empirical shrinkage TARGET for the analytic backend, mirroring
-    :func:`correct`'s bootstrap-path adaptive target (see that function's
-    power_tune docstring) but simpler: since ``var_unlab`` here is already
-    a closed form from the large unlabeled sample (no resampling needed),
-    only the small (Y_lab, Y_hat_lab) PAIRED sample needs to be resampled.
-    Unlike the bootstrap path's ``b1`` arrays (which store only a bootstrap
-    MEAN per draw, so a group of them has to be pooled before a single
-    covariance/variance ratio can be computed at all), each resample here
-    is the FULL (Y_lab, Y_hat_lab) pair array, so the exact same closed-form
-    ratio the point estimate itself uses can be recomputed directly per
-    draw -- a standard bootstrap-the-statistic distribution, no batching
-    trick needed. n_boot=800 pairs are cheap regardless of n_lab, so this
-    stays fast even at the small n_lab (~15-30) this backend targets.
-
-    ``target = 1 - P(lambda_hat < 0.5 | data)`` over the 800 draws:
-    confidently-informative data pulls the target toward 1 (today's
-    behavior), confidently-uninformative data pulls it toward 0, ambiguous
-    data lands near 0.5 (a mild pull, not a hard jump -- averaging over
-    many draws avoids a pretest-estimator's instability at the
-    threshold)."""
-    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
-    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
-    Yl_b = Y_lab[idx]
-    Yh_b = Y_hat_lab[idx]
-    var_hat_lab_b = Yh_b.var(axis=1, ddof=1) / n_lab
-    cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
-    denom_b = var_unlab + var_hat_lab_b
-    lam_b = np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
-    p_low = float(np.mean(lam_b < 0.5))
-    return 1.0 - p_low
 
 
 def _analytic_mean_point_se(
@@ -491,29 +548,21 @@ def _analytic_mean_point_se(
         else:
             lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
 
-        # Adaptive shrinkage target (see correct()'s bootstrap-path power_tune
-        # docstring and _analytic_shrink_target for the full rationale): a
-        # raw lambda* from only n_lab points is a noisy estimate of the true
-        # population lambda, but there's no reason a noisy estimate should be
-        # presumed close to 1 rather than close to 0 -- that presumption is
-        # what the OLD fixed shrink-to-1 target baked in unconditionally.
-        # Instead, estimate P(lambda_hat < 0.5 | data) via a cheap internal
-        # micro-bootstrap of just the (Y_lab, Y_hat_lab) pair (var_unlab is
-        # already closed-form from the large unlabeled sample, no resampling
-        # needed there), and shrink toward whichever pole the data actually
-        # supports. Falls back to target=1 when Y_lab itself is
-        # near-degenerate: a near-constant labeled sample can't reveal
-        # covariance no matter how it's resampled, so a "confidently near 0"
-        # reading there is a resampling artifact, not evidence -- the same
-        # reasoning the degenerate `denom<=1e-12` fallback above already uses.
+        # Adaptive shrinkage (see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _analytic_mean_lambda_replicates for
+        # this estimand's version of the replicate-generation step). Falls
+        # back to target=1 when Y_lab itself is near-degenerate: a
+        # near-constant labeled sample can't reveal covariance no matter
+        # how it's resampled, so a "confidently near 0" reading there is a
+        # resampling artifact, not evidence -- the same reasoning the
+        # degenerate `denom<=1e-12` fallback above already uses.
         raw_var_lab = var_lab * n_lab
         raw_var_hat_lab = var_hat_lab * n_lab
         if n_lab <= 1 or raw_var_lab < raw_var_hat_lab * 1e-6:
-            target = 1.0
+            lam_replicates = None
         else:
-            target = _analytic_shrink_target(Y_lab, Y_hat_lab, var_unlab, n_lab)
-        w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
-        lam = w * lam_raw + (1.0 - w) * target
+            lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
@@ -1256,40 +1305,22 @@ def correct(
         else:
             lam_raw = 1.0  # degenerate bootstrap variance -- fall back, don't divide by ~0.
 
-        # Adaptive target: split the SAME b1 draw already computed above
-        # into n_batches sub-batches (no extra bootstrap draws -- just
-        # arithmetic on arrays already in memory) to get an empirical
-        # P(lambda_hat < 0.5 | data), and shrink toward
-        # target = 1 - that probability instead of always toward 1. A
-        # confidently-informative judge still gets target->1 (the original
-        # fixed behavior); a confidently-uninformative judge gets
-        # target->0 instead of being dragged back up; ambiguous data lands
-        # near 0.5 (a mild pull, not a hard jump -- averaging over many
-        # batches avoids a pretest-estimator's instability at the
-        # threshold). Falls back to target=1 when Y_lab itself is
-        # near-degenerate (a near-constant labeled sample can never reveal
-        # covariance no matter how it's resampled, so a "confidently near
-        # 0" signal there is an artifact, not evidence) -- the analytic
-        # backend's _analytic_shrink_target mirrors this same logic.
-        n_batches = max(5, min(30, n_boot // 50))
-        batch_size = n_boot // n_batches
-        lam_batches = np.empty(n_batches)
-        for k in range(n_batches):
-            sl = slice(k * batch_size, (k + 1) * batch_size)
-            d = float(np.var(b1_unlab[sl] - b1_hat_lab[sl], ddof=1))
-            if d > 1e-12:
-                lb = float(np.cov(b1_lab[sl], b1_hat_lab[sl], ddof=1)[0, 1] / d)
-                lam_batches[k] = min(max(lb, 0.0), 1.0)
-            else:
-                lam_batches[k] = 1.0
-        target = 1.0 - float(np.mean(lam_batches < 0.5))
+        # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _bootstrap_batch_lambda_replicates for
+        # how the SAME b1 draw already computed above gets turned into
+        # replicate lambda estimates (no extra bootstrap draws). Falls
+        # back to target=1 when Y_lab itself is near-degenerate (a
+        # near-constant labeled sample can never reveal covariance no
+        # matter how it's resampled, so a "confidently near 0" signal
+        # there is an artifact, not evidence) -- the analytic backends'
+        # degenerate guards mirror this same logic.
         var_lab = float(np.var(Y_lab, ddof=1)) if n_lab > 1 else 0.0
         var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) if n_lab > 1 else 0.0
-        if var_lab < var_hat_lab * 1e-6:
-            target = 1.0
-
-        w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
-        lam = w * lam_raw + (1.0 - w) * target
+        if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _bootstrap_batch_lambda_replicates(b1_lab, b1_hat_lab, b1_unlab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
         b2_unlab, b2_lab, b2_hat_lab = _draw_replicates()
         estimate = f_lab + lam * (f_unlab - f_hat_lab)
         boots = b2_lab + lam * (b2_unlab - b2_hat_lab)

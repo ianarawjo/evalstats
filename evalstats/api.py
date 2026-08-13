@@ -1064,7 +1064,7 @@ def _ppi_bootstrap_t_joint_stats(
         full matrix (Romano-Wolf's step-down) use it directly), and
         ``t_obs`` has shape ``(k,)``.
     """
-    from evalstats.ppi import _POWER_TUNE_SHRINKAGE_C
+    from evalstats.ppi import _adaptive_shrink_lambda, _analytic_mean_lambda_replicates
 
     k = len(pair_keys)
 
@@ -1125,11 +1125,23 @@ def _ppi_bootstrap_t_joint_stats(
             float(np.cov(d_lab_true, d_lab_llm, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
         )
 
-        lam_p = 1.0
+        lam_p_raw = 1.0
         denom = var_unlab_n + var_hat_lab_n
         if denom > 1e-12:
-            lam_p = min(max(cov_lab_n / denom, 0.0), 1.0)
-        lam_p = 1.0 - (1.0 - lam_p) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_p_raw = min(max(cov_lab_n / denom, 0.0), 1.0)
+        # Adaptive shrinkage (see evalstats.ppi._adaptive_shrink_lambda's
+        # docstring for the shared rationale) -- was previously fixed
+        # toward a target of 1 regardless of what the data supported,
+        # unlike every other power_tune site in this codebase. Falls back
+        # to target=1 when d_lab_true is near-degenerate, same guard
+        # evalstats.ppi._analytic_mean_point_se uses.
+        raw_var_lab_true = float(np.var(d_lab_true, ddof=1)) if n_lab > 1 else 0.0
+        raw_var_lab_llm = float(np.var(d_lab_llm, ddof=1)) if n_lab > 1 else 0.0
+        if n_lab <= 1 or raw_var_lab_true < raw_var_lab_llm * 1e-6:
+            lam_p_replicates = None
+        else:
+            lam_p_replicates = _analytic_mean_lambda_replicates(d_lab_true, d_lab_llm, var_unlab_n, n_lab)
+        lam_p = _adaptive_shrink_lambda(lam_p_raw, lam_p_replicates, n_lab)
         lam[p_idx] = lam_p
 
         point_ests[p_idx] = f_lab + lam_p * (f_unlab - f_hat_lab)
