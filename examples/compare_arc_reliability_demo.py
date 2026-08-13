@@ -31,7 +31,13 @@ evalstats surfaces this two ways:
    want to check -- e.g. "is this one model/config reliable enough to
    ship?" -- without running a full multi-model comparison.
 
-Both report the same underlying numbers.
+Both report the same underlying numbers. A third view, plot_run_disagreement(),
+turns this into a figure: one row per model, with a bar over every scenario
+where the 5 runs didn't all agree -- taller means a more even split. Ink
+never depends on whether the model was *right*, only on whether it was
+*consistent*, so a model that's confidently wrong every time looks exactly
+as quiet as one that's confidently right every time. Saved to
+examples/arc_reliability_plot.png.
 
 Real data note: each "decision scenario" here is actually a question from
 ARC (Clark et al., 2018), a benchmark of grade-school science questions --
@@ -55,6 +61,7 @@ import pandas as pd
 
 import evalstats as es
 from evalstats.core.summary import print_analysis_summary
+from evalstats.vis.reliability import plot_run_disagreement
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -116,3 +123,12 @@ stability_result = es.stability(
     long_df, config_col="model", run_col="run", item_col="item", value_col="score",
 )
 stability_result.summary(item_singular="model")
+
+print()
+print("=" * 70)
+print("plot_run_disagreement() -- the same reliability check, as a figure")
+print("=" * 70)
+PLOT_PATH = REPO_ROOT / "examples" / "arc_reliability_plot.png"
+fig = plot_run_disagreement(result.full_analysis, title="Run-to-Run Reliability on ARC")
+fig.savefig(PLOT_PATH, dpi=150, bbox_inches="tight")
+print(f"Wrote {PLOT_PATH.relative_to(REPO_ROOT)}")
