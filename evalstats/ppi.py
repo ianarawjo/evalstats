@@ -93,11 +93,14 @@ def _lambda_var_inflation(r_term: float, lam_replicates: Optional[np.ndarray]) -
     only inflates uncertainty when lambda estimation is itself uncertain,
     not whenever n_lab is small: a confidently-poor judge (tight lambda
     replicates near 0) isn't penalized, only a genuinely ambiguous one.
-    See Addenda 17-19 for the derivation and per-site validation. Does
-    NOT extend to ``evalstats.api._ppi_bootstrap_t_joint_stats``'s
-    Romano-Wolf step-down construction -- Addendum 20 found a real,
-    high-rep-confirmed FWER regression in one tested condition there, not
-    explained by noise, so that site keeps its original construction."""
+    See Addenda 17-19 for the derivation and per-site validation, and
+    Addendum 20/21 for ``evalstats.api._ppi_bootstrap_t_joint_stats``'s
+    Romano-Wolf step-down construction specifically: an initial attempt
+    there used each bootstrap replicate's own resampled r_term instead of
+    the fixed observed one, causing a real, high-rep-confirmed FWER
+    regression in one tested condition; holding r_term fixed (matching how
+    lambda itself is held fixed across replicates there) resolved it, per
+    a subsequent paired high-rep recheck."""
     if lam_replicates is None or len(lam_replicates) <= 1:
         return 0.0
     var_lam_hat = float(np.var(lam_replicates, ddof=1))

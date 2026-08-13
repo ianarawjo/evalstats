@@ -1064,7 +1064,9 @@ def _ppi_bootstrap_t_joint_stats(
         full matrix (Romano-Wolf's step-down) use it directly), and
         ``t_obs`` has shape ``(k,)``.
     """
-    from evalstats.ppi import _adaptive_shrink_lambda, _analytic_mean_lambda_replicates
+    from evalstats.ppi import (
+        _adaptive_shrink_lambda, _analytic_mean_lambda_replicates, _lambda_var_inflation,
+    )
 
     k = len(pair_keys)
 
@@ -1092,6 +1094,7 @@ def _ppi_bootstrap_t_joint_stats(
     point_ests = np.empty(k)
     obs_se = np.empty(k)
     lam = np.ones(k)
+    lambda_extra_var = np.zeros(k)  # per-pair r_term**2 * Var(lambda_hat), held fixed across replicates like lam
     for p_idx, (ea, eb) in enumerate(pair_keys):
         ia, ib = entity_idx[ea], entity_idx[eb]
         d_all = scores_2d[ia] - scores_2d[ib]
@@ -1148,6 +1151,17 @@ def _ppi_bootstrap_t_joint_stats(
         var_estimate = max(
             var_lab_n + lam_p * lam_p * (var_unlab_n + var_hat_lab_n) - 2.0 * lam_p * cov_lab_n, 0.0,
         )
+        # Precompute the extra variance ONCE per pair, from the OBSERVED
+        # (fixed) r_term -- not re-derived per bootstrap replicate below --
+        # matching how lam itself is held fixed across every replicate for
+        # this pair. An earlier version used each replicate's own resampled
+        # r_term_b instead, making the injected variance data-dependent
+        # within the bootstrap itself; a paired high-rep recheck confirmed
+        # that was the cause of a real FWER regression in one tested
+        # condition (fixed by holding r_term fixed here) -- see
+        # simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 20/21.
+        lambda_extra_var[p_idx] = _lambda_var_inflation(f_unlab - f_hat_lab, lam_p_replicates)
+        var_estimate += lambda_extra_var[p_idx]
         obs_se[p_idx] = np.sqrt(var_estimate)
 
     boot_theta = np.empty((n_boot, k))
@@ -1191,6 +1205,10 @@ def _ppi_bootstrap_t_joint_stats(
         var_b = np.maximum(
             var_lab_b + lam_col * lam_col * (var_unlab_b + var_hat_lab_b) - 2.0 * lam_col * cov_lab_b, 0.0,
         )
+        # Same fixed per-pair extra variance as obs_se above, broadcast
+        # across every replicate (not re-derived per replicate) -- see the
+        # comment there.
+        var_b = var_b + lambda_extra_var[:, np.newaxis]
         boot_theta[start:stop] = theta_b.T
         boot_se[start:stop] = np.sqrt(var_b).T
         start = stop
