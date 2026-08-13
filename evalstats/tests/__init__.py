@@ -1841,7 +1841,8 @@ def _ppi_paired_bayes_bootstrap(
     """
     from evalstats.ppi import (
         PPIResult, _adaptive_shrink_lambda, _analytic_mean_correct,
-        _bootstrap_batch_lambda_replicates, _MIN_LAB_RECOMMENDED,
+        _bootstrap_batch_lambda_replicates, _lambda_var_inflation,
+        _MIN_LAB_RECOMMENDED,
     )
 
     rng = np.random.default_rng(rng)
@@ -1910,6 +1911,15 @@ def _ppi_paired_bayes_bootstrap(
         b2_unlab, b2_lab, b2_hat_lab = _draw(n_boot)
         estimate = f_lab + lam * (f_unlab - f_hat_lab)
         boots = b2_lab + lam * (b2_unlab - b2_hat_lab)
+        # See evalstats.ppi._lambda_var_inflation's docstring and
+        # evalstats.ppi.correct's bootstrap path (identical fix, mirrored
+        # here): `lam` is fixed across every b2 replicate, so `boots`
+        # understates variance by missing lambda's own estimation
+        # uncertainty. Convolve it back in as independent noise, rather
+        # than re-deriving lambda per replicate.
+        extra_var = _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
+        if extra_var > 0.0:
+            boots = boots + rng.normal(0.0, np.sqrt(extra_var), size=boots.shape)
     else:
         b_unlab, b_lab, b_hat_lab = _draw(n_boot)
         estimate = f_unlab + rectifier

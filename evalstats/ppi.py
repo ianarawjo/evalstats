@@ -65,6 +65,45 @@ def _adaptive_shrink_lambda(
     return w * lam_raw + (1.0 - w) * target
 
 
+def _lambda_var_inflation(r_term: float, lam_replicates: Optional[np.ndarray]) -> float:
+    """Delta-method variance-inflation term for a power-tuned PPI estimate
+    of the form ``f_lab + lambda_hat * r_term`` -- the missing piece of
+    Var(lambda_hat * r_term) for a product of two estimated quantities
+    (``r_term**2 * Var(lambda_hat)``), using ``lam_replicates`` as the
+    Var(lambda_hat) estimate. Returns 0.0 when ``lam_replicates`` is
+    ``None`` or too small to estimate a variance from (an already-fixed
+    lambda, or the degenerate-labeled-sample guard fired upstream -- no
+    lambda-estimation uncertainty to account for either way).
+
+    Every power_tune site's variance/CI construction otherwise plugs in
+    the adaptively-chosen lambda as if it were a known constant -- a
+    plug-in/post-selection variance gap, since lambda is estimated from
+    the same sample it's then used to correct, but the reported
+    uncertainty doesn't reflect that estimation step. Callers with an
+    explicit variance formula (:func:`_analytic_mean_point_se`,
+    :func:`_analytic_walsh_theta_correct`) add this directly to their
+    variance; callers building a percentile-bootstrap CI (``correct()``'s
+    bootstrap path, ``evalstats.tests._ppi_paired_bayes_bootstrap``)
+    convolve in independent noise of this variance instead, since lambda
+    is held fixed across every replicate there and the CI's spread would
+    otherwise reflect zero lambda uncertainty.
+
+    Unlike a target-pull-toward-1 (tried and rejected -- see
+    simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 16), this
+    only inflates uncertainty when lambda estimation is itself uncertain,
+    not whenever n_lab is small: a confidently-poor judge (tight lambda
+    replicates near 0) isn't penalized, only a genuinely ambiguous one.
+    See Addenda 17-19 for the derivation and per-site validation. Does
+    NOT extend to ``evalstats.api._ppi_bootstrap_t_joint_stats``'s
+    Romano-Wolf step-down construction -- Addendum 20 found a real,
+    high-rep-confirmed FWER regression in one tested condition there, not
+    explained by noise, so that site keeps its original construction."""
+    if lam_replicates is None or len(lam_replicates) <= 1:
+        return 0.0
+    var_lam_hat = float(np.var(lam_replicates, ddof=1))
+    return r_term * r_term * var_lam_hat
+
+
 def _bootstrap_batch_lambda_replicates(
     b_lab: np.ndarray, b_hat_lab: np.ndarray, b_unlab: np.ndarray,
 ) -> np.ndarray:
@@ -488,6 +527,8 @@ def _analytic_walsh_theta_correct(
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    if power_tune:
+        var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
     se = float(np.sqrt(var_estimate))
     df = max(n_lab - 1, 1)
 
@@ -566,6 +607,8 @@ def _analytic_mean_point_se(
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    if power_tune:
+        var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
     se = float(np.sqrt(var_estimate))
     df = max(n_lab - 1, 1)
 
@@ -977,6 +1020,13 @@ def correct(
         degenerate (≈0). ``PPIResult.lam`` reports the (shrunk) value
         actually used.
 
+        The reported CI/SE also account for λ̂ being estimated (not fixed):
+        see :func:`_lambda_var_inflation` -- treating a data-driven λ̂ as a
+        known constant is a plug-in/post-selection variance gap, worst at
+        small n_lab, which this closes without reintroducing the poor-judge
+        power cost a fixed shrink-to-1 target has (see ``simulations/out/
+        results_why_ppi_shrink_1_over_0.md`` Addenda 17-19).
+
         ``kruskal``/``anova``/``friedman``/``bootstrap_t``/``lmm*`` and the
         MNAR-experimental rectifiers do not go through this function
         (bespoke bootstrap/closed-form code of their own) and are
@@ -1329,6 +1379,15 @@ def correct(
         b2_unlab, b2_lab, b2_hat_lab = _draw_replicates()
         estimate = f_lab + lam * (f_unlab - f_hat_lab)
         boots = b2_lab + lam * (b2_unlab - b2_hat_lab)
+        # See _lambda_var_inflation's docstring: `lam` is a single point
+        # value (estimated once from b1) applied uniformly across every b2
+        # replicate, so `boots`' spread reflects zero uncertainty from
+        # lambda's own estimation -- convolve it back in as independent
+        # noise, rather than re-deriving lambda per b2 replicate (a full
+        # nested bootstrap).
+        extra_var = _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
+        if extra_var > 0.0:
+            boots = boots + rng.normal(0.0, np.sqrt(extra_var), size=boots.shape)
     else:
         b_unlab_arr, b_lab_arr, b_hat_lab_arr = _draw_replicates()
         estimate = f_unlab + (f_lab - f_hat_lab)
