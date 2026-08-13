@@ -2865,6 +2865,7 @@ def _noncentral_f_ci_lambda(f_obs: float, dfn: float, dfd: float, alpha: float) 
 
 def _ppi_anova_independent_f_stat(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
+    power_tune: bool = False,
 ) -> Optional[dict]:
     """Shared F-statistic computation for independent-groups ANOVA's PPI
     correction -- factored out so the p-value and the (test-inversion) CI
@@ -2872,7 +2873,15 @@ def _ppi_anova_independent_f_stat(
     ``f_corr``/``dfn``/``dfd``/``denom`` rather than two separately-computed
     pipelines. Returns None under the same degenerate condition the old
     ``_ppi_anova_independent_p_value`` returned None for (a group with zero
-    labels)."""
+    labels).
+
+    ``power_tune`` (default *False*, matching every existing caller):
+    EXPERIMENTAL -- see the docstring inside the ``if power_tune:`` branch
+    below for why this needed a different per-group construction than the
+    ``power_tune=False`` branch's fixed-lambda=1 one, not just a lambda<1
+    plug-in. Not yet validated at the harness level; see
+    ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s ANOVA
+    power-tuning addendum for the investigation in progress."""
     masks = [~np.isnan(g_lab) for g_lab in groups_lab]
     n_lab_arr = np.array([int(m.sum()) for m in masks], dtype=float)
 
@@ -2882,11 +2891,54 @@ def _ppi_anova_independent_f_stat(
     ns = np.array([len(g) for g in groups], dtype=float)
     N = int(ns.sum())
 
-    # PPI-corrected group means: μ̂ᵢ_PPI = mean(llm_all_i) + (mean(human_lab_i) - mean(llm_lab_i))
-    corr_means = np.array([
-        g.mean() + (g_lab[mask].mean() - g[mask].mean())
-        for g, g_lab, mask in zip(groups, groups_lab, masks)
-    ])
+    if power_tune:
+        # A prior attempt at power-tuning this test (see correct()'s
+        # power_tune docstring / simulations/harness/README.md's "PPI++
+        # power-tuning" section) inflated Type-I to ~19%. That attempt (per
+        # its own description) plugged a variance-minimizing lambda<1 into
+        # THIS function's existing g.mean() + lambda*rectifier construction
+        # below -- but that construction is only unbiased at lambda=1: `g`
+        # is the FULL group's judge scores (labeled+unlabeled combined,
+        # weight 1, fixed), and only the rectifier gets weighted by lambda,
+        # so E[corr_means_i] = true_mean_i + (1-lambda)*bias_i -- genuinely
+        # biased whenever lambda<1 and the judge has a real bias. Squared
+        # into ss_between, that's exactly the reintroduced-bias failure
+        # mode the README describes -- but it's an artifact of THIS
+        # function's shortcut construction, not an inherent property of a
+        # quadratic estimand.
+        #
+        # The standard PPI construction (`f_lab + lambda*(f_unlab -
+        # f_hat_lab)`, full weight on the HUMAN term, disjoint unlabeled
+        # sample) doesn't have this problem: its rectifier has expectation
+        # ~=0 at ANY lambda (same population, disjoint samples), which is
+        # exactly the property that makes power-tuning safe for a plain
+        # mean. Reusing that exact construction here (once per group, via
+        # _analytic_mean_point_se -- already gets the adaptive-target
+        # shrinkage for free) keeps E[corr_means_i] = true_mean_i
+        # regardless of lambda, so ss_between's null-expectation identity
+        # should hold for ANY lambda, not just 1 -- AS LONG AS `denom`
+        # below is also built from this same per-group variance, not the
+        # power_tune=False branch's lambda=1-specific inflation formula.
+        from evalstats.ppi import _analytic_mean_point_se
+
+        corr_means = np.empty(k)
+        var_ppi_per_group = np.empty(k)
+        for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
+            Y_lab_i = g_lab[mask]
+            Y_hat_lab_i = g[mask]
+            Y_hat_unlab_i = g[~mask]
+            est_i, se_i, _, _, _, _, _ = _analytic_mean_point_se(
+                Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, power_tune=True,
+            )
+            corr_means[i] = est_i
+            var_ppi_per_group[i] = se_i * se_i
+    else:
+        # PPI-corrected group means: μ̂ᵢ_PPI = mean(llm_all_i) + (mean(human_lab_i) - mean(llm_lab_i))
+        corr_means = np.array([
+            g.mean() + (g_lab[mask].mean() - g[mask].mean())
+            for g, g_lab, mask in zip(groups, groups_lab, masks)
+        ])
+
     grand = (ns * corr_means).sum() / N
     ss_between = float(np.sum(ns * (corr_means - grand) ** 2))
 
@@ -2896,41 +2948,59 @@ def _ppi_anova_independent_f_stat(
     ss_within = float(sum(np.sum((g - g.mean()) ** 2) for g in groups))
     ms_within = ss_within / (N - k)
 
-    # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human),
-    # AND per-group Cov(true, noise) from the same labeled subset.
-    #
-    # Var(judge_score) = σ² + σ_llm² + 2·Cov(true, noise) -- the "+2·Cov" term
-    # is only zero if the judge's error is independent of the true score,
-    # which a real LLM judge routinely violates (typically a negative
-    # correlation: "regression to the mean"/compression toward the middle of
-    # a bounded scale). Omitting it makes ms_within (computed from the
-    # judge's own, compressed scores) come out below what "σ² + σ_llm²,
-    # independent" would predict, so subtracting only σ_llm_sq_weighted
-    # systematically under-estimates σ² by ~2·Cov(true, noise) -- a fixed
-    # absolute shortfall that becomes a larger fraction of denom (and thus a
-    # larger Type-I inflation) as label_frac grows, since the other term in
-    # inflation_per_group shrinks with n_lab while this one doesn't. Not
-    # visible on i.i.d.-Gaussian-noise synthetic data (Cov(true, noise) = 0
-    # by construction) -- specific to judges whose error genuinely
-    # correlates with the true value.
-    sigma_llm_sq_per_group = np.zeros(k)
-    cov_true_noise_per_group = np.zeros(k)
-    for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
-        if mask.sum() > 1:
-            noise = g[mask] - g_lab[mask]
-            sigma_llm_sq_per_group[i] = float(np.var(noise, ddof=1))
-            cov_true_noise_per_group[i] = float(np.cov(g_lab[mask], noise, ddof=1)[0, 1])
+    if power_tune:
+        # Per-group inflation: Var[μ̂ᵢ_PPI(lambda_i)] / Var[μ̂ᵢ_LLM], matching
+        # the power_tune=False branch's own convention (see its docstring
+        # below: "Var[μ̂ᵢ_PPI] = σ²/nᵢ + σ_llm² × (1/n_lab_i − 1/nᵢ)", a
+        # MEAN-scale quantity, divided by Var[μ̂ᵢ_LLM] = ms_within/nᵢ --
+        # the nᵢ's cancel to leave (σ² + σ_llm²×(nᵢ/n_lab_i−1))/ms_within,
+        # which IS that branch's actual formula). var_ppi_per_group above
+        # is _analytic_mean_point_se's se², already the correct MEAN-scale
+        # Var[μ̂ᵢ_PPI(lambda_i)] -- so it needs the same "* nᵢ" to divide
+        # by Var[μ̂ᵢ_LLM] rather than ms_within directly; leaving that out
+        # was an initial bug caught by validate_anova_power_tune.py (Type-I
+        # went to 1.0 -- denom came out ~nᵢ times too small).
+        inflation_per_group = var_ppi_per_group * ns / ms_within
+    else:
+        # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human),
+        # AND per-group Cov(true, noise) from the same labeled subset.
+        #
+        # Var(judge_score) = σ² + σ_llm² + 2·Cov(true, noise) -- the "+2·Cov" term
+        # is only zero if the judge's error is independent of the true score,
+        # which a real LLM judge routinely violates (typically a negative
+        # correlation: "regression to the mean"/compression toward the middle of
+        # a bounded scale). Omitting it makes ms_within (computed from the
+        # judge's own, compressed scores) come out below what "σ² + σ_llm²,
+        # independent" would predict, so subtracting only σ_llm_sq_weighted
+        # systematically under-estimates σ² by ~2·Cov(true, noise) -- a fixed
+        # absolute shortfall that becomes a larger fraction of denom (and thus a
+        # larger Type-I inflation) as label_frac grows, since the other term in
+        # inflation_per_group shrinks with n_lab while this one doesn't. Not
+        # visible on i.i.d.-Gaussian-noise synthetic data (Cov(true, noise) = 0
+        # by construction) -- specific to judges whose error genuinely
+        # correlates with the true value.
+        sigma_llm_sq_per_group = np.zeros(k)
+        cov_true_noise_per_group = np.zeros(k)
+        for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
+            if mask.sum() > 1:
+                noise = g[mask] - g_lab[mask]
+                sigma_llm_sq_per_group[i] = float(np.var(noise, ddof=1))
+                cov_true_noise_per_group[i] = float(np.cov(g_lab[mask], noise, ddof=1)[0, 1])
 
-    # n_i-weighted average (matches how ms_within pools group residuals)
-    sigma_llm_sq_weighted = float(np.dot(ns, sigma_llm_sq_per_group) / N)
-    cov_true_noise_weighted = float(np.dot(ns, cov_true_noise_per_group) / N)
-    sigma_sq = max(ms_within - sigma_llm_sq_weighted - 2.0 * cov_true_noise_weighted, 0.0)
+        # n_i-weighted average (matches how ms_within pools group residuals)
+        sigma_llm_sq_weighted = float(np.dot(ns, sigma_llm_sq_per_group) / N)
+        cov_true_noise_weighted = float(np.dot(ns, cov_true_noise_per_group) / N)
+        sigma_sq = max(ms_within - sigma_llm_sq_weighted - 2.0 * cov_true_noise_weighted, 0.0)
 
-    # Per-group inflation: Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM]
-    # = (σ² + σ_llm_i² × (nᵢ/n_lab_i − 1)) / ms_within
+        # Per-group inflation: Var[μ̂ᵢ_PPI] / Var[μ̂ᵢ_LLM]
+        # = (σ² + σ_llm_i² × (nᵢ/n_lab_i − 1)) / ms_within
+        inflation_per_group = (sigma_sq + sigma_llm_sq_per_group * (ns / n_lab_arr - 1.0)) / ms_within
+
     # Weights: (N−nᵢ)/(N(k−1)) derived from E[SS_between_corr] = Σᵢ nᵢ(N−nᵢ)/N · Var[μ̂ᵢ]
-    # For balanced groups these equal nᵢ/N (same as old formula).
-    inflation_per_group = (sigma_sq + sigma_llm_sq_per_group * (ns / n_lab_arr - 1.0)) / ms_within
+    # -- a general identity for independent (across groups) unbiased
+    # per-group estimates with their own variance, so it applies unchanged
+    # to either branch's Var[μ̂ᵢ] above. For balanced groups these equal
+    # nᵢ/N (same as old formula).
     w = (N - ns) / (N * (k - 1))
     inflation = float(np.dot(w, inflation_per_group))
     inflation = max(inflation, 1e-6)
