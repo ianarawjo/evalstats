@@ -22,9 +22,18 @@ PPI-alignment warning threshold in ``evalstats/api.py`` and
 ``evalstats/alignment.py``."""
 
 _POWER_TUNE_SHRINKAGE_C = 20.0
-"""Pseudo-count for shrinking :func:`correct`'s power-tuning weight lambda
-back toward 1 (vanilla PPI) as ``n_lab`` shrinks -- see the ``power_tune``
-parameter docstring."""
+"""Pseudo-count controlling how much :func:`correct`'s power-tuning weight
+lambda gets shrunk toward an ADAPTIVE target as ``n_lab`` shrinks -- used
+identically by the bootstrap path (below) and the analytic-mean backend
+(:func:`_analytic_mean_point_se`/:func:`_analytic_shrink_target`). The
+target itself is estimated from the data (confidently-informative judge ->
+target near 1, confidently-uninformative judge -> target near 0) rather
+than fixed at 1: a raw lambda* from only ``n_lab`` points is a noisy
+estimate of the true population lambda, but there's no reason a noisy
+estimate should be presumed close to 1 specifically -- see the
+``power_tune`` parameter docstring for the full rationale and
+simulations/out/results_why_ppi_shrink_1_over_0.md for the investigation
+that motivated moving off a fixed target."""
 
 
 @dataclass
@@ -348,6 +357,52 @@ def _analytic_walsh_theta_correct(
     )
 
 
+_ANALYTIC_TARGET_SEED = 0
+"""Fixed internal seed for :func:`_analytic_shrink_target`'s micro-bootstrap
+-- purely an implementation detail for cheaply approximating a shrinkage
+TARGET (see that function's docstring), not a source of reported Monte
+Carlo uncertainty a caller would need to control. Fixed (not threaded
+through from callers) so every ``_analytic_mean_point_se`` caller -- there
+are several, across ``evalstats/tests/__init__.py`` -- stays fully
+deterministic (same inputs -> same outputs) without a signature change."""
+
+
+def _analytic_shrink_target(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, var_unlab: float, n_lab: int,
+    n_boot: int = 800,
+) -> float:
+    """Empirical shrinkage TARGET for the analytic backend, mirroring
+    :func:`correct`'s bootstrap-path adaptive target (see that function's
+    power_tune docstring) but simpler: since ``var_unlab`` here is already
+    a closed form from the large unlabeled sample (no resampling needed),
+    only the small (Y_lab, Y_hat_lab) PAIRED sample needs to be resampled.
+    Unlike the bootstrap path's ``b1`` arrays (which store only a bootstrap
+    MEAN per draw, so a group of them has to be pooled before a single
+    covariance/variance ratio can be computed at all), each resample here
+    is the FULL (Y_lab, Y_hat_lab) pair array, so the exact same closed-form
+    ratio the point estimate itself uses can be recomputed directly per
+    draw -- a standard bootstrap-the-statistic distribution, no batching
+    trick needed. n_boot=800 pairs are cheap regardless of n_lab, so this
+    stays fast even at the small n_lab (~15-30) this backend targets.
+
+    ``target = 1 - P(lambda_hat < 0.5 | data)`` over the 800 draws:
+    confidently-informative data pulls the target toward 1 (today's
+    behavior), confidently-uninformative data pulls it toward 0, ambiguous
+    data lands near 0.5 (a mild pull, not a hard jump -- averaging over
+    many draws avoids a pretest-estimator's instability at the
+    threshold)."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    Yl_b = Y_lab[idx]
+    Yh_b = Y_hat_lab[idx]
+    var_hat_lab_b = Yh_b.var(axis=1, ddof=1) / n_lab
+    cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
+    denom_b = var_unlab + var_hat_lab_b
+    lam_b = np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
+    p_low = float(np.mean(lam_b < 0.5))
+    return 1.0 - p_low
+
+
 def _analytic_mean_point_se(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, power_tune: bool,
 ) -> tuple[float, float, float, float, float, Optional[float], int]:
@@ -386,15 +441,33 @@ def _analytic_mean_point_se(
     if power_tune:
         denom = var_unlab + var_hat_lab
         if denom > 1e-12:
-            lam = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
-        # else: degenerate variance -- fall back to lam=1, matching the bootstrap path.
-        # Same n_lab-dependent shrinkage toward 1 as correct()'s bootstrap path
-        # (_POWER_TUNE_SHRINKAGE_C): a raw lambda* computed from only n_lab
-        # points is itself a noisy estimate of the true population lambda.
-        # Without this, a raw lambda*=0 (e.g. when Y_lab happens to have ~0
-        # sample variance at small n_lab) collapses the estimate to f_lab with
-        # se=0 exactly.
-        lam = 1.0 - (1.0 - lam) * n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        else:
+            lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
+
+        # Adaptive shrinkage target (see correct()'s bootstrap-path power_tune
+        # docstring and _analytic_shrink_target for the full rationale): a
+        # raw lambda* from only n_lab points is a noisy estimate of the true
+        # population lambda, but there's no reason a noisy estimate should be
+        # presumed close to 1 rather than close to 0 -- that presumption is
+        # what the OLD fixed shrink-to-1 target baked in unconditionally.
+        # Instead, estimate P(lambda_hat < 0.5 | data) via a cheap internal
+        # micro-bootstrap of just the (Y_lab, Y_hat_lab) pair (var_unlab is
+        # already closed-form from the large unlabeled sample, no resampling
+        # needed there), and shrink toward whichever pole the data actually
+        # supports. Falls back to target=1 when Y_lab itself is
+        # near-degenerate: a near-constant labeled sample can't reveal
+        # covariance no matter how it's resampled, so a "confidently near 0"
+        # reading there is a resampling artifact, not evidence -- the same
+        # reasoning the degenerate `denom<=1e-12` fallback above already uses.
+        raw_var_lab = var_lab * n_lab
+        raw_var_hat_lab = var_hat_lab * n_lab
+        if n_lab <= 1 or raw_var_lab < raw_var_hat_lab * 1e-6:
+            target = 1.0
+        else:
+            target = _analytic_shrink_target(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+        lam = w * lam_raw + (1.0 - w) * target
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
@@ -784,18 +857,30 @@ def correct(
         measurably undercovers, since λ̂ ends up partly optimized against
         noise specific to that one draw ("double dipping"); the split
         removes that circularity at the cost of one extra bootstrap pass.
-        λ̂ is clipped to ``[0, 1]``, then shrunk back toward 1 by an
-        n_lab-dependent amount (see ``_POWER_TUNE_SHRINKAGE_C``) -- a
-        small n_lab makes the raw λ̂ estimate itself unreliable and exposes
-        a separate, pre-existing small-sample weakness of the percentile
-        bootstrap that this shrinkage compensates for; it is an empirical
-        patch, not part of the published PPI++ derivation. Un-shrunk λ̂=0
-        falls back to the classical labels-only estimate
-        (``human_estimate``) when the LLM adds no value; λ=1 reproduces
-        ``power_tune=False``'s estimate when the LLM is fully informative
-        or n_lab is small. Falls back to λ=1 (unchanged behavior) if the
-        bootstrap variance in the denominator is degenerate (≈0).
-        ``PPIResult.lam`` reports the (shrunk) value actually used.
+        λ̂ is clipped to ``[0, 1]``, then shrunk by an n_lab-dependent
+        amount (see ``_POWER_TUNE_SHRINKAGE_C``) toward an ADAPTIVE target
+        estimated from the same bootstrap draw, rather than a fixed target:
+        a small n_lab makes the raw λ̂ estimate itself unreliable, but
+        there's no reason an unreliable estimate should be presumed close
+        to 1 specifically -- a fixed shrink-to-1 target costs real power
+        against a genuinely uninformative judge (confirmed via simulation),
+        without a matching Type-I benefit in that regime. The target is
+        ``1 - P(λ̂ < 0.5)``, estimated cheaply from the same replicates
+        already drawn for λ̂ itself: confidently-informative data pulls the
+        target toward 1 (the original fixed behavior); confidently-
+        uninformative data pulls it toward 0 (recovering the classical
+        labels-only estimate, ``human_estimate``); ambiguous data lands
+        near 0.5. This is an empirical patch, not part of the published
+        PPI++ derivation -- see ``simulations/out/
+        results_why_ppi_shrink_1_over_0.md`` for the investigation behind
+        it. Falls back to a target of 1 (the original behavior) when
+        ``Y_lab`` itself is near-degenerate (its own bootstrap variance
+        ≈0), since a near-constant labeled sample can't reveal covariance
+        no matter how it's resampled -- a "confidently near 0" reading
+        there is a resampling artifact, not evidence. Also falls back to
+        λ=1 (unchanged) if the bootstrap variance in λ̂'s own denominator is
+        degenerate (≈0). ``PPIResult.lam`` reports the (shrunk) value
+        actually used.
 
         ``kruskal``/``anova``/``friedman``/``bootstrap_t``/``tango_score``/
         ``lmm*`` and the MNAR-experimental rectifiers do not go through
@@ -1094,21 +1179,27 @@ def correct(
     # pass (still cheap via the fast-batch path above). power_tune=False
     # needs only one draw.
     #
-    # lambda is then shrunk back toward 1 by an n_lab-dependent amount
-    # (lam_reg = 1 - (1-lam)*n_lab/(n_lab+_POWER_TUNE_SHRINKAGE_C)) before
-    # being applied. Without this, power_tune=True's Type-I error runs
-    # measurably worse than power_tune=False's baseline at small n_lab: the
-    # percentile bootstrap CI of a small sample is itself mildly
-    # anti-conservative, and vanilla PPI's fixed λ=1 masks that by always
-    # blending in the large, well-behaved unlabeled-sample bootstrap.
-    # Power-tuning, by correctly identifying an uninformative judge and
-    # shrinking λ toward 0, leans more on that same small-sample
-    # bootstrap -- which unmasks its pre-existing weakness rather than
-    # introducing a new one. Shrinking lambda itself back toward 1 as
-    # n_lab shrinks defers to vanilla PPI's already-tolerable baseline in
-    # that regime. This is not part of the published PPI++ derivation --
-    # it's an empirical patch for a bootstrap-construction limitation this
-    # codebase already had, layered on top.
+    # lambda is then shrunk by an n_lab-dependent amount toward an ADAPTIVE
+    # target (see _POWER_TUNE_SHRINKAGE_C) rather than a fixed target of 1.
+    # Some shrinkage is needed regardless of target: without it,
+    # power_tune=True's Type-I error runs measurably worse than
+    # power_tune=False's baseline at small n_lab, since the percentile
+    # bootstrap CI of a small sample is itself mildly anti-conservative,
+    # and vanilla PPI's fixed λ=1 masks that by always blending in the
+    # large, well-behaved unlabeled-sample bootstrap -- power-tuning, by
+    # correctly identifying an uninformative judge and shrinking λ toward
+    # 0, leans more on that same small-sample bootstrap, unmasking its
+    # pre-existing weakness. But shrinking specifically TOWARD 1
+    # conflates "λ̂ is imprecise because n_lab is small" with "the true λ
+    # is probably close to 1" -- there's no reason the second should
+    # follow from the first, and a fixed shrink-to-1 target costs real
+    # power against a genuinely uninformative judge (confirmed via
+    # simulation) with no matching Type-I benefit in that regime. This is
+    # not part of the published PPI++ derivation -- it's an empirical
+    # patch for a bootstrap-construction limitation this codebase already
+    # had, layered on top; see simulations/out/
+    # results_why_ppi_shrink_1_over_0.md for the investigation behind the
+    # adaptive-target version below.
     lam: Optional[float] = None
     if power_tune:
         b1_unlab, b1_lab, b1_hat_lab = _draw_replicates()
@@ -1119,18 +1210,21 @@ def correct(
         else:
             lam_raw = 1.0  # degenerate bootstrap variance -- fall back, don't divide by ~0.
 
-        # EXPERIMENT (isolated worktree investigation): adaptive shrinkage
-        # target instead of a fixed 1. Splits the SAME b1 draw already
-        # computed above into n_batches sub-batches (no extra bootstrap
-        # draws -- just arithmetic on arrays already in memory) to get an
-        # empirical P(lambda_hat < 0.5 | data), and shrinks toward
+        # Adaptive target: split the SAME b1 draw already computed above
+        # into n_batches sub-batches (no extra bootstrap draws -- just
+        # arithmetic on arrays already in memory) to get an empirical
+        # P(lambda_hat < 0.5 | data), and shrink toward
         # target = 1 - that probability instead of always toward 1. A
-        # confidently-informative judge still gets target->1 (today's
-        # behavior); a confidently-uninformative judge gets target->0
-        # instead of being dragged back up. Falls back to target=1 when
-        # Y_lab itself is near-degenerate (a near-constant labeled sample
-        # can never reveal covariance no matter how it's resampled, so a
-        # "confidently near 0" signal there is an artifact, not evidence).
+        # confidently-informative judge still gets target->1 (the original
+        # fixed behavior); a confidently-uninformative judge gets
+        # target->0 instead of being dragged back up; ambiguous data lands
+        # near 0.5 (a mild pull, not a hard jump -- averaging over many
+        # batches avoids a pretest-estimator's instability at the
+        # threshold). Falls back to target=1 when Y_lab itself is
+        # near-degenerate (a near-constant labeled sample can never reveal
+        # covariance no matter how it's resampled, so a "confidently near
+        # 0" signal there is an artifact, not evidence) -- the analytic
+        # backend's _analytic_shrink_target mirrors this same logic.
         n_batches = max(5, min(30, n_boot // 50))
         batch_size = n_boot // n_batches
         lam_batches = np.empty(n_batches)
