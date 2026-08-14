@@ -46,6 +46,14 @@ from evalstats.loader import _CANONICAL_ALIASES, _find_col, _detect_score_type
 MARKER_COL = "_sampled_for_labeling"
 SYNTHETIC_ITEM_COL = "_row_item"
 
+# Synthetic human_cols key used when no --metric is given at all -- e.g. an
+# HCI researcher sampling/collecting ground-truth labels before any LLM
+# judge exists yet. Produces one generic "<prefix>label" column instead of
+# "<prefix><metric>".
+GENERIC_LABEL_KEY = "label"
+
+VALID_SCORE_TYPES = ("binary", "likert", "continuous", "grade")
+
 # Mirrors the n_all < 50 floor _run_alignment_ppi() enforces in api.py ("PPI
 # is only beneficial at scale"). Kept as a local constant rather than a
 # cross-module import since that check is inline there, not exported -- if
@@ -90,10 +98,11 @@ def _detect_paired(df: pd.DataFrame, factor_col: Optional[str], item_col: str) -
 def _resolve_columns(
     df: pd.DataFrame,
     *,
-    metrics: list[str],
+    metrics: Optional[list[str]],
     factor: Optional[str],
     item_col: Optional[str],
 ) -> tuple[pd.DataFrame, str, Optional[str], bool]:
+    metrics = metrics or []
     missing = [m for m in metrics if m not in df.columns]
     if missing:
         raise ValueError(
@@ -135,7 +144,7 @@ def _resolve_columns(
 def detect_design(
     df: pd.DataFrame,
     *,
-    metrics: list[str],
+    metrics: Optional[list[str]] = None,
     factor: Optional[str] = None,
     item_col: Optional[str] = None,
     min_total: int = MIN_TOTAL_FOR_PPI,
@@ -145,11 +154,17 @@ def detect_design(
     minimum size (default 50 rows) -- deliberately fails before any
     labeling effort is spent, not after.
 
+    ``metrics`` is optional: pass ``None``/``[]`` to sample/label ground
+    truth ahead of having any LLM judge column at all (e.g. an HCI
+    researcher collecting labels before building a judge). Sampling and
+    design detection don't need it -- only the eventual PPI validation does.
+
     Returns a dict (including the possibly-copied DataFrame, under "df" --
     only different from the input when a synthetic item column had to be
     added) meant to be rendered with :func:`describe_design` and passed
     straight to :func:`sample_for_labeling`.
     """
+    metrics = metrics or []
     if len(df) < min_total:
         raise ValueError(
             f"sample_for_labeling requires at least {min_total} rows in the full "
@@ -223,7 +238,13 @@ def describe_design(design: dict) -> str:
             "no shared item id -- will sample independently within each condition)"
         )
     lines.append(f"Design: {kind}")
-    lines.append(f"Metric(s) to validate: {design['metrics']}")
+    if design["metrics"]:
+        lines.append(f"Metric(s) to validate: {design['metrics']}")
+    else:
+        lines.append(
+            "No --metric given -- sampling/labeling ground truth only, no LLM "
+            "judge column to validate against yet."
+        )
     return "\n".join(lines)
 
 
@@ -234,7 +255,7 @@ def describe_design(design: dict) -> str:
 def sample_for_labeling(
     df: pd.DataFrame,
     *,
-    metrics: list[str],
+    metrics: Optional[list[str]] = None,
     factor: Optional[str] = None,
     item_col: Optional[str] = None,
     n_lab: int = 15,
@@ -246,6 +267,11 @@ def sample_for_labeling(
     :func:`detect_design`) and sharing one sampled item set across every
     metric in ``metrics`` (one round of grading can cover several axes on
     the same content).
+
+    ``metrics`` is optional. When omitted (e.g. sampling/labeling ground
+    truth before any LLM judge exists), one generic column named
+    ``f"{human_col_prefix}{GENERIC_LABEL_KEY}"`` (``"human_label"`` by
+    default) is created instead of one per metric.
 
     Idempotent: pass in a DataFrame that already has ``_sampled_for_labeling``
     set (e.g. re-loading a partially-labeled file) and this only tops up any
@@ -259,6 +285,7 @@ def sample_for_labeling(
         meant for the CLI to print, and for passing straight to
         :func:`run_interactive_labeling`.
     """
+    metrics = metrics or []
     design = detect_design(df, metrics=metrics, factor=factor, item_col=item_col)
     df = design["df"]
     item_col_r = design["item_col"]
@@ -275,7 +302,10 @@ def sample_for_labeling(
     else:
         df[MARKER_COL] = df[MARKER_COL].fillna(False).astype(bool)
 
-    human_cols = {m: f"{human_col_prefix}{m}" for m in metrics}
+    if metrics:
+        human_cols = {m: f"{human_col_prefix}{m}" for m in metrics}
+    else:
+        human_cols = {GENERIC_LABEL_KEY: f"{human_col_prefix}{GENERIC_LABEL_KEY}"}
     for hcol in human_cols.values():
         if hcol not in df.columns:
             df[hcol] = np.nan
@@ -359,6 +389,40 @@ def _prompt_for_grade(score_type: str, metric_name: str, in_: Callable[[str], st
         return val
 
 
+def resolve_score_types(
+    df: pd.DataFrame,
+    keys: list[str],
+    *,
+    overrides: Optional[dict[str, str]] = None,
+) -> dict[str, str]:
+    """Resolve a score type per grading target (one per key in
+    ``info["human_cols"]``): an explicit override when given, else
+    auto-detected from ``df[key]`` -- which only exists when ``key`` is a
+    real LLM-judge metric column, not the synthetic
+    :data:`GENERIC_LABEL_KEY` used when no ``--metric`` was given.
+
+    Raises ``ValueError`` (naming the offending key) when neither an
+    override nor a real column is available, rather than silently guessing
+    "continuous" from an all-NaN column -- the whole point of a labeling-
+    only session is that there's no judge score to infer a type from, so
+    the type has to be declared, not detected.
+    """
+    overrides = overrides or {}
+    resolved: dict[str, str] = {}
+    for key in keys:
+        if key in overrides:
+            resolved[key] = overrides[key]
+        elif key in df.columns:
+            resolved[key] = _detect_score_type(df[key].dropna())
+        else:
+            raise ValueError(
+                f"Can't auto-detect a score type for {key!r} -- there's no LLM "
+                "judge column to infer it from (labeling-only mode, no --metric "
+                f"given). Pass score_type= explicitly for it (one of {VALID_SCORE_TYPES})."
+            )
+    return resolved
+
+
 def run_interactive_labeling(
     df: pd.DataFrame,
     info: dict,
@@ -366,6 +430,7 @@ def run_interactive_labeling(
     save_fn: Callable[[pd.DataFrame], None],
     display_cols: Optional[list[str]] = None,
     input_fn: Callable[[str], str] = input,
+    score_type_overrides: Optional[dict[str, str]] = None,
 ) -> pd.DataFrame:
     """Walk every marked-but-ungraded row, prompting for a grade per metric
     and saving after each answer (a Ctrl-C or 'q' loses at most one item).
@@ -373,9 +438,14 @@ def run_interactive_labeling(
     Deliberately never shows the LLM judge's own score for the metric being
     graded -- an independent human check is the whole point, and seeing the
     judge's score first would anchor the human toward agreeing with it.
+
+    ``score_type_overrides`` lets the caller declare a grading target's
+    score type explicitly (keyed the same as ``info["human_cols"]``) --
+    required when there's no judge column to auto-detect from (no
+    ``--metric`` given), and otherwise usable to correct a wrong guess.
     """
     metrics = list(info["human_cols"].keys())
-    score_types = {m: _detect_score_type(df[m].dropna()) for m in metrics}
+    score_types = resolve_score_types(df, metrics, overrides=score_type_overrides)
     human_cols = list(info["human_cols"].values())
 
     exclude = {info["item_col"], info.get("factor_col"), MARKER_COL, *human_cols, *metrics}
