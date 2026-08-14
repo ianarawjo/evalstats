@@ -114,8 +114,8 @@ print("The advisor's question, after watching a pilot user wait: what about late
 print("es.tradeoff() -- accuracy vs. latency, jointly")
 print("=" * 70)
 result = es.tradeoff(
-    df, config_col="prompt", item_col="item",
-    primary_col="accuracy", secondary_metric={"latency_s": "min"},
+    df, factor="prompt", item_col="item",
+    primary_metric="accuracy", secondary_metric={"latency_s": "min"},
     rng=np.random.default_rng(12),
 )
 result.summary(show_rank_probabilities=True)

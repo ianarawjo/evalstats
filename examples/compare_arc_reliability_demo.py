@@ -120,7 +120,7 @@ print("=" * 70)
 print("es.stability() -- the same reliability check, on its own")
 print("=" * 70)
 stability_result = es.stability(
-    long_df, config_col="model", run_col="run", item_col="item", value_col="score",
+    long_df, factor="model", run_col="run", item_col="item", metric="score",
 )
 stability_result.summary(item_singular="model")
 
