@@ -365,7 +365,7 @@ def plot_pareto_tradeoff(
         dx, dy, ha = label_offsets[i]
         ann_list.append(ax.annotate(
             lbl, (xs[i], ys[i]), xytext=(dx, dy), textcoords="offset points",
-            ha=ha, fontsize=9, color=_PALETTE["text"],
+            ha=ha, fontsize=9, color=_PALETTE["text"], zorder=4,
         ))
 
     # The cluster-based initial offsets keep obviously-close points apart,
