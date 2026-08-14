@@ -1567,12 +1567,24 @@ def _print_bundle_summary(
     print()
 
     if getattr(bundle, "ppi_applied", False):
+        banner = "═" * 58
+        print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
         print(
-            f"{_BOLD}{_BRIGHT_MAGENTA}PPI-corrected: every estimate below assumes the "
-            f"labeled subset used for correction was randomly sampled from the "
-            f"full item pool (MCAR). Run judge_alignment(...).summary() to check "
-            f"this and see the judge's reliability.{_RESET}"
+            f"{_BOLD}{_BRIGHT_MAGENTA}PPI-CORRECTED — every estimate below relies on the "
+            f"alignment report printed here first.{_RESET}"
         )
+        print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
+        ar = bundle.alignment_result
+        if ar is not None:
+            ar.summary()
+        else:
+            # Older bundle predating alignment_result plumbing (e.g. a
+            # cached/pickled object from before this field existed) --
+            # fall back to a pointer rather than crashing on the missing report.
+            print(
+                f"{_BOLD}{_BRIGHT_MAGENTA}(Alignment report unavailable on this "
+                f"bundle -- run judge_alignment(...).summary() directly.){_RESET}"
+            )
         print()
 
     _print_subsection("--- Descriptive Statistics ---")
