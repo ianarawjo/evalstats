@@ -11,6 +11,9 @@ Usage::
     evalstats analyze data.xlsx --sheet "Results"
     evalstats analyze data.csv --ci 0.90 --n-bootstrap 5000
     evalstats analyze data.csv --evaluator-mode per_evaluator
+
+    evalstats label data.csv --metric llm_score
+    evalstats label data.csv --metric llm_score --n-lab 20 --interactive
 """
 
 from __future__ import annotations
@@ -39,6 +42,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "analyze":
         _cmd_analyze(args)
+    elif args.command == "label":
+        _cmd_label(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -349,6 +354,111 @@ def _build_parser() -> argparse.ArgumentParser:
             ".json (structured analysis), and .png (robustness interval plot)."
         ),
     )
+
+    label = sub.add_parser(
+        "label",
+        help="Randomly sample items for human labeling (for judge_alignment()/PPI).",
+        description=(
+            "Mark a random, correctly-sampled subset of rows for human labeling, so "
+            "judge_alignment(..., selection='random') and compare()'s PPI correction "
+            "get the MCAR (missing-completely-at-random) sample they assume. "
+            "Auto-detects whether the design is paired (item ids repeat across "
+            "factor levels, e.g. models/prompts -- sample once, reuse across every "
+            "condition) or unpaired (independent item pools per level -- sample "
+            "N_lab within each level separately). Re-running on an already-marked "
+            "file is safe: it tops up any condition still short of --n-lab without "
+            "disturbing prior selections or labels already filled in."
+        ),
+    )
+    label.add_argument(
+        "file",
+        type=Path,
+        help="Path to a CSV or XLSX file in evalstats' long/tidy format.",
+    )
+    label.add_argument(
+        "--metric",
+        nargs="+",
+        required=True,
+        metavar="COL",
+        help=(
+            "LLM-judge score column(s) to validate against human labels. Multiple "
+            "metrics share one sampled item set (one round of grading covers every "
+            "metric on the same content) but each gets its own human_<metric> column."
+        ),
+    )
+    label.add_argument(
+        "--factor",
+        default=None,
+        metavar="COL",
+        help=(
+            "Condition/factor column (e.g. 'model' or 'prompt'). Auto-detected via "
+            "the same column aliases load_from() uses when omitted."
+        ),
+    )
+    label.add_argument(
+        "--item-col",
+        default=None,
+        metavar="COL",
+        help="Item/input identifier column. Auto-detected when omitted.",
+    )
+    label.add_argument(
+        "--n-lab",
+        type=int,
+        default=15,
+        metavar="INT",
+        help="Target number of labeled items per condition (default: 15).",
+    )
+    label.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="INT",
+        help=(
+            "Random seed for sampling. If omitted, one is generated and printed -- "
+            "record it for reproducibility."
+        ),
+    )
+    label.add_argument(
+        "--human-prefix",
+        default="human_",
+        metavar="STR",
+        help="Prefix for the created human-label column(s) (default: 'human_').",
+    )
+    label.add_argument(
+        "--sheet",
+        default="0",
+        metavar="SHEET",
+        help="Sheet name or 0-based index for XLSX files (default: 0).",
+    )
+    label.add_argument(
+        "--out",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Output file path. Defaults to '<name>_for_labeling<ext>' next to the "
+            "input file, so the original is never silently overwritten."
+        ),
+    )
+    label.add_argument(
+        "--interactive",
+        action="store_true",
+        help=(
+            "Grade the sampled items right here in the terminal after marking them. "
+            "Never shows the LLM judge's own score for the metric being graded, to "
+            "avoid anchoring the human rater on it. Saves after every answer; 'q' "
+            "quits and saves, 's' skips an item. Re-running with --interactive "
+            "resumes on whatever's still ungraded."
+        ),
+    )
+    label.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help=(
+            "Skip the 'does this match your experimental design?' confirmation "
+            "prompt (auto-detected item/factor columns and paired/unpaired design). "
+            "For scripted use; interactive terminal runs should leave this off."
+        ),
+    )
     return parser
 
 
@@ -497,6 +607,103 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# label command
+# ---------------------------------------------------------------------------
+
+def _cmd_label(args: argparse.Namespace) -> None:
+    path = args.file.expanduser().resolve()
+    if not path.exists():
+        _die(f"file not found: {path}")
+
+    print(f"Loading {path.name} ...", flush=True)
+    sheet = _parse_sheet(getattr(args, "sheet", "0"))
+    try:
+        df = _load_file(path, sheet=sheet)
+    except ImportError as exc:
+        _die(
+            f"{exc}\n"
+            "Install openpyxl for XLSX support:  pip install openpyxl\n"
+            "Or install with the xlsx extra:     pip install evalstats[xlsx]"
+        )
+    except Exception as exc:
+        _die(f"could not read file: {exc}")
+
+    print(f"  {len(df)} rows × {len(df.columns)} columns: {list(df.columns)}")
+    print()
+
+    from evalstats.labeling import detect_design, describe_design, sample_for_labeling, MARKER_COL
+
+    try:
+        design = detect_design(
+            df,
+            metrics=args.metric,
+            factor=args.factor,
+            item_col=args.item_col,
+        )
+    except ValueError as exc:
+        _die(str(exc))
+
+    print(describe_design(design))
+    print()
+
+    if not getattr(args, "yes", False):
+        reply = input("Does this match your experimental design? [Y/n]: ").strip().lower()
+        if reply not in ("", "y", "yes"):
+            _die(
+                "Aborted -- override auto-detection with --factor/--item-col "
+                "if it got something wrong, then re-run."
+            )
+
+    try:
+        marked_df, info = sample_for_labeling(
+            design["df"],
+            metrics=args.metric,
+            factor=design["factor_col"],
+            item_col=design["item_col"],
+            n_lab=args.n_lab,
+            seed=args.seed,
+            human_col_prefix=args.human_prefix,
+        )
+    except ValueError as exc:
+        _die(str(exc))
+
+    out_path = (
+        Path(args.out).expanduser().resolve()
+        if args.out
+        else path.with_name(f"{path.stem}_for_labeling{path.suffix}")
+    )
+
+    def _save(d: pd.DataFrame) -> None:
+        _write_table(d, out_path)
+
+    _save(marked_df)
+
+    print()
+    print(f"Random seed used: {info['seed']}  (record this for reproducibility)")
+    print(f"Marker column: '{MARKER_COL}'   Human label column(s): {list(info['human_cols'].values())}")
+    print("Coverage (labeled/marked so far vs. target):")
+    for lvl, n in info["coverage"].items():
+        print(f"  {lvl}: {n}/{args.n_lab}")
+    print(f"Wrote: {out_path}")
+
+    if getattr(args, "interactive", False):
+        from evalstats.labeling import run_interactive_labeling
+        run_interactive_labeling(marked_df, info, save_fn=_save)
+        print(f"Wrote: {out_path}")
+    else:
+        human_cols = list(info["human_cols"].values())
+        print()
+        print(
+            "Hand this file to your labeler (fill in the human_* column(s) for "
+            "marked rows), or re-run with --interactive to grade it here."
+        )
+        print(
+            "Once labeled, call judge_alignment(evaldata, llm_metric=..., "
+            f"human_groundtruth={human_cols[0]!r}, selection='random')."
+        )
+
+
+# ---------------------------------------------------------------------------
 # File loading
 # ---------------------------------------------------------------------------
 
@@ -518,6 +725,18 @@ def _load_file(path: Path, sheet: Union[int, str] = 0) -> pd.DataFrame:
         raise ValueError(
             f"Unsupported file type '{suffix}'. "
             "Accepted formats: .csv, .xlsx, .xls, .ods"
+        )
+
+
+def _write_table(df: pd.DataFrame, path: Path) -> None:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        df.to_csv(path, index=False)
+    elif suffix in (".xlsx", ".xls"):
+        df.to_excel(path, index=False)
+    else:
+        raise ValueError(
+            f"Unsupported output file type '{suffix}'. Use .csv, .xlsx, or .xls."
         )
 
 
