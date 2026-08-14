@@ -11,6 +11,7 @@ from typing import Callable, Optional
 
 import numpy as np
 from scipy.special import expit as _sigmoid
+from scipy.stats import norm as _norm_dist
 from scipy.stats import t as _t_dist
 
 from .core.resampling import _LOGIT_T_BOUNDARY_EPS
@@ -105,6 +106,60 @@ def _lambda_var_inflation(r_term: float, lam_replicates: Optional[np.ndarray]) -
         return 0.0
     var_lam_hat = float(np.var(lam_replicates, ddof=1))
     return r_term * r_term * var_lam_hat
+
+
+def _shrunk_lambda_variance(lam_raw: float, var_lam_raw: float, w: float) -> float:
+    """Closed-form delta-method estimate of Var(shrunk lambda) --
+    Var(w*lam_raw + (1-w)*target) -- that accounts for the adaptive
+    shrinkage TARGET's own sampling uncertainty, without a nested
+    bootstrap. Used by :func:`evalstats.tests._ppi_friedman_f_stat`/
+    :func:`evalstats.tests._ppi_anova_repeated_f_stat` in place of the
+    naive ``Var(lam_raw)`` those sites' inflation term used to plug in
+    directly (an implicit, incorrect ``w=1`` assumption).
+
+    Derivation (see simulations/out/results_why_ppi_shrink_1_over_0.md's
+    friedman power_tune=True addendum for the full investigation this
+    resolved). :func:`_adaptive_shrink_lambda`'s ``target`` is
+    ``1 - mean(lam_replicates < 0.5)``, which approximates
+    ``P(lam_raw_boot >= 0.5)`` under the bootstrap distribution of
+    ``lam_raw`` -- i.e. approximately ``Phi((lam_raw - 0.5) / sigma)``,
+    where ``sigma = sqrt(Var(lam_raw))`` (already available as
+    ``var_lam_raw``) and ``Phi`` is the standard normal CDF. So ``target``
+    is (to this approximation) a smooth function of ``lam_raw`` alone:
+    ``target ~= h(lam_raw) = Phi((lam_raw - 0.5) / sigma)``. Treating
+    ``sigma`` as fixed for this one-variable delta method (its own
+    estimation noise is a smaller, second-order term), the SHRUNK lambda
+    is ``H(lam_raw) = w*lam_raw + (1-w)*h(lam_raw)``, with
+    ``H'(lam_raw) = w + (1-w)*phi(z)/sigma`` (``phi`` = standard normal
+    PDF, ``z = (lam_raw - 0.5)/sigma``), giving
+
+        Var(lam) ~= H'(lam_raw)^2 * Var(lam_raw) = [w*sigma + (1-w)*phi(z)]^2
+
+    -- a clean closed form (in fact a perfect square) computed entirely
+    from quantities the caller already has (``lam_raw``, ``var_lam_raw``,
+    ``w``), no extra resampling. This REPLACES (not adds to) a raw
+    ``Var(lam_raw)`` plug-in: at ``w=1`` (no shrinkage, e.g. n_lab very
+    large relative to :data:`_POWER_TUNE_SHRINKAGE_C`) it reduces to
+    ``sigma^2 = Var(lam_raw)`` exactly, matching the un-shrunk case;
+    below that it correctly reflects that a shrunk-toward-target lambda
+    has different (generally smaller, since ``w<1`` alone would suggest
+    ``w^2*Var(lam_raw)``, but not simply that -- the target itself
+    carries real, previously-unaccounted-for uncertainty via the second
+    term) sampling variance than the raw ratio would.
+
+    Validated via a ground-truth check (Monte Carlo variance of the
+    corrected point estimate across independent datasets, not just a
+    bootstrap self-consistency check) and a rejection-rate sweep across
+    friedman's full scenario grid: closes roughly 20-30% of the mean
+    Type-I gap above nominal alpha with no meaningful power cost -- a
+    real, principled, but partial improvement (does not fully eliminate
+    the residual inflation on every scenario)."""
+    if var_lam_raw <= 0.0:
+        return 0.0
+    sigma = float(np.sqrt(var_lam_raw))
+    z = (lam_raw - 0.5) / sigma
+    phi_z = float(_norm_dist.pdf(z))
+    return float((w * sigma + (1.0 - w) * phi_z) ** 2)
 
 
 def _bootstrap_batch_lambda_replicates(

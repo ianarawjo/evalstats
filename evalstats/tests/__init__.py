@@ -3385,7 +3385,15 @@ def _ppi_anova_repeated_f_stat(
     addendum): Type-I stays controlled (elevated at n_lab~15-20, converging
     to the fixed-lambda baseline by n_lab~40-60, the same small-sample
     pattern documented for every other adaptively-shrunk site in this
-    codebase), with large power gains for poor/uninformative judges."""
+    codebase), with large power gains for poor/uninformative judges.
+
+    Shares :func:`_ppi_friedman_f_stat`'s ``_repeated_anova_lambda_raw``/
+    ``_repeated_anova_lambda_replicates`` machinery and, as of Addendum
+    30, its closed-form variance-inflation fix
+    (:func:`evalstats.ppi._shrunk_lambda_variance`) -- see that
+    function's docstring for the mild residual power_tune=True inflation
+    this partially (not fully) addresses, and why an n_lab-adaptive
+    default switch was investigated and found not warranted."""
     n_subjects = len(groups[0])
     labels_mat = np.column_stack(groups_lab)
     overlap = np.all(~np.isnan(labels_mat), axis=1)
@@ -3441,7 +3449,7 @@ def _ppi_anova_repeated_f_stat(
             lam_replicates = _repeated_anova_lambda_replicates(
                 centered_human_lab, centered_llm_lab, llm_unlab, P, k, n_lab,
             )
-        from evalstats.ppi import _adaptive_shrink_lambda
+        from evalstats.ppi import _adaptive_shrink_lambda, _shrunk_lambda_variance, _POWER_TUNE_SHRINKAGE_C
         lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
 
         cond_means_ppi = f_lab_human + lam * r_term
@@ -3451,8 +3459,17 @@ def _ppi_anova_repeated_f_stat(
         var_human = np.atleast_2d(np.cov(centered_human_lab, rowvar=False)) / n_lab
         var_matrix = var_human + lam * lam * (var_unlab + var_lab_llm) - 2.0 * lam * cov_cross
         if lam_replicates is not None and len(lam_replicates) > 1:
-            var_lam_hat = float(np.var(lam_replicates, ddof=1))
-            var_matrix = var_matrix + np.outer(r_term, r_term) * var_lam_hat
+            # Closed-form Var(shrunk lambda), accounting for the shrinkage
+            # target's own sampling uncertainty -- see
+            # evalstats.ppi._shrunk_lambda_variance's docstring for the
+            # derivation and simulations/out/results_why_ppi_shrink_1_over_0.md's
+            # friedman power_tune=True addendum for the validation (a plain
+            # Var(lam_raw) plug-in here, the prior construction, implicitly
+            # assumes w=1/no shrinkage, understating this term).
+            var_lam_raw = float(np.var(lam_replicates, ddof=1))
+            w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            var_lam_shrunk = _shrunk_lambda_variance(lam_raw, var_lam_raw, w)
+            var_matrix = var_matrix + np.outer(r_term, r_term) * var_lam_shrunk
         var_matrix = (var_matrix + var_matrix.T) / 2.0  # symmetrize away float noise
 
         # E[ss_condition_corr] = n_subjects * trace(P @ Var[cond_means_ppi] @ P)
@@ -3654,6 +3671,37 @@ def _ppi_friedman_f_stat(
     MNAR is a documented, out-of-scope limitation for this package
     generally (see :func:`evalstats.ppi.correct`'s docstring); this is one
     more instance of that.
+
+    Known, open (partially mitigated) limitation under ``power_tune=True``
+    (MCAR labeling): a mild, broad-based Type-I inflation at small-to-
+    moderate ``n_lab``, root-caused to the same same-sample lambda/point-
+    estimate coupling that caused wilcoxon()'s much larger inflation
+    (Addendum 28) -- but here the failure mode is a mild mean-level shift
+    in ``f_corr``'s expectation, NOT a heavy tail like wilcoxon's, so
+    wilcoxon's cross-fitting fix (and a joint-bootstrap variant, tried as
+    a second candidate) do not transfer -- both were validated (ground-
+    truth Monte Carlo variance checks plus rejection-rate sweeps) to make
+    calibration WORSE, not better, and were rejected. What DOES help: the
+    variance-inflation term now uses :func:`evalstats.ppi.
+    _shrunk_lambda_variance`'s closed-form correction for the adaptive
+    shrinkage TARGET's own sampling uncertainty (previously unaccounted
+    for -- the prior term implicitly assumed no shrinkage, i.e. ``w=1``),
+    which closes roughly 20-30% of the mean Type-I gap above nominal alpha
+    (139-scenario sweep: mean 0.0542->0.0530, max 0.0767->0.0733) with no
+    meaningful power cost -- real but partial, not a full fix. An n_lab-
+    adaptive default switch (using ``power_tune=False`` below some n_lab
+    threshold) was also investigated as a follow-up and found NOT
+    warranted: a controlled, deconfounded sweep across n_lab~15-120 (two
+    independent scenario families, 2500 reps/point) found no reliable
+    n_lab regime where ``power_tune=True`` becomes calibration-superior to
+    ``power_tune=False`` -- the one apparent crossover point did not
+    replicate at the same n_lab in the second family, consistent with
+    Monte Carlo noise rather than a real effect -- so switching would
+    effectively mean "always use ``power_tune=False``," forfeiting
+    ``power_tune``'s substantial documented power advantage for no
+    reliable calibration gain. See simulations/out/
+    results_why_ppi_shrink_1_over_0.md's Addendum 30 for the full
+    investigation (four candidate fixes tried, one adopted).
     """
     n_subjects = len(groups[0])
     labels_mat = np.column_stack(groups_lab)
@@ -3695,7 +3743,7 @@ def _ppi_friedman_f_stat(
             lam_replicates = None
         else:
             lam_replicates = _repeated_anova_lambda_replicates(human_lab, llm_lab, llm_unlab, P, k, n_lab)
-        from evalstats.ppi import _adaptive_shrink_lambda
+        from evalstats.ppi import _adaptive_shrink_lambda, _shrunk_lambda_variance, _POWER_TUNE_SHRINKAGE_C
         lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
 
         cond_means_ppi = f_lab_human + lam * r_term
@@ -3705,8 +3753,14 @@ def _ppi_friedman_f_stat(
         var_human = np.atleast_2d(np.cov(human_lab, rowvar=False)) / n_lab
         var_matrix = var_human + lam * lam * (var_unlab + var_lab_llm) - 2.0 * lam * cov_cross
         if lam_replicates is not None and len(lam_replicates) > 1:
-            var_lam_hat = float(np.var(lam_replicates, ddof=1))
-            var_matrix = var_matrix + np.outer(r_term, r_term) * var_lam_hat
+            # Closed-form Var(shrunk lambda) -- see
+            # evalstats.ppi._shrunk_lambda_variance's docstring and
+            # simulations/out/results_why_ppi_shrink_1_over_0.md's
+            # friedman power_tune=True addendum.
+            var_lam_raw = float(np.var(lam_replicates, ddof=1))
+            w = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            var_lam_shrunk = _shrunk_lambda_variance(lam_raw, var_lam_raw, w)
+            var_matrix = var_matrix + np.outer(r_term, r_term) * var_lam_shrunk
         var_matrix = (var_matrix + var_matrix.T) / 2.0
 
         denom = float(n_subjects * np.trace(P @ var_matrix @ P) / (k - 1))

@@ -2734,3 +2734,284 @@ sites). `tests/test_ppi_corrections.py`: 319 passed (2 tests updated per
 above). The residual `power_tune=True` binary elevation is flagged as a
 smaller, separate, not-yet-investigated follow-up -- the primary
 boundary/discreteness problem this addendum targeted is resolved.
+
+## Addendum 30 (2026-08-14): Friedman's mild power_tune=True inflation -- four fixes tried, one adopted (closed-form target-variance correction)
+
+Motivated by a harness run flagging `friedman` at mean=0.060 Type-I
+(vs. nominal 0.05) after `power_tune=True` became its default (see
+"16fc89c Default power_tune=True for anova/friedman/kruskal"). Addendum
+27 had already shown this in the 118-scenario harness sweep (friedman
+0.044->0.056 mean, 0.125->0.150 max, 0/354 Holm-confirmed cells), but
+Addendum 28's own follow-up check of friedman/anova_rep used only the 3
+scenarios worst for *wilcoxon*, not friedman's own worst cases -- this
+addendum runs friedman's full own scenario grid and works through four
+candidate fixes end to end.
+
+### Part 1: diagnosis, own full sweep
+
+All 139 scenarios from `build_judge_bias_sources()`
+(continuous/likert/grades/binary), 300 reps each, `_ppi_friedman_p_value`
+directly, `power_tune=True` vs. `False` (pre-fix):
+
+| | mean | max |
+|---|---|---|
+| power_tune=True | 0.0518 | 0.0800 |
+| power_tune=False | 0.0450 | 0.0733 |
+
+Real and broad (not concentrated in 1-2 cells), confirming Addendum 27's
+harness-level number on a different (own-grid, non-cherry-picked)
+scenario set. The gap tracks small `n_lab`: worst cells are
+`confound.likert.pure_nuisance`/`quality_correlated` (n_lab~20,
+true=0.070-0.073 vs. false=0.027-0.030), `balance.4:1.*` (n_lab~8, 0.050
+vs. 0.013), `lab.5%`/`lab.10%.*` (n_lab~5-10, 0.073-0.077 vs.
+0.047-0.050). A direct 1000-2500-rep check on 5 of these cells confirmed
+`anova_rep` shows the identical pattern at comparable magnitude on the
+same scenarios (e.g. `confound.likert.pure_nuisance`: friedman 0.063 vs.
+0.037, anova_rep 0.048 vs. 0.044) -- consistent with both sharing the
+identical `_repeated_anova_lambda_raw`/`_repeated_anova_lambda_replicates`
+lambda machinery.
+
+**Mechanism, not just root-cause family.** Same same-sample lambda/point-
+estimate coupling as Addendum 28 (lambda and the rectified estimate both
+computed from the identical n_lab labeled rows), but a direct kurtosis/
+mean check on the worst cell (`confound.likert.pure_nuisance`, 4000 reps,
+dfd=38 fixed) shows this is NOT the wilcoxon mechanism: empirical excess
+kurtosis of `f_corr` is 6.65 vs. the reference F(2,38)'s own theoretical
+9.35 (`f_corr` is *less* heavy-tailed than its own reference
+distribution, not more). Instead, `E[f_corr]=1.107` vs. the reference's
+theoretical mean 1.056 -- a mild ~5% mean-level upward shift, translating
+to 0.0605 empirical rejection at nominal alpha=0.05 on this cell at 4000
+reps. Fundamentally different, much milder failure mode than wilcoxon's
+heavy-tailed studentized statistic (kurtosis ~12 vs. t's ~0.65, ~50-91%
+relative inflation) -- here the relative inflation on the worst cells
+tops out around 20-45%, and the grid-wide average is ~15% relative.
+
+### Part 2: fix attempt #1 -- cross-fitting (structural, disjoint folds) -- REJECTED
+
+Split the n_lab labeled subjects into two folds, estimate each fold's
+shared scalar lambda from the OTHER fold's own covariance matrices,
+combine the two folds' `k`-vector `cond_means_ppi` and denom-trace terms
+by an `n_fold/n_lab`-weighted average, combine denominator df via
+`_cross_fit_satterthwaite_df` (the same helper wilcoxon's Addendum 28 fix
+already added to `evalstats/ppi.py`). Validated on 7 scenarios at 1500
+reps:
+
+| scenario | n_lab | single-sample | cross-fit | power_tune=False |
+|---|---|---|---|---|
+| confound.likert.pure_nuisance | ~20 | 0.0520 | **0.0700** | 0.0287 |
+| confound.likert.quality_correlated | ~20 | 0.0560 | **0.0700** | 0.0287 |
+| n=60.mildbias | ~12 | 0.0560 | 0.0600 | 0.0347 |
+| n=60.modbias | ~12 | 0.0540 | 0.0593 | 0.0340 |
+| stress.unbal+diff | ~3 | 0.0580 | 0.0540 | 0.0367 |
+| lab.5% | ~5 | 0.0580 | 0.0527 | 0.0387 |
+| lab.10% | ~10 | 0.0580 | 0.0527 | 0.0387 |
+
+**Rejected.** Cross-fitting makes the two worst (confound) cells
+meaningfully *worse* (0.052-0.056 -> 0.070) and only trims the
+smallest-n_lab cells by 1-5 points without reaching `power_tune=False`'s
+own rate. Consistent with the mechanism finding above: cross-fitting is a
+targeted fix for a heavy-tailed delta-method independence violation; for
+a mild mean-level shift with no heavy tail, halving n_lab's already-small
+per-fold sample for a `k=3`-dimensional covariance estimate adds more
+noise than the coupling it removes was costing.
+
+### Part 3: fix attempt #2 -- joint bootstrap of the coupled estimator -- REJECTED
+
+Derivation: the current construction computes `Var[g]` (`g = f_lab_human
++ lambda_hat*r_term`) via an ADDITIVE delta-method decomposition -- treat
+lambda as fixed at its realized value, then separately bolt on
+`outer(r_term,r_term)*Var(lambda_raw_replicates)` for lambda's own
+estimation uncertainty. That additive form implicitly assumes
+`Cov(f_lab_human + lambda0*r_term, lambda_hat) = 0`, which is generically
+false since `lambda_hat` is a ratio built from the exact same sample.
+
+**Fix tried:** directly bootstrap the FULL coupled quantity `g_b =
+f_lab_human_b + lambda_b*r_term_b` from each labeled-sample micro-
+bootstrap replicate, so the covariance-with-lambda is captured
+automatically. Ground-truth check (TRUE Monte Carlo variance across 2000
+independent datasets vs. mean reported denom on a single dataset):
+
+| scenario | TRUE trace(P Cov(g) P) | current denom (ratio) | bootstrap-g denom (ratio) |
+|---|---|---|---|
+| confound.likert.pure_nuisance | 0.03550 | 0.03307 (0.932) | 0.03212 (**0.905**) |
+| n=60.mildbias | 0.10941 | 0.10554 (0.965) | 0.09716 (**0.888**) |
+| lab.5% | 0.10910 | 0.10426 (0.956) | 0.09626 (**0.882**) |
+
+The current construction's `denom` already runs 4-7% below the true
+variance, but the "honest" bootstrap runs *even lower* -- 12-13% below
+true. Rejection-rate check, 10 scenarios spanning n_lab~3-40, 1500 reps
+each: bootstrap-g worse than single-sample in **10/10 scenarios**, never
+better. Likely explanation: the adaptive-shrinkage TARGET is itself a
+noisy function of the labeled sample with its own sampling variability,
+suppressed by holding it fixed across the inner bootstrap (the only way
+to avoid an O(n_boot^2) nested bootstrap); the current construction's
+`Var(lambda_raw)` term happens to over-count in a way that accidentally,
+partially offsets the missing coupling term it's also not capturing --
+two errors of opposite sign landing closer to correct than one "fixed"
+error alone.
+
+### Part 4: fix attempt #3 -- closed-form shrinkage-target-variance correction -- ADOPTED
+
+Following up on Part 3's diagnosis (the shrinkage target's own
+uncertainty is the real missing piece, not simply `Cov(g, lambda_hat)`),
+derived a CLOSED FORM instead of a nested bootstrap.
+`_adaptive_shrink_lambda`'s `target = 1 - mean(lam_replicates < 0.5)`
+approximates `P(lam_raw_boot >= 0.5)` under the bootstrap distribution of
+`lam_raw`, i.e. approximately `Phi((lam_raw - 0.5) / sigma)` where `sigma
+= sqrt(Var(lam_raw))` (already computed) and `Phi` is the standard normal
+CDF -- so `target` is (to this approximation) a smooth function of
+`lam_raw` alone. Treating `sigma` as fixed for a one-variable delta
+method, the shrunk lambda is `H(lam_raw) = w*lam_raw +
+(1-w)*Phi((lam_raw-0.5)/sigma)`, giving
+
+    Var(lam) ~= H'(lam_raw)^2 * Var(lam_raw) = [w*sigma + (1-w)*phi(z)]^2
+
+(`phi` = standard normal PDF, `z = (lam_raw-0.5)/sigma`) -- a clean
+closed form (in fact a perfect square) computed entirely from quantities
+already available (`lam_raw`, `Var(lam_raw)` from `lam_replicates`, `w`),
+no extra resampling at all. This REPLACES the prior `Var(lam_raw)`
+plug-in (which implicitly assumed `w=1`, no shrinkage).
+
+**Ground-truth check** (same 3 scenarios/methodology as Part 3):
+
+| scenario | TRUE trace(P Cov(g) P) | current denom (ratio) | targetvar denom (ratio) |
+|---|---|---|---|
+| confound.likert.pure_nuisance | 0.03550 | 0.03307 (0.932) | 0.03617 (**1.019**) |
+| n=60.mildbias | 0.10941 | 0.10554 (0.965) | 0.10673 (**0.976**) |
+| lab.5% | 0.10910 | 0.10426 (0.956) | 0.10680 (**0.979**) |
+
+All 3/3 scenarios move closer to the true variance (in one case slightly
+overshooting to 1.9% over, vs. the prior 6.8% under).
+
+**Rejection-rate check, 10 scenarios spanning n_lab~3-40, 1500 reps
+each:**
+
+| scenario | n_lab | single-sample | targetvar | power_tune=False |
+|---|---|---|---|---|
+| confound.likert.pure_nuisance | ~20 | 0.0493 | 0.0400 | 0.0340 |
+| confound.likert.quality_correlated | ~20 | 0.0520 | 0.0413 | 0.0320 |
+| n=60.mildbias | ~12 | 0.0500 | 0.0500 | 0.0420 |
+| n=60.modbias | ~12 | 0.0487 | 0.0487 | 0.0407 |
+| stress.unbal+diff | ~3 | 0.0527 | 0.0507 | 0.0367 |
+| lab.5% | ~5 | 0.0560 | 0.0547 | 0.0400 |
+| lab.10% | ~10 | 0.0560 | 0.0547 | 0.0400 |
+| balance.4:1.mildbias | ~8 | 0.0587 | 0.0613 | 0.0373 |
+| biasmag.likert.severe | ~20 | 0.0580 | 0.0433 | 0.0307 |
+| n=200.mildbias | ~40 | 0.0480 | 0.0473 | 0.0553 |
+
+9/10 improved or flat, one negligibly worse (well within 1500-rep MC
+noise, SE~0.0056). Mean across these 10 worst-case cells: single=0.0529
+-> targetvar=0.0492, essentially AT nominal.
+
+**Full 139-scenario sweep** (300 reps each, matching Part 1's
+methodology): mean 0.0542 -> 0.0530, max 0.0767 -> 0.0733
+(`power_tune=False`'s own mean/max on this run: 0.0466/0.0800 -- not
+uniformly better either). Real, broad, but PARTIAL -- closes roughly
+20-30% of the gap above nominal, doesn't eliminate it. Remaining worst
+cells after the fix: `eval_type.binary` (0.0733->0.0567 vs. false=0.0100),
+`corr.0.3`/`corr.0.7` (unchanged, 0.0700-0.0733 vs. false=0.0267-0.0367),
+several `confound.binary.*`/`confound.magnitude.binary.*` cells
+(0.06-0.07 vs. false~0.02-0.03) -- binary/correlated-condition scenarios
+look like a distinct residual pattern not addressed by this fix.
+
+**Power check** (4 scenarios x 2 effect sizes, 1500 reps): no meaningful
+cost -- e.g. `confound.likert.pure_nuisance` es=0.3: single=0.778 ->
+targetvar=0.742 (still far above `power_tune=False`'s 0.629);
+`biasmag.likert.severe` es=0.3: single=0.803 -> targetvar=0.780 (vs.
+false=0.679); every es=0.6 point saturates near/at 1.0 for all three
+constructions.
+
+**anova_rep check** (5 scenarios, 1500 reps, same shared machinery):
+close to nominal throughout (0.038-0.047), no clear degradation vs.
+`power_tune=False` -- confirms the fix is safe to share across both
+sites (it lives in `_repeated_anova_lambda_raw`/`_replicates`' shared
+caller pattern, not touched itself; only the inflation-term plug-in
+changed, identically, in both `_ppi_friedman_f_stat` and
+`_ppi_anova_repeated_f_stat`).
+
+**Adopted.** Implemented in `evalstats/ppi.py`
+(`_shrunk_lambda_variance`, new helper next to `_lambda_var_inflation`)
+and `evalstats/tests/__init__.py` (`_ppi_friedman_f_stat`,
+`_ppi_anova_repeated_f_stat` -- both now compute `var_lam_raw =
+Var(lam_replicates)`, `w = n_lab/(n_lab+_POWER_TUNE_SHRINKAGE_C)`, and
+plug `_shrunk_lambda_variance(lam_raw, var_lam_raw, w)` into the inflation
+term instead of the raw `var_lam_raw` directly). Confirmed the production
+code reproduces the standalone validated prototype bit-for-bit (20/20
+matched p-values to 1e-9 on a spot check). Deliberately scoped to ONLY
+these two sites (not the shared `_lambda_var_inflation`/
+`_adaptive_shrink_lambda` used by wilcoxon/paired_t/etc.), matching this
+investigation's established discipline of not touching already-validated
+sites without separately re-validating them there.
+
+### Part 5: fix attempt #4 -- n_lab-adaptive default switching -- investigated, NOT warranted
+
+Even with Part 4's fix, Part 4's full-sweep numbers show the gap isn't
+fully closed. A natural follow-up: since `correct()` already dispatches
+analytic-vs-bootstrap backends by an n_lab threshold
+(`_MIN_LAB_RECOMMENDED`), could `friedman`/`anova_rep` similarly switch
+to `power_tune=False` below some n_lab and `power_tune=True` (with Part
+4's fix) above it? This requires an actual, empirically-located crossover
+point, not a guessed round number.
+
+Ran two independent, deconfounded scenario families (n-varying at fixed
+label_frac=0.2; label_frac-varying at fixed n=100) against the
+NOW-FIXED production code, 2500 reps/point for low MC noise (SE~0.0044):
+
+| n_lab | source | power_tune=True (fixed) | power_tune=False |
+|---|---|---|---|
+| 15 (floored*) | n=40/60, lf=0.03-0.15 | 0.0528-0.0608 | 0.0404-0.0536 |
+| 20 | n=100, lf=0.20 | 0.0516 | 0.0436 |
+| 30 | n=150, lf=0.30 | 0.0412-0.0516 | 0.0412-0.0456 |
+| 40 | n=200, lf=0.40 | 0.0488 | 0.0364-0.0424 |
+| 60 | n=300, lf=0.60 | 0.0536-0.0540 | 0.0460-0.0580 |
+| 80 | n=400 | 0.0528 | 0.0480 |
+| 120 | n=600 | 0.0512 | 0.0496 |
+
+(*`_JB_MIN_LAB=15` floors n_lab at 15 regardless of `label_frac` on
+`n=100` -- an existing, documented harness convention, not a bug; this
+means `label_frac` in {0.03, 0.05, 0.08, 0.10} on `n=100` all silently
+test the identical n_lab=15, which is why those cells print bit-identical
+rates.)
+
+**No reliable crossover.** Only one cell (n_lab=60 via the n-varying
+family, n=300) shows `power_tune=True` numerically ahead of
+`power_tune=False` (0.0540 vs. 0.0580) -- but the SAME n_lab=60 via the
+OTHER family (label_frac=0.60, n=100) shows the opposite (0.0536 vs.
+0.0460, `power_tune=True` still worse), and the gap there (0.004) is well
+within 1 SE of the 2500-rep noise floor. Across every other tested point
+from n_lab=15 through 120, `power_tune=True` (even with Part 4's fix)
+stays at-or-above `power_tune=False`'s rate, with the gap shrinking
+toward ~0 (not reliably crossing) as n_lab grows. The calibration also
+depends on total `n_subjects`, not n_lab alone -- e.g. n_lab=40 via
+`n=200` (gap 0.006) vs. n_lab=40 via `n=100,label_frac=0.40` (gap 0.012)
+differ meaningfully despite matching n_lab, undermining a clean
+n_lab-only switching rule further.
+
+**Conclusion: not implemented.** An n_lab-adaptive switch would, given
+this data, effectively mean "use `power_tune=False` at every n_lab
+tested" -- there is no regime where `power_tune=True` is reliably
+calibration-superior. That would forfeit `power_tune`'s large, separately
+validated power advantage (Addendum 25/27: e.g. likert es=0.10:
+0.075->0.225) for a calibration gain that mostly isn't real (MC noise) at
+large n_lab and doesn't exist at small n_lab (where `power_tune=False` is
+consistently, if mildly, better-calibrated already, without needing a
+switch). The mild residual inflation Part 4 leaves in place (mean~0.053
+vs. nominal 0.05, no Holm-confirmed miscalibrated cell in the harness's
+118-scenario sweep) is judged an acceptable cost for retaining
+`power_tune`'s power benefit across the board, consistent with keeping
+`power_tune=True` as the default (unchanged from the prior session's
+decision).
+
+### Status
+
+Documented as a known, open (now partially mitigated) limitation in both
+`_ppi_friedman_f_stat`'s and `_ppi_anova_repeated_f_stat`'s docstrings.
+`power_tune=True` stays the default for `friedman`/`anova_rep`.
+`tests/test_ppi_corrections.py` passes: 319 passed, 27 warnings, 378s.
+Diagnostic/validation scripts were standalone (not added to the repo).
+Binary/correlated-condition scenarios (`eval_type.binary`, `corr.0.3`/
+`corr.0.7`, `confound.binary.*`) remain the largest un-addressed residual
+after Part 4's fix and are flagged as an open follow-up, not yet
+investigated -- they don't obviously fit either "same-sample coupling"
+story tested here and may have a distinct mechanism.
+
