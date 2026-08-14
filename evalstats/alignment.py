@@ -883,6 +883,18 @@ _REPRESENTATIVENESS_WHY = (
     "inference may not generalize to unlabeled items."
 )
 
+# Significance threshold for every representativeness "passed" verdict
+# (score distribution, slice columns, label contiguity). Deliberately lower
+# than the conventional 0.05: these are diagnostic tripwires meant to catch
+# real MNAR violations, not confirmatory hypothesis tests -- and a
+# well-calibrated test fires on true-null (genuinely random) data at
+# whatever rate this is set to, so 0.05 means real random samples get
+# flagged 1-in-20 times. 0.02 trades a bit of detection power for fewer
+# false alarms crying wolf on real random data. Alignment-metric CIs
+# (Pearson r, kappa, etc.) use their own, separate alpha= (default 0.05)
+# and are unaffected by this constant.
+_REP_ALPHA = 0.02
+
 
 def _rep_check_display_name(key: str) -> str:
     """Human-readable label for a representativeness-check dict key, for
@@ -899,14 +911,14 @@ def _rep_check_display_name(key: str) -> str:
 def _interpret_representativeness(passed: bool, subject: str) -> str:
     if passed:
         return (
-            f"no evidence (p ≥ 0.05) that {subject} differs between the labeled "
-            "subset and the full pool — alignment estimates should generalize "
-            "reasonably well"
+            f"no evidence (p ≥ {_REP_ALPHA:g}) that {subject} differs between the "
+            "labeled subset and the full pool — alignment estimates should "
+            "generalize reasonably well"
         )
     return (
         f"{subject} differs between the labeled subset and the full pool "
-        "(p < 0.05) — treat alignment estimates as potentially biased for "
-        "unlabeled items; consider expanding or re-sampling the alignment set"
+        f"(p < {_REP_ALPHA:g}) — treat alignment estimates as potentially biased "
+        "for unlabeled items; consider expanding or re-sampling the alignment set"
     )
 
 
@@ -951,7 +963,7 @@ def _check_score_distribution(
             p = float(p)
         except ValueError:
             p = 1.0
-        passed = p >= 0.05
+        passed = p >= _REP_ALPHA
         msg = f"χ² p={p:.3f}"
         if not passed:
             msg += " — labeled 0/1 distribution differs from unlabeled pool"
@@ -975,7 +987,7 @@ def _check_score_distribution(
             }
         _, p = ks_2samp(labeled_scores, compare_target)
         p = float(p)
-        passed = p >= 0.05
+        passed = p >= _REP_ALPHA
         msg = f"KS p={p:.3f}"
         if not passed:
             msg += " — labeled subset appears non-representative of full score range"
@@ -1020,7 +1032,7 @@ def _check_slice_column(
         p = float(p)
     except ValueError:
         p = 1.0
-    passed = p >= 0.05
+    passed = p >= _REP_ALPHA
     msg = f"χ² p={p:.3f}"
     if not passed:
         msg += " — labeled subset is over/under-represented in some categories"
@@ -1072,7 +1084,7 @@ def _check_slice_column_numeric(
         }
     _, p = ks_2samp(labeled, unlabeled)
     p = float(p)
-    passed = p >= 0.05
+    passed = p >= _REP_ALPHA
     msg = f"KS p={p:.3f}"
     if not passed:
         msg += " — labeled subset differs from unlabeled pool on this covariate"
@@ -1088,13 +1100,14 @@ def _apply_family_correction(results: dict[str, dict], method: str = "holm") -> 
     representativeness checks (one per covariate), keyed by name.
 
     Without this, testing many slice columns inflates the chance of at least
-    one spurious "not representative" flag well above the nominal 5% --
-    e.g. ~63% with 20 unrelated covariates under a true null, empirically.
-    Entries with no ``p_value`` (not-applicable checks) pass through
-    untouched and aren't counted in the correction family. Only annotates
-    the message for entries whose *raw* p was < 0.05 (Holm-adjusted p is
-    never smaller than the raw p, so a raw-passing entry always still
-    passes -- nothing to say there).
+    one spurious "not representative" flag well above the nominal alpha --
+    e.g. ~63% with 20 unrelated covariates under a true null at alpha=0.05,
+    empirically (worse at looser alpha, better at the stricter _REP_ALPHA
+    this module actually uses). Entries with no ``p_value`` (not-applicable
+    checks) pass through untouched and aren't counted in the correction
+    family. Only annotates the message for entries whose *raw* p was below
+    ``_REP_ALPHA`` (Holm-adjusted p is never smaller than the raw p, so a
+    raw-passing entry always still passes -- nothing to say there).
     """
     testable = [k for k, v in results.items() if v.get("p_value") is not None]
     if len(testable) <= 1:
@@ -1107,10 +1120,10 @@ def _apply_family_correction(results: dict[str, dict], method: str = "holm") -> 
         p_adj = float(p_adj)
         res = dict(out[k])
         raw_p_k = res["p_value"]
-        passed = bool(p_adj >= 0.05)
+        passed = bool(p_adj >= _REP_ALPHA)
         res["p_value_adjusted"] = p_adj
         res["passed"] = passed
-        if raw_p_k < 0.05:
+        if raw_p_k < _REP_ALPHA:
             if passed:
                 res["message"] += (
                     f" — no longer significant after Holm correction across "
@@ -1228,7 +1241,7 @@ def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
     r_obs = _count_runs(mask)
     p = _runs_test_pvalue(n_labeled, n_unlabeled, r_obs)
     mu = 1.0 + 2.0 * n_labeled * n_unlabeled / n_total
-    passed = p >= 0.05
+    passed = p >= _REP_ALPHA
 
     positions = np.flatnonzero(mask)
     span = int(positions.max() - positions.min() + 1)
