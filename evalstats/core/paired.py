@@ -707,7 +707,7 @@ def pairwise_differences(
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_name="tango",
+            test_name="tango effective-run" if multirun else "tango",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,

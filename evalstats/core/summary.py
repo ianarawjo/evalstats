@@ -945,7 +945,7 @@ def _print_cross_model_executive_summary(bundle: MultiModelBundle) -> None:
     global_cell_max = float(sv.per_cell_seed_std.max()) if has_stability else 0.0
 
     _print_subsection("--- Executive Summary (Cross-model pair leaderboard) ---")
-    _cross_ci_header = "Wilson CI" if _uses_wilson_ci(cross) else "CI"
+    _cross_ci_header = "Wilson-flat CI" if _uses_wilson_ci(cross) else "CI"
     header = (
         f"  {'Model':<{model_w}s}"
         f"  {'Template':<{template_w}s}"
@@ -1484,7 +1484,7 @@ def _print_mean_advantage(
 
     _ci_method = (bundle.resolved_ci_method or "").lower()
     if _uses_wilson_ci(bundle):
-        ci_note = "Wilson CIs"
+        ci_note = "Wilson-flat CIs"
     elif _ci_method == "nig":
         ci_note = "marginal NIG CIs"
     elif _ci_method == "logit_t":
@@ -3188,7 +3188,7 @@ def _print_executive_summary(
     pareto_w = max([len(tradeoff_header)] + [len(p) for p in pareto_phrases.values()]) if has_pareto else 0
 
     # CI column header: Wilson CI when no bootstrap was used (binary data path).
-    ci_col_header = "Wilson CI" if _uses_wilson_ci(bundle) else "CI"
+    ci_col_header = "Wilson-flat CI" if _uses_wilson_ci(bundle) else "CI"
 
     # Header row (no ANSI codes so widths match exactly).
     header_parts = [
