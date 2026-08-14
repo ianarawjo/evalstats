@@ -234,6 +234,13 @@ class ComparisonResult:
               analysis, not as a substitute for it.
             * ``"cd"`` — critical difference diagram via
               :func:`~evalstats.vis.critical_difference.plot_critical_difference`.
+            * ``"pareto"`` — uncertainty-aware trade-off scatter via
+              :func:`~evalstats.vis.pareto.plot_pareto_tradeoff`. Only
+              available when ``compare(..., secondary=...)`` was passed;
+              raises otherwise. One bootstrap point cloud per entity plus a
+              percentile band over per-replicate Pareto frontiers, colored
+              by calibrated status (frontier / dominated / ambiguous) --
+              see :attr:`pareto_status`.
 
         **kwargs
             Forwarded to the underlying plot function.
@@ -251,10 +258,19 @@ class ComparisonResult:
         elif method == "cd":
             from evalstats.vis.critical_difference import plot_critical_difference
             return plot_critical_difference(self, **kwargs)
+        elif method == "pareto":
+            if self._pareto is None:
+                raise ValueError(
+                    "method='pareto' requires compare(..., secondary=...) "
+                    "to have been passed -- no Pareto analysis was run for "
+                    "this result."
+                )
+            from evalstats.vis.pareto import plot_pareto_tradeoff
+            return plot_pareto_tradeoff(self._pareto, metric=self._metric, **kwargs)
         else:
             raise ValueError(
                 f"Unknown plot method: {method!r}. "
-                "Expected 'bar', 'forest', or 'cd'."
+                "Expected 'bar', 'forest', 'cd', or 'pareto'."
             )
 
     def report(self, format: str = "markdown") -> str:
