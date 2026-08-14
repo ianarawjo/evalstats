@@ -59,7 +59,11 @@ N_ITEMS = 30
 # zero-shot is the odd one out: with no instruction to be concise, the
 # model tends to hedge and ramble before answering -- worse *and* slower
 # than the deliberately terse prompt, a "worst of both worlds" case that
-# tradeoff() should confidently call dominated, not just unclear. And
+# tradeoff() should confidently call dominated, not just unclear.
+# few-shot-3 is a second one: padding the prompt with three unexplained
+# examples costs tokens (and thus latency) without teaching the model to
+# actually reason, so it ends up worse *and* slower than one-line-cot's
+# single explicit reasoning hint -- also confidently dominated.
 # few-shot-5-cot sits close enough to cot-verbose (worse point estimate on
 # both axes, but only slightly) to land "ambiguous" rather than confidently
 # either way -- the calibration point: a naive point-estimate-only Pareto
@@ -68,7 +72,7 @@ ACCURACY = {
     "zero-shot": 0.50,
     "terse": 0.645,
     "one-line-cot": 0.70,
-    "few-shot-3": 0.74,
+    "few-shot-3": 0.60,
     "cot": 0.78,
     "cot-verbose": 0.80,
     "few-shot-5-cot": 0.785,
@@ -78,7 +82,7 @@ LATENCY_S = {  # lower is better
     "zero-shot": 0.62,
     "terse": 0.29,
     "one-line-cot": 0.62,
-    "few-shot-3": 0.88,
+    "few-shot-3": 1.05,
     "cot": 1.55,
     "cot-verbose": 2.05,
     "few-shot-5-cot": 2.75,
