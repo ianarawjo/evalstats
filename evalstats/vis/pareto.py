@@ -10,6 +10,14 @@ cloud's shape is honest about *correlation* between the two metrics (e.g.
 harder items being both slower and less accurate shows up as a tilted
 cloud), and needs no distributional assumption (no covariance-ellipse
 fitting) to be read correctly.
+
+The frontier itself is drawn the same uncertainty-aware way: instead of one
+crisp line through the point-estimate frontier's members (implying more
+confidence than the data has about both *which* entities belong on it and
+the line's exact shape), :func:`_bootstrap_frontier_ensemble` recomputes the
+non-dominated set per bootstrap replicate and overlays many faint candidate
+frontiers -- solid where replicates agree, frayed wherever a point is only
+sometimes on the frontier.
 """
 
 from __future__ import annotations
@@ -124,12 +132,70 @@ def _resolve_label_overlaps(fig, anns, max_iter=40, step=10.0):
         renderer = fig.canvas.get_renderer()
 
 
+def _bootstrap_frontier_ensemble(replicate_primary, replicate_secondary, direction, n_lines, rng):
+    """Per-replicate Pareto frontiers, for drawing as a translucent band
+    instead of one crisp line through the point-estimate frontier.
+
+    A single line connecting the *mean* frontier's members implies more
+    certainty than the data has -- both about which entities belong on it
+    and about the line's exact shape between neighbors. Recomputing the
+    same non-dominated test :func:`~evalstats.core.pareto.pareto_bootstrap`
+    already applies internally, but per-replicate instead of on the
+    aggregate tallies, gives ``n_lines`` candidate frontiers; overlaying
+    them faintly shows where replicates agree (the band is solid) and
+    where they don't (a point that's only sometimes on the frontier makes
+    the band fray right around it).
+
+    Parameters
+    ----------
+    replicate_primary, replicate_secondary : np.ndarray
+        Shape ``(N, n_bootstrap)``, already oriented so higher = better on
+        both axes (``ParetoBootstrapResult.replicate_primary`` /
+        ``replicate_secondary``).
+    direction : {"min", "max"}
+        Secondary metric's real-world direction, to un-orient x back to
+        display units.
+    n_lines : int
+        Number of replicates to draw (subsampled from the full bootstrap).
+    rng : np.random.Generator
+
+    Returns
+    -------
+    list[tuple[np.ndarray, np.ndarray]]
+        One ``(xs, ys)`` pair per drawn replicate, x-sorted, ready for
+        ``ax.plot``.
+    """
+    n_entities, n_bootstrap = replicate_primary.shape
+    n_lines = min(n_lines, n_bootstrap)
+    cols = rng.choice(n_bootstrap, size=n_lines, replace=False)
+    eye = np.eye(n_entities, dtype=bool)
+
+    lines = []
+    for j in cols:
+        p1 = replicate_primary[:, j]
+        p2 = replicate_secondary[:, j]
+        ge_both = (p1[None, :] >= p1[:, None]) & (p2[None, :] >= p2[:, None])
+        gt_either = (p1[None, :] > p1[:, None]) | (p2[None, :] > p2[:, None])
+        dominates = ge_both & gt_either
+        dominates &= ~eye
+        is_dominated = dominates.any(axis=1)
+        frontier = np.where(~is_dominated)[0]
+        if len(frontier) < 2:
+            continue
+        x_display = p2[frontier] if direction == "max" else -p2[frontier]
+        y_display = p1[frontier]
+        order = np.argsort(x_display)
+        lines.append((x_display[order], y_display[order]))
+    return lines
+
+
 def plot_pareto_tradeoff(
     pareto: dict,
     *,
     metric: Optional[str] = None,
     title: Optional[str] = None,
     n_cloud_points: int = 300,
+    n_frontier_lines: int = 60,
     figsize: Optional[tuple[float, float]] = None,
     rng: Optional[np.random.Generator] = None,
 ) -> "Figure":
@@ -156,6 +222,14 @@ def plot_pareto_tradeoff(
     n_cloud_points : int
         Bootstrap replicates shown per entity (subsampled from the full
         joint bootstrap for a legible, not over-dense, cloud).
+    n_frontier_lines : int
+        Per-replicate Pareto frontiers drawn as a translucent band, in
+        place of a single line through the point-estimate frontier (see
+        :func:`_bootstrap_frontier_ensemble`) -- a single line implies more
+        certainty about frontier membership and shape than the data has;
+        overlaying many faint per-replicate frontiers instead shows where
+        replicates agree (solid band) and where a point is only sometimes
+        on the frontier (the band frays right around it).
     figsize : tuple[float, float], optional
         Figure size. Defaults to ``(7, 5.2)``.
     rng : np.random.Generator, optional
@@ -199,6 +273,13 @@ def plot_pareto_tradeoff(
     ax.set_facecolor("white")
 
     rng = np.random.default_rng(rng) if rng is not None else np.random.default_rng(0)
+
+    ensemble = _bootstrap_frontier_ensemble(
+        result.replicate_primary, result.replicate_secondary, direction, n_frontier_lines, rng,
+    )
+    for line_x, line_y in ensemble:
+        ax.plot(line_x, line_y, color=_PALETTE["unbeaten"], lw=1.0, alpha=0.05, zorder=1)
+
     ann_list = []
     for i, lbl in enumerate(labels):
         color = _STATUS_COLOR[statuses_list[i]]
@@ -217,14 +298,6 @@ def plot_pareto_tradeoff(
             lbl, (xs[i], ys[i]), xytext=(dx, dy), textcoords="offset points",
             ha=ha, fontsize=9, color=_PALETTE["text"],
         ))
-
-    frontier_idx = [i for i, s in enumerate(statuses_list) if s == "frontier"]
-    frontier_idx.sort(key=lambda i: xs[i])
-    if len(frontier_idx) > 1:
-        ax.plot(
-            xs[frontier_idx], ys[frontier_idx],
-            color=_PALETTE["unbeaten"], lw=1.0, ls="--", alpha=0.4, zorder=1,
-        )
 
     # The cluster-based initial offsets keep obviously-close points apart,
     # but can't account for actual label text width -- follow up with a
