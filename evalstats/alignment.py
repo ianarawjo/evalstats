@@ -13,7 +13,7 @@ from typing import Optional
 
 import numpy as np
 import pandas as pd
-from scipy.stats import ks_2samp, chi2_contingency, pearsonr, spearmanr
+from scipy.stats import ks_2samp, chi2_contingency, pearsonr, spearmanr, norm
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -914,7 +914,16 @@ def _check_score_distribution(
     all_scores: np.ndarray,
     labeled_scores: np.ndarray,
     score_type: str,
+    unlabeled_scores: Optional[np.ndarray] = None,
 ) -> dict:
+    """``unlabeled_scores``, when available, is used as the KS-test comparison
+    target instead of ``all_scores``. ``all_scores`` includes the labeled
+    subset by construction, so comparing against it (rather than the
+    unlabeled complement) dilutes any real divergence -- the more of the
+    pool is labeled, the more the sample resembles the thing it's being
+    compared to. The binary branch is unaffected: it already derives
+    unlabeled counts by subtraction, which is exact regardless.
+    """
     if score_type == "binary":
         what = (
             "Chi-square test comparing the labeled subset's 0/1 score distribution "
@@ -947,9 +956,12 @@ def _check_score_distribution(
         if not passed:
             msg += " — labeled 0/1 distribution differs from unlabeled pool"
     else:
+        compare_target = unlabeled_scores if unlabeled_scores is not None and len(unlabeled_scores) > 0 else all_scores
         what = (
             "Kolmogorov–Smirnov test comparing the labeled subset's score "
-            "distribution to the full item pool's."
+            "distribution to "
+            + ("the unlabeled complement's." if unlabeled_scores is not None and len(unlabeled_scores) > 0
+               else "the full item pool's (unlabeled-only comparison unavailable in this call form).")
         )
         if len(np.unique(labeled_scores)) < 2:
             return {
@@ -961,7 +973,7 @@ def _check_score_distribution(
                     "this test"
                 ),
             }
-        _, p = ks_2samp(labeled_scores, all_scores)
+        _, p = ks_2samp(labeled_scores, compare_target)
         p = float(p)
         passed = p >= 0.05
         msg = f"KS p={p:.3f}"
@@ -1019,71 +1031,250 @@ def _check_slice_column(
     }
 
 
+def _check_slice_column_numeric(
+    df: pd.DataFrame,
+    labeled_mask: pd.Series,
+    col: str,
+) -> dict:
+    """KS-test analogue of :func:`_check_slice_column` for numeric covariates
+    (e.g. difficulty, length, latency) -- these are never string dtype, so
+    the chi-square categorical check above silently skips them entirely.
+    """
+    what = (
+        f"Kolmogorov–Smirnov test comparing the distribution of numeric "
+        f"column {col!r} between labeled and unlabeled items."
+    )
+    why = (
+        "Checks whether the alignment set is representative across this "
+        "numeric covariate — important if judge accuracy might vary with it "
+        "(e.g. difficulty, length, latency). Categorical (string) columns are "
+        "checked with a chi-square test instead; this covers the numeric "
+        "columns that check silently skips."
+    )
+    labeled = df.loc[labeled_mask, col].dropna().to_numpy(dtype=float)
+    unlabeled = df.loc[~labeled_mask, col].dropna().to_numpy(dtype=float)
+    if len(unlabeled) == 0:
+        return {
+            "passed": True, "message": "no unlabeled items", "p_value": None,
+            "what": what, "why": why,
+            "interpretation": (
+                "not applicable — there are no unlabeled items to compare against"
+            ),
+        }
+    if len(np.unique(labeled)) < 2:
+        return {
+            "passed": True, "message": "insufficient labeled variation to test", "p_value": None,
+            "what": what, "why": why,
+            "interpretation": (
+                "not applicable — the labeled values don't vary enough to run "
+                "this test"
+            ),
+        }
+    _, p = ks_2samp(labeled, unlabeled)
+    p = float(p)
+    passed = p >= 0.05
+    msg = f"KS p={p:.3f}"
+    if not passed:
+        msg += " — labeled subset differs from unlabeled pool on this covariate"
+    return {
+        "passed": passed, "message": msg, "p_value": p,
+        "what": what, "why": why,
+        "interpretation": _interpret_representativeness(passed, f"{col!r}"),
+    }
+
+
+def _apply_family_correction(results: dict[str, dict], method: str = "holm") -> dict[str, dict]:
+    """Apply a family-wise multiple-testing correction across a set of
+    representativeness checks (one per covariate), keyed by name.
+
+    Without this, testing many slice columns inflates the chance of at least
+    one spurious "not representative" flag well above the nominal 5% --
+    e.g. ~63% with 20 unrelated covariates under a true null, empirically.
+    Entries with no ``p_value`` (not-applicable checks) pass through
+    untouched and aren't counted in the correction family. Only annotates
+    the message for entries whose *raw* p was < 0.05 (Holm-adjusted p is
+    never smaller than the raw p, so a raw-passing entry always still
+    passes -- nothing to say there).
+    """
+    testable = [k for k, v in results.items() if v.get("p_value") is not None]
+    if len(testable) <= 1:
+        return results
+    from evalstats.core.stats_utils import correct_pvalues
+    raw_p = np.array([results[k]["p_value"] for k in testable])
+    adj_p = correct_pvalues(raw_p, method=method)
+    out = dict(results)
+    for k, p_adj in zip(testable, adj_p):
+        p_adj = float(p_adj)
+        res = dict(out[k])
+        raw_p_k = res["p_value"]
+        passed = bool(p_adj >= 0.05)
+        res["p_value_adjusted"] = p_adj
+        res["passed"] = passed
+        if raw_p_k < 0.05:
+            if passed:
+                res["message"] += (
+                    f" — no longer significant after Holm correction across "
+                    f"{len(testable)} covariates (adjusted p={p_adj:.3f})"
+                )
+            else:
+                res["message"] += (
+                    f" — still significant after Holm correction across "
+                    f"{len(testable)} covariates (adjusted p={p_adj:.3f})"
+                )
+            res["interpretation"] = _interpret_representativeness(passed, "this covariate")
+        out[k] = res
+    return out
+
+
+def _safe_comb(n: int, k: int) -> int:
+    if k < 0 or n < 0 or k > n:
+        return 0
+    return math.comb(n, k)
+
+
+def _count_runs(mask: np.ndarray) -> int:
+    """Number of maximal contiguous same-value stretches in a boolean sequence."""
+    if len(mask) == 0:
+        return 0
+    return int(1 + np.sum(mask[1:] != mask[:-1]))
+
+
+def _runs_test_pvalue(n1: int, n2: int, r_obs: int) -> float:
+    """Two-sided Wald–Wolfowitz runs-test p-value for ``r_obs`` runs among
+    ``n1`` items of one kind and ``n2`` of another, arranged uniformly at
+    random. Flags both too few runs (clustering, e.g. a contiguous block or
+    a couple of blocks) and too many runs (suspicious regularity, e.g. every
+    Kth position).
+
+    Uses the exact distribution (summed directly, cheap for realistic
+    dataset sizes) below ``n1 + n2 <= 4000``; falls back to the standard
+    normal approximation with continuity correction above that, since the
+    exact pmf's binomial-coefficient terms grow expensive to sum one-by-one
+    at that scale while the normal approximation is already excellent there.
+    """
+    n = n1 + n2
+    if n1 == 0 or n2 == 0:
+        return 1.0
+    if n <= 4000:
+        total = math.comb(n, n1)
+
+        def pmf(r: int) -> float:
+            if r % 2 == 0:
+                k = r // 2
+                return 2 * _safe_comb(n1 - 1, k - 1) * _safe_comb(n2 - 1, k - 1) / total
+            k = (r - 1) // 2
+            return (
+                _safe_comb(n1 - 1, k) * _safe_comb(n2 - 1, k - 1)
+                + _safe_comb(n1 - 1, k - 1) * _safe_comb(n2 - 1, k)
+            ) / total
+
+        p_le = sum(pmf(r) for r in range(2, r_obs + 1))
+        p_ge = sum(pmf(r) for r in range(r_obs, n + 1))
+        return float(min(1.0, 2 * min(p_le, p_ge)))
+
+    mu = 1.0 + 2.0 * n1 * n2 / n
+    var = (2.0 * n1 * n2 * (2.0 * n1 * n2 - n1 - n2)) / (n**2 * (n - 1))
+    if var <= 0:
+        return 1.0
+    sd = math.sqrt(var)
+    cc = 0.5 if r_obs < mu else -0.5
+    z = (r_obs - mu + cc) / sd
+    return float(2 * norm.sf(abs(z)))
+
+
 def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
-    """Flag the single most common non-random labeling pattern: taking "the
-    first N" or "the last N" items (or any other contiguous run) rather than
-    sampling randomly across the item pool.
+    """Runs test on where the labeled items sit in the dataset.
 
     Unlike the distribution-based checks above, this doesn't look at scores
     at all -- it only looks at *where in the dataset* the labeled items sit.
-    A contiguous run is essentially impossible from genuine random sampling
-    (the exact probability is computed below and reported as the p-value),
-    so observing one is strong evidence of deliberate, ordered selection --
-    even in the case where such a selection happens to produce a labeled
-    subset whose score distribution passes the other checks by chance.
+    A single contiguous block (e.g. "the first N" or "the last N" items) is
+    the most common way evalstats has seen this assumption broken in
+    practice, but it's just the most extreme case of a broader failure mode:
+    labeled items clustered into a small number of blocks (e.g. first-N-
+    plus-last-N), or laid out with suspicious regularity (e.g. every Kth
+    row). The Wald-Wolfowitz runs test catches all of these by comparing the
+    observed number of contiguous same-label runs against what genuine
+    uniform-random sampling would produce -- even in the case where such a
+    selection happens to produce a labeled subset whose score distribution
+    passes the other checks by chance.
     """
     what = (
-        "Checks whether the labeled items sit at consecutive positions in the "
-        "dataset (e.g. rows 0-14, or the last 15 rows), rather than being "
-        "scattered across it."
+        "Runs test on the labeled/unlabeled sequence: checks whether the "
+        "labeled items form too few contiguous blocks (clustering, e.g. "
+        "rows 0-14, or first-15-plus-last-15) or too many (suspicious "
+        "regularity, e.g. every 10th row) to be a uniformly random subset."
     )
     why = (
         "The most common way evalstats has seen this assumption broken in "
         "practice isn't a subtle score-distribution skew -- it's literally "
         "labeling \"the first N\" or \"the last N\" items, often just because "
-        "that's what a spreadsheet or a `.head()` call hands you first."
+        "that's what a spreadsheet or a `.head()` call hands you first. A "
+        "runs test catches that pattern and its variants (e.g. a couple of "
+        "blocks, or artificially regular spacing) in one check, rather than "
+        "only the single-contiguous-block special case."
     )
-    positions = np.flatnonzero(labeled_mask)
-    n_labeled = len(positions)
-    if n_labeled < 2 or n_labeled >= n_total:
+    n_labeled = int(labeled_mask.sum())
+    n_unlabeled = n_total - n_labeled
+    if n_labeled < 2 or n_unlabeled < 2:
         return {
             "passed": True, "message": "not applicable", "p_value": None,
             "what": what, "why": why,
             "interpretation": (
-                "not applicable -- fewer than 2 labeled items, or every item "
-                "is labeled, so there's no position pattern to check"
+                "not applicable -- fewer than 2 labeled or 2 unlabeled items, "
+                "so there's no position pattern to check"
             ),
         }
+    mask = labeled_mask.astype(bool)
+    r_obs = _count_runs(mask)
+    p = _runs_test_pvalue(n_labeled, n_unlabeled, r_obs)
+    mu = 1.0 + 2.0 * n_labeled * n_unlabeled / n_total
+    passed = p >= 0.05
+
+    positions = np.flatnonzero(mask)
     span = int(positions.max() - positions.min() + 1)
-    is_contiguous = span == n_labeled
-    # Exact probability that a uniform-random n_labeled-of-n_total subset
-    # happens to be contiguous: (n_total - n_labeled + 1) possible contiguous
-    # windows, out of C(n_total, n_labeled) possible subsets.
-    p = (n_total - n_labeled + 1) / math.comb(n_total, n_labeled)
-    p = min(1.0, p)
-    passed = not is_contiguous
-    if is_contiguous:
-        start, end = int(positions.min()), int(positions.max())
-        msg = (
-            f"the {n_labeled} labeled items are exactly rows {start}-{end} "
-            f"of {n_total} -- a contiguous block (p={p:.2e} under random selection)"
-        )
+    is_single_block = span == n_labeled and r_obs <= 2
+
+    if not passed:
+        if is_single_block:
+            start, end = int(positions.min()), int(positions.max())
+            msg = (
+                f"the {n_labeled} labeled items are exactly rows {start}-{end} "
+                f"of {n_total} -- a single contiguous block ({r_obs} run(s) vs. "
+                f"~{mu:.0f} expected under random selection, p={p:.2e})"
+            )
+        elif r_obs < mu:
+            msg = (
+                f"labeled item positions form only {r_obs} contiguous run(s), "
+                f"vs. ~{mu:.0f} expected under random selection (p={p:.2e}) -- "
+                "looks like a small number of blocks (e.g. first-N-plus-"
+                "last-N) rather than a scattered random sample"
+            )
+        else:
+            msg = (
+                f"labeled item positions form {r_obs} runs, far more than "
+                f"the ~{mu:.0f} expected under random selection (p={p:.2e}) "
+                "-- looks like an artificially regular pattern (e.g. every "
+                "Kth row) rather than genuine random sampling"
+            )
     else:
-        msg = f"labeled item positions look scattered, not contiguous (p={p:.2e} reference)"
+        msg = (
+            f"labeled item positions look scattered ({r_obs} runs, "
+            f"~{mu:.0f} expected under random selection, p={p:.2f})"
+        )
+
     if passed:
         interpretation = (
-            "the labeled items' positions don't form a suspicious contiguous "
-            "block -- doesn't confirm random selection, but rules out the "
-            "single most common non-random pattern"
+            "the labeled items' positions don't form a suspicious clustered "
+            "or artificially regular pattern -- doesn't confirm random "
+            "selection, but rules out the most common non-random patterns"
         )
     else:
         interpretation = (
-            "the labeled items are exactly consecutive in the dataset, which "
-            "is essentially impossible from real random sampling -- treat "
-            "alignment estimates as unreliable for unlabeled items unless "
-            "this was deliberate (e.g. the dataset itself was already "
-            "shuffled before labeling); consider re-sampling the alignment "
-            "set uniformly at random instead"
+            "the labeled items' positions are essentially impossible from "
+            "real random sampling -- treat alignment estimates as unreliable "
+            "for unlabeled items unless this was deliberate (e.g. the "
+            "dataset itself was already shuffled before labeling); consider "
+            "re-sampling the alignment set uniformly at random instead"
         )
     return {
         "passed": passed, "message": msg, "p_value": p,
@@ -1145,7 +1336,12 @@ def _judge_alignment_core(
 
     rep: dict = {}
     if all_llm is not None:
-        dist_result = _check_score_distribution(all_llm, llm_aligned, score_type)
+        unlabeled_llm = None
+        if labeled_mask is not None and len(labeled_mask) == len(all_llm):
+            unlabeled_llm = all_llm[~labeled_mask.astype(bool)]
+        dist_result = _check_score_distribution(
+            all_llm, llm_aligned, score_type, unlabeled_scores=unlabeled_llm
+        )
         rep["score_distribution"] = dist_result
         if not dist_result["passed"]:
             warnings.warn(
@@ -1159,14 +1355,31 @@ def _judge_alignment_core(
             )
 
     if slice_df is not None and slice_labeled_mask is not None:
-        slice_cols = [
+        cat_cols = [
             c for c in slice_df.columns
             if c not in slice_exclude_cols
             and pd.api.types.is_string_dtype(slice_df[c])
             and 1 < slice_df[c].nunique() <= 20
         ]
-        for col in slice_cols:
-            col_result = _check_slice_column(slice_df, slice_labeled_mask, col)
+        num_cols = [
+            c for c in slice_df.columns
+            if c not in slice_exclude_cols
+            and pd.api.types.is_numeric_dtype(slice_df[c])
+            and not pd.api.types.is_bool_dtype(slice_df[c])
+            and slice_df[c].nunique() > 1
+        ]
+        slice_results: dict = {}
+        for col in cat_cols:
+            slice_results[col] = _check_slice_column(slice_df, slice_labeled_mask, col)
+        for col in num_cols:
+            slice_results[col] = _check_slice_column_numeric(slice_df, slice_labeled_mask, col)
+
+        # Correct across the whole covariate family jointly (not per-column) --
+        # testing many slice columns otherwise inflates the false-alarm rate
+        # well above the nominal 5% (empirically ~63% at 20 columns).
+        slice_results = _apply_family_correction(slice_results, method="holm")
+
+        for col, col_result in slice_results.items():
             rep[f"slice_{col}"] = col_result
             if not col_result["passed"]:
                 warnings.warn(
@@ -1289,12 +1502,22 @@ def _judge_alignment_from_evaldata(
     human_aligned = df.loc[labeled_mask, human_groundtruth].to_numpy(dtype=float)
     all_llm = df[llm_metric].to_numpy(dtype=float)
 
+    # Structural role columns (model/item/run) are row/group identifiers, not
+    # domain covariates -- an "item" column is frequently just a sequential
+    # index (or unique per row), which the numeric-covariate check would
+    # otherwise happily test, redundantly rediscovering (in a noisier form)
+    # exactly what the position-based label-contiguity check already covers.
+    structural_cols = {
+        c for c in (evaldata._col.get("model"), evaldata._col.get("item"), evaldata._col.get("run"))
+        if c is not None
+    }
+
     return _judge_alignment_core(
         llm_aligned, human_aligned, score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth,
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=df, slice_labeled_mask=labeled_mask,
-        slice_exclude_cols=frozenset({llm_metric, human_groundtruth}),
+        slice_exclude_cols=frozenset({llm_metric, human_groundtruth}) | structural_cols,
         labeled_mask=labeled_mask.to_numpy(), selection=selection,
         warn_stacklevel=4,
     )
