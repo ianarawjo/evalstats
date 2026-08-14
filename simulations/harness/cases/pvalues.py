@@ -6036,16 +6036,15 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     carries no on-plot annotations or N callouts beyond the axis labels and
     legend.
 
-    Each panel gets its OWN legend immediately to its right (not one
-    legend shared across the whole figure) -- unlike a plot where every
-    panel shares the same series (e.g. one line per TEST, comparable
-    panel to panel), here each panel's lines are calibrated to that eval
-    type's OWN alignment metric/targets (Pearson r for continuous,
-    weighted kappa for likert, kappa for binary), so a single combined
-    legend was concatenating three metric-incompatible label sets into
-    one list a reader had to mentally re-split by panel. wspace is widened
-    to leave each panel room for its own legend without overlapping the
-    next panel.
+One legend, shared across the whole figure (not one per panel) and
+positioned to the right of the last panel. Each panel's lines ARE
+calibrated to that eval type's own alignment metric (Pearson r for
+continuous, weighted kappa for likert, kappa for binary), but the legend
+labels by the generic "IRR~=<target>" (inter-rater reliability) instead
+of the metric-specific symbol/achieved value -- since the label no longer
+varies by panel, all three panels' entries for a given target collapse
+into one shared legend line, rather than three near-duplicate,
+metric-incompatible ones a reader had to mentally re-split by panel.
 
     ``square`` (default True): whether x and y share one axis max with
     ``ax.set_aspect("equal")``, so the y=x reference renders at a literal
@@ -6066,10 +6065,15 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in results)]
     fig, axes = plt.subplots(
         1, len(eval_types), figsize=(6.2 * len(eval_types), 4.4), squeeze=False,
-        gridspec_kw={"wspace": 0.75},
+        gridspec_kw={"wspace": 0.35},
     )
     axes = axes[0]
     cmap = plt.cm.viridis
+    # Collected across all panels (not per-panel) and deduped by label, so
+    # the one shared legend has every category used anywhere (e.g.
+    # "power saturated" even if only one panel happens to hit it) without
+    # repeating a target's entry once per panel.
+    legend_handles: dict[str, "plt.Artist"] = {}
 
     for col, et in enumerate(eval_types):
         ax = axes[col]
@@ -6082,7 +6086,6 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
         # middle LIST POSITION, which silently drifted onto 0.6 when the
         # target set widened from 3 to 5 points, caught before it shipped).
         baseline_target = min(targets, key=lambda t: abs(t - 0.7))
-        metric_symbol = _LABEL_EFF_ALIGNMENT_METRIC[et][1]
 
         # Axis scale comes from NON-saturated points only -- a single
         # saturated cell's clamped-to-n_grid.max() equiv_n_lab must never be
@@ -6109,10 +6112,11 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             x_max = x_data_max * 1.05
             y_max = y_data_max * 1.15
 
-        ax.plot(
+        no_benefit_line, = ax.plot(
             [0, x_max], [0, x_max], color="black", ls="--", lw=1.2, alpha=0.6,
             label="No benefit (y = x)", zorder=2,
         )
+        legend_handles.setdefault("No benefit (y = x)", no_benefit_line)
 
         for i, target in enumerate(targets):
             rows = sorted((r for r in et_rows if r.alignment_target == target), key=lambda r: r.n_lab)
@@ -6123,20 +6127,34 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
             ys = [min(r.equiv_n_lab, y_max * 0.97) if r.saturated else r.equiv_n_lab for r in rows]
             color = cmap(0.15 + 0.7 * i / max(1, len(targets) - 1))
             is_baseline = target == baseline_target
-            achieved = float(np.mean([r.alignment_value for r in rows]))
             marker = _LABEL_EFF_MARKER_SHAPES[i % len(_LABEL_EFF_MARKER_SHAPES)]
-            ax.plot(
+            # Labeled by the TARGET (a round, panel-independent number),
+            # not each panel's own achieved alignment value -- the whole
+            # point of one shared legend is that a given target's entry
+            # means the same thing in every panel, which a per-panel
+            # achieved value (e.g. r=0.83 here, weighted-kappa=0.79 there)
+            # would undermine.
+            line, = ax.plot(
                 xs, ys, color=color, marker=marker,
                 markersize=_LABEL_EFF_MARKER_SIZE.get(marker, 5), linewidth=2.0 if is_baseline else 1.4,
-                label=f"{metric_symbol}~={achieved:.2f} (target {target:.1f})",
+                label=f"IRR~={target:.1f}",
                 zorder=4,
             )
+            legend_handles.setdefault(f"IRR~={target:.1f}", line)
             sat_xs = [x for x, r in zip(xs, rows) if r.saturated]
             sat_ys = [y for y, r in zip(ys, rows) if r.saturated]
             if sat_xs:
+                # Plotted in this tier's own color (a saturated point is
+                # still that tier's data), but the shared legend swatch for
+                # "power saturated" is a separate, neutral-gray proxy --
+                # the category isn't tied to any one tier's color.
                 ax.plot(
                     sat_xs, sat_ys, color=color, marker="^", markersize=7, linestyle="none",
-                    label="power saturated" if i == 0 else None, zorder=5,
+                    zorder=5,
+                )
+                legend_handles.setdefault(
+                    "power saturated",
+                    plt.Line2D([], [], color="gray", marker="^", markersize=7, linestyle="none"),
                 )
 
         ax.set_xlim(0, x_max)
@@ -6146,11 +6164,29 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
         ax.set_title(et.capitalize())
         if square:
             ax.set_aspect("equal", adjustable="box")
-        ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize=7, borderaxespad=0.3, frameon=True)
 
     fig.suptitle(
         "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power",
         fontsize=11,
+    )
+    # One shared legend, ordered "No benefit" -> IRR targets descending ->
+    # "power saturated" -- NOT plain insertion order (legend_handles fills
+    # in whatever order panels happen to hit each category, so
+    # "power saturated" can land mid-list if an early panel saturates on
+    # its very first tier); explicitly sorted here instead. Positioned to
+    # the right of the LAST panel via the figure's own coordinate system,
+    # not per-axes bbox_to_anchor.
+    def _legend_sort_key(label: str) -> tuple[int, float]:
+        if label == "No benefit (y = x)":
+            return (0, 0.0)
+        if label == "power saturated":
+            return (2, 0.0)
+        return (1, -float(label.rsplit("=", 1)[1]))  # descending IRR target
+    ordered_labels = sorted(legend_handles.keys(), key=_legend_sort_key)
+    fig.legend(
+        [legend_handles[l] for l in ordered_labels], ordered_labels,
+        loc="center left", bbox_to_anchor=(1.0, 0.5), bbox_transform=axes[-1].transAxes,
+        fontsize=8, borderaxespad=0.3, frameon=True,
     )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
