@@ -6064,8 +6064,8 @@ metric-incompatible ones a reader had to mentally re-split by panel.
         raise ValueError("No label-efficiency results to plot.")
     eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in results)]
     fig, axes = plt.subplots(
-        1, len(eval_types), figsize=(6.2 * len(eval_types), 4.4), squeeze=False,
-        gridspec_kw={"wspace": 0.35},
+        1, len(eval_types), figsize=(4.4 * len(eval_types), 4.2), squeeze=False,
+        gridspec_kw={"wspace": 0.15},
     )
     axes = axes[0]
     cmap = plt.cm.viridis
@@ -6173,9 +6173,7 @@ metric-incompatible ones a reader had to mentally re-split by panel.
     # "power saturated" -- NOT plain insertion order (legend_handles fills
     # in whatever order panels happen to hit each category, so
     # "power saturated" can land mid-list if an early panel saturates on
-    # its very first tier); explicitly sorted here instead. Positioned to
-    # the right of the LAST panel via the figure's own coordinate system,
-    # not per-axes bbox_to_anchor.
+    # its very first tier); explicitly sorted here instead.
     def _legend_sort_key(label: str) -> tuple[int, float]:
         if label == "No benefit (y = x)":
             return (0, 0.0)
@@ -6183,9 +6181,18 @@ metric-incompatible ones a reader had to mentally re-split by panel.
             return (2, 0.0)
         return (1, -float(label.rsplit("=", 1)[1]))  # descending IRR target
     ordered_labels = sorted(legend_handles.keys(), key=_legend_sort_key)
-    fig.legend(
+    # Anchored to the RIGHTMOST axes' own transAxes (not a hand-picked
+    # figure-fraction number, and not bbox_to_anchor=(1.0, ...), which
+    # butts the legend's edge right up against the last panel with no
+    # visible gap): a figure-fraction anchor has to be re-tuned any time
+    # panel count/content changes tight_layout's actual axes width, and
+    # over/under-shooting it either leaves a dead gap or overlaps the last
+    # panel. Anchoring to the last axes' own coordinate system at 1.05
+    # gives a fixed, panel-relative gap (5% of that axes' width) that's
+    # stable regardless of the overall figure layout.
+    axes[-1].legend(
         [legend_handles[l] for l in ordered_labels], ordered_labels,
-        loc="center left", bbox_to_anchor=(1.0, 0.5), bbox_transform=axes[-1].transAxes,
+        loc="center left", bbox_to_anchor=(1.05, 0.5),
         fontsize=8, borderaxespad=0.3, frameon=True,
     )
     with warnings.catch_warnings():
