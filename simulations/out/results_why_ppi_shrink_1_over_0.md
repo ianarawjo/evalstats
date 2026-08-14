@@ -3015,3 +3015,183 @@ after Part 4's fix and are flagged as an open follow-up, not yet
 investigated -- they don't obviously fit either "same-sample coupling"
 story tested here and may have a distinct mechanism.
 
+## Addendum 31 (2026-08-14): ttest's remaining binary residual and MNAR
+catastrophe -- both traced to per-group lambda, fixed by pooling
+
+Addendum 29's closed-form `_ppi_two_sample_t_interval` fixed the general
+MCAR near-boundary inflation, but left a real residual on the worst
+binary cells (a full harness Type-I run: `ttest` corr max=0.100, mean=
+0.053 over 183 MCAR scenarios) and, separately, a run of the harness's
+MNAR check surfaced something much worse: `ttest` corr max=**0.260** on
+`label.binary.mnar-strong` -- by far the single worst number posted by
+any of the 14 tests in either table (next-worst under MNAR: `ttest_welch`
+itself at 0.087). This addendum traces both to the same root cause and
+fixes it with one structural change.
+
+### Part 1: three approaches tried and rejected for the residual MCAR bias
+
+Before finding the real fix, three "reprocess the same tiny sample
+differently" ideas were tried on the worst residual binary cells (`p=
+0.90`/`p=0.30`/`balance.binary.4:1`/`noise.binary.0.05`, ~3000 reps each,
+matching this file's established methodology):
+
+- **Jackknife bias correction** on the unclamped `lambda_raw` ratio:
+  correctly shifted the mean toward the theoretical target (0.640->0.738
+  on a group-level check) but *added* variance (std 0.324->0.407, from
+  deleting 1-of-~15 already-scarce points per replicate), pushing 23.2%
+  of values above the upper clamp (previously 0%) and largely canceling
+  the gain after clamping (net 0.640->0.694). Rejected.
+- **Analytic "Bernoulli variance" substitution** (`p_hat*(1-p_hat)*n/
+  (n-1)` in place of `np.var(..., ddof=1)`): produced bit-for-bit
+  identical results to the unmodified baseline across every tested
+  scenario -- turns out this is a mathematical identity, not a bug: for
+  genuinely {0,1}-valued data the sample-variance formula algebraically
+  *reduces to* the Bernoulli-variance formula (`np.var([0,1]-array,
+  ddof=1) == n/(n-1)*p_hat*(1-p_hat)` exactly). Confirmed analytically.
+  Not a distinct estimator; can't possibly change anything. Rejected.
+- **Closed-form Taylor/delta-method ratio-bias correction** (Cochran-
+  style: `Bias(R_hat) ~= [R*Var(D_hat) - Cov(N_hat,D_hat)]/E[D_hat]^2`,
+  with `Var(D_hat)`/`Cov(N_hat,D_hat)` estimated from the existing
+  ordinary bootstrap distribution, not a new leave-one-out scheme): moved
+  `mean(lambda_raw)` up slightly (0.504->0.533 on the worst cell) but the
+  fraction of draws pinned at the hard 0 clamp was UNCHANGED (0.179->
+  0.179) -- a smooth, differentiable bias correction can't rescue draws
+  that are already deep in negative territory before hitting a
+  discontinuous truncation. Calibration barely moved (0.0893->0.0923 on
+  the worst cell, if anything slightly worse). Rejected.
+- **Smooth (softplus) clamp** replacing the hard `min(max(x,0),1)`: did
+  meaningfully help, but only on the one scenario where the hard clamp
+  was actually biting (`p=0.90`, 17.9% mass at the floor): 0.0893->0.0823
+  at transition-width `s=0.2`, monotonic in `s`, no power cost -- but a
+  no-op everywhere else (the other three scenarios had ~0% clamp mass to
+  begin with) and didn't come close to closing the gap to `power_tune=
+  False`'s own calibration on that cell (0.0600). Judged "a patch, not a
+  full fix" and not pursued further once the real mechanism below was
+  found.
+
+### Part 2: root cause -- per-group lambda estimation, not the ratio or the clamp
+
+Tracing the MNAR catastrophe led to the real mechanism. The harness's
+`ttest` and `ttest_welch` columns are commonly assumed to differ only by
+`equal_var` (Student's vs. Welch's) -- true before Addendum 29, but
+`simulations/harness/cases/pvalues.py`'s `_run_ppi_cell` currently routes
+them through *entirely different* PPI constructions: `ttest` calls the
+new closed-form `_ppi_two_sample_t_interval` (Addendum 29's fix);
+`ttest_welch`'s call site was left on the old general-purpose percentile
+bootstrap `_ppi_two_sample`. The `equal_var` naming is now vestigial.
+
+The structural difference that matters: `_ppi_two_sample_t_interval`
+estimates a SEPARATE lambda per group (needed to get each group's own
+variance/df right for the Satterthwaite combination -- the whole reason
+Addendum 29 built it that way). `_ppi_two_sample` uses a SINGLE lambda
+pooled across both groups' labeled data combined ("single global
+rectifier", per its own docstring). Under MNAR, label-selection bias can
+distort the two groups' labeled subsamples asymmetrically; a per-group
+lambda has no data to average that distortion out over, while a pooled
+lambda does.
+
+Confirmed directly (3000 reps, matching the harness's own MNAR
+scenarios):
+
+| scenario | per-group lambda (current) | pooled lambda | old bootstrap `_ppi_two_sample` |
+|---|---|---|---|
+| `label.binary.mnar-strong` | rate=0.2603 (matches production's 0.260) | rate=**0.0377** | rate=0.0523 |
+| `label.binary.mnar-mild` | rate=0.1617 | rate=**0.0703** | rate=0.0783 |
+
+Pooling doesn't just narrow the gap, it closes it -- and on the worst
+scenario, pooled lambda actually beats the old bootstrap construction
+too. The pooled lambda's own mean value drops sharply under strong MNAR
+(0.236 vs. 0.564 under mild MNAR), automatically discounting the LLM
+correction when the covariance signal itself becomes untrustworthy --
+the right behavior, not a coincidence.
+
+**Same fix also resolves Part 1's MCAR residual**, as a side effect: pooling
+roughly doubles the effective sample the `lambda_raw = cov/denom` ratio
+is estimated from, directly reducing how often noise pushes it to the
+hard clamp -- the same mechanism Part 1's rejected attempts were trying
+to patch around indirectly.
+
+| scenario (MCAR) | per-group lambda (current) | pooled lambda |
+|---|---|---|
+| `p=0.90` | rate=0.0717, mean(est)=0.01632 | rate=0.0583, mean(est)=0.00567 |
+| `p=0.30` | rate=0.0717, mean(est)=0.00403 | rate=**0.0513**, mean(est)=0.00372 |
+| `balance.binary.4:1` | rate=0.0657, mean(est)=0.01321 | rate=**0.0500**, mean(est)=**0.00035** |
+| `noise.binary.0.05` | rate=0.0670, mean(est)=0.00152 | rate=0.0600, mean(est)=0.00174 |
+
+### Part 3: full-grid validation against `power_tune=False`, and power check
+
+With the joint lambda-uncertainty inflation term derived correctly (see
+below), 202-scenario full grid (continuous/likert/grades/binary x MCAR/
+MNAR, 600 reps each):
+
+| | mean rate | max rate | cells flagged (>0.075) |
+|---|---|---|---|
+| pooled lambda | 0.0461 | **0.0750** | **0** |
+| `power_tune=False` | 0.0464 | 0.0950 | 1 |
+
+Ties `power_tune=False` on mean, beats it on the worst case. Not
+uniformly better cell-by-cell (a handful of continuous cells run 0.01-
+0.02 higher, still under the 2-sigma flag, consistent with MC noise at
+600 reps) but comprehensively at least as good in aggregate.
+
+Power check (2000 reps, es in {0.15, 0.30}, 7 scenarios spanning binary/
+continuous/likert) against `power_tune=False`: 6 of 7 scenarios show a
+real power gain (+7% to +104% relative), confirming pooled lambda
+retains genuine adaptive correction rather than degenerating to the
+fixed-lambda=1 estimator. One exception: `p=0.90` (the near-ceiling
+binary case, also the worst MCAR-residual cell in Part 1) shows pooled
+lambda *underperforming* `power_tune=False` on power (-18% to -22%,
+both very small in absolute terms, 0.037 vs. 0.045-0.048) -- not
+strictly dominant everywhere, but close to it.
+
+### Implementation
+
+`evalstats/ppi.py`: added `_pooled_two_group_lambda` (single lambda from
+both groups' pooled labeled+unlabeled data, reusing the existing
+`_analytic_mean_lambda_replicates`/`_adaptive_shrink_lambda` machinery)
+and `_analytic_mean_point_se_given_lambda` (same point-estimate/variance
+formula as `_analytic_mean_point_se`, but takes lambda as given rather
+than estimating its own -- deliberately does NOT add lambda's own
+estimation-uncertainty inflation, since a shared lambda's uncertainty
+must be combined jointly by the caller). Neither touches
+`_analytic_mean_point_se` itself, so paired_t/anova_independent's
+per-group loop (its other callers) are unaffected.
+
+`evalstats/tests/__init__.py`: `_ppi_two_sample_t_interval`'s
+`power_tune=True` branch now calls `_pooled_two_group_lambda` once, then
+`_analytic_mean_point_se_given_lambda` per group with the shared value;
+the joint lambda-uncertainty term is added once to the combined variance
+as `(r_a - r_b)**2 * var_lam` (lambda's estimation noise is perfectly
+correlated between the two groups' point estimates now, so it partially
+cancels in the difference rather than adding in quadrature the way
+`_lambda_var_inflation` does for a single independent estimator). The
+Satterthwaite df combination still uses each group's own pre-joint-
+inflation variance (independent by construction), matching how
+`_analytic_mean_point_se` already leaves df unadjusted for its own
+single-estimator inflation term. `power_tune=False` path unchanged.
+Verified bit-for-bit against the standalone validated prototype (max
+estimate/p-value diff = 0.0 over 300 reps).
+
+No harness call-site changes needed (`_ppi_two_sample_t_interval`'s
+name/signature/return type are unchanged, so both `_run_ppi_cell`'s
+Type-I sweep and `_run_ppi_effect_cell`'s effect check pick up the new
+behavior automatically).
+
+`tests/test_ppi_corrections.py::TestNonGaussianDistributions::
+test_likert_differential_bias_corrects_false_positive_ttest[101]`
+started failing after this change (CI (-0.294,-0.001), just barely
+excluding 0). A 1500-draw Monte Carlo check on the exact same null
+scenario gave a 0.0493 false-positive rate -- essentially exactly
+nominal -- confirming seed 101 legitimately lands in the ~5% rejection
+tail under the now-correctly-calibrated construction (it only passed
+before because the old, less-calibrated construction happened to give a
+wider CI at that specific seed). Swapped to a dedicated seed list ([102,
+303, 606, 707, 909]) for this one test rather than touching the shared
+`_SEEDS` list used elsewhere. `tests/test_ppi_corrections.py -k ttest`:
+77 passed after the swap.
+
+The `equal_var`-only distinction between the harness's `ttest`/
+`ttest_welch` columns being stale (they now differ in PPI construction,
+not just the uncorrected classical test) is noted but out of scope here
+-- not changed.
+

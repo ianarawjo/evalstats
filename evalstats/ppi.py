@@ -801,6 +801,119 @@ def _analytic_mean_point_se(
     return estimate, se, f_unlab, f_lab, rectifier, (lam if power_tune else None), df
 
 
+def _pooled_two_group_lambda(
+    Y_lab_a: np.ndarray, Y_hat_lab_a: np.ndarray, Y_hat_unlab_a: np.ndarray,
+    Y_lab_b: np.ndarray, Y_hat_lab_b: np.ndarray, Y_hat_unlab_b: np.ndarray,
+) -> tuple[float, float]:
+    """Single lambda estimated from the POOLED (both groups') labeled and
+    unlabeled data, instead of each group independently estimating its
+    own -- see :func:`evalstats.tests._ppi_two_sample_t_interval`'s
+    docstring for why this replaced per-group estimation there. Per-group
+    lambda is fine under MCAR, but under MNAR (label selection correlated
+    with an item's own value) it can distort the two groups' labeled
+    subsamples asymmetrically, and a per-group lambda has no data to
+    average that distortion out over. Pooling the labeled/unlabeled data
+    across both groups before estimating lambda restores that averaging
+    -- the same "single global rectifier" pattern :func:`_ppi_two_sample`
+    already uses via ``correct()``'s general bootstrap path, just
+    computed in closed form here. Empirically fixes both the MNAR
+    failure (worst binary cell: 0.260 -> 0.038 rejection rate under the
+    null) and, as a side effect, the original MCAR binary near-boundary
+    inflation this construction was built to fix in the first place
+    (same mechanism: pooling both groups' data roughly doubles the
+    effective sample the ratio lambda_raw = cov/denom is estimated from,
+    which directly reduces how often noise pushes it to the hard [0,1]
+    clamp). See ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s
+    ttest-binary addendum for the full investigation.
+
+    Returns ``(lam, var_lam)``. ``var_lam`` is ``Var(lam_raw)`` estimated
+    from the pooled bootstrap replicates -- the caller needs it to build
+    the JOINT lambda-uncertainty inflation term, since lambda is now
+    shared between the two groups' point estimates rather than
+    independent per group: its contribution to ``Var(est_a - est_b)``
+    uses the *difference* of each group's own rectifier term ``(r_a -
+    r_b)**2 * var_lam``, not each group's term squared independently as
+    :func:`_lambda_var_inflation` computes for a single estimator (lambda
+    noise is perfectly correlated between the two groups here, so it
+    partially cancels in the difference rather than adding in
+    quadrature).
+    """
+    Y_lab = np.concatenate([Y_lab_a, Y_lab_b])
+    Y_hat_lab = np.concatenate([Y_hat_lab_a, Y_hat_lab_b])
+    Y_hat_unlab = np.concatenate([Y_hat_unlab_a, Y_hat_unlab_b])
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    denom = var_unlab + var_hat_lab
+    lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0) if denom > 1e-12 else 1.0
+
+    raw_var_lab = var_lab * n_lab
+    raw_var_hat_lab = var_hat_lab * n_lab
+    if n_lab <= 1 or raw_var_lab < raw_var_hat_lab * 1e-6:
+        lam_replicates = None
+    else:
+        lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+    lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+    var_lam = (
+        float(np.var(lam_replicates, ddof=1))
+        if lam_replicates is not None and len(lam_replicates) > 1
+        else 0.0
+    )
+    return lam, var_lam
+
+
+def _analytic_mean_point_se_given_lambda(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, lam: float,
+) -> tuple[float, float, float, float, float, float, int]:
+    """Same point-estimate/variance construction as
+    :func:`_analytic_mean_point_se`, but takes ``lam`` as GIVEN (already
+    estimated elsewhere -- e.g. pooled across two groups by
+    :func:`_pooled_two_group_lambda`) instead of estimating its own from
+    this group's data alone.
+
+    Deliberately does NOT add lambda's own estimation-uncertainty
+    inflation (:func:`_lambda_var_inflation`'s term): a caller sharing
+    one lambda across multiple groups needs to add that jointly, using
+    all the groups' rectifier terms together, not once per group -- see
+    :func:`_pooled_two_group_lambda`'s docstring.
+
+    Returns ``(estimate, var_estimate, f_unlab, f_lab, rectifier, r_term, df)``
+    -- ``r_term = f_unlab - f_hat_lab`` (the lambda-uncertainty caller
+    needs this per group to build the joint inflation term).
+    """
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+    if n_all == 0:
+        raise ValueError(
+            "PPI correction requires at least one unlabeled item, got n_all=0 "
+            "(every item in this comparison is human-labeled, leaving no "
+            "unlabeled residual for the LLM-only term). If every item is "
+            "labeled, use the human labels directly instead of PPI correction."
+        )
+
+    f_unlab = float(np.mean(Y_hat_unlab))
+    f_lab = float(np.mean(Y_lab))
+    f_hat_lab = float(np.mean(Y_hat_lab))
+    rectifier = f_lab - f_hat_lab
+    r_term = f_unlab - f_hat_lab
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    estimate = f_lab + lam * r_term
+    var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+    df = max(n_lab - 1, 1)
+
+    return estimate, var_estimate, f_unlab, f_lab, rectifier, r_term, df
+
+
 def _analytic_mean_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool,

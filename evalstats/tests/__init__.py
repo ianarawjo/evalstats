@@ -2593,17 +2593,32 @@ def _ppi_two_sample_t_interval(
     covariates -- see that function's ``X_lab``/``X_unlab`` handling);
     this is a standalone function callers reach directly instead.
 
-    Each group's own PPI-corrected mean and variance come from
-    :func:`evalstats.ppi._analytic_mean_point_se` -- the SAME per-group
-    closed-form machinery already used inside
-    :func:`_ppi_anova_independent_f_stat`'s ``power_tune`` branch, so each
-    group gets its own independently adaptively-tuned lambda. Groups A and
-    B are independent samples, so ``Var(A - B) = Var(A) + Var(B)``; their
-    two (generally unequal) degrees of freedom are combined via
-    :func:`evalstats.ppi._cross_fit_satterthwaite_df` -- despite the name,
-    a generic two-independent-component Satterthwaite combiner (introduced
-    for wilcoxon's cross-fitted CI, reused here as-is; nothing about it is
-    specific to cross-fitting).
+    Each group's own PPI-corrected mean/variance moments come from
+    :func:`evalstats.ppi._analytic_mean_point_se` (``power_tune=False``)
+    or, when ``power_tune=True``, from a SHARED lambda estimated once
+    from both groups' POOLED labeled+unlabeled data
+    (:func:`evalstats.ppi._pooled_two_group_lambda`) rather than each
+    group independently estimating its own -- per-group lambda is fine
+    under MCAR, but under MNAR (label selection correlated with an
+    item's own value) it can distort the two groups' labeled subsamples
+    asymmetrically, and a per-group lambda has no data to average that
+    distortion out over (worst observed case: 0.260 rejection rate under
+    the null on a binary MNAR scenario, vs. 0.038 after pooling -- see
+    simulations/out/results_why_ppi_shrink_1_over_0.md's ttest-binary
+    addendum). Pooling also, as a side effect, further reduces the
+    original MCAR near-boundary inflation this construction was built to
+    fix (roughly doubling the effective sample the lambda ratio is
+    estimated from). Groups A and B are independent samples, so
+    ``Var(A - B) = Var(A) + Var(B))`` plus, when lambda is shared, a joint
+    lambda-uncertainty term (see ``_pooled_two_group_lambda``'s
+    docstring); their two (generally unequal) degrees of freedom are
+    combined via :func:`evalstats.ppi._cross_fit_satterthwaite_df` --
+    despite the name, a generic two-independent-component Satterthwaite
+    combiner (introduced for wilcoxon's cross-fitted CI, reused here as-is;
+    nothing about it is specific to cross-fitting), computed from each
+    group's own pre-joint-inflation variance (independent by construction),
+    matching how :func:`_analytic_mean_point_se` already leaves df
+    unadjusted for its own single-estimator lambda inflation term.
 
     Built specifically to fix ttest's real, validated small-sample
     weakness on binary/discrete proportion data: ``correct()``'s general
@@ -2625,7 +2640,10 @@ def _ppi_two_sample_t_interval(
     group's own label is non-NaN; each group's masking is independent
     (unlike :func:`_ppi_paired_t_interval`, there is no shared pairing).
     """
-    from evalstats.ppi import _analytic_mean_point_se, _cross_fit_satterthwaite_df
+    from evalstats.ppi import (
+        _analytic_mean_point_se, _analytic_mean_point_se_given_lambda,
+        _pooled_two_group_lambda, _cross_fit_satterthwaite_df,
+    )
     from scipy.stats import t as _t_dist_local
 
     mask_a = ~np.isnan(a_lab)
@@ -2635,16 +2653,31 @@ def _ppi_two_sample_t_interval(
             "Both groups need at least one labeled item in a_lab and b_lab."
         )
 
-    est_a, se_a, f_unlab_a, f_lab_a, rect_a, lam_a, df_a = _analytic_mean_point_se(
-        a_lab[mask_a], a[mask_a], a[~mask_a], power_tune=power_tune,
-    )
-    est_b, se_b, f_unlab_b, f_lab_b, rect_b, lam_b, df_b = _analytic_mean_point_se(
-        b_lab[mask_b], b[mask_b], b[~mask_b], power_tune=power_tune,
-    )
+    if power_tune:
+        lam, var_lam = _pooled_two_group_lambda(
+            a_lab[mask_a], a[mask_a], a[~mask_a],
+            b_lab[mask_b], b[mask_b], b[~mask_b],
+        )
+        est_a, var_a, f_unlab_a, f_lab_a, rect_a, r_a, df_a = _analytic_mean_point_se_given_lambda(
+            a_lab[mask_a], a[mask_a], a[~mask_a], lam,
+        )
+        est_b, var_b, f_unlab_b, f_lab_b, rect_b, r_b, df_b = _analytic_mean_point_se_given_lambda(
+            b_lab[mask_b], b[mask_b], b[~mask_b], lam,
+        )
+        estimate = est_a - est_b
+        var_estimate = var_a + var_b + ((r_a - r_b) ** 2) * var_lam
+        lam_a = lam_b = lam
+    else:
+        est_a, se_a, f_unlab_a, f_lab_a, rect_a, lam_a, df_a = _analytic_mean_point_se(
+            a_lab[mask_a], a[mask_a], a[~mask_a], power_tune=False,
+        )
+        est_b, se_b, f_unlab_b, f_lab_b, rect_b, lam_b, df_b = _analytic_mean_point_se(
+            b_lab[mask_b], b[mask_b], b[~mask_b], power_tune=False,
+        )
+        estimate = est_a - est_b
+        var_a, var_b = se_a * se_a, se_b * se_b
+        var_estimate = var_a + var_b
 
-    estimate = est_a - est_b
-    var_a, var_b = se_a * se_a, se_b * se_b
-    var_estimate = var_a + var_b
     se = float(np.sqrt(var_estimate))
     df = (
         _cross_fit_satterthwaite_df(var_a, float(df_a), var_b, float(df_b))
@@ -2659,10 +2692,10 @@ def _ppi_two_sample_t_interval(
         ci_low, ci_high = estimate - t_crit * se, estimate + t_crit * se
         p_value = min(max(float(2.0 * (1.0 - _t_dist_local.cdf(abs(estimate) / se, df))), 0.0), 1.0)
 
-    # Combined lambda for reporting only (not used in the estimate/CI
-    # above, which already applied each group's own lambda independently)
-    # -- a labeled-sample-size-weighted average of the two groups' own
-    # values, mirroring wilcoxon's cross-fit combined-lambda convention.
+    # Combined lambda for reporting. When power_tune=True this is just
+    # `lam` (both groups share the same pooled value, lam_a == lam_b);
+    # kept as a labeled-sample-size-weighted average for generality and
+    # to mirror wilcoxon's cross-fit combined-lambda convention.
     n_lab_a, n_lab_b = int(mask_a.sum()), int(mask_b.sum())
     if lam_a is not None and lam_b is not None:
         lam_combined = (n_lab_a * lam_a + n_lab_b * lam_b) / (n_lab_a + n_lab_b)
