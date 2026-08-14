@@ -3195,3 +3195,89 @@ The `equal_var`-only distinction between the harness's `ttest`/
 not just the uncorrected classical test) is noted but out of scope here
 -- not changed.
 
+## Addendum 32 (2026-08-14): ttest_welch migrated to the same closed-form
+construction, restoring the equal_var-only invariant
+
+Addendum 31 flagged but deliberately left unchanged: `simulations/
+harness/cases/pvalues.py`'s `ttest_welch` column still called the old
+general-purpose percentile-bootstrap `_ppi_two_sample` at both its call
+sites (`_run_ppi_cell`'s Type-I sweep, `_run_ppi_effect_cell`'s effect
+check), while `ttest`'s own blocks had already been migrated to the
+closed-form `_ppi_two_sample_t_interval`. Confirmed via a full harness
+Type-I run that `ttest_welch` was, as a result, one of the worst-
+calibrated tests in the 14-test suite (corr max 0.110 on the MCAR grid,
+worst cells: `lab.5%` 0.110, `balance.binary.1:1` 0.097, `balance.binary.
+4:1.modbias` 0.097, `shape.binary.p=0.90` 0.093, `noise.binary.0.2.
+modbias` 0.093, `hetero.extreme` 0.093) -- essentially the same
+discreteness/small-`n_lab` family of near-boundary bias the ttest fix
+addressed, just left unfixed on this column because the call site was
+never migrated.
+
+Both `ttest_welch` call sites now call `_ppi_two_sample_t_interval`
+directly, matching the `ttest` block immediately above each (the
+uncorrected `scipy_stats.ttest_ind(..., equal_var=False)` computation is
+untouched -- that remains the one legitimate difference between the two
+columns, restoring the invariant this file's `_COMPARISON_METHODS`
+docstring already documents: `ttest`/`ttest_welch` share the identical
+PPI-corrected construction and differ only in which classical reference
+test computes the uncorrected arm).
+
+Standalone Monte Carlo validation (2500 reps/cell, `n_boot=1000` for the
+old bootstrap construction, same methodology as Addendum 31's Part 2),
+comparing old (`_ppi_two_sample`) vs. new (`_ppi_two_sample_t_interval`)
+directly on `ttest_welch`'s worst cells under the null:
+
+| scenario | old (`_ppi_two_sample`) | new (`_ppi_two_sample_t_interval`) |
+|---|---|---|
+| `lab.5%` | 0.0636 | **0.0444** |
+| `balance.binary.1:1` | 0.0528 | **0.0416** |
+| `balance.binary.4:1.modbias` | 0.0624 | **0.0468** |
+| `shape.binary.p=0.90` | 0.0708 | **0.0488** |
+| `noise.binary.0.2.modbias` | 0.0548 | **0.0396** |
+| `hetero.extreme` | 0.0552 | **0.0420** |
+
+Every cell moves toward nominal alpha=0.05 (SE at n=2500 is ~0.0044, so
+each shift is several SE and not MC noise). The old-construction rates
+here (0.053-0.071) read lower than the harness's own reps=200 sweep
+numbers above (0.093-0.110) because reps=200 carries much larger MC
+noise (SE~0.03 on a rate this size) -- consistent with, not
+contradicting, the harness numbers; both point the same direction.
+
+`tests/test_ppi_corrections.py -k "welch or ttest"`: 77 passed, no
+seed-boundary failures -- expected, since this migration only touches
+the harness (`simulations/harness/cases/pvalues.py`), not `evalstats/
+tests/__init__.py` or the public `ttest()` API those tests exercise
+directly, so it was never expected to move anything there. Addendum 31's
+own `test_likert_differential_bias_corrects_false_positive_ttest[101]`
+seed-swap (dedicated `[102, 303, 606, 707, 909]` parametrize list) is
+unrelated to this change and untouched.
+
+Found but explicitly NOT changed here (flagged for a separate decision):
+`_ppi_comparison_pvalue`/`_classical_pvalue` (used by
+`_run_ppi_comparison_cell`, the method-comparison factorial sweep, a
+third call site distinct from the two migrated here) still routes BOTH
+`ttest` and `ttest_welch` through `_ppi_two_sample`'s bootstrap
+construction, and `_ppi_comparison_pvalue`'s own docstring claims it
+"mirrors _run_ppi_cell's ... blocks ... exactly" -- a claim that was
+already false for `ttest` since Addendum 29/31 (never migrated there)
+and remains false for `ttest_welch` after this addendum. Left alone
+since it's a separate call site this task wasn't scoped to and changing
+it would affect the method-comparison sweep's own numbers, which
+deserves its own dedicated check rather than a drive-by change here.
+
+**Follow-up (same day): `_ppi_comparison_pvalue` migrated too.** Since it
+genuinely was the same stale-docstring/unmigrated-call-site pattern as
+the two sites above (not a different situation warranting different
+treatment), its `TTEST.name`/`TTEST_WELCH.name` branch was switched from
+`_ppi_two_sample(...)` to `_ppi_two_sample_t_interval(a, b, a_lab,
+b_lab, _ALPHA, power_tune=power_tune)`, matching the other two sites
+exactly (the now-unused per-branch `estimator` lambda was removed;
+`power_tune` forwarding for `--factorial-no-power-tune` preserved).
+Sanity check (`shape.binary.p=0.90`, 2000 reps, `n_boot=1000`): `ttest`
+and `ttest_welch` now return bit-identical rates (0.0545 each, both near
+nominal) since they call the literal same function on the literal same
+data -- confirms the intended "identical PPI correction, differing only
+in the uncorrected reference test" invariant now holds at all three
+call sites. No test file references `_ppi_comparison_pvalue` directly
+(internal harness function only), so no pytest impact.
+

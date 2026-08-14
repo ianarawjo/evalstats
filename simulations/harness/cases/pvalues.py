@@ -3516,7 +3516,11 @@ def _run_ppi_cell(
                 try:
                     p_u = float(scipy_stats.ttest_ind(cell.llm_a2, cell.llm_b2, equal_var=False).pvalue)
                     uncorrected[TTEST_WELCH.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    # Closed-form construction -- see the matching TTEST
+                    # block above for why (identical PPI-corrected
+                    # construction; only the uncorrected reference test
+                    # differs, equal_var=True vs False).
+                    r = _ppi_two_sample_t_interval(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA)
                     corrected[TTEST_WELCH.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[TTEST_WELCH.name] += 1
@@ -4026,7 +4030,9 @@ def _run_ppi_effect_cell(
 
             if TTEST_WELCH.name in active_tests:
                 try:
-                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    # Closed-form construction -- see the Type-I sweep's
+                    # matching TTEST_WELCH block for why.
+                    r = _ppi_two_sample_t_interval(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA)
                     out[TTEST_WELCH.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
@@ -4577,23 +4583,26 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
 
 def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int, power_tune: bool = True) -> float:
     """The SAME PPI-corrected call _run_ppi_cell uses for this method
-    (_ppi_two_sample / _ppi_two_sample_midrank_corrected for "group"
-    methods, _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
-    ttest_welch/mwu/mwu_mnar_experimental/paired_t/wilcoxon blocks, which this
-    mirrors exactly).
+    (_ppi_two_sample_t_interval for ttest/ttest_welch, _ppi_two_sample /
+    _ppi_two_sample_midrank_corrected for the other "group" methods,
+    _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
+    ttest/ttest_welch/mwu/mwu_mnar_experimental/paired_t/wilcoxon blocks,
+    which this mirrors exactly).
 
-    power_tune : forwarded to _ppi_two_sample/_ppi_paired_arrays as-is (see
-    evalstats.ppi.correct's power_tune parameter). Default True matches the
-    production default; --factorial-no-power-tune sets this False for a
-    head-to-head comparison run -- see that flag's help text."""
+    power_tune : forwarded to _ppi_two_sample_t_interval/_ppi_two_sample/
+    _ppi_paired_arrays as-is (see evalstats.ppi.correct's power_tune
+    parameter). Default True matches the production default;
+    --factorial-no-power-tune sets this False for a head-to-head
+    comparison run -- see that flag's help text."""
     if structure == "group":
         if method in (TTEST.name, TTEST_WELCH.name):
             # Identical PPI correction for both -- PPI's mean-difference
             # estimator doesn't depend on the classical equal-variance
             # assumption at all; only _classical_pvalue's UNCORRECTED arm
-            # differs between them (equal_var=True vs False).
-            estimator = lambda ya, yb: float(ya.mean() - yb.mean())  # noqa: E731
-            return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune).p_value
+            # differs between them (equal_var=True vs False). Closed-form
+            # construction (see the matching _run_ppi_cell TTEST/
+            # TTEST_WELCH blocks for why -- Addendum 29/31/32).
+            return _ppi_two_sample_t_interval(a, b, a_lab, b_lab, _ALPHA, power_tune=power_tune).p_value
         if method == MWU_MNAR_EXPERIMENTAL.name:
             return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
         if method == MWU_MNAR_POOLED.name:
