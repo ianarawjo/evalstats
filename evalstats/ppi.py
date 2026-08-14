@@ -1388,16 +1388,27 @@ def correct(
     fast_est = _fast_batch.get(id(estimator_func)) if X_unlab is None else None
     fast_rect = _fast_batch.get(id(_rect_fn)) if X_lab is None else None
 
-    # Smoothed-bootstrap jitter (see _tie_jitter_scale) -- only when the
-    # estimator/rectifier is np.median specifically (mean's bootstrap
-    # distribution doesn't degenerate under ties; jittering it would just
-    # add pointless noise). 0.0 disables jitter (np.random.normal(0, 0, ...)
-    # is exactly a no-op, so this is safe to add unconditionally below).
-    _jitter_unlab = _tie_jitter_scale(Y_hat_unlab) if fast_est is not None and estimator_func is np.median else 0.0
-    _jitter_labpair = (
-        _tie_jitter_scale(np.concatenate([Y_lab, Y_hat_lab]))
-        if fast_rect is not None and _rect_fn is np.median else 0.0
-    )
+    # Smoothed-bootstrap jitter (see _tie_jitter_scale). Applied
+    # unconditionally, not just for np.median: _tie_jitter_scale is
+    # self-scaling from the DATA alone (min gap between distinct values /
+    # 20), so it's already a near-zero no-op on high-resolution continuous
+    # data and only becomes meaningfully sized on coarse/discrete data
+    # (e.g. binary {0,1} scores) -- no need to special-case which
+    # estimator_func is in use. Originally gated to np.median only
+    # (bootstrapping a median under ties is a classically degenerate
+    # combination -- most resamples land on the identical repeated value),
+    # but a mean-type estimator on a near-boundary binary proportion has an
+    # analogous (if less severe) failure mode: a percentile bootstrap of a
+    # discrete, boundary-adjacent proportion is skewed/undercovers. Confirmed
+    # via simulation this helps ttest's covariate-based construction
+    # (_ppi_two_sample, which never reaches the analytic backend and so
+    # never got jitter before this) on binary scenarios where differential
+    # judge bias pushes one group's score distribution toward 0 or 1 -- see
+    # simulations/out/results_why_ppi_shrink_1_over_0.md's ttest-binary
+    # addendum. 0.0 disables jitter (np.random.normal(0, 0, ...) is exactly
+    # a no-op, so this is safe to add unconditionally below).
+    _jitter_unlab = _tie_jitter_scale(Y_hat_unlab)
+    _jitter_labpair = _tie_jitter_scale(np.concatenate([Y_lab, Y_hat_lab]))
 
     def _draw_replicates() -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         b_unlab_arr = np.empty(n_boot)

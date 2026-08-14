@@ -154,6 +154,7 @@ with warnings.catch_warnings():
     )
     from evalstats.tests import (
         _ppi_two_sample,
+        _ppi_two_sample_t_interval,
         _ppi_two_sample_midrank_corrected,
         _ppi_two_sample_midrank_corrected_pooled,
         _ppi_two_sample_adaptive,
@@ -3498,7 +3499,15 @@ def _run_ppi_cell(
                 try:
                     p_u = float(scipy_stats.ttest_ind(cell.llm_a2, cell.llm_b2, equal_var=True).pvalue)
                     uncorrected[TTEST.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    # Closed-form (no-bootstrap) construction, not the
+                    # general correct()-bootstrap _ppi_two_sample path --
+                    # see _ppi_two_sample_t_interval's docstring for why:
+                    # covariate-based estimators can never reach an
+                    # analytic backend through correct()'s own dispatch,
+                    # so ttest was stuck on the percentile bootstrap,
+                    # which undercovers on near-boundary discrete (binary)
+                    # proportions -- see this file's ttest-binary addendum.
+                    r = _ppi_two_sample_t_interval(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA)
                     corrected[TTEST.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     failed[TTEST.name] += 1
@@ -4008,7 +4017,9 @@ def _run_ppi_effect_cell(
 
             if TTEST.name in active_tests:
                 try:
-                    r = _ppi_two_sample(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, lambda ya, yb: float(ya.mean() - yb.mean()), _ALPHA, n_boot, _rng_seed())
+                    # Closed-form construction -- see the Type-I sweep's
+                    # matching TTEST block above for why.
+                    r = _ppi_two_sample_t_interval(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA)
                     out[TTEST.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass

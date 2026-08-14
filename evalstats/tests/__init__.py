@@ -2582,6 +2582,101 @@ def _ppi_paired_t_interval(
     return _analytic_mean_correct(diffs_lab_true, diffs_lab_llm, diffs_unlab, alpha, power_tune=power_tune)
 
 
+def _ppi_two_sample_t_interval(
+    a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, alpha: float, power_tune: bool = True,
+):
+    """PPI correction for an INDEPENDENT two-sample mean-difference
+    estimand ``mean(a) - mean(b)``, via a closed-form (no-bootstrap)
+    construction -- the independent-groups analogue of
+    :func:`_ppi_paired_t_interval`. Not registered with :func:`evalstats.
+    ppi.correct`'s analytic-backend dispatch (which requires no
+    covariates -- see that function's ``X_lab``/``X_unlab`` handling);
+    this is a standalone function callers reach directly instead.
+
+    Each group's own PPI-corrected mean and variance come from
+    :func:`evalstats.ppi._analytic_mean_point_se` -- the SAME per-group
+    closed-form machinery already used inside
+    :func:`_ppi_anova_independent_f_stat`'s ``power_tune`` branch, so each
+    group gets its own independently adaptively-tuned lambda. Groups A and
+    B are independent samples, so ``Var(A - B) = Var(A) + Var(B)``; their
+    two (generally unequal) degrees of freedom are combined via
+    :func:`evalstats.ppi._cross_fit_satterthwaite_df` -- despite the name,
+    a generic two-independent-component Satterthwaite combiner (introduced
+    for wilcoxon's cross-fitted CI, reused here as-is; nothing about it is
+    specific to cross-fitting).
+
+    Built specifically to fix ttest's real, validated small-sample
+    weakness on binary/discrete proportion data: ``correct()``'s general
+    percentile bootstrap (what ``ttest()``/``_ppi_two_sample`` used
+    exclusively before this, since covariate-based estimators can never
+    reach an analytic backend through ``correct()``'s own dispatch)
+    undercovers on near-boundary discrete proportions -- the same broad
+    "percentile bootstrap + discreteness" failure family already
+    documented for the median-under-ties case (``_tie_jitter_scale``),
+    just triggered here by boundary proximity rather than ties. Unlike
+    ``PPI_WILSON`` (:func:`_ppi_single_wilson`), this does NOT clamp the
+    resulting interval to a proportion's valid range -- kept general
+    since this same construction also serves ``ttest()``'s continuous
+    case, where a [-1, 1]-style clamp would be actively wrong. See
+    simulations/out/results_why_ppi_shrink_1_over_0.md's ttest-binary
+    addendum for the full diagnosis and validation.
+
+    A position is included in a group's labeled set only when that
+    group's own label is non-NaN; each group's masking is independent
+    (unlike :func:`_ppi_paired_t_interval`, there is no shared pairing).
+    """
+    from evalstats.ppi import _analytic_mean_point_se, _cross_fit_satterthwaite_df
+    from scipy.stats import t as _t_dist_local
+
+    mask_a = ~np.isnan(a_lab)
+    mask_b = ~np.isnan(b_lab)
+    if mask_a.sum() == 0 or mask_b.sum() == 0:
+        raise ValueError(
+            "Both groups need at least one labeled item in a_lab and b_lab."
+        )
+
+    est_a, se_a, f_unlab_a, f_lab_a, rect_a, lam_a, df_a = _analytic_mean_point_se(
+        a_lab[mask_a], a[mask_a], a[~mask_a], power_tune=power_tune,
+    )
+    est_b, se_b, f_unlab_b, f_lab_b, rect_b, lam_b, df_b = _analytic_mean_point_se(
+        b_lab[mask_b], b[mask_b], b[~mask_b], power_tune=power_tune,
+    )
+
+    estimate = est_a - est_b
+    var_a, var_b = se_a * se_a, se_b * se_b
+    var_estimate = var_a + var_b
+    se = float(np.sqrt(var_estimate))
+    df = (
+        _cross_fit_satterthwaite_df(var_a, float(df_a), var_b, float(df_b))
+        if var_a > 0.0 and var_b > 0.0 else max(float(df_a), float(df_b), 1.0)
+    )
+
+    if se <= 0.0:
+        ci_low = ci_high = estimate
+        p_value = 1.0 if abs(estimate) < 1e-12 else 0.0
+    else:
+        t_crit = float(_t_dist_local.ppf(1.0 - alpha / 2.0, df))
+        ci_low, ci_high = estimate - t_crit * se, estimate + t_crit * se
+        p_value = min(max(float(2.0 * (1.0 - _t_dist_local.cdf(abs(estimate) / se, df))), 0.0), 1.0)
+
+    # Combined lambda for reporting only (not used in the estimate/CI
+    # above, which already applied each group's own lambda independently)
+    # -- a labeled-sample-size-weighted average of the two groups' own
+    # values, mirroring wilcoxon's cross-fit combined-lambda convention.
+    n_lab_a, n_lab_b = int(mask_a.sum()), int(mask_b.sum())
+    if lam_a is not None and lam_b is not None:
+        lam_combined = (n_lab_a * lam_a + n_lab_b * lam_b) / (n_lab_a + n_lab_b)
+    else:
+        lam_combined = None
+
+    from evalstats.ppi import PPIResult
+    return PPIResult(
+        estimate=estimate, ci_low=ci_low, ci_high=ci_high, alpha=alpha,
+        llm_estimate=float(f_unlab_a - f_unlab_b), human_estimate=float(f_lab_a - f_lab_b),
+        rectifier=float(rect_a - rect_b), p_value=p_value, lam=lam_combined,
+    )
+
+
 def _ppi_single_logit_t(
     a: np.ndarray, a_lab: np.ndarray, alpha: float, lo: float = 0.0, hi: float = 1.0, power_tune: bool = True,
 ):
@@ -3897,9 +3992,7 @@ def ttest(
                 np.concatenate([a, b]),
                 np.concatenate([a_lab, b_lab]),
             )
-            def _indep(ya, yb):
-                return float(ya.mean() - yb.mean())
-            ppi = _ppi_two_sample(a, b, a_lab, b_lab, _indep, alpha, n_boot, rng, power_tune=power_tune)
+            ppi = _ppi_two_sample_t_interval(a, b, a_lab, b_lab, alpha, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)

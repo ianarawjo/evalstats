@@ -2604,3 +2604,133 @@ by default wherever n_lab>=4 -- no further wiring needed. Full pytest
 suite (`tests/test_ppi_corrections.py`, 319 tests) passes unchanged.
 Diagnostic/validation scripts were standalone (not added to the repo).
 ttest/ttest_welch's inflation is the natural next investigation.
+
+## Addendum 29 (2026-08-14): ttest's binary Type-I inflation -- closed-form construction, same family as PPI_WILSON
+
+Motivated by the same harness run that flagged wilcoxon (Addendum 28):
+`ttest`/`ttest_welch` were ALSO substantially elevated (corr max 0.107,
+mean 0.062-0.063 -- essentially tied with wilcoxon's 0.110/0.064), but
+had not yet been investigated. User's hypothesis: a t-test-family
+weakness on non-normal data. Correct in spirit, wrong in the specific
+mechanism -- `ttest`/`ttest_welch` were never actually a classical
+Student-t construction here (no normality assumption anywhere); they
+were `_ppi_two_sample` -> `correct()`'s general PERCENTILE BOOTSTRAP,
+unconditionally. The real issue: percentile-bootstrapping a MEAN on
+discrete, boundary-adjacent proportions (binary judge scores are
+literally 0/1, via a flip-probability confusion-matrix model -- see
+`_jb_llm_binary`) is a known-bad combination, the same broad "percentile
+bootstrap + discreteness" family already fixed elsewhere in this
+codebase for the median-under-ties case (`_tie_jitter_scale`), just
+triggered here by boundary proximity rather than exact ties.
+
+**Root-cause confirmation.** `ttest` can NEVER reach an analytic backend
+through `correct()`'s own dispatch: `_ppi_two_sample` always passes
+`X_lab`/`X_unlab` covariates (to distinguish group A/B), and
+`correct()`'s analytic-backend check explicitly requires
+`X_lab is None and X_unlab is None`. So ttest was permanently stuck on
+the percentile bootstrap regardless of n_lab or `power_tune`, unlike
+paired_t/wilcoxon (which reach a closed-form backend automatically at
+small n_lab). A p-sweep on binary data (`shape.binary.p=0.10/0.30/0.70/
+0.90`, `power_tune=False` to isolate the effect from adaptive tuning
+entirely) showed a revealing ASYMMETRY: Type-I rose with `p` (0.054 ->
+0.058 -> 0.067 -> 0.089), not symmetrically around p=0.5 as a pure
+"distance from a fixed boundary" story would predict. Traced to
+`bias_type="differential"`: it pushes one group's JUDGE score in a FIXED
+direction regardless of the true `p` -- at low true `p` this pulls the
+judge's own proportion away from the 0 boundary (harmless), but at high
+true `p` it compounds, pushing the judge's realized proportion to ~0.925
+(measured directly), right up against the 1.0 boundary with n=100 in
+that group. The labeled-side sample (the initial hypothesis) turned out
+NOT to be the driver -- its own "collapsed to zero variance" rate was
+flat (~0.016) across both well- and badly-calibrated `p` values.
+
+**Fix explored first, not adopted: broadened smoothed-bootstrap jitter.**
+`_tie_jitter_scale`'s existing jitter mechanism was gated to
+`estimator_func is np.median` specifically, and (separately) only wired
+into `correct()`'s fast-batch resampling path -- `_ppi_two_sample`, with
+covariates, always uses the slow per-replicate loop, so ttest got zero
+jitter regardless of estimator. Broadening the trigger to apply
+unconditionally (self-scaling: `_tie_jitter_scale`'s min-gap-based
+formula is already near-zero on high-resolution continuous data) gave a
+real but PARTIAL improvement on binary data (e.g. p=0.90 power_tune=True:
+0.089->0.077) -- but caused an unexpected regression on a continuous
+scenario (`noise.0.7`: 0.060->0.067), since a finite small-n_lab
+continuous sample's own realized minimum gap isn't always negligible.
+Not adopted as the final fix given a cleaner alternative below closes the
+gap further with no such side effect.
+
+**Fix adopted: closed-form two-independent-sample construction
+(`_ppi_two_sample_t_interval`), same family as `PPI_WILSON`.** Note on
+naming: `PPI_WILSON` (`_ppi_single_wilson`) is NOT actually a Wilson
+score interval, despite the name -- its own docstring explains why: a
+genuine Wilson shrinkage-toward-0.5 term is derived from a real
+binomial's variance changing with the hypothesized value, but the
+PPI-corrected estimator's plug-in variance doesn't behave that way, so
+borrowing Wilson's formula would introduce spurious bias. What actually
+makes `PPI_WILSON` well-calibrated at small n is simpler: it's entirely
+CLOSED-FORM (no bootstrap at all), sidestepping the percentile
+bootstrap's boundary-skew weakness rather than patching around it.
+`_ppi_two_sample_t_interval` applies the same idea to ttest's
+independent-two-group case (which `PPI_WILSON` doesn't cover -- it's
+single-arm only): each group's own PPI-corrected mean/variance comes
+from `evalstats.ppi._analytic_mean_point_se` (the same per-group
+machinery `_ppi_anova_independent_f_stat`'s power_tune branch already
+uses, so each group gets its own independently adaptively-tuned lambda),
+combined as `Var(A-B) = Var(A) + Var(B)` (independent samples) with
+`_cross_fit_satterthwaite_df` (wilcoxon's Addendum 28 helper, reused
+as-is -- a generic two-component Satterthwaite combiner, nothing
+cross-fitting-specific about it) combining the two groups' degrees of
+freedom. Unlike `PPI_WILSON`, does NOT clamp to a proportion's valid
+range, since the same construction also serves ttest's continuous case,
+where a [-1, 1]-style clamp would be wrong.
+
+**Validation** (binary: `shape.binary.p=0.10/0.30/0.70/0.90`,
+`n.binary.60.modbias`; continuous: `stress.unbal+diff.mildbias`,
+`balance.4:1.mildbias`, `noise.0.7`; 3000 reps/scenario):
+
+| scenario | old bootstrap `power_tune=False` | new closed-form `power_tune=False` | new closed-form `power_tune=True` |
+|---|---|---|---|
+| p=0.10 | 0.054 | **0.043** | 0.045 |
+| p=0.30 | 0.058 | **0.048** | 0.074 |
+| p=0.70 | 0.067 | **0.049** | 0.060 |
+| p=0.90 | 0.089 | **0.062** | 0.079 |
+| n.binary.60.modbias | 0.068 | **0.042** | 0.058 |
+
+`power_tune=False` is now excellently calibrated across every binary
+scenario tested -- the boundary/discreteness problem in the CI
+construction itself is resolved. `power_tune=True` is improved from the
+old bootstrap baseline in most cases but still shows real residual
+elevation on some scenarios (p=0.30, p=0.90) -- current best
+explanation: `_analytic_mean_point_se`'s own adaptive-lambda estimation
+uses an internal micro-bootstrap (`_analytic_mean_lambda_replicates`) to
+build the shrinkage target, and that micro-bootstrap is itself still
+exposed to the same discreteness issue on binary {0,1} labeled data --
+a different mechanism than the CI-construction problem just fixed, not
+yet investigated further. Continuous scenarios showed clean improvement
+or no change (stress.unbal+diff.mildbias: 0.077->0.052; balance.4:1.
+mildbias: 0.065->0.055; noise.0.7: 0.060->0.061, essentially flat) --
+no sign of the jitter approach's regression.
+
+**API/test changes.** Two existing tests asserted behavior specific to
+the old bootstrap path's silent degeneracy and were updated (per
+explicit user confirmation) to expect the new, more informative errors:
+(1) `test_one_lab_none_defaults_to_all_nan` -- previously the old
+bootstrap path silently produced NaN (mean-of-empty-array) when one
+group had zero human labels; the new closed-form construction raises a
+clear `ValueError` instead, which is arguably the better behavior (a
+caller passing `b_lab=None` almost certainly made a mistake or has a
+genuinely degenerate case). (2) `test_all_items_labeled_raises_
+informatively` -- its regex expected the old bootstrap path's
+"unlabeled pool" wording; ttest now raises `_analytic_mean_point_se`'s
+existing, already-standard message ("no unlabeled residual..."), so the
+regex was updated to match -- a consistency win (ttest now raises the
+SAME message as every other analytic-backend PPI function) rather than
+a new message invented for this.
+
+**Status.** Implemented in `evalstats/tests/__init__.py`
+(`_ppi_two_sample_t_interval`, wired into `ttest()`'s independent-samples
+path) and `simulations/harness/cases/pvalues.py` (both TTEST call
+sites). `tests/test_ppi_corrections.py`: 319 passed (2 tests updated per
+above). The residual `power_tune=True` binary elevation is flagged as a
+smaller, separate, not-yet-investigated follow-up -- the primary
+boundary/discreteness problem this addendum targeted is resolved.

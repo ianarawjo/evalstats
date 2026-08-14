@@ -958,27 +958,34 @@ class TestInputHandling:
         assert r.corrected_estimate is not None
 
     def test_one_lab_none_defaults_to_all_nan(self):
-        """Only a_lab set; b_lab=None treated as all unlabeled for group B."""
+        """Only a_lab set; b_lab=None means group B has zero human labels.
+        ttest()'s independent-samples path now uses a closed-form
+        construction (_ppi_two_sample_t_interval) that requires EACH group
+        to have at least one labeled item (there is no way to estimate a
+        group's own rectifier with none) -- raises a clear error instead
+        of the old bootstrap path's silent NaN (a mean-of-empty-array
+        RuntimeWarning that propagated through uncaught)."""
         rng = np.random.default_rng(101)
         a, b, al, _ = _two_sample(rng, n=100, n_lab=30)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
-            r = ttest(a, b, a_lab=al, b_lab=None, n_boot=200, rng=101)
-        assert r.corrected_estimate is not None
+        with pytest.raises(ValueError, match="at least one labeled item"):
+            ttest(a, b, a_lab=al, b_lab=None, n_boot=200, rng=101)
 
     def test_all_items_labeled_raises_informatively(self):
-        """All items labeled -> PPI has no unlabeled pool to extrapolate the
+        """All items labeled -> PPI has no unlabeled residual to extrapolate the
         correction to (Y_hat_unlab must be DISJOINT from the labeled
         positions -- see evalstats.ppi.correct's docstring), so this now
         raises a clear, actionable error instead of silently reusing the
-        labeled data as its own "unlabeled" set."""
+        labeled data as its own "unlabeled" set. ttest()'s independent-
+        samples path routes through _analytic_mean_point_se (per group),
+        the same closed-form machinery used by paired_t/anova's per-group
+        case, so it raises that shared, already-established message."""
         rng = np.random.default_rng(102)
         n = 80
         truth_a = rng.normal(3.5, 1.0, n)
         truth_b = rng.normal(3.0, 1.0, n)
         a = truth_a + rng.normal(0, 0.1, n)
         b = truth_b + rng.normal(0, 0.1, n)
-        with pytest.raises(ValueError, match="unlabeled pool"):
+        with pytest.raises(ValueError, match="unlabeled item"):
             ttest(a, b, a_lab=truth_a, b_lab=truth_b, n_boot=200, rng=102)
 
     def test_both_labs_none_gives_uncorrected_result(self):
