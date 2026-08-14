@@ -539,8 +539,8 @@ def _stability_core(labels: list[str], arrays: list[np.ndarray], *, warn_orienta
                     "runs. If this came from a pivot table shaped (items, "
                     "runs), you likely need to transpose it (.T) before "
                     "calling stability(), or use the DataFrame form "
-                    "(stability(df, config_col=..., run_col=..., item_col=..., "
-                    "value_col=...)) instead, which has no orientation to get "
+                    "(stability(df, factor_col=..., run_col=..., item_col=..., "
+                    "metric_col=...)) instead, which has no orientation to get "
                     "wrong.",
                     UserWarning,
                     stacklevel=4,
@@ -573,10 +573,10 @@ def stability(
     runs: Union[np.ndarray, dict, pd.DataFrame],
     *,
     labels: Optional[list[str]] = None,
-    config_col: Optional[str] = None,
+    factor_col: Optional[str] = None,
     run_col: Optional[str] = None,
     item_col: Optional[str] = None,
-    value_col: Optional[str] = None,
+    metric_col: Optional[str] = None,
 ) -> StabilityResult:
     """Multi-run reliability: how much does a config's score move across
     repeated runs on the same items?
@@ -588,9 +588,10 @@ def stability(
 
     Three input forms:
 
-    * A long-format DataFrame plus ``config_col``/``run_col``/``item_col``/
-      ``value_col`` -- **recommended**, since each row names its own run
+    * A long-format DataFrame plus ``factor_col``/``run_col``/``item_col``/
+      ``metric_col`` -- **recommended**, since each row names its own run
       and item explicitly, there's no axis-orientation to get wrong.
+      Naming mirrors ``compare()``'s ``factors=``/``metric=``.
     * A single config's repeated-run scores as a 2-D array of shape
       ``(K, M)`` (K runs, M items -- note this is *not* what
       ``df.pivot(index='item', columns='run')`` gives you; that needs a
@@ -607,7 +608,7 @@ def stability(
     labels : list[str], optional
         Override labels when ``runs`` is a single array (default
         ``["value"]``). Ignored for the dict/DataFrame forms.
-    config_col, run_col, item_col, value_col : str, optional
+    factor_col, run_col, item_col, metric_col : str, optional
         Required (and only used) when ``runs`` is a DataFrame.
 
     Returns
@@ -617,26 +618,26 @@ def stability(
     Examples
     --------
     >>> import evalstats as es
-    >>> es.stability(df, config_col="config", run_col="run",
-    ...              item_col="item", value_col="score")
+    >>> es.stability(df, factor_col="config", run_col="run",
+    ...              item_col="item", metric_col="score")
     >>> es.stability(rag_config_a_runs)  # shape (5, 200): 5 runs, 200 items
     >>> es.stability({"config_a": runs_a, "config_b": runs_b}).to_frame()
     """
     if isinstance(runs, pd.DataFrame):
         missing = [
             name for name, col in [
-                ("config_col", config_col), ("run_col", run_col),
-                ("item_col", item_col), ("value_col", value_col),
+                ("factor_col", factor_col), ("run_col", run_col),
+                ("item_col", item_col), ("metric_col", metric_col),
             ] if col is None
         ]
         if missing:
             raise ValueError(
-                "stability() on a DataFrame requires config_col, run_col, "
-                "item_col, and value_col; missing: " + ", ".join(missing)
+                "stability() on a DataFrame requires factor_col, run_col, "
+                "item_col, and metric_col; missing: " + ", ".join(missing)
             )
         for name, col in [
-            ("config_col", config_col), ("run_col", run_col),
-            ("item_col", item_col), ("value_col", value_col),
+            ("factor_col", factor_col), ("run_col", run_col),
+            ("item_col", item_col), ("metric_col", metric_col),
         ]:
             if col not in runs.columns:
                 raise ValueError(f"{name} '{col}' not found in DataFrame columns: {list(runs.columns)}")
@@ -644,8 +645,8 @@ def stability(
         input_labels: list[str] = []
         arrays: list[np.ndarray] = []
         item_order = None
-        for config, group in runs.groupby(config_col, sort=False):
-            pivot = group.pivot(index=run_col, columns=item_col, values=value_col)
+        for config, group in runs.groupby(factor_col, sort=False):
+            pivot = group.pivot(index=run_col, columns=item_col, values=metric_col)
             if item_order is None:
                 item_order = list(pivot.columns)
             elif set(pivot.columns) != set(item_order):
@@ -669,7 +670,7 @@ def stability(
             raise ValueError(
                 "runs must be a 2-D array (K runs x M items), a "
                 "{label: array} dict of such arrays, or a DataFrame (with "
-                f"config_col/run_col/item_col/value_col); got shape {arr.shape}."
+                f"factor_col/run_col/item_col/metric_col); got shape {arr.shape}."
             )
         input_labels = list(labels) if labels is not None else ["value"]
         if len(input_labels) != 1:
@@ -803,9 +804,9 @@ class TradeoffResult:
 def tradeoff(
     df: pd.DataFrame,
     *,
-    config_col: str,
+    factor_col: str,
     item_col: str,
-    primary_col: str,
+    primary_metric: str,
     secondary_metric: dict[str, Literal["min", "max"]],
     alpha: Optional[float] = None,
     n_bootstrap: int = 10_000,
@@ -832,12 +833,13 @@ def tradeoff(
     ----------
     df : pd.DataFrame
         Long-format data with one row per (config, item).
-    config_col, item_col : str
+    factor_col, item_col : str
         Column names identifying the entity being compared (e.g. a prompt
-        template or model) and the benchmark item.
-    primary_col : str
+        template or model) and the benchmark item. ``factor_col`` mirrors
+        ``compare()``'s ``factors=``.
+    primary_metric : str
         Column name of the primary metric (e.g. accuracy). Always assumed
-        "higher is better".
+        "higher is better". Mirrors ``compare()``'s ``metric=``.
     secondary_metric : dict[str, {"min", "max"}]
         Exactly one secondary metric column mapped to its direction, e.g.
         ``{"latency_s": "min"}`` or ``{"quality_score": "max"}``.
@@ -857,8 +859,8 @@ def tradeoff(
     --------
     >>> import evalstats as es
     >>> result = es.tradeoff(
-    ...     df, config_col="prompt", item_col="item",
-    ...     primary_col="accuracy", secondary_metric={"cost_usd": "min"},
+    ...     df, factor_col="prompt", item_col="item",
+    ...     primary_metric="accuracy", secondary_metric={"cost_usd": "min"},
     ... )
     >>> result.status
     >>> result.plot()
@@ -872,8 +874,8 @@ def tradeoff(
     if direction not in ("min", "max"):
         raise ValueError(f"secondary_metric={{'{secondary_col}': {direction!r}}} -- direction must be 'min' or 'max'.")
     for name, col in [
-        ("config_col", config_col), ("item_col", item_col),
-        ("primary_col", primary_col),
+        ("factor_col", factor_col), ("item_col", item_col),
+        ("primary_metric", primary_metric),
     ]:
         if col not in df.columns:
             raise ValueError(f"{name} '{col}' not found in DataFrame columns: {list(df.columns)}")
@@ -885,24 +887,24 @@ def tradeoff(
     # _run_pareto_if_needed) rather than re-deriving it here, so tradeoff()
     # and compare(secondary_metric=...) can never drift out of calibration sync.
     # load_from() needs canonical 'model'/'item' column names to build its
-    # duplicate-checking key -- an arbitrary config_col isn't enough on its
+    # duplicate-checking key -- an arbitrary factor_col isn't enough on its
     # own, even though compare(factors=...) itself accepts any column name.
     from .loader import load_from
     from .api import compare
 
     rng_gen = np.random.default_rng(rng)
     evaldata = load_from(
-        df, metric_cols=[primary_col, secondary_col],
-        col_map={config_col: "model", item_col: "item"},
+        df, metric_cols=[primary_metric, secondary_col],
+        col_map={factor_col: "model", item_col: "item"},
     )
     cr = compare(
-        evaldata, factors="model", metric=primary_col, block="item",
+        evaldata, factors="model", metric=primary_metric, block="item",
         secondary_metric=secondary_metric, alpha=alpha, n_bootstrap=n_bootstrap, rng=rng_gen,
     )
     if cr._pareto is None:
         raise ValueError(
-            "Pareto-front analysis did not run -- check that config_col/"
-            "item_col/primary_col/secondary_metric are correct and that every "
+            "Pareto-front analysis did not run -- check that factor_col/"
+            "item_col/primary_metric/secondary_metric are correct and that every "
             "config was scored on every item for both metrics."
         )
     pareto = cr._pareto
@@ -910,7 +912,7 @@ def tradeoff(
     statuses = pareto["statuses"]
     return TradeoffResult(
         labels=labels,
-        primary_metric=primary_col,
+        primary_metric=primary_metric,
         secondary_metric=secondary_col,
         direction=direction,
         status={l: statuses[l].status for l in labels},
