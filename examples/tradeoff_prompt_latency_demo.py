@@ -129,3 +129,11 @@ PLOT_PATH = REPO_ROOT / "examples" / "tradeoff_prompt_latency_plot.png"
 fig = result.plot()
 fig.savefig(PLOT_PATH, dpi=150, bbox_inches="tight")
 print(f"Wrote {PLOT_PATH.relative_to(REPO_ROOT)}")
+
+# A smaller figsize for a paper figure -- font sizes are fixed in points,
+# so shrinking the physical figure makes the text proportionally bigger
+# relative to the plot without needing to touch fontsize anywhere.
+PAPER_PLOT_PATH = REPO_ROOT / "examples" / "tradeoff_prompt_latency_plot_small.png"
+fig_small = result.plot(figsize=(4.2, 3.4))
+fig_small.savefig(PAPER_PLOT_PATH, dpi=200, bbox_inches="tight")
+print(f"Wrote {PAPER_PLOT_PATH.relative_to(REPO_ROOT)}")
