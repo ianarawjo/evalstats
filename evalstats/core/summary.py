@@ -37,6 +37,7 @@ _BRIGHT_GREEN  = "\033[92m" if _ANSI else ""
 _BRIGHT_YELLOW = "\033[93m" if _ANSI else ""
 _BRIGHT_CYAN   = "\033[96m" if _ANSI else ""
 _BRIGHT_RED    = "\033[91m" if _ANSI else ""
+_BRIGHT_MAGENTA = "\033[95m" if _ANSI else ""  # "pink" -- reserved for the PPI/MCAR reminder, nothing else
 
 
 def _p_best_color(p: float) -> str:
@@ -1564,6 +1565,27 @@ def _print_bundle_summary(
         + (f" | Runs: {n_runs}" if n_runs > 1 else "")
     )
     print()
+
+    if getattr(bundle, "ppi_applied", False):
+        banner = "═" * 58
+        print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
+        print(
+            f"{_BOLD}{_BRIGHT_MAGENTA}PPI-CORRECTED — every estimate below relies on the "
+            f"alignment report printed here first.{_RESET}"
+        )
+        print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
+        ar = bundle.alignment_result
+        if ar is not None:
+            ar.summary()
+        else:
+            # Older bundle predating alignment_result plumbing (e.g. a
+            # cached/pickled object from before this field existed) --
+            # fall back to a pointer rather than crashing on the missing report.
+            print(
+                f"{_BOLD}{_BRIGHT_MAGENTA}(Alignment report unavailable on this "
+                f"bundle -- run judge_alignment(...).summary() directly.){_RESET}"
+            )
+        print()
 
     _print_subsection("--- Descriptive Statistics ---")
     _rob_df = bundle.robustness.summary_table()

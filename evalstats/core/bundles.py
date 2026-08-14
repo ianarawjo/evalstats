@@ -17,6 +17,7 @@ from .variance import RobustnessResult, SeedVarianceResult
 
 if TYPE_CHECKING:
     from .mixed_effects import LMMInfo, FactorialLMMInfo
+    from ..alignment import AlignmentResult
 
 
 # ---------------------------------------------------------------------------
@@ -93,6 +94,12 @@ class AnalysisBundle:
         True when ``compare(..., alignment=...)`` overrode this bundle's
         robustness/pairwise/rank_dist with a Prediction-Powered Inference
         correction (see ``evalstats.api._run_alignment_ppi``).
+    alignment_result : AlignmentResult or None
+        The :class:`~evalstats.alignment.AlignmentResult` the correction
+        above was computed from -- set together with ``ppi_applied``,
+        ``None`` otherwise. Lets the summary printer show the full
+        alignment/representativeness report inline instead of just the
+        boolean flag.
     resolved_score_range : tuple[float, float] or None
         The ``(lo, hi)`` bounds actually used to rescale data for
         ``resolved_method='logit_t'`` / ``resolved_ci_method='logit_t'``
@@ -114,6 +121,7 @@ class AnalysisBundle:
     resolved_score_range: Optional[tuple[float, float]] = None
     p_value_method: Optional[str] = None
     ppi_applied: bool = False
+    alignment_result: Optional["AlignmentResult"] = None
 
     def summary(self, **kwargs) -> None:
         """Print the console summary for this bundle.

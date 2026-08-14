@@ -115,6 +115,11 @@ ar = es.judge_alignment(
     evaldata,
     llm_metric="llm_score",
     human_groundtruth="human_score",
+    # The gold_indices above were drawn via rng.choice(..., replace=False) --
+    # a genuine uniform-random sample of the full item pool, so this is the
+    # case selection="random" exists to confirm. Try changing this to
+    # "unknown" (the default) or "manual" to see the warnings it triggers.
+    selection="random",
 )
 ar.summary()
 

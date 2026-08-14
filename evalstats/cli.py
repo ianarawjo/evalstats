@@ -11,6 +11,9 @@ Usage::
     evalstats analyze data.xlsx --sheet "Results"
     evalstats analyze data.csv --ci 0.90 --n-bootstrap 5000
     evalstats analyze data.csv --evaluator-mode per_evaluator
+
+    evalstats label data.csv --metric llm_score
+    evalstats label data.csv --metric llm_score --n-lab 20 --interactive
 """
 
 from __future__ import annotations
@@ -39,6 +42,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "analyze":
         _cmd_analyze(args)
+    elif args.command == "label":
+        _cmd_label(args)
     else:
         parser.print_help()
         sys.exit(1)
@@ -107,6 +112,110 @@ Long / tidy format  (one observation per row):
       evaluator → eval, judge, criterion, metric_name
       model     → model_label, model_name
       run       → seed, repeat, run_id, trial
+"""
+
+_LABEL_DESCRIPTION = """\
+Picks which rows of your data need a human grade -- a genuinely random
+sample, not "the ones I happened to eyeball" -- and, if you want, lets you
+grade them right here in the terminal.
+
+WHY THIS EXISTS: if you're using an LLM to score/judge your data and later
+want to statistically correct for the judge's mistakes (judge_alignment()
+and compare()'s PPI correction), the human-labeled subset has to be a
+random sample of the full dataset. Hand-picking "the items I wasn't sure
+about" -- the natural instinct -- breaks that assumption and silently
+biases the correction. This command does the random part for you.
+
+CONCRETE SCENARIOS -- what your spreadsheet can look like:
+
+  1) Comparing several prompts/models on the SAME questions (the common
+     case -- one row per (condition, item), item ids repeat across every
+     condition):
+
+         model,     item, llm_score
+         baseline,     0,      0.8
+         baseline,     1,      0.6
+         cot,          0,      0.9
+         cot,          1,      0.7
+         ...
+
+     -> picks --n-lab items ONCE and reuses them across every condition
+        (15 items selected = 15 x n_conditions rows marked), since the same
+        item ids repeat across models/prompts here. This is what the paper
+        example (factor='model') looks like.
+
+  2) A between-subjects study -- each participant/item appears under only
+     ONE condition, so there's nothing to share across conditions:
+
+         condition,  participant, helpfulness
+         control,    p001,        3
+         treatment,  p002,        5
+         ...
+
+     -> samples --n-lab participants independently WITHIN each condition
+        instead (this needs --factor condition --item-col participant,
+        since those column names aren't auto-detected -- see FILE FORMAT
+        below).
+
+  3) You don't have LLM judge scores yet -- you just want to sample and
+     hand-label some ground truth first. Common for HCI researchers
+     collecting labels before a judge model even exists. Omit --metric
+     entirely, and declare what kind of grade you'll give with
+     --score-type (there's no judge column to guess it from):
+
+         model,     item, response_text
+         gpt-4o,       0, "..."
+         claude-3,     0, "..."
+         ...
+
+     -> samples items the same way, creates one generic human_label
+        column instead of one per metric.
+
+  4) Several judge metrics on the same content (e.g. accuracy AND
+     fluency) -- pass --metric more than once; one round of grading
+     covers every metric on the same sampled items:
+
+         model, item, accuracy, fluency
+         gpt-4o,   0,      0.8,     4.2
+         ...
+
+     -> --metric accuracy fluency shares one sampled item set, but each
+        metric gets its own human_<metric> column.
+
+Re-running on an already-marked file is safe -- it tops up any condition
+still short of --n-lab without disturbing prior selections or labels
+already filled in, so --interactive sessions can be stopped and resumed
+freely.
+"""
+
+_LABEL_EPILOG = """\
+FILE FORMAT
+-----------
+
+Deliberately looser than `analyze`'s: any CSV/XLSX with a numeric metric
+column works (or no metric column at all -- see scenario 3 above). No
+'run' column, no duplicate-row restriction, and this also accepts
+between-subjects data with no shared item id across conditions -- it
+doesn't need a full BenchmarkResult, just enough structure to sample from.
+
+Column auto-detection (case-insensitive), same aliases load_from() uses,
+except metric columns -- those are always given explicitly via --metric
+(never auto-detected), and score types -- those are auto-detected from an
+existing --metric column, or declared via --score-type when there isn't one:
+
+  item column   : item, input, example, id, input_label
+  factor column : model, model_label, model_name,
+                  prompt, template, prompt_template
+
+Both are optional and fall back gracefully when not found or not given:
+  no item column   -> each row is treated as its own item (forces
+                       independent per-condition sampling -- there's no
+                       shared identity to reuse across conditions)
+  no factor column -> every row is treated as one group
+
+--factor/--item-col override auto-detection; use them when your columns
+don't match the aliases above (as in scenario 2), or when the confirmation
+prompt shows the wrong design.
 """
 
 
@@ -349,6 +458,124 @@ def _build_parser() -> argparse.ArgumentParser:
             ".json (structured analysis), and .png (robustness interval plot)."
         ),
     )
+
+    label = sub.add_parser(
+        "label",
+        help="Randomly sample items for human labeling (for judge_alignment()/PPI).",
+        description=_LABEL_DESCRIPTION,
+        epilog=_LABEL_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    label.add_argument(
+        "file",
+        type=Path,
+        help=(
+            "Path to a CSV or XLSX file. Looser than 'analyze': any numeric metric "
+            "column works, no item/factor column is required -- see FILE FORMAT below."
+        ),
+    )
+    label.add_argument(
+        "--metric",
+        nargs="*",
+        default=[],
+        metavar="COL",
+        help=(
+            "LLM-judge score column(s) to validate against human labels. Optional -- "
+            "omit entirely to sample/label ground truth before you have any judge "
+            "column at all (see scenario 3 above); pass --score-type in that case, "
+            "since there's no judge score to detect it from. Multiple metrics share "
+            "one sampled item set (one round of grading covers every metric on the "
+            "same content) but each gets its own human_<metric> column."
+        ),
+    )
+    label.add_argument(
+        "--score-type",
+        nargs="+",
+        default=None,
+        choices=["binary", "likert", "continuous", "grade"],
+        metavar="TYPE",
+        help=(
+            "Declare the grading scale for --interactive, instead of auto-detecting "
+            "it from an existing --metric column. Required when --metric is omitted "
+            "(nothing to auto-detect from); optional otherwise, to override a wrong "
+            "guess. Pass one value to apply to every metric, or one per --metric in "
+            "the same order. binary=0/1, likert=small integer (e.g. 1-5), "
+            "grade=0-100, continuous=any number."
+        ),
+    )
+    label.add_argument(
+        "--factor",
+        default=None,
+        metavar="COL",
+        help=(
+            "Condition/factor column (e.g. 'model' or 'prompt'). Auto-detected via "
+            "the same column aliases load_from() uses when omitted."
+        ),
+    )
+    label.add_argument(
+        "--item-col",
+        default=None,
+        metavar="COL",
+        help="Item/input identifier column. Auto-detected when omitted.",
+    )
+    label.add_argument(
+        "--n-lab",
+        type=int,
+        default=15,
+        metavar="INT",
+        help="Target number of labeled items per condition (default: 15).",
+    )
+    label.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        metavar="INT",
+        help=(
+            "Random seed for sampling. If omitted, one is generated and printed -- "
+            "record it for reproducibility."
+        ),
+    )
+    label.add_argument(
+        "--human-prefix",
+        default="human_",
+        metavar="STR",
+        help="Prefix for the created human-label column(s) (default: 'human_').",
+    )
+    label.add_argument(
+        "--sheet",
+        default="0",
+        metavar="SHEET",
+        help="Sheet name or 0-based index for XLSX files (default: 0).",
+    )
+    label.add_argument(
+        "--out",
+        default=None,
+        metavar="PATH",
+        help=(
+            "Output file path. Defaults to '<name>_for_labeling<ext>' next to the "
+            "input file, so the original is never silently overwritten."
+        ),
+    )
+    label.add_argument(
+        "--interactive",
+        action="store_true",
+        help=(
+            "Grade the sampled items right here in the terminal after marking them. "
+            "Never shows the LLM judge's own score for the metric being graded, to "
+            "avoid anchoring the human rater on it. Saves after every answer; 'q' "
+            "quits and saves, 's' skips an item. Re-running with --interactive "
+            "resumes on whatever's still ungraded."
+        ),
+    )
+    label.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        help=(
+            "Skip the 'does this match your experimental design?' confirmation "
+            "prompt (auto-detected item/factor columns and paired/unpaired design). "
+            "For scripted use; interactive terminal runs should leave this off."
+        ),
+    )
     return parser
 
 
@@ -497,6 +724,146 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
 
 # ---------------------------------------------------------------------------
+# label command
+# ---------------------------------------------------------------------------
+
+def _cmd_label(args: argparse.Namespace) -> None:
+    from evalstats.labeling import (
+        detect_design, describe_design, sample_for_labeling, run_interactive_labeling,
+        MARKER_COL, GENERIC_LABEL_KEY, VALID_SCORE_TYPES,
+    )
+
+    metrics = list(getattr(args, "metric", None) or [])
+    score_type_keys = metrics if metrics else [GENERIC_LABEL_KEY]
+
+    # Argument-level validation first -- fails before touching the file at all.
+    score_type_overrides: dict[str, str] = {}
+    if args.score_type:
+        if len(args.score_type) == 1:
+            score_type_overrides = {k: args.score_type[0] for k in score_type_keys}
+        elif len(args.score_type) == len(score_type_keys):
+            score_type_overrides = dict(zip(score_type_keys, args.score_type))
+        else:
+            _die(
+                f"--score-type expects 1 value (applied to all) or "
+                f"{len(score_type_keys)} (one per --metric, in order); "
+                f"got {len(args.score_type)}."
+            )
+    if (
+        getattr(args, "interactive", False)
+        and not metrics
+        and GENERIC_LABEL_KEY not in score_type_overrides
+    ):
+        _die(
+            "--interactive with no --metric needs --score-type -- there's no judge "
+            f"column to auto-detect it from. Pass one of {VALID_SCORE_TYPES}."
+        )
+
+    path = args.file.expanduser().resolve()
+    if not path.exists():
+        _die(f"file not found: {path}")
+
+    print(f"Loading {path.name} ...", flush=True)
+    sheet = _parse_sheet(getattr(args, "sheet", "0"))
+    try:
+        df = _load_file(path, sheet=sheet)
+    except ImportError as exc:
+        _die(
+            f"{exc}\n"
+            "Install openpyxl for XLSX support:  pip install openpyxl\n"
+            "Or install with the xlsx extra:     pip install evalstats[xlsx]"
+        )
+    except Exception as exc:
+        _die(f"could not read file: {exc}")
+
+    print(f"  {len(df)} rows × {len(df.columns)} columns: {list(df.columns)}")
+    print()
+
+    try:
+        design = detect_design(
+            df,
+            metrics=metrics,
+            factor=args.factor,
+            item_col=args.item_col,
+        )
+    except ValueError as exc:
+        _die(str(exc))
+
+    print(describe_design(design))
+    print()
+
+    if not getattr(args, "yes", False):
+        reply = input("Does this match your experimental design? [Y/n]: ").strip().lower()
+        if reply not in ("", "y", "yes"):
+            _die(
+                "Aborted -- override auto-detection with --factor/--item-col "
+                "if it got something wrong, then re-run."
+            )
+
+    try:
+        marked_df, info = sample_for_labeling(
+            design["df"],
+            metrics=metrics,
+            factor=design["factor_col"],
+            item_col=design["item_col"],
+            n_lab=args.n_lab,
+            seed=args.seed,
+            human_col_prefix=args.human_prefix,
+        )
+    except ValueError as exc:
+        _die(str(exc))
+
+    out_path = (
+        Path(args.out).expanduser().resolve()
+        if args.out
+        else path.with_name(f"{path.stem}_for_labeling{path.suffix}")
+    )
+
+    def _save(d: pd.DataFrame) -> None:
+        _write_table(d, out_path)
+
+    _save(marked_df)
+
+    print()
+    print(f"Random seed used: {info['seed']}  (record this for reproducibility)")
+    print(f"Marker column: '{MARKER_COL}'   Human label column(s): {list(info['human_cols'].values())}")
+    print("Coverage (labeled/marked so far vs. target):")
+    for lvl, n in info["coverage"].items():
+        print(f"  {lvl}: {n}/{args.n_lab}")
+    print(f"Wrote: {out_path}")
+
+    if getattr(args, "interactive", False):
+        try:
+            run_interactive_labeling(
+                marked_df, info, save_fn=_save, score_type_overrides=score_type_overrides
+            )
+        except ValueError as exc:
+            _die(str(exc))
+        print(f"Wrote: {out_path}")
+    else:
+        human_cols = list(info["human_cols"].values())
+        print()
+        print(
+            "Hand this file to your labeler (fill in the human_* column(s) for "
+            "marked rows), or re-run with --interactive to grade it here."
+        )
+        if metrics:
+            print(
+                "Once labeled, call judge_alignment(evaldata, llm_metric=..., "
+                f"human_groundtruth={human_cols[0]!r}, selection='random')."
+            )
+        else:
+            print(
+                "No --metric given -- this samples ground-truth labels ahead of time. "
+                "Once you also have LLM judge scores for this data, merge them in and call"
+            )
+            print(
+                f"judge_alignment(evaldata, llm_metric=..., "
+                f"human_groundtruth={human_cols[0]!r}, selection='random')."
+            )
+
+
+# ---------------------------------------------------------------------------
 # File loading
 # ---------------------------------------------------------------------------
 
@@ -518,6 +885,18 @@ def _load_file(path: Path, sheet: Union[int, str] = 0) -> pd.DataFrame:
         raise ValueError(
             f"Unsupported file type '{suffix}'. "
             "Accepted formats: .csv, .xlsx, .xls, .ods"
+        )
+
+
+def _write_table(df: pd.DataFrame, path: Path) -> None:
+    suffix = path.suffix.lower()
+    if suffix == ".csv":
+        df.to_csv(path, index=False)
+    elif suffix in (".xlsx", ".xls"):
+        df.to_excel(path, index=False)
+    else:
+        raise ValueError(
+            f"Unsupported output file type '{suffix}'. Use .csv, .xlsx, or .xls."
         )
 
 

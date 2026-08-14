@@ -1993,6 +1993,7 @@ def _run_alignment_ppi(
     from evalstats.core.ranking import ppi_bootstrap_ranks
     bundle.rank_dist = ppi_bootstrap_ranks(scores_2d, lab_matrix, labels, n_boot, rng)
     bundle.ppi_applied = True
+    bundle.alignment_result = alignment_result
 
     # ── Override _analysis in-place ───────────────────────────────────────────
     bundle.robustness.mean     = final_means
