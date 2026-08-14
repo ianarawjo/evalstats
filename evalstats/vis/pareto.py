@@ -46,17 +46,24 @@ _STATUS_MARKER = {"frontier": "*", "dominated": "x", "ambiguous": "o"}
 _STATUS_LABEL = {
     "frontier": "Best trade-off",
     "dominated": "Dominated",
-    "ambiguous": "Ambiguous (unconfirmed)",
+    "ambiguous": "Ambiguous",
 }
 
 
-def _assign_label_offsets(xs, ys):
+def _assign_label_offsets(xs, ys, scale=1.0):
     """Greedy collision avoidance for point labels: cluster points that sit
     close together (in axis-range-normalized distance, so both axes count
     equally regardless of their units) and fan each cluster's labels out to
     different offset positions instead of stacking every label at the same
     fixed (dx, dy). Returns a list of (dx, dy, ha) per point, in points, for
     ``ax.annotate(..., textcoords="offset points", ha=ha)``.
+
+    ``scale`` shrinks the offset magnitudes (not the clustering threshold,
+    which is already figure-size-agnostic) -- the candidate offsets below
+    are tuned for the default figure size; at a smaller ``figsize`` the
+    same point-valued offsets eat a much bigger fraction of the plot and
+    start overlapping neighbors, so plot_pareto_tradeoff passes a scale
+    proportional to the actual figure size.
     """
     n = len(xs)
     x_range = max(np.ptp(xs), 1e-9)
@@ -90,11 +97,12 @@ def _assign_label_offsets(xs, ys):
 
     # Candidate (dx, dy, ha) offsets, in points, roughly spiraling outward
     # so a cluster of several points still gets distinct, readable spots.
-    candidates = [
+    _base_candidates = [
         (7, 6, "left"), (7, -15, "left"), (-7, 6, "right"), (-7, -15, "right"),
         (7, 20, "left"), (7, -29, "left"), (-7, 20, "right"), (-7, -29, "right"),
         (14, 34, "left"), (14, -43, "left"),
     ]
+    candidates = [(scale * dx, scale * dy, ha) for dx, dy, ha in _base_candidates]
     offsets: list[tuple] = [None] * n
     for members in clusters.values():
         members_sorted = sorted(members, key=lambda i: -ys[i])  # stable top-to-bottom stacking
@@ -103,7 +111,7 @@ def _assign_label_offsets(xs, ys):
     return offsets
 
 
-def _resolve_label_overlaps(fig, anns, max_iter=40, step=10.0):
+def _resolve_label_overlaps(fig, anns, max_iter=150, step=10.0):
     """Push apart any pair of annotation text boxes that still overlap
     after the cluster-based initial placement, using real rendered bounding
     boxes -- accounts for actual label text width/height, which the
@@ -313,10 +321,15 @@ def plot_pareto_tradeoff(
     xs = xs_oriented if direction == "max" else -xs_oriented
 
     statuses_list = [statuses[l].status for l in labels]
-    label_offsets = _assign_label_offsets(xs, ys)
 
     if figsize is None:
         figsize = (7, 5.2)
+    # Label-offset candidates are tuned in points for the (7, 5.2) default;
+    # at a smaller figsize the same point-valued offsets eat a much bigger
+    # share of the plot and start overlapping, so shrink them proportionally.
+    label_scale = min(figsize[0] / 7.0, figsize[1] / 5.2)
+    label_offsets = _assign_label_offsets(xs, ys, scale=label_scale)
+
     fig, ax = plt.subplots(figsize=figsize)
     fig.patch.set_facecolor("white")
     ax.set_facecolor("white")
@@ -382,7 +395,15 @@ def plot_pareto_tradeoff(
         if s in statuses_list
     ]
     if handles:
-        ax.legend(handles=handles, loc="best", fontsize=8.5, frameon=False)
+        # Outside the axes (to the right), not loc="best" -- "best" only
+        # avoids plotted lines/collections, not the point-label annotations,
+        # so at smaller figsizes it was landing right on top of a label.
+        # Placing it outside is robust at any size; savefig(bbox_inches=
+        # "tight") includes it in the saved image regardless.
+        ax.legend(
+            handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5),
+            fontsize=8.5, frameon=False,
+        )
 
     fig.tight_layout()
     return fig
