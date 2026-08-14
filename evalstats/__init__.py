@@ -43,6 +43,8 @@ from evalstats.quick import (
     GroupSummary,
     stability,
     StabilityResult,
+    tradeoff,
+    TradeoffResult,
     judge_debias_mean_ci,
     DebiasedMeanCI,
 )
@@ -69,6 +71,8 @@ __all__ = [
     "GroupSummary",
     "stability",
     "StabilityResult",
+    "tradeoff",
+    "TradeoffResult",
     "judge_debias_mean_ci",
     "DebiasedMeanCI",
     # Core types

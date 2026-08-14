@@ -1,6 +1,6 @@
 """Uncertainty-aware Pareto-front analysis for a primary metric + secondary metric(s).
 
-Backs ``compare(..., secondary=...)``. Unlike a naive Pareto front on point
+Backs ``compare(..., secondary_metric=...)``. Unlike a naive Pareto front on point
 estimates -- which lets a marginally-lower cost or marginally-higher accuracy
 count as "dominates" even when the underlying data can't distinguish the two
 entities -- this module resamples both metrics jointly (same shared per-item
@@ -65,6 +65,14 @@ class ParetoBootstrapResult:
         good, strictly better on at least one). Diagonal is always 0.
     n_bootstrap : int
         Number of bootstrap replicates the tallies above were computed from.
+    replicate_primary, replicate_secondary : np.ndarray, optional
+        Shape ``(N, n_bootstrap)``. Every replicate's per-entity (primary,
+        secondary) point value -- the raw joint draws the tallies above are
+        computed from. ``None`` unless ``pareto_bootstrap(...,
+        return_replicates=True)`` was requested; skipped by default since
+        no consumer of the calibrated dominance/CI path needs them, only
+        visualizations that want the joint (correlated) uncertainty shape
+        rather than independent per-metric marginal CIs.
     """
 
     labels: list[str]
@@ -73,6 +81,8 @@ class ParetoBootstrapResult:
     p_frontier: np.ndarray
     p_dominated_by: np.ndarray
     n_bootstrap: int
+    replicate_primary: Optional[np.ndarray] = None
+    replicate_secondary: Optional[np.ndarray] = None
 
 
 def orient_higher_is_better(scores: np.ndarray, direction: Literal["max", "min"]) -> np.ndarray:
@@ -99,6 +109,7 @@ def pareto_bootstrap(
     *,
     statistic: Literal["mean", "median"] = "mean",
     batch_size: int = 256,
+    return_replicates: bool = False,
 ) -> ParetoBootstrapResult:
     """Joint bootstrap Pareto-dominance tallies for two per-item-aligned metrics.
 
@@ -129,6 +140,12 @@ def pareto_bootstrap(
         ``(N, N, batch)`` pairwise-dominance array (mirrors the chunking
         pattern used elsewhere in this codebase, e.g.
         :func:`~evalstats.core.paired.romano_wolf_stepdown_pvalues`).
+    return_replicates : bool
+        When ``True``, also retain every replicate's per-entity (primary,
+        secondary) point value on the result (see
+        :attr:`ParetoBootstrapResult.replicate_primary`/
+        ``replicate_secondary``) -- ``(N, n_bootstrap)`` each, so only worth
+        enabling for visualization, not the default calibrated path.
 
     Returns
     -------
@@ -153,6 +170,8 @@ def pareto_bootstrap(
     frontier_count = np.zeros(N)
     dominated_count = np.zeros((N, N))  # [i, j] += 1 when j dominates i, this replicate
     eye = np.eye(N, dtype=bool)
+    replicate_primary = np.empty((N, n_bootstrap)) if return_replicates else None
+    replicate_secondary = np.empty((N, n_bootstrap)) if return_replicates else None
 
     start = 0
     while start < n_bootstrap:
@@ -164,6 +183,10 @@ def pareto_bootstrap(
         r2 = scores_secondary[:, idx]  # (N, b, M)
         bm1 = _stat(r1, axis=2)  # (N, b)
         bm2 = _stat(r2, axis=2)  # (N, b)
+
+        if return_replicates:
+            replicate_primary[:, start:stop] = bm1
+            replicate_secondary[:, start:stop] = bm2
 
         m1_i, m1_j = bm1[:, None, :], bm1[None, :, :]  # (N,1,b), (1,N,b)
         m2_i, m2_j = bm2[:, None, :], bm2[None, :, :]
@@ -185,6 +208,8 @@ def pareto_bootstrap(
         p_frontier=frontier_count / n_bootstrap,
         p_dominated_by=dominated_count / n_bootstrap,
         n_bootstrap=n_bootstrap,
+        replicate_primary=replicate_primary,
+        replicate_secondary=replicate_secondary,
     )
 
 

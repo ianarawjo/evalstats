@@ -19,7 +19,7 @@ DataFrame -- mirroring how ``ComparisonResult`` already offers ``.to_dict()``
 from __future__ import annotations
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal, NamedTuple, Optional, Union
 
 import numpy as np
@@ -679,6 +679,244 @@ def stability(
         arrays = [arr]
 
     return _stability_core(input_labels, arrays, warn_orientation=True)
+
+
+# ---------------------------------------------------------------------------
+# tradeoff
+# ---------------------------------------------------------------------------
+
+@dataclass
+class TradeoffResult:
+    """Uncertainty-aware Pareto trade-off between a primary and a secondary metric.
+
+    Returned by :func:`tradeoff`. Wraps the same joint-bootstrap dominance
+    engine ``compare(secondary_metric=...)`` uses internally (see
+    :mod:`evalstats.core.pareto`) -- for when the trade-off itself is all
+    you want to check, without a full ``compare()`` comparison.
+
+    Attributes
+    ----------
+    labels : list[str]
+        Config labels.
+    primary_metric, secondary_metric : str
+        Column names of the two metrics being traded off. The primary
+        metric is always assumed "higher is better"; ``direction`` says
+        which way the secondary metric goes.
+    direction : {"min", "max"}
+        Whether a lower or higher secondary metric value is better.
+    status : dict[str, str]
+        Per-config Pareto classification, one of "frontier" (calibrated
+        best-trade-off set), "dominated" (confidently beaten on both axes
+        by some other config), or "ambiguous" (point estimate looks
+        dominated, but there isn't enough evidence to confirm it) -- see
+        :class:`~evalstats.core.pareto.ParetoStatus`.
+    frontier_probability : dict[str, float]
+        Per-config ``P(Pareto-optimal)``: fraction of joint bootstrap
+        replicates in which the config wasn't dominated on both axes.
+    """
+
+    labels: list[str]
+    primary_metric: str
+    secondary_metric: str
+    direction: Literal["min", "max"]
+    status: dict[str, str]
+    frontier_probability: dict[str, float]
+    _pareto: dict = field(default_factory=dict)  # powers summary()/plot()/to_dict()/to_frame()
+
+    def summary(self, *, show_rank_probabilities: bool = False) -> None:
+        """Print the same Pareto Front breakdown ``compare()``'s ``summary()``
+        shows for ``secondary_metric=`` -- the ASCII scatter, each entity's status
+        and calibrated mean + CI on both metrics, and (optionally) the
+        bootstrap ``P(Pareto-optimal)`` bar chart.
+        """
+        from .core.summary import _print_pareto_section
+        _print_pareto_section(
+            self._pareto, metric=self.primary_metric,
+            show_rank_probabilities=show_rank_probabilities,
+        )
+
+    def plot(self, **kwargs):
+        """Uncertainty-aware Pareto-front scatter (matplotlib).
+
+        See :func:`~evalstats.vis.pareto.plot_pareto_tradeoff` for accepted
+        keyword arguments.
+
+        Returns
+        -------
+        matplotlib.figure.Figure
+        """
+        from .vis.pareto import plot_pareto_tradeoff
+        return plot_pareto_tradeoff(self._pareto, metric=self.primary_metric, **kwargs)
+
+    def to_dict(self) -> dict:
+        """Plain, JSON-friendly dict: ``{label: {status, dominated_by,
+        ambiguous_vs, p_pareto_optimal, primary: {...}, secondary: {...}}}``.
+        """
+        primary_rob = self._pareto["primary_robustness"]
+        secondary_rob = self._pareto["secondary_robustness"]
+        statuses = self._pareto["statuses"]
+        p_idx = {l: i for i, l in enumerate(primary_rob.labels)}
+        s_idx = {l: i for i, l in enumerate(secondary_rob.labels)}
+        out: dict[str, dict] = {}
+        for label in self.labels:
+            st = statuses[label]
+            pi, si = p_idx[label], s_idx[label]
+            out[label] = {
+                "status": st.status,
+                "dominated_by": list(st.dominated_by),
+                "ambiguous_vs": list(st.ambiguous_vs),
+                "p_pareto_optimal": float(self.frontier_probability[label]),
+                "primary": {
+                    "mean": float(primary_rob.mean[pi]),
+                    "ci_low": float(primary_rob.ci_low[pi]) if primary_rob.ci_low is not None else None,
+                    "ci_high": float(primary_rob.ci_high[pi]) if primary_rob.ci_high is not None else None,
+                },
+                "secondary": {
+                    "mean": float(secondary_rob.mean[si]),
+                    "ci_low": float(secondary_rob.ci_low[si]) if secondary_rob.ci_low is not None else None,
+                    "ci_high": float(secondary_rob.ci_high[si]) if secondary_rob.ci_high is not None else None,
+                },
+            }
+        return out
+
+    def to_frame(self) -> pd.DataFrame:
+        """One row per config as a pandas DataFrame, indexed by label."""
+        d = self.to_dict()
+        rows = []
+        for label in self.labels:
+            e = d[label]
+            rows.append({
+                "status": e["status"],
+                "p_pareto_optimal": e["p_pareto_optimal"],
+                f"{self.primary_metric}_mean": e["primary"]["mean"],
+                f"{self.primary_metric}_ci_low": e["primary"]["ci_low"],
+                f"{self.primary_metric}_ci_high": e["primary"]["ci_high"],
+                f"{self.secondary_metric}_mean": e["secondary"]["mean"],
+                f"{self.secondary_metric}_ci_low": e["secondary"]["ci_low"],
+                f"{self.secondary_metric}_ci_high": e["secondary"]["ci_high"],
+                "dominated_by": ", ".join(e["dominated_by"]),
+                "ambiguous_vs": ", ".join(e["ambiguous_vs"]),
+            })
+        return pd.DataFrame(rows, index=pd.Index(self.labels, name="config"))
+
+
+def tradeoff(
+    df: pd.DataFrame,
+    *,
+    config_col: str,
+    item_col: str,
+    primary_col: str,
+    secondary_metric: dict[str, Literal["min", "max"]],
+    alpha: Optional[float] = None,
+    n_bootstrap: int = 10_000,
+    rng=None,
+) -> TradeoffResult:
+    """Uncertainty-aware Pareto trade-off between a primary and a secondary metric.
+
+    Standalone version of the joint-bootstrap Pareto-front analysis
+    ``compare(..., secondary_metric=...)`` runs internally -- for when the
+    trade-off itself (e.g. "which prompt gives the best accuracy-for-cost")
+    is all you want to check, without a full comparative report. Unlike a
+    naive Pareto front on point estimates alone -- which calls a config
+    "dominated" any time another's mean beats it on both axes, even when
+    the underlying data can't actually support that claim -- this jointly
+    resamples both metrics together (a shared per-item bootstrap draw, so
+    correlation between the metrics is preserved) and only calls a config
+    "dominated" when the data backs it up; a merely-point-estimate-losing
+    config is reported "ambiguous" instead.
+
+    Requires a complete design: every config scored on every item, for
+    both metrics.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format data with one row per (config, item).
+    config_col, item_col : str
+        Column names identifying the entity being compared (e.g. a prompt
+        template or model) and the benchmark item.
+    primary_col : str
+        Column name of the primary metric (e.g. accuracy). Always assumed
+        "higher is better".
+    secondary_metric : dict[str, {"min", "max"}]
+        Exactly one secondary metric column mapped to its direction, e.g.
+        ``{"latency_s": "min"}`` or ``{"quality_score": "max"}``.
+    alpha : float, optional
+        Significance level for both metrics' marginal CIs and for the
+        FWER-adjusted dominance calls (default: ``get_alpha_ci()``, 0.05).
+    n_bootstrap : int
+        Number of joint bootstrap replicates.
+    rng : optional
+        Seed or ``np.random.Generator``.
+
+    Returns
+    -------
+    TradeoffResult
+
+    Examples
+    --------
+    >>> import evalstats as es
+    >>> result = es.tradeoff(
+    ...     df, config_col="prompt", item_col="item",
+    ...     primary_col="accuracy", secondary_metric={"cost_usd": "min"},
+    ... )
+    >>> result.status
+    >>> result.plot()
+    """
+    if not isinstance(secondary_metric, dict) or len(secondary_metric) != 1:
+        raise ValueError(
+            "secondary_metric must be a single-entry dict mapping a metric column "
+            "name to 'min' or 'max', e.g. secondary_metric={'latency_s': 'min'}."
+        )
+    (secondary_col, direction), = secondary_metric.items()
+    if direction not in ("min", "max"):
+        raise ValueError(f"secondary_metric={{'{secondary_col}': {direction!r}}} -- direction must be 'min' or 'max'.")
+    for name, col in [
+        ("config_col", config_col), ("item_col", item_col),
+        ("primary_col", primary_col),
+    ]:
+        if col not in df.columns:
+            raise ValueError(f"{name} '{col}' not found in DataFrame columns: {list(df.columns)}")
+    if secondary_col not in df.columns:
+        raise ValueError(f"secondary metric column '{secondary_col}' not found in DataFrame columns: {list(df.columns)}")
+
+    # A thin wrapper over compare(secondary_metric=...) -- reuses its exact
+    # Pareto-bootstrap + calibrated-marginal-CI machinery (core.pareto,
+    # _run_pareto_if_needed) rather than re-deriving it here, so tradeoff()
+    # and compare(secondary_metric=...) can never drift out of calibration sync.
+    # load_from() needs canonical 'model'/'item' column names to build its
+    # duplicate-checking key -- an arbitrary config_col isn't enough on its
+    # own, even though compare(factors=...) itself accepts any column name.
+    from .loader import load_from
+    from .api import compare
+
+    rng_gen = np.random.default_rng(rng)
+    evaldata = load_from(
+        df, metric_cols=[primary_col, secondary_col],
+        col_map={config_col: "model", item_col: "item"},
+    )
+    cr = compare(
+        evaldata, factors="model", metric=primary_col, block="item",
+        secondary_metric=secondary_metric, alpha=alpha, n_bootstrap=n_bootstrap, rng=rng_gen,
+    )
+    if cr._pareto is None:
+        raise ValueError(
+            "Pareto-front analysis did not run -- check that config_col/"
+            "item_col/primary_col/secondary_metric are correct and that every "
+            "config was scored on every item for both metrics."
+        )
+    pareto = cr._pareto
+    labels = list(pareto["result"].labels)
+    statuses = pareto["statuses"]
+    return TradeoffResult(
+        labels=labels,
+        primary_metric=primary_col,
+        secondary_metric=secondary_col,
+        direction=direction,
+        status={l: statuses[l].status for l in labels},
+        frontier_probability=dict(zip(labels, pareto["result"].p_frontier.tolist())),
+        _pareto=pareto,
+    )
 
 
 # ---------------------------------------------------------------------------

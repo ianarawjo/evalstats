@@ -3126,7 +3126,7 @@ def _print_executive_summary(
 
     Shows each template's significance group, mean score, bootstrap CI,
     optional stability (when seed data is present), optional Trade-off
-    status (when ``compare(..., secondary=...)`` was passed -- see
+    status (when ``compare(..., secondary_metric=...)`` was passed -- see
     ``_print_pareto_section``), and a plain-language verdict so the user can
     assess results at a glance without scrolling up. The Trade-off column
     surfaces the secondary-metric verdict right next to the primary-metric
@@ -3176,7 +3176,7 @@ def _print_executive_summary(
     # Across Runs" table above it, so bar heights are comparable across rows
     # and across the two tables.
     global_cell_max = float(sv.per_cell_seed_std.max()) if has_stability else 0.0
-    # "Trade-off vs {secondary}" names the second axis explicitly (truncated
+    # "Trade-off vs {secondary_metric}" names the second axis explicitly (truncated
     # -- an arbitrary column name shouldn't be able to blow out this table's
     # width), pairing with "On {metric}" below so the two columns' headers
     # alone state both axes without needing the Pareto section above.
@@ -3210,7 +3210,7 @@ def _print_executive_summary(
     )
     if has_pareto:
         # "On {metric}" first (echoes the Mean/CI columns just shown), then
-        # "Trade-off vs {secondary}" -- reads as "here's the primary-metric
+        # "Trade-off vs {secondary_metric}" -- reads as "here's the primary-metric
         # call, and here's how that changes once the other axis counts too."
         header_parts.append(f"  {verdict_header:<{verdict_w}s}")
         header_parts.append(f"  {tradeoff_header}")
@@ -3267,7 +3267,7 @@ def _print_executive_summary(
             row += f"  {row_color}{noise_plain}{_RESET}" if row_color else f"  {noise_plain}"
             row += f"  {row_color}{stab_plain}{_RESET}" if row_color else f"  {stab_plain}"
 
-        # "On {metric}" (verdict) first, then "Trade-off vs {secondary}" --
+        # "On {metric}" (verdict) first, then "Trade-off vs {secondary_metric}" --
         # matches the header order above.
         row += f"  {verdict_str}"
 
