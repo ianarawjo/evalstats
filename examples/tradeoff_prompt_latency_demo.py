@@ -49,24 +49,33 @@ import evalstats as es
 
 rng = np.random.default_rng(11)
 
-N_ITEMS = 80
+N_ITEMS = 30
 
 # A spectrum from terse/fast to verbose/careful. Accuracy climbs steadily;
 # latency climbs faster, especially at the self-consistency end (multiple
 # reasoning samples, voted) -- the shape that makes "just pick the top
 # accuracy score" the wrong reflex for something a person is waiting on.
+#
+# zero-shot is the odd one out: with no instruction to be concise, the
+# model tends to hedge and ramble before answering -- worse *and* slower
+# than the deliberately terse prompt, a "worst of both worlds" case that
+# tradeoff() should confidently call dominated, not just unclear. And
+# few-shot-5-cot sits close enough to cot-verbose (worse point estimate on
+# both axes, but only slightly) to land "ambiguous" rather than confidently
+# either way -- the calibration point: a naive point-estimate-only Pareto
+# front would silently call this "dominated" too.
 ACCURACY = {
-    "zero-shot": 0.62,
+    "zero-shot": 0.50,
     "terse": 0.645,
     "one-line-cot": 0.70,
     "few-shot-3": 0.74,
     "cot": 0.78,
-    "cot-verbose": 0.795,
-    "few-shot-5-cot": 0.82,
+    "cot-verbose": 0.80,
+    "few-shot-5-cot": 0.785,
     "cot-selfconsistency": 0.845,
 }
 LATENCY_S = {  # lower is better
-    "zero-shot": 0.32,
+    "zero-shot": 0.62,
     "terse": 0.29,
     "one-line-cot": 0.62,
     "few-shot-3": 0.88,
