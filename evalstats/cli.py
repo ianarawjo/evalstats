@@ -114,6 +114,53 @@ Long / tidy format  (one observation per row):
       run       → seed, repeat, run_id, trial
 """
 
+_LABEL_EPILOG = """\
+FILE FORMAT
+-----------
+
+Deliberately looser than `analyze`'s: any CSV/XLSX with a numeric metric
+column works. No 'run' column, no duplicate-row restriction, and unlike
+compare()/analyze() this also accepts between-subjects data with no shared
+item id across conditions -- it doesn't need a full BenchmarkResult, just
+enough structure to sample from.
+
+Column auto-detection (case-insensitive), same aliases load_from() uses,
+except metric columns -- those are always given explicitly via --metric,
+never auto-detected:
+
+  item column   : item, input, example, id, input_label
+  factor column : model, model_label, model_name,
+                  prompt, template, prompt_template
+
+Both are optional and fall back gracefully when not found or not given:
+  no item column   -> each row is treated as its own item (forces
+                       independent per-condition sampling -- there's no
+                       shared identity to reuse across conditions)
+  no factor column -> every row is treated as one group
+
+--factor/--item-col override auto-detection; use them when your columns
+don't match the aliases above, or when the confirmation prompt shows the
+wrong design.
+
+Example -- minimal file, works with just --metric llm_score:
+
+    model,    item, llm_score
+    gpt-4o,      0,      0.85
+    gpt-4o,      1,      0.72
+    claude-3,    0,      0.90
+    claude-3,    1,      0.65
+    ...
+
+Example -- between-subjects, unrecognized column names (needs explicit
+--factor condition --item-col participant, or decline the confirmation
+prompt and re-run with them):
+
+    condition,  participant, helpfulness
+    control,    p001,        3
+    treatment,  p002,        5
+    ...
+"""
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -359,21 +406,26 @@ def _build_parser() -> argparse.ArgumentParser:
         "label",
         help="Randomly sample items for human labeling (for judge_alignment()/PPI).",
         description=(
-            "Mark a random, correctly-sampled subset of rows for human labeling, so "
-            "judge_alignment(..., selection='random') and compare()'s PPI correction "
-            "get the MCAR (missing-completely-at-random) sample they assume. "
-            "Auto-detects whether the design is paired (item ids repeat across "
-            "factor levels, e.g. models/prompts -- sample once, reuse across every "
-            "condition) or unpaired (independent item pools per level -- sample "
-            "N_lab within each level separately). Re-running on an already-marked "
-            "file is safe: it tops up any condition still short of --n-lab without "
-            "disturbing prior selections or labels already filled in."
+            "Mark a random, correctly-sampled subset of rows for human labeling, so\n"
+            "judge_alignment(..., selection='random') and compare()'s PPI correction\n"
+            "get the MCAR (missing-completely-at-random) sample they assume.\n\n"
+            "Auto-detects whether the design is paired (item ids repeat across factor\n"
+            "levels, e.g. models/prompts -- sample once, reuse across every condition)\n"
+            "or unpaired (independent item pools per level -- sample N_lab within each\n"
+            "level separately). Re-running on an already-marked file is safe: it tops\n"
+            "up any condition still short of --n-lab without disturbing prior\n"
+            "selections or labels already filled in."
         ),
+        epilog=_LABEL_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     label.add_argument(
         "file",
         type=Path,
-        help="Path to a CSV or XLSX file in evalstats' long/tidy format.",
+        help=(
+            "Path to a CSV or XLSX file. Looser than 'analyze': any numeric metric "
+            "column works, no item/factor column is required -- see FILE FORMAT below."
+        ),
     )
     label.add_argument(
         "--metric",
