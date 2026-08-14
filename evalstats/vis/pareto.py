@@ -1,6 +1,6 @@
 """Uncertainty-aware Pareto trade-off scatter (matplotlib).
 
-Backs ``compare(..., secondary=...)``'s and :func:`~evalstats.tradeoff`'s
+Backs ``compare(..., secondary_metric=...)``'s and :func:`~evalstats.tradeoff`'s
 ``.plot()``. Each entity is drawn as its point estimate plus a light cloud
 of its own joint bootstrap replicates -- the same replicates
 :func:`~evalstats.core.pareto.pareto_bootstrap` already draws to compute the
@@ -260,7 +260,7 @@ def plot_pareto_tradeoff(
     cloud per entity, colored/marked by Pareto status.
 
     Requires *pareto* to carry joint bootstrap replicates -- i.e. it must
-    come from ``compare(secondary=...)`` or :func:`~evalstats.tradeoff`,
+    come from ``compare(secondary_metric=...)`` or :func:`~evalstats.tradeoff`,
     both of which request them via ``pareto_bootstrap(...,
     return_replicates=True)``.
 
@@ -305,7 +305,7 @@ def plot_pareto_tradeoff(
         raise ValueError(
             "pareto['result'] has no bootstrap replicates -- "
             "plot_pareto_tradeoff() requires pareto_bootstrap(..., "
-            "return_replicates=True), which compare(secondary=...) and "
+            "return_replicates=True), which compare(secondary_metric=...) and "
             "tradeoff() both request automatically."
         )
 
@@ -313,7 +313,7 @@ def plot_pareto_tradeoff(
     metric_label = metric or "primary metric"
 
     # Point estimates come straight from the bootstrap result (already
-    # oriented so higher = better on both axes); undo the secondary's
+    # oriented so higher = better on both axes); undo the secondary_metric's
     # orientation flip for display so the axis reads in real units.
     order = {l: i for i, l in enumerate(labels)}
     ys = np.array([float(result.point_primary[order[l]]) for l in labels])

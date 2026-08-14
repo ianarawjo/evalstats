@@ -1,6 +1,6 @@
 """Uncertainty-aware Pareto-front analysis for a primary metric + secondary metric(s).
 
-Backs ``compare(..., secondary=...)``. Unlike a naive Pareto front on point
+Backs ``compare(..., secondary_metric=...)``. Unlike a naive Pareto front on point
 estimates -- which lets a marginally-lower cost or marginally-higher accuracy
 count as "dominates" even when the underlying data can't distinguish the two
 entities -- this module resamples both metrics jointly (same shared per-item

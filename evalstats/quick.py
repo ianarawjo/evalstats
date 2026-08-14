@@ -690,7 +690,7 @@ class TradeoffResult:
     """Uncertainty-aware Pareto trade-off between a primary and a secondary metric.
 
     Returned by :func:`tradeoff`. Wraps the same joint-bootstrap dominance
-    engine ``compare(secondary=...)`` uses internally (see
+    engine ``compare(secondary_metric=...)`` uses internally (see
     :mod:`evalstats.core.pareto`) -- for when the trade-off itself is all
     you want to check, without a full ``compare()`` comparison.
 
@@ -703,7 +703,7 @@ class TradeoffResult:
         metric is always assumed "higher is better"; ``direction`` says
         which way the secondary metric goes.
     direction : {"min", "max"}
-        Whether a lower or higher secondary-metric value is better.
+        Whether a lower or higher secondary metric value is better.
     status : dict[str, str]
         Per-config Pareto classification, one of "frontier" (calibrated
         best-trade-off set), "dominated" (confidently beaten on both axes
@@ -725,7 +725,7 @@ class TradeoffResult:
 
     def summary(self, *, show_rank_probabilities: bool = False) -> None:
         """Print the same Pareto Front breakdown ``compare()``'s ``summary()``
-        shows for ``secondary=`` -- the ASCII scatter, each entity's status
+        shows for ``secondary_metric=`` -- the ASCII scatter, each entity's status
         and calibrated mean + CI on both metrics, and (optionally) the
         bootstrap ``P(Pareto-optimal)`` bar chart.
         """
@@ -806,7 +806,7 @@ def tradeoff(
     config_col: str,
     item_col: str,
     primary_col: str,
-    secondary: dict[str, Literal["min", "max"]],
+    secondary_metric: dict[str, Literal["min", "max"]],
     alpha: Optional[float] = None,
     n_bootstrap: int = 10_000,
     rng=None,
@@ -814,7 +814,7 @@ def tradeoff(
     """Uncertainty-aware Pareto trade-off between a primary and a secondary metric.
 
     Standalone version of the joint-bootstrap Pareto-front analysis
-    ``compare(..., secondary=...)`` runs internally -- for when the
+    ``compare(..., secondary_metric=...)`` runs internally -- for when the
     trade-off itself (e.g. "which prompt gives the best accuracy-for-cost")
     is all you want to check, without a full comparative report. Unlike a
     naive Pareto front on point estimates alone -- which calls a config
@@ -838,7 +838,7 @@ def tradeoff(
     primary_col : str
         Column name of the primary metric (e.g. accuracy). Always assumed
         "higher is better".
-    secondary : dict[str, {"min", "max"}]
+    secondary_metric : dict[str, {"min", "max"}]
         Exactly one secondary metric column mapped to its direction, e.g.
         ``{"latency_s": "min"}`` or ``{"quality_score": "max"}``.
     alpha : float, optional
@@ -858,19 +858,19 @@ def tradeoff(
     >>> import evalstats as es
     >>> result = es.tradeoff(
     ...     df, config_col="prompt", item_col="item",
-    ...     primary_col="accuracy", secondary={"cost_usd": "min"},
+    ...     primary_col="accuracy", secondary_metric={"cost_usd": "min"},
     ... )
     >>> result.status
     >>> result.plot()
     """
-    if not isinstance(secondary, dict) or len(secondary) != 1:
+    if not isinstance(secondary_metric, dict) or len(secondary_metric) != 1:
         raise ValueError(
-            "secondary must be a single-entry dict mapping a metric column "
-            "name to 'min' or 'max', e.g. secondary={'latency_s': 'min'}."
+            "secondary_metric must be a single-entry dict mapping a metric column "
+            "name to 'min' or 'max', e.g. secondary_metric={'latency_s': 'min'}."
         )
-    (secondary_col, direction), = secondary.items()
+    (secondary_col, direction), = secondary_metric.items()
     if direction not in ("min", "max"):
-        raise ValueError(f"secondary={{'{secondary_col}': {direction!r}}} -- direction must be 'min' or 'max'.")
+        raise ValueError(f"secondary_metric={{'{secondary_col}': {direction!r}}} -- direction must be 'min' or 'max'.")
     for name, col in [
         ("config_col", config_col), ("item_col", item_col),
         ("primary_col", primary_col),
@@ -880,10 +880,10 @@ def tradeoff(
     if secondary_col not in df.columns:
         raise ValueError(f"secondary metric column '{secondary_col}' not found in DataFrame columns: {list(df.columns)}")
 
-    # A thin wrapper over compare(secondary=...) -- reuses its exact
+    # A thin wrapper over compare(secondary_metric=...) -- reuses its exact
     # Pareto-bootstrap + calibrated-marginal-CI machinery (core.pareto,
     # _run_pareto_if_needed) rather than re-deriving it here, so tradeoff()
-    # and compare(secondary=...) can never drift out of calibration sync.
+    # and compare(secondary_metric=...) can never drift out of calibration sync.
     # load_from() needs canonical 'model'/'item' column names to build its
     # duplicate-checking key -- an arbitrary config_col isn't enough on its
     # own, even though compare(factors=...) itself accepts any column name.
@@ -897,12 +897,12 @@ def tradeoff(
     )
     cr = compare(
         evaldata, factors="model", metric=primary_col, block="item",
-        secondary=secondary, alpha=alpha, n_bootstrap=n_bootstrap, rng=rng_gen,
+        secondary_metric=secondary_metric, alpha=alpha, n_bootstrap=n_bootstrap, rng=rng_gen,
     )
     if cr._pareto is None:
         raise ValueError(
             "Pareto-front analysis did not run -- check that config_col/"
-            "item_col/primary_col/secondary are correct and that every "
+            "item_col/primary_col/secondary_metric are correct and that every "
             "config was scored on every item for both metrics."
         )
     pareto = cr._pareto

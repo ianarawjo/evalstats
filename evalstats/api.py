@@ -68,7 +68,7 @@ class ComparisonResult:
         self._mmb_view = _mmb_view  # which MultiModelBundle view is primary
         self._min_meaningful_diff = min_meaningful_diff
         self._variance_components: Optional[dict] = None  # set by MC alignment loop
-        self._pareto: Optional[dict] = None  # set by _run_pareto_if_needed when secondary= is passed
+        self._pareto: Optional[dict] = None  # set by _run_pareto_if_needed when secondary_metric= is passed
         # Bootstrap P(Best)/E[Rank] output is opt-in, not opt-out: it reads as
         # a confident, almost authoritative verdict (e.g. "63.6% probability
         # of being best") even when the underlying CIs overlap heavily and the
@@ -236,7 +236,7 @@ class ComparisonResult:
               :func:`~evalstats.vis.critical_difference.plot_critical_difference`.
             * ``"pareto"`` — uncertainty-aware trade-off scatter via
               :func:`~evalstats.vis.pareto.plot_pareto_tradeoff`. Only
-              available when ``compare(..., secondary=...)`` was passed;
+              available when ``compare(..., secondary_metric=...)`` was passed;
               raises otherwise. One bootstrap point cloud per entity plus a
               percentile band over per-replicate Pareto frontiers, colored
               by calibrated status (frontier / dominated / ambiguous) --
@@ -261,7 +261,7 @@ class ComparisonResult:
         elif method == "pareto":
             if self._pareto is None:
                 raise ValueError(
-                    "method='pareto' requires compare(..., secondary=...) "
+                    "method='pareto' requires compare(..., secondary_metric=...) "
                     "to have been passed -- no Pareto analysis was run for "
                     "this result."
                 )
@@ -492,7 +492,7 @@ class ComparisonResult:
     def pareto_status(self) -> Optional[dict]:
         """Per-entity three-state Pareto classification, or ``None``.
 
-        Populated only when ``compare(..., secondary=...)`` was passed.
+        Populated only when ``compare(..., secondary_metric=...)`` was passed.
         Keys are entity labels, values are
         :class:`~evalstats.core.pareto.ParetoStatus` (``.status`` is one of
         ``"frontier"``, ``"dominated"``, ``"ambiguous"`` -- see that class's
@@ -509,7 +509,7 @@ class ComparisonResult:
     def pareto_frontier_probability(self) -> Optional[dict]:
         """Per-entity ``P(entity is Pareto-optimal)``, or ``None``.
 
-        Populated only when ``compare(..., secondary=...)`` was passed. Keys
+        Populated only when ``compare(..., secondary_metric=...)`` was passed. Keys
         are entity labels, values are the fraction of joint bootstrap
         replicates in which that entity was non-dominated -- a continuous
         probability, not the calibrated three-state label
@@ -2144,7 +2144,7 @@ def _run_judge_alignment_if_needed(
 def _run_pareto_if_needed(
     cr: "ComparisonResult",
     *,
-    secondary,
+    secondary_metric,
     df: pd.DataFrame,
     factor_col: str,
     item_col: str,
@@ -2153,36 +2153,36 @@ def _run_pareto_if_needed(
     rng,
 ) -> None:
     """Run uncertainty-aware Pareto-front analysis and store it on *cr*, if
-    ``secondary=`` was passed.
+    ``secondary_metric=`` was passed.
 
     Mirrors ``_run_judge_alignment_if_needed``'s validate-and-dispatch shape:
-    warns and no-ops on a malformed ``secondary=``, and is only supported for
+    warns and no-ops on a malformed ``secondary_metric=``, and is only supported for
     a single-factor result (a plain ``AnalysisBundle`` -- multi-model and
     factorial results are not yet supported, same restriction as
     ``alignment=``).
     """
-    if secondary is None:
+    if secondary_metric is None:
         return
-    if not isinstance(secondary, dict):
+    if not isinstance(secondary_metric, dict):
         warnings.warn(
-            "secondary= must be a dict mapping a metric column name to "
-            "'min' or 'max', e.g. secondary={'latency_ms': 'min'}. "
-            "secondary= will be ignored.",
+            "secondary_metric= must be a dict mapping a metric column name to "
+            "'min' or 'max', e.g. secondary_metric={'latency_ms': 'min'}. "
+            "secondary_metric= will be ignored.",
             UserWarning,
             stacklevel=4,
         )
         return
-    if len(secondary) != 1:
+    if len(secondary_metric) != 1:
         raise NotImplementedError(
-            f"secondary= currently supports exactly one secondary metric "
-            f"(bivariate Pareto fronts only); got {len(secondary)}: "
-            f"{list(secondary.keys())}. N-way Pareto fronts are not yet "
+            f"secondary_metric= currently supports exactly one secondary metric "
+            f"(bivariate Pareto fronts only); got {len(secondary_metric)}: "
+            f"{list(secondary_metric.keys())}. N-way Pareto fronts are not yet "
             "implemented."
         )
-    (secondary_col, direction), = secondary.items()
+    (secondary_col, direction), = secondary_metric.items()
     if direction not in ("min", "max"):
         raise ValueError(
-            f"secondary={{'{secondary_col}': {direction!r}}} -- direction "
+            f"secondary_metric={{'{secondary_col}': {direction!r}}} -- direction "
             "must be 'min' or 'max'."
         )
     if secondary_col not in df.columns:
@@ -2197,8 +2197,8 @@ def _run_pareto_if_needed(
         # would never actually catch the multi-model case. Must check
         # cr._analysis itself, same as _run_judge_alignment_if_needed does.
         warnings.warn(
-            "Pareto-front analysis (secondary=) is not yet supported for "
-            "multi-model or factorial analyses. secondary= will be ignored "
+            "Pareto-front analysis (secondary_metric=) is not yet supported for "
+            "multi-model or factorial analyses. secondary_metric= will be ignored "
             "for this comparison.",
             UserWarning,
             stacklevel=4,
@@ -2207,9 +2207,9 @@ def _run_pareto_if_needed(
     bundle = cr._primary_bundle()
     if bundle.benchmark.is_seeded:
         raise ValueError(
-            "Pareto-front analysis (secondary=) does not yet support seeded "
+            "Pareto-front analysis (secondary_metric=) does not yet support seeded "
             "benchmarks (R >= 3 repeated runs). Aggregate runs to a single "
-            "score per (template, input) cell before passing secondary=."
+            "score per (template, input) cell before passing secondary_metric=."
         )
 
     from evalstats.core.pareto import pareto_bootstrap, classify_pareto_status, orient_higher_is_better
@@ -2245,7 +2245,7 @@ def _run_pareto_if_needed(
     if np.any(np.isnan(scores_secondary)):
         n_missing = int(np.sum(np.isnan(scores_secondary)))
         raise ValueError(
-            f"secondary='{secondary_col}' has {n_missing} missing (entity, item) "
+            f"secondary_metric='{secondary_col}' has {n_missing} missing (entity, item) "
             f"cell(s) out of {n_entities * n_items} -- Pareto-front analysis "
             "currently requires a complete design (every entity scored on "
             "every item for the secondary metric too)."
@@ -2312,7 +2312,7 @@ def compare(
     baseline: Optional[str] = None,
     block: Union[str, list[str], Literal["auto"]] = "auto",
     slices=None,         # deferred
-    secondary: Optional[dict[str, Literal["min", "max"]]] = None,
+    secondary_metric: Optional[dict[str, Literal["min", "max"]]] = None,
     alignment=None,
     n_mc: int = 200,
     min_meaningful_diff=None,  # deferred
@@ -2346,9 +2346,9 @@ def compare(
     block : str, list[str], or "auto"
         Blocking variable(s) — typically ``"item"`` or ``"input"``.
         ``"auto"`` (default) uses the item column detected by ``load_from``.
-    secondary : dict[str, {"min", "max"}], optional
+    secondary_metric : dict[str, {"min", "max"}], optional
         Run an uncertainty-aware Pareto-front analysis against a second
-        metric, e.g. ``secondary={"latency_ms": "min"}`` to find the
+        metric, e.g. ``secondary_metric={"latency_ms": "min"}`` to find the
         accuracy/latency frontier (``"min"`` for a cost-like metric where
         lower is better, ``"max"`` for a benefit-like one). Currently
         supports exactly one secondary metric, a complete design (every
@@ -2605,7 +2605,7 @@ def compare(
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
         _run_pareto_if_needed(
-            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            cr, secondary_metric=secondary_metric, df=df, factor_col=factor_col_name,
             item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
             rng=engine_kwargs.get("rng"),
         )
@@ -2659,7 +2659,7 @@ def compare(
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
         _run_pareto_if_needed(
-            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            cr, secondary_metric=secondary_metric, df=df, factor_col=factor_col_name,
             item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
             rng=engine_kwargs.get("rng"),
         )
@@ -2696,7 +2696,7 @@ def compare(
             df=df, factor_col=factor_col_name, item_col=item_col, run_col=run_col,
         )
         _run_pareto_if_needed(
-            cr, secondary=secondary, df=df, factor_col=factor_col_name,
+            cr, secondary_metric=secondary_metric, df=df, factor_col=factor_col_name,
             item_col=item_col, alpha=alpha, n_boot=max(n_mc, 1000),
             rng=engine_kwargs.get("rng"),
         )

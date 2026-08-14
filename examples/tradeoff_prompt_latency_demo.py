@@ -19,7 +19,7 @@ through a multi-second pause before each reply, and asks the obvious
 question the accuracy-only leaderboard never raised: what does this look
 like once you factor in latency, not just accuracy?
 
-That's what compare(secondary=...) / tradeoff() are for. Both jointly
+That's what compare(secondary_metric=...) / tradeoff() are for. Both jointly
 bootstrap accuracy and latency together (a shared per-item resample, not
 two independent marginal bootstraps) and report a calibrated verdict per
 prompt -- "frontier" (best trade-off), "dominated" (confidently worse on
@@ -115,7 +115,7 @@ print("es.tradeoff() -- accuracy vs. latency, jointly")
 print("=" * 70)
 result = es.tradeoff(
     df, config_col="prompt", item_col="item",
-    primary_col="accuracy", secondary={"latency_s": "min"},
+    primary_col="accuracy", secondary_metric={"latency_s": "min"},
     rng=np.random.default_rng(12),
 )
 result.summary(show_rank_probabilities=True)

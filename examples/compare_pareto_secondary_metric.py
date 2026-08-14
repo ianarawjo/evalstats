@@ -1,10 +1,10 @@
-"""Uncertainty-aware Pareto-front analysis: compare(secondary=...).
+"""Uncertainty-aware Pareto-front analysis: compare(secondary_metric=...).
 
 A developer is choosing among 5 models and cares about both accuracy and
 latency. A naive Pareto front on point estimates alone would call a
 "dominates" verdict any time one model's mean beats another's on both axes
 -- even when the underlying per-item data can't actually support that claim.
-compare(secondary=...) instead jointly bootstraps both metrics (a shared
+compare(secondary_metric=...) instead jointly bootstraps both metrics (a shared
 per-item resample, not two independent marginal bootstraps) so dominance
 calls are only made when the data backs them up, and reports a calibrated
 three-state verdict per model: "frontier", "dominated", or "ambiguous"
@@ -68,7 +68,7 @@ result = es.compare(
     evaldata,
     factors="model",
     metric="accuracy",
-    secondary={"latency_s": "min"},
+    secondary_metric={"latency_s": "min"},
     rng=np.random.default_rng(42),
     show_rank_probabilities=True,  # also print the continuous P(Pareto-optimal)
 )
