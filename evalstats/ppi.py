@@ -463,6 +463,53 @@ def _walsh_theta_lambda_replicates(
     return lam_b
 
 
+def _walsh_theta_fold_lambda(
+    Y_lab_fold: np.ndarray, Y_hat_lab_fold: np.ndarray, var_unlab: float, n_fold: int,
+) -> tuple[float, float, float, float]:
+    """Adaptively-shrunk lambda (see :func:`_adaptive_shrink_lambda`)
+    estimated from ONE fold of the labeled pair, for
+    :func:`_analytic_walsh_theta_correct`'s cross-fitted power-tuning --
+    see that function's docstring for why this needs to be scoped to a
+    fold rather than the full labeled sample. Identical arithmetic to the
+    non-cross-fit path, just parameterized over a fold instead of the full
+    sample. Returns ``(lam, var_lab_fold, var_hat_lab_fold,
+    cov_lab_hatlab_fold)`` -- the caller needs the latter three to build
+    that SAME fold's own point estimate/variance with the OTHER fold's
+    lambda plugged in."""
+    var_lab_f = _walsh_theta_analytic_variance(Y_lab_fold) if n_fold > 1 else 0.0
+    var_hat_lab_f = _walsh_theta_analytic_variance(Y_hat_lab_fold) if n_fold > 1 else 0.0
+    if n_fold > 1:
+        h1_lab_f = _walsh_theta_h1_components(Y_lab_fold)
+        h1_hat_lab_f = _walsh_theta_h1_components(Y_hat_lab_fold)
+        cov_f = 4.0 * float(np.cov(h1_lab_f, h1_hat_lab_f, ddof=1)[0, 1]) / n_fold
+    else:
+        cov_f = 0.0
+
+    denom_f = var_unlab + var_hat_lab_f
+    lam_raw_f = min(max(cov_f / denom_f, 0.0), 1.0) if denom_f > 1e-12 else 1.0
+    if n_fold <= 1 or var_lab_f < var_hat_lab_f * 1e-6:
+        lam_replicates_f = None
+    else:
+        lam_replicates_f = _walsh_theta_lambda_replicates(Y_lab_fold, Y_hat_lab_fold, var_unlab, n_fold)
+    lam_f = _adaptive_shrink_lambda(lam_raw_f, lam_replicates_f, n_fold)
+    return lam_f, var_lab_f, var_hat_lab_f, cov_f
+
+
+def _cross_fit_satterthwaite_df(vA: float, dfA: float, vB: float, dfB: float) -> float:
+    """Welch-Satterthwaite effective df for combining two fold-level
+    variance estimates from :func:`_analytic_walsh_theta_correct`'s
+    cross-fitting. Unlike a single-sample delta-method inflation term
+    (tried and empirically rejected for this problem -- see
+    ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s Wilcoxon
+    power-tuning addendum), ``vA``/``vB`` here really ARE independent:
+    each fold's point estimate uses the OTHER fold's lambda, so this
+    combination rests on a valid, not merely convenient, assumption."""
+    total = vA + vB
+    if total <= 0.0 or vA <= 0.0 or vB <= 0.0:
+        return max(dfA, dfB, 1.0)
+    return (total * total) / (vA * vA / dfA + vB * vB / dfB)
+
+
 def _analytic_walsh_theta_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool,
@@ -480,60 +527,141 @@ def _analytic_walsh_theta_correct(
     Used at every ``n_lab`` under ``backend="auto"`` (see
     :data:`_ANALYTIC_ALWAYS_PREFERRED`), not just below the usual n_lab=30
     cutoff: it dominates the percentile bootstrap on power for this
-    estimand across the full n_lab range, with statistically
-    indistinguishable Type-I calibration, so there is no bootstrap regime
-    worth falling back to.
+    estimand across the full n_lab range.
 
-    Degrees of freedom for the Student-t interval: ``n_lab - 1``, matching
-    :func:`_analytic_mean_correct`'s choice (the labeled term is the
-    variance bottleneck there too, since n_all is typically much larger
-    than n_lab)."""
+    ``power_tune=True`` at ``n_lab >= 4`` uses CROSS-FITTED power-tuning,
+    not the single-sample construction :func:`_analytic_mean_correct`
+    still uses: the labeled pair is split into two folds, each fold's
+    lambda is estimated from the OTHER fold only, and that lambda is
+    plugged into THIS fold's own point estimate/variance -- then the two
+    folds' estimates are combined by a size-weighted average. This exists
+    because the single-sample construction (lambda and the point estimate
+    both computed from the SAME n_lab points, as every other power_tune
+    site in this codebase still does) was found to produce a genuinely
+    heavy-tailed studentized statistic at small n_lab for THIS estimand
+    specifically (excess kurtosis ~12 vs. a t-distribution's ~0.65,
+    confirmed via simulation, driving Type-I error to roughly double
+    nominal on some scenarios) -- NOT explained by a simple mean-level
+    variance underestimate (a Satterthwaite effective-df correction and a
+    smoothed/KDE-jittered lambda-replicate bootstrap were both tried and
+    both failed to close the gap; see ``simulations/out/
+    results_why_ppi_shrink_1_over_0.md``'s Wilcoxon power-tuning addendum
+    for the full investigation). The root cause was that lambda and the
+    point estimate shared the same finite sample, making the delta-method
+    inflation term's implicit independence assumption false; cross-fitting
+    makes that assumption true by construction instead of trying to
+    patch around its violation. Validated via simulation to restore
+    Type-I to within Monte Carlo noise of nominal alpha across every
+    tested small-n_lab scenario, while retaining most of adaptive
+    tuning's power advantage over the classical (``power_tune=False``)
+    estimator, and to not regress calibration at larger n_lab (the
+    single-sample construction's own miscalibration already fades as
+    n_lab grows, so cross-fitting converges to being nearly a no-op there
+    rather than becoming needlessly conservative).
+
+    The fold split uses a FIXED (not caller-seeded) permutation -- see
+    :data:`_ANALYTIC_TARGET_SEED` -- matching every other source of
+    internal randomness in this backend, so the function stays fully
+    deterministic (same inputs -> same outputs). This is safe under the
+    SAME i.i.d./representative-sample assumption :func:`correct` already
+    requires of the labeled subset: a fixed split is statistically
+    equivalent to a random one when array position carries no meaning of
+    its own.
+
+    Below n_lab=4 there isn't enough data for two non-degenerate folds
+    (each needs >= 2 points), so this falls back to the single-sample
+    construction even under ``power_tune=True`` -- the same construction
+    ``power_tune=False`` always uses.
+
+    Degrees of freedom for the Student-t interval: ``n_lab - 1`` in the
+    non-cross-fit path (matching :func:`_analytic_mean_correct`'s choice),
+    or a Welch-Satterthwaite combination of the two folds' own degrees of
+    freedom under cross-fitting -- see :func:`_cross_fit_satterthwaite_df`."""
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
     f_unlab = paired_walsh_midrank_theta(Y_hat_unlab)
-    f_lab = paired_walsh_midrank_theta(Y_lab)
-    f_hat_lab = paired_walsh_midrank_theta(Y_hat_lab)
-    rectifier = f_lab - f_hat_lab
-
     var_unlab = _walsh_theta_analytic_variance(Y_hat_unlab) if n_all > 1 else 0.0
-    var_lab = _walsh_theta_analytic_variance(Y_lab) if n_lab > 1 else 0.0
-    var_hat_lab = _walsh_theta_analytic_variance(Y_hat_lab) if n_lab > 1 else 0.0
 
-    if n_lab > 1:
-        h1_lab = _walsh_theta_h1_components(Y_lab)
-        h1_hat_lab = _walsh_theta_h1_components(Y_hat_lab)
-        cov_lab_hatlab = 4.0 * float(np.cov(h1_lab, h1_hat_lab, ddof=1)[0, 1]) / n_lab
+    if power_tune and n_lab >= 4:
+        rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+        perm = rng.permutation(n_lab)
+        n_A = n_lab // 2
+        idx_A, idx_B = perm[:n_A], perm[n_A:]
+        n_B = n_lab - n_A
+
+        Y_lab_A, Y_hat_lab_A = Y_lab[idx_A], Y_hat_lab[idx_A]
+        Y_lab_B, Y_hat_lab_B = Y_lab[idx_B], Y_hat_lab[idx_B]
+
+        lam_B, var_lab_B, var_hat_lab_B, cov_B = _walsh_theta_fold_lambda(Y_lab_B, Y_hat_lab_B, var_unlab, n_B)
+        lam_A, var_lab_A, var_hat_lab_A, cov_A = _walsh_theta_fold_lambda(Y_lab_A, Y_hat_lab_A, var_unlab, n_A)
+
+        f_lab_A = paired_walsh_midrank_theta(Y_lab_A)
+        f_hat_lab_A = paired_walsh_midrank_theta(Y_hat_lab_A)
+        f_lab_B = paired_walsh_midrank_theta(Y_lab_B)
+        f_hat_lab_B = paired_walsh_midrank_theta(Y_hat_lab_B)
+
+        # Fold A's point estimate uses fold B's lambda (and vice versa) --
+        # disjoint folds, so that lambda is genuinely independent of this
+        # fold's own randomness, unlike the single-sample construction.
+        est_A = f_lab_A + lam_B * (f_unlab - f_hat_lab_A)
+        est_B = f_lab_B + lam_A * (f_unlab - f_hat_lab_B)
+        var_est_A = max(var_lab_A + lam_B * lam_B * (var_unlab + var_hat_lab_A) - 2.0 * lam_B * cov_A, 0.0)
+        var_est_B = max(var_lab_B + lam_A * lam_A * (var_unlab + var_hat_lab_B) - 2.0 * lam_A * cov_B, 0.0)
+
+        w_A, w_B = n_A / n_lab, n_B / n_lab
+        estimate = w_A * est_A + w_B * est_B
+        # human_estimate/rectifier are built from the SAME per-fold
+        # decomposition as `estimate`, for internal consistency, rather
+        # than a separately-computed full-sample statistic.
+        f_lab = w_A * f_lab_A + w_B * f_lab_B
+        f_hat_lab_combined = w_A * f_hat_lab_A + w_B * f_hat_lab_B
+        rectifier = f_lab - f_hat_lab_combined
+        lam = w_A * lam_B + w_B * lam_A
+
+        v_A_term, v_B_term = w_A * w_A * var_est_A, w_B * w_B * var_est_B
+        var_estimate = v_A_term + v_B_term
+        se = float(np.sqrt(var_estimate))
+        df = _cross_fit_satterthwaite_df(v_A_term, max(n_A - 1, 1), v_B_term, max(n_B - 1, 1))
     else:
-        cov_lab_hatlab = 0.0
+        f_lab = paired_walsh_midrank_theta(Y_lab)
+        f_hat_lab = paired_walsh_midrank_theta(Y_hat_lab)
+        rectifier = f_lab - f_hat_lab
 
-    lam = 1.0
-    if power_tune:
-        denom = var_unlab + var_hat_lab
-        if denom > 1e-12:
-            lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+        var_lab = _walsh_theta_analytic_variance(Y_lab) if n_lab > 1 else 0.0
+        var_hat_lab = _walsh_theta_analytic_variance(Y_hat_lab) if n_lab > 1 else 0.0
+
+        if n_lab > 1:
+            h1_lab = _walsh_theta_h1_components(Y_lab)
+            h1_hat_lab = _walsh_theta_h1_components(Y_hat_lab)
+            cov_lab_hatlab = 4.0 * float(np.cov(h1_lab, h1_hat_lab, ddof=1)[0, 1]) / n_lab
         else:
-            lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
+            cov_lab_hatlab = 0.0
 
-        # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring for
-        # the shared rationale, and _walsh_theta_lambda_replicates for this
-        # estimand's version of the replicate-generation step. var_lab/
-        # var_hat_lab are already on the Walsh-theta variance scale (not
-        # raw sample variance), so the degenerate-Y_lab guard below reuses
-        # them directly rather than recomputing a separate raw variance
-        # the way the mean backend needs to.
-        if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
-            lam_replicates = None
-        else:
-            lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
-        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+        lam = 1.0
+        lam_replicates = None
+        if power_tune:
+            denom = var_unlab + var_hat_lab
+            if denom > 1e-12:
+                lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
+            else:
+                lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
 
-    estimate = f_lab + lam * (f_unlab - f_hat_lab)
-    var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
-    if power_tune:
-        var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
-    se = float(np.sqrt(var_estimate))
-    df = max(n_lab - 1, 1)
+            # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring
+            # for the shared rationale, and _walsh_theta_lambda_replicates
+            # for this estimand's version of the replicate-generation step.
+            if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
+                lam_replicates = None
+            else:
+                lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+            lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+
+        estimate = f_lab + lam * (f_unlab - f_hat_lab)
+        var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
+        if power_tune:
+            var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
+        se = float(np.sqrt(var_estimate))
+        df = max(n_lab - 1, 1)
 
     if se <= 0.0:
         ci_low = ci_high = estimate

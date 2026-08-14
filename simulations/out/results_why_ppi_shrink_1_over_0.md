@@ -2457,3 +2457,150 @@ were already flagged as not power-tunable via the simple bootstrap route
 (`_ppi_anova_independent`/`_ppi_kruskal_wallis`'s effect-size CIs,
 hardcoded `power_tune=False`, per their own existing comments) -- those
 remain explicitly out of scope for this round.
+
+## Addendum 28 (2026-08-14): Wilcoxon's Type-I inflation under adaptive tuning -- cross-fitted lambda fixes it
+
+Flagged by the user as the most concerning post-adaptive-tuning regression:
+the official harness run's per-test summary showed `wilcoxon` at corr
+mean=0.064/max=0.110, the highest of every standard test in the catalog
+(edging out `ttest`/`ttest_welch` at 0.062-0.063/0.107), with one
+Holm-confirmed miscalibrated cell (`interact.large+sparse+hetero+diff
+.mildbias`, n_lab=15, rate=0.110/300).
+
+**Diagnosis.** `power_tune=True` roughly DOUBLES wilcoxon's Type-I rate
+vs. `power_tune=False` on every tested small-n_lab (n_lab=15) scenario
+(e.g. 0.0745 vs. 0.0390 on the flagged cell), confirming adaptive tuning
+itself is the driver, not a pre-existing tie-related limitation. The
+mechanism is NOT a simple mean-level variance underestimate -- the
+marginal ratio of empirical estimate-spread to reported SE was actually
+~1.04 (mildly anticonservative, nowhere near enough to explain a
+near-doubled rejection rate). The real signature: the studentized
+statistic `estimate/se` has excess kurtosis ~12.2 under `power_tune=True`
+vs. ~0.65 under `power_tune=False` -- the latter matches a t_14
+distribution's theoretical kurtosis (6/(df-4)=0.6) almost exactly, so the
+classical fixed-lambda=1 construction is well-behaved here; adaptive
+tuning specifically introduces a heavy tail a symmetric t-reference can't
+capture. Root cause: lambda and the point estimate are both computed
+from the SAME n_lab=15-point labeled sample, so
+`_lambda_var_inflation`'s implicit independence assumption (lambda's
+estimation error is independent of the rest of the estimate) is false --
+confirmed via direct measurement: `corr(lambda, se)=-0.41`,
+`corr(se, |estimate|)=-0.49` on the flagged scenario.
+
+**Four fixes tried and empirically rejected** (each validated via direct
+simulation on the 3 worst-offending n_lab=15 scenarios, 2000-4000 reps
+each) before landing on one that worked:
+1. Retuning `_POWER_TUNE_SHRINKAGE_C` (20 -> up to 150): flat --
+   `_adaptive_shrink_lambda`'s "adaptive target" is itself built from the
+   same noisy `lam_replicates` array as the raw estimate, so reweighting
+   toward it doesn't reach anything more stable.
+2. Welch-Satterthwaite effective-df correction for the
+   lambda-inflation term: flat even at the most aggressive setting
+   (df2=2) -- the inflation term (V2) is only ~5% of total variance on
+   average (though heavily right-skewed: median 0.0003 vs. mean 0.0010),
+   too small a share for a df-mixing correction to have real leverage.
+3. Switching to `correct()`'s general two-stage bootstrap backend
+   (`backend="bootstrap"`): not better, slightly worse (0.0865 vs.
+   0.0730 analytic on the flagged cell) -- that path has the identical
+   lambda-held-fixed-plus-delta-method-inflation structure, just built
+   from resamples instead of a closed form.
+4. Gaussian-KDE smoothed bootstrap for the lambda-replicate resampling
+   (joint, covariance-preserving jitter on the labeled pair, bandwidth
+   swept 0.15-1.00x the pair's own covariance scale): flat even at the
+   largest bandwidth tested.
+
+**What worked: cross-fitting.** Split the n_lab labeled pairs into two
+folds; estimate each fold's lambda from the OTHER fold only, then plug
+that lambda into THIS fold's own point estimate/variance (disjoint folds
+-> the independence the delta-method needs is now genuinely true, not
+assumed). Combine via a size-weighted average; combine the two folds'
+degrees of freedom via Welch-Satterthwaite (now legitimate, since the two
+variance components really are independent). Implemented in
+`evalstats/ppi.py`'s `_analytic_walsh_theta_correct` (new
+`_walsh_theta_fold_lambda`/`_cross_fit_satterthwaite_df` helpers),
+active whenever `power_tune=True` and `n_lab >= 4` (below that, falls
+back to the single-sample construction `power_tune=False` always uses --
+not enough data for two non-degenerate folds). Fold split uses a FIXED
+internal permutation (`_ANALYTIC_TARGET_SEED`), matching every other
+source of randomness in this backend, so the function stays fully
+deterministic -- valid under the same i.i.d./representative-labeled-
+subset assumption `correct()` already requires.
+
+**Validation, 3 worst scenarios, 2000-2500 reps each:**
+
+| scenario | pre-fix (single-sample) rate | cross-fit rate |
+|---|---|---|
+| interact.large+sparse+hetero+diff.mildbias | 0.065-0.075 | 0.052-0.057 |
+| n=60.mildbias | 0.06-0.075 | 0.048-0.050 |
+| balance.4:1.modbias | 0.062-0.068 | 0.047-0.050 |
+
+All cross-fit rates land within Monte Carlo noise of nominal 0.05.
+Combined lambda's mean is actually slightly HIGHER under cross-fitting
+than the single-sample construction's (~0.32-0.38 vs. ~0.28-0.33) --
+calibration wasn't bought by brute-force collapsing lambda toward the
+classical estimator.
+
+**Power** (effect sizes 0.3x/0.6x the continuous population SD injected
+into the same 3 scenarios): cross-fit substantially beats
+`power_tune=False` everywhere (e.g. 0.178 vs. 0.123 at 0.6x SD on
+`n=60.mildbias`), and retains most (roughly 70-100%, scenario-dependent)
+of adaptive tuning's excess power over the classical estimator once each
+method's own null-hypothesis false-positive rate is backed out of its
+raw power number (the single-sample construction's raw power is
+partly inflated by its own miscalibration, so a direct raw comparison
+isn't apples-to-apples).
+
+**Larger n_lab** (n_lab~40 via the `lab.40%*` scenarios, ~75 via a
+custom higher-label_frac variant of the flagged interact scenario):
+cross-fit does not become needlessly conservative as the single-sample
+construction's own miscalibration naturally fades with n_lab -- at
+n_lab~75 the two are nearly identical (0.0500 cross-fit vs. 0.0510
+single-sample, both close to `power_tune=False`'s 0.0465). No explicit
+n_lab gate beyond the n_lab>=4 degenerate-fold guard was needed.
+
+**Does this generalize to other power_tune sites?** Checked directly
+(same 3 scenarios, `power_tune=True` vs. `False`, 2500 reps): `paired_t`
+(same analytic-backend structure as wilcoxon, just `np.mean` instead of
+the Walsh-theta U-statistic) shows NO heavy-tail problem -- studentized-
+stat kurtosis 0.21-0.40, essentially matching t_14's theoretical ~0.65,
+rates 0.042-0.051 regardless of `power_tune`. `anova_rep` and `friedman`
+likewise show no meaningful `power_tune`-attributable inflation (in
+several cells `power_tune=True` is BETTER calibrated than
+`power_tune=False`). `anova_ind` shows a real but much smaller
+`power_tune=True`-specific inflation at 2 of 3 scenarios (0.0608 vs.
+0.0496, and 0.0628 vs. 0.0584 -- 8-22% relative, vs. wilcoxon's ~49-91%
+relative), plus a SEPARATE, larger miscalibration at the interact
+scenario that persists even at `power_tune=False` (0.082 fixed-lambda
+vs. 0.078 adaptive -- both elevated, meaning that one is not a lambda-
+coupling problem at all and cross-fitting would not fix it). Conclusion:
+the same-sample lambda/point-estimate coupling is a structurally general
+risk across every power_tune site using this delta-method pattern, but
+its PRACTICAL severity is estimand-specific -- Walsh-theta's U-statistic
+variance estimator is unusually fragile at small n_lab in a way the
+mean-based and vector-lambda (repeated-ANOVA/Friedman) constructions
+just aren't. Extending cross-fitting to those sites is not warranted by
+this data; `anova_ind`'s separate non-lambda miscalibration is flagged
+as an open follow-up, not yet investigated.
+
+`ttest`/`ttest_welch` were NOT covered by this comparison -- the harness
+run that flagged wilcoxon also showed them elevated (corr max 0.107,
+mean 0.062-0.063, essentially tied with wilcoxon's 0.110/0.064), but
+`ttest` routes through `_ppi_two_sample` -> `correct()` WITH `X_lab`/
+`X_unlab` covariates, which forces the general bootstrap backend
+unconditionally (the analytic dispatch requires no covariates) -- it
+never reaches `_analytic_mean_point_se`/`_analytic_walsh_theta_correct`
+at all, so this addendum's diagnosis doesn't directly transfer. Whether
+ttest's inflation shares a root cause with the general bootstrap
+backend's own two-stage (estimate-lambda-then-build-CI-at-fixed-lambda)
+construction -- which was ALSO found not better-calibrated than the
+analytic path when tested as a candidate wilcoxon fix above -- is an
+open question, not yet investigated.
+
+**Status**: implemented in `evalstats/ppi.py` (`_analytic_walsh_theta_
+correct`, `_walsh_theta_fold_lambda`, `_cross_fit_satterthwaite_df`).
+`power_tune=True` is already the default throughout the call chain
+(`correct`/`_ppi_paired_arrays`/`wilcoxon`), so cross-fitting is active
+by default wherever n_lab>=4 -- no further wiring needed. Full pytest
+suite (`tests/test_ppi_corrections.py`, 319 tests) passes unchanged.
+Diagnostic/validation scripts were standalone (not added to the repo).
+ttest/ttest_welch's inflation is the natural next investigation.
