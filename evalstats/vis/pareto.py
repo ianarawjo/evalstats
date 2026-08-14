@@ -14,10 +14,12 @@ fitting) to be read correctly.
 The frontier itself is drawn the same uncertainty-aware way: instead of one
 crisp line through the point-estimate frontier's members (implying more
 confidence than the data has about both *which* entities belong on it and
-the line's exact shape), :func:`_bootstrap_frontier_ensemble` recomputes the
-non-dominated set per bootstrap replicate and overlays many faint candidate
-frontiers -- solid where replicates agree, frayed wherever a point is only
-sometimes on the frontier.
+the line's exact shape), :func:`_frontier_region_band` recomputes the
+non-dominated set per bootstrap replicate (:func:`_bootstrap_frontier_ensemble`),
+interpolates each replicate's own frontier over its own x-range, and takes
+the [5th, 95th] percentile envelope at each x -- a smooth shaded region
+(plus a median line) that widens wherever replicates disagree about the
+frontier's shape, e.g. right around a point that's only sometimes included.
 """
 
 from __future__ import annotations
@@ -36,7 +38,9 @@ if TYPE_CHECKING:
 _STATUS_COLOR = {
     "frontier": _PALETTE["unbeaten"],
     "dominated": _PALETTE["lower_tier"],
-    "ambiguous": "#c98a1f",  # amber -- distinct from both blue and red
+    # Purple: sits between frontier's blue and dominated's red, matching
+    # what "ambiguous" actually means here (could go either way).
+    "ambiguous": "#9467bd",
 }
 _STATUS_MARKER = {"frontier": "*", "dominated": "x", "ambiguous": "o"}
 _STATUS_LABEL = {
@@ -189,13 +193,58 @@ def _bootstrap_frontier_ensemble(replicate_primary, replicate_secondary, directi
     return lines
 
 
+def _frontier_region_band(
+    replicate_primary, replicate_secondary, direction, n_lines, rng,
+    *, n_grid=200, pct_lo=5, pct_hi=95, min_coverage=0.08,
+):
+    """Smooth [pct_lo, pct_hi] percentile envelope of the per-replicate
+    Pareto frontiers from :func:`_bootstrap_frontier_ensemble`, plus a
+    median line -- a calmer alternative to overlaying every individual
+    replicate frontier as its own faint line (which reads as visual noise
+    at a glance). Each replicate's frontier is interpolated only over its
+    own x-range (a replicate whose frontier doesn't reach some x doesn't
+    contribute a value there), so the band's width at each x reflects how
+    much replicates actually disagree, not an artifact of extrapolation.
+
+    Returns
+    -------
+    (x_grid, lower, upper, median, valid) : tuple of np.ndarray
+        ``valid`` is a boolean mask -- ``x_grid`` points with too few
+        contributing replicates (< ``min_coverage`` fraction of ``n_lines``)
+        are excluded rather than drawn from a handful of stray lines.
+        Empty arrays when fewer than 2 replicates yield a usable frontier.
+    """
+    lines = _bootstrap_frontier_ensemble(replicate_primary, replicate_secondary, direction, n_lines, rng)
+    if len(lines) < 2:
+        empty = np.array([])
+        return empty, empty, empty, empty, np.array([], dtype=bool)
+
+    all_x = np.concatenate([lx for lx, _ in lines])
+    x_grid = np.linspace(all_x.min(), all_x.max(), n_grid)
+
+    y = np.full((len(lines), n_grid), np.nan)
+    for i, (lx, ly) in enumerate(lines):
+        y[i] = np.interp(x_grid, lx, ly, left=np.nan, right=np.nan)
+
+    coverage = np.mean(~np.isnan(y), axis=0)
+    valid = coverage >= min_coverage
+
+    lower = np.full(n_grid, np.nan)
+    upper = np.full(n_grid, np.nan)
+    median = np.full(n_grid, np.nan)
+    lower[valid] = np.nanpercentile(y[:, valid], pct_lo, axis=0)
+    upper[valid] = np.nanpercentile(y[:, valid], pct_hi, axis=0)
+    median[valid] = np.nanmedian(y[:, valid], axis=0)
+    return x_grid, lower, upper, median, valid
+
+
 def plot_pareto_tradeoff(
     pareto: dict,
     *,
     metric: Optional[str] = None,
     title: Optional[str] = None,
     n_cloud_points: int = 300,
-    n_frontier_lines: int = 60,
+    n_frontier_replicates: int = 1500,
     figsize: Optional[tuple[float, float]] = None,
     rng: Optional[np.random.Generator] = None,
 ) -> "Figure":
@@ -222,14 +271,14 @@ def plot_pareto_tradeoff(
     n_cloud_points : int
         Bootstrap replicates shown per entity (subsampled from the full
         joint bootstrap for a legible, not over-dense, cloud).
-    n_frontier_lines : int
-        Per-replicate Pareto frontiers drawn as a translucent band, in
-        place of a single line through the point-estimate frontier (see
-        :func:`_bootstrap_frontier_ensemble`) -- a single line implies more
-        certainty about frontier membership and shape than the data has;
-        overlaying many faint per-replicate frontiers instead shows where
-        replicates agree (solid band) and where a point is only sometimes
-        on the frontier (the band frays right around it).
+    n_frontier_replicates : int
+        Per-replicate Pareto frontiers used to build the smooth [5th, 95th]
+        percentile region band (see :func:`_frontier_region_band`), in
+        place of a single line through the point-estimate frontier -- a
+        single line implies more certainty about frontier membership and
+        shape than the data has. More replicates give a smoother, more
+        reliable band; this is cheap since it's reused from the already-
+        computed calibration bootstrap, not a new resampling pass.
     figsize : tuple[float, float], optional
         Figure size. Defaults to ``(7, 5.2)``.
     rng : np.random.Generator, optional
@@ -274,11 +323,18 @@ def plot_pareto_tradeoff(
 
     rng = np.random.default_rng(rng) if rng is not None else np.random.default_rng(0)
 
-    ensemble = _bootstrap_frontier_ensemble(
-        result.replicate_primary, result.replicate_secondary, direction, n_frontier_lines, rng,
+    band_x, band_lo, band_hi, band_med, band_valid = _frontier_region_band(
+        result.replicate_primary, result.replicate_secondary, direction, n_frontier_replicates, rng,
     )
-    for line_x, line_y in ensemble:
-        ax.plot(line_x, line_y, color=_PALETTE["unbeaten"], lw=1.0, alpha=0.05, zorder=1)
+    if band_valid.any():
+        ax.fill_between(
+            band_x, band_lo, band_hi, where=band_valid,
+            color=_PALETTE["unbeaten"], alpha=0.18, linewidth=0, zorder=1,
+        )
+        ax.plot(
+            band_x[band_valid], band_med[band_valid],
+            color=_PALETTE["unbeaten"], lw=1.3, alpha=0.55, zorder=1,
+        )
 
     ann_list = []
     for i, lbl in enumerate(labels):
