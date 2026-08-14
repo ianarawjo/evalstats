@@ -6014,7 +6014,7 @@ smaller/larger than "o" at the same nominal size; anything not listed here
 falls back to the default markersize passed at the call site."""
 
 
-def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str) -> str:
+def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str, square: bool = True) -> str:
     """The flagship label-efficiency figure: one panel per eval type
     (binary, continuous, likert -- the standard panel order used
     throughout this harness's plots, see eval_types below), x=actual
@@ -6047,15 +6047,18 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
     to leave each panel room for its own legend without overlapping the
     next panel.
 
-    Axes are deliberately NOT square/shared: x is capped at the actual
-    N_lab grid tested (the multiplier being consistently > 1x means
-    equiv_n_lab usually runs 1.5-4x higher, so a shared max used to spend
-    most of the panel's width on N_lab values nobody tested, compressing
-    every real point into the bottom-left corner); y expands independently
-    to fit equiv_n_lab. The y=x reference line is still exactly y=x in
-    data coordinates -- it just won't render at a visual 45 degrees
-    anymore, which is an acceptable tradeoff for making the low-N_lab
-    region (the range that matters most in practice) actually readable."""
+    ``square`` (default True): whether x and y share one axis max with
+    ``ax.set_aspect("equal")``, so the y=x reference renders at a literal
+    45 degrees. When True (the default), the shared max is driven by
+    whichever of x (N_lab tested) or y (equiv_n_lab) is larger -- since
+    the multiplier is consistently > 1x, that's almost always y, so most
+    of the panel's width ends up spent on N_lab values nobody tested,
+    compressing every real point toward the bottom-left corner. Pass
+    ``square=False`` to trade the 45-degree diagonal for legibility at low
+    N_lab instead: x caps at just the N_lab grid actually tested, y
+    expands independently to fit equiv_n_lab, and the axes are unequal.
+    The y=x reference line is exactly y=x in data coordinates either way
+    -- with square=False it just won't render at a visual 45 degrees."""
     import matplotlib.pyplot as plt
 
     if not results:
@@ -6089,17 +6092,22 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
         # squashed every real point in that panel into an unreadable sliver).
         # Falls back to using every row's n_lab (never equiv_n_lab) if a
         # panel is saturated everywhere, which no current eval_type is.
-        # x and y scale independently (see this function's docstring) --
-        # x caps at the actual N_lab grid tested, y at the largest
-        # equiv_n_lab actually observed.
         unsaturated = [r for r in et_rows if not r.saturated]
         x_data_max = max(r.n_lab for r in et_rows)
         if unsaturated:
             y_data_max = max(r.equiv_n_lab for r in unsaturated)
         else:
             y_data_max = x_data_max * 3.0
-        x_max = x_data_max * 1.05
-        y_max = y_data_max * 1.15
+
+        if square:
+            # x and y share one max (see this function's `square` docstring
+            # section) so the y=x reference renders at a literal 45 degrees.
+            x_max = y_max = max(x_data_max, y_data_max) * 1.15
+        else:
+            # x and y scale independently -- x caps at the actual N_lab
+            # grid tested, y at the largest equiv_n_lab actually observed.
+            x_max = x_data_max * 1.05
+            y_max = y_data_max * 1.15
 
         ax.plot(
             [0, x_max], [0, x_max], color="black", ls="--", lw=1.2, alpha=0.6,
@@ -6136,6 +6144,8 @@ def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path
         ax.set_xlabel("Num human labels used")
         ax.set_ylabel("Num human labels a classical test would need" if col == 0 else "")
         ax.set_title(et.capitalize())
+        if square:
+            ax.set_aspect("equal", adjustable="box")
         ax.legend(loc="center left", bbox_to_anchor=(1.05, 0.5), fontsize=7, borderaxespad=0.3, frameon=True)
 
     fig.suptitle(
