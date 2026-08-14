@@ -118,7 +118,14 @@ def _resolve_columns(
     elif resolved_item not in df.columns:
         raise ValueError(f"item_col {resolved_item!r} not found in data.")
 
-    resolved_factor = factor if factor is not None else _find_col(df, _CANONICAL_ALIASES["model"])
+    # "model" and "prompt" are both legitimate compare()/analyze() factor
+    # roles (see loader.py's canonical-role list) -- a prompt-only A/B test
+    # on a single model has no "model" column at all, so falling back to
+    # "model" alone would silently miss its factor and treat every prompt's
+    # rows as one undifferentiated group.
+    resolved_factor = factor
+    if resolved_factor is None:
+        resolved_factor = _find_col(df, _CANONICAL_ALIASES["model"]) or _find_col(df, _CANONICAL_ALIASES["prompt"])
     if resolved_factor is not None and resolved_factor not in df.columns:
         raise ValueError(f"factor column {resolved_factor!r} not found in data.")
 
