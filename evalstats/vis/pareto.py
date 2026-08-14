@@ -100,10 +100,11 @@ def _resolve_label_overlaps(fig, anns, max_iter=40, step=10.0):
     """
     if len(anns) < 2:
         return
+    margin = 4.0  # px -- stop once there's real whitespace, not just zero overlap
     fig.canvas.draw()
     renderer = fig.canvas.get_renderer()
     for _ in range(max_iter):
-        boxes = [a.get_window_extent(renderer=renderer) for a in anns]
+        boxes = [a.get_window_extent(renderer=renderer).padded(margin) for a in anns]
         moved = False
         for i in range(len(anns)):
             for j in range(i + 1, len(anns)):
