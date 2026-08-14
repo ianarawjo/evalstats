@@ -2241,6 +2241,11 @@ def _run_pareto_if_needed(
     result = pareto_bootstrap(
         scores_primary, scores_secondary_oriented, labels,
         n_bootstrap=n_boot, rng=rng_gen,
+        # Retained for plot_pareto_tradeoff()'s bootstrap point cloud, so it
+        # draws from the exact same replicates the calibrated status/P(Pareto-
+        # optimal) numbers come from, rather than a second independent
+        # bootstrap. Cheap: O(N x n_bootstrap) floats, not O(N^2).
+        return_replicates=True,
     )
     statuses = classify_pareto_status(result, alpha=alpha)
 
