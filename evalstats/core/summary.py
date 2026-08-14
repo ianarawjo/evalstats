@@ -37,6 +37,7 @@ _BRIGHT_GREEN  = "\033[92m" if _ANSI else ""
 _BRIGHT_YELLOW = "\033[93m" if _ANSI else ""
 _BRIGHT_CYAN   = "\033[96m" if _ANSI else ""
 _BRIGHT_RED    = "\033[91m" if _ANSI else ""
+_BRIGHT_MAGENTA = "\033[95m" if _ANSI else ""  # "pink" -- reserved for the PPI/MCAR reminder, nothing else
 
 
 def _p_best_color(p: float) -> str:
@@ -1564,6 +1565,15 @@ def _print_bundle_summary(
         + (f" | Runs: {n_runs}" if n_runs > 1 else "")
     )
     print()
+
+    if getattr(bundle, "ppi_applied", False):
+        print(
+            f"{_BOLD}{_BRIGHT_MAGENTA}PPI-corrected: every estimate below assumes the "
+            f"labeled subset used for correction was randomly sampled from the "
+            f"full item pool (MCAR). Run judge_alignment(...).summary() to check "
+            f"this and see the judge's reliability.{_RESET}"
+        )
+        print()
 
     _print_subsection("--- Descriptive Statistics ---")
     _rob_df = bundle.robustness.summary_table()
