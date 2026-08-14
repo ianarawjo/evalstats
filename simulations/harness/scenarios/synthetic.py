@@ -3795,11 +3795,12 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     wilcoxon's own PPI-corrected estimator actually targets -- see that
     function's docstring for the full rationale.
 
-    "ppi_wilson"/"bootstrap_t_single"'s gold value is the single-arm
-    population mean of the "a2" marginal -- the same distribution
-    generate_judge_bias_cell draws truth_a2 from -- reusing the diffs2/
-    thetas2 loop's own `a` draw rather than a separate MC loop, since it's
-    already exactly that quantity.
+    "ppi_wilson"/"bootstrap_t_single"/"ppi_t_interval_single"/
+    "ppi_logit_t_single"'s gold value is the single-arm population mean of
+    the "a2" marginal -- the same distribution generate_judge_bias_cell
+    draws truth_a2 from -- reusing the diffs2/thetas2 loop's own `a` draw
+    rather than a separate MC loop, since it's already exactly that
+    quantity.
 
     "ppi_t_interval"/"ppi_logit_t" target the same paired mean-difference
     estimand as "paired_t"/"tango_score" (both are closed-form PPI
@@ -3883,4 +3884,6 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "kruskal": 0.5,
         "ppi_wilson": float(a_means2.mean()),  # single-arm population mean of "a2" -- same estimand as truth_a2
         "bootstrap_t_single": float(a_means2.mean()),  # same estimand, non-binary construction
+        "ppi_t_interval_single": float(a_means2.mean()),  # same estimand, closed-form non-binary construction
+        "ppi_logit_t_single": float(a_means2.mean()),  # same estimand, closed-form [lo,hi]-bounded construction
     }

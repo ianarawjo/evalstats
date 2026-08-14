@@ -3430,15 +3430,25 @@ _PPI_BINARY_COMPATIBLE_TESTS = {
 # by simply never being added to _PPI_BINARY_COMPATIBLE_TESTS above.
 _PPI_BINARY_ONLY_TESTS = {TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name}
 
-# ppi_wilson/bootstrap_t_single are single-ARM estimation methods (one
-# group's mean, via cell.llm_a2/lab_a2) with no two-group/paired rejection
-# decision to compute a Type-I error on -- unlike TANGO/BOOTSTRAP_T, which
-# are also two-/paired-group PAIRWISE_METHODS entries with a real Type-I
-# concept. Excluded from _run_ppi_cell's Type-I sweep (see its use below) so
-# they don't produce a fake "0/0 rejections, perfectly calibrated" row --
-# they're swept only by run_ppi_effect_check's bias/coverage pass, which is
-# what they're actually for (see _PPI_EFFECT_TESTS).
-_PPI_SINGLE_ARM_TESTS = {PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name}
+# ppi_wilson/bootstrap_t_single/t_interval_single/logit_t_single are
+# single-ARM estimation methods (one group's mean, via cell.llm_a2/lab_a2)
+# with no two-group/paired rejection decision to compute a Type-I error
+# on -- unlike TANGO/BOOTSTRAP_T, which are also two-/paired-group
+# PAIRWISE_METHODS entries with a real Type-I concept. Excluded from
+# _run_ppi_cell's Type-I sweep (see its use below) so they don't produce a
+# fake "0/0 rejections, perfectly calibrated" row -- they're swept only by
+# run_ppi_effect_check's bias/coverage pass, which is what they're
+# actually for (see _PPI_EFFECT_TESTS). PPI_T_INTERVAL_SINGLE/
+# PPI_LOGIT_T_SINGLE were missing from this set entirely (added after
+# PPI_WILSON/PPI_BOOTSTRAP_T_SINGLE, per their own docstrings' "split out
+# for the same reason" note, but never added here) -- caught by their
+# Type-I row showing a literal, unconditional 0/n_reps in every scenario
+# (both corrected AND uncorrected), not a real "perfectly calibrated"
+# result: these estimands need single-sample data, so running them on
+# this check's two-group cells degenerates instead of erroring.
+_PPI_SINGLE_ARM_TESTS = {
+    PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
+}
 
 
 def _ppi_effective_tests(sc: JudgeBiasSource, active_tests: list[str]) -> list[str]:
@@ -3883,7 +3893,7 @@ def run_ppi_simulation(
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, MWU_RIDGE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
-    PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
+    PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name, PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 )
 
 # bayes_bootstrap/bootstrap_t/tango_score/ppi_wilson/bootstrap_t_single/
@@ -3975,13 +3985,14 @@ def _run_ppi_effect_cell(
     disjoint unlabeled-only complement, matching the convention documented
     in anova_oneway/friedman's rectifier comments.
 
-    ppi_wilson/bootstrap_t_single are the single-arm robustness-CI methods
-    PPI_AUTO_METHOD_TABLE routes to for marginal (not pairwise) alignment
-    corrections -- unlike every other test here, they use only
-    cell.llm_a2/lab_a2 (one group), not a two-group contrast; added so these
-    methods get a genuine synthetic ground-truth coverage check instead of
-    relying solely on cases/ppi_real.py's real-data check (see PPI_WILSON's
-    Method-registry comment).
+    ppi_wilson/bootstrap_t_single/t_interval_single/logit_t_single are the
+    single-arm robustness-CI methods PPI_AUTO_METHOD_TABLE routes to for
+    marginal (not pairwise) alignment corrections -- unlike every other
+    test here, they use only cell.llm_a2/lab_a2 (one group), not a
+    two-group contrast; added so these methods get a genuine synthetic
+    ground-truth coverage check instead of relying solely on
+    cases/ppi_real.py's real-data check (see PPI_WILSON's Method-registry
+    comment).
     """
     active_tests = _ppi_effective_tests(sc, active_tests)
     rng = np.random.default_rng(seed)
@@ -4130,6 +4141,28 @@ def _run_ppi_effect_cell(
                     # analogue of the PPI_WILSON block above, same a2 estimand.
                     r = _ppi_single_bootstrap_t(cell.llm_a2, cell.lab_a2, _ALPHA, n_boot, _rng_seed())
                     out[PPI_BOOTSTRAP_T_SINGLE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_T_INTERVAL_SINGLE.name in active_tests:
+                try:
+                    # Single-sample sibling of PPI_T_INTERVAL, closed-form
+                    # analogue of PPI_BOOTSTRAP_T_SINGLE (identical a2
+                    # estimand, no bootstrap resampling) -- see
+                    # PPI_T_INTERVAL_SINGLE's Method-registry comment.
+                    r = _ppi_single_t_interval(cell.llm_a2, cell.lab_a2, _ALPHA)
+                    out[PPI_T_INTERVAL_SINGLE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
+            if PPI_LOGIT_T_SINGLE.name in active_tests:
+                try:
+                    # [lo,hi]-bounded analogue of PPI_T_INTERVAL_SINGLE, same
+                    # a2 estimand -- see PPI_LOGIT_T_SINGLE's Method-registry
+                    # comment.
+                    _lo, _hi = EVAL_TYPE_SCALE_BOUNDS[sc.eval_type]
+                    r = _ppi_single_logit_t(cell.llm_a2, cell.lab_a2, _ALPHA, lo=_lo, hi=_hi)
+                    out[PPI_LOGIT_T_SINGLE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 

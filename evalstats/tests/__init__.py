@@ -1370,7 +1370,7 @@ def _ppi_kruskal_wallis_pairwise(
     alpha: float,
     n_boot: int,
     rng,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> dict:
     """Joint PPI bootstrap of every pairwise dominance effect θ_ab, used for
     the omnibus Wald test (H₀: every θ_ab = 0.5) and for per-pair reporting.
@@ -2960,7 +2960,7 @@ def _noncentral_f_ci_lambda(f_obs: float, dfn: float, dfd: float, alpha: float) 
 
 def _ppi_anova_independent_f_stat(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[dict]:
     """Shared F-statistic computation for independent-groups ANOVA's PPI
     correction -- factored out so the p-value and the (test-inversion) CI
@@ -3022,9 +3022,22 @@ def _ppi_anova_independent_f_stat(
             Y_lab_i = g_lab[mask]
             Y_hat_lab_i = g[mask]
             Y_hat_unlab_i = g[~mask]
-            est_i, se_i, _, _, _, _, _ = _analytic_mean_point_se(
-                Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, power_tune=True,
-            )
+            if len(Y_hat_unlab_i) == 0:
+                # This group is fully labeled -- _analytic_mean_point_se
+                # raises on an empty unlabeled residual (see its own
+                # docstring), so fall back to the human-labeled mean
+                # directly: the power_tune=False branch's fixed-lambda=1
+                # construction (g.mean() + (g_lab[mask].mean() -
+                # g[mask].mean())) reduces to exactly this when mask is
+                # all True, so this stays consistent with that branch at
+                # 100% labeling.
+                est_i = float(Y_lab_i.mean())
+                n_lab_i = len(Y_lab_i)
+                se_i = float(np.sqrt(np.var(Y_lab_i, ddof=1) / n_lab_i)) if n_lab_i > 1 else 0.0
+            else:
+                est_i, se_i, _, _, _, _, _ = _analytic_mean_point_se(
+                    Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, power_tune=True,
+                )
             corr_means[i] = est_i
             var_ppi_per_group[i] = se_i * se_i
     else:
@@ -3114,7 +3127,7 @@ def _ppi_anova_independent_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[float]:
     """Corrected p-value for independent ANOVA via per-group PPI mean corrections.
 
@@ -3146,7 +3159,7 @@ def _ppi_anova_independent_p_value(
 
 def _ppi_anova_independent_ci(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[tuple[float, float, float]]:
     """(estimate, ci_low, ci_high) for independent ANOVA's between-group
     variance, via test-inversion on the SAME F-statistic
@@ -3226,7 +3239,7 @@ def _repeated_anova_lambda_replicates(human_lab, llm_lab, llm_unlab, P, k, n_lab
 
 def _ppi_anova_repeated_f_stat(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[dict]:
     """Shared F-statistic computation for repeated-measures ANOVA's PPI
     correction -- see :func:`_ppi_anova_independent_f_stat`'s docstring for
@@ -3299,11 +3312,18 @@ def _ppi_anova_repeated_f_stat(
     centered_human_lab = human_lab - human_lab.mean(axis=1, keepdims=True)
     delta = centered_human_lab.mean(axis=0) - centered_llm_lab.mean(axis=0)
 
-    if power_tune:
-        unlab_idx = np.where(~overlap)[0]
-        n_unlab = len(unlab_idx)
-        if n_unlab < 2 or n_lab < 2:
-            return None
+    unlab_idx = np.where(~overlap)[0]
+    n_unlab = len(unlab_idx)
+
+    # n_unlab<2 (includes the fully-labeled n_unlab==0 case) can't support
+    # the adaptive lambda estimate below (its replicate-resampling needs at
+    # least 2 unlabeled subjects) -- fall through to the fixed-lambda=1
+    # computation below instead of erroring, same fallback used for
+    # n_lab<2. At 100% labeling that fixed-lambda=1 construction already
+    # reduces cleanly to the human-labeled result (no unlabeled
+    # extrapolation term), matching _ppi_anova_independent_f_stat's
+    # per-group fallback for the same edge case.
+    if power_tune and n_unlab >= 2 and n_lab >= 2:
         llm_unlab = centered_llm_all[unlab_idx]
         f_unlab = llm_unlab.mean(axis=0)
         f_lab_llm = centered_llm_lab.mean(axis=0)
@@ -3407,7 +3427,7 @@ def _ppi_anova_repeated_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[float]:
     """Corrected p-value for repeated-measures ANOVA via per-condition PPI corrections.
 
@@ -3427,7 +3447,7 @@ def _ppi_anova_repeated_p_value(
 
 def _ppi_anova_repeated_ci(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[tuple[float, float, float]]:
     """(estimate, ci_low, ci_high) for repeated-measures ANOVA's condition
     variance, via test-inversion on the SAME F-statistic
@@ -3452,7 +3472,7 @@ def _ppi_anova_repeated_ci(
 
 def _ppi_friedman_f_stat(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[dict]:
     """Shared F-statistic computation for Friedman's PPI correction -- see
     :func:`_ppi_anova_independent_f_stat`'s docstring for why this is
@@ -3557,11 +3577,13 @@ def _ppi_friedman_f_stat(
     human_lab = _scipy_stats.rankdata(labels_mat[overlap], axis=1, method="average")
     delta = human_lab.mean(axis=0) - llm_lab.mean(axis=0)
 
-    if power_tune:
-        unlab_idx = np.where(~overlap)[0]
-        n_unlab = len(unlab_idx)
-        if n_unlab < 2 or n_lab < 2:
-            return None
+    unlab_idx = np.where(~overlap)[0]
+    n_unlab = len(unlab_idx)
+
+    # Same n_unlab<2 fallback as _ppi_anova_repeated_f_stat -- see its
+    # comment for the rationale (includes the fully-labeled n_unlab==0
+    # case).
+    if power_tune and n_unlab >= 2 and n_lab >= 2:
         llm_unlab = llm_mat[unlab_idx]
         f_unlab = llm_unlab.mean(axis=0)
         f_lab_llm = llm_lab.mean(axis=0)
@@ -3671,7 +3693,7 @@ def _ppi_friedman_p_value(
     groups: list[np.ndarray],
     groups_lab: list[np.ndarray],
     k: int,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[float]:
     """Corrected p-value for the Friedman test via per-condition PPI
     corrections applied to within-subject ranks -- see
@@ -3688,7 +3710,7 @@ def _ppi_friedman_p_value(
 
 def _ppi_friedman_ci(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], k: int, alpha: float,
-    power_tune: bool = False,
+    power_tune: bool = True,
 ) -> Optional[tuple[float, float, float]]:
     """(estimate, ci_low, ci_high) for Friedman's within-subject-rank
     condition variance, via test-inversion on the SAME F-statistic
