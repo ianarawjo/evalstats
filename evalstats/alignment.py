@@ -7,6 +7,7 @@ imputation of latent human labels.
 """
 from __future__ import annotations
 
+import math
 import warnings
 from typing import Optional
 
@@ -39,10 +40,22 @@ class AlignmentResult:
         Number of items with human labels (alignment set size).
     n_total : int
         Total number of items in the dataset.
+    selection : str
+        How the labeled subset was chosen, as declared by the caller via
+        :func:`judge_alignment`'s ``selection=`` -- ``"random"``,
+        ``"stratified"``, ``"manual"``, or ``"unknown"`` (the default when
+        not specified). Every correction :func:`judge_alignment` /
+        ``compare(alignment=...)`` applies assumes the labeled subset is a
+        random sample of the full item pool (MCAR, "missing completely at
+        random"); anything other than ``"random"`` means that assumption
+        is either known-violated or unconfirmed, and a warning is raised
+        at call time -- see :attr:`representativeness` and
+        :meth:`summary` for the diagnostics that check for this in practice.
     alignment_metrics : dict
         Point estimates and bootstrap CIs for each alignment metric.
     representativeness : dict
-        Representativeness check results (distribution and slice columns).
+        Representativeness check results (distribution, slice columns, and
+        label-position contiguity).
     bias_check : dict or None
         For likert/continuous/grade score types, compares the correlation-type
         metric (weighted κ or Pearson r) against ICC(2,1) to flag whether the
@@ -63,6 +76,7 @@ class AlignmentResult:
         alignment_metrics: dict,
         representativeness: dict,
         bias_check: Optional[dict] = None,
+        selection: str = "unknown",
     ) -> None:
         self.llm_metric = llm_metric
         self.human_col = human_col
@@ -73,6 +87,7 @@ class AlignmentResult:
         self.alignment_metrics = alignment_metrics
         self.representativeness = representativeness
         self.bias_check = bias_check
+        self.selection = selection
 
     # ── sampling ─────────────────────────────────────────────────────────────
 
@@ -165,6 +180,12 @@ class AlignmentResult:
             f"Alignment set  : {self.n_labeled} of {self.n_total} items "
             f"have human labels ({pct:.1f}%)"
         )
+        sel_icon = "✓" if self.selection == "random" else "⚠ "
+        print(f"Label selection: {sel_icon} {self.selection}")
+        print(
+            "Note: corrections below assume the labeled subset is a random "
+            "sample of the full item pool (MCAR) — see 'Representativeness'."
+        )
         print()
 
     def _summary_simple(self) -> None:
@@ -198,8 +219,7 @@ class AlignmentResult:
         if rep_failed:
             print("⚠ Representativeness: the labeled sample may not be representative")
             for key, val in rep_failed:
-                name = "score distribution" if key == "score_distribution" else key[len("slice_"):]
-                print(f"    - {name}: {val['message']}")
+                print(f"    - {_rep_check_display_name(key)}: {val['message']}")
         else:
             print("✓ Representativeness: labeled items look like the full item pool")
         print()
@@ -250,8 +270,11 @@ class AlignmentResult:
         dist = rep.get("score_distribution")
         if dist:
             _print_check("Score distribution", dist)
+        contiguity = rep.get("label_contiguity")
+        if contiguity:
+            _print_check("Label position contiguity", contiguity)
         for key, val in rep.items():
-            if key == "score_distribution":
+            if key in ("score_distribution", "label_contiguity"):
                 continue
             if key.startswith("slice_"):
                 col = key[len("slice_"):]
@@ -844,14 +867,33 @@ def _compute_alignment_metrics(
 # Representativeness checks
 # ─────────────────────────────────────────────────────────────────────────────
 
-# Why representativeness is checked at all — shared across the score-distribution
-# and slice-column checks, since both exist to answer the same question.
+# Why representativeness is checked at all — shared across the score-distribution,
+# slice-column, and label-contiguity checks, since all three exist to answer the
+# same question. Named explicitly (not just "representative") because the
+# developer needs the actual causal mechanism to avoid it next time: the natural
+# QA instinct is to hand-label the items you're *unsure about* (borderline
+# scores, ones the judge seemed shaky on) -- which is exactly the kind of
+# selection that breaks this assumption.
 _REPRESENTATIVENESS_WHY = (
     "The calibration model and alignment metrics above are fit only on the "
-    "labeled subset; if that subset isn't representative of the full item pool, "
-    "statistical inference may not generalize to "
-    "unlabeled items."
+    "labeled subset, and assume it's a random sample of the full item pool "
+    "(\"missing completely at random\", MCAR, in the statistics literature) -- "
+    "not, for example, the items you were most unsure about, or the "
+    "lowest-scoring ones. If that assumption doesn't hold, statistical "
+    "inference may not generalize to unlabeled items."
 )
+
+
+def _rep_check_display_name(key: str) -> str:
+    """Human-readable label for a representativeness-check dict key, for
+    the short/simple summary (:meth:`AlignmentResult._summary_simple`)."""
+    if key == "score_distribution":
+        return "score distribution"
+    if key == "label_contiguity":
+        return "label position"
+    if key.startswith("slice_"):
+        return key[len("slice_"):]
+    return key
 
 
 def _interpret_representativeness(passed: bool, subject: str) -> str:
@@ -977,9 +1019,85 @@ def _check_slice_column(
     }
 
 
+def _check_label_contiguity(n_total: int, labeled_mask: np.ndarray) -> dict:
+    """Flag the single most common non-random labeling pattern: taking "the
+    first N" or "the last N" items (or any other contiguous run) rather than
+    sampling randomly across the item pool.
+
+    Unlike the distribution-based checks above, this doesn't look at scores
+    at all -- it only looks at *where in the dataset* the labeled items sit.
+    A contiguous run is essentially impossible from genuine random sampling
+    (the exact probability is computed below and reported as the p-value),
+    so observing one is strong evidence of deliberate, ordered selection --
+    even in the case where such a selection happens to produce a labeled
+    subset whose score distribution passes the other checks by chance.
+    """
+    what = (
+        "Checks whether the labeled items sit at consecutive positions in the "
+        "dataset (e.g. rows 0-14, or the last 15 rows), rather than being "
+        "scattered across it."
+    )
+    why = (
+        "The most common way evalstats has seen this assumption broken in "
+        "practice isn't a subtle score-distribution skew -- it's literally "
+        "labeling \"the first N\" or \"the last N\" items, often just because "
+        "that's what a spreadsheet or a `.head()` call hands you first."
+    )
+    positions = np.flatnonzero(labeled_mask)
+    n_labeled = len(positions)
+    if n_labeled < 2 or n_labeled >= n_total:
+        return {
+            "passed": True, "message": "not applicable", "p_value": None,
+            "what": what, "why": why,
+            "interpretation": (
+                "not applicable -- fewer than 2 labeled items, or every item "
+                "is labeled, so there's no position pattern to check"
+            ),
+        }
+    span = int(positions.max() - positions.min() + 1)
+    is_contiguous = span == n_labeled
+    # Exact probability that a uniform-random n_labeled-of-n_total subset
+    # happens to be contiguous: (n_total - n_labeled + 1) possible contiguous
+    # windows, out of C(n_total, n_labeled) possible subsets.
+    p = (n_total - n_labeled + 1) / math.comb(n_total, n_labeled)
+    p = min(1.0, p)
+    passed = not is_contiguous
+    if is_contiguous:
+        start, end = int(positions.min()), int(positions.max())
+        msg = (
+            f"the {n_labeled} labeled items are exactly rows {start}-{end} "
+            f"of {n_total} -- a contiguous block (p={p:.2e} under random selection)"
+        )
+    else:
+        msg = f"labeled item positions look scattered, not contiguous (p={p:.2e} reference)"
+    if passed:
+        interpretation = (
+            "the labeled items' positions don't form a suspicious contiguous "
+            "block -- doesn't confirm random selection, but rules out the "
+            "single most common non-random pattern"
+        )
+    else:
+        interpretation = (
+            "the labeled items are exactly consecutive in the dataset, which "
+            "is essentially impossible from real random sampling -- treat "
+            "alignment estimates as unreliable for unlabeled items unless "
+            "this was deliberate (e.g. the dataset itself was already "
+            "shuffled before labeling); consider re-sampling the alignment "
+            "set uniformly at random instead"
+        )
+    return {
+        "passed": passed, "message": msg, "p_value": p,
+        "what": what, "why": why,
+        "interpretation": interpretation,
+    }
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # judge_alignment
 # ─────────────────────────────────────────────────────────────────────────────
+
+_VALID_SELECTIONS = ("random", "stratified", "manual", "unknown")
+
 
 def _judge_alignment_core(
     llm_aligned: np.ndarray,
@@ -994,6 +1112,8 @@ def _judge_alignment_core(
     slice_df: Optional[pd.DataFrame] = None,
     slice_labeled_mask: Optional[pd.Series] = None,
     slice_exclude_cols: frozenset = frozenset(),
+    labeled_mask: Optional[np.ndarray] = None,
+    selection: str = "unknown",
     warn_stacklevel: int = 3,
 ) -> AlignmentResult:
     """Shared core behind both :func:`judge_alignment` call forms: fits the
@@ -1001,11 +1121,18 @@ def _judge_alignment_core(
     relevant context is available) runs representativeness diagnostics.
 
     ``all_llm`` enables the score-distribution check; ``slice_df`` +
-    ``slice_labeled_mask`` enable the categorical slice-column checks (both
-    require the full item pool / other columns, so they're skipped
-    entirely -- not silently approximated -- when this is called from raw
-    paired arrays with no further context, see :func:`judge_alignment`).
+    ``slice_labeled_mask`` enable the categorical slice-column checks; a
+    non-``None`` ``labeled_mask`` (positions of labeled items within the
+    ``n_total``-length item pool, in dataset row order) enables the
+    label-contiguity check. All three require the full item pool / other
+    columns, so they're skipped entirely -- not silently approximated --
+    when this is called from raw paired arrays with no further context,
+    see :func:`judge_alignment`.
     """
+    if selection not in _VALID_SELECTIONS:
+        raise ValueError(
+            f"selection={selection!r} -- must be one of {_VALID_SELECTIONS}."
+        )
     n_labeled = int(len(llm_aligned))
 
     calibration = _fit_calibration(llm_aligned, human_aligned, score_type)
@@ -1051,6 +1178,54 @@ def _judge_alignment_core(
                     stacklevel=warn_stacklevel,
                 )
 
+    if labeled_mask is not None:
+        contiguity_result = _check_label_contiguity(n_total, labeled_mask)
+        rep["label_contiguity"] = contiguity_result
+        if not contiguity_result["passed"]:
+            warnings.warn(
+                f"Representativeness warning: {contiguity_result['message']}. "
+                "This looks like 'the first N' or 'the last N' items were "
+                "labeled rather than a random sample. Consider re-sampling "
+                "the alignment set uniformly at random.",
+                UserWarning,
+                stacklevel=warn_stacklevel,
+            )
+
+    if selection == "unknown":
+        warnings.warn(
+            "judge_alignment() was not told how the labeled subset was "
+            "selected (selection=). Every correction it and "
+            "compare(alignment=...) apply assumes the labeled items are a "
+            "random sample of the full item pool -- pass selection='random' "
+            "to confirm that's the case, or selection='manual'/'stratified' "
+            "if not, so this is a deliberate acknowledgment rather than an "
+            "unexamined default.",
+            UserWarning,
+            stacklevel=warn_stacklevel,
+        )
+    elif selection == "manual":
+        warnings.warn(
+            "selection='manual': the labeled subset was NOT randomly "
+            "sampled. PPI/alignment correction assumes random sampling "
+            "(MCAR) to be valid -- with a manually-chosen subset, the "
+            "corrected estimates and CIs compare()/judge_alignment() report "
+            "may be miscalibrated, not just imprecise. Treat them as "
+            "informal unless the alignment set is re-sampled at random.",
+            UserWarning,
+            stacklevel=warn_stacklevel,
+        )
+    elif selection == "stratified":
+        warnings.warn(
+            "selection='stratified': evalstats' current correction doesn't "
+            "account for stratification weights, so this is only valid if "
+            "each stratum was itself sampled uniformly at random and the "
+            "strata are otherwise ignorable for the metric being judged. "
+            "If items were hand-picked within strata, treat corrected "
+            "estimates as potentially biased, same as selection='manual'.",
+            UserWarning,
+            stacklevel=warn_stacklevel,
+        )
+
     return AlignmentResult(
         llm_metric=llm_metric,
         human_col=human_groundtruth,
@@ -1061,6 +1236,7 @@ def _judge_alignment_core(
         alignment_metrics=alignment_metrics,
         representativeness=rep,
         bias_check=bias_check,
+        selection=selection,
     )
 
 
@@ -1070,6 +1246,7 @@ def _judge_alignment_from_evaldata(
     llm_metric: str,
     human_groundtruth: str,
     alpha: float,
+    selection: str = "unknown",
 ) -> AlignmentResult:
     df = evaldata._df
 
@@ -1118,6 +1295,7 @@ def _judge_alignment_from_evaldata(
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=df, slice_labeled_mask=labeled_mask,
         slice_exclude_cols=frozenset({llm_metric, human_groundtruth}),
+        labeled_mask=labeled_mask.to_numpy(), selection=selection,
         warn_stacklevel=4,
     )
 
@@ -1131,6 +1309,7 @@ def _judge_alignment_from_arrays(
     llm_metric: Optional[str],
     human_groundtruth: Optional[str],
     alpha: float,
+    selection: str = "unknown",
 ) -> AlignmentResult:
     judge_full = np.asarray(judge_scores, dtype=float)
     human_full = np.asarray(human_scores, dtype=float)
@@ -1174,10 +1353,17 @@ def _judge_alignment_from_arrays(
     # conservative and skip the check rather than silently comparing a set
     # against itself (which would trivially "pass" and could read as false
     # confidence). An explicit all_judge_scores= always wins either way.
+    # Position-based (label-contiguity) check needs labeled_mask to actually
+    # index into all_llm -- only true when all_llm *is* judge_full itself.
+    # An explicit all_judge_scores= has no known positional correspondence
+    # to judge_scores/human_scores, so the check is skipped rather than
+    # guessed at.
+    position_mask = None
     if all_judge_scores is not None:
         all_llm = np.asarray(all_judge_scores, dtype=float)
     elif n_labeled < judge_full.size:
         all_llm = judge_full
+        position_mask = labeled_mask
     else:
         all_llm = None
     n_total = int(all_llm.size) if all_llm is not None else n_labeled
@@ -1191,6 +1377,7 @@ def _judge_alignment_from_arrays(
         llm_metric=llm_metric or "judge", human_groundtruth=human_groundtruth or "human",
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=None, slice_labeled_mask=None,
+        labeled_mask=position_mask, selection=selection,
         warn_stacklevel=4,
     )
 
@@ -1204,6 +1391,7 @@ def judge_alignment(
     all_judge_scores=None,
     score_type: Optional[str] = None,
     alpha: float = 0.05,
+    selection: str = "unknown",
 ) -> AlignmentResult:
     """Validate how well an LLM judge aligns with human graders.
 
@@ -1262,6 +1450,17 @@ def judge_alignment(
         the labeled judge scores when not given.
     alpha : float
         Significance level for alignment metric CIs.  Default ``0.05``.
+    selection : {"random", "stratified", "manual", "unknown"}
+        How the labeled subset was chosen. Every correction this function
+        (and ``compare(alignment=...)``) applies assumes the labeled items
+        are a random sample of the full item pool ("missing completely at
+        random", MCAR) -- pass ``"random"`` to confirm that's the case.
+        Anything else (including the ``"unknown"`` default) raises a
+        ``UserWarning`` explaining the risk, since the natural QA instinct
+        -- hand-labeling the items you're least sure about -- is exactly
+        the kind of selection that breaks this assumption. ``"manual"``
+        and ``"stratified"`` are for acknowledging a known-non-random
+        selection explicitly rather than leaving it unexamined.
 
     Returns
     -------
@@ -1286,6 +1485,7 @@ def judge_alignment(
             )
         return _judge_alignment_from_evaldata(
             evaldata, llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
+            selection=selection,
         )
 
     if human_scores is None:
@@ -1299,4 +1499,5 @@ def judge_alignment(
         judge_scores_or_evaldata, human_scores,
         all_judge_scores=all_judge_scores, score_type=score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
+        selection=selection,
     )

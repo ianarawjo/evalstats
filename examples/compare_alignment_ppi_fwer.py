@@ -128,6 +128,7 @@ ar = es.judge_alignment(
     evaldata,
     llm_metric="llm_score",
     human_groundtruth="human_score",
+    selection="random",  # gold_indices above was rng.choice(..., replace=False)
 )
 ar.summary()
 

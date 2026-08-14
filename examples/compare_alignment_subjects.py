@@ -159,6 +159,7 @@ ar_bs = es.judge_alignment(
     evaldata_bs,
     llm_metric="llm_score",
     human_groundtruth="human_score",
+    selection="random",  # rng.choice(..., replace=False) above
 )
 ar_bs.summary()
 
@@ -169,6 +170,7 @@ ar_ws = es.judge_alignment(
     evaldata_ws,
     llm_metric="llm_score",
     human_groundtruth="human_score",
+    selection="random",  # rng.choice(..., replace=False) above
 )
 ar_ws.summary()
 
