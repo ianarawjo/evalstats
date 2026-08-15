@@ -655,7 +655,21 @@ def _walsh_theta_fold_lambda(
 
     denom_f = var_unlab + var_hat_lab_f
     lam_raw_f = min(max(cov_f / denom_f, 0.0), 1.0) if denom_f > 1e-12 else 1.0
-    if n_fold <= 1 or var_lab_f < var_hat_lab_f * 1e-6:
+    # var_hat_lab_f < 1e-12 is its own trigger, not just var_lab_f's
+    # relative-to-var_hat_lab_f check: when Y_hat_lab_fold happens to be
+    # EXACTLY tied (all Walsh-pairwise comparisons agree -- plausible at
+    # fold sizes this small on real, heavily-tied Likert-like data), cov_f
+    # is identically 0 regardless of Y_lab_fold's own variance, so a
+    # relative check alone (var_lab_f < var_hat_lab_f * 1e-6) can fail to
+    # fire precisely when var_hat_lab_f itself is 0 (0 < 0 is False) --
+    # letting a spuriously "confident" lam_raw_f=0 through instead of
+    # falling back to the safe target=1 default below. Confirmed
+    # (2026-08-15) to zero out one fold's ENTIRE contribution to both the
+    # combined point estimate and its variance whenever the OTHER fold hit
+    # this exact corner case, driving real-data Type-I as high as 0.515 on
+    # some appstore/wmt_da/privacy_judge judge pairs at label_frac=0.05 --
+    # see results_why_ppi_shrink_1_over_0.md's real-data wilcoxon addendum.
+    if n_fold <= 1 or var_hat_lab_f < 1e-12 or var_lab_f < var_hat_lab_f * 1e-6:
         lam_replicates_f = None
     else:
         lam_replicates_f = _walsh_theta_lambda_replicates(Y_lab_fold, Y_hat_lab_fold, var_unlab, n_fold)
@@ -863,7 +877,13 @@ def _analytic_walsh_theta_correct(
             # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring
             # for the shared rationale, and _walsh_theta_lambda_replicates
             # for this estimand's version of the replicate-generation step.
-            if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
+            # var_hat_lab < 1e-12 is caught explicitly (not just relative to
+            # var_lab) for the same reason _walsh_theta_fold_lambda's guard
+            # is: an exactly-tied Y_hat_lab makes cov_lab_hatlab identically
+            # 0 regardless of Y_lab's own variance, so the relative check
+            # alone can miss a degenerate reading -- see that function's
+            # docstring for the real-data failure this was found from.
+            if n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6:
                 lam_replicates = None
             else:
                 lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
@@ -986,7 +1006,12 @@ def _analytic_mean_point_se(
         # degenerate `denom<=1e-12` fallback above already uses.
         raw_var_lab = var_lab * n_lab
         raw_var_hat_lab = var_hat_lab * n_lab
-        if n_lab <= 1 or raw_var_lab < raw_var_hat_lab * 1e-6:
+        # raw_var_hat_lab < 1e-12 is its own trigger (not just relative to
+        # raw_var_lab) -- see _walsh_theta_fold_lambda's guard for why an
+        # exactly-degenerate Y_hat_lab needs the same fallback as an
+        # exactly-degenerate Y_lab: either side being ~0 makes cov_lab_hatlab
+        # trivially ~0 too, so a relative-only check can miss it.
+        if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
             lam_replicates = None
         else:
             lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
@@ -1075,7 +1100,9 @@ def _pooled_two_group_lambda(
 
     raw_var_lab = var_lab * n_lab
     raw_var_hat_lab = var_hat_lab * n_lab
-    if n_lab <= 1 or raw_var_lab < raw_var_hat_lab * 1e-6:
+    # See _walsh_theta_fold_lambda's guard docstring for why
+    # raw_var_hat_lab itself needs an absolute floor check too.
+    if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
         lam_replicates = None
     else:
         lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
@@ -1909,7 +1936,12 @@ def correct(
         # degenerate guards mirror this same logic.
         var_lab = float(np.var(Y_lab, ddof=1)) if n_lab > 1 else 0.0
         var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) if n_lab > 1 else 0.0
-        if n_lab <= 1 or var_lab < var_hat_lab * 1e-6:
+        # var_hat_lab < 1e-12 is its own trigger too -- see
+        # _walsh_theta_fold_lambda's guard docstring for why an
+        # exactly-degenerate Y_hat_lab needs the same fallback as an
+        # exactly-degenerate Y_lab (either side being ~0 makes the raw
+        # covariance ratio trivially ~0, not genuinely informative).
+        if n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6:
             lam_replicates = None
         else:
             lam_replicates = _bootstrap_batch_lambda_replicates(b1_lab, b1_hat_lab, b1_unlab)

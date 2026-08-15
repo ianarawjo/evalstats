@@ -1574,22 +1574,56 @@ def _ppi_kruskal_wallis_pairwise(
     # smaller df in whatever corner the covariance genuinely is
     # near-singular, rather than assuming it always is.
     eigvals = np.linalg.eigvalsh(cov)
-    df = int(np.linalg.matrix_rank(cov, tol=rcond * float(eigvals.max())))
+    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
 
-    # Finite-sample (Hotelling's T²-style) correction: a chi-square reference
-    # is only the n→∞ limit of the Wald statistic's distribution, and is
-    # known to be mildly anti-conservative (too many rejections) whenever the
-    # covariance is estimated from a small effective sample — exactly the
-    # regime of a sparse labeled set. ν is the total labeled observations
-    # across groups (the classical Hotelling "n" feeding the covariance
-    # estimate); as ν → ∞ this F-reference converges back to the chi-square
-    # one, so it costs nothing in the well-labeled regime.
-    nu = sum(n_lab_per_group)
-    if nu > df:
-        f_stat = wald_stat * (nu - df + 1) / (nu * df)
-        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    if max_eigval <= 1e-12:
+        # Every pairwise dominance estimate has (numerically) EXACTLY zero
+        # bootstrap variance -- confirmed to happen on real data whenever
+        # the labeled subsample preserves a strict, deterministic group
+        # ordering (e.g. an exact rank-split positive control: the labeled
+        # human-side theta is 1.0/0.0 on every possible resample, since
+        # resampling can't undo a strict ordering), combined with a small
+        # enough power-tuning lambda that the judge-side variance
+        # contribution also rounds to zero. np.linalg.pinv on an all-zero
+        # covariance returns an all-zero pseudo-inverse (it can't represent
+        # "infinite precision"), which silently collapses wald_stat to 0
+        # -- indistinguishable, from the Wald statistic alone, from "no
+        # information", even though zero uncertainty around a nonzero
+        # effect is the most CONFIDENT result a test can report, not an
+        # absent one. df then also collapses to 0, which crashed this
+        # function outright (ZeroDivisionError in the nu>df branch below)
+        # rather than reporting the correct near-certain rejection --
+        # silently swallowed by cases/ppi_real.py's per-rep try/except and
+        # counted as "failed to detect", which is what collapsed real-data
+        # kruskal power from ~0.83 (uncorrected) to ~0.20 (corrected) on
+        # exactly these strong-effect scenarios. Bypasses wald_stat/pinv
+        # entirely here and falls back to the same "check the point
+        # estimate directly" idiom every other closed-form PPI backend
+        # uses for an se<=0 degenerate case (e.g.
+        # evalstats.ppi._analytic_walsh_theta_correct).
+        wald_stat = 0.0
+        df = 0
+        wald_p = 0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0
     else:
-        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+        cov_pinv = np.linalg.pinv(cov, rcond=rcond)
+        wald_stat = float(diff @ cov_pinv @ diff)
+        df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
+
+        # Finite-sample (Hotelling's T²-style) correction: a chi-square
+        # reference is only the n→∞ limit of the Wald statistic's
+        # distribution, and is known to be mildly anti-conservative (too
+        # many rejections) whenever the covariance is estimated from a
+        # small effective sample — exactly the regime of a sparse labeled
+        # set. ν is the total labeled observations across groups (the
+        # classical Hotelling "n" feeding the covariance estimate); as ν →
+        # ∞ this F-reference converges back to the chi-square one, so it
+        # costs nothing in the well-labeled regime.
+        nu = sum(n_lab_per_group)
+        if nu > df:
+            f_stat = wald_stat * (nu - df + 1) / (nu * df)
+            wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+        else:
+            wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
 
     return {
         "pairs": pairs,
@@ -1724,22 +1758,35 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
     cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
     diff = theta_hat - 0.5
     rcond = 1e-8
-    cov_pinv = np.linalg.pinv(cov, rcond=rcond)
-    wald_stat = float(diff @ cov_pinv @ diff)
     # df = the pseudo-inverse's OWN rank, not a hardcoded k-1 -- same fix,
     # same reasoning as _ppi_kruskal_wallis_pairwise's df (see that
     # function's docstring): pairwise DOMINANCE probabilities aren't linear
     # combinations of k group effects the way mean differences are, so
     # their covariance is generically full rank C(k,2), not k-1.
     eigvals = np.linalg.eigvalsh(cov)
-    df = int(np.linalg.matrix_rank(cov, tol=rcond * float(eigvals.max())))
+    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
 
-    nu = sum(n_lab_per_group)
-    if nu > df:
-        f_stat = wald_stat * (nu - df + 1) / (nu * df)
-        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    if max_eigval <= 1e-12:
+        # See _ppi_kruskal_wallis_pairwise's identical degenerate-cov guard
+        # for the full mechanism (a real, exact-ordering positive-control
+        # effect can drive bootstrap variance to exactly 0, which pinv
+        # treats as "no information" rather than "perfect certainty" --
+        # crashing on a division by df=0 instead of reporting a confident
+        # rejection).
+        wald_stat = 0.0
+        df = 0
+        wald_p = 0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0
     else:
-        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+        cov_pinv = np.linalg.pinv(cov, rcond=rcond)
+        wald_stat = float(diff @ cov_pinv @ diff)
+        df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
+
+        nu = sum(n_lab_per_group)
+        if nu > df:
+            f_stat = wald_stat * (nu - df + 1) / (nu * df)
+            wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+        else:
+            wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
 
     return {
         "pairs": pairs,

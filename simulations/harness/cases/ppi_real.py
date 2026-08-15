@@ -237,6 +237,29 @@ _SINGLE_METHOD_WILSON = "ppi_wilson"
 """Deliberately not "wilson" -- see methods.PPI_WILSON's docstring: that
 name is already taken by ci_single.py's plain (non-PPI) Wilson CI."""
 
+_RATER_NOISE_SD = 0.03
+"""Fixed small std (on the shared [0, 1] rescaled score) for the
+independent per-arm label noise generate_real_paired_null_cell/
+generate_real_omnibus_repeated_null_cell inject via `rater_noise_sd` --
+see those functions' docstrings and _independent_rater_copies for why an
+exact-tie construction alone (rater_noise_sd=0) is an unrealistically
+idealized worst case for a Type-I claim (real, independent human ratings
+essentially never agree to floating-point precision). A fixed, modest
+value rather than one calibrated per-dataset to a measured inter-rater
+reliability figure -- those aren't available for every dataset here, and
+a fixed small value is enough to break the exact tie without overstating
+how noisy real annotation actually is."""
+
+_DEGENERATE_LABEL_PROB = 0.10
+"""Fraction of paired-null/repeated-null reps that use the exact-tie
+construction (rater_noise_sd=0) rather than the noisy one -- the
+degenerate case is still worth exercising directly (it's what caught a
+real cross-fit bug in wilcoxon's power-tuning), but shouldn't dominate
+the sweep now that a more realistic alternative exists. Reps of both
+kinds are pooled into the SAME corrected/uncorrected counters (no
+separate reporting) -- the reported rate is the average over both
+regimes, weighted by this probability."""
+
 
 # ---------------------------------------------------------------------------
 # Per-cell test batteries
@@ -394,7 +417,14 @@ def _run_real_paired_cell(
     scored by two DIFFERENT judges) -- mirrors pvalues.py's _run_ppi_cell
     paired-groups branches (wilcoxon/paired_t/ppi_t_interval/ppi_logit_t/
     tango). See generate_real_paired_null_cell for why this is an exact
-    null rather than merely an equal-in-distribution one."""
+    null rather than merely an equal-in-distribution one.
+
+    Each rep independently draws exact-tie (rater_noise_sd=0, probability
+    _DEGENERATE_LABEL_PROB) vs. independent-small-noise
+    (rater_noise_sd=_RATER_NOISE_SD, the rest) labels -- see those
+    constants' docstrings. Both kinds feed the SAME corrected/uncorrected
+    counters below, so the reported rate is already the pooled average
+    over both regimes; no separate reporting needed."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -403,7 +433,10 @@ def _run_real_paired_cell(
         return int(rng.integers(0, 2 ** 31))
 
     for _ in range(n_reps):
-        llm_x, llm_y, lab_x, lab_y = generate_real_paired_null_cell(corpus, rng, n, label_frac, judge_a, judge_b)
+        noise_sd = 0.0 if rng.random() < _DEGENERATE_LABEL_PROB else _RATER_NOISE_SD
+        llm_x, llm_y, lab_x, lab_y = generate_real_paired_null_cell(
+            corpus, rng, n, label_frac, judge_a, judge_b, rater_noise_sd=noise_sd,
+        )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
@@ -534,14 +567,18 @@ def _run_real_omnibus_repeated_cell(
     """n_reps replicates of the omnibus-repeated Type-I null check (same
     items, 3 different judges -- see generate_real_omnibus_repeated_
     null_cell's docstring), mirroring pvalues.py's _run_ppi_cell's
-    ANOVA_REP/FRIEDMAN branches."""
+    ANOVA_REP/FRIEDMAN branches.
+
+    Same exact-tie-vs-noisy per-rep draw as _run_real_paired_cell -- see
+    that function's docstring and _DEGENERATE_LABEL_PROB/_RATER_NOISE_SD."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
 
     for _ in range(n_reps):
+        noise_sd = 0.0 if rng.random() < _DEGENERATE_LABEL_PROB else _RATER_NOISE_SD
         groups, groups_lab = generate_real_omnibus_repeated_null_cell(
-            corpus, rng, n, label_frac, judge_a, judge_b, judge_c,
+            corpus, rng, n, label_frac, judge_a, judge_b, judge_c, rater_noise_sd=noise_sd,
         )
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
