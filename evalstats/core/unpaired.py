@@ -472,18 +472,63 @@ def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict
 def _compute_group_stats(
     labels: list[str], arrays: list[np.ndarray], *, alpha: float, n_bootstrap: int, rng,
     score_range: Optional[tuple[float, float]] = None,
+    lab_arrays: Optional[list[np.ndarray]] = None,
 ) -> list[GroupStat]:
     """Per-group mean + calibrated marginal CI (with gradient multi_ci
     bands), computed independently per group -- the exact same building
     block ``evalstats.quick.summarize`` uses internally, called directly
     here (with multi_ci=True, which summarize()'s own public signature
     doesn't expose) rather than through that quick-primitive wrapper.
+
+    ``lab_arrays``, when given (PPI alignment is active), makes this a PPI-
+    corrected marginal mean per group instead of a raw one -- mirroring
+    ``evalstats.api._run_alignment_ppi``'s own single-sample correction
+    exactly (same ``is_binary_scores``/``is_bounded_01_scores`` ->
+    ``resolve_ppi_auto_methods`` -> ``_ppi_robustness_dispatch`` chain, same
+    ``GRADIENT_CI_ALPHAS`` sweep for the gradient bands), just applied per
+    between-subjects group instead of per paired-path entity. Every group is
+    guaranteed to have at least one label by this point -- the caller
+    (``compare_unpaired``) already validates that and raises before this is
+    ever reached otherwise -- so there is no paired-path-style "entity has
+    zero labels, keep its uncorrected estimate" fallback needed here.
     """
     from evalstats.core.router import resolve_auto_robustness_method
     from evalstats.core.variance import robustness_metrics
 
+    ppi_applied = lab_arrays is not None
+    if ppi_applied:
+        from evalstats.config import resolve_ppi_auto_methods, GRADIENT_CI_ALPHAS
+        from evalstats.core.resampling import is_binary_scores, is_bounded_01_scores
+        # A single import here, not per-call to compare_unpaired -- avoids the
+        # api.py <-> core/unpaired.py circular import (api.py imports
+        # compare_unpaired from this module at module scope).
+        from evalstats.api import _ppi_robustness_dispatch
+
+        pooled = np.concatenate(arrays)
+        if is_binary_scores(pooled):
+            data_kind = "binary"
+        elif is_bounded_01_scores(pooled):
+            data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
+        _, ppi_robustness_method = resolve_ppi_auto_methods(data_kind)
+
     out = []
-    for label, arr in zip(labels, arrays):
+    for i, (label, arr) in enumerate(zip(labels, arrays)):
+        if ppi_applied:
+            lab_arr = lab_arrays[i]
+            res = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, alpha, n_bootstrap, rng)
+            multi_ci = {}
+            for a in GRADIENT_CI_ALPHAS:
+                g = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, a, n_bootstrap, rng)
+                multi_ci[a] = (float(g.ci_low), float(g.ci_high))
+            out.append(GroupStat(
+                label=label, n=int(arr.size), mean=float(res.estimate), std=float(np.std(arr)),
+                ci_low=float(res.ci_low), ci_high=float(res.ci_high),
+                method=ppi_robustness_method, multi_ci=multi_ci,
+            ))
+            continue
+
         a2d = arr.reshape(1, -1)
         _, robustness_method, resolved_score_range, _ = resolve_auto_robustness_method(
             a2d, score_range=score_range, stacklevel=4,
@@ -715,6 +760,7 @@ def compare_unpaired(
     group_stats = _compute_group_stats(
         labels, group_arrays, alpha=alpha, n_bootstrap=n_boot, rng=rng,
         score_range=score_range,
+        lab_arrays=group_lab_arrays if ppi_applied else None,
     )
 
     k = len(labels)

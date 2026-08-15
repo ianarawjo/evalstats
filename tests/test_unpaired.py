@@ -472,6 +472,58 @@ class TestCompareUnpairedWithPPI:
         # Exactly one alignment report should be printed, not a duplicate/stale second one.
         assert out.count("PPI-CORRECTED") == 1
 
+    def test_ppi_corrects_the_marginal_group_mean_not_just_pairwise(self):
+        """Regression test for a bug where GroupStat.mean (the "Mean
+        Performance" table, and the Delta-mean pairwise column derived from
+        it) was ALWAYS computed from raw judge scores via
+        _compute_group_stats -> robustness_metrics, which has no PPI/
+        alignment parameter at all -- so alignment= silently had zero
+        effect on the marginal mean, even though the pairwise Delta-theta/
+        Delta-p WAS genuinely corrected. Found by comparing compare(...)
+        with and without alignment= on real biased-judge data and noticing
+        the "PPI-corrected" group means were bit-for-bit identical to the
+        uncorrected ones.
+
+        Here: a judge with a deliberate, systematic downward bias (true - 3
+        clipped) for the "A" group only -- the correction should move A's
+        mean substantially toward its true value, while leaving the
+        well-calibrated "B" group's mean roughly where it was.
+        """
+        rng = _rng(9)
+        rows = []
+        for i in range(60):
+            true = int(np.clip(round(rng.normal(3.5, 0.9)), 1, 5))
+            judge = int(np.clip(true - 3, 1, 5))  # systematic downward bias
+            rows.append({"model": "A", "item": f"A_{i}", "llm_score": judge,
+                         "human_score": true if i < 20 else np.nan})
+        for i in range(60):
+            true = int(np.clip(round(rng.normal(3.5, 0.9)), 1, 5))
+            judge = int(np.clip(round(true + rng.normal(0, 0.3)), 1, 5))  # well-calibrated
+            rows.append({"model": "B", "item": f"B_{i}", "llm_score": judge,
+                         "human_score": true if i < 20 else np.nan})
+        df = pd.DataFrame(rows)
+        evaldata = es.load_from(df)
+        with warnings_lib.catch_warnings():
+            warnings_lib.simplefilter("ignore")
+            ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score", selection="random")
+
+        r_ppi = compare_unpaired(df, factor_col="model", metric_col="llm_score",
+                                  alignment={"llm_score": ar}, score_range=(1, 5), rng=10)
+        r_raw = compare_unpaired(df, factor_col="model", metric_col="llm_score",
+                                  score_range=(1, 5), rng=10)
+        mean_ppi = {g.label: g.mean for g in r_ppi.groups}
+        mean_raw = {g.label: g.mean for g in r_raw.groups}
+
+        # The correction must actually move the biased group's mean --
+        # not be silently identical to the raw estimate.
+        assert mean_ppi["A"] != pytest.approx(mean_raw["A"], abs=1e-9)
+        # And move it in the right direction: corrected should be higher
+        # than raw (raw underestimates A due to the downward judge bias),
+        # substantially closer to A's true mean (~3.5) than raw is.
+        assert mean_ppi["A"] > mean_raw["A"] + 0.5
+        # The well-calibrated group's correction should be much smaller.
+        assert abs(mean_ppi["B"] - mean_raw["B"]) < abs(mean_ppi["A"] - mean_raw["A"])
+
     def test_ppi_k2_pairwise_survives_degenerate_covariance_seeds(self):
         """Regression test for a ZeroDivisionError in
         evalstats.tests._ppi_kruskal_wallis_pairwise (found via
