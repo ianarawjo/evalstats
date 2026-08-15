@@ -3696,3 +3696,301 @@ wilcoxon` (37/37, confirmed passing on this branch before this change --
 the previously-flagged `_EvalStub` failure was fixed separately, commit
 `9a055e4`) still passes 37/37 after this change.
 
+## Addendum 36 (2026-08-15): `bootstrap_t_single`'s residual MNAR bias --
+confirmed honest lambda=1 floor, no separate bug found
+
+Addendum 34 flagged `bootstrap_t_single` (`_ppi_single_bootstrap_t`,
+`evalstats/tests/__init__.py:2336`) as a "not changed" residual: a
+studentized-bootstrap single-arm CI with no power-tuning lambda at all
+(its point estimate, `f_unlab + (f_lab - f_hat_lab)`, is unconditionally
+the lambda=1/full-rectifier case of the closed-form single-arm
+construction `_analytic_mean_point_se_given_lambda` fixed by
+`label_shift_robust`), showing coverage 0.89-0.92 and bias-z up to -10.5
+on `label.mnar-strong*` in the same flagging log Addendum 34 diagnosed.
+This addendum investigates whether that residual is (a) the same
+inherent lambda=1 floor Addendum 34 already characterized as
+near-irreducible, or (b) something additionally fixable -- e.g. the
+bootstrap's variance/SE construction itself under-capturing the true
+sampling distribution under MNAR, independent of the point-estimate
+bias.
+
+**Method.** A standalone ground-truth Monte Carlo check (800 independent
+draws per scenario, via `simulations.harness.scenarios.synthetic.
+generate_judge_bias_cell` + production `evalstats.tests.
+_ppi_single_bootstrap_t` on `cell.llm_a2`/`cell.lab_a2`, `n_boot=800`)
+compares, per scenario: the empirical bias of the mean estimate against
+the harness's own gold target (`estimate_judge_bias_gold_null_values`'s
+`bootstrap_t_single` key -- population mean of the "a2" marginal), the
+TRUE empirical SD of the estimate across the 800 independent draws, and
+the MEAN of `se_obs` (the analytic sandwich SE the construction itself
+reports and studentizes by) across those same draws. If `true_sd` and
+`mean(se_obs)` agree, the SE/bootstrap-variance machinery is honest and
+any under-coverage is a pure consequence of the point-estimate's mean
+bias (Addendum 34's floor); if `true_sd` notably exceeds `mean(se_obs)`,
+that would indicate a separate, fixable SE-underestimation bug.
+
+| scenario | bias | z | true sd(estimate) | mean(se_obs) | ratio | coverage |
+|---|---|---|---|---|---|---|
+| `label.mcar` (control) | +0.0006 | +0.34 | 0.0499 | 0.0514 | 0.971 | 0.953 |
+| `lab.5%` (control, MCAR, small n_lab) | +0.0002 | +0.10 | 0.0568 | 0.0568 | 1.000 | 0.954 |
+| `label.mnar-mild` | -0.0256 | -14.06 | 0.0515 | 0.0510 | 1.011 | 0.916 |
+| `label.mnar-mild.mildbias` | -0.0256 | -14.06 | 0.0515 | 0.0510 | 1.011 | 0.916 |
+| `label.mnar-strong` | -0.0383 | -21.00 | 0.0515 | 0.0507 | 1.016 | 0.899 |
+| `label.mnar-strong.mildbias` | -0.0383 | -21.00 | 0.0515 | 0.0507 | 1.016 | 0.899 |
+| `label.mnar-strong.modbias` | -0.0383 | -21.00 | 0.0515 | 0.0507 | 1.016 | 0.899 |
+
+(The `*.mildbias`/`*.modbias` companions match their base scenario
+exactly, as expected: `bias_delta` is a constant additive offset on the
+judge's score, which cancels identically in the rectifier
+`f_lab - f_hat_lab` regardless of magnitude -- MNAR strength, not judge
+bias magnitude, drives this residual.) The MCAR controls (`label.mcar`,
+`lab.5%`, a different labeled-fraction regime) reproduce nominal
+coverage and a `true_sd`/`se_obs` ratio within 3% of 1.0, confirming the
+check's methodology is sound and the construction is honest absent MNAR.
+
+**Diagnosis: (a), not (b).** Across every MNAR scenario tested, the
+`true_sd`/`mean(se_obs)` ratio stays in a tight 1.011-1.016 band --
+statistically indistinguishable from the 0.971-1.000 band the MCAR
+controls show, and if anything very slightly on the conservative side
+(se_obs never under-shoots true_sd by a meaningful margin). The
+bootstrap's studentized-t construction is NOT under-capturing the
+sampling distribution's spread under MNAR; the SE/variance machinery is
+just as honest here as in the MCAR case. The under-coverage (0.899-0.916
+vs. nominal 0.95) is fully attributable to the point estimate's mean
+bias, not to any SE-construction defect -- confirmed quantitatively: a
+naive Gaussian model (correctly-calibrated SE, but centered `bias/se_obs`
+away from the true value) predicts `label.mnar-strong`'s coverage at
+`Phi(1.96 - 0.0383/0.0507) - Phi(-1.96 - 0.0383/0.0507) = 0.884`, close
+to the 0.899 actually observed (the small remaining gap is in the
+*safe* direction -- observed coverage is slightly better than the naive
+bias-only prediction, not worse).
+
+This residual bias (-0.026 to -0.038 across `mnar-mild`/`mnar-strong`)
+is quantitatively consistent with Addendum 34's own characterization of
+the lambda=1 endpoint on `label.mnar-strong`: "the full-rectifier
+estimator (lambda=1 ... very nearly cancels this bias (residual
+-0.036)". `bootstrap_t_single` is unconditionally that same lambda=1
+estimator -- it has no lambda parameter to blend toward 1.0 the way
+`label_shift_robust` blends `ppi_t_interval_single`/`ppi_logit_t_single`
+(both of which start from a power-tuned lambda that collapses toward 0
+under MNAR's range-restriction attenuation, per Addendum 34's
+diagnosis); `bootstrap_t_single` is already sitting at that fix's
+*target* endpoint with no further lever on this axis. There is no
+"apply the Addendum 34 fix here too" available, because there's nothing
+left to blend.
+
+**No fix implemented.** As Addendum 34's own "Known limitation" section
+already states, non-ignorable (outcome-dependent) missingness of this
+kind is "not, in general, fully identifiable from the observed data
+alone without further assumptions" -- closing this residual further
+would require either a formal MNAR selection model (propensity
+weighting on the true, unobservable selection mechanism) or a
+fundamentally different point-estimator construction, both explicitly
+out of scope for this investigation. Given the ground-truth check found
+the SE/bootstrap-variance construction itself fully honest (ratio ~1.0
+in both MCAR and MNAR regimes) and the residual bias matching the
+already-documented lambda=1 floor almost exactly, this is judged a
+genuine floor, not a bug -- consistent with Addendum 34's framing of
+`bootstrap_t_single`'s coverage as "a comparable residual" to
+`label_shift_robust`'s own best achievable result on the same cells (its
+`label.mnar-strong` coverage after the fix: 0.886, vs.
+`bootstrap_t_single`'s unfixed 0.899 here -- the same order of
+magnitude, not a regression to fix toward). No code changes were made.
+
+## Addendum 37 (2026-08-15): `anova_ind`'s MNAR bias -- two plausible fixes
+tried, both rejected, root cause identified as unfixable without a
+design-based variance estimator
+
+Flagged alongside `bootstrap_t_single` in the same MNAR effect-check log:
+`anova_ind` (`_ppi_anova_independent_f_stat`/`_ppi_anova_independent_ci`,
+`evalstats/tests/__init__.py`) showed a real, systematic NEGATIVE bias in
+all 6 MNAR label-mechanism scenarios (worst |z|=7.27 on
+`label.mnar-mild.modbias`), reproduced faithfully at higher rep counts
+(2000-3000 reps, z scales to -11 to -16, back-scaling by sqrt(reps) to
+match the flagged log's z~-3 to -4 at 200 reps). The `.mildbias`/
+`.modbias` scenario suffixes are a red herring for this mechanism --
+`bias_delta` adds a per-group CONSTANT offset that cancels exactly in
+both the PPI rectifier and `ms_within` regardless of magnitude (verified
+analytically and empirically: identical bias/z across a scenario and its
+`.mildbias`/`.modbias` companions under a shared seed) -- the MNAR
+label-selection mechanism alone drives the bias, not judge-bias
+magnitude.
+
+**Attempt 1: k-group pooled lambda (ttest-style generalization) --
+rejected.** The leading hypothesis (matching Addendum 31's ttest fix)
+was that `_ppi_anova_independent_f_stat`'s `power_tune=True` branch
+estimates lambda separately per group, with MNAR asymmetrically
+distorting each group's labeled subsample and no cross-group averaging
+to cancel it. A k=3-group generalization of `_pooled_two_group_lambda`
+(pool ALL groups' labeled+unlabeled data into one shared lambda, apply
+via `_analytic_mean_point_se_given_lambda` per group) was built and
+validated via ground-truth Monte Carlo. Result: the point-estimate bias
+was barely affected by pooling (mild: +0.0755 -> +0.0753; strong:
++0.1247 -> +0.1237) -- unlike ttest's DIFFERENCE estimand, ANOVA's
+per-group MNAR bias is common across all k groups (same population, same
+mechanism) and already cancels automatically via grand-mean centering in
+`ss_between`, so pooling lambda doesn't address anything ttest-style
+pooling actually fixes. The effect on the final theta/F-stat bias was
+inconsistent besides: `label.mnar-strong`'s z improved substantially
+(-13.66 -> -2.99) but `label.mnar-mild` barely moved (-16.36 -> -12.30).
+Rejected as not a clean, consistent fix.
+
+**Root cause, confirmed via ground-truth decomposition.** Isolating just
+`f_lab_i` (each group's human-labeled-subsample mean, no lambda/rectifier
+involved at all) against many independent MNAR draws: the naive
+`ddof=1` sample-variance formula for the labeled mean systematically
+OVERESTIMATES its true (Monte Carlo) sampling variance under MNAR's
+weighted-without-replacement label selection -- reported/true-variance
+ratio ~1.25-1.28 for `mnar-mild`, ~1.05-1.08 for `mnar-strong`, consistent
+across all 3 groups. This inflated per-group variance feeds directly into
+`_ppi_anova_independent_f_stat`'s debiasing floor (`dfn*denom/scale`,
+subtracted from `ss_between` -- see `_ppi_anova_independent_ci`'s own
+comment on this identity), so an inflated floor over-subtracts, producing
+the observed NEGATIVE theta bias. This is a design-based-vs-naive-variance
+MISMATCH (the i.i.d. sample-variance formula doesn't reflect the true
+sampling variability of a mean under non-uniform preferential selection),
+not a lambda-distortion issue at all -- confirmed to persist even with
+pooled lambda and even with the lambda-uncertainty inflation term
+(`_lambda_var_inflation`) removed entirely.
+
+**Attempt 2: `label_shift_robust=True` applied per-group -- rejected,
+makes calibration worse.** Since each ANOVA group is structurally a
+single-arm mean estimand, Addendum 34's single-arm MNAR fix
+(`label_shift_robust=True` on `_analytic_mean_point_se`) was tried inside
+the per-group loop. It DID fix the point-estimate bias dramatically (mild:
++0.0755 -> +0.0204; strong: +0.1247 -> +0.0039, a 20-30x reduction),
+confirming Addendum 34's mechanism transfers to each ANOVA group
+individually. But the ANOVA theta estimate got WORSE, not better: bias
+flipped to strongly POSITIVE (z +19.85 mild, +19.74 strong), coverage
+dropping to 0.89-0.91. Reason: `label_shift_robust`'s own variance formula
+UNDERESTIMATES the added uncertainty from its data-driven blend weight
+(reported/true-variance ratio 0.62-0.64 -- under, not over, the opposite
+direction from Attempt 1's problem), and this under-count compounds badly
+through the F-statistic's denominator in the wrong direction. Rejected.
+
+**Conclusion: no fix implemented.** Neither the ttest-style fix (pooled
+lambda) nor the single-arm-style fix (`label_shift_robust`) cleanly
+resolves this -- one under-corrects (barely touches the actual
+mechanism), the other over-corrects and makes coverage measurably worse.
+The actual driver -- a naive-variance-formula mismatch under non-uniform
+(weighted) label selection -- would need the TRUE (unknown, in real-world
+use) selection probabilities to fix properly via a design-based variance
+estimator; a plug-in numeric correction calibrated to this specific
+synthetic MNAR generator's observed ratio (~1.05-1.28x) would be
+overfitting to the simulation, not a principled fix. Same non-
+identifiability caveat already on record in `label_shift_robust`'s own
+docstring for the single-arm case (Addendum 34) -- this is the third site
+this investigation has run into that same fundamental limit of
+non-ignorable missingness. No code was modified.
+
+## Addendum 38 (2026-08-15): `anova_ind`'s MNAR bias -- a permutation-based
+null floor tried, mixed regime-dependent results, not adopted; practical
+Type-I impact confirmed benign
+
+Following up on Addendum 37's root-cause diagnosis (a naive `ddof=1`
+sample-variance formula overestimates a group mean's true sampling
+variance under MNAR's weighted label selection, and that inflated
+variance feeds directly into the debiasing floor `dfn*denom/scale`
+subtracted from `ss_between` to form the point estimate `theta`), a
+design-agnostic alternative was prototyped: instead of estimating
+`E[ss_between]` under the null via the parametric per-group variance
+formula, estimate it empirically by permutation -- pool all N items
+(judge score, label-status, label-value) across the k groups, repeatedly
+reassign items to group "slots" of the original sizes (preserving each
+item's own values, including whether and how it was labeled), recompute
+`ss_between` for each permutation, and use the empirical mean across many
+permutations as the floor. This needs no assumption about the sampling
+distribution of a group mean under non-uniform selection -- it uses
+whatever the realized labeled/unlabeled composition actually looks like.
+
+**Two variants tested**, both holding the per-group `_analytic_mean_point_se`
+correction machinery otherwise unchanged and only replacing the floor:
+
+1. **Fixed lambda per slot**: each group's ALREADY-ESTIMATED (real-data,
+   fully adaptively-shrunk) lambda is applied to whichever items land in
+   that slot under each permutation -- lambda is a plugged-in nuisance
+   parameter, not re-derived per permutation (for speed: re-deriving the
+   full adaptively-shrunk lambda per permutation would need an 800-replicate
+   bootstrap PER GROUP PER PERMUTATION, computationally prohibitive).
+2. **Re-derived lambda per slot**: a fast, UNSHRUNK raw lambda ratio
+   (`cov/denom`, clamped to [0,1], no bootstrap) is recomputed from each
+   permutation's own realized (Y_lab, Y_hat_lab, Y_hat_unlab) triple per
+   slot, to test whether holding lambda fixed (variant 1) was masking a
+   better fix.
+
+**Validation** (ground-truth Monte Carlo, 250 independent draws/scenario,
+150 permutations/draw, implied z = mean(theta)/[std(theta)/sqrt(n)] against
+the gold null value of exactly 0.0):
+
+| scenario | current (parametric) | perm, fixed lambda | perm, re-derived lambda |
+|---|---|---|---|
+| `label.mnar-mild` | z=-4.44 to -5.63 | z=-5.26 to -6.64 (worse) | z=-4.36 (~unchanged) |
+| `label.mnar-strong` | z=-4.06 to -6.00 | z=-1.82 to -3.65 (**better, 57-68% bias reduction**) | z=-6.33 (worse than both) |
+
+(Ranges reflect two separate runs at slightly different rep counts/seeds,
+both directionally consistent.) `.mildbias`/`.modbias` scenario variants
+were confirmed (as Addendum 37 already established for the parametric
+construction) to replicate their base-strength scenario's numbers near-
+exactly under this construction too -- `bias_delta`'s constant offset
+cancels in the rectifier regardless of the floor-estimation method, so
+MNAR strength alone drives the result, not judge-bias magnitude.
+
+**Diagnosis: real but regime-dependent, not a clean fix.** The fixed-
+lambda permutation floor gives a substantial, genuine bias reduction
+under STRONG MNAR (~57-68%), with essentially no added variance (std
+unchanged from the parametric baseline in the earlier single-scenario
+check). But it does NOT help -- and mildly worsens -- MILD MNAR, which is
+where the single worst-flagged cell in this whole investigation lives
+(`label.mnar-mild.modbias`, z=7.27 in the original flagging log).
+Re-deriving lambda per permutation (removing the fixed-lambda
+simplification) does not close that gap either: it leaves mild MNAR
+essentially unchanged and makes strong MNAR WORSE than the fixed-lambda
+variant (z=-6.33 vs -3.65) -- ruling out "lambda held fixed is masking a
+better fix" as the explanation for the mild-MNAR gap. Counter-intuitively,
+Addendum 37 measured the naive-variance mismatch itself as LARGER under
+mild MNAR (~1.25-1.28x) than strong MNAR (~1.05-1.08x) -- if permutation
+were cleanly targeting that mismatch, it should help mild MORE than
+strong, not less or not at all. This suggests a second, unidentified
+factor specific to the mild-MNAR regime, not fully explained by either
+attempt here.
+
+**Not adopted.** Neither permutation variant cleanly resolves the
+problem across both MNAR strengths, and the fixed-lambda version (the
+better of the two) is also computationally more expensive (150+
+permutations x k group recomputations per test call, layered on top of
+the existing per-group lambda-estimation bootstrap) for a partial,
+regime-dependent gain. Standalone prototype scripts (not part of the
+fix, not committed) are referenced by the investigating conversation;
+not added to the repo.
+
+**Practical impact assessment: Type-I error is confirmed safe, not
+inflated.** The debiasing-floor bias only enters the POINT ESTIMATE
+`theta` (the `ss_between - (k-1)*denom` numerator); the p-value/CI come
+from a SEPARATE construction, `_noncentral_f_ci_lambda(f_corr, dfn, dfd,
+alpha)` on the F-statistic `f_corr = (ss_between/(k-1))/denom`, which
+does not depend on the debiased `theta` line at all. Since the same
+inflated `denom` that biases `theta` also appears in `f_corr`'s
+DENOMINATOR, an inflated `denom` mechanically SUPPRESSES `f_corr` --
+producing p-values that are too LARGE, not too small. Confirmed directly
+against the real MNAR Type-I sweep
+(`simulations/out/typeI_check_all_tests/pvalues_ppi_reps300_20260815_085356_mnar_ppi_summary.log`):
+every `label_mechanism` MNAR row's `anova_ind` rejection rate sits AT OR
+BELOW nominal alpha=0.05 (0.023-0.040 across all six MNAR scenarios,
+grid-wide corr max=0.040, corr mean=0.034) -- the test is CONSERVATIVE
+under MNAR, not anti-conservative. This mirrors the same "biased point
+estimate, honest-or-conservative interval" shape already documented for
+`bootstrap_t_single` (Addendum 36) and the coverage pattern noted for
+`anova_ind` throughout this investigation (mean coverage 0.988,
+over-covering, never under). Power under MNAR was not separately
+measured in this investigation, but the identical mechanism (suppressed
+`f_corr`) predicts a real effect would also need to be somewhat larger to
+clear the same threshold -- i.e. some power is plausibly left on the
+table under MNAR, but never in the direction of false confidence.
+**Bottom line: `anova_ind`'s Type-I error can be trusted under MNAR (if
+anything erring conservative); its point estimate carries a real,
+unfixed small bias under MNAR specifically that a user should be aware
+of if they're reporting the corrected effect-size number itself, not
+just the test's significance decision; under MCAR (the condition PPI
+correction is designed and validated for throughout this file) none of
+this applies.**
+
