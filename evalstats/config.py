@@ -552,7 +552,7 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
 #   the *paired* path uses Tango instead of a generic t-interval for binary
 #   data -- there is no between-subjects Tango equivalent today). A
 #   deliberate patch, not a clean solution -- see
-#   PLAN_between_subjects_extension.md §3.2/§5 for the full discussion.
+#   notes/PLAN_between_subjects_extension.md §3.2/§5 for the full discussion.
 #
 #   continuous / likert / grade -> kruskalwallis (omnibus + θ_ab pairwise
 #   post-hoc) + mannwhitney (the k=2 special case -- Kruskal-Wallis reduces
@@ -590,7 +590,7 @@ AUTO_UNPAIRED_METHOD_TABLE: tuple[AutoUnpairedRule, ...] = (
             "the proportion difference a reader expects for a binary "
             "outcome, using entirely existing machinery. Known limitation: "
             "t-intervals on proportions can misbehave at extreme values or "
-            "small N -- see PLAN_between_subjects_extension.md §5."
+            "small N -- see notes/PLAN_between_subjects_extension.md §5."
         ),
     ),
     AutoUnpairedRule(
