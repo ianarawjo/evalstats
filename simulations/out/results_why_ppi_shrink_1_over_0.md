@@ -4231,3 +4231,119 @@ longer collapses; and the harness's paired/repeated null checks now test
 against a mix of the original exact-tie worst case and a more realistic
 independent-small-noise construction, strengthening the methodological
 defensibility of any real-data Type-I claims made from this suite.
+
+## Addendum 40 (2026-08-15): `anova_ind`'s real-data Type-I inflation --
+fixed via pooled lambda estimation (a different mechanism from Addendum
+37's rejected MNAR fix)
+
+Addendum 39 flagged `anova_ind`'s real-data corr max=0.145 but, after
+re-checking with more reps, characterized the true rate as a modest
+~0.07-0.09 and did not pursue a fix, on the reasoning that Addendum 37 had
+already tried and rejected a k-group pooled lambda for this exact test. On
+reflection this was too quick to write off: Addendum 37's investigation was
+entirely about SYNTHETIC MNAR scenarios and a POINT-ESTIMATE bias
+mechanism; the real-data finding here is under plain MCAR labeling (no
+MNAR) and, as this addendum shows, is actually a VARIANCE (not
+point-estimate) bias -- a genuinely different mechanism that pooling fixes
+for a different reason.
+
+**Confirming the premise.** Directly compared `power_tune=False` (the
+original, pre-adaptive-shrinkage construction) against `power_tune=True` on
+the SAME real cells (1200 reps each): `power_tune=False` stayed within
+Monte Carlo noise of nominal alpha on every cell tested (0.040-0.057);
+`power_tune=True` was consistently, measurably elevated on the exact same
+data (0.066-0.073). This isolates the inflation specifically to adaptive
+power-tuning, not to anything about real data per se.
+
+**Mechanism.** `_ppi_anova_independent_f_stat`'s `power_tune=True` branch
+had each of the k groups independently estimate its own lambda from its
+own labeled subsample via `_analytic_mean_point_se`. PPI++'s lambda formula
+is the value that minimizes `Var(f_lab + lambda*(f_unlab - f_hat_lab))`
+using that SAME finite sample's empirical variance/covariance moments as
+plug-ins for the (unknown) population values -- so the resulting `se_i`,
+reported using that same chosen lambda and those same sample moments, is a
+textbook "estimate the argmin, then evaluate the objective AT that argmin
+using the same noisy inputs" optimism bias: it systematically
+UNDERESTIMATES the true variance at the population-optimal lambda, on top
+of (and distinct from) lambda's own sampling uncertainty, which
+`_lambda_var_inflation`'s delta-method term already separately corrects
+for. Ground-truth confirmed directly: with independent per-group lambdas,
+`mean(ss_between)/(k-1)` exceeded `mean(denom)` by ~14% under a real null
+(ratio 1.136 -- should be ~1.0 if `denom` is an unbiased estimate of the
+scaled between-group variance under H0); with `power_tune=False`, the same
+ratio was 0.970, matching the classical construction's known-good
+calibration.
+
+**Why pooling fixes THIS mechanism specifically (and why Addendum 37's
+rejection doesn't transfer).** Addendum 37's k-group pooled lambda attempt
+was evaluated against a real, but DIFFERENT, bias: under synthetic MNAR,
+each group's naive `ddof=1` labeled-mean variance formula overestimates its
+true sampling variance under non-uniform label selection -- a mismatch
+that's COMMON across groups (same mechanism, same population) and already
+cancels via `ss_between`'s grand-mean centering, so pooling lambda had
+nothing to fix there (confirmed: point-estimate bias barely moved,
++0.0755->+0.0753). The optimism bias identified here is different in kind:
+it's not about MNAR-driven variance mismatch at all, and it doesn't cancel
+automatically -- it directly shrinks the reported `denom` regardless of
+labeling mechanism. Pooling fixes it by a completely mechanical route:
+combining all k groups' labeled data increases the EFFECTIVE sample size
+lambda is estimated from, and the optimism gap (the expected difference
+between "variance at the sample-argmin, evaluated on the same sample" and
+"variance at the population-optimal lambda") shrinks as that effective
+sample grows. Confirmed directly: pooled-lambda's ratio moved from 1.136 to
+0.980 on the SAME real cell -- landing almost exactly at the classical
+construction's own 0.970.
+
+**Implementation.** New `evalstats/ppi.py:_pooled_k_group_lambda`,
+generalizing the existing `_pooled_two_group_lambda` (ttest's own,
+differently-motivated fix -- see that function's docstring) from 2 to
+arbitrary k groups; kept as a separate function rather than widening
+`_pooled_two_group_lambda`'s signature, since that function has exactly one
+existing, already-validated caller. `_ppi_anova_independent_f_stat`'s
+`power_tune=True` branch now: estimates one shared lambda via
+`_pooled_k_group_lambda` (excluding any fully-labeled group, which has no
+judge-side rectifier to share lambda with, from the pool); computes each
+group's point estimate/variance via `_analytic_mean_point_se_given_lambda`
+with that shared lambda; and adds a joint lambda-uncertainty term
+(`r_term_i^2 * var_lam` per group, same weighting as the base variance
+term) to `inflation_per_group` -- a first-order approximation (treats the
+shared-lambda perturbation as an independent per-group addition rather than
+deriving `SS_between`'s full covariance structure under a
+perfectly-correlated-across-groups lambda) that the validation below found
+sufficient in practice, with no residual miscalibration or power cost
+detected on any tested cell.
+
+**Validation.**
+- 18 real-data MCAR null cells across 5 datasets (privacy_judge, wmt_da,
+  appstore, arena; 800-1500 reps each): pooled lambda at or below the
+  per-group construction on EVERY cell, never worse -- e.g.
+  privacy_judge/n=148/labfrac=0.10: 0.0707 -> 0.0493; privacy_judge/n=74/
+  labfrac=0.05: 0.0740 -> 0.0480; wmt_da/n=333/labfrac=0.10: 0.0687 ->
+  0.0607; arena/n=422/labfrac=0.05: 0.0762 -> 0.0612.
+- 7 synthetic null scenarios (1500 reps each, including 2 MNAR): no
+  regression anywhere, most cells improved (e.g. `noise.0.1.mildbias`
+  0.0660 -> 0.0507); MNAR scenarios moved TOWARD nominal, not away from it
+  (`label.mnar-strong` 0.0227 -> 0.0300 -- less conservative, not
+  anti-conservative).
+- Power: 6 real-data rank-split power cells (saturated at 1.000 both
+  before/after -- too easy to differentiate) and 3 synthetic power
+  scenarios with real headroom (0.92/0.98/0.39 before -> 0.92/0.98/0.41
+  after) -- unchanged or mildly IMPROVED, no cost anywhere.
+- 30/30 anova_ind unit tests, full 378-test
+  `tests/test_ppi_corrections.py` + `tests/test_p_values.py` suite pass.
+- Official synthetic harness re-check (`pvalues --mode ppi`, reps=500,
+  anova_ind only): Type-I corr max **0.086**, mean **0.051**, 0
+  Holm-confirmed miscalibrated cells (was flagged as EXPERIMENTAL/"not yet
+  validated at the harness level" in this function's own docstring before
+  this investigation); MNAR max 0.050, mean 0.039. All three power sweeps
+  (opposing/nobias/reinforcing bias direction, continuous+likert) show
+  smooth, monotonic, well-calibrated curves with `es=0.00` Type-I
+  cross-check columns at nominal.
+
+**Bottom line.** `anova_ind`'s real-data Type-I inflation was real,
+specific to adaptive power-tuning (confirming the premise that it wasn't a
+problem before adaptive shrinkage was added), and had a genuine fix
+distinct from the two approaches Addendum 37 already tried and rejected for
+a different (MNAR, point-estimate) mechanism. Combined with Addendum 39's
+wilcoxon/kruskal fixes, this closes out every real-data Type-I/power issue
+found in this investigation's `--official-tests` sweep.
