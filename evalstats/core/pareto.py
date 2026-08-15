@@ -213,6 +213,109 @@ def pareto_bootstrap(
     )
 
 
+def pareto_bootstrap_unpaired(
+    groups_primary: list[np.ndarray],
+    groups_secondary: list[np.ndarray],
+    labels: list[str],
+    n_bootstrap: int,
+    rng: np.random.Generator,
+    *,
+    statistic: Literal["mean", "median"] = "mean",
+    return_replicates: bool = False,
+) -> ParetoBootstrapResult:
+    """Joint bootstrap Pareto-dominance tallies for two metrics measured on
+    disjoint per-group items (between-subjects data) -- the counterpart to
+    :func:`pareto_bootstrap` for ``compare(design="unpaired", secondary_metric=...)``.
+
+    :func:`pareto_bootstrap` draws one *shared* per-item resample index and
+    applies it to every entity, because every entity is scored on the same
+    items (paired by column position) -- that shared draw is what preserves
+    correlation between the two metrics for a given item across entities.
+    Between-subjects groups have no such shared item pool: each group's rows
+    are its own, independent items. The correlation that still needs
+    preserving is narrower but simpler -- item i's primary and secondary
+    values are the same row (the same reviewer/response), so each group's
+    row-index resample is drawn *independently*, not shared across groups.
+    Groups may also have different sizes (unbalanced), which the paired
+    function's fixed-``M``-for-all-entities design can't express at all.
+
+    Parameters
+    ----------
+    groups_primary, groups_secondary : list[np.ndarray]
+        One array per group/entity, row-aligned within each group (index i
+        of ``groups_primary[g]`` and ``groups_secondary[g]`` must be the
+        same underlying row) -- but groups may differ in length from each
+        other. Both already oriented so higher is better (see
+        :func:`orient_higher_is_better`).
+    labels : list[str]
+        Entity labels, length N (same order as the two group lists).
+    n_bootstrap, rng, statistic, return_replicates
+        Same meaning as :func:`pareto_bootstrap`.
+
+    Returns
+    -------
+    ParetoBootstrapResult
+        Identical shape/semantics to :func:`pareto_bootstrap`'s output, so
+        :func:`classify_pareto_status` (and any other consumer) works
+        unchanged regardless of which bootstrap produced it.
+    """
+    N = len(labels)
+    if len(groups_primary) != N or len(groups_secondary) != N:
+        raise ValueError(
+            f"groups_primary/groups_secondary must have one entry per label "
+            f"(N={N}); got {len(groups_primary)} and {len(groups_secondary)}."
+        )
+    for g_idx, (gp, gs) in enumerate(zip(groups_primary, groups_secondary)):
+        if len(gp) != len(gs):
+            raise ValueError(
+                f"group {labels[g_idx]!r}: primary/secondary length mismatch "
+                f"({len(gp)} vs {len(gs)}) -- both metrics must be row-aligned "
+                "within each group."
+            )
+        if len(gp) == 0:
+            raise ValueError(f"group {labels[g_idx]!r} has no rows.")
+
+    def _stat(a: np.ndarray, axis: int) -> np.ndarray:
+        return a.mean(axis=axis) if statistic == "mean" else np.median(a, axis=axis)
+
+    point_primary = np.array([_stat(g, axis=0) for g in groups_primary])
+    point_secondary = np.array([_stat(g, axis=0) for g in groups_secondary])
+
+    # Each group's resample is independent and small (m rows x n_bootstrap
+    # draws), unlike the paired function's shared (N, N, batch) x M dominance
+    # array -- N is typically a handful of groups, so no batching needed here.
+    bm1 = np.empty((N, n_bootstrap))
+    bm2 = np.empty((N, n_bootstrap))
+    for g_idx, (gp, gs) in enumerate(zip(groups_primary, groups_secondary)):
+        m = len(gp)
+        idx = rng.integers(0, m, size=(n_bootstrap, m))
+        bm1[g_idx] = _stat(gp[idx], axis=1)
+        bm2[g_idx] = _stat(gs[idx], axis=1)
+
+    eye = np.eye(N, dtype=bool)
+    m1_i, m1_j = bm1[:, None, :], bm1[None, :, :]
+    m2_i, m2_j = bm2[:, None, :], bm2[None, :, :]
+    ge_both = (m1_j >= m1_i) & (m2_j >= m2_i)
+    gt_either = (m1_j > m1_i) | (m2_j > m2_i)
+    j_dominates_i = ge_both & gt_either
+    j_dominates_i &= ~eye[:, :, None]
+
+    dominated_count = j_dominates_i.sum(axis=2)
+    i_is_dominated = j_dominates_i.any(axis=1)
+    frontier_count = (~i_is_dominated).sum(axis=1)
+
+    return ParetoBootstrapResult(
+        labels=list(labels),
+        point_primary=point_primary,
+        point_secondary=point_secondary,
+        p_frontier=frontier_count / n_bootstrap,
+        p_dominated_by=dominated_count / n_bootstrap,
+        n_bootstrap=n_bootstrap,
+        replicate_primary=bm1 if return_replicates else None,
+        replicate_secondary=bm2 if return_replicates else None,
+    )
+
+
 @dataclass
 class ParetoStatus:
     """Default three-state Pareto classification for one entity.

@@ -75,6 +75,24 @@ class GroupStat:
     multi_ci: Optional[dict] = None  # {alpha: (lo, hi)} gradient CI bands
 
 
+class _GroupStatsAsRobustness:
+    """Minimal ``RobustnessResult``-compatible view over a ``list[GroupStat]``.
+
+    Exists so ``core.summary._print_pareto_section`` -- built for the
+    paired path's ``RobustnessResult`` (per-entity ``.labels``/``.mean``/
+    ``.ci_low``/``.ci_high`` arrays) -- can render the between-subjects
+    Pareto section unmodified: it only ever reads those four attributes, so
+    this adapter is all that's needed to reuse the whole section (including
+    the ASCII scatterplot) rather than reimplementing it.
+    """
+
+    def __init__(self, stats: list[GroupStat]):
+        self.labels = [s.label for s in stats]
+        self.mean = np.array([s.mean for s in stats])
+        self.ci_low = np.array([s.ci_low for s in stats])
+        self.ci_high = np.array([s.ci_high for s in stats])
+
+
 @dataclass
 class GroupDiffResult:
     """One pairwise between-subjects comparison.
@@ -106,7 +124,8 @@ class GroupComparisonResult:
     Deliberately a narrower reporting surface than ``ComparisonResult``
     (no executive summary, critical-difference rank bands, or forest-plot
     brackets) -- per-group means with gradient CIs, a pairwise comparison
-    table, and the omnibus test when k>=3. See PLAN_between_subjects_
+    table, the omnibus test when k>=3, and a Pareto-front section when
+    ``secondary_metric=`` was passed. See PLAN_between_subjects_
     extension.md §1/§3.6 for the scope discussion.
     """
     factor_col: str
@@ -127,12 +146,38 @@ class GroupComparisonResult:
     pvalue_correction: str    # "holm" or "none" (k=2, single comparison)
     ppi_applied: bool
     alignment_result: Optional["AlignmentResult"] = None
+    show_p_values: bool = True
+    pareto: Optional[dict] = None
 
     # ── convenience accessors ──────────────────────────────────────────────
 
     @property
     def labels(self) -> list[str]:
         return [g.label for g in self.groups]
+
+    @property
+    def pareto_status(self) -> Optional[dict]:
+        """Per-group three-state Pareto classification, or ``None``.
+
+        Populated only when ``compare(design="unpaired", secondary_metric=...)``
+        was passed. Mirrors :attr:`~evalstats.api.ComparisonResult.pareto_status`
+        exactly -- keys are group labels, values are
+        :class:`~evalstats.core.pareto.ParetoStatus`.
+        """
+        return self.pareto["statuses"] if self.pareto is not None else None
+
+    @property
+    def pareto_frontier_probability(self) -> Optional[dict]:
+        """Per-group ``P(group is Pareto-optimal)``, or ``None``.
+
+        Populated only when ``compare(design="unpaired", secondary_metric=...)``
+        was passed. Mirrors
+        :attr:`~evalstats.api.ComparisonResult.pareto_frontier_probability`.
+        """
+        if self.pareto is None:
+            return None
+        result = self.pareto["result"]
+        return dict(zip(result.labels, result.p_frontier.tolist()))
 
     def _group(self, label: str) -> GroupStat:
         for g in self.groups:
@@ -198,6 +243,27 @@ class GroupComparisonResult:
             ],
             "ci_correction": self.ci_correction,
             "pvalue_correction": self.pvalue_correction,
+            **self._pareto_to_dict(),
+        }
+
+    def _pareto_to_dict(self) -> dict:
+        if self.pareto is None:
+            return {}
+        pareto_groups: dict[str, dict] = {}
+        p_frontier = self.pareto_frontier_probability
+        for label, st in self.pareto["statuses"].items():
+            entry: dict = {"status": st.status, "p_pareto_optimal": float(p_frontier[label])}
+            if st.dominated_by:
+                entry["dominated_by"] = list(st.dominated_by)
+            if st.ambiguous_vs:
+                entry["ambiguous_vs"] = list(st.ambiguous_vs)
+            pareto_groups[str(label)] = entry
+        return {
+            "pareto": {
+                "secondary_metric": self.pareto["secondary_metric"],
+                "direction": self.pareto["direction"],
+                "groups": pareto_groups,
+            }
         }
 
     def to_frame(self) -> pd.DataFrame:
@@ -346,6 +412,7 @@ def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict
 
 def _compute_group_stats(
     labels: list[str], arrays: list[np.ndarray], *, alpha: float, n_bootstrap: int, rng,
+    score_range: Optional[tuple[float, float]] = None,
 ) -> list[GroupStat]:
     """Per-group mean + calibrated marginal CI (with gradient multi_ci
     bands), computed independently per group -- the exact same building
@@ -360,7 +427,7 @@ def _compute_group_stats(
     for label, arr in zip(labels, arrays):
         a2d = arr.reshape(1, -1)
         _, robustness_method, resolved_score_range, _ = resolve_auto_robustness_method(
-            a2d, stacklevel=4,
+            a2d, score_range=score_range, stacklevel=4,
         )
         rob = robustness_metrics(
             a2d, ["_"],
@@ -395,6 +462,10 @@ def compare_unpaired(
     alpha: Optional[float] = None,
     n_boot: int = 2000,
     rng=None,
+    score_range: Optional[tuple[float, float]] = None,
+    p_values: bool = True,
+    omnibus: bool = True,
+    secondary_metric: Optional[dict] = None,
 ) -> GroupComparisonResult:
     """Between-subjects comparison engine -- see module docstring.
 
@@ -424,6 +495,39 @@ def compare_unpaired(
         (unused by the binary family, which is closed-form).
     rng : optional
         Seed or ``np.random.Generator``.
+    score_range : (float, float), optional
+        Explicit metric bounds (e.g. ``(1, 5)`` for a Likert scale), passed
+        through to the per-group marginal CI's auto-method resolution
+        (matches ``compare()``'s own ``score_range=`` engine kwarg). When
+        ``None`` (default), bounds are auto-detected per group, same as
+        the paired path's own default.
+    p_values : bool
+        Whether ``.summary()`` prints the pairwise table's p-value column
+        (and the p-value-correction footnote at k>=3). Defaults to
+        ``True`` here (an unpaired-specific default, deliberately not
+        ``compare()``'s own ``False`` -- p-values are core to reading this
+        narrower report, not an opt-in extra). The underlying
+        ``GroupDiffResult.p_value``/``raw_p_value`` fields are always
+        computed and available via ``.to_dict()``/``.to_frame()``
+        regardless of this flag; it only controls console display.
+    omnibus : bool
+        Whether the omnibus test (Kruskal-Wallis/ANOVA, k>=3 only) is run
+        at all. Defaults to ``True`` here (again, not ``compare()``'s own
+        ``False``). When ``False``, ``omnibus_test_name`` and friends stay
+        ``None`` even at k>=3 -- unlike ``p_values``, this skips the
+        *computation*, not just the display, mirroring the paired path's
+        own ``if omnibus and len(labels) >= 3:`` gate.
+    secondary_metric : dict, optional
+        ``{column_name: "min" | "max"}``, matching ``compare()``'s own
+        ``secondary_metric=`` convention exactly. Runs an uncertainty-aware
+        Pareto-front analysis between ``metric_col`` and this second column,
+        via :func:`~evalstats.core.pareto.pareto_bootstrap_unpaired` -- a
+        per-group joint bootstrap (each group's own rows resampled
+        together, preserving the row-level primary/secondary correlation),
+        not the paired path's shared-item-index bootstrap (there's no
+        shared item pool to preserve correlation across between disjoint
+        groups). Populates :attr:`GroupComparisonResult.pareto`/
+        ``.pareto_status``/``.pareto_frontier_probability``.
 
     Returns
     -------
@@ -433,6 +537,23 @@ def compare_unpaired(
         raise ValueError(f"factor_col {factor_col!r} not found in data.")
     if metric_col not in df.columns:
         raise ValueError(f"metric_col {metric_col!r} not found in data.")
+
+    secondary_col = None
+    secondary_direction = None
+    if secondary_metric is not None:
+        if not isinstance(secondary_metric, dict) or len(secondary_metric) != 1:
+            raise ValueError(
+                "secondary_metric= must be a dict with exactly one entry, "
+                "e.g. secondary_metric={'latency_ms': 'min'}."
+            )
+        (secondary_col, secondary_direction), = secondary_metric.items()
+        if secondary_direction not in ("min", "max"):
+            raise ValueError(
+                f"secondary_metric={{{secondary_col!r}: {secondary_direction!r}}} -- "
+                "direction must be 'min' or 'max'."
+            )
+        if secondary_col not in df.columns:
+            raise ValueError(f"secondary_metric column {secondary_col!r} not found in data.")
 
     if alpha is None:
         alpha = get_alpha_ci()
@@ -445,27 +566,20 @@ def compare_unpaired(
     elif resolved_item not in df.columns:
         raise ValueError(f"item_col {resolved_item!r} not found in data.")
 
-    groups_series = df.groupby(factor_col, sort=False)[metric_col]
-    labels = [str(k) for k in groups_series.groups.keys()]
+    groups_df = dict(tuple(df.groupby(factor_col, sort=False)))
+    labels = [str(k) for k in groups_df.keys()]
     if len(labels) < 2:
         raise ValueError(
             f"factor_col {factor_col!r} has only {len(labels)} distinct value(s) -- "
             "need at least 2 groups to compare."
         )
-    group_arrays = [
-        groups_series.get_group(k).to_numpy(dtype=float) for k in groups_series.groups.keys()
-    ]
-    for lbl, arr in zip(labels, group_arrays):
-        if arr.size == 0:
-            raise ValueError(f"Group {lbl!r} has no scores.")
 
     score_type = _detect_score_type(df[metric_col].dropna())
-    _, pairwise_method = resolve_auto_unpaired_methods(score_type)
-    family = "binary_proportion" if pairwise_method == "ttest" else "rank_based"
+    family, _, _ = resolve_auto_unpaired_methods(score_type)
 
     ppi_applied = alignment is not None and metric_col in alignment
     alignment_result = alignment[metric_col] if ppi_applied else None
-    group_lab_arrays: Optional[list[np.ndarray]] = None
+    human_col = None
     if ppi_applied:
         human_col = alignment_result.human_col
         if human_col not in df.columns:
@@ -473,15 +587,75 @@ def compare_unpaired(
                 f"alignment result's human_groundtruth column {human_col!r} "
                 "not found in data."
             )
-        lab_series = df.groupby(factor_col, sort=False)[human_col]
-        lab_groups = dict(lab_series.groups)
-        group_lab_arrays = [
-            df.loc[lab_groups[k], human_col].to_numpy(dtype=float)
-            for k in groups_series.groups.keys()
+
+    # Build group_arrays and (if PPI) group_lab_arrays from the SAME per-group
+    # slice so a dropped NaN-score row drops its label in lockstep -- keeping
+    # positional alignment between the two, which the PPI machinery below
+    # requires. Drop NaN per group with a warning (don't silently produce a
+    # NaN-poisoned CI/omnibus stat, or crash deep inside a closed-form CI
+    # helper) -- matches evalstats.quick._clean_1d's own drop-and-warn
+    # convention for flat, unstructured score lists. Unlike the paired path's
+    # hard-error on missing cells (which protects item *alignment*, a concern
+    # that doesn't exist here -- there's no cross-group pairing to break).
+    # When secondary_metric= is given, a row is only usable if BOTH metrics
+    # are present -- the row-level (primary, secondary) pairing is exactly
+    # what the Pareto joint bootstrap needs preserved, so both arrays must
+    # drop the same rows in lockstep, not be cleaned independently.
+    import warnings as _warnings
+    group_arrays: list[np.ndarray] = []
+    group_lab_arrays: Optional[list[np.ndarray]] = [] if ppi_applied else None
+    secondary_arrays: Optional[list[np.ndarray]] = [] if secondary_col else None
+    for lbl, key in zip(labels, groups_df.keys()):
+        sub = groups_df[key]
+        scores = sub[metric_col].to_numpy(dtype=float)
+        is_nan = np.isnan(scores)
+        sec_scores = None
+        if secondary_col:
+            sec_scores = sub[secondary_col].to_numpy(dtype=float)
+            is_nan = is_nan | np.isnan(sec_scores)
+        n_missing = int(is_nan.sum())
+        if n_missing > 0:
+            _warnings.warn(
+                f"group {lbl!r}: dropped {n_missing} NaN (missing) value(s) out of "
+                f"{scores.size}; computed from the remaining {scores.size - n_missing}.",
+                UserWarning, stacklevel=4,
+            )
+            scores = scores[~is_nan]
+        if scores.size == 0:
+            raise ValueError(f"group {lbl!r} has no valid (non-NaN) scores.")
+        group_arrays.append(scores)
+        if ppi_applied:
+            group_lab_arrays.append(sub[human_col].to_numpy(dtype=float)[~is_nan])
+        if secondary_col:
+            secondary_arrays.append(sec_scores[~is_nan])
+
+    if ppi_applied:
+        zero_labeled = [
+            lbl for lbl, labs in zip(labels, group_lab_arrays) if np.all(np.isnan(labs))
         ]
+        if zero_labeled:
+            raise ValueError(
+                f"Group(s) {zero_labeled!r} have zero labeled items. Every group "
+                "needs at least one human label for PPI correction -- otherwise "
+                "its rectifier term is undefined and any comparison touching it "
+                "degenerates to a point estimate at the null with no real signal."
+            )
+        # Same minimum-label-count enforcement (>=15 total human labels,
+        # warn below 30) every other PPI caller in evalstats.tests goes
+        # through -- unpaired.py calls the *private* pairwise engines below
+        # directly (bypassing the public ttest()/kruskalwallis()/etc.
+        # wrappers, which do this themselves), so it must sanitize here or
+        # the correction can silently run on too few labels (a near-zero-
+        # width, spuriously confident CI) or crash on a zero-labeled group.
+        from evalstats.tests import _sanitize_multigroup_ppi_labels
+        group_lab_arrays = _sanitize_multigroup_ppi_labels(
+            group_arrays, group_lab_arrays, repeated=False,
+            test_label="between-subjects comparison",
+        )
 
     group_stats = _compute_group_stats(
         labels, group_arrays, alpha=alpha, n_bootstrap=n_boot, rng=rng,
+        score_range=score_range,
     )
 
     k = len(labels)
@@ -503,7 +677,7 @@ def compare_unpaired(
     # for direct callers of that module -- not something to change here);
     # suppressed only at this call site.
     omnibus_test_name = omnibus_statistic = omnibus_p_value = omnibus_corrected_p_value = None
-    if k >= 3:
+    if k >= 3 and omnibus:
         with contextlib.redirect_stdout(io.StringIO()) if ppi_applied else contextlib.nullcontext():
             if family == "binary_proportion":
                 from evalstats.tests import anova_oneway
@@ -553,6 +727,30 @@ def compare_unpaired(
         for idx, (i, j) in enumerate(pw["pairs"])
     ]
 
+    pareto_dict = None
+    if secondary_col:
+        from evalstats.core.pareto import (
+            pareto_bootstrap_unpaired, classify_pareto_status, orient_higher_is_better,
+        )
+        secondary_oriented = [orient_higher_is_better(arr, secondary_direction) for arr in secondary_arrays]
+        pareto_result = pareto_bootstrap_unpaired(
+            group_arrays, secondary_oriented, labels, n_bootstrap=n_boot, rng=rng,
+        )
+        secondary_group_stats = _compute_group_stats(
+            labels, secondary_arrays, alpha=alpha, n_bootstrap=n_boot, rng=rng,
+        )
+        pareto_dict = {
+            "secondary_metric": secondary_col,
+            "direction": secondary_direction,
+            "result": pareto_result,
+            "statuses": classify_pareto_status(pareto_result, alpha=alpha),
+            # Reuses core.summary._print_pareto_section's display unmodified
+            # (see _GroupStatsAsRobustness) -- same keys the paired path's
+            # own pareto dict uses.
+            "primary_robustness": _GroupStatsAsRobustness(group_stats),
+            "secondary_robustness": _GroupStatsAsRobustness(secondary_group_stats),
+        }
+
     return GroupComparisonResult(
         factor_col=factor_col, metric_col=metric_col,
         item_col=resolved_item, item_col_synthetic=item_synthetic,
@@ -564,4 +762,5 @@ def compare_unpaired(
         ci_correction="bonferroni" if n_pairs > 1 else "none",
         pvalue_correction="holm" if n_pairs > 1 else "none",
         ppi_applied=ppi_applied, alignment_result=alignment_result,
+        show_p_values=p_values, pareto=pareto_dict,
     )

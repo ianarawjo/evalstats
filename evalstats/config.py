@@ -619,18 +619,24 @@ AUTO_UNPAIRED_METHOD_TABLE: tuple[AutoUnpairedRule, ...] = (
 )
 
 
-def resolve_auto_unpaired_methods(score_type: str) -> tuple[str, str]:
+def resolve_auto_unpaired_methods(score_type: str) -> tuple[UnpairedFamily, str, str]:
     """Resolve ``compare(design="unpaired")``'s routing to
-    ``(omnibus_method, pairwise_method)`` -- see :data:`AUTO_UNPAIRED_METHOD_TABLE`.
+    ``(family, omnibus_method, pairwise_method)`` -- see
+    :data:`AUTO_UNPAIRED_METHOD_TABLE`.
+
+    ``family`` is returned directly (not re-derived from ``pairwise_method``
+    by the caller) so the table stays the actual source of truth for which
+    engine runs -- editing a row here changes behavior, rather than editing
+    ``omnibus_method``/``pairwise_method`` silently doing nothing because
+    some other call site re-derives family from a hardcoded string check.
 
     The *k=2* special case (``mannwhitney``/``ttest`` used directly, no
     omnibus test needed since there's only one comparison) is handled by
-    the caller (``evalstats.core.unpaired``), not this table -- this
-    function only resolves which *family* applies.
+    the caller (``evalstats.core.unpaired``), not this table.
     """
     for rule in AUTO_UNPAIRED_METHOD_TABLE:
         if rule.score_type == score_type:
-            return rule.omnibus_method, rule.pairwise_method
+            return rule.family, rule.omnibus_method, rule.pairwise_method
     raise AssertionError(
         f"no AUTO_UNPAIRED_METHOD_TABLE rule matched score_type={score_type!r}"
     )
