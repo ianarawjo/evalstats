@@ -22,6 +22,31 @@ undercover -- see :func:`correct`'s ``backend`` parameter. Shared with the
 PPI-alignment warning threshold in ``evalstats/api.py`` and
 ``evalstats/alignment.py``."""
 
+_WILCOXON_CROSSFIT_COV_COEF = 0.75
+"""Coefficient on :func:`_analytic_walsh_theta_correct`'s cross-fit
+fold-covariance term (``w_A * w_B * lam_A * lam_B * var_unlab``), the
+missing-covariance fix from ``simulations/out/
+results_why_ppi_shrink_1_over_0.md``'s Addendum 33. That addendum
+calibrated this at 1.0 (halving the textbook cross-term coefficient of 2)
+using ONLY null (``effect_size=0.0``) scenarios. Addendum 35 found this
+does not transfer to ``build_ppi_power_sources``' real-effect scenarios:
+at 1.0, the term over-corrects there (reported/true variance ratio
+1.06-1.10 at moderate effect sizes, vs. 0.96-1.00 at null), driving a
+real, avoidable power regression, while a ground-truth check showed the
+term's own assumption (``Cov(r_term_A, r_term_B) ~= var_unlab``) is
+itself less accurate under a real effect (empirical ratio ~0.88-0.91 vs.
+~0.997 at null) -- the true target coefficient is regime-dependent and no
+single value serves both regimes exactly. 0.75 was chosen as a validated
+middle ground: a coefficient sweep (0.0/0.3/0.5/0.7/1.0) against ACTUAL
+rejection rates (not just variance ratios) found lowering from 1.0 to
+0.75 recovers meaningful power at every regressed power-check cell tested
+while staying AT OR BELOW nominal alpha=0.05 on every null scenario
+tested (including the single worst-case cell, noise=0/mildbias, which
+landed at exactly 0.0500) -- see Addendum 35 for the full validation
+table. Not a full fix (the underlying regime-dependence is unresolved --
+see that addendum's own caveats), but a modest, non-regressing
+improvement over the prior fixed 1.0."""
+
 _POWER_TUNE_SHRINKAGE_C = 20.0
 """Pseudo-count controlling how much :func:`correct`'s power-tuning weight
 lambda gets shrunk toward an ADAPTIVE target as ``n_lab`` shrinks -- used
@@ -798,13 +823,16 @@ def _analytic_walsh_theta_correct(
         # by roughly 2x for this Hajek-projection-based estimand (var_unlab
         # here is a U-statistic variance estimator, not a plain
         # linear-statistic variance the textbook identity assumes) --
-        # calibrated to 1x instead. Reported/true variance ratio: 0.628
-        # (before either fix) -> 0.768 (lambda-uncertainty term alone) ->
-        # 0.986 (with this term, coefficient 1x) on the worst tested cell;
-        # see results_why_ppi_shrink_1_over_0.md's wilcoxon cross-fit
-        # covariance addendum for the full derivation/validation
-        # (including a power check showing no meaningful cost).
-        var_estimate += w_A * w_B * lam_A * lam_B * var_unlab
+        # Addendum 33 calibrated this to 1x against NULL scenarios only
+        # (reported/true variance ratio: 0.628 before either fix -> 0.768
+        # with the lambda-uncertainty term alone -> 0.986 with this term at
+        # 1x, on the worst tested null cell). Addendum 35 found 1x
+        # over-corrects specifically under a REAL injected effect (ratio
+        # 1.06-1.10 at moderate effect sizes in build_ppi_power_sources,
+        # vs. 0.96-1.00 at null) -- see _WILCOXON_CROSSFIT_COV_COEF's
+        # docstring for the regime-dependence this reflects and the
+        # rejection-rate sweep that validated moving to 0.75.
+        var_estimate += _WILCOXON_CROSSFIT_COV_COEF * w_A * w_B * lam_A * lam_B * var_unlab
 
         se = float(np.sqrt(var_estimate))
         df = _cross_fit_satterthwaite_df(v_A_term, max(n_A - 1, 1), v_B_term, max(n_B - 1, 1))

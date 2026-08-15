@@ -3559,3 +3559,140 @@ power-tuning weight) -- flagged, not attempted in this session.
 flagging log) was also flagged but not investigated -- lower priority,
 unrelated construction.
 
+## Addendum 35 (2026-08-15): Addendum 33's cross-fit covariance coefficient
+over-corrects under a real effect -- calibrated 1x down to 0.75x
+
+Addendum 33's fold-covariance term (coefficient 1x, halving the textbook
+`Var(w_A*X+w_B*Y)` cross-term coefficient of 2) was calibrated ONLY
+against null (`effect_size=0.0`) scenarios -- a noise-level sweep on
+`noise.0.0.mildbias` plus a 7-scenario regression check, none with a real
+injected effect. A before/after harness comparison on
+`build_ppi_power_sources` (the dedicated real-effect power check, run
+separately from this investigation at 300 reps old / 200 reps new) found
+wilcoxon specifically regressed: 8 of 32 (scenario, effect_size) cells
+significantly down (two-proportion z < -1.96, several past z=-3), zero
+up, concentrated at moderate effect sizes (es~0.20-0.60) across both
+`continuous` and `likert` eval types -- e.g. `power.continuous.es=0.35`
+corrected rate 0.233 -> 0.115 (z=-3.33). ttest/ttest_welch (different,
+closed-form constructions -- Addenda 29/31/32) showed no comparable
+regression, isolating this to wilcoxon's cross-fit specifically.
+
+**Reproduction.** Re-ran `power.continuous.es=0.35` and
+`power.likert.es=0.40` directly via `_ppi_paired_arrays` +
+`generate_judge_bias_cell` at 1800 reps: 0.163 and 0.671 respectively --
+both well below the old baseline (0.233, 0.750), confirming the
+regression independent of the original before/after CSVs' rep counts.
+
+**Ground-truth variance check (same methodology as Addendum 33 itself,
+but on real-effect scenarios instead of null).** Drew many independent
+full datasets from each scenario, computed the TRUE empirical variance of
+the cross-fit point estimate across draws, and compared against the
+construction's own mean reported `var_estimate`, toggling Addendum 33's
+two terms independently (`base` / `+lam_unc` / `+lam_unc_cov`, mirroring
+its own ablation):
+
+| scenario | mode | reported/true ratio |
+|---|---|---|
+| `noise.0.0.mildbias` (null) | base | 0.617 |
+| | +lam_unc | 0.750 |
+| | +lam_unc_cov (1x, shipped) | 0.960 |
+| `power.continuous.es=0.35` | base | 0.833 |
+| | +lam_unc | 0.965 |
+| | +lam_unc_cov (1x, shipped) | **1.095** |
+| `power.likert.es=0.40` | base | 0.863 |
+| | +lam_unc | 0.973 |
+| | +lam_unc_cov (1x, shipped) | **1.060** |
+
+At null, the full fix lands at 0.960 -- matching Addendum 33's own 0.986
+on its worst cell (small differences attributable to rep count/seed).
+Under a real effect, the SAME construction OVER-covers by 6-10%: the
+lambda-uncertainty term alone (`+lam_unc`, no coefficient tuning
+involved) already lands almost exactly on target (0.965/0.973) in the
+real-effect regime, so the excess is attributable specifically to the
+fold-covariance term (component 2) -- the null-calibrated 1x coefficient
+is simply too large once a real effect is present.
+
+**Mechanism.** The covariance term assumes `Cov(r_term_A, r_term_B) ~=
+var_unlab` (exactly true in principle, since `r_term_A`/`r_term_B` share
+the same `f_unlab` draw and are otherwise built from independent,
+disjoint item sets). Measuring this directly (empirical
+`Cov(r_term_A, r_term_B)` across reps vs. empirical `Var(f_unlab)` across
+the SAME reps, both as ground-truth quantities, not plug-in estimators):
+the ratio is 0.997 at null (the assumption holds almost exactly) but only
+0.876-0.907 under the tested real effects -- i.e. the assumption itself
+is measurably less accurate once a real effect is present, not merely a
+symptom of `var_unlab`'s plug-in estimator being noisy. Re-deriving the
+term algebraically without any ad hoc coefficient (folding both folds'
+separate `lam^2*var_unlab` pieces into one combined
+`(w_A*lam_B + w_B*lam_A)^2 * var_unlab` term, which is mathematically
+exact given each fold's lambda held fixed) reproduces the textbook
+coefficient-2 version Addendum 33 already tried and rejected (it
+overshot null calibration, dropping rates to 0.021-0.033) -- confirming
+this isn't a fixable algebra/derivation bug, and that whatever makes
+`var_unlab` too large relative to the true cross-covariance for this
+purpose is itself regime-dependent (worse, i.e. more inflated relative to
+truth, at null than under a real effect). The root cause of that
+regime-dependence was not further isolated (out of scope for this
+session -- flagged below).
+
+**No single coefficient serves both regimes exactly** -- confirmed via a
+direct rejection-rate sweep (not just variance ratios) of the covariance
+coefficient (0.0/0.3/0.5/0.7/1.0) on `noise.0.0.mildbias`: rate rises
+monotonically as the coefficient falls (0.0433 at 1.0 -> 0.0860 at 0.0),
+while power on `power.continuous.es=0.35`/`power.likert.es=0.40` falls
+monotonically as the coefficient rises (0.1940/0.7260 at 0.0 ->
+0.1493/0.6880 at 1.0) -- a strict, monotonic trade-off along this one
+dial, no coefficient recovers full power without cost to Type-I control.
+
+**Validated fix: 1x -> 0.75x.** A broader rejection-rate check (1200 reps
+each, coefficients 0.75 vs. 1.0 (shipped)) across 6 null scenarios
+(`noise.0.0.mildbias`, `noise.0.1.mildbias`, `noise.0.0.modbias`,
+`lab.5%.mildbias`, `hetero.extreme.mildbias`, `balance.1:1.mildbias`) and
+4 power scenarios (`power.continuous.es=0.20/0.35/0.60`,
+`power.likert.es=0.40`):
+
+| scenario | 1.0x (shipped) | 0.75x |
+|---|---|---|
+| `noise.0.0.mildbias` (worst null cell) | 0.0433 | 0.0500 |
+| `noise.0.1.mildbias` | 0.0400 | 0.0425 |
+| `noise.0.0.modbias` | 0.0417 | 0.0450 |
+| `lab.5%.mildbias` | 0.0358 | 0.0367 |
+| `hetero.extreme.mildbias` | 0.0483 | 0.0483 |
+| `balance.1:1.mildbias` | 0.0442 | 0.0442 |
+| `power.continuous.es=0.20` | 0.0692 | 0.0750 |
+| `power.continuous.es=0.35` | 0.1525 | 0.1600 |
+| `power.continuous.es=0.60` | 0.4675 | 0.4858 |
+| `power.likert.es=0.40` | 0.6800 | 0.6875 |
+
+Every null scenario stays AT OR BELOW nominal alpha=0.05 at 0.75x
+(worst case exactly 0.0500, no worse than the shipped 1.0x's own
+worst-case margin), while every power scenario improves (+1 to +8
+percentage points relative). A production end-to-end re-check (through
+`_ppi_paired_arrays`/`correct()` directly, not the standalone replica
+used for the sweep) confirmed the same direction:
+`power.continuous.es=0.35` 0.1628 -> 0.1733,
+`power.likert.es=0.40` 0.6711 -> 0.6817 (both at ~1800-2000 reps), and
+`noise.0.0.mildbias` held at 0.0560 (within Monte Carlo noise of nominal
+at 2000 reps, SE~0.005).
+
+This is a real but MODEST improvement, not a full fix -- it does not
+close the gap back to the old (pre-Addendum-33) power baseline, most of
+which was itself an artifact of the very undercoverage Addendum 33
+correctly fixed (the `base`-mode ratios of 0.833/0.863 at es=0.35/0.40,
+already below 1.0 before ANY of Addendum 33's terms are added, show a
+real, honest SE-widening was always going to cost some power here; only
+the portion pushing the ratio from ~1.0 up to 1.06-1.10 was avoidable
+over-correction). The underlying regime-dependence (why the covariance
+assumption specifically degrades under a real effect, and by how much as
+a function of effect size) was not resolved -- flagged as open for
+anyone revisiting this, same spirit as Addendum 33's own closing note.
+
+**Implementation.** `evalstats/ppi.py`: new module-level constant
+`_WILCOXON_CROSSFIT_COV_COEF = 0.75` (previously the coefficient was
+hardcoded as `1.0`/omitted inline in `_analytic_walsh_theta_correct`'s
+cross-fit branch); the `var_estimate +=` line multiplies by this constant
+instead of using the bare product. `tests/test_ppi_corrections.py -k
+wilcoxon` (37/37, confirmed passing on this branch before this change --
+the previously-flagged `_EvalStub` failure was fixed separately, commit
+`9a055e4`) still passes 37/37 after this change.
+
