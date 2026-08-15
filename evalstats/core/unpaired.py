@@ -164,9 +164,7 @@ class GroupComparisonResult:
     (no forest-plot brackets) -- per-group means with gradient CIs, a
     pairwise comparison table (with critical-difference rank bands), the
     omnibus test when k>=3, an executive summary leaderboard, and a
-    Pareto-front section when ``secondary_metric=`` was passed. See
-    notes/PLAN_between_subjects_extension.md §1/§3.6 for the scope
-    discussion.
+    Pareto-front section when ``secondary_metric=`` was passed.
     """
     factor_col: str
     metric_col: str
@@ -363,8 +361,7 @@ def _bonferroni_alpha(alpha: float, n_pairs: int) -> float:
     Deliberately Bonferroni, not Šidák: Šidák's exactness needs (near-)
     independence between the pairwise statistics, which is unverified for
     this bootstrap's dependence structure (pairs sharing a group are
-    correlated). Bonferroni's union bound holds regardless. See
-    notes/PLAN_between_subjects_extension.md §3.4.
+    correlated). Bonferroni's union bound holds regardless.
     """
     return alpha if n_pairs <= 1 else alpha / n_pairs
 

@@ -3565,7 +3565,6 @@ def print_group_comparison_summary(result: "GroupComparisonResult", *, style: st
     with gradient CIs, a pairwise comparison table (with critical-difference
     rank bands), the omnibus test at k>=3, a Pareto-front section when
     ``secondary_metric=`` was passed, and an executive summary leaderboard.
-    See notes/PLAN_between_subjects_extension.md §1/§3.6.
 
     Reuses the paired path's rendering functions directly rather than
     reimplementing them -- the PPI banner (``_print_ppi_banner``), the

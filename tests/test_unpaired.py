@@ -1,8 +1,6 @@
 """Tests for the between-subjects comparison engine:
 evalstats.core.unpaired.compare_unpaired(), GroupComparisonResult, and
 compare(design=...) routing in evalstats/api.py.
-
-See notes/PLAN_between_subjects_extension.md for the design this implements.
 """
 from __future__ import annotations
 
