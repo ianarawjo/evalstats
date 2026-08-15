@@ -375,6 +375,37 @@ class TestGroupComparisonResultReporting:
         # the ...-corrected CI...") is intentionally still present.
         assert "significant (" not in out
 
+    def test_pairwise_table_shows_raw_mean_diff_alongside_dominance_delta(self):
+        """Δθ alone doesn't say how far apart two groups are on the metric's
+        own scale, so the dominance family also gets a secondary Δmean
+        column (point estimate only, mirroring how the paired path's ES
+        column has no separate CI). The binary family's Δp column already
+        *is* the raw difference, so it must NOT get a redundant Δmean.
+        """
+        r = self._result()  # continuous scores -> dominance family
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        assert "Δmean" in out
+
+        means = {g.label: g.mean for g in r.groups}
+        pair = r.pairwise[0]
+        expected = means[pair.label_a] - means[pair.label_b]
+        row_line = next(
+            line for line in out.splitlines()
+            if line.strip().startswith(pair.label_a) and pair.label_b in line
+        )
+        printed_mean_diff = float(row_line.split()[-2])  # Δmean sits right before p
+        assert printed_mean_diff == pytest.approx(expected, abs=0.001)
+
+        df_bin = _make_unpaired_binary_df({"A": 0.3, "B": 0.6})
+        r_bin = compare_unpaired(df_bin, factor_col="model", metric_col="score")
+        buf_bin = io.StringIO()
+        with redirect_stdout(buf_bin):
+            r_bin.summary()
+        assert "Δmean" not in buf_bin.getvalue()
+
     def test_means_table_uses_shared_print_mean_advantage(self):
         """The per-group means table is rendered by the SAME function the
         paired path uses (core.summary._print_mean_advantage), not a

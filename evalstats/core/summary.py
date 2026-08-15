@@ -1326,24 +1326,34 @@ def _prepare_unpaired_pairwise_rows(
     # by the shift, so its existing "Δ" label already describes it exactly.
     pair_stat_label = f"Δ{est_symbol}" if null_value != 0.0 else est_symbol
 
+    # For the rank-based (dominance) family, Δθ alone doesn't say how far
+    # apart the groups are on the metric's own scale -- e.g. a 1-5 Likert
+    # score. Surface each pair's raw mean difference too (point estimate
+    # only, no separate CI -- same convention the paired path's own "ES"
+    # rank-biserial column uses), reusing the marginal means already
+    # computed for the "Mean Performance" section above this table.
+    mean_by_label = {g.label: g.mean for g in result.groups}
+    show_mean_diff = result.pairwise and result.pairwise[0].estimand == "dominance"
+
     label_index = {lbl: i for i, lbl in enumerate(result.labels)}
     rows = []
     for p in result.pairwise:
-        rows.append(
-            {
-                "left": p.label_a,
-                "right": p.label_b,
-                "left_pos": label_index.get(p.label_a, 0),
-                "right_pos": label_index.get(p.label_b, 0),
-                "point_diff": p.point_estimate - null_value,
-                "ci_low": p.ci_low - null_value,
-                "ci_high": p.ci_high - null_value,
-                "std_diff": 0.0,  # no ±1σ "spread" concept for a pairwise estimate itself
-                "p_value": p.p_value,
-                "display_p": p.p_value if show_p else None,
-                "multi_ci": None,
-            }
-        )
+        row = {
+            "left": p.label_a,
+            "right": p.label_b,
+            "left_pos": label_index.get(p.label_a, 0),
+            "right_pos": label_index.get(p.label_b, 0),
+            "point_diff": p.point_estimate - null_value,
+            "ci_low": p.ci_low - null_value,
+            "ci_high": p.ci_high - null_value,
+            "std_diff": 0.0,  # no ±1σ "spread" concept for a pairwise estimate itself
+            "p_value": p.p_value,
+            "display_p": p.p_value if show_p else None,
+            "multi_ci": None,
+        }
+        if show_mean_diff:
+            row["es_value"] = mean_by_label[p.label_a] - mean_by_label[p.label_b]
+        rows.append(row)
 
     if pairwise_sort not in {"grouped", "significance"}:
         raise ValueError("pairwise_sort must be 'grouped' or 'significance'.")
@@ -1398,7 +1408,10 @@ def _prepare_unpaired_pairwise_rows(
         "pair_stat_label": pair_stat_label,
         "pair_item_col_width": label_width,
         "effect_label": "Left - Right",
-        "es_label": None,  # no rank-biserial-equivalent effect size for between-subjects pairs
+        # Only the dominance family gets a secondary raw-mean-difference
+        # column -- the binary/mean_diff family's primary column already
+        # *is* the raw difference (Δp), so a second copy would be redundant.
+        "es_label": "Δmean" if show_mean_diff else None,
         "p_col_header": "p" if show_p else None,
         "friedman_line_fn": None,
         "footer_fn": _footer,
