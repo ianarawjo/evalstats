@@ -5,9 +5,22 @@ omnibus test at k>=3 -- no executive summary, critical-difference rank
 bands, or forest-plot brackets. See PLAN_between_subjects_extension.md
 §1/§3.6.
 
-Reuses the paired path's low-level line-rendering primitives directly
-(``_choose_interval_line`` et al.) rather than reimplementing them --
-those already work on plain floats, no bundle/PairwiseMatrix required.
+Reuses the paired path's rendering primitives directly -- the PPI banner
+(``_print_ppi_banner``), the per-entity means table
+(``_print_mean_advantage``), the pairwise comparison table
+(``_print_pairwise_section``), and the Pareto-front section
+(``_print_pareto_section``, when ``secondary_metric=`` was passed) are the
+*same* functions the paired path calls, not reimplementations, so a change
+to any of them renders identically for both paths. What's genuinely
+unpaired-specific (this engine's fixed Bonferroni-CI/Holm-p FWER scheme, vs.
+the paired path's six CI/p-value method families plus Friedman/Nemenyi;
+its own per-group joint bootstrap for the Pareto front, since there's no
+shared item pool across disjoint groups) is resolved by
+``_prepare_unpaired_pairwise_rows``/``pareto_bootstrap_unpaired`` into the
+same shapes the shared renderers consume either way. The Behavioral
+Agreement (McNemar-style) subsection is paired-only and never called here
+-- ``agreement_mcc``/``binary_confusion`` need the same item scored by both
+entities, which has no between-subjects equivalent.
 """
 from __future__ import annotations
 
@@ -15,33 +28,18 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
-from evalstats.config import get_alpha_ci
 from evalstats.core.summary import (
-    _ANSI, _RESET, _BOLD, _DIM, _BRIGHT_MAGENTA, _BRIGHT_GREEN, _BRIGHT_RED,
-    _choose_interval_line, _legend_ci_label, _mean_marker_legend,
-    _print_subsection,
+    _RESET, _BOLD,
+    _print_subsection, _print_ppi_banner, _print_mean_advantage, _print_pairwise_section,
+    _print_pareto_section,
+    _FAMILY_DISPLAY_UNPAIRED as _FAMILY_DISPLAY,
 )
 
 if TYPE_CHECKING:
     from evalstats.core.unpaired import GroupComparisonResult
 
-_FAMILY_DISPLAY = {
-    "binary_proportion": "proportion difference (Δp)",
-    "rank_based": "stochastic dominance (θ = P(a>b))",
-}
-_ESTIMAND_LABEL = {"mean_diff": "Δ", "dominance": "θ"}
-
-
-def _truncate(label: str, width: int) -> str:
-    if len(label) <= width:
-        return label
-    return label[: max(1, width - 1)] + "…"
-
 
 def print_group_comparison_summary(result: "GroupComparisonResult", *, style: str = "gradient") -> None:
-    alpha = result.alpha
-    ci_pct = int(round((1 - alpha) * 100))
-
     print(f"{_BOLD}Between-subjects comparison{_RESET}  "
           f"(design=unpaired; factor={result.factor_col!r}, metric={result.metric_col!r})")
     item_note = " (synthetic -- no item column found; each row is its own item)" if result.item_col_synthetic else ""
@@ -51,54 +49,27 @@ def print_group_comparison_summary(result: "GroupComparisonResult", *, style: st
     print()
 
     if result.ppi_applied:
-        banner = "═" * 58
-        print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
-        print(
-            f"{_BOLD}{_BRIGHT_MAGENTA}PPI-CORRECTED — every estimate below relies on the "
-            f"alignment report printed here first.{_RESET}"
-        )
-        print(f"{_BOLD}{_BRIGHT_MAGENTA}{banner}{_RESET}")
-        if result.alignment_result is not None:
-            result.alignment_result.summary()
-        else:
-            print(
-                f"{_BOLD}{_BRIGHT_MAGENTA}(Alignment report unavailable -- run "
-                f"judge_alignment(...).summary() directly.){_RESET}"
-            )
-        print()
+        _print_ppi_banner(result.alignment_result)
 
     # ── Per-group means ──────────────────────────────────────────────────────
-    _print_subsection("--- Group Means (marginal CIs) ---")
-    all_vals = []
-    for g in result.groups:
-        all_vals.extend([g.mean - g.std, g.mean + g.std, g.ci_low, g.ci_high])
-        if g.multi_ci:
-            for lo, hi in g.multi_ci.values():
-                all_vals.extend([lo, hi])
-    all_vals = [v for v in all_vals if np.isfinite(v)]
-    if all_vals:
-        val_range = max(all_vals) - min(all_vals)
-        pad = max(val_range * 0.05, 1e-4)
-        axis_low, axis_high = min(all_vals) - pad, max(all_vals) + pad
-    else:
-        axis_low, axis_high = 0.0, 1.0
-    grand_mean = float(np.mean([g.mean for g in result.groups]))
-
+    # Shared with the paired path's own per-entity means table
+    # (_print_mean_advantage in core/summary.py) -- see that function's
+    # docstring for why one function renders both.
     label_width = min(24, max(8, max(len(g.label) for g in result.groups)))
     line_width = 44
-    ci_legend = _legend_ci_label(style, ci_pct, any(g.multi_ci for g in result.groups))
-    mean_marker = _mean_marker_legend(style, "grand mean")
-    print(f"  axis: [{axis_low:.3f}, {axis_high:.3f}]  (· ±1σ, {ci_legend}{mean_marker}, │ grand mean)")
-    print(f"  {'Group':<{label_width}s} {'Interval Plot':<{line_width}s} {'Mean':>8s} {'CI Low':>9s} {'CI High':>9s}")
-    for g in result.groups:
-        line = _choose_interval_line(
-            mean=g.mean, ci_low=g.ci_low, ci_high=g.ci_high,
-            spread_low=g.mean - g.std, spread_high=g.mean + g.std,
-            axis_low=axis_low, axis_high=axis_high, width=line_width,
-            reference=grand_mean, style=style, multi_ci=g.multi_ci,
-        )
-        print(f"  {_truncate(g.label, label_width):<{label_width}s} {line:<{line_width}s} "
-              f"{g.mean:>8.3f} {g.ci_low:>9.3f} {g.ci_high:>9.3f}")
+    _print_mean_advantage(
+        labels=[g.label for g in result.groups],
+        mean=np.array([g.mean for g in result.groups]),
+        std=np.array([g.std for g in result.groups]),
+        ci_low=np.array([g.ci_low for g in result.groups]),
+        ci_high=np.array([g.ci_high for g in result.groups]),
+        multi_ci_per_entity=[g.multi_ci for g in result.groups],
+        resolved_ci_method=result.groups[0].method,
+        item_singular="group",
+        line_width=line_width,
+        template_col_width=label_width,
+        style=style,
+    )
     print()
 
     # ── Omnibus test ─────────────────────────────────────────────────────────
@@ -114,30 +85,19 @@ def print_group_comparison_summary(result: "GroupComparisonResult", *, style: st
         print()
 
     # ── Pairwise table ───────────────────────────────────────────────────────
-    n_pairs = len(result.pairwise)
-    correction_note = (
-        f"  |  CI: {result.ci_correction}, p-value: {result.pvalue_correction} "
-        f"(family of {n_pairs})" if n_pairs > 1 else ""
-    )
-    _print_subsection(f"--- Pairwise Comparisons ({_FAMILY_DISPLAY[result.family]}) ---")
-    print(f"  α={alpha:g}{correction_note}")
-    est_label = _ESTIMAND_LABEL[result.pairwise[0].estimand] if result.pairwise else "Δ"
-    print(f"  {'Left':<{label_width}s} {'Right':<{label_width}s} {est_label:>8s} "
-          f"{'CI Low':>9s} {'CI High':>9s} {'p':>9s}   Verdict")
-    for p in result.pairwise:
-        p_str = f"{p.p_value:.4f}" if p.p_value >= 0.0001 else f"{p.p_value:.2e}"
-        if p.significant:
-            direction = ">" if p.point_estimate > p.null_value else "<"
-            verdict = f"{_BRIGHT_GREEN}significant ({p.label_a} {direction} {p.label_b}){_RESET}" if _ANSI else \
-                f"significant ({p.label_a} {direction} {p.label_b})"
-        else:
-            verdict = f"{_DIM}not significant{_RESET}" if _ANSI else "not significant"
-        print(f"  {_truncate(p.label_a, label_width):<{label_width}s} "
-              f"{_truncate(p.label_b, label_width):<{label_width}s} "
-              f"{p.point_estimate:>8.3f} {p.ci_low:>9.3f} {p.ci_high:>9.3f} {p_str:>9s}   {verdict}")
-    if n_pairs > 1:
-        print(f"  {_DIM}Verdict reflects the {result.ci_correction}-corrected CI; p is "
-              f"independently {result.pvalue_correction}-corrected -- the two can rarely "
-              f"disagree right at the boundary, since they're different (both valid) "
-              f"FWER corrections.{_RESET}")
-    print()
+    # Shared with the paired path's own pairwise table (_print_pairwise_section
+    # in core/summary.py) -- see that function's docstring for why one
+    # function renders both, and _prepare_unpaired_pairwise_rows for how this
+    # engine's fixed Bonferroni-CI/Holm-p scheme maps onto the shared row
+    # shape (no Wilcoxon/Romano-Wolf/Nemenyi/etc. method-family detection,
+    # no ranking-bootstrap-based canonical ordering, no ES/agreement columns).
+    _print_pairwise_section(result, line_width=line_width, style=style)
+
+    # ── Pareto front (secondary_metric=) ────────────────────────────────────
+    # Shared with the paired path's own Pareto section (_print_pareto_section
+    # in core/summary.py) -- see that function's docstring; the ASCII
+    # scatterplot and Trade-off table render unmodified via
+    # _GroupStatsAsRobustness, a minimal adapter so this engine's
+    # list[GroupStat] duck-types as the RobustnessResult that function reads.
+    if result.pareto is not None:
+        _print_pareto_section(result.pareto, metric=result.metric_col, show_rank_probabilities=False)
