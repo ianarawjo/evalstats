@@ -492,11 +492,15 @@ def _run_alignment_report(llm_all: np.ndarray, human_sparse: np.ndarray):
         # judge_alignment() dispatches on isinstance(x, EvalResults) -- a
         # real (if minimal) subclass rather than a duck-typed lookalike, so
         # it doesn't need EvalResults' full constructor args (metric_cols/
-        # col/factor_cols), none of which _judge_alignment_from_evaldata
-        # actually reads; only ._df and ._score_types are used.
+        # factor_cols). _judge_alignment_from_evaldata reads ._df,
+        # ._score_types, and ._col (role -> actual col name, used to exclude
+        # structural model/item/run columns from covariate checks); this stub
+        # has no structural columns at all, so ._col is simply empty -- every
+        # role lookup correctly resolves to None via .get().
         def __init__(self):
             self._df = df
             self._score_types = {_LLM: _detect_score_type(pd.Series(llm_all))}
+            self._col = {}
 
     ar = judge_alignment(_EvalStub(), llm_metric=_LLM, human_groundtruth=_HUM)
     ar.summary()
