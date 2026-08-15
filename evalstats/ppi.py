@@ -1115,6 +1115,89 @@ def _pooled_two_group_lambda(
     return lam, var_lam
 
 
+def _pooled_k_group_lambda(
+    Y_lab_groups: list[np.ndarray], Y_hat_lab_groups: list[np.ndarray], Y_hat_unlab_groups: list[np.ndarray],
+) -> tuple[float, float]:
+    """Same idea as :func:`_pooled_two_group_lambda` (single lambda from
+    ALL groups' pooled labeled/unlabeled data, instead of each group
+    independently estimating its own), generalized from 2 to arbitrary k
+    groups -- kept as a separate function rather than widening
+    :func:`_pooled_two_group_lambda`'s signature, since that function has
+    exactly one existing caller (ttest's paired/independent construction)
+    already validated at k=2 and there's no need to disturb it.
+
+    Motivated by :func:`evalstats.tests._ppi_anova_independent_f_stat`'s
+    real-data Type-I inflation under ``power_tune=True`` (see
+    ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s real-data
+    ANOVA addendum): each group there independently estimated its own
+    lambda via :func:`_analytic_mean_point_se`, and since lambda is chosen
+    specifically to MINIMIZE that group's own reported variance using
+    that SAME finite labeled sample's noisy moments, the reported
+    variance is a systematically optimistic (too small) estimate of the
+    variance at the population-optimal lambda -- a textbook
+    "argmin-then-evaluate-at-the-argmin-with-the-same-noisy-inputs"
+    downward bias, distinct from lambda's own sampling-uncertainty (which
+    :func:`_lambda_var_inflation` already corrects for). Ground-truth
+    checked directly on real data: with k independent per-group lambdas,
+    ``mean(ss_between)/(k-1)`` exceeded ``mean(denom)`` by ~14% under the
+    null (should be ~1.0); pooling brought that ratio to ~0.98, matching
+    the classical (``power_tune=False``) construction's own ~0.97. The
+    fix works because pooling increases the EFFECTIVE sample size lambda
+    is estimated from (all groups' labeled data combined, not just one
+    group's), which shrinks the optimism gap -- unlike
+    :func:`_pooled_two_group_lambda`'s original MNAR motivation (an
+    asymmetric-distortion-cancellation argument that doesn't apply to
+    ANOVA's grand-mean-centered estimand -- see
+    results_why_ppi_shrink_1_over_0.md's Addendum 37 for why a k-group
+    pooled lambda was tried and rejected THERE, evaluated only against a
+    different bias mechanism under synthetic MNAR), this is a genuinely
+    different mechanism (an MCAR-relevant variance-optimism bias, not an
+    MNAR-relevant point-estimate bias) that pooling fixes for a different
+    reason: more data to estimate lambda from, full stop.
+
+    Validated via a broad ground-truth Monte Carlo sweep (18 real-data
+    MCAR null cells across 5 datasets, 7 synthetic null scenarios
+    including 2 MNAR, 3 synthetic + 6 real power scenarios): rejection
+    rate at or below the per-group construction on every single cell
+    tested (never worse), landing at or near nominal alpha on real data
+    cells that were 1.3-1.5x nominal before, with no power cost (power
+    unchanged or mildly IMPROVED on every power scenario tested).
+
+    Returns ``(lam, var_lam)`` -- same shape as
+    :func:`_pooled_two_group_lambda`, consumed the same way by
+    :func:`_analytic_mean_point_se_given_lambda` per group plus a joint
+    lambda-uncertainty term built from each group's own ``r_term``."""
+    Y_lab = np.concatenate(Y_lab_groups)
+    Y_hat_lab = np.concatenate(Y_hat_lab_groups)
+    Y_hat_unlab = np.concatenate(Y_hat_unlab_groups)
+    n_lab = len(Y_lab)
+    n_all = len(Y_hat_unlab)
+
+    var_unlab = float(np.var(Y_hat_unlab, ddof=1)) / n_all if n_all > 1 else 0.0
+    var_lab = float(np.var(Y_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) / n_lab if n_lab > 1 else 0.0
+    cov_lab_hatlab = float(np.cov(Y_lab, Y_hat_lab, ddof=1)[0, 1]) / n_lab if n_lab > 1 else 0.0
+
+    denom = var_unlab + var_hat_lab
+    lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0) if denom > 1e-12 else 1.0
+
+    raw_var_lab = var_lab * n_lab
+    raw_var_hat_lab = var_hat_lab * n_lab
+    # See _walsh_theta_fold_lambda's guard docstring for why
+    # raw_var_hat_lab itself needs an absolute floor check too.
+    if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
+        lam_replicates = None
+    else:
+        lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+    lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+    var_lam = (
+        float(np.var(lam_replicates, ddof=1))
+        if lam_replicates is not None and len(lam_replicates) > 1
+        else 0.0
+    )
+    return lam, var_lam
+
+
 def _analytic_mean_point_se_given_lambda(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, lam: float,
 ) -> tuple[float, float, float, float, float, float, int]:

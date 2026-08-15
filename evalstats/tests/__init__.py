@@ -3166,13 +3166,14 @@ def _ppi_anova_independent_f_stat(
     ``_ppi_anova_independent_p_value`` returned None for (a group with zero
     labels).
 
-    ``power_tune`` (default *False*, matching every existing caller):
-    EXPERIMENTAL -- see the docstring inside the ``if power_tune:`` branch
-    below for why this needed a different per-group construction than the
-    ``power_tune=False`` branch's fixed-lambda=1 one, not just a lambda<1
-    plug-in. Not yet validated at the harness level; see
+    ``power_tune`` (default *True*, matching every existing caller): see
+    the docstring inside the ``if power_tune:`` branch below for why this
+    needed a different per-group construction than the ``power_tune=False``
+    branch's fixed-lambda=1 one, not just a lambda<1 plug-in, and for the
+    pooled-lambda fix (2026-08-15) to a real-data Type-I inflation found
+    with the original per-group-lambda version of this construction; see
     ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s ANOVA
-    power-tuning addendum for the investigation in progress."""
+    power-tuning addenda for the full investigation."""
     masks = [~np.isnan(g_lab) for g_lab in groups_lab]
     n_lab_arr = np.array([int(m.sum()) for m in masks], dtype=float)
 
@@ -3210,32 +3211,64 @@ def _ppi_anova_independent_f_stat(
         # should hold for ANY lambda, not just 1 -- AS LONG AS `denom`
         # below is also built from this same per-group variance, not the
         # power_tune=False branch's lambda=1-specific inflation formula.
-        from evalstats.ppi import _analytic_mean_point_se
+        #
+        # Lambda is estimated ONCE, POOLED across all k groups' labeled+
+        # unlabeled data (evalstats.ppi._pooled_k_group_lambda), not
+        # independently per group -- per-group lambda estimation was found
+        # (2026-08-15, real-data validation) to systematically UNDERSTATE
+        # `denom` (mean(ss_between)/(k-1) exceeded mean(denom) by ~14%
+        # under a real MCAR null): each group's lambda is chosen
+        # specifically to minimize THAT group's own reported variance
+        # using that same finite sample's noisy moments, an
+        # "argmin-then-evaluate-at-the-argmin" optimism bias distinct from
+        # lambda's own sampling uncertainty (which
+        # evalstats.ppi._lambda_var_inflation already separately corrects
+        # for). Pooling increases the effective sample lambda is estimated
+        # from, shrinking that optimism gap -- see _pooled_k_group_lambda's
+        # docstring and simulations/out/results_why_ppi_shrink_1_over_0.md's
+        # real-data ANOVA addendum for the full ground-truth validation
+        # (real + synthetic, null + power, no regression found anywhere).
+        from evalstats.ppi import (
+            _analytic_mean_point_se_given_lambda, _pooled_k_group_lambda,
+        )
+
+        fully_labeled = [len(g[~m]) == 0 for g, m in zip(groups, masks)]
+        pool_idx = [i for i, fl in enumerate(fully_labeled) if not fl]
+        if pool_idx:
+            lam, var_lam = _pooled_k_group_lambda(
+                [groups_lab[i][masks[i]] for i in pool_idx],
+                [groups[i][masks[i]] for i in pool_idx],
+                [groups[i][~masks[i]] for i in pool_idx],
+            )
+        else:
+            lam, var_lam = 1.0, 0.0
 
         corr_means = np.empty(k)
         var_ppi_per_group = np.empty(k)
+        r_terms = np.zeros(k)
         for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
             Y_lab_i = g_lab[mask]
             Y_hat_lab_i = g[mask]
             Y_hat_unlab_i = g[~mask]
-            if len(Y_hat_unlab_i) == 0:
-                # This group is fully labeled -- _analytic_mean_point_se
-                # raises on an empty unlabeled residual (see its own
-                # docstring), so fall back to the human-labeled mean
-                # directly: the power_tune=False branch's fixed-lambda=1
-                # construction (g.mean() + (g_lab[mask].mean() -
-                # g[mask].mean())) reduces to exactly this when mask is
-                # all True, so this stays consistent with that branch at
-                # 100% labeling.
+            if fully_labeled[i]:
+                # This group is fully labeled -- lambda/the judge-side
+                # rectifier plays no role for it at all, so it's excluded
+                # from the pooled lambda estimate above too (see
+                # pool_idx). Fall back to the human-labeled mean directly:
+                # the power_tune=False branch's fixed-lambda=1 construction
+                # (g.mean() + (g_lab[mask].mean() - g[mask].mean()))
+                # reduces to exactly this when mask is all True, so this
+                # stays consistent with that branch at 100% labeling.
                 est_i = float(Y_lab_i.mean())
                 n_lab_i = len(Y_lab_i)
-                se_i = float(np.sqrt(np.var(Y_lab_i, ddof=1) / n_lab_i)) if n_lab_i > 1 else 0.0
+                var_i = float(np.var(Y_lab_i, ddof=1) / n_lab_i) if n_lab_i > 1 else 0.0
             else:
-                est_i, se_i, _, _, _, _, _ = _analytic_mean_point_se(
-                    Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, power_tune=True,
+                est_i, var_i, _, _, _, r_term_i, _ = _analytic_mean_point_se_given_lambda(
+                    Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, lam,
                 )
+                r_terms[i] = r_term_i
             corr_means[i] = est_i
-            var_ppi_per_group[i] = se_i * se_i
+            var_ppi_per_group[i] = var_i
     else:
         # PPI-corrected group means: μ̂ᵢ_PPI = mean(llm_all_i) + (mean(human_lab_i) - mean(llm_lab_i))
         corr_means = np.array([
@@ -3264,7 +3297,20 @@ def _ppi_anova_independent_f_stat(
         # by Var[μ̂ᵢ_LLM] rather than ms_within directly; leaving that out
         # was an initial bug caught by validate_anova_power_tune.py (Type-I
         # went to 1.0 -- denom came out ~nᵢ times too small).
-        inflation_per_group = var_ppi_per_group * ns / ms_within
+        #
+        # var_ppi_per_group deliberately excludes lambda's own estimation
+        # uncertainty (_analytic_mean_point_se_given_lambda's docstring --
+        # a pooled/shared lambda needs that added jointly, not once per
+        # group). Added here as r_term_i^2 * var_lam per group, same
+        # MEAN-scale-to-Var[μ̂ᵢ_LLM] weighting as the base term; a
+        # first-order approximation (treats the shared-lambda perturbation
+        # as an independent per-group addition rather than deriving
+        # SS_between's full induced covariance structure under a
+        # perfectly-correlated-across-groups lambda) that the ground-truth
+        # Monte Carlo validation (see this branch's docstring above) found
+        # sufficient in practice -- no residual miscalibration or power
+        # cost detected on any tested cell.
+        inflation_per_group = (var_ppi_per_group + (r_terms ** 2) * var_lam) * ns / ms_within
     else:
         # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human),
         # AND per-group Cov(true, noise) from the same labeled subset.
