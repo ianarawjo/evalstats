@@ -117,16 +117,56 @@ class GroupDiffResult:
         return not (self.ci_low <= self.null_value <= self.ci_high)
 
 
+class _GroupDiffResultsAsPairwiseMatrix:
+    """Minimal ``PairwiseMatrix``-compatible view over a ``list[GroupDiffResult]``.
+
+    Exists so ``core.summary``'s critical-difference-band and executive-
+    summary machinery (``_critical_difference_groups``/
+    ``_assign_significance_groups``/``_print_executive_summary``) -- built
+    for the paired path's ``PairwiseMatrix`` (a ``.get(a, b)`` lookup plus
+    ``.simultaneous_ci_method``) -- can render the between-subjects case
+    unmodified. Those functions only ever read ``.get(a, b).point_diff``/
+    ``.ci_low``/``.ci_high``, and check ``.simultaneous_ci_method is not
+    None`` to decide whether significance is CI-exclusion-based rather than
+    a p-value threshold -- the only branch reached here, since this
+    engine's own ``ci_correction`` already *is* a simultaneous-CI scheme
+    (Bonferroni), so ``simultaneous_ci_method`` is set to a matching
+    sentinel and the p-value-threshold branch never fires.
+    ``point_diff``/``ci_low``/``ci_high`` are the same null-shifted
+    quantities the pairwise table itself displays (Δθ/Δp), so "CI excludes
+    zero" means exactly what it already means there.
+    """
+
+    def __init__(self, pairwise: list["GroupDiffResult"]):
+        self._by_pair: dict[tuple[str, str], tuple[float, float, float]] = {}
+        for p in pairwise:
+            self._by_pair[(p.label_a, p.label_b)] = (
+                p.point_estimate - p.null_value, p.ci_low - p.null_value, p.ci_high - p.null_value,
+            )
+        self.simultaneous_ci_method = "bonferroni"  # any non-None sentinel -- see docstring
+
+    def get(self, a: str, b: str):
+        from types import SimpleNamespace
+        if (a, b) in self._by_pair:
+            point_diff, ci_low, ci_high = self._by_pair[(a, b)]
+            return SimpleNamespace(point_diff=point_diff, ci_low=ci_low, ci_high=ci_high)
+        if (b, a) in self._by_pair:
+            point_diff, ci_low, ci_high = self._by_pair[(b, a)]
+            return SimpleNamespace(point_diff=-point_diff, ci_low=-ci_high, ci_high=-ci_low)
+        raise KeyError(f"no comparison found for ({a}, {b})")
+
+
 @dataclass
 class GroupComparisonResult:
     """Result of a between-subjects ``compare(design="unpaired")`` call.
 
     Deliberately a narrower reporting surface than ``ComparisonResult``
-    (no executive summary, critical-difference rank bands, or forest-plot
-    brackets) -- per-group means with gradient CIs, a pairwise comparison
-    table, the omnibus test when k>=3, and a Pareto-front section when
-    ``secondary_metric=`` was passed. See PLAN_between_subjects_
-    extension.md §1/§3.6 for the scope discussion.
+    (no forest-plot brackets) -- per-group means with gradient CIs, a
+    pairwise comparison table (with critical-difference rank bands), the
+    omnibus test when k>=3, an executive summary leaderboard, and a
+    Pareto-front section when ``secondary_metric=`` was passed. See
+    notes/PLAN_between_subjects_extension.md §1/§3.6 for the scope
+    discussion.
     """
     factor_col: str
     metric_col: str
@@ -194,7 +234,7 @@ class GroupComparisonResult:
     # ── reporting ───────────────────────────────────────────────────────────
 
     def summary(self) -> None:
-        from evalstats.core.summary_unpaired import print_group_comparison_summary
+        from evalstats.core.summary import print_group_comparison_summary
         print_group_comparison_summary(self)
 
     def plot(self, **kwargs):
@@ -291,6 +331,28 @@ class GroupComparisonResult:
         return pd.DataFrame(rows).set_index("label")
 
 
+class _GroupComparisonResultAsBundle:
+    """Minimal ``AnalysisBundle``-compatible view over a
+    ``GroupComparisonResult``, so ``core.summary._print_executive_summary``
+    (built for the paired path) can render the between-subjects executive
+    summary leaderboard unmodified. It only ever reads ``.rank_dist.labels``,
+    ``.robustness.{mean,ci_low,ci_high}``, ``.pairwise`` (a
+    ``PairwiseMatrix``-compatible lookup), ``.seed_variance`` (always
+    ``None`` here -- no run/seed axis exists for between-subjects data, by
+    construction: ``design="unpaired"`` refuses multi-run data outright),
+    and ``.resolved_ci_method`` (only to decide the "Wilson-flat CI" column
+    header).
+    """
+
+    def __init__(self, result: "GroupComparisonResult"):
+        from types import SimpleNamespace
+        self.rank_dist = SimpleNamespace(labels=result.labels)
+        self.robustness = _GroupStatsAsRobustness(result.groups)
+        self.pairwise = _GroupDiffResultsAsPairwiseMatrix(result.pairwise)
+        self.seed_variance = None
+        self.resolved_ci_method = result.groups[0].method if result.groups else None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # FWER helpers
 # ─────────────────────────────────────────────────────────────────────────────
@@ -302,7 +364,7 @@ def _bonferroni_alpha(alpha: float, n_pairs: int) -> float:
     independence between the pairwise statistics, which is unverified for
     this bootstrap's dependence structure (pairs sharing a group are
     correlated). Bonferroni's union bound holds regardless. See
-    PLAN_between_subjects_extension.md §3.4.
+    notes/PLAN_between_subjects_extension.md §3.4.
     """
     return alpha if n_pairs <= 1 else alpha / n_pairs
 

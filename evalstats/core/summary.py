@@ -1367,6 +1367,25 @@ def _prepare_unpaired_pairwise_rows(
                 f"disagree right at the boundary, since they're different (both valid) "
                 f"FWER corrections.{_RESET}"
             )
+        # Critical-difference rank bands, shared with the paired path's own
+        # (see _prepare_paired_pairwise_rows) -- reuses
+        # _critical_difference_groups/_print_critical_difference_groups
+        # unmodified via _GroupDiffResultsAsPairwiseMatrix, an adapter whose
+        # .simultaneous_ci_method sentinel routes it through the same
+        # CI-exclusion significance check GroupDiffResult.significant
+        # already uses (this engine has no p-value-threshold alternative
+        # the way the paired path's Wilcoxon/Nemenyi paths do). Sorted by
+        # mean descending -- there's no ranking bootstrap here, so this is
+        # the same "best first" order the executive summary below uses.
+        from evalstats.core.unpaired import _GroupDiffResultsAsPairwiseMatrix
+        labels_sorted = [g.label for g in sorted(result.groups, key=lambda g: -g.mean)]
+        print()
+        _print_critical_difference_groups(
+            _GroupDiffResultsAsPairwiseMatrix(result.pairwise),
+            labels_sorted=labels_sorted,
+            alpha=result.alpha,
+            p_source="bootstrap",
+        )
 
     label_width = min(24, max(8, max((len(g) for g in result.labels), default=8)))
     correction_note = ""
@@ -1401,9 +1420,9 @@ def _print_pairwise_section(
     ``AnalysisBundle`` or an unpaired ``GroupComparisonResult``.
 
     Shared by the paired path's full bundle summary and the unpaired path's
-    between-subjects summary (``print_group_comparison_summary`` in
-    core/summary_unpaired.py) -- the axis/legend/header/row-rendering core
-    is identical machinery either way (through ``_choose_interval_line``),
+    between-subjects summary (``print_group_comparison_summary``, also in
+    this module) -- the axis/legend/header/row-rendering core is identical
+    machinery either way (through ``_choose_interval_line``),
     so one function renders both instead of two independently-drifting
     implementations. What genuinely differs between the two designs (six
     CI/p-value method families + Friedman/Nemenyi + critical-difference
@@ -1616,7 +1635,7 @@ def _print_mean_advantage(
 
     Shared by the paired path (``_print_bundle_summary``, entities all scored
     on the same items -- a ``RobustnessResult``) and the unpaired path
-    (``print_group_comparison_summary`` in core/summary_unpaired.py, disjoint
+    (``print_group_comparison_summary``, also in this module, disjoint
     items per group -- a ``list[GroupStat]``) -- both reduce to the same "N
     entities, each with a mean/CI/spread" shape by the time they call this,
     so one function renders both instead of two independently-drifting
@@ -1701,7 +1720,7 @@ def _print_ppi_banner(alignment_result) -> None:
     """Print the standard "PPI-CORRECTED" banner + inline alignment report.
 
     Shared by the paired path's ``_print_bundle_summary`` and the unpaired
-    path's ``print_group_comparison_summary`` (core/summary_unpaired.py) --
+    path's ``print_group_comparison_summary`` (also in this module) --
     previously two copy-pasted, near-identical blocks; unified so a banner
     text/formatting change only needs to happen once.
     """
@@ -3531,6 +3550,105 @@ def _print_pareto_callout(pareto: dict, *, metric: Optional[str]) -> None:
             "— no real trade-off here."
         )
     print()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Between-subjects (design="unpaired") summary
+# ─────────────────────────────────────────────────────────────────────────────
+
+def print_group_comparison_summary(result: "GroupComparisonResult", *, style: str = "gradient") -> None:
+    """Print the console summary for a between-subjects
+    ``compare(design="unpaired")`` result.
+
+    Deliberately narrower than the paired path's summary (no forest-plot
+    brackets) but otherwise mirrors it section for section: per-group means
+    with gradient CIs, a pairwise comparison table (with critical-difference
+    rank bands), the omnibus test at k>=3, a Pareto-front section when
+    ``secondary_metric=`` was passed, and an executive summary leaderboard.
+    See notes/PLAN_between_subjects_extension.md §1/§3.6.
+
+    Reuses the paired path's rendering functions directly rather than
+    reimplementing them -- the PPI banner (``_print_ppi_banner``), the
+    per-entity means table (``_print_mean_advantage``), the pairwise
+    comparison table (``_print_pairwise_section``, whose
+    ``_prepare_unpaired_pairwise_rows`` also drives the critical-difference
+    bands), the Pareto-front section (``_print_pareto_section``, when
+    present) and callout (``_print_pareto_callout``), and the executive
+    summary (``_print_executive_summary``) are the *same* functions the
+    paired path calls, not reimplementations, so a change to any of them
+    renders identically for both paths. What's genuinely unpaired-specific
+    (this engine's fixed Bonferroni-CI/Holm-p FWER scheme, vs. the paired
+    path's six CI/p-value method families plus Friedman/Nemenyi; its own
+    per-group joint bootstrap for the Pareto front, since there's no shared
+    item pool across disjoint groups) is resolved into the same shapes
+    those shared renderers already consume, via small duck-typed adapters
+    in ``evalstats.core.unpaired`` (``_GroupStatsAsRobustness``,
+    ``_GroupDiffResultsAsPairwiseMatrix``, ``_GroupComparisonResultAsBundle``).
+    The Behavioral Agreement (McNemar-style) subsection is paired-only and
+    never called here -- ``agreement_mcc``/``binary_confusion`` need the
+    same item scored by both entities, which has no between-subjects
+    equivalent.
+    """
+    from evalstats.core.unpaired import _GroupComparisonResultAsBundle
+
+    print(f"{_BOLD}Between-subjects comparison{_RESET}  "
+          f"(design=unpaired; factor={result.factor_col!r}, metric={result.metric_col!r})")
+    item_note = " (synthetic -- no item column found; each row is its own item)" if result.item_col_synthetic else ""
+    print(f"Item column: {result.item_col!r}{item_note}")
+    print(f"Groups: {len(result.groups)}  |  Score type: {result.score_type}  |  "
+          f"Family: {_FAMILY_DISPLAY_UNPAIRED[result.family]}")
+    print()
+
+    if result.ppi_applied:
+        _print_ppi_banner(result.alignment_result)
+
+    # ── Per-group means ──────────────────────────────────────────────────────
+    label_width = min(24, max(8, max(len(g.label) for g in result.groups)))
+    line_width = 44
+    _print_mean_advantage(
+        labels=[g.label for g in result.groups],
+        mean=np.array([g.mean for g in result.groups]),
+        std=np.array([g.std for g in result.groups]),
+        ci_low=np.array([g.ci_low for g in result.groups]),
+        ci_high=np.array([g.ci_high for g in result.groups]),
+        multi_ci_per_entity=[g.multi_ci for g in result.groups],
+        resolved_ci_method=result.groups[0].method,
+        item_singular="group",
+        line_width=line_width,
+        template_col_width=label_width,
+        style=style,
+    )
+    print()
+
+    # ── Omnibus test ─────────────────────────────────────────────────────────
+    if result.omnibus_test_name is not None:
+        _print_subsection(f"--- Omnibus Test: {result.omnibus_test_name} ---")
+        p_str = f"{result.omnibus_p_value:.4f}" if result.omnibus_p_value >= 0.0001 else f"{result.omnibus_p_value:.2e}"
+        print(f"  statistic = {result.omnibus_statistic:.4f}   p = {p_str}"
+              f"{'  (uncorrected)' if result.ppi_applied else ''}")
+        if result.omnibus_corrected_p_value is not None:
+            cp = result.omnibus_corrected_p_value
+            cp_str = f"{cp:.4f}" if cp >= 0.0001 else f"{cp:.2e}"
+            print(f"  PPI-corrected p = {cp_str}")
+        print()
+
+    # ── Pairwise table (includes critical-difference rank bands) ───────────
+    _print_pairwise_section(result, line_width=line_width, style=style)
+
+    # ── Pareto front (secondary_metric=), printed right before the executive
+    # summary -- same positioning as the paired path. ──────────────────────
+    if result.pareto is not None:
+        print()
+        _print_pareto_section(result.pareto, metric=result.metric_col, show_rank_probabilities=False)
+
+    # ── Executive summary leaderboard ───────────────────────────────────────
+    print()
+    _print_executive_summary(
+        _GroupComparisonResultAsBundle(result),
+        item_singular="group", pareto=result.pareto, metric=result.metric_col,
+    )
+    if result.pareto is not None:
+        _print_pareto_callout(result.pareto, metric=result.metric_col)
 
 
 def _print_next_steps_guidance(

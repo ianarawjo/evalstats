@@ -2,7 +2,7 @@
 evalstats.core.unpaired.compare_unpaired(), GroupComparisonResult, and
 compare(design=...) routing in evalstats/api.py.
 
-See PLAN_between_subjects_extension.md for the design this implements.
+See notes/PLAN_between_subjects_extension.md for the design this implements.
 """
 from __future__ import annotations
 
@@ -293,20 +293,76 @@ class TestGroupComparisonResultReporting:
         with pytest.raises(NotImplementedError):
             r.plot()
 
+    def test_executive_summary_and_critical_difference_bands_present(self):
+        """compare(design="unpaired") now shows an executive summary
+        leaderboard and critical-difference rank bands, matching the
+        paired path -- reused via _GroupComparisonResultAsBundle/
+        _GroupDiffResultsAsPairwiseMatrix rather than reimplemented.
+        """
+        r = self._result()
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        assert "Executive Summary (Group leaderboard)" in out
+        assert "Grp" in out and "Verdict" in out
+        assert "#1" in out
+        assert "Statistically indistinguishable rank bands" in out
+
+    def test_critical_difference_bands_use_mean_order_not_factor_order(self):
+        # C has the highest mean (0.7) but is defined last in the factor
+        # column order -- the CD bands / executive summary must rank by
+        # mean (best first), not by group/factor-level order.
+        df = _make_unpaired_df({"A": 0.3, "B": 0.7, "C": 0.5})
+        r = compare_unpaired(df, factor_col="model", metric_col="score", n_boot=800, rng=1)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        exec_section = out.split("Executive Summary")[1]
+        # B (highest mean) must be the first data row after the header.
+        b_line_idx = exec_section.find("\n  B ")
+        a_line_idx = exec_section.find("\n  A ")
+        c_line_idx = exec_section.find("\n  C ")
+        assert 0 < b_line_idx < a_line_idx
+        assert 0 < b_line_idx < c_line_idx
+
+    def test_executive_summary_k2_still_works(self):
+        df = _make_unpaired_df({"A": 0.4, "B": 0.7})
+        r = compare_unpaired(df, factor_col="model", metric_col="score", n_boot=500, rng=2)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        assert "Executive Summary" in out
+        assert "#1" in out and "#2" in out
+
+    def test_executive_summary_shows_pareto_tradeoff_column_when_present(self):
+        df = _make_unpaired_pareto_df({"A": 0.5, "B": 0.85, "C": 0.4}, seed=41)
+        r = compare_unpaired(df, factor_col="model", metric_col="score",
+                              secondary_metric={"cost": "min"}, n_boot=800, rng=41)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            r.summary()
+        out = buf.getvalue()
+        assert "Trade-off" in out
+        assert "On score" in out  # verdict column relabeled once Pareto is present
+
     def test_pairwise_table_uses_shared_print_pairwise_section(self):
         """The pairwise comparison table is rendered by the SAME function
         the paired path uses (core.summary._print_pairwise_section), not a
-        parallel reimplementation -- see core/summary_unpaired.py's module
-        docstring. This changed the unpaired table's format: an interval-
-        plot bar per pair (previously text-only), the estimand shown as a
-        signed deviation from null (Δθ for the dominance family, unchanged
-        for Δp since its null is already 0), and p-values with significance
-        stars -- replacing the old verbal "Verdict: significant (A < B)"
-        column, which doesn't exist in the shared renderer.
+        parallel reimplementation -- print_group_comparison_summary itself
+        lives in core/summary.py alongside it (no separate
+        core/summary_unpaired.py module). This changed the unpaired table's
+        format: an interval-plot bar per pair (previously text-only), the
+        estimand shown as a signed deviation from null (Δθ for the
+        dominance family, unchanged for Δp since its null is already 0),
+        and p-values with significance stars -- replacing the old verbal
+        "Verdict: significant (A < B)" column, which doesn't exist in the
+        shared renderer.
         """
-        from evalstats.core.summary import _print_pairwise_section
-        import evalstats.core.summary_unpaired as _mod
-        assert _mod._print_pairwise_section.__module__ == "evalstats.core.summary"
+        from evalstats.core.summary import print_group_comparison_summary
+        assert print_group_comparison_summary.__module__ == "evalstats.core.summary"
 
         r = self._result()
         buf = io.StringIO()
@@ -324,15 +380,13 @@ class TestGroupComparisonResultReporting:
     def test_means_table_uses_shared_print_mean_advantage(self):
         """The per-group means table is rendered by the SAME function the
         paired path uses (core.summary._print_mean_advantage), not a
-        parallel reimplementation -- see core/summary_unpaired.py's module
-        docstring. A change to that shared function's section header
-        renders identically for both paths; assert the literal header text
-        here as a tripwire against that sharing silently regressing back
-        into two independent implementations.
+        parallel reimplementation. A change to that shared function's
+        section header renders identically for both paths; assert the
+        literal header text here as a tripwire against that sharing
+        silently regressing back into two independent implementations.
         """
-        from evalstats.core.summary_unpaired import print_group_comparison_summary
-        import evalstats.core.summary_unpaired as _mod
-        assert _mod._print_mean_advantage.__module__ == "evalstats.core.summary"
+        from evalstats.core.summary import print_group_comparison_summary, _print_mean_advantage
+        assert _print_mean_advantage.__module__ == "evalstats.core.summary"
 
         r = self._result()
         buf = io.StringIO()
@@ -556,12 +610,10 @@ class TestCompareUnpairedPareto:
     def test_summary_prints_pareto_section_using_shared_paired_renderer(self):
         """The Pareto section is rendered by the SAME function the paired
         path uses (core.summary._print_pareto_section), including its ASCII
-        scatterplot -- see core/summary_unpaired.py's module docstring and
-        evalstats.core.unpaired._GroupStatsAsRobustness.
+        scatterplot -- see evalstats.core.unpaired._GroupStatsAsRobustness.
         """
         from evalstats.core.summary import _print_pareto_section
-        import evalstats.core.summary_unpaired as _mod
-        assert _mod._print_pareto_section.__module__ == "evalstats.core.summary"
+        assert _print_pareto_section.__module__ == "evalstats.core.summary"
 
         df = _make_unpaired_pareto_df({"A": 0.5, "B": 0.8, "C": 0.4}, seed=39)
         r = compare_unpaired(df, factor_col="model", metric_col="score",
