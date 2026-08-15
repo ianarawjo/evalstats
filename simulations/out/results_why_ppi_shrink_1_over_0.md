@@ -3281,3 +3281,106 @@ in the uncorrected reference test" invariant now holds at all three
 call sites. No test file references `_ppi_comparison_pvalue` directly
 (internal harness function only), so no pytest impact.
 
+## Addendum 33 (2026-08-14): wilcoxon's remaining low-noise residual -- a
+missing cross-fit-fold covariance term
+
+Addendum 28's cross-fitting fix resolved wilcoxon's main Type-I
+inflation, but a fresh full-grid harness run (Addendum 31's rerun)
+surfaced a smaller residual concentrated at `noise.0.0.mildbias` (corr
+rate 0.133, the single worst wilcoxon cell, well clear of the
+next-worst at 0.090). Diagnosed and fixed in three steps.
+
+**Diagnosis.** A kurtosis check on this cell showed excess kurtosis
+0.213 (essentially Gaussian -- NOT Addendum 28's heavy-tail signature)
+but empirical std of the studentized statistic 1.230 (should be ~1.0):
+a pure SE-underestimation problem, not a return of the original
+mechanism. A noise-level sweep (0.0 to 0.35) showed this scales
+continuously with `llm_noise` -- worse as noise shrinks and lambda
+rises toward its ceiling (mean lambda 0.90 at noise=0 vs. 0.28 at
+noise=0.35) -- ruling out a boundary/degenerate numerical edge case.
+
+Two candidate missing terms were tried, via a ground-truth Monte Carlo
+check (many independent full draws of `estimate`, comparing its
+empirical variance against the construction's own reported
+`var_estimate`, same methodology as Addendum 30's Friedman check):
+
+1. **Joint lambda-uncertainty term.** The cross-fit construction plugs
+   fold B's lambda (`lam_B`) into fold A's point estimate/variance as if
+   it were a known constant -- but it's a random quantity with its own
+   sampling uncertainty from fold B's finite sample, the same gap
+   `_lambda_var_inflation` patches for the single-sample construction.
+   Adding `(f_unlab - f_hat_lab_A)^2 * Var(lam_B)` to `var_est_A` (and
+   symmetrically for B) moved the reported/true variance ratio from
+   0.628 to 0.768 on the worst cell -- real, but a partial fix (rate
+   0.1415 -> 0.1105 at noise=0, still ~2x nominal).
+2. **Shared-`f_unlab` covariance between the two folds' estimates.**
+   `est_A` and `est_B` both depend on the SAME `f_unlab` draw (the
+   shared unlabeled pool), so `Cov(est_A, est_B) != 0` -- but the
+   construction combines their variances as if independent, with no
+   cross term. Since `f_hat_lab_A`/`f_hat_lab_B` come from disjoint
+   folds and are independent of the unlabeled draw and of each other,
+   `Cov(f_unlab - f_hat_lab_A, f_unlab - f_hat_lab_B) = Var(f_unlab) =
+   var_unlab` exactly; to first order (treating each fold's lambda as
+   fixed at its realized value), `Cov(est_A, est_B) ~= lam_A * lam_B *
+   var_unlab`. The textbook `Var(w_A*X + w_B*Y)` cross-term coefficient
+   is 2 -- adding `2 * w_A * w_B * lam_A * lam_B * var_unlab` overshot
+   badly (ratio 1.204, rates dropping BELOW nominal at moderate noise:
+   0.021-0.033). Halving the coefficient (`1 * w_A * w_B * lam_A * lam_B
+   * var_unlab`) landed almost exactly on target: ratio 0.986. The 2x
+   discrepancy is attributed to `var_unlab` being a Hajek-projection-
+   based U-statistic variance estimator, not a plain linear-statistic
+   variance -- the textbook independent-sum identity doesn't transfer
+   1:1 for this estimand, and the coefficient was calibrated empirically
+   against the ground-truth check rather than re-derived analytically
+   (a real gap in rigor, noted for anyone revisiting this).
+
+**Validation (both terms together, coefficient 1x on the covariance
+term).** Ground-truth variance ratio: 0.628 (before) -> 0.986 (after) on
+the worst cell. Full noise sweep, corrected rate vs. nominal 0.05 (2000
+reps each):
+
+| noise | before | after |
+|---|---|---|
+| 0.000 | 0.1155 | **0.0535** |
+| 0.020 | 0.0780 | 0.0345 |
+| 0.050 | 0.0525 | 0.0310 |
+| 0.100 | 0.0530 | 0.0365 |
+| 0.350 | 0.0585 | 0.0525 |
+
+The worst cell moves almost exactly onto nominal; moderate-noise cells
+(0.02-0.10) become mildly under-nominal (0.031-0.037) rather than
+over -- a real imperfection in the empirically-calibrated coefficient
+(not perfectly uniform across the noise range) but conservative, not
+dangerous. Regression check on 7 other scenarios (previously-flagged
+and already-healthy, spanning likert/small-`n_lab`/heteroskedastic/
+typical): every cell landed at 0.042-0.051, no over-conservative
+outliers, e.g. `noise.0.0.modbias` 0.097 -> 0.050 (near-exact),
+`confound.likert.pure_nuisance` 0.075 -> 0.045. Power check (2000 reps,
+es in {0.15, 0.30}, 3 noise levels): max cost 1.6 percentage points
+across every tested condition (e.g. 0.9675 -> 0.9540 at noise=0.05,
+es=0.15) -- negligible next to the calibration gain.
+
+**Implementation.** `evalstats/ppi.py`: `_walsh_theta_fold_lambda` now
+also returns `var_lam_fold` (that fold's own lambda-replicate variance,
+already computed internally, previously discarded).
+`_analytic_walsh_theta_correct`'s cross-fit branch adds the joint
+lambda-uncertainty term to each fold's own `var_est_*`, then adds the
+fold-covariance term directly to the combined `var_estimate` (not
+folded into `v_A_term`/`v_B_term`, so `_cross_fit_satterthwaite_df`'s df
+combination is unaffected -- matching how the single-sample
+construction already leaves df unadjusted for its own lambda-inflation
+term). No other call sites reference `_walsh_theta_fold_lambda`, so
+this was a self-contained change.
+
+Verified the production code reproduces the standalone validated
+prototype's point estimate exactly (bit-for-bit, direct calls to
+`_analytic_walsh_theta_correct` vs. the prototype, bypassing any
+CI-backed-out SE comparison). Full `tests/test_ppi_corrections.py -k
+wilcoxon` could NOT be used to validate this change: 31/37 tests in that
+selection fail with `AttributeError: '_EvalStub' object has no
+attribute '_col'` in `evalstats/alignment.py` -- confirmed via `git
+stash` to be a PRE-EXISTING failure unrelated to this fix (present
+identically with the fix removed), most likely introduced by an
+unrelated `worktree-pareto-tradeoff` merge into this branch. Flagged,
+not fixed here -- out of scope.
+

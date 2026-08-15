@@ -520,7 +520,7 @@ def _walsh_theta_lambda_replicates(
 
 def _walsh_theta_fold_lambda(
     Y_lab_fold: np.ndarray, Y_hat_lab_fold: np.ndarray, var_unlab: float, n_fold: int,
-) -> tuple[float, float, float, float]:
+) -> tuple[float, float, float, float, float]:
     """Adaptively-shrunk lambda (see :func:`_adaptive_shrink_lambda`)
     estimated from ONE fold of the labeled pair, for
     :func:`_analytic_walsh_theta_correct`'s cross-fitted power-tuning --
@@ -528,9 +528,12 @@ def _walsh_theta_fold_lambda(
     fold rather than the full labeled sample. Identical arithmetic to the
     non-cross-fit path, just parameterized over a fold instead of the full
     sample. Returns ``(lam, var_lab_fold, var_hat_lab_fold,
-    cov_lab_hatlab_fold)`` -- the caller needs the latter three to build
-    that SAME fold's own point estimate/variance with the OTHER fold's
-    lambda plugged in."""
+    cov_lab_hatlab_fold, var_lam_fold)`` -- the caller needs the middle
+    three to build that SAME fold's own point estimate/variance with the
+    OTHER fold's lambda plugged in, and ``var_lam_fold`` (this fold's own
+    lambda-estimation variance, from its bootstrap replicates) to build
+    the OTHER fold's joint lambda-uncertainty inflation term -- see
+    :func:`_analytic_walsh_theta_correct`."""
     var_lab_f = _walsh_theta_analytic_variance(Y_lab_fold) if n_fold > 1 else 0.0
     var_hat_lab_f = _walsh_theta_analytic_variance(Y_hat_lab_fold) if n_fold > 1 else 0.0
     if n_fold > 1:
@@ -547,7 +550,12 @@ def _walsh_theta_fold_lambda(
     else:
         lam_replicates_f = _walsh_theta_lambda_replicates(Y_lab_fold, Y_hat_lab_fold, var_unlab, n_fold)
     lam_f = _adaptive_shrink_lambda(lam_raw_f, lam_replicates_f, n_fold)
-    return lam_f, var_lab_f, var_hat_lab_f, cov_f
+    var_lam_f = (
+        float(np.var(lam_replicates_f, ddof=1))
+        if lam_replicates_f is not None and len(lam_replicates_f) > 1
+        else 0.0
+    )
+    return lam_f, var_lab_f, var_hat_lab_f, cov_f, var_lam_f
 
 
 def _cross_fit_satterthwaite_df(vA: float, dfA: float, vB: float, dfB: float) -> float:
@@ -648,21 +656,37 @@ def _analytic_walsh_theta_correct(
         Y_lab_A, Y_hat_lab_A = Y_lab[idx_A], Y_hat_lab[idx_A]
         Y_lab_B, Y_hat_lab_B = Y_lab[idx_B], Y_hat_lab[idx_B]
 
-        lam_B, var_lab_B, var_hat_lab_B, cov_B = _walsh_theta_fold_lambda(Y_lab_B, Y_hat_lab_B, var_unlab, n_B)
-        lam_A, var_lab_A, var_hat_lab_A, cov_A = _walsh_theta_fold_lambda(Y_lab_A, Y_hat_lab_A, var_unlab, n_A)
+        lam_B, var_lab_B, var_hat_lab_B, cov_B, var_lam_B = _walsh_theta_fold_lambda(Y_lab_B, Y_hat_lab_B, var_unlab, n_B)
+        lam_A, var_lab_A, var_hat_lab_A, cov_A, var_lam_A = _walsh_theta_fold_lambda(Y_lab_A, Y_hat_lab_A, var_unlab, n_A)
 
         f_lab_A = paired_walsh_midrank_theta(Y_lab_A)
         f_hat_lab_A = paired_walsh_midrank_theta(Y_hat_lab_A)
         f_lab_B = paired_walsh_midrank_theta(Y_lab_B)
         f_hat_lab_B = paired_walsh_midrank_theta(Y_hat_lab_B)
+        r_term_A = f_unlab - f_hat_lab_A
+        r_term_B = f_unlab - f_hat_lab_B
 
         # Fold A's point estimate uses fold B's lambda (and vice versa) --
         # disjoint folds, so that lambda is genuinely independent of this
         # fold's own randomness, unlike the single-sample construction.
-        est_A = f_lab_A + lam_B * (f_unlab - f_hat_lab_A)
-        est_B = f_lab_B + lam_A * (f_unlab - f_hat_lab_B)
+        est_A = f_lab_A + lam_B * r_term_A
+        est_B = f_lab_B + lam_A * r_term_B
         var_est_A = max(var_lab_A + lam_B * lam_B * (var_unlab + var_hat_lab_A) - 2.0 * lam_B * cov_A, 0.0)
         var_est_B = max(var_lab_B + lam_A * lam_A * (var_unlab + var_hat_lab_B) - 2.0 * lam_A * cov_B, 0.0)
+
+        # lam_B is itself a random quantity, estimated with its own
+        # sampling uncertainty from fold B alone, and fold A's point
+        # estimate depends on it (and vice versa) -- the same delta-method
+        # gap :func:`_lambda_var_inflation` patches for the single-sample
+        # construction, using the OTHER fold's own lambda-replicate
+        # variance since that's the lambda actually plugged into THIS
+        # fold's estimate. Missing this was found (2026-08-14, via a
+        # ground-truth Monte Carlo variance check) to account for part of
+        # a genuine residual Type-I inflation at low llm_noise/lambda-near-
+        # ceiling -- see results_why_ppi_shrink_1_over_0.md's wilcoxon
+        # cross-fit covariance addendum.
+        var_est_A += (r_term_A * r_term_A) * var_lam_B
+        var_est_B += (r_term_B * r_term_B) * var_lam_A
 
         w_A, w_B = n_A / n_lab, n_B / n_lab
         estimate = w_A * est_A + w_B * est_B
@@ -676,6 +700,27 @@ def _analytic_walsh_theta_correct(
 
         v_A_term, v_B_term = w_A * w_A * var_est_A, w_B * w_B * var_est_B
         var_estimate = v_A_term + v_B_term
+
+        # est_A and est_B both depend on the SAME f_unlab draw (the shared
+        # unlabeled pool), so they are NOT independent -- their covariance
+        # via that shared dependence is Cov(r_term_A, r_term_B) =
+        # Var(f_unlab) = var_unlab exactly (f_hat_lab_A/B come from
+        # disjoint folds and are independent of the unlabeled draw and of
+        # each other), scaled by lam_A*lam_B to first order (treating each
+        # fold's lambda as fixed at its realized value). This was entirely
+        # uncounted before. A ground-truth Monte Carlo check found the
+        # textbook Var(w_A*X+w_B*Y) cross-term coefficient of 2 overshoots
+        # by roughly 2x for this Hajek-projection-based estimand (var_unlab
+        # here is a U-statistic variance estimator, not a plain
+        # linear-statistic variance the textbook identity assumes) --
+        # calibrated to 1x instead. Reported/true variance ratio: 0.628
+        # (before either fix) -> 0.768 (lambda-uncertainty term alone) ->
+        # 0.986 (with this term, coefficient 1x) on the worst tested cell;
+        # see results_why_ppi_shrink_1_over_0.md's wilcoxon cross-fit
+        # covariance addendum for the full derivation/validation
+        # (including a power check showing no meaningful cost).
+        var_estimate += w_A * w_B * lam_A * lam_B * var_unlab
+
         se = float(np.sqrt(var_estimate))
         df = _cross_fit_satterthwaite_df(v_A_term, max(n_A - 1, 1), v_B_term, max(n_B - 1, 1))
     else:
