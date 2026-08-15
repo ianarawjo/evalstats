@@ -1625,6 +1625,17 @@ def _ppi_kruskal_wallis_pairwise(
         else:
             wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
 
+    # Per-pair two-sided bootstrap p-values, same convention as
+    # TestResult.corrected_p_value's own definition (2*min(P(boot<=0.5),
+    # P(boot>=0.5))) -- exposed alongside `boots` itself (additive, not a
+    # contract change: existing callers only read the keys below already
+    # present) so a caller building its own multi-pair FWER correction
+    # (e.g. Holm across a family of pairs) has real per-pair p-values to
+    # correct, not just the single omnibus wald_p. See
+    # evalstats/core/unpaired.py.
+    pair_p = 2.0 * np.minimum((boots <= 0.5).mean(axis=0), (boots >= 0.5).mean(axis=0))
+    pair_p = np.minimum(pair_p, 1.0)
+
     return {
         "pairs": pairs,
         "theta_hat": theta_hat,
@@ -1632,6 +1643,8 @@ def _ppi_kruskal_wallis_pairwise(
         "ci_hi": ci_hi,
         "wald_stat": wald_stat,
         "wald_p": wald_p,
+        "boots": boots,
+        "pair_p": pair_p,
     }
 
 
