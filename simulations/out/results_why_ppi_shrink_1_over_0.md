@@ -3384,3 +3384,178 @@ identically with the fix removed), most likely introduced by an
 unrelated `worktree-pareto-tradeoff` merge into this branch. Flagged,
 not fixed here -- out of scope.
 
+## Addendum 34 (2026-08-15): single-arm PPI's MNAR catastrophe -- range
+restriction collapses power-tuning's lambda toward 0, exposing the raw
+biased human-labels-only mean
+
+A fresh full-grid harness run flagged `ppi_t_interval_single`/
+`ppi_logit_t_single` (`_ppi_single_t_interval`/`_ppi_single_logit_t` in
+`evalstats/tests/__init__.py`, both thin wrappers around
+`evalstats.ppi._analytic_mean_point_se`'s shared point-estimate/variance
+derivation) with a catastrophe an order of magnitude past anything else
+in the run: bias-z up to **70** and coverage as low as **0.000-0.28** on
+`label.mnar-strong`/`label.mnar-mild` (nominal 0.95), vs. the next-worst
+MNAR issue in the same run (`anova_ind`, z=7.27). See
+`simulations/out/typeI_check_all_tests/
+pvalues_ppi_effect_reps200_20260814_231114_mnar_ppi_effect_summary.log`'s
+"Flagged cells" section.
+
+**Diagnosis.** The harness's MNAR label-selection mechanism
+(`_jb_label_indices` in `simulations/harness/scenarios/synthetic.py`)
+weights which items get a human label by the item's own TRUE score
+(`truth_a2`), not by an observed covariate or the judge's prediction --
+`mnar_mode="high"` preferentially labels high-truth items. This is
+genuine non-ignorable (outcome-dependent) missingness, not merely a
+covariate-shift MAR case.
+
+A standalone ground-truth Monte Carlo check (2000 independent draws of
+`label.mnar-strong`, decomposing the estimator into its `f_lab`/
+`f_hat_lab`/`f_unlab`/`lambda` components) found:
+
+| quantity | mean | bias vs. target (0.1998) |
+|---|---|---|
+| `f_lab` (human mean, labeled subset) | 0.3453 | **+0.1455** |
+| estimate @ lambda=0 (human-only) | 0.3453 | +0.1455 |
+| estimate @ lambda=1 (full rectifier, no power-tuning) | 0.1636 | **-0.0362** |
+| estimate, ACTUAL power-tuned lambda (mean 0.11) | 0.3251 | +0.1253 |
+
+`f_lab` alone (labeled-subset human mean) is catastrophically biased --
+expected, since the labeled subsample is a truth-selected, non-
+representative slice of the population. The full-rectifier estimator
+(lambda=1, i.e. classical PPI with no power-tuning) very nearly cancels
+this bias (residual -0.036): the SAME per-item selection also shifts
+`f_hat_lab` (judge mean on the labeled slice) by almost the identical
+amount, since judge = truth*slope + bias + noise is close to linear here
+(default `slope=1.0`), so the rectifier `f_lab - f_hat_lab` and the
+`f_unlab` term combine to mostly cancel the selection bias. **But the
+ACTUAL power-tuned estimator lands almost exactly on the human-only
+endpoint (mean lambda 0.11, bias +0.1253)** -- power-tuning is throwing
+away almost the entire correction that would otherwise fix this.
+
+Why does power-tuning collapse lambda here? `lambda_raw = Cov(Y_lab,
+Y_hat_lab)/n_lab / (Var(Y_hat_unlab)/n_all + Var(Y_hat_lab)/n_lab)` is
+(for `n_all >> n_lab`, the typical case) approximately the OLS
+regression slope of the labeled subsample's exact truth (`Y_lab`) on its
+noisy judge score (`Y_hat_lab`) -- a classic
+`Y = slope*X + noise`-type errors-in-variables setup where the "true"
+population slope is attenuated below 1 in proportion to the noise-to-
+signal ratio (`Var(Y)/(Var(Y)+noise_var)`), which is EXACTLY what
+power-tuning is supposed to do (down-weight a noisy judge). The problem
+is `Var(Y)` here: computed on the labeled subsample specifically, and
+that subsample's dynamic range on `Y` (=truth) is RESTRICTED by the
+truth-based MNAR selection (labels cluster near the top of the
+distribution). A restricted `Var(Y)` inflates the noise term's *share*
+of `Var(Y_hat_lab)`, driving the regression-slope-like ratio down --
+classical "restriction of range" attenuation (psychometrics' Thorndike
+Case II problem), here applied to a variance-minimizing PPI++ weight
+rather than a correlation coefficient. This is a genuinely different
+failure mode from ttest's original per-group-lambda MNAR bug (Addendum:
+`_pooled_two_group_lambda`'s docstring) -- there, TWO groups under the
+SAME selection mechanism let the bias cancel in the group difference
+even with a bad per-group lambda; a single-arm estimand has no second
+group to cancel against, so a collapsed lambda directly exposes the raw
+biased `f_lab`.
+
+**Fix.** Rather than trying to correct `lambda_raw`'s restriction-of-
+range attenuation directly (would need to know the population's
+`Var(Y)`, which isn't observable -- `Y` is only observed on the labeled,
+range-restricted subsample), blend the power-tuned lambda back toward
+1.0 (the full-rectifier endpoint, empirically near-unbiased here) in
+proportion to a MODEL-FREE, human-label-free signal: whether the labeled
+subsample's own JUDGE SCORE distribution detectably differs from the
+unlabeled subsample's (`evalstats/ppi.py`'s new
+`_label_shift_blend_weight`). `z_shift = |f_hat_lab - f_unlab| /
+sqrt(Var(f_hat_lab) + Var(f_unlab))`; since `z_shift**2` is
+approximately chi2(1) under a true null of no shift (mean 1), `excess =
+max(0, z_shift**2 - 1)` is a null-centered "excess evidence" statistic,
+fed through the same `w = excess/(excess+K)` pseudo-count shrinkage
+shape `_adaptive_shrink_lambda` already uses elsewhere (K=3.0, module
+constant `_LABEL_SHIFT_SHRINKAGE_K`). A raw linear ramp starting at
+`z_shift=0` was tried first and rejected: it reacts to ordinary
+null-distribution noise (`E|Z| ~= 0.8` under a true null, since
+`z_shift` is a standard two-sample z-statistic) and measurably
+over-corrects MCAR/weak-judge scenarios that have no real MNAR at all
+(e.g. inflated a weak-judge scenario's CI width by ~2x for no
+calibration benefit). A first attempt at the accompanying lambda-
+uncertainty variance-inflation term (holding the blend weight fixed at
+its observed value, first-order) was found via the same ground-truth
+check to under-cover; replaced with a full-chain bootstrap
+(`_label_shift_blended_lambda_replicates`) that resamples the labeled
+pair and recomputes the ENTIRE raw-ratio -> adaptive-shrink -> shift-
+blend pipeline per replicate, since the blend weight itself is a noisy
+function of the same small labeled sample and swings substantially
+replicate-to-replicate.
+
+Scoped to single-arm callers only via a new `label_shift_robust: bool =
+False` parameter threaded through `_analytic_mean_point_se` ->
+`_analytic_mean_correct`/`_analytic_logit_t_correct`; only
+`_ppi_single_t_interval`/`_ppi_single_logit_t` pass `True`. Paired/
+two-group callers (`_ppi_paired_t_interval`, `_ppi_paired_logit_t`, and
+`correct()`'s general `np.mean` dispatch) keep the default `False`,
+unchanged -- deliberately NOT applied there: those estimands' bias
+already cancels via the two-group/paired-difference structure (see
+above), so this blend was never validated there and risks an
+unnecessary efficiency cost for no calibration benefit.
+
+**Validation** (ground-truth Monte Carlo: 800 independent draws per
+scenario, production code path via `evalstats.tests._ppi_single_t_interval`,
+K=3.0):
+
+| scenario | bias (before) | z (before) | cov (before) | bias (after) | z (after) | cov (after) |
+|---|---|---|---|---|---|---|
+| `label.mcar` | -0.0003 | -0.21 | 0.930 | -0.0010 | -1.02 | 0.963 |
+| `label.mnar-mild` | +0.0745 | +56.13 | 0.312 | +0.0206 | +11.30 | 0.765 |
+| `label.mnar-strong` | +0.1229 | +100.33 | 0.018 | +0.0013 | +0.66 | 0.886 |
+| `noise.0.7` (weak judge, MCAR) | +0.0004 | +0.30 | 0.925 | -0.0001 | -0.06 | 0.969 |
+| `n=60` | -- | -- | -- | +0.0023 | +1.91 | 0.953 |
+| `lab.5%` | -- | -- | -- | +0.0007 | +0.58 | 0.946 |
+
+`label.mnar-strong`'s bias-z collapses from +100 to +0.66 (essentially
+resolved) and coverage rises from 0.018 to 0.886. `label.mnar-mild`
+improves by >5x on z (56 -> 11) but coverage (0.765) and z (11.3) remain
+clearly non-nominal -- see "Known limitation" below. MCAR/weak-judge
+scenarios are essentially undisturbed: coverage stays at or above
+baseline (0.93-0.97 throughout), width increases modestly (noise.0.7:
++33% at K=3, the single largest efficiency cost observed, vs. the ~2x
+inflation an unrejected linear-ramp design would have caused). `pytest
+tests/test_ppi_ci_methods.py` (the dedicated coverage for
+`_analytic_mean_point_se`/`_analytic_mean_correct`/
+`_analytic_logit_t_correct` and their `_ppi_single_*`/`_ppi_paired_*`
+wrappers, including `TestWrapperEquivalence` and
+`TestMonteCarloCoverage` under plain MCAR): all 37 tests pass unchanged.
+
+**Known limitation -- this is a substantial mitigation, not a full
+fix.** Non-ignorable (outcome-dependent) missingness is not, in
+general, fully identifiable from the observed data alone without
+further assumptions; a per-replicate shift-detection statistic at
+`n_lab` ~15-30 has genuinely limited power to distinguish "real MNAR" from
+ordinary sampling noise, so no single blend strength (`K`) fully
+resolves every MNAR-strength scenario in this grid simultaneously
+(K=3.0 was chosen as the best simultaneous fit across mild/strong/
+MCAR/weak-judge; K=1-2 fixes `mnar-mild` better but leaves `mnar-strong`
+under-corrected, and vice versa for larger K -- see the diagnosis
+session's calibration sweep). The residual `label.mnar-strong`/
+`label.mnar-mild` undercoverage (0.77-0.89) is real, but now on the
+same order of magnitude this codebase already tolerates for other
+flagged MNAR cells rather than the previous 5-30x-worse catastrophe
+(e.g. `bootstrap_t_single`, which has no power-tuning to collapse in the
+first place -- effectively always at this construction's lambda=1
+endpoint -- independently showed coverage 0.89-0.92 and z up to -10.5 on
+the same scenarios in the flagging log, i.e. a comparable residual). A
+full resolution would need either a formal missing-not-at-random model
+(propensity weighting on the selection mechanism, not assumable from
+the observed data alone) or a fundamentally different point-estimator
+construction for the single-arm case -- out of scope here.
+
+**Not changed:** `_ppi_single_bootstrap_t` (`bootstrap_t_single`) has no
+power-tuning step at all (always an implicit lambda=1, full rectifier)
+-- there is no lambda-collapse mechanism to fix there, and its own
+residual MNAR bias (z up to -10.5, coverage down to 0.89) sits at
+roughly the same floor `label_shift_robust=True` converges toward on the
+worst cells here. A further improvement there, if wanted, would need a
+different treatment (e.g. correcting the point estimator itself, not a
+power-tuning weight) -- flagged, not attempted in this session.
+`anova_ind`'s own, much smaller MNAR bias issue (z up to 7.27, same
+flagging log) was also flagged but not investigated -- lower priority,
+unrelated construction.
+

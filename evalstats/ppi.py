@@ -195,6 +195,23 @@ def _bootstrap_batch_lambda_replicates(
     return lam_batches
 
 
+_LABEL_SHIFT_SHRINKAGE_K = 3.0
+"""Pseudo-count controlling how aggressively :func:`_analytic_mean_point_se`
+(when ``label_shift_robust=True``) blends its power-tuned lambda back
+toward 1.0 (full rectifier / no power tuning) in response to detected
+evidence of a labeled-vs-unlabeled JUDGE-SCORE distribution shift -- see
+that function's ``label_shift_robust`` parameter docstring for the full
+mechanism this addresses (label-selection MNAR's "restriction of range"
+attenuation of the power-tuning ratio) and
+simulations/out/results_why_ppi_shrink_1_over_0.md Addendum 34 for the
+calibration sweep that picked this value: small enough that a strong,
+clearly-detected shift (label.mnar-strong) blends most of the way to
+lambda=1 (closing a bias-z of ~100-150 down to roughly 1-4), large enough
+that MCAR/weak-judge scenarios (where the shift statistic is pure null
+noise) are barely perturbed (coverage/width within a few percent of the
+un-blended baseline)."""
+
+
 _ANALYTIC_TARGET_SEED = 0
 """Fixed internal seed for :func:`_analytic_mean_lambda_replicates`/
 :func:`_walsh_theta_lambda_replicates`'s micro-bootstrap -- purely an
@@ -235,6 +252,74 @@ def _analytic_mean_lambda_replicates(
     cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
     denom_b = var_unlab + var_hat_lab_b
     return np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
+
+
+def _label_shift_blend_weight(
+    f_hat_lab: float, f_unlab: float, var_hat_lab: float, var_unlab: float, k: float,
+) -> float:
+    """How much to trust the power-tuned lambda vs. fall back toward 1.0
+    (full rectifier), based on whether the labeled subsample's JUDGE score
+    distribution detectably differs from the unlabeled subsample's -- see
+    :func:`_analytic_mean_point_se`'s ``label_shift_robust`` docstring for
+    the full rationale. Returns ``w_rep`` such that the final lambda is
+    ``w_rep * lam_power_tuned + (1 - w_rep) * 1.0``: 1.0 means "no detected
+    shift, trust power-tuning fully" and 0.0 means "strongly detected
+    shift, fall back to the full-rectifier estimator entirely."
+
+    ``z_shift**2`` is approximately chi2(1)-distributed under a true null
+    of no labeled/unlabeled shift (mean 1 there), so ``excess = max(0,
+    z_shift**2 - 1)`` is an (upward-biased-by-clipping-at-0, but
+    null-centered) "excess evidence" statistic -- fed through the same
+    pseudo-count shrinkage-blend shape :func:`_adaptive_shrink_lambda`
+    already uses elsewhere (``w = excess / (excess + k)``). A raw linear
+    ramp starting at ``z_shift=0`` was tried first and rejected: it reacts
+    to ordinary null-distribution noise (``E|Z| ~= 0.8`` under a true null)
+    and measurably over-corrects (inflates CI width for) scenarios with no
+    real MNAR at all -- see Addendum 34's calibration sweep.
+    """
+    var_shift = var_hat_lab + var_unlab
+    if var_shift <= 1e-12:
+        return 1.0
+    z_shift = abs(f_hat_lab - f_unlab) / np.sqrt(var_shift)
+    excess = max(0.0, z_shift * z_shift - 1.0)
+    return 1.0 - excess / (excess + k)
+
+
+def _label_shift_blended_lambda_replicates(
+    Y_lab: np.ndarray, Y_hat_lab: np.ndarray, f_unlab: float, var_unlab: float,
+    n_lab: int, w_shrink: float, target: float, k: float, n_boot: int = 800,
+) -> np.ndarray:
+    """Bootstrap replicates of the FULL ``label_shift_robust`` lambda chain
+    (raw ratio -> adaptive shrink -> label-shift blend), for a variance
+    estimate that captures the shift-blend's own added sampling noise, not
+    just the raw ratio's -- a first-order approximation that instead held
+    the blend weight fixed at its observed value was found (empirically,
+    via the ground-truth Monte Carlo check in Addendum 34) to under-cover:
+    the blend weight is itself a noisy function of the same small labeled
+    sample and swings substantially replicate-to-replicate. ``f_unlab``
+    (the fixed unlabeled-pool mean) and the adaptive-shrink parameters
+    ``(w_shrink, target)`` are held FIXED at their already-computed values,
+    matching the codebase's established "hold other already-computed
+    pieces fixed across replicates" precedent (see
+    :func:`_lambda_var_inflation`'s docstring, Addendum 20/21) -- only the
+    (Y_lab, Y_hat_lab) pair is resampled, exactly as in
+    :func:`_analytic_mean_lambda_replicates`."""
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
+    Yl_b = Y_lab[idx]
+    Yh_b = Y_hat_lab[idx]
+    mean_hat_lab_b = Yh_b.mean(axis=1)
+    var_hat_lab_b = Yh_b.var(axis=1, ddof=1) / n_lab
+    cov_b = ((Yl_b - Yl_b.mean(axis=1, keepdims=True)) * (Yh_b - Yh_b.mean(axis=1, keepdims=True))).sum(axis=1) / (n_lab - 1) / n_lab
+    denom_b = var_unlab + var_hat_lab_b
+    lam_raw_b = np.where(denom_b > 1e-12, np.clip(cov_b / np.maximum(denom_b, 1e-300), 0.0, 1.0), 1.0)
+    lam_power_tuned_b = w_shrink * lam_raw_b + (1.0 - w_shrink) * target
+
+    var_shift_b = var_unlab + var_hat_lab_b
+    z_shift_b = np.abs(mean_hat_lab_b - f_unlab) / np.sqrt(np.maximum(var_shift_b, 1e-300))
+    excess_b = np.maximum(0.0, z_shift_b * z_shift_b - 1.0)
+    w_rep_b = 1.0 - excess_b / (excess_b + k)
+    return w_rep_b * lam_power_tuned_b + (1.0 - w_rep_b) * 1.0
 
 
 @dataclass
@@ -780,6 +865,7 @@ def _analytic_walsh_theta_correct(
 
 def _analytic_mean_point_se(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray, power_tune: bool,
+    label_shift_robust: bool = False,
 ) -> tuple[float, float, float, float, float, Optional[float], int]:
     """Shared closed-form point-estimate/SE/df computation for a PPI mean
     correction -- factored out of :func:`_analytic_mean_correct` so
@@ -789,6 +875,48 @@ def _analytic_mean_point_se(
     delta-method logit-scale transform in ``_analytic_logit_t_correct``).
     See ``_analytic_mean_correct``'s docstring for the closed-form
     lambda*/variance derivation this implements.
+
+    ``label_shift_robust`` (default False, preserving every existing
+    caller's behavior unchanged) additionally blends the power-tuned
+    lambda back toward 1.0 (full rectifier) in proportion to detected
+    evidence of a labeled-vs-unlabeled JUDGE SCORE distribution shift --
+    see :func:`_label_shift_blend_weight`'s docstring for the mechanism.
+    Fixes a catastrophic bias/undercoverage failure specific to a SINGLE-
+    ARM mean estimand under label-selection MNAR (missingness correlated
+    with an item's own TRUE value, not just an observed covariate):
+    ``ppi_t_interval_single``/``ppi_logit_t_single`` saw bias-z up to ~100
+    and coverage as low as 0.00-0.03 on ``label.mnar-strong`` before this
+    fix (see simulations/out/typeI_check_all_tests/
+    pvalues_ppi_effect_reps200_20260814_231114_mnar_ppi_effect_summary.log's
+    "Flagged cells" section, and results_why_ppi_shrink_1_over_0.md's
+    Addendum 34 for the full diagnosis/validation).
+
+    Root cause: the labeled subsample's dynamic range on the (unobserved-
+    for-the-unlabeled-side) TRUTH variable gets restricted by MNAR
+    selection -- a classical "restriction of range" attenuation that pulls
+    the power-tuning ratio ``lam_raw = Cov(Y_lab, Y_hat_lab) / (Var(Y_unlab)
+    + Var(Y_hat_lab))`` (and the adaptive-shrinkage target, resampled from
+    the SAME restricted sample) toward 0 even when the judge is a
+    genuinely good predictor on the full population. For a TWO-GROUP
+    comparison (see ``_pooled_two_group_lambda``'s docstring) this same
+    per-item selection mechanism biases both groups' point estimates
+    roughly equally, so it mostly cancels in the difference; a single-arm
+    estimand has no second group to cancel against, so the point estimate
+    collapses toward the raw, badly-biased human-labels-only mean
+    (``f_lab``) as lambda shrinks -- an entirely different, more severe
+    failure mode than the two-group case's variance/CI-width issue, so
+    this fix is deliberately scoped to single-arm callers only
+    (``_ppi_single_t_interval``/``_ppi_single_logit_t``) rather than
+    applied to this function's paired-difference callers, where it isn't
+    needed and wasn't validated.
+
+    This does NOT achieve full nominal coverage under label-selection MNAR
+    -- Addendum 34's validation found a residual bias/undercoverage on the
+    same order of magnitude this codebase already tolerates for other
+    flagged MNAR cells (e.g. ``anova_ind``, ``bootstrap_t_single``), not
+    a complete fix. Non-ignorable (outcome-dependent) missingness is not,
+    in general, fully identifiable without further assumptions -- see that
+    addendum for the honest limitation.
 
     Returns (estimate, se, f_unlab, f_lab, rectifier, lam_or_None, df).
     """
@@ -834,12 +962,32 @@ def _analytic_mean_point_se(
             lam_replicates = None
         else:
             lam_replicates = _analytic_mean_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
-        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+        lam_power_tuned = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+
+        if label_shift_robust:
+            w_rep = _label_shift_blend_weight(f_hat_lab, f_unlab, var_hat_lab, var_unlab, _LABEL_SHIFT_SHRINKAGE_K)
+            lam = w_rep * lam_power_tuned + (1.0 - w_rep) * 1.0
+        else:
+            lam = lam_power_tuned
 
     estimate = f_lab + lam * (f_unlab - f_hat_lab)
     var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
-    if power_tune:
-        var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
+    if power_tune and lam_replicates is not None and len(lam_replicates) > 1:
+        if label_shift_robust:
+            # Full-chain lambda-uncertainty inflation: bootstrap the ENTIRE
+            # raw-ratio -> adaptive-shrink -> label-shift-blend pipeline
+            # (not just the raw ratio), since a first-order "hold the
+            # blend weight fixed" approximation was found (empirically) to
+            # under-cover -- see _label_shift_blended_lambda_replicates's
+            # docstring.
+            w_shrink = n_lab / (n_lab + _POWER_TUNE_SHRINKAGE_C)
+            target = 1.0 - float(np.mean(lam_replicates < 0.5))
+            lam_blend_replicates = _label_shift_blended_lambda_replicates(
+                Y_lab, Y_hat_lab, f_unlab, var_unlab, n_lab, w_shrink, target, _LABEL_SHIFT_SHRINKAGE_K,
+            )
+            var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_blend_replicates)
+        else:
+            var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
     se = float(np.sqrt(var_estimate))
     df = max(n_lab - 1, 1)
 
@@ -961,7 +1109,7 @@ def _analytic_mean_point_se_given_lambda(
 
 def _analytic_mean_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
-    alpha: float, power_tune: bool,
+    alpha: float, power_tune: bool, label_shift_robust: bool = False,
 ) -> "PPIResult":
     """Closed-form (delta-method) PPI correction for
     ``estimator_func=np.mean`` -- no bootstrap resampling at all. See
@@ -1002,9 +1150,12 @@ def _analytic_mean_correct(
     ``_POWER_TUNE_SHRINKAGE_C``) -- that shrinkage exists specifically to
     compensate for the bootstrap's own small-sample weakness, which this
     path doesn't have.
+
+    ``label_shift_robust`` (default False) is passed straight through to
+    :func:`_analytic_mean_point_se` -- see its docstring.
     """
     estimate, se, f_unlab, f_lab, rectifier, lam, df = _analytic_mean_point_se(
-        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune,
+        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune, label_shift_robust=label_shift_robust,
     )
 
     if se <= 0.0:
@@ -1025,6 +1176,7 @@ def _analytic_mean_correct(
 def _analytic_logit_t_correct(
     Y_lab: np.ndarray, Y_hat_lab: np.ndarray, Y_hat_unlab: np.ndarray,
     alpha: float, power_tune: bool, lo: float = 0.0, hi: float = 1.0,
+    label_shift_robust: bool = False,
 ) -> "PPIResult":
     """Closed-form PPI correction for a [lo, hi]-bounded mean estimand, CI
     constructed on the logit scale -- the PPI analogue of
@@ -1072,9 +1224,12 @@ def _analytic_logit_t_correct(
     ``method="logit_t"`` branch, which also returns the plain paired-t-test
     p-value regardless of the logit CI construction -- only the CI's shape
     differs, never the significance test itself.
+
+    ``label_shift_robust`` (default False) is passed straight through to
+    :func:`_analytic_mean_point_se` -- see its docstring.
     """
     estimate, se, f_unlab, f_lab, rectifier, lam, df = _analytic_mean_point_se(
-        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune,
+        Y_lab, Y_hat_lab, Y_hat_unlab, power_tune, label_shift_robust=label_shift_robust,
     )
 
     if se <= 0.0 or not np.isfinite(se):

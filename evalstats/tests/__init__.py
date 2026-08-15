@@ -2536,6 +2536,14 @@ def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float, power
     ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
     same name (see its docstring's "PPI++ power-tuning" section) -- default
     True, matching every other paired/single PPI wrapper in this module.
+
+    Passes ``label_shift_robust=True`` to :func:`evalstats.ppi.
+    _analytic_mean_correct` -- unlike every paired/two-group PPI wrapper in
+    this module, a single-arm mean estimand has no second group for a
+    label-selection MNAR mechanism's point-estimate bias to cancel against
+    (see :func:`evalstats.ppi._analytic_mean_point_se`'s
+    ``label_shift_robust`` docstring for the full mechanism and
+    simulations/out/results_why_ppi_shrink_1_over_0.md's Addendum 34).
     """
     from evalstats.ppi import _analytic_mean_correct
 
@@ -2548,7 +2556,10 @@ def _ppi_single_t_interval(a: np.ndarray, a_lab: np.ndarray, alpha: float, power
     values_lab_llm = all_values[mask]
     values_lab_true = np.asarray(a_lab, dtype=float)[mask]
 
-    return _analytic_mean_correct(values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=power_tune)
+    return _analytic_mean_correct(
+        values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=power_tune,
+        label_shift_robust=True,
+    )
 
 
 def _ppi_paired_t_interval(
@@ -2738,6 +2749,11 @@ def _ppi_single_logit_t(
     ``power_tune`` mirrors :func:`evalstats.ppi.correct`'s parameter of the
     same name -- default True, matching every other paired/single PPI
     wrapper in this module.
+
+    Passes ``label_shift_robust=True`` to :func:`evalstats.ppi.
+    _analytic_logit_t_correct` -- see :func:`_ppi_single_t_interval`'s
+    docstring for why (identical mechanism, this estimand's [lo,hi]-bounded
+    analogue).
     """
     from evalstats.ppi import _analytic_logit_t_correct
 
@@ -2752,6 +2768,7 @@ def _ppi_single_logit_t(
 
     return _analytic_logit_t_correct(
         values_lab_true, values_lab_llm, values_unlab, alpha, power_tune=power_tune, lo=lo, hi=hi,
+        label_shift_robust=True,
     )
 
 
