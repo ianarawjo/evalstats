@@ -2971,46 +2971,40 @@ def _assign_significance_groups(
 ) -> dict[str, str]:
     """Assign numeric group IDs (#1, #2, #3…) to templates via CD-group analysis.
 
-    Templates in the same maximal non-significant rank band share an ID.
-    Group #1 is the band that contains the rank-1 template. Any template not
-    found in any CD group receives a unique ID (it is distinctly ranked).
+    Templates in the same maximal non-significant rank band share an ID, and
+    IDs are non-decreasing down the rank-sorted list (group #1 always holds
+    the rank-1 template). When maximal bands overlap -- e.g. A~B and B~C are
+    each individually non-significant but A~C is significant, a transitivity
+    caveat inherent to critical-difference diagrams (Demsar 2006) -- the
+    whole chain A-B-C is merged into one group, since each entity can only
+    carry a single ID in this table (unlike a CD diagram, which can draw
+    overlapping bands as separate lines).
     """
     if alpha is None:
         alpha = get_alpha_ci()
     groups = _critical_difference_groups(
         pairwise, labels_sorted=labels_sorted, alpha=alpha, p_source=p_source,
     )
-    rank_map = {label: i for i, label in enumerate(labels_sorted)}
-    groups_sorted = sorted(groups, key=lambda g: min(rank_map.get(l, 999) for l in g))
-    top_label = labels_sorted[0]
+    rank_of = {label: i for i, label in enumerate(labels_sorted)}
+
+    # For each label, the rightmost rank index reached by any maximal CD band
+    # it belongs to (its own rank if it belongs to none).
+    reach = {label: rank_of[label] for label in labels_sorted}
+    for group in groups:
+        end_idx = max(rank_of[l] for l in group)
+        for label in group:
+            reach[label] = max(reach[label], end_idx)
 
     label_to_group: dict[str, str] = {}
-
-    # Group #1 is reserved for the top-ranked item and any non-significant ties
-    # that share its maximal contiguous rank band.
-    label_to_group[top_label] = "#1"
-    for group in groups_sorted:
-        if top_label in group:
-            for label in group:
-                label_to_group[label] = "#1"
-
-    group_idx = 1
-    for group in groups_sorted:
-        if top_label in group:
-            continue
-        new_members = [l for l in group if l not in label_to_group]
-        if new_members:
-            group_id = f"#{group_idx + 1}"
+    group_idx = 0
+    current_end_idx = -1
+    for idx, label in enumerate(labels_sorted):
+        if idx > current_end_idx:
             group_idx += 1
-            for label in new_members:
-                label_to_group[label] = group_id
-
-    # Templates not in any CD group each get their own unique letter.
-    for label in labels_sorted:
-        if label not in label_to_group:
-            group_id = f"#{group_idx + 1}"
-            label_to_group[label] = group_id
-            group_idx += 1
+            current_end_idx = reach[label]
+        else:
+            current_end_idx = max(current_end_idx, reach[label])
+        label_to_group[label] = f"#{group_idx}"
 
     return label_to_group
 

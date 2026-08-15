@@ -2606,6 +2606,26 @@ def compare(
                         not is_model_comparison and not is_prompt_comparison)
     is_factorial = len(factors_list) >= 2
 
+    # Reject NaN/missing values in factor column(s) early with a clear,
+    # correctly-attributed error -- otherwise a NaN factor value silently
+    # becomes its own group and only surfaces later as a confusing "scores
+    # contain N NaN cells" error that blames the metric column instead.
+    for _f in factors_list:
+        _resolved_factor_col = (
+            model_col if (_f == "model" and model_col and model_col in df.columns) else
+            prompt_col if (_f in {"prompt", "template"} and prompt_col and prompt_col in df.columns) else
+            _f if _f in df.columns else None
+        )
+        if _resolved_factor_col is not None:
+            _n_na_factor = int(df[_resolved_factor_col].isna().sum())
+            if _n_na_factor > 0:
+                raise ValueError(
+                    f"factor column {_resolved_factor_col!r} contains {_n_na_factor} "
+                    "missing (NaN) value(s). Every row must have a value for the "
+                    "factor being compared -- drop or fill these rows before "
+                    "calling compare()."
+                )
+
     # Also handle the case where factor is neither "model" nor "prompt" but names
     # a canonical-alias column directly (e.g. user mapped "llm" → "model", then
     # passes factors="model" which now IS model_col).

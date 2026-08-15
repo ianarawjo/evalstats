@@ -594,6 +594,14 @@ def load_from(
     if df.empty:
         raise EvalLoadError("data is empty (no rows).")
 
+    dupe_cols = df.columns[df.columns.duplicated()].unique().tolist()
+    if dupe_cols:
+        raise EvalLoadError(
+            f"Duplicate column name(s) in data: {dupe_cols}. "
+            "This usually comes from a bad CSV merge/export. "
+            "Rename or drop the duplicate(s) before calling load_from()."
+        )
+
     # ── apply column remapping ────────────────────────────────────────────────
     if col_map:
         unknown = [k for k in col_map if k not in df.columns]
