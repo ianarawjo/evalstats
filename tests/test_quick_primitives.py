@@ -126,29 +126,29 @@ def test_summarize_dict_of_arrays():
     assert "mean" in frame.columns and "ci_low" in frame.columns
 
 
-def test_summarize_dataframe_group_col():
+def test_summarize_dataframe_factor_metric():
     rng = _rng(12)
     rows = []
     for m, mu in [("x", 0.7), ("y", 0.5)]:
         for i in range(20):
             rows.append({"model": m, "score": float(np.clip(rng.normal(mu, 0.1), 0, 1))})
     df = pd.DataFrame(rows)
-    result = es.summarize(df, group_col="model", value_col="score")
+    result = es.summarize(df, factor="model", metric="score")
     assert set(result.labels) == {"x", "y"}
     frame = result.to_frame()
     assert frame.loc["x", "mean"] > frame.loc["y", "mean"]
 
 
-def test_summarize_dataframe_requires_group_and_value_col():
+def test_summarize_dataframe_requires_factor_and_metric():
     df = pd.DataFrame({"model": ["a", "b"], "score": [0.5, 0.6]})
-    with pytest.raises(ValueError, match="group_col"):
+    with pytest.raises(ValueError, match="factor"):
         es.summarize(df)
 
 
 def test_summarize_dataframe_bad_column_name():
     df = pd.DataFrame({"model": ["a", "b"], "score": [0.5, 0.6]})
     with pytest.raises(ValueError, match="not found"):
-        es.summarize(df, group_col="nope", value_col="score")
+        es.summarize(df, factor="nope", metric="score")
 
 
 def test_summarize_empty_dict_raises():
