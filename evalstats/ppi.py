@@ -22,31 +22,6 @@ undercover -- see :func:`correct`'s ``backend`` parameter. Shared with the
 PPI-alignment warning threshold in ``evalstats/api.py`` and
 ``evalstats/alignment.py``."""
 
-_WILCOXON_CROSSFIT_COV_COEF = 0.75
-"""Coefficient on :func:`_analytic_walsh_theta_correct`'s cross-fit
-fold-covariance term (``w_A * w_B * lam_A * lam_B * var_unlab``), the
-missing-covariance fix from ``simulations/out/
-results_why_ppi_shrink_1_over_0.md``'s Addendum 33. That addendum
-calibrated this at 1.0 (halving the textbook cross-term coefficient of 2)
-using ONLY null (``effect_size=0.0``) scenarios. Addendum 35 found this
-does not transfer to ``build_ppi_power_sources``' real-effect scenarios:
-at 1.0, the term over-corrects there (reported/true variance ratio
-1.06-1.10 at moderate effect sizes, vs. 0.96-1.00 at null), driving a
-real, avoidable power regression, while a ground-truth check showed the
-term's own assumption (``Cov(r_term_A, r_term_B) ~= var_unlab``) is
-itself less accurate under a real effect (empirical ratio ~0.88-0.91 vs.
-~0.997 at null) -- the true target coefficient is regime-dependent and no
-single value serves both regimes exactly. 0.75 was chosen as a validated
-middle ground: a coefficient sweep (0.0/0.3/0.5/0.7/1.0) against ACTUAL
-rejection rates (not just variance ratios) found lowering from 1.0 to
-0.75 recovers meaningful power at every regressed power-check cell tested
-while staying AT OR BELOW nominal alpha=0.05 on every null scenario
-tested (including the single worst-case cell, noise=0/mildbias, which
-landed at exactly 0.0500) -- see Addendum 35 for the full validation
-table. Not a full fix (the underlying regime-dependence is unresolved --
-see that addendum's own caveats), but a modest, non-regressing
-improvement over the prior fixed 1.0."""
-
 _POWER_TUNE_SHRINKAGE_C = 20.0
 """Pseudo-count controlling how much :func:`correct`'s power-tuning weight
 lambda gets shrunk toward an ADAPTIVE target as ``n_lab`` shrinks -- used
@@ -611,7 +586,21 @@ def _walsh_theta_lambda_replicates(
     docstring) -- stays a Python loop over ``n_boot`` draws, same tradeoff
     that function already accepts. Fine here: n_lab is small (this
     backend's whole point is being fast at the small n_lab where it's
-    preferred), so n_boot=800 tiny sorts is cheap in aggregate."""
+    preferred), so n_boot=800 tiny sorts is cheap in aggregate.
+
+    CALLER GUARD (referenced from every site that calls a
+    ``_..._lambda_replicates`` helper). Callers must skip this and pass
+    ``lam_replicates=None`` when the labeled pair is degenerate:
+    ``n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6``.
+    The ``var_hat_lab < 1e-12`` clause needs to be its OWN absolute check,
+    not merely the relative ``var_lab < var_hat_lab * 1e-6`` one: when
+    ``Y_hat_lab`` is EXACTLY tied (all Walsh comparisons agree -- plausible
+    at small n_lab on real, heavily-tied Likert-like data) the covariance is
+    identically 0 regardless of ``Y_lab``'s own spread, and the relative
+    test cannot fire because ``0 < 0`` is False. Letting a spuriously
+    "confident" lambda through there was confirmed (2026-08-15) to drive
+    real-data Type-I as high as 0.515 -- see
+    results_why_ppi_shrink_1_over_0.md's real-data wilcoxon addendum."""
     rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
     idx = rng.integers(0, n_lab, size=(n_boot, n_lab))
     lam_b = np.empty(n_boot)
@@ -628,58 +617,48 @@ def _walsh_theta_lambda_replicates(
     return lam_b
 
 
-def _walsh_theta_fold_lambda(
-    Y_lab_fold: np.ndarray, Y_hat_lab_fold: np.ndarray, var_unlab: float, n_fold: int,
-) -> tuple[float, float, float, float, float]:
-    """Adaptively-shrunk lambda (see :func:`_adaptive_shrink_lambda`)
-    estimated from ONE fold of the labeled pair, for
-    :func:`_analytic_walsh_theta_correct`'s cross-fitted power-tuning --
-    see that function's docstring for why this needs to be scoped to a
-    fold rather than the full labeled sample. Identical arithmetic to the
-    non-cross-fit path, just parameterized over a fold instead of the full
-    sample. Returns ``(lam, var_lab_fold, var_hat_lab_fold,
-    cov_lab_hatlab_fold, var_lam_fold)`` -- the caller needs the middle
-    three to build that SAME fold's own point estimate/variance with the
-    OTHER fold's lambda plugged in, and ``var_lam_fold`` (this fold's own
-    lambda-estimation variance, from its bootstrap replicates) to build
-    the OTHER fold's joint lambda-uncertainty inflation term -- see
-    :func:`_analytic_walsh_theta_correct`."""
-    var_lab_f = _walsh_theta_analytic_variance(Y_lab_fold) if n_fold > 1 else 0.0
-    var_hat_lab_f = _walsh_theta_analytic_variance(Y_hat_lab_fold) if n_fold > 1 else 0.0
-    if n_fold > 1:
-        h1_lab_f = _walsh_theta_h1_components(Y_lab_fold)
-        h1_hat_lab_f = _walsh_theta_h1_components(Y_hat_lab_fold)
-        cov_f = 4.0 * float(np.cov(h1_lab_f, h1_hat_lab_f, ddof=1)[0, 1]) / n_fold
-    else:
-        cov_f = 0.0
+_WALSH_SIGNFLIP_B = 200
+"""Sign-flip draws used by :func:`_walsh_theta_signflip_null_var`. 200 is
+enough for a variance (not a tail quantile) and keeps the cost well below
+the two :func:`_walsh_theta_lambda_replicates` calls the cross-fitted
+construction it replaced already paid."""
 
-    denom_f = var_unlab + var_hat_lab_f
-    lam_raw_f = min(max(cov_f / denom_f, 0.0), 1.0) if denom_f > 1e-12 else 1.0
-    # var_hat_lab_f < 1e-12 is its own trigger, not just var_lab_f's
-    # relative-to-var_hat_lab_f check: when Y_hat_lab_fold happens to be
-    # EXACTLY tied (all Walsh-pairwise comparisons agree -- plausible at
-    # fold sizes this small on real, heavily-tied Likert-like data), cov_f
-    # is identically 0 regardless of Y_lab_fold's own variance, so a
-    # relative check alone (var_lab_f < var_hat_lab_f * 1e-6) can fail to
-    # fire precisely when var_hat_lab_f itself is 0 (0 < 0 is False) --
-    # letting a spuriously "confident" lam_raw_f=0 through instead of
-    # falling back to the safe target=1 default below. Confirmed
-    # (2026-08-15) to zero out one fold's ENTIRE contribution to both the
-    # combined point estimate and its variance whenever the OTHER fold hit
-    # this exact corner case, driving real-data Type-I as high as 0.515 on
-    # some appstore/wmt_da/privacy_judge judge pairs at label_frac=0.05 --
-    # see results_why_ppi_shrink_1_over_0.md's real-data wilcoxon addendum.
-    if n_fold <= 1 or var_hat_lab_f < 1e-12 or var_lab_f < var_hat_lab_f * 1e-6:
-        lam_replicates_f = None
-    else:
-        lam_replicates_f = _walsh_theta_lambda_replicates(Y_lab_fold, Y_hat_lab_fold, var_unlab, n_fold)
-    lam_f = _adaptive_shrink_lambda(lam_raw_f, lam_replicates_f, n_fold)
-    var_lam_f = (
-        float(np.var(lam_replicates_f, ddof=1))
-        if lam_replicates_f is not None and len(lam_replicates_f) > 1
-        else 0.0
-    )
-    return lam_f, var_lab_f, var_hat_lab_f, cov_f, var_lam_f
+
+def _walsh_theta_signflip_null_var(Y_lab: np.ndarray, n_boot: int = _WALSH_SIGNFLIP_B) -> Optional[float]:
+    """Var(theta) under H0, obtained by SIGN-FLIP randomization -- the
+    score-test counterpart to :func:`_walsh_theta_analytic_variance`'s
+    Wald (evaluate-at-the-estimate) variance.
+
+    Under H0 the paired differences are symmetric about 0, so flipping the
+    sign of any subset of them leaves the null distribution unchanged. The
+    variance of ``paired_walsh_midrank_theta`` across sign flips is
+    therefore its null variance, computed CONDITIONAL on the observed
+    ``|Y_lab|`` -- which is exactly the classical randomization reference
+    for a signed-rank statistic, and is valid regardless of ties.
+
+    Why not the textbook closed form. Under H0 (and no ties) the Walsh
+    count IS the Wilcoxon signed-rank statistic, giving
+    ``Var(theta) = (2n+1) / (6n(n+1))`` exactly. That matches simulation on
+    continuous data (n=20: 0.016270 vs. 0.016105 measured) but is badly
+    wrong under the heavy ties real judge data carries -- on appstore's
+    88%-tied judge differences it reads 0.021528 against a true 0.006156,
+    3.5x too large. Sign-flipping handles ties and discreteness exactly, so
+    it is used instead.
+
+    Returns ``None`` when every labeled difference is exactly 0: sign
+    flipping cannot move a vector of zeros, so no null variance is
+    recoverable and the caller must fall back to the Wald estimate.
+
+    Deterministic (fixed :data:`_ANALYTIC_TARGET_SEED`), matching every
+    other source of internal randomness in this backend.
+    """
+    d = np.asarray(Y_lab, dtype=float)
+    n = len(d)
+    if n < 2 or not np.any(d != 0.0):
+        return None
+    rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
+    flips = rng.choice(np.array([-1.0, 1.0]), size=(n_boot, n))
+    return float(np.var([paired_walsh_midrank_theta(d * flips[b]) for b in range(n_boot)], ddof=1))
 
 
 def _cross_fit_satterthwaite_df(vA: float, dfA: float, vB: float, dfB: float) -> float:
@@ -716,185 +695,138 @@ def _analytic_walsh_theta_correct(
     cutoff: it dominates the percentile bootstrap on power for this
     estimand across the full n_lab range.
 
-    ``power_tune=True`` at ``n_lab >= 4`` uses CROSS-FITTED power-tuning,
-    not the single-sample construction :func:`_analytic_mean_correct`
-    still uses: the labeled pair is split into two folds, each fold's
-    lambda is estimated from the OTHER fold only, and that lambda is
-    plugged into THIS fold's own point estimate/variance -- then the two
-    folds' estimates are combined by a size-weighted average. This exists
-    because the single-sample construction (lambda and the point estimate
-    both computed from the SAME n_lab points, as every other power_tune
-    site in this codebase still does) was found to produce a genuinely
-    heavy-tailed studentized statistic at small n_lab for THIS estimand
-    specifically (excess kurtosis ~12 vs. a t-distribution's ~0.65,
-    confirmed via simulation, driving Type-I error to roughly double
-    nominal on some scenarios) -- NOT explained by a simple mean-level
-    variance underestimate (a Satterthwaite effective-df correction and a
-    smoothed/KDE-jittered lambda-replicate bootstrap were both tried and
-    both failed to close the gap; see ``simulations/out/
-    results_why_ppi_shrink_1_over_0.md``'s Wilcoxon power-tuning addendum
-    for the full investigation). The root cause was that lambda and the
-    point estimate shared the same finite sample, making the delta-method
-    inflation term's implicit independence assumption false; cross-fitting
-    makes that assumption true by construction instead of trying to
-    patch around its violation. Validated via simulation to restore
-    Type-I to within Monte Carlo noise of nominal alpha across every
-    tested small-n_lab scenario, while retaining most of adaptive
-    tuning's power advantage over the classical (``power_tune=False``)
-    estimator, and to not regress calibration at larger n_lab (the
-    single-sample construction's own miscalibration already fades as
-    n_lab grows, so cross-fitting converges to being nearly a no-op there
-    rather than becoming needlessly conservative).
+    ``power_tune=True`` uses a SCORE-TYPE variance for the human term.
 
-    The fold split uses a FIXED (not caller-seeded) permutation -- see
-    :data:`_ANALYTIC_TARGET_SEED` -- matching every other source of
-    internal randomness in this backend, so the function stays fully
-    deterministic (same inputs -> same outputs). This is safe under the
-    SAME i.i.d./representative-sample assumption :func:`correct` already
-    requires of the labeled subset: a fixed split is statistically
-    equivalent to a random one when array position carries no meaning of
-    its own.
+    THE DEFECT IT FIXES. ``theta`` is proportion-like on [-0.5, 0.5], so
+    (exactly as a binomial's ``p(1-p)``) its sampling variance is MAXIMAL at
+    theta=0 and collapses toward the boundaries -- measured 0.0166 at true
+    theta=0 vs. 8e-6 at true theta=0.499. The plug-in ("Wald") variance is
+    evaluated AT the observed estimate, so a large ``|estimate|``
+    mechanically arrives with a small ``se``
+    (``corr(sqrt(var), |theta_hat|) = -0.88 .. -0.95``) and a TWO-SIDED test
+    is inflated in both tails. This is a property of the ESTIMAND, not of
+    lambda: it is why fixed ``power_tune=False`` (lambda=1) was always well
+    calibrated, since adaptive lambda shrinks the correction toward
+    ``f_lab`` and concentrates the statistic on the small labeled sample
+    where the coupling bites. Adaptive tuning EXPOSED the coupling rather
+    than creating it.
 
-    Below n_lab=4 there isn't enough data for two non-degenerate folds
-    (each needs >= 2 points), so this falls back to the single-sample
-    construction even under ``power_tune=True`` -- the same construction
-    ``power_tune=False`` always uses.
+    THE FIX. Evaluate the human term's variance UNDER H0 instead of at the
+    estimate -- a score rather than a Wald construction, the same reason
+    this package prefers Wilson over Wald for binary proportions and Tango
+    for paired binary. Under H0 the Walsh count is the Wilcoxon signed-rank
+    statistic, whose null law is distribution-free;
+    :func:`_walsh_theta_signflip_null_var` obtains it by sign-flip
+    randomization (exact under ties, unlike the closed form). A null
+    variance is a CONSTANT with respect to ``theta_hat``, so it removes the
+    coupling without distorting anything at the boundary.
 
-    Degrees of freedom for the Student-t interval: ``n_lab - 1`` in the
-    non-cross-fit path (matching :func:`_analytic_mean_correct`'s choice),
-    or a Welch-Satterthwaite combination of the two folds' own degrees of
-    freedom under cross-fitting -- see :func:`_cross_fit_satterthwaite_df`."""
+    The substitution is made COHERENTLY -- the estimated correlation is kept
+    and only the human-side variance is rescaled -- because replacing
+    ``var_lab`` alone violates the quadratic form's Cauchy-Schwarz
+    consistency and drives ~9% of samples to a clamped, near-zero ``se``.
+    See the inline comment at the substitution for the algebra.
+
+    This REPLACED a cross-fitted construction (two folds, each fold's lambda
+    estimated from the other). That construction did control Type-I, but
+    measurement showed it worked by inflating the reported SE 5-17% rather
+    than by the mechanism its own docstring claimed: it barely moved the
+    tails (excess kurtosis 266 -> 227), and kurtosis does not drive Type-I
+    here at all (flooring the variance collapses kurtosis 153 -> 2.5 while
+    leaving the rejection rate identical at 0.0590). On ``ppi_real`` the
+    score construction beats it on every axis -- Type-I max 0.105 -> 0.090,
+    pooled 0.0522 -> 0.0449, CI coverage 0.941 -> 0.946, and CI width
+    0.2199 -> 0.1626 (26% narrower) at IDENTICAL power (1.000) -- narrower
+    intervals with better coverage being the direct evidence that the old
+    SE inflation was wasteful. Nine other approaches were tried and
+    rejected first, including a variance-stabilizing (arcsine) transform
+    that looked best of all synthetically and then collapsed real power to
+    0.462, because any such transform's derivative diverges exactly where
+    real effects live. See results_why_ppi_shrink_1_over_0.md's Addenda
+    28/33/35/41 for the full record.
+
+    ``power_tune=False`` is deliberately left on the plain Wald variance:
+    at fixed lambda=1 that path is long-validated (including under MNAR)
+    and serves as the harness's classical reference baseline, so it is not
+    disturbed by a change validated only for ``power_tune=True``.
+
+    Degrees of freedom for the Student-t interval: ``n_lab - 1``, matching
+    :func:`_analytic_mean_correct`'s choice."""
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
     f_unlab = paired_walsh_midrank_theta(Y_hat_unlab)
     var_unlab = _walsh_theta_analytic_variance(Y_hat_unlab) if n_all > 1 else 0.0
 
-    if power_tune and n_lab >= 4:
-        rng = np.random.default_rng(_ANALYTIC_TARGET_SEED)
-        perm = rng.permutation(n_lab)
-        n_A = n_lab // 2
-        idx_A, idx_B = perm[:n_A], perm[n_A:]
-        n_B = n_lab - n_A
+    f_lab = paired_walsh_midrank_theta(Y_lab)
+    f_hat_lab = paired_walsh_midrank_theta(Y_hat_lab)
+    rectifier = f_lab - f_hat_lab
 
-        Y_lab_A, Y_hat_lab_A = Y_lab[idx_A], Y_hat_lab[idx_A]
-        Y_lab_B, Y_hat_lab_B = Y_lab[idx_B], Y_hat_lab[idx_B]
+    var_lab = _walsh_theta_analytic_variance(Y_lab) if n_lab > 1 else 0.0
+    var_hat_lab = _walsh_theta_analytic_variance(Y_hat_lab) if n_lab > 1 else 0.0
 
-        lam_B, var_lab_B, var_hat_lab_B, cov_B, var_lam_B = _walsh_theta_fold_lambda(Y_lab_B, Y_hat_lab_B, var_unlab, n_B)
-        lam_A, var_lab_A, var_hat_lab_A, cov_A, var_lam_A = _walsh_theta_fold_lambda(Y_lab_A, Y_hat_lab_A, var_unlab, n_A)
-
-        f_lab_A = paired_walsh_midrank_theta(Y_lab_A)
-        f_hat_lab_A = paired_walsh_midrank_theta(Y_hat_lab_A)
-        f_lab_B = paired_walsh_midrank_theta(Y_lab_B)
-        f_hat_lab_B = paired_walsh_midrank_theta(Y_hat_lab_B)
-        r_term_A = f_unlab - f_hat_lab_A
-        r_term_B = f_unlab - f_hat_lab_B
-
-        # Fold A's point estimate uses fold B's lambda (and vice versa) --
-        # disjoint folds, so that lambda is genuinely independent of this
-        # fold's own randomness, unlike the single-sample construction.
-        est_A = f_lab_A + lam_B * r_term_A
-        est_B = f_lab_B + lam_A * r_term_B
-        var_est_A = max(var_lab_A + lam_B * lam_B * (var_unlab + var_hat_lab_A) - 2.0 * lam_B * cov_A, 0.0)
-        var_est_B = max(var_lab_B + lam_A * lam_A * (var_unlab + var_hat_lab_B) - 2.0 * lam_A * cov_B, 0.0)
-
-        # lam_B is itself a random quantity, estimated with its own
-        # sampling uncertainty from fold B alone, and fold A's point
-        # estimate depends on it (and vice versa) -- the same delta-method
-        # gap :func:`_lambda_var_inflation` patches for the single-sample
-        # construction, using the OTHER fold's own lambda-replicate
-        # variance since that's the lambda actually plugged into THIS
-        # fold's estimate. Missing this was found (2026-08-14, via a
-        # ground-truth Monte Carlo variance check) to account for part of
-        # a genuine residual Type-I inflation at low llm_noise/lambda-near-
-        # ceiling -- see results_why_ppi_shrink_1_over_0.md's wilcoxon
-        # cross-fit covariance addendum.
-        var_est_A += (r_term_A * r_term_A) * var_lam_B
-        var_est_B += (r_term_B * r_term_B) * var_lam_A
-
-        w_A, w_B = n_A / n_lab, n_B / n_lab
-        estimate = w_A * est_A + w_B * est_B
-        # human_estimate/rectifier are built from the SAME per-fold
-        # decomposition as `estimate`, for internal consistency, rather
-        # than a separately-computed full-sample statistic.
-        f_lab = w_A * f_lab_A + w_B * f_lab_B
-        f_hat_lab_combined = w_A * f_hat_lab_A + w_B * f_hat_lab_B
-        rectifier = f_lab - f_hat_lab_combined
-        lam = w_A * lam_B + w_B * lam_A
-
-        v_A_term, v_B_term = w_A * w_A * var_est_A, w_B * w_B * var_est_B
-        var_estimate = v_A_term + v_B_term
-
-        # est_A and est_B both depend on the SAME f_unlab draw (the shared
-        # unlabeled pool), so they are NOT independent -- their covariance
-        # via that shared dependence is Cov(r_term_A, r_term_B) =
-        # Var(f_unlab) = var_unlab exactly (f_hat_lab_A/B come from
-        # disjoint folds and are independent of the unlabeled draw and of
-        # each other), scaled by lam_A*lam_B to first order (treating each
-        # fold's lambda as fixed at its realized value). This was entirely
-        # uncounted before. A ground-truth Monte Carlo check found the
-        # textbook Var(w_A*X+w_B*Y) cross-term coefficient of 2 overshoots
-        # by roughly 2x for this Hajek-projection-based estimand (var_unlab
-        # here is a U-statistic variance estimator, not a plain
-        # linear-statistic variance the textbook identity assumes) --
-        # Addendum 33 calibrated this to 1x against NULL scenarios only
-        # (reported/true variance ratio: 0.628 before either fix -> 0.768
-        # with the lambda-uncertainty term alone -> 0.986 with this term at
-        # 1x, on the worst tested null cell). Addendum 35 found 1x
-        # over-corrects specifically under a REAL injected effect (ratio
-        # 1.06-1.10 at moderate effect sizes in build_ppi_power_sources,
-        # vs. 0.96-1.00 at null) -- see _WILCOXON_CROSSFIT_COV_COEF's
-        # docstring for the regime-dependence this reflects and the
-        # rejection-rate sweep that validated moving to 0.75.
-        var_estimate += _WILCOXON_CROSSFIT_COV_COEF * w_A * w_B * lam_A * lam_B * var_unlab
-
-        se = float(np.sqrt(var_estimate))
-        df = _cross_fit_satterthwaite_df(v_A_term, max(n_A - 1, 1), v_B_term, max(n_B - 1, 1))
+    if n_lab > 1:
+        h1_lab = _walsh_theta_h1_components(Y_lab)
+        h1_hat_lab = _walsh_theta_h1_components(Y_hat_lab)
+        cov_lab_hatlab = 4.0 * float(np.cov(h1_lab, h1_hat_lab, ddof=1)[0, 1]) / n_lab
     else:
-        f_lab = paired_walsh_midrank_theta(Y_lab)
-        f_hat_lab = paired_walsh_midrank_theta(Y_hat_lab)
-        rectifier = f_lab - f_hat_lab
+        cov_lab_hatlab = 0.0
 
-        var_lab = _walsh_theta_analytic_variance(Y_lab) if n_lab > 1 else 0.0
-        var_hat_lab = _walsh_theta_analytic_variance(Y_hat_lab) if n_lab > 1 else 0.0
-
-        if n_lab > 1:
-            h1_lab = _walsh_theta_h1_components(Y_lab)
-            h1_hat_lab = _walsh_theta_h1_components(Y_hat_lab)
-            cov_lab_hatlab = 4.0 * float(np.cov(h1_lab, h1_hat_lab, ddof=1)[0, 1]) / n_lab
+    lam = 1.0
+    lam_replicates = None
+    if power_tune:
+        denom = var_unlab + var_hat_lab
+        if denom > 1e-12:
+            lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
         else:
-            cov_lab_hatlab = 0.0
+            lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
 
-        lam = 1.0
-        lam_replicates = None
-        if power_tune:
-            denom = var_unlab + var_hat_lab
-            if denom > 1e-12:
-                lam_raw = min(max(cov_lab_hatlab / denom, 0.0), 1.0)
-            else:
-                lam_raw = 1.0  # degenerate variance -- fall back, don't divide by ~0.
+        # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring for
+        # the shared rationale, and _walsh_theta_lambda_replicates for this
+        # estimand's version of the replicate-generation step (including why
+        # var_hat_lab needs an absolute floor check of its own).
+        if n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6:
+            lam_replicates = None
+        else:
+            lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
+        lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
 
-            # Adaptive shrinkage -- see _adaptive_shrink_lambda's docstring
-            # for the shared rationale, and _walsh_theta_lambda_replicates
-            # for this estimand's version of the replicate-generation step.
-            # var_hat_lab < 1e-12 is caught explicitly (not just relative to
-            # var_lab) for the same reason _walsh_theta_fold_lambda's guard
-            # is: an exactly-tied Y_hat_lab makes cov_lab_hatlab identically
-            # 0 regardless of Y_lab's own variance, so the relative check
-            # alone can miss a degenerate reading -- see that function's
-            # docstring for the real-data failure this was found from.
-            if n_lab <= 1 or var_hat_lab < 1e-12 or var_lab < var_hat_lab * 1e-6:
-                lam_replicates = None
-            else:
-                lam_replicates = _walsh_theta_lambda_replicates(Y_lab, Y_hat_lab, var_unlab, n_lab)
-            lam = _adaptive_shrink_lambda(lam_raw, lam_replicates, n_lab)
+    estimate = f_lab + lam * (f_unlab - f_hat_lab)
 
-        estimate = f_lab + lam * (f_unlab - f_hat_lab)
-        var_estimate = max(var_lab + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_lab_hatlab, 0.0)
-        if power_tune:
-            var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
-        se = float(np.sqrt(var_estimate))
-        df = max(n_lab - 1, 1)
+    # SCORE-TYPE variance for the human term (power_tune only) -- see this
+    # function's docstring for the full rationale. var_lab is the Wald
+    # (evaluate-at-the-estimate) variance, and because Var(theta) DEPENDS on
+    # theta for this proportion-like estimand, using it couples se to
+    # |estimate| and inflates a two-sided test. Substituting the H0 variance
+    # breaks that coupling.
+    #
+    # The substitution must be COHERENT. var_lab + lam^2*D - 2*lam*cov is the
+    # variance of an actual linear combination, so it is non-negative only
+    # because cov^2 <= var_lab*var_hat_lab (Cauchy-Schwarz) holds for the
+    # Wald pair. Swapping var_lab alone breaks that: measured 9.0% of reps
+    # went negative, clamped to ~0 se, and produced spurious rejections
+    # (Type-I 0.122). So keep the ESTIMATED CORRELATION and rescale only the
+    # human side:
+    #     rho      = cov / sqrt(var_lab * var_hat_lab)
+    #     cov_used = rho * sqrt(var_null * var_hat_lab)
+    # The result is a quadratic in lam with discriminant
+    # 4*var_null*(rho^2*var_hat_lab - D) <= 0, since D = var_unlab +
+    # var_hat_lab >= var_hat_lab >= rho^2*var_hat_lab -- provably non-negative.
+    var_lab_used, cov_used = var_lab, cov_lab_hatlab
+    if power_tune:
+        var_null = _walsh_theta_signflip_null_var(Y_lab)
+        if var_null is not None and var_lab > 1e-15 and var_hat_lab > 1e-15:
+            rho = float(np.clip(cov_lab_hatlab / np.sqrt(var_lab * var_hat_lab), -1.0, 1.0))
+            var_lab_used = var_null
+            cov_used = rho * float(np.sqrt(var_null * var_hat_lab))
+
+    var_estimate = max(
+        var_lab_used + lam * lam * (var_unlab + var_hat_lab) - 2.0 * lam * cov_used, 0.0
+    )
+    if power_tune:
+        var_estimate += _lambda_var_inflation(f_unlab - f_hat_lab, lam_replicates)
+    se = float(np.sqrt(var_estimate))
+    df = max(n_lab - 1, 1)
 
     if se <= 0.0:
         ci_low = ci_high = estimate
@@ -1007,7 +939,7 @@ def _analytic_mean_point_se(
         raw_var_lab = var_lab * n_lab
         raw_var_hat_lab = var_hat_lab * n_lab
         # raw_var_hat_lab < 1e-12 is its own trigger (not just relative to
-        # raw_var_lab) -- see _walsh_theta_fold_lambda's guard for why an
+        # raw_var_lab) -- see _walsh_theta_lambda_replicates' CALLER GUARD note for why an
         # exactly-degenerate Y_hat_lab needs the same fallback as an
         # exactly-degenerate Y_lab: either side being ~0 makes cov_lab_hatlab
         # trivially ~0 too, so a relative-only check can miss it.
@@ -1100,7 +1032,7 @@ def _pooled_two_group_lambda(
 
     raw_var_lab = var_lab * n_lab
     raw_var_hat_lab = var_hat_lab * n_lab
-    # See _walsh_theta_fold_lambda's guard docstring for why
+    # See _walsh_theta_lambda_replicates' CALLER GUARD note for why
     # raw_var_hat_lab itself needs an absolute floor check too.
     if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
         lam_replicates = None
@@ -1183,7 +1115,7 @@ def _pooled_k_group_lambda(
 
     raw_var_lab = var_lab * n_lab
     raw_var_hat_lab = var_hat_lab * n_lab
-    # See _walsh_theta_fold_lambda's guard docstring for why
+    # See _walsh_theta_lambda_replicates' CALLER GUARD note for why
     # raw_var_hat_lab itself needs an absolute floor check too.
     if n_lab <= 1 or raw_var_hat_lab < 1e-12 or raw_var_lab < raw_var_hat_lab * 1e-6:
         lam_replicates = None
@@ -2020,7 +1952,7 @@ def correct(
         var_lab = float(np.var(Y_lab, ddof=1)) if n_lab > 1 else 0.0
         var_hat_lab = float(np.var(Y_hat_lab, ddof=1)) if n_lab > 1 else 0.0
         # var_hat_lab < 1e-12 is its own trigger too -- see
-        # _walsh_theta_fold_lambda's guard docstring for why an
+        # _walsh_theta_lambda_replicates' CALLER GUARD note for why an
         # exactly-degenerate Y_hat_lab needs the same fallback as an
         # exactly-degenerate Y_lab (either side being ~0 makes the raw
         # covariance ratio trivially ~0, not genuinely informative).

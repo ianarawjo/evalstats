@@ -4347,3 +4347,279 @@ distinct from the two approaches Addendum 37 already tried and rejected for
 a different (MNAR, point-estimate) mechanism. Combined with Addendum 39's
 wilcoxon/kruskal fixes, this closes out every real-data Type-I/power issue
 found in this investigation's `--official-tests` sweep.
+
+## Addendum 41 (2026-08-16): wilcoxon's adaptive-tuning residual -- root cause
+identified (estimand mean-variance coupling), nine remedies tried, all
+rejected; cross-fitting retained and its stated rationale corrected
+
+Follow-up to the user's observation that analytic wilcoxon at fixed lambda=1
+was always well calibrated (even under MNAR) and that trouble began exactly
+when adaptive tuning arrived. That framing is correct and turns out to be the
+key to the diagnosis.
+
+### The real mechanism
+
+`theta = P_mid(Walsh > 0) - 0.5` is PROPORTION-LIKE on [-0.5, 0.5]. Exactly as
+a binomial's `p(1-p)`, its sampling variance is maximal at theta=0 and
+collapses toward the boundaries. Measured (n=20, 4000 draws/row):
+
+| true theta | mean analytic var | sd(theta_hat) |
+|---|---|---|
+| 0.000 | 0.016599 | 0.129 |
+| 0.413 | 0.003893 | 0.061 |
+| 0.499 | 0.000008 | 0.0027 |
+
+Within a fixed truth, `corr(sqrt(var), |theta_hat|) = -0.88 .. -0.95`. At the
+null `corr(sqrt(var), theta_hat) = -0.026` (no LINEAR correlation) but the
+correlation with `|theta_hat|` is -0.880 -- a symmetric/quadratic coupling,
+which is precisely what inflates a TWO-SIDED test: extreme `|est|` and small
+`se` arrive together, in both tails.
+
+This is an ESTIMAND property, not a lambda artifact. It explains the whole
+history: fixed lambda=1 leans on the full-sample rectifier, while adaptive
+lambda shrinks the correction toward `f_lab`, concentrating the statistic on
+the small labeled sample where the coupling is severe. **Adaptive tuning
+exposed the coupling; it did not create it.**
+
+### Addendum 28's diagnosis was wrong (and its own numbers show it)
+
+Addendum 28 attributed the failure to a heavy-tailed studentized statistic
+(excess kurtosis ~12) and built cross-fitting on that. Measured now:
+
+* cross-fitting barely touches the tails: kurtosis 266 -> 227 at n_lab=15.
+* kurtosis does not drive Type-I at all. Flooring the variance at
+  0.25-0.50x the median collapses kurtosis 153 -> 2.5 while the rejection
+  rate stays IDENTICAL at 0.0590 -- the extreme tail is ~0.3% of draws
+  already far past the threshold, so fixing it changes no decisions.
+* what cross-fitting measurably does is inflate reported SE by 5-17%
+  (reported/true 1.05-1.17), controlling Type-I at a real power cost.
+
+Addendum 28 *did* record the correct signal -- `corr(se,|estimate|) = -0.49`,
+`corr(lambda,se) = -0.41` -- and then never acted on it. The tail metric and
+the rejection rate were conflated.
+
+### Nine remedies tried, all rejected
+
+| # | approach | outcome |
+|---|---|---|
+| 1 | studentized / percentile-t bootstrap | Type-I 0.0025 (20x conservative); per-rep critical value right-skewed (median 2.45, mean 2.93, max 22.7) as `se_b` collapses on some replicates. Independently reproduces the long-standing "bootstrap interacts oddly with wilcoxon" experience that motivated the analytic backend. |
+| 2 | "argmin optimism" term `Var(lam)*D` | Algebra correct (reported var IS biased low by ~`Var(cov_hat)/D`) but the magnitude is ~1% of variance. Fixes the MEAN; the defect is the FLUCTUATION. |
+| 3 | U-statistic fold-splitting penalty (to justify K-fold) | No penalty: variance-inflation ratio ~1.0, since the Hajek projection is linear and dominates. |
+| 4 | variance flooring | kurtosis 153 -> 2.5, Type-I unchanged at 0.0590. |
+| 5 | drop cross-fit, keep raw scale | Type-I 0.063-0.072 synthetic / 0.067-0.069 real. Rejected. |
+| 6 | K-fold cross-fitting (K=3, 5) | K=5 STRICTLY DOMINATED: more conservative (0.0243 vs 0.0371) AND less power (0.416 vs 0.491). Tiny folds make per-fold variance estimates noisy; that swamps the better lambda. |
+| 7 | decouple variance from realized `cov_hat` (variance at shrinkage target / bootstrap-mean lambda / `var_lab - lam^2 D`) | `corr(se,|est|)` unchanged (-0.343 -> -0.343/-0.339). Proves the coupling is NOT lambda-side. |
+| 8 | pooled `zeta_1` (estimate the U-statistic's `zeta_1` once from all judge differences) | FIXED the exact-tie real-data catastrophe (0.164 -> 0.029) but regressed `eval_type.likert` 0.0358 -> 0.0975, `eval_type.grades` -> 0.0900, `label.mnar-strong` 0.0575 -> 0.0817. Rejected. |
+| 9 | arcsine variance-stabilizing transform | Best synthetic result of the nine; FAILS on real data. See below. |
+
+### #9 in detail: why the arcsine transform fails
+
+Delta-method onto `g(p) = arcsin(sqrt(p))`, `p = theta + 0.5`, testing
+`g = pi/4`. Arcsine is the correct stabilizer for a proportion (measured sd
+across shifts: raw 0.128/0.106/0.060, arcsine 0.133/0.128/0.116 (flat), logit
+0.554/0.725/2.141 (worse)) -- note the codebase's existing `logit_t` would
+have been the WRONG transform here.
+
+Synthetically it looked excellent: `corr(se,|est|)` -0.343 -> 0.050, Type-I
+mean|dev| 0.0091 vs cross-fit's 0.0088 over 34 nulls (MNAR clean), and
+**+6.2pp SIZE-ADJUSTED power** over 14 effect sizes (size-adjusted = each
+method at its own empirical 95th-percentile critical value, so the gain was
+not an artifact of reduced conservatism).
+
+Running the ACTUAL `ppi_real` harness (isolated worktree at HEAD, same
+seed=46/reps=200/n_boot=2000 as the 2026-08-15 official run, all six corpora)
+killed it:
+
+| wilcoxon metric (192 matched cells) | shipped | arcsine |
+|---|---|---|
+| **real-data power** | **1.000** | **0.462** |
+| **CI coverage** | **0.941** | **0.835** |
+| CI width | 0.2199 | 0.5953 |
+| Type-I max | 0.1050 | 0.0900 |
+| Type-I pooled | 0.0522 | 0.0477 (z=-2.87) |
+| cells > 0.075 | 10 | 5 |
+
+Type-I genuinely improved; irrelevant beside the power/coverage collapse.
+
+Cause: `g'(p) = 1/(2*sqrt(p(1-p)))` diverges at the boundary -- 1.0x at
+theta=0, 2.3x at 0.45, 7.1x at 0.495, 50x at 0.4999 -- and `wmt_da_paired`'s
+TRUE target is `theta = -0.5000`, exactly the boundary. Real effects
+(rank-splits, genuine paired shifts) drive theta there, `se_g` explodes, and
+the test cannot reject. **The variance stabilization that fixes the null IS
+the property that destroys power at the boundary**, and every monotone
+variance stabilizer for a proportion has an unbounded derivative there, so
+the entire class is structurally unsuitable for this estimand. (Anchoring
+`g'` at the null instead of the estimate merely reduces to the raw scale.)
+
+### Validation-design lesson (generalizes beyond wilcoxon)
+
+Synthetic power scenarios keep theta INTERIOR, so approach #9 passed both
+synthetic Type-I and synthetic size-adjusted power convincingly. Only real
+data drives theta to the boundary. **Synthetic evidence is insufficient for
+wilcoxon inference changes; `ppi_real` is required before belief.**
+
+Related caution surfaced by #8: some of this code's calibration rests on
+ACCIDENTAL CONSERVATISM. The within-sample Walsh variance formula overstates
+variance on tied data (ratio 1.05-1.12 on real appstore judge diffs), and
+pooled `zeta_1` regressed precisely because it made that estimate more
+ACCURATE, removing a margin other scenarios were leaning on. Any future
+improvement to these variance estimators must be validated on the full null
+battery including MNAR, not only on the cell it targets.
+
+### Outcome
+
+No code change to the estimator. Cross-fitting is retained: across all nine
+alternatives it is the only construction that simultaneously holds Type-I,
+real-data power (1.000) and coverage (0.941). `_analytic_walsh_theta_correct`'s
+docstring has been corrected, since the previous explanation was not merely
+incomplete but actively misleading -- it would send the next investigator
+chasing kurtosis, which is now proven to be a dead end.
+
+The residual (real-data Type-I max 0.105, and the exact-tie construction's
+0.12-0.19) remains OPEN at the time of writing, and is now understood to be
+an estimand-level mean-variance coupling rather than anything about lambda
+estimation.
+
+**SUPERSEDED the same day -- see Addendum 42.** The coupling diagnosis above
+is what made the fix findable: every approach in the table attacked the
+variance AT the observed estimate (a Wald construction). Evaluating it under
+H0 instead (a score construction) resolves the coupling directly, and it is
+now implemented -- cross-fitting has been REMOVED.
+
+## Addendum 42 (2026-08-16): wilcoxon's adaptive-tuning residual -- FIXED by a
+score-type (H0-evaluated) variance; cross-fitting removed
+
+Addendum 41 established the mechanism (theta is proportion-like, so
+`Var(theta)` depends on theta, and evaluating it at `theta_hat` couples `se`
+to `|estimate|`) but rejected nine remedies and kept cross-fitting. This
+addendum records the tenth, which works.
+
+### The premise all nine shared
+
+Sorting the failures by what they attacked made the blind spot visible: the
+reference distribution, the variance's mean, its lambda-coupling, the tails,
+the estimator's structure, the scale -- but every one of them evaluated the
+variance AT THE OBSERVED ESTIMATE. That is a Wald construction, and it is
+the thing generating the defect. The classical alternative is a SCORE
+construction: evaluate the variance UNDER H0. It is also this package's own
+established pattern -- Wilson rather than Wald for binary proportions, Tango
+for paired binary.
+
+Under H0 the Walsh count IS the Wilcoxon signed-rank statistic, whose null
+law is distribution-free. Two ways to get it:
+
+* closed form `Var(theta) = (2n+1)/(6n(n+1))` -- accurate on continuous data
+  (n=20: 0.016270 predicted vs 0.016105 measured) but **unusable here**: on
+  appstore's 88%-tied judge differences it reads 0.021528 against a true
+  0.006156, 3.5x too large.
+* **sign-flip randomization** -- exact under ties and discreteness (the null
+  is invariant to flipping signs of symmetric differences), conditional on
+  the observed `|Y_lab|`. This is what shipped.
+
+Measured decoupling, which is the whole point:
+`corr(sqrt(var), |theta_hat|)` = **-0.871 / -0.898** (Wald) -> **-0.102 /
++0.031** (sign-flip) at n_lab = 15 / 30.
+
+Critically, and unlike the arcsine transform that failed in Addendum 41, a
+null variance is a CONSTANT with respect to `theta_hat`, so it cannot
+diverge at the boundary where real effects live. Verified directly before
+anything else was measured: at a true theta of 0.4998 the score construction
+holds power at 1.000, exactly matching cross-fitting, where arcsine
+collapsed to 0.462.
+
+### A real bug in the first attempt (worth recording)
+
+Substituting the null `var_lab` while leaving `cov` at its Wald value breaks
+the quadratic form's internal Cauchy-Schwarz consistency
+(`cov^2 <= var_lab * var_hat_lab`), which is the only reason
+`var_lab + lam^2*D - 2*lam*cov` is non-negative. Measured: **9.0% of
+replicates went negative**, clamped to ~0 `se`, and produced spurious
+rejections -- Type-I 0.122 vs cross-fitting's 0.028. The idea was fine; the
+substitution was incoherent.
+
+Fix: keep the ESTIMATED CORRELATION and rescale only the human side.
+
+    rho      = cov / sqrt(var_lab * var_hat_lab)
+    cov_used = rho * sqrt(var_null * var_hat_lab)
+
+The result is a quadratic in lam with discriminant
+`4*var_null*(rho^2*var_hat_lab - D) <= 0`, since
+`D = var_unlab + var_hat_lab >= var_hat_lab >= rho^2*var_hat_lab` --
+provably non-negative, no clamping.
+
+### Results: full official ppi_real, all checks
+
+Both runs `--official-tests` -> real data, reps=200, ppi_n_boot=2000,
+seed=46, all six corpora. Baseline `official_20260815_145612`, new
+`official_20260816_092927`.
+
+wilcoxon, 192 matched cells, paired cell-by-cell:
+
+| metric | cross-fit | SCORE |
+|---|---|---|
+| Type-I max | 0.1050 | **0.0800** |
+| Type-I pooled | 0.0522 | **0.0428** (two-proportion z = -6.09) |
+| cells > 0.075 | 10 | **1** |
+| cells > 0.10 | 1 | **0** |
+| real-data POWER | 1.000 | **1.000** |
+| CI coverage | 0.941 | **0.945** |
+| worst-cell coverage | 0.890 | **0.900** |
+| CI width | 0.2199 | **0.1621 (-26%)** |
+| worst bias-z | 2.87 | **2.51** |
+
+Whole table: **Holm-confirmed miscalibrated cells 1/2208 -> 0/2208**,
+inflated at 3-sigma 33 -> 17, Wilson-miscalibrated 194 -> 163, mean
+corrected Type-I 0.0520 -> 0.0501. All nine power rows unchanged at 1.000.
+
+**A NARROWER interval (-26%) with BETTER coverage is the direct evidence
+that cross-fitting's 5-17% SE inflation was wasteful rather than
+protective** -- exactly what Addendum 41's diagnosis predicted.
+
+Scope check: of the twelve tests, exactly TWO moved. `wilcoxon` (this
+change) and `anova_ind` (0.145 -> 0.110, mean 0.074 -> 0.056). The
+`anova_ind` movement is NOT attributable here -- the baseline run finished
+16:18 on 2026-08-15 and the pooled-lambda fix `3d64d1f` landed at 17:00, so
+the baseline simply predates it; this run is that fix's first real-data
+appearance, and it validates. The other ten tests are bit-for-bit identical
+(`max|delta| = 0.0000`), confirming the change is properly scoped.
+
+Synthetic battery (28 nulls + 6 power, 1200 reps): score is more
+CONSERVATIVE than cross-fit on most nulls (max 0.0583 vs 0.0608, zero cells
+above 0.075, MNAR clean at 0.0517/0.0558) AND more powerful on all six power
+scenarios (+0.005..+0.038, mean +0.020). More conservative on nulls while
+more powerful is not a size/power trade -- it is what removing a
+spurious-rejection mechanism and dropping a blanket SE inflation looks like
+simultaneously.
+
+### Implementation
+
+`evalstats/ppi.py`:
+* NEW `_walsh_theta_signflip_null_var` + `_WALSH_SIGNFLIP_B = 200`.
+* `_analytic_walsh_theta_correct` now uses the single-sample construction
+  plus the coherent score substitution, under `power_tune=True` only.
+* REMOVED `_walsh_theta_fold_lambda` and `_WILCOXON_CROSSFIT_COV_COEF`
+  (cross-fitting and its hand-tuned coefficient are gone).
+  `_cross_fit_satterthwaite_df` is RETAINED -- ttest's two-sample path uses it.
+* The degenerate-guard rationale that five call sites cross-referenced moved
+  to `_walsh_theta_lambda_replicates` as a CALLER GUARD note.
+
+`power_tune=False` is deliberately untouched: at fixed lambda=1 that path is
+long-validated (including under MNAR) and serves as the harness's classical
+reference baseline, and the score construction was validated only for
+`power_tune=True`.
+
+Verification: production reproduces the validated prototype exactly (0/400
+p-value mismatches at matched settings); 0 malformed CIs and 0 CI/p-value
+disagreements across 600 cases including heavy-tie and fully-degenerate
+inputs; 414/414 tests pass across test_ppi_corrections/test_p_values/
+test_analyze. Cost 21-34 ms/call, replacing cross-fitting's two
+`_walsh_theta_lambda_replicates` calls with one plus 200 sign-flips.
+
+### Still open
+
+The exact-tie proxy-pairing construction (`rater_noise_sd=0`) remains
+inflated for every method tried; it is a harness artifact rather than an
+estimator defect (see Addendum 39) and is now 10% of paired-null reps.
+The MNAR-strong x low-judge-noise corner remains the worst regime in the
+factorial sweep (pooled 0.086-0.096 at the lowest noise, decaying to ~0.050),
+across methods -- not wilcoxon-specific.
