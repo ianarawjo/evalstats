@@ -134,7 +134,7 @@ import time
 import warnings
 from collections import defaultdict
 from contextlib import redirect_stdout
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import numpy as np
@@ -211,6 +211,7 @@ from ..scenarios.synthetic import (
     PPI_LABEL_EFF_NOISE_LEVELS,
     PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
     PPI_LABEL_EFF_EFFECT_FRAC,
+    PPI_LABEL_EFF_EFFECT_FRACS,
     PPI_LABEL_EFF_N,
     PPI_NFORMULA_N_VALUES,
     PPI_NFORMULA_NLAB_VALUES,
@@ -5394,6 +5395,23 @@ class LabelEfficiencyPoint:
     rather than plotting/averaging equiv_n_lab unconditionally."""
     n_reps: int
     saturated: bool = False
+    effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC
+    """Which arm of PPI_LABEL_EFF_EFFECT_FRACS this point came from. The
+    multiplier should be es-INVARIANT (it is a property of judge quality),
+    so this exists to make that checkable: per-es curves are plotted
+    separately alongside the pooled one, and this is a CSV column so the
+    arms stay separable after the fact."""
+    mult_lo: float = float("nan")
+    mult_hi: float = float("nan")
+    """95% interval on the multiplier (equiv_n_lab / n_lab), from
+    propagating ppi_power's binomial SE through the reference curve's LOCAL
+    slope -- see _multiplier_ci. Reporting the multiplier without this
+    overstates its precision badly: at effect_frac=0.15/n_lab=15 the
+    interval routinely spans [1.0, 5.3], i.e. "no benefit" is not excluded.
+    Covers binomial noise in ppi_power ONLY; the reference curve's own MC
+    error is shared across every cell of an eval type and is addressed by
+    smoothing it (_smooth_monotone_power_curve) rather than by this
+    interval."""
     """True when `ppi_power` is at or above the classical reference curve's
     OWN ceiling (power_grid.max(), reached once the sample size is large
     enough that adding more barely moves power further -- inevitable for an
@@ -5477,6 +5495,63 @@ def _classical_pooled_power_curve(
                         pass
         powers[i] = float(np.mean([rejects[m] / n_mc for m in methods]))
     return np.maximum.accumulate(powers)
+
+
+def _smooth_monotone_power_curve(n_grid: np.ndarray, power_grid: np.ndarray) -> np.ndarray:
+    """Fit the classical reference curve with a logistic in log N, then
+    re-enforce monotonicity -- replacing raw Monte Carlo points that
+    _equivalent_n_lab would otherwise invert as if their wiggle were signal.
+
+    This is a BIAS fix, not just a smoothing nicety. At ref_n_mc=3000 the raw
+    curve routinely ties across adjacent grid points (measured at
+    effect_frac=0.15: power 0.070 at N=17.1, 19.4 AND 22.1), so np.interp
+    maps a whole range of N to one power and the inversion there is
+    arbitrary -- it resolves to the lowest tied N, biasing equiv_n_lab (and
+    so the multiplier) DOWNWARD exactly in the small-n_lab cells where the
+    curve is flattest. Measured effect of smoothing on real cells:
+    n_lab=15/r=0.30 goes 1.06x -> 1.52x, n_lab=15/r=0.50 goes 1.10x -> 1.62x.
+
+    The reference curve's MC error is SHARED by every cell of an eval type
+    (it is built once), so unlike ppi_power's binomial noise it is a
+    systematic offset that raising --effect-reps cannot reduce. Smoothing is
+    the lever that actually addresses it.
+
+    Falls back to the raw curve if the fit degenerates (e.g. a curve that is
+    entirely flat, where the logit transform carries no slope information)."""
+    p = np.clip(np.asarray(power_grid, dtype=float), 1e-4, 1.0 - 1e-4)
+    x = np.log(np.asarray(n_grid, dtype=float))
+    if len(x) < 3 or not np.isfinite(p).all() or float(np.ptp(p)) < 1e-9:
+        return np.maximum.accumulate(np.asarray(power_grid, dtype=float))
+    try:
+        slope, intercept = np.polyfit(x, np.log(p / (1.0 - p)), 1)
+    except (np.linalg.LinAlgError, ValueError):
+        return np.maximum.accumulate(np.asarray(power_grid, dtype=float))
+    if not np.isfinite(slope) or not np.isfinite(intercept) or slope <= 0:
+        return np.maximum.accumulate(np.asarray(power_grid, dtype=float))
+    return np.maximum.accumulate(1.0 / (1.0 + np.exp(-(intercept + slope * x))))
+
+
+def _multiplier_ci(
+    ppi_power: float, n_reps: int, n_lab: int, n_grid: np.ndarray, power_grid: np.ndarray,
+    z: float = 1.959963984540054,
+) -> tuple[float, float]:
+    """95% interval on equiv_n_lab / n_lab, by pushing ppi_power's binomial
+    Wald interval through the same inversion the point estimate uses.
+
+    The interval is wide because the inversion's gain is: dN/dP is 800-1250
+    labels per unit power in the flat part of the curve, so an SE of 0.02 on
+    ppi_power moves equiv_n_lab by +/-16-25 labels. That is real uncertainty,
+    not a defect of this function -- it is why the effect-size sweep
+    (PPI_LABEL_EFF_EFFECT_FRACS) matters more than raising reps: moving a
+    cell into the curve's steep middle shrinks dN/dP, whereas reps only
+    shrink SE as 1/sqrt(n)."""
+    if n_lab <= 0 or n_reps <= 0 or not np.isfinite(ppi_power):
+        return float("nan"), float("nan")
+    se = math.sqrt(max(ppi_power * (1.0 - ppi_power), 0.0) / n_reps)
+    lo_p = max(ppi_power - z * se, 0.0)
+    hi_p = min(ppi_power + z * se, 1.0)
+    return (_equivalent_n_lab(lo_p, n_grid, power_grid) / n_lab,
+            _equivalent_n_lab(hi_p, n_grid, power_grid) / n_lab)
 
 
 def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.ndarray) -> float:
@@ -5671,46 +5746,77 @@ def run_ppi_label_efficiency_check(
         for noise, (target, achieved) in info.items():
             calib_rows.append((et, noise, metric_name, target, achieved))
 
-    cont_likert_sources = build_ppi_label_efficiency_sources(noise_by_eval_type=noise_by_eval_type)
-    groups = [
-        ("continuous", [s for s in cont_likert_sources if s.eval_type == "continuous"],
-         _COMPARISON_METHODS, r"labeleff\.continuous\.noise=([\d.]+)\.lab=[\d.]+"),
-        ("likert", [s for s in cont_likert_sources if s.eval_type == "likert"],
-         _COMPARISON_METHODS, r"labeleff\.likert\.noise=([\d.]+)\.lab=[\d.]+"),
-        ("binary", build_ppi_label_efficiency_sources_binary(noise_levels=tuple(bin_noises)),
-         _COMPARISON_METHODS_BINARY, r"labeleff\.binary\.noise=([\d.]+)\.lab=[\d.]+"),
-    ]
-    for eval_type, sources, methods, name_re in groups:
-        if not sources:
-            continue
-        es = sources[0].effect_size
-        n_grid = np.geomspace(float(_JB_MIN_LAB), 500.0, 28)
-        power_grid = _classical_pooled_power_curve(eval_type, es, methods, n_grid, ref_n_mc, seed)
-        raw = run_ppi_comparison_simulation(
-            sources, n_reps, n_boot, methods=methods, seed=seed, n_workers=n_workers,
-            progress_mode=progress_mode,
+    # Sweep PPI_LABEL_EFF_EFFECT_FRACS rather than a single effect size: one
+    # es cannot keep the whole N_lab grid in the reference curve's steep
+    # middle, and the multiplier's noise is dominated by that curve's local
+    # slope (see PPI_LABEL_EFF_EFFECT_FRACS / _multiplier_ci). The arms
+    # overlap deliberately -- the multiplier should be es-invariant, so
+    # agreement across arms on shared n_lab cells is a robustness check.
+    # Grid the classical reference curve is tabulated on. _equivalent_n_lab
+    # inverts this curve with np.interp, which CLAMPS at the endpoints -- so
+    # this cap is a hard ceiling on any reportable multiplier
+    # (multiplier = equiv_n_lab / n_lab, hence max reportable = cap / n_lab).
+    # At the old cap of 500 that ceiling bit hardest exactly where the method
+    # looks best: binary's kappa=0.80 tier reached a true multiplier of ~4x,
+    # needing equiv ~800 at n_lab=200, but could only ever report 500/200 =
+    # 2.50x -- so the BEST-performing eval type was silently truncated into
+    # looking WORSE than likert. Measured on the reps=200 sweep: every clipped
+    # cell returned exactly 500.0 across all four effect-size arms despite
+    # powers ranging 0.795-1.000, which is the clamp, not a measurement.
+    # 1500 gives headroom past binary's ~800; the extra grid points keep
+    # low-end resolution despite the wider span.
+    n_grid = np.geomspace(float(_JB_MIN_LAB), 1500.0, 36)
+    for effect_frac in PPI_LABEL_EFF_EFFECT_FRACS:
+        cont_likert_sources = build_ppi_label_efficiency_sources(
+            noise_by_eval_type=noise_by_eval_type, effect_frac=effect_frac,
         )
-        all_raw.extend(raw)
-        pooled = pool_ppi_comparison_across_methods(raw)
-        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
-        for r in pooled:
-            m = re.match(name_re, r.name)
-            if not m:
-                raise ValueError(f"run_ppi_label_efficiency_check: could not parse noise from {r.name!r}")
-            noise = float(m.group(1))
-            # The scenario name round-trips the calibrated noise through a
-            # %.4f format, so an exact dict lookup can miss on precision --
-            # match to the closest calibrated value instead.
-            closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
-            target, achieved = calib_info[eval_type][closest_noise]
-            ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
-            equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
-            saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
-            results.append(LabelEfficiencyPoint(
-                eval_type=eval_type, judge_noise=noise, alignment_metric=metric_name,
-                alignment_target=target, alignment_value=achieved,
-                n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps, saturated=saturated,
-            ))
+        groups = [
+            ("continuous", [s for s in cont_likert_sources if s.eval_type == "continuous"],
+             _COMPARISON_METHODS, r"labeleff\.continuous\.noise=([\d.]+)\.lab=[\d.]+"),
+            ("likert", [s for s in cont_likert_sources if s.eval_type == "likert"],
+             _COMPARISON_METHODS, r"labeleff\.likert\.noise=([\d.]+)\.lab=[\d.]+"),
+            ("binary", build_ppi_label_efficiency_sources_binary(
+                noise_levels=tuple(bin_noises), effect_frac=effect_frac),
+             _COMPARISON_METHODS_BINARY, r"labeleff\.binary\.noise=([\d.]+)\.lab=[\d.]+"),
+        ]
+        for eval_type, sources, methods, name_re in groups:
+            if not sources:
+                continue
+            es = sources[0].effect_size
+            # Smoothed, strictly-monotone reference curve: the raw MC curve
+            # ties across adjacent grid points at ref_n_mc, and inverting a
+            # tie biases equiv_n_lab downward exactly where the curve is
+            # flattest -- see _smooth_monotone_power_curve.
+            power_grid = _smooth_monotone_power_curve(
+                n_grid, _classical_pooled_power_curve(eval_type, es, methods, n_grid, ref_n_mc, seed),
+            )
+            raw = run_ppi_comparison_simulation(
+                sources, n_reps, n_boot, methods=methods, seed=seed, n_workers=n_workers,
+                progress_mode=progress_mode,
+            )
+            all_raw.extend(raw)
+            pooled = pool_ppi_comparison_across_methods(raw)
+            metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
+            for r in pooled:
+                m = re.match(name_re, r.name)
+                if not m:
+                    raise ValueError(f"run_ppi_label_efficiency_check: could not parse noise from {r.name!r}")
+                noise = float(m.group(1))
+                # The scenario name round-trips the calibrated noise through a
+                # %.4f format, so an exact dict lookup can miss on precision --
+                # match to the closest calibrated value instead.
+                closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
+                target, achieved = calib_info[eval_type][closest_noise]
+                ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
+                equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
+                saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
+                lo, hi = _multiplier_ci(ppi_power, r.n_reps, r.n_lab, n_grid, power_grid)
+                results.append(LabelEfficiencyPoint(
+                    eval_type=eval_type, judge_noise=noise, alignment_metric=metric_name,
+                    alignment_target=target, alignment_value=achieved,
+                    n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps,
+                    saturated=saturated, effect_frac=effect_frac, mult_lo=lo, mult_hi=hi,
+                ))
     return results, all_raw, calib_rows
 
 
@@ -5821,7 +5927,20 @@ def run_ppi_nformula_check(
     # One classical reference curve per (eval_type, effect_frac) -- NOT per
     # N (see docstring above) -- precomputed once and reused across every
     # N/alignment-target row at that (eval_type, effect_frac).
-    n_grid = np.geomspace(float(_JB_MIN_LAB), 500.0, 28)
+    # Grid the classical reference curve is tabulated on. _equivalent_n_lab
+    # inverts this curve with np.interp, which CLAMPS at the endpoints -- so
+    # this cap is a hard ceiling on any reportable multiplier
+    # (multiplier = equiv_n_lab / n_lab, hence max reportable = cap / n_lab).
+    # At the old cap of 500 that ceiling bit hardest exactly where the method
+    # looks best: binary's kappa=0.80 tier reached a true multiplier of ~4x,
+    # needing equiv ~800 at n_lab=200, but could only ever report 500/200 =
+    # 2.50x -- so the BEST-performing eval type was silently truncated into
+    # looking WORSE than likert. Measured on the reps=200 sweep: every clipped
+    # cell returned exactly 500.0 across all four effect-size arms despite
+    # powers ranging 0.795-1.000, which is the clamp, not a measurement.
+    # 1500 gives headroom past binary's ~800; the extra grid points keep
+    # low-end resolution despite the wider span.
+    n_grid = np.geomspace(float(_JB_MIN_LAB), 1500.0, 36)
     ref_curves: dict[tuple[str, float], np.ndarray] = {}
     for eval_type, _sources, methods, _name_re in groups:
         for frac in PPI_NFORMULA_EFFECT_FRACS:
@@ -5942,15 +6061,22 @@ def save_results_artifacts_ppi_label_efficiency(
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "eval_type", "alignment_metric", "alignment_target", "alignment_value", "judge_noise",
-            "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier", "saturated",
+            # effect_frac FIRST among the new columns: the sweep spans
+            # PPI_LABEL_EFF_EFFECT_FRACS, so without it the arms are not
+            # separable after the fact and the es-invariance check (which is
+            # the point of sweeping) cannot be reproduced from the CSV.
+            "eval_type", "effect_frac", "alignment_metric", "alignment_target", "alignment_value",
+            "judge_noise", "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
+            "multiplier_lo", "multiplier_hi", "saturated",
         ])
         for r in results:
             mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
             writer.writerow([
-                r.eval_type, r.alignment_metric, f"{r.alignment_target:.2f}", f"{r.alignment_value:.4f}",
+                r.eval_type, f"{r.effect_frac:.2f}", r.alignment_metric,
+                f"{r.alignment_target:.2f}", f"{r.alignment_value:.4f}",
                 f"{r.judge_noise:.4f}", r.n_lab, r.n_reps,
-                f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}", r.saturated,
+                f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
+                f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
             ])
     summary_path = out_base / f"{run_stem}_ppi_label_efficiency_summary.log"
     buf = io.StringIO()
@@ -6027,12 +6153,18 @@ def save_results_artifacts_ppi_label_efficiency_raw(
     with raw_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow([
-            "name", "tag", "eval_type", "method", "n", "n_reps", "effect_size", "label_frac", "n_lab",
+            # effect_frac is parsed back out of the scenario name (which
+            # embeds ".es=<frac>") so the per-method rows stay separable by
+            # sweep arm without having to re-derive it from effect_size,
+            # whose absolute value differs per eval type.
+            "name", "tag", "eval_type", "effect_frac", "method", "n", "n_reps", "effect_size", "label_frac", "n_lab",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in raw:
+            _m_es = re.search(r"\.es=([\d.]+)", r.name)
             writer.writerow([
-                r.name, r.tag, r.eval_type, r.method, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
+                r.name, r.tag, r.eval_type, (_m_es.group(1) if _m_es else ""),
+                r.method, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -6065,6 +6197,234 @@ _LABEL_EFF_MARKER_SIZE = {"*": 9, "P": 6, "X": 6}
 """markersize overrides for _LABEL_EFF_MARKER_SHAPES entries that render
 smaller/larger than "o" at the same nominal size; anything not listed here
 falls back to the default markersize passed at the call site."""
+
+
+_ANALYTIC_PLOT_SEED = 0
+"""Fixed seed for the bootstrap CIs drawn inside plotting helpers, so a
+re-render of the same results produces an identical figure."""
+
+
+_LABEL_EFF_PANEL_TITLES = {
+    "binary": "Binary (Cohen's $\\kappa$)",
+    "continuous": "Continuous (Pearson $r$)",
+    "likert": "Likert (weighted $\\kappa$)",
+}
+"""Panel titles naming each eval type's own alignment metric -- the axis is
+"judge-human agreement" generically, but the STATISTIC differs per eval type
+(see _LABEL_EFF_ALIGNMENT_METRIC), and a reader comparing panels needs to
+know they are not the same number."""
+
+
+def save_ppi_label_efficiency_invariance_plot(
+    results: list[LabelEfficiencyPoint], out_path: str,
+) -> str:
+    """Effect-size INVARIANCE figure (appendix): multiplier on y, effect size
+    on x, one line per judge-quality tier, one panel per eval type.
+
+    The claim this figure has to make is "the label-efficiency multiplier is a
+    property of the JUDGE, not of the effect you happen to be testing", and
+    the visual encoding is chosen so that claim needs no statistical setup
+    from the reader: **flat lines mean invariance**. A reader who knows
+    nothing about the reference-curve inversion can see the result.
+
+    Why this figure exists at all: the multiplier is obtained by inverting a
+    classical power curve, so it COULD in principle drift with effect size
+    (the inversion is better conditioned in the curve's steep middle -- see
+    PPI_LABEL_EFF_EFFECT_FRACS). Sweeping several effect sizes and showing
+    the multiplier does not move is what licenses reporting a single pooled
+    number in the main text.
+
+    Medians across the N_lab grid, IQR/2 bars. Saturated points are dropped
+    (their equiv_n_lab is clamped -- see LabelEfficiencyPoint.saturated)."""
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in results if not r.saturated and np.isfinite(r.equiv_n_lab)]
+    if not rows:
+        raise ValueError("No non-saturated label-efficiency results to plot.")
+    eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in rows)]
+    tiers = sorted({r.alignment_target for r in rows})
+    cmap = plt.cm.viridis
+
+    fig, axes = plt.subplots(1, len(eval_types), figsize=(4.4 * len(eval_types), 4.3), sharey=True,
+                             squeeze=False)
+    for ax, et in zip(axes[0], eval_types):
+        fracs = sorted({r.effect_frac for r in rows if r.eval_type == et})
+        for i, t in enumerate(tiers):
+            med, err = [], []
+            for ef in fracs:
+                v = [r.equiv_n_lab / r.n_lab for r in rows
+                     if r.eval_type == et and r.alignment_target == t and r.effect_frac == ef]
+                med.append(float(np.median(v)) if v else np.nan)
+                err.append(float(np.percentile(v, 75) - np.percentile(v, 25)) / 2 if len(v) > 2 else 0.0)
+            ax.errorbar(fracs, med, yerr=err, marker="o", ms=4, lw=1.6, capsize=2.5,
+                        color=cmap(i / max(len(tiers) - 1, 1)), label=f"{t:.1f}")
+        ax.axhline(1.0, color="crimson", ls="--", lw=1.2, zorder=0)
+        ax.set_title(_LABEL_EFF_PANEL_TITLES.get(et, et), fontsize=10)
+        ax.set_xlabel("effect size (fraction of population SD)")
+        ax.set_xticks(fracs)
+        ax.grid(alpha=0.25)
+    axes[0][0].set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
+    axes[0][0].legend(title="judge–human\nagreement", fontsize=8, title_fontsize=8,
+                      loc="upper left", ncol=2)
+    fig.suptitle("Label-efficiency multiplier is invariant to effect size (flat lines = invariance)",
+                 fontsize=11, y=1.0)
+    fig.text(0.5, -0.03, "Each line is one judge-quality tier; points are medians across the "
+             "$N_{lab}$ grid, bars are IQR/2. Saturated cells excluded.", ha="center", fontsize=8.5)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_ppi_label_efficiency_threshold_plot(
+    results: list[LabelEfficiencyPoint], out_path: str, n_boot: int = 3000,
+) -> str:
+    """"How good must the judge be?" figure: multiplier vs judge-human
+    agreement, with the practically-useless region shaded.
+
+    This is the figure a practitioner actually acts on -- it answers "is my
+    judge good enough to be worth wiring up?" in the unit they care about
+    (labels, hence money), not in power or p-values.
+
+    The shaded band below 1.25x is deliberate. A multiplier can be
+    STATISTICALLY above 1.0 while being practically pointless: at agreement
+    0.4 the measured medians are 1.14x/1.01x/1.03x (binary/continuous/likert)
+    -- a 1-14% label saving that no one would restructure a pipeline for. So
+    the figure marks "distinguishable from 1.0" and "worth the trouble" as
+    different thresholds, rather than letting a significance test stand in
+    for a practical one.
+
+    Bands are bootstrap CIs on the median, pooled across effect-size arms
+    (licensed by save_ppi_label_efficiency_invariance_plot's result)."""
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in results if not r.saturated and np.isfinite(r.equiv_n_lab)]
+    if not rows:
+        raise ValueError("No non-saturated label-efficiency results to plot.")
+    eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in rows)]
+    tiers = sorted({r.alignment_target for r in rows})
+    marks = {"binary": "o", "continuous": "s", "likert": "^"}
+    cols = {"binary": "#2166ac", "continuous": "#1a9850", "likert": "#b2182b"}
+    rng = np.random.default_rng(_ANALYTIC_PLOT_SEED)
+
+    fig, ax = plt.subplots(figsize=(7.2, 5.0))
+    ymax = 1.0
+    for et in eval_types:
+        med, lo, hi = [], [], []
+        for t in tiers:
+            v = np.array([r.equiv_n_lab / r.n_lab for r in rows
+                          if r.eval_type == et and r.alignment_target == t])
+            if not len(v):
+                med.append(np.nan); lo.append(np.nan); hi.append(np.nan); continue
+            b = [np.median(rng.choice(v, len(v), replace=True)) for _ in range(n_boot)]
+            med.append(float(np.median(v)))
+            lo.append(float(np.percentile(b, 2.5))); hi.append(float(np.percentile(b, 97.5)))
+        ymax = max(ymax, float(np.nanmax(hi)))
+        ax.plot(tiers, med, marker=marks.get(et, "o"), color=cols.get(et), lw=2, ms=6,
+                label=_LABEL_EFF_PANEL_TITLES.get(et, et), zorder=3)
+        ax.fill_between(tiers, lo, hi, color=cols.get(et), alpha=0.18, zorder=2)
+
+    ax.axhspan(0.95, 1.25, color="grey", alpha=0.16, zorder=0)
+    # Label the shaded band in its EMPTY right half: every eval type has
+    # climbed above 1.25x by the upper agreement tiers, so the band is clear
+    # there, whereas the left half is exactly where the low-agreement points
+    # sit and any label collides with them.
+    ax.text(tiers[-1], 1.10, "not worth the trouble\n(<1.25× saving)  ",
+            fontsize=8.5, color="#444", va="center", ha="right")
+    ax.axhline(1.0, color="crimson", ls="--", lw=1.3, zorder=1)
+    for xv, txt in ((0.5, "≈0.5: PPI starts\nto pay for itself"),
+                    (0.7, "≈0.7: ~1.5×\nlabel savings")):
+        if tiers[0] <= xv <= tiers[-1]:
+            ax.axvline(xv, color="k", ls=":", lw=1.2, zorder=1)
+            ax.text(xv + 0.005, ymax * 0.92, txt, fontsize=8.5, va="top")
+    ax.set_xlabel("judge–human agreement (inter-rater reliability)")
+    ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
+    ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
+    ax.set_xticks(tiers)
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=9, loc="upper left")
+    fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and "
+             "the $N_{lab}$ grid.\nBelow ≈0.5 agreement the multiplier is 1.0–1.2×: PPI recovers "
+             "little over simply labeling by hand.", ha="center", fontsize=8.5)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_ppi_label_efficiency_plots(
+    results: list[LabelEfficiencyPoint], out_path: str, square: bool = True,
+) -> list[str]:
+    """Emit the OVERALL label-efficiency figure (pooled across the effect-size
+    sweep) plus ONE FIGURE PER effect size, as separate .png files.
+
+    The per-es figures are not decoration: the multiplier is a property of
+    judge quality and should be es-INVARIANT, so the sweep's whole value as a
+    robustness check is that a reader can see the arms agree (or not) on the
+    n_lab cells they share. Pooling alone would average that check away --
+    an arm that disagrees would silently shift the pooled curve rather than
+    announce itself.
+
+    The pooled figure averages equiv_n_lab across arms per
+    (eval_type, alignment_target, n_lab) cell, skipping saturated points
+    (see LabelEfficiencyPoint.saturated -- a saturated equiv_n_lab is
+    clamped to n_grid's edge and would drag any average it enters).
+
+    Returns every path written, overall first."""
+    paths = [save_ppi_label_efficiency_plot(_pool_label_eff_across_es(results), out_path, square=square)]
+    base = Path(out_path)
+    # The two analysis figures: es-invariance (which licenses pooling across
+    # arms at all) and the practitioner-facing agreement threshold.
+    try:
+        paths.append(save_ppi_label_efficiency_threshold_plot(
+            results, str(base.with_name(f"{base.stem}_threshold{base.suffix}"))))
+    except ValueError:
+        pass
+    fracs = sorted({r.effect_frac for r in results})
+    if len(fracs) > 1:
+        try:
+            paths.append(save_ppi_label_efficiency_invariance_plot(
+                results, str(base.with_name(f"{base.stem}_es_invariance{base.suffix}"))))
+        except ValueError:
+            pass
+        for frac in fracs:
+            subset = [r for r in results if r.effect_frac == frac]
+            if not subset:
+                continue
+            # readable suffix: foo_es0p35.png
+            sub_path = base.with_name(f"{base.stem}_es{f'{frac:.2f}'.replace('.', 'p')}{base.suffix}")
+            paths.append(save_ppi_label_efficiency_plot(subset, str(sub_path), square=square))
+    return paths
+
+
+def _pool_label_eff_across_es(results: list[LabelEfficiencyPoint]) -> list[LabelEfficiencyPoint]:
+    """Average equiv_n_lab/ppi_power across the effect-size arms, per
+    (eval_type, alignment_target, n_lab). Saturated points are dropped
+    first; a cell with nothing left stays saturated so the plot's own
+    saturation handling still fires."""
+    from collections import defaultdict
+    buckets: dict[tuple, list[LabelEfficiencyPoint]] = defaultdict(list)
+    for r in results:
+        buckets[(r.eval_type, r.alignment_target, r.n_lab)].append(r)
+    pooled: list[LabelEfficiencyPoint] = []
+    for (_et, _tgt, _nl), rows in buckets.items():
+        usable = [r for r in rows if not r.saturated and np.isfinite(r.equiv_n_lab)]
+        src = usable or rows
+        ref = src[0]
+        pooled.append(replace(
+            ref,
+            ppi_power=float(np.mean([r.ppi_power for r in src])),
+            equiv_n_lab=float(np.mean([r.equiv_n_lab for r in src])),
+            n_reps=int(sum(r.n_reps for r in src)),
+            saturated=not usable,
+            mult_lo=float(np.mean([r.mult_lo for r in src])),
+            mult_hi=float(np.mean([r.mult_hi for r in src])),
+        ))
+    return pooled
 
 
 def save_ppi_label_efficiency_plot(results: list[LabelEfficiencyPoint], out_path: str, square: bool = True) -> str:
@@ -6177,7 +6537,14 @@ metric-incompatible ones a reader had to mentally re-split by panel.
             # Saturated points are plotted as a lower-bound marker clipped
             # just inside the axis ceiling, never at their raw (meaningless)
             # equiv_n_lab value -- see LabelEfficiencyPoint.saturated.
-            ys = [min(r.equiv_n_lab, y_max * 0.97) if r.saturated else r.equiv_n_lab for r in rows]
+            # Saturated points are pinned AT the axis ceiling, not just
+            # below it. Drawing them at 0.97*y_max made them visually
+            # indistinguishable from a real measurement slightly under the
+            # highest true point -- a triangle at ~388 read as "tops out near
+            # 390" when it actually means ">= 500, truly >= 800". Pinning to
+            # the ceiling plus a caret marker says "runs off the top", which
+            # is what a lower bound should look like.
+            ys = [y_max if r.saturated else r.equiv_n_lab for r in rows]
             color = cmap(0.15 + 0.7 * i / max(1, len(targets) - 1))
             is_baseline = target == baseline_target
             marker = _LABEL_EFF_MARKER_SHAPES[i % len(_LABEL_EFF_MARKER_SHAPES)]
@@ -6201,13 +6568,18 @@ metric-incompatible ones a reader had to mentally re-split by panel.
                 # still that tier's data), but the shared legend swatch for
                 # "power saturated" is a separate, neutral-gray proxy --
                 # the category isn't tied to any one tier's color.
+                # clip_on=False so the caret straddles the axis line itself,
+                # reinforcing "this value is off the chart" rather than
+                # "this value is at the top of the chart".
                 ax.plot(
-                    sat_xs, sat_ys, color=color, marker="^", markersize=7, linestyle="none",
-                    zorder=5,
+                    sat_xs, sat_ys, color=color, marker="^", markersize=11,
+                    markeredgecolor="black", markeredgewidth=0.8, linestyle="none",
+                    clip_on=False, zorder=6,
                 )
                 legend_handles.setdefault(
-                    "power saturated",
-                    plt.Line2D([], [], color="gray", marker="^", markersize=7, linestyle="none"),
+                    "saturated (lower bound: true value is higher)",
+                    plt.Line2D([], [], color="gray", marker="^", markersize=9,
+                               markeredgecolor="black", markeredgewidth=0.8, linestyle="none"),
                 )
 
         ax.set_xlim(0, x_max)
@@ -6223,16 +6595,24 @@ metric-incompatible ones a reader had to mentally re-split by panel.
         fontsize=11,
     )
     # One shared legend, ordered "No benefit" -> IRR targets descending ->
-    # "power saturated" -- NOT plain insertion order (legend_handles fills
+    # any non-tier entries (e.g. the saturated marker) -- NOT plain insertion order (legend_handles fills
     # in whatever order panels happen to hit each category, so
     # "power saturated" can land mid-list if an early panel saturates on
     # its very first tier); explicitly sorted here instead.
     def _legend_sort_key(label: str) -> tuple[int, float]:
         if label == "No benefit (y = x)":
             return (0, 0.0)
-        if label == "power saturated":
+        # Anything that isn't an "IRR~=<value>" tier entry sorts last. Matched
+        # structurally rather than by exact string: this previously compared
+        # against a hardcoded "power saturated" and raised IndexError the
+        # moment that label's wording changed, since the fallthrough branch
+        # assumes an "=" is present.
+        if not label.startswith("IRR"):
             return (2, 0.0)
-        return (1, -float(label.rsplit("=", 1)[1]))  # descending IRR target
+        try:
+            return (1, -float(label.rsplit("=", 1)[1]))  # descending IRR target
+        except (IndexError, ValueError):
+            return (2, 0.0)
     ordered_labels = sorted(legend_handles.keys(), key=_legend_sort_key)
     # Anchored to the RIGHTMOST axes' own transAxes (not a hand-picked
     # figure-fraction number, and not bbox_to_anchor=(1.0, ...), which
@@ -10616,11 +10996,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                             out_dir=args.out_dir, run_stem=label_eff_stem,
                         )
                     if args.plots == "save":
-                        label_eff_plot_path = save_ppi_label_efficiency_plot(
+                        # One pooled figure + one per effect-size arm -- see
+                        # save_ppi_label_efficiency_plots' docstring for why
+                        # the per-es views are kept rather than only pooled.
+                        for label_eff_plot_path in save_ppi_label_efficiency_plots(
                             label_eff_results, out_path=str(Path(plots_dir) / f"{label_eff_stem}_plot.png"),
-                        )
-                        output_paths.append(label_eff_plot_path)
-                        print(f"Saved plot: {label_eff_plot_path}")
+                        ):
+                            output_paths.append(label_eff_plot_path)
+                            print(f"Saved plot: {label_eff_plot_path}")
                     key_metrics["ppi_label_efficiency_n_results"] = len(label_eff_results)
 
             # N-formula check (run_ppi_nformula_check): opt-in, separate from

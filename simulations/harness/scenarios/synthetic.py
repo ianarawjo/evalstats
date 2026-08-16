@@ -2285,8 +2285,56 @@ PPI_LABEL_EFF_NOISE_LEVELS_BINARY = (0.025, 0.10, 0.40)
 """Binary analogue of PPI_LABEL_EFF_NOISE_LEVELS -- 0.10 matches
 PPI_BINARY_NOISE_BASELINE (the existing default), the other two are
 PPI_BINARY_NOISE_LEVELS' low/high ends."""
+PPI_LABEL_EFF_EFFECT_FRACS = (0.15, 0.20, 0.25, 0.35)
+"""Effect sizes the label-efficiency check sweeps (as fractions of the eval
+type's own population SD -- see _jb_effect_magnitude).
+
+A SINGLE effect size cannot keep the whole N_lab grid well-conditioned. The
+multiplier is not measured directly; it is INVERTED through the classical
+reference curve (equiv_n_lab = interp(ppi_power, power_grid, n_grid)), and
+that inversion's gain dN/dP is 800-1250 labels per unit power wherever the
+curve is flat -- i.e. near alpha and near saturation. A binomial SE of 0.02
+on ppi_power then becomes +/-16-25 equivalent labels, which at n_lab=15 is
++/-1.05x on the multiplier. Measured at frac=0.15: the predicted multiplier
+sd from binomial noise alone (1.41 at n_lab=15) EXCEEDS the observed scatter
+(0.56), so multipliers below 1.0x in that regime are inversion artifacts,
+not PPI underperforming a human-only test.
+
+Since N_lab spans 13x (15..200), power necessarily sweeps a wide range for
+any one effect size. Cells that land in the steep middle (0.15 <= power <=
+0.85), by frac:
+
+                         continuous        binary
+    frac=0.15  ->  n_lab  90..200 (3/8)   30..200 (6/8)   <- the old single value
+    frac=0.20  ->        40..200 (5/8)   15..200 (8/8)
+    frac=0.25  ->        30..200 (6/8)   15..130 (7/8)
+    frac=0.35  ->        15..130 (7/8)   15.. 60 (5/8)
+
+The union covers every n_lab in every eval type, with overlap -- and the
+overlap is the point: the multiplier is a property of JUDGE QUALITY and
+should be es-INVARIANT, so agreement between arms on shared cells is a
+genuine robustness check, and disagreement is a real finding. Report per-es
+curves alongside the pooled one so that check stays visible rather than
+being averaged away.
+
+Why this range and not lower or higher. The eval types peak at DIFFERENT
+fracs -- binary at 0.20, continuous at 0.35, roughly 1.75x apart, because
+binary's classical power curve rises faster. Reaching below 0.15 does not
+help: frac=0.05/0.10 yield 0/8 and 1/8 usable cells for continuous and
+0/8 and 3/8 for likert, so they would be near-dead arms for two of the
+three eval types while binary is already fully covered once 0.20 is
+present. Reaching to 0.50 is worse than it looks: its usefulness depends
+on the TRUE multiplier, and at the 2.5-3.5x binary actually achieves,
+frac=0.50 degrades to 0/8 usable and 3/8 SATURATED (verified by a
+sensitivity scan over assumed multipliers 1.5/2.5/3.5). Every frac kept
+here stays useful as the multiplier grows; 0.50 does not."""
+
 PPI_LABEL_EFF_EFFECT_FRAC = 0.15
-"""Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
+"""Backward-compatible single effect-size fraction (the first entry of
+PPI_LABEL_EFF_EFFECT_FRACS). Retained for callers that want one arm --
+build_ppi_nformula_sources and the comparison sweeps still reference it.
+
+Effect-size fraction for build_ppi_label_efficiency_sources -- smaller
 than PPI_COMPARISON_MODERATE_EFFECT_FRAC (0.30) deliberately: continuous's
 classical (human-only) test power grows faster with N_lab at that
 constant's own scale, so both PPI's and the reference curve's power would
@@ -2378,6 +2426,7 @@ make the fit look clean."""
 
 def build_ppi_label_efficiency_sources(
     noise_by_eval_type: dict[str, tuple[float, ...]] | None = None,
+    effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC,
 ) -> list[JudgeBiasSource]:
     """Label-fraction x judge-quality grid for the label-efficiency /
     effective-sample-size check (cases/pvalues.py's save_ppi_label_
@@ -2417,8 +2466,8 @@ def build_ppi_label_efficiency_sources(
 
     return [
         JudgeBiasSource(
-            name=f"labeleff.{et}.noise={noise:.4f}.lab={n_lab_target}", tag="label_eff",
-            effect_size=_jb_effect_magnitude(et, PPI_LABEL_EFF_EFFECT_FRAC),
+            name=f"labeleff.{et}.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}", tag="label_eff",
+            effect_size=_jb_effect_magnitude(et, effect_frac),
             **_kwargs(et, n_lab_target, noise),
         )
         for et in PPI_LABEL_EFF_EVAL_TYPES
@@ -2429,6 +2478,7 @@ def build_ppi_label_efficiency_sources(
 
 def build_ppi_label_efficiency_sources_binary(
     noise_levels: tuple[float, ...] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC,
 ) -> list[JudgeBiasSource]:
     """Binary analogue of build_ppi_label_efficiency_sources, restricted to
     _COMPARISON_METHODS_BINARY (ttest_welch/paired_t -- see that constant's
@@ -2447,8 +2497,8 @@ def build_ppi_label_efficiency_sources_binary(
 
     return [
         JudgeBiasSource(
-            name=f"labeleff.binary.noise={noise:.4f}.lab={n_lab_target}", tag="label_eff_binary",
-            effect_size=_jb_effect_magnitude_binary(PPI_LABEL_EFF_EFFECT_FRAC),
+            name=f"labeleff.binary.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}", tag="label_eff_binary",
+            effect_size=_jb_effect_magnitude_binary(effect_frac),
             **_kwargs(n_lab_target, noise),
         )
         for noise in noise_levels
