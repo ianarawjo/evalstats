@@ -3344,6 +3344,282 @@ def _icc_21(a: np.ndarray, b: np.ndarray) -> float:
     return float((MSR - MSE) / denom)
 
 
+def _lin_ccc(a: np.ndarray, b: np.ndarray) -> float:
+    """Lin's concordance correlation coefficient.
+
+        CCC = 2*cov(a,b) / (var(a) + var(b) + (mean(a)-mean(b))^2)
+
+    Included specifically because it DECOMPOSES as ``pearson_r * C_b``,
+    where C_b is a bias-correction factor <= 1: it is "correlation, times a
+    penalty for systematic miscalibration". Pearson r alone is shift-
+    invariant (a judge reading uniformly 2 points high still scores r=1.0),
+    so reporting r and CCC side by side separates "is the judge
+    INFORMATIVE" from "is the judge CALIBRATED" -- the distinction that
+    matters here, since PPI's rectifier absorbs additive bias but cannot
+    manufacture information. Population moments (ddof=0), per Lin (1989).
+
+    Written as the literal ``r * C_b`` product (with r from scipy) rather than
+    the equivalent one-line covariance form, so the decomposition the metric
+    is included FOR is visible in the code rather than only in this
+    docstring. No sklearn/scipy/statsmodels equivalent exists (checked)."""
+    from scipy.stats import pearsonr
+
+    a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
+    if len(a) < 2:
+        return float("nan")
+    sa, sb = float(np.std(a)), float(np.std(b))
+    if sa <= 0 or sb <= 0:
+        return float("nan")
+    r = float(pearsonr(a, b).statistic)
+    # C_b <= 1: the bias-correction factor, penalizing a location shift
+    # (mean difference) or scale mismatch between the two raters.
+    c_b = (2.0 * sa * sb) / (sa ** 2 + sb ** 2 + (float(a.mean()) - float(b.mean())) ** 2)
+    return float(r * c_b)
+
+
+def _gwet_ac1(a: np.ndarray, b: np.ndarray) -> float:
+    """Gwet's AC1 agreement coefficient (nominal).
+
+    Exists because Cohen's kappa suffers the KAPPA PARADOX: when one
+    category dominates, chance agreement P_e is inflated and kappa collapses
+    even though raw agreement is high. That regime is not hypothetical here
+    -- several real corpora sit at a ~0.28 base rate. AC1 replaces kappa's
+    chance term with one that does not blow up under skew:
+
+        P_e = sum_k pi_k (1 - pi_k) / (K - 1),  pi_k = mean marginal
+        AC1 = (P_o - P_e) / (1 - P_e)
+
+    Gwet (2008). Hand-rolled because no sklearn/scipy/statsmodels equivalent
+    exists (statsmodels.stats.inter_rater ships only cohens_kappa and
+    fleiss_kappa) -- P_o comes from sklearn all the same.
+
+    NOTE the chance term has NO factor of 2: for K=2 with balanced marginals
+    pi=[.5,.5] the correct P_e is 0.5, and an erroneous leading 2 drives it
+    to exactly 1.0 (a divide-by-zero that reads as nan). Validated against
+    the closed form on skewed and balanced 2x2 tables."""
+    from sklearn.metrics import accuracy_score
+
+    a = np.asarray(a); b = np.asarray(b)
+    cats = np.unique(np.concatenate([a, b]))
+    K = len(cats)
+    if K < 2:
+        return 1.0 if len(a) else float("nan")
+    p_o = float(accuracy_score(a, b))
+    pi = np.array([ (np.mean(a == c) + np.mean(b == c)) / 2.0 for c in cats ], dtype=float)
+    p_e = float(np.sum(pi * (1.0 - pi)) / (K - 1))
+    return float((p_o - p_e) / (1.0 - p_e)) if p_e < 1.0 else float("nan")
+
+
+def _pabak(a: np.ndarray, b: np.ndarray) -> float:
+    """Prevalence-Adjusted Bias-Adjusted Kappa, in its K-category form:
+
+        PABAK_K = (K*P_o - 1) / (K - 1)
+
+    For K=2 this is exactly Byrt et al. (1993)'s 2*P_o - 1; for general K it
+    is the Brennan-Prediger coefficient (equivalently Bennett's S), i.e. the
+    kappa you get by replacing the estimated chance term with a UNIFORM one,
+    P_e = 1/K.
+
+    The other standard answer to the kappa paradox, and deliberately the
+    SIMPLEST one: it depends only on observed agreement, so it cannot be
+    distorted by marginal skew at all. Reported alongside AC1 because the two
+    disagree in informative ways -- AC1 still estimates chance agreement from
+    the observed marginals, PABAK assumes it is uniform.
+
+    The K generalization is NOT optional bookkeeping: the 2*P_o - 1 form
+    hardcodes a chance-agreement rate of 0.5, so applying it to a 5-point
+    Likert scale (where uniform chance is 0.2) understates the coefficient
+    badly -- it returned a NEGATIVE value for a judge simultaneously scoring
+    weighted kappa = 0.60, which is how this was caught. P_o via sklearn."""
+    from sklearn.metrics import accuracy_score
+
+    a = np.asarray(a); b = np.asarray(b)
+    if not len(a):
+        return float("nan")
+    n_cat = len(np.unique(np.concatenate([a, b])))
+    if n_cat < 2:
+        return 1.0
+    p_o = float(accuracy_score(a, b))
+    return float((n_cat * p_o - 1.0) / (n_cat - 1.0))
+
+
+def _krippendorff_alpha(a: np.ndarray, b: np.ndarray, level: str = "nominal") -> float:
+    """Krippendorff's alpha for two coders, no missing data.
+
+        alpha = 1 - D_o / D_e
+
+    with D_o the mean squared (metric-weighted) distance between the two
+    coders' scores for the same unit, and D_e the mean distance between all
+    pairs of scores across the pooled rating pool.
+
+    Included because it is the default reliability statistic in HCI/CSCW
+    content analysis, and -- uniquely among the metrics here -- it applies to
+    NOMINAL, ORDINAL and INTERVAL data with only the distance function
+    changing. That makes it the one number reportable on the SAME footing
+    across all three eval types, which is what lets a reader check whether
+    the "judge-human agreement" abstraction survives a change of statistic
+    rather than being an artifact of using r for one type and kappa for
+    another.
+
+    ``level``: "nominal" (0/1 distance), "interval" (squared difference), or
+    "ordinal" (squared difference of cumulative rank positions, per
+    Krippendorff's ordinal metric).
+
+    Hand-rolled: neither sklearn, scipy nor statsmodels implements alpha, and
+    the standalone ``krippendorff`` package is not a dependency here. Each
+    branch is validated against an independent, explicitly-constructed
+    coincidence-matrix reference implementation (see this feature's
+    validation script) rather than against a recalled published constant."""
+    a = np.asarray(a, dtype=float); b = np.asarray(b, dtype=float)
+    n = len(a)
+    if n < 2:
+        return float("nan")
+    if level == "nominal":
+        d_o = float(np.mean(a != b))
+        pool = np.concatenate([a, b])
+        vals, counts = np.unique(pool, return_counts=True)
+        p = counts / counts.sum()
+        d_e = float(1.0 - np.sum(p ** 2))
+    elif level == "interval":
+        d_o = float(np.mean((a - b) ** 2))
+        pool = np.concatenate([a, b])
+        # mean squared difference over all ordered pairs = 2 * population var
+        d_e = float(2.0 * np.var(pool))
+    elif level == "ordinal":
+        pool = np.concatenate([a, b])
+        vals, counts = np.unique(pool, return_counts=True)
+        # Krippendorff's ordinal metric: distance between ranks g<h is
+        # (sum of counts strictly between, plus half each endpoint)^2
+        cum = np.cumsum(counts)
+        cvals = cum - counts / 2.0
+        # vectorized value -> rank-center lookup (vals is sorted by np.unique)
+        pa = cvals[np.searchsorted(vals, a)]
+        pb = cvals[np.searchsorted(vals, b)]
+        d_o = float(np.mean((pa - pb) ** 2))
+        p = counts / counts.sum()
+        mean_c = float(np.sum(p * cvals))
+        d_e = float(2.0 * np.sum(p * (cvals - mean_c) ** 2))
+    else:
+        raise ValueError(f"unknown level {level!r}")
+    if d_e <= 0:
+        return float("nan")
+    # two coders, no missing data: the (n*m-1)/(n*m) finite-sample factor on
+    # D_e reduces to (2n-1)/(2n)
+    d_e *= (2.0 * n) / (2.0 * n - 1.0)
+    return float(1.0 - d_o / d_e)
+
+
+def _alignment_metric_dict(a: np.ndarray, b: np.ndarray, eval_type: str) -> dict:
+    """Every defensible inter-rater-reliability metric for one eval type,
+    computed from two aligned rating vectors. Shared by
+    measure_judge_alignment (judge vs. human truth) and
+    measure_human_human_alignment (human vs. human) so the two are guaranteed
+    to be computed identically -- the human-human numbers are only meaningful
+    as a benchmark for the judge numbers if both sides use the same estimator.
+
+    `a`/`b` must ALREADY be on their final comparison scale (likert rounded
+    and clipped to the integer grid, binary as 0/1) -- this function does not
+    re-discretize, since what counts as the right rounding rule is the
+    caller's decision (see measure_judge_alignment's closing note).
+
+    Everything with a library implementation uses it: Cohen's kappa
+    (unweighted / linear / quadratic) from sklearn.metrics.cohen_kappa_score,
+    percent agreement from sklearn.metrics.accuracy_score, Pearson/Spearman/
+    Kendall tau-b from scipy.stats. Only Krippendorff's alpha, Gwet's AC1 and
+    Lin's CCC are hand-rolled, because no sklearn/scipy/statsmodels
+    implementation of them exists (verified, not assumed).
+
+    WHY MORE THAN ONE: the label-efficiency result is stated as a threshold in
+    "IRR" (see cases/pvalues.py's es-invariance/threshold plots), so the
+    obvious reviewer question is whether that threshold is an artifact of
+    picking kappa for binary and Pearson r for continuous. Reporting the full
+    panel per eval type -- including alpha, which applies to ALL THREE types
+    with only its distance function changing -- is what makes that question
+    answerable from the CSV instead of requiring a re-run.
+
+    Metrics are only included where they're DEFINED for the type: the
+    chance-corrected categorical ones (kappa, AC1, PABAK) need categories, so
+    continuous gets correlation/agreement-type metrics only. Values are RAW
+    (not rescaled); callers do their own clipping/bucketing."""
+    from scipy.stats import kendalltau, pearsonr, spearmanr
+    from sklearn.metrics import accuracy_score, cohen_kappa_score
+
+    a = np.asarray(a); b = np.asarray(b)
+    out: dict[str, float] = {}
+
+    if eval_type in ("binary", "likert"):
+        ai, bi = a.astype(int), b.astype(int)
+        out["percent_agreement"] = float(accuracy_score(ai, bi) * 100.0)
+        # CAUTION when reading these two for likert: both are UNWEIGHTED
+        # (nominal) coefficients, so a 1-vs-5 miss counts exactly as badly as
+        # a 1-vs-2 miss. On an ordinal scale they will therefore read far
+        # below the weighted kappas on the same data -- that is the metrics
+        # disagreeing by construction, not the judge being worse than the
+        # weighted numbers suggest. They are included because the kappa
+        # paradox they address is a marginal-skew problem that applies to
+        # ordinal scales too, but the ordinal-aware comparisons to make are
+        # linear/quadratic weighted kappa and Krippendorff's ordinal alpha.
+        out["gwet_ac1"] = _gwet_ac1(ai, bi)
+        out["pabak"] = _pabak(ai, bi)
+
+    if eval_type == "binary":
+        out["kappa"] = float(cohen_kappa_score(ai, bi))
+        # Pearson r on 0/1 data is the phi coefficient. Carried for EVERY eval
+        # type (not just continuous) because rho^2 -- see the "rho2" key below
+        # -- is the one judge-quality number that predicts PPI's label-
+        # efficiency gain identically across all three, so it has to be
+        # measured on a common footing rather than only where r is the
+        # conventional report.
+        out["pearson_r"] = float(pearsonr(ai.astype(float), bi.astype(float)).statistic)
+        # ICC(2,1) and CCC on 0/1 data are well-defined (a 2-level ordinal
+        # scale) and are what a reviewer coming from the continuous panel
+        # will look for; tau-b on 2x2 coincides with the phi coefficient.
+        out["icc_21"] = _icc_21(ai.astype(float), bi.astype(float))
+        out["lin_ccc"] = _lin_ccc(ai, bi)
+        out["kendall_tau_b"] = float(kendalltau(ai, bi, variant="b").statistic)
+        out["krippendorff_alpha"] = _krippendorff_alpha(ai, bi, level="nominal")
+    elif eval_type == "likert":
+        out["weighted_kappa"] = float(cohen_kappa_score(ai, bi, weights="quadratic"))
+        # Linear weights punish a 2-category miss twice as hard as a
+        # 1-category miss; quadratic punishes it four times as hard. Which is
+        # "right" for a Likert judge is a convention, so report both rather
+        # than defending one.
+        out["linear_weighted_kappa"] = float(cohen_kappa_score(ai, bi, weights="linear"))
+        out["pearson_r"] = float(pearsonr(ai.astype(float), bi.astype(float)).statistic)
+        out["spearman_r"] = float(spearmanr(ai, bi).statistic)
+        out["kendall_tau_b"] = float(kendalltau(ai, bi, variant="b").statistic)
+        out["icc_21"] = _icc_21(ai.astype(float), bi.astype(float))
+        out["lin_ccc"] = _lin_ccc(ai, bi)
+        out["krippendorff_alpha"] = _krippendorff_alpha(ai, bi, level="ordinal")
+    else:
+        af, bf = a.astype(float), b.astype(float)
+        out["pearson_r"] = float(pearsonr(af, bf).statistic)
+        out["spearman_r"] = float(spearmanr(af, bf).statistic)
+        out["kendall_tau_b"] = float(kendalltau(af, bf, variant="b").statistic)
+        out["icc_21"] = _icc_21(af, bf)
+        out["lin_ccc"] = _lin_ccc(af, bf)
+        out["krippendorff_alpha"] = _krippendorff_alpha(af, bf, level="interval")
+
+    # rho^2 -- THE judge-quality axis for PPI label efficiency, and the reason
+    # pearson_r is carried for all three eval types above. PPI++ with tuned
+    # lambda is a control variate, so the variance of the corrected estimate
+    # falls by the factor (1 - rho^2 * unlabeled_fraction), giving
+    #
+    #     labeling-effort saving = 1 / (1 - rho^2 * (1 - n_lab/N))
+    #
+    # (see cases/pvalues.py's _ppi_predicted_savings, which is where that
+    # formula lives). Nothing in the derivation refers to the data type, which
+    # is what lets ONE threshold cover binary/likert/continuous -- validated
+    # over a 48-cell noise x bias grid at R^2=0.997 against measured variance
+    # ratios. Unlike the agreement-type metrics it is invariant to judge BIAS,
+    # correctly, because PPI's rectifier removes additive bias: at fixed noise
+    # a 4x bias increase drops ICC 0.857 -> 0.532 while the realized saving
+    # holds at 3.30x -> 3.19x.
+    r = out.get("pearson_r")
+    out["rho2"] = float(r * r) if r is not None and np.isfinite(r) else float("nan")
+    return out
+
+
 def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int = 0) -> dict:
     """Large-sample (n_mc), FULLY-labeled point measurement of judge-human
     alignment for one JudgeBiasSource's judge model -- deliberately separate
@@ -3362,26 +3638,11 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
     every metric this eval type has a defensible claim to, not just one
     "primary" pick, since which one a caller wants to bucket/report by is a
     presentational choice made downstream (see cases/pvalues.py's
-    _ALIGNMENT_VIEWS), not something baked into the measurement:
-      - binary: "kappa" (unweighted Cohen's kappa -- the standard nominal-
-        data reliability statistic, and what evalstats/alignment.py's own
-        public API reports for a binary judge), "percent_agreement"
-        (raw exact-match % -- the same public API's companion number).
-      - likert: "weighted_kappa" (quadratic Cohen's kappa -- the standard
-        ordinal-data reliability statistic, and what most papers report for
-        Likert-type judge alignment), "spearman_r" (rank correlation --
-        some work recommends this instead for Likert judges, since it
-        doesn't require picking tie-weights the way weighted kappa does),
-        "icc_21" (Shrout & Fleiss two-way random-effects ICC, absolute
-        agreement -- see _icc_21's docstring for why it's included
-        alongside the two correlation-type metrics rather than instead of
-        them), "percent_agreement" (raw exact-match % -- rarely reported
-        alone, kept as an intuitive companion number).
-      - continuous: "pearson_r" (still the most commonly reported single
-        number for numeric/continuous judge-vs-human agreement),
-        "spearman_r" (companion, robust to nonlinear-but-monotonic
-        judge miscalibration), "icc_21" (see _icc_21's docstring).
-    All are on their natural scale (roughly -1 to 1 for a correlation/kappa,
+    _ALIGNMENT_VIEWS), not something baked into the measurement. See
+    _alignment_metric_dict for the exact panel per eval type and why each
+    metric is in it; the historically-primary picks are "kappa" (binary),
+    "weighted_kappa"/"spearman_r" (likert) and "pearson_r" (continuous),
+    which remain present and unchanged. All are on their natural scale (roughly -1 to 1 for a correlation/kappa,
     though never far below 0 for a judge that's at least weakly aligned with
     truth) -- callers wanting a 0-100 bucketing axis apply their own
     clip(x, 0, 1) * 100 (see cases/pvalues.py's _alignment_bucket).
@@ -3410,40 +3671,14 @@ def measure_judge_alignment(sc: JudgeBiasSource, n_mc: int = 20_000, seed: int =
     unrounded judge score would almost never exactly equal an integer human
     label. Rounding first matches what a real deployment would do to report
     an "X% aligned"/kappa claim on a Likert-scored judge in the first place."""
-    from scipy.stats import pearsonr, spearmanr
-    from sklearn.metrics import cohen_kappa_score
-
     rng = np.random.default_rng(seed)
     cal_sc = replace(sc, n=n_mc)
     cell = generate_judge_bias_cell(cal_sc, rng)
     truth, llm = cell.truth_a2, cell.llm_a2
 
-    if sc.eval_type == "binary":
-        # Unweighted Cohen's kappa + percent agreement -- deliberately NOT
-        # sensitivity/specificity/F1: matches evalstats/alignment.py's own
-        # _compute_alignment_metrics binary branch (the two numbers the
-        # public tool actually reports for a binary judge), and recent work
-        # on what to report for binary LLM-judge agreement singles out
-        # accuracy+kappa as the core pair, treating further correlation-type
-        # statistics (phi/MCC/Pearson/Spearman/Kendall's tau-b) as
-        # essentially redundant with each other on 2x2 data -- see this
-        # feature's design discussion.
-        kappa = float(cohen_kappa_score(truth.astype(int), llm.astype(int)))
-        pct_agree = float(np.mean(llm == truth) * 100.0)
-        return {"kappa": kappa, "percent_agreement": pct_agree}
-    elif sc.eval_type == "likert":
-        lo, hi = 1.0, float(sc.likert_max)
-        llm_rounded = np.clip(np.rint(llm), lo, hi)
-        kappa = float(cohen_kappa_score(truth.astype(int), llm_rounded.astype(int), weights="quadratic"))
-        pct_agree = float(np.mean(llm_rounded == truth) * 100.0)
-        rho, _ = spearmanr(truth, llm_rounded)
-        icc = _icc_21(truth, llm_rounded)
-        return {"weighted_kappa": kappa, "spearman_r": float(rho), "icc_21": icc, "percent_agreement": pct_agree}
-    else:
-        r, _ = pearsonr(truth, llm)
-        rho, _ = spearmanr(truth, llm)
-        icc = _icc_21(truth, llm)
-        return {"pearson_r": float(r), "spearman_r": float(rho), "icc_21": icc}
+    if sc.eval_type == "likert":
+        llm = np.clip(np.rint(llm), 1.0, float(sc.likert_max))
+    return _alignment_metric_dict(truth, llm, sc.eval_type)
 
 
 PPI_ALIGNMENT_HUMAN_NOISE_LEVELS = (0.05, 0.15, 0.30)
@@ -3473,9 +3708,6 @@ def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc:
     to JudgeBiasSource.llm_noise via build_ppi_factorial_sources' llm_noise
     factor, so results are directly comparable to the main judge-alignment
     view."""
-    from scipy.stats import pearsonr, spearmanr
-    from sklearn.metrics import cohen_kappa_score
-
     rng = np.random.default_rng(seed)
     shape = _ppi_shape(eval_type)
     anchor = _ppi_shape_anchor(shape)
@@ -3485,19 +3717,17 @@ def measure_human_human_alignment(eval_type: str, human_noise_frac: float, n_mc:
     rater2 = _jb_llm(truth, bias=0.0, noise_sd=human_noise, rng=rng, slope=1.0, anchor=anchor)
 
     if eval_type == "likert":
-        lo, hi = 1.0, 5.0
-        r1 = np.clip(np.rint(rater1), lo, hi)
-        r2 = np.clip(np.rint(rater2), lo, hi)
-        kappa = float(cohen_kappa_score(r1.astype(int), r2.astype(int), weights="quadratic"))
-        pct_agree = float(np.mean(r1 == r2) * 100.0)
-        rho, _ = spearmanr(r1, r2)
-        icc = _icc_21(r1, r2)
-        return {"weighted_kappa": kappa, "spearman_r": float(rho), "icc_21": icc, "percent_agreement": pct_agree}
-    else:
-        r, _ = pearsonr(rater1, rater2)
-        rho, _ = spearmanr(rater1, rater2)
-        icc = _icc_21(rater1, rater2)
-        return {"pearson_r": float(r), "spearman_r": float(rho), "icc_21": icc}
+        r1 = np.clip(np.rint(rater1), 1.0, 5.0)
+        r2 = np.clip(np.rint(rater2), 1.0, 5.0)
+        return _alignment_metric_dict(r1, r2, "likert")
+    # NOTE binary deliberately routes here too, not through the "binary"
+    # branch: _jb_llm adds CONTINUOUS noise to the 0/1 truth, so two "human
+    # raters" built this way are not binary-valued and thresholding them
+    # would invent a decision rule this function never modeled. This mirrors
+    # the pre-existing behaviour (there has never been a binary human-human
+    # branch -- see cases/pvalues.py's note that the human-human view does
+    # not cover binary).
+    return _alignment_metric_dict(rater1, rater2, "continuous")
 
 
 @dataclass

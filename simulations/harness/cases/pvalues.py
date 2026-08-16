@@ -5403,6 +5403,25 @@ class LabelEfficiencyPoint:
     arms stay separable after the fact."""
     mult_lo: float = float("nan")
     mult_hi: float = float("nan")
+    rho2: float = float("nan")
+    """Squared within-group Pearson correlation between judge score and human
+    label, for the judge at this (eval_type, judge_noise) tier -- the SAME
+    quantity for all three eval types, which is what lets one threshold cover
+    them (see scenarios/synthetic._alignment_metric_dict's "rho2"). Recorded
+    per point rather than only in the calibration csv so the measured
+    `multiplier` and the theory it should follow sit on the same row."""
+    predicted_mult: float = float("nan")
+    """Control-variate prediction 1/(1 - rho2*(1 - n_lab/N)) from
+    _ppi_predicted_savings -- the exact finite-pool form, NOT the asymptotic
+    1/(1-rho2) (which overstates badly for a strong judge; see that function).
+    Note this predicts the VARIANCE-scale saving, whereas `multiplier` is
+    obtained by inverting a POWER curve and so saturates for strong judges --
+    expect predicted_mult >= multiplier at the top tiers rather than exact
+    agreement."""
+    predicted_mult_asymptotic: float = float("nan")
+    """1/(1 - rho2), the large-unlabeled-pool limit. Carried alongside the
+    exact form purely so a reader can see how far apart they are at this
+    design point; do not report it as the headline number."""
     """95% interval on the multiplier (equiv_n_lab / n_lab), from
     propagating ppi_power's binomial SE through the reference curve's LOCAL
     slope -- see _multiplier_ci. Reporting the multiplier without this
@@ -5531,6 +5550,54 @@ def _smooth_monotone_power_curve(n_grid: np.ndarray, power_grid: np.ndarray) -> 
     return np.maximum.accumulate(1.0 / (1.0 + np.exp(-(intercept + slope * x))))
 
 
+def _ppi_predicted_savings(rho2: float, n_lab: int, n_total: int) -> float:
+    """Control-variate prediction of PPI's labeling-effort saving:
+
+        saving = 1 / (1 - rho^2 * (1 - n_lab/n_total))
+
+    i.e. how many times more human labels a human-only analysis would need to
+    match this PPI analysis. `rho2` is the squared Pearson correlation between
+    judge score and human label WITHIN a group (see scenarios/synthetic.
+    _alignment_metric_dict's "rho2"), which is the same quantity for binary,
+    likert and continuous data -- the property that lets one threshold serve
+    all three.
+
+    Derivation (labeled set of size n NESTED in n_total items, judge score f
+    observed on all of them, so the labeled and full-sample means are
+    correlated):
+
+        theta_hat = lam*fbar_all + (Ybar_lab - lam*fbar_lab)
+                  = Ybar_lab - lam*(1 - n/N)*(fbar_lab - fbar_unlab)
+        Var       = (sigma_Y^2/n) * (1 - rho^2*(N-n)/N)      at lam* = rho*sY/sf
+
+    against a human-only Var of sigma_Y^2/n, giving the ratio above.
+
+    THE UNLABELED-FRACTION TERM IS NOT OPTIONAL. The asymptotic 1/(1-rho^2) is
+    a reasonable approximation only for a mediocre judge; because the
+    denominator is 1 - rho^2*k, sensitivity to k GROWS as the judge improves,
+    which is the opposite of the usual intuition. Measured against empirical
+    variance ratios: at rho^2=0.5 the asymptote is 2.00 vs 1.97 exact (fine),
+    but at rho^2=0.90 it claims 10x against 8.4x, and at rho^2=0.99 it claims
+    100x against a measured 40x. Report the exact form; use the asymptote only
+    as intuition. An earlier N/(N+n_lab) variant of this correction, fitted at
+    a single design point, is systematically too generous (43% high at
+    n_lab/N=0.4) and should not be reused.
+
+    Small n_lab is the FAVOURABLE end, worth stating for readers who will
+    reach for the smallest labeled set the tool allows: at n_total=1000,
+    n_lab=15 measured 39.7x where n_lab=400 measured 2.4x, since a small
+    labeled set leverages a large unlabeled pool.
+
+    Validated over a 48-cell (3 eval types x 4 noise x 4 bias) grid at 3000
+    replicates per cell: R^2=0.9968 vs measured Var(human-subset)/Var(PPI),
+    mean error -0.15%, max 5.5%, under ADAPTIVE (power-tuned) lambda."""
+    if not np.isfinite(rho2) or n_total <= 0:
+        return float("nan")
+    k = max(0.0, 1.0 - float(n_lab) / float(n_total))
+    denom = 1.0 - float(np.clip(rho2, 0.0, 1.0)) * k
+    return float(1.0 / denom) if denom > 1e-9 else float("inf")
+
+
 def _multiplier_ci(
     ppi_power: float, n_reps: int, n_lab: int, n_grid: np.ndarray, power_grid: np.ndarray,
     z: float = 1.959963984540054,
@@ -5639,33 +5706,43 @@ def _calibrate_noise_for_alignment(
     shift-invariant; kappa isn't). Callers must label by the ACHIEVED value
     (see below), never silently claim the nominal target was hit.
 
-    Returns (calibrated_noise, achieved_metric_value) -- the achieved value
-    is a FRESH measurement at the final calibrated noise, not interpolated
-    from the bisection steps, since callers should label plots/tables by
-    what was actually achieved (MC noise in any single n_mc-sample
-    measurement means it won't land exactly on `target`), not the nominal
-    target."""
-    def _measure(noise: float) -> float:
+    Returns (calibrated_noise, achieved_metric_value, all_metrics) -- the
+    achieved value is a FRESH measurement at the final calibrated noise, not
+    interpolated from the bisection steps, since callers should label
+    plots/tables by what was actually achieved (MC noise in any single
+    n_mc-sample measurement means it won't land exactly on `target`), not the
+    nominal target.
+
+    `all_metrics` is the FULL alignment panel (every metric
+    measure_judge_alignment computes for this eval type) from that same final
+    measurement -- i.e. the other IRR statistics that the calibrated judge
+    happens to realize at the noise level chosen to hit `target` on
+    `metric_name`. It costs nothing extra to carry (the bisection already
+    computed it and previously discarded all but one key) and is what lets
+    the calibration CSV answer "would this judge-quality tier look the same
+    under a different reliability statistic?" without a re-run."""
+    def _measure_all(noise: float) -> dict:
         kw = dict(base_kwargs)
         kw["llm_noise"] = noise
         kw["eval_type"] = eval_type
         sc = JudgeBiasSource(name="_align_cal", tag="_ref", effect_size=0.0, **kw)
-        return float(measure_judge_alignment(sc, n_mc=n_mc, seed=seed)[metric_name])
+        return measure_judge_alignment(sc, n_mc=n_mc, seed=seed)
 
     for _ in range(iters):
         mid = (lo + hi) / 2.0
-        if _measure(mid) > target:
+        if float(_measure_all(mid)[metric_name]) > target:
             lo = mid
         else:
             hi = mid
     final_noise = (lo + hi) / 2.0
-    return final_noise, _measure(final_noise)
+    final_metrics = _measure_all(final_noise)
+    return final_noise, float(final_metrics[metric_name]), final_metrics
 
 
 def run_ppi_label_efficiency_check(
     n_reps: int, n_boot: int, ref_n_mc: int = 3000, align_n_mc: int = 20_000, seed: int = 71,
     n_workers: int = 1, progress_mode: str = "bar",
-) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float]]]:
+) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float, dict]]]:
     """Runs the label-efficiency comparison sweep (continuous/likert via
     build_ppi_label_efficiency_sources + _COMPARISON_METHODS, binary via
     build_ppi_label_efficiency_sources_binary + _COMPARISON_METHODS_BINARY),
@@ -5705,13 +5782,16 @@ def run_ppi_label_efficiency_check(
         save_results_artifacts_ppi_label_efficiency_raw.
       - the noise -> (eval_type, alignment_metric, target, achieved)
         calibration lookup, as a flat list of tuples (eval_type, noise,
-        alignment_metric, target, achieved) -- needed to map the raw rows'
-        embedded noise value (in PPIComparisonResult.name) back to the
-        alignment level it was calibrated to hit, without re-running
-        _calibrate_noise_for_alignment."""
+        alignment_metric, target, achieved, all_metrics) -- needed to map the
+        raw rows' embedded noise value (in PPIComparisonResult.name) back to
+        the alignment level it was calibrated to hit, without re-running
+        _calibrate_noise_for_alignment. `all_metrics` is that tier's full
+        realized IRR panel (see _CALIB_EXTRA_METRIC_COLUMNS), carried so the
+        calibration csv can report every reliability statistic the judge
+        achieved, not only the one it was tuned on."""
     results: list[LabelEfficiencyPoint] = []
     all_raw: list[PPIComparisonResult] = []
-    calib_rows: list[tuple[str, float, str, float, float]] = []
+    calib_rows: list[tuple[str, float, str, float, float, dict]] = []
 
     cont_likert_baselines = {et: _ppi_power_baseline(et) for et in ("continuous", "likert")}
     binary_baseline = _ppi_power_baseline_binary()
@@ -5720,31 +5800,31 @@ def run_ppi_label_efficiency_check(
     # building the comparison-sweep sources (which need the calibrated
     # noise values as input, not the other way around).
     noise_by_eval_type: dict[str, tuple[float, ...]] = {}
-    calib_info: dict[str, dict[float, tuple[float, float]]] = {}  # eval_type -> {calibrated_noise: (target, achieved)}
+    calib_info: dict[str, dict[float, tuple[float, float, dict]]] = {}  # eval_type -> {calibrated_noise: (target, achieved, all_metrics)}
     for et, baseline in cont_likert_baselines.items():
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
         noises, info = [], {}
         for target in _LABEL_EFF_ALIGNMENT_TARGETS:
-            noise, achieved = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
+            noise, achieved, panel = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
             noises.append(noise)
-            info[noise] = (target, achieved)
+            info[noise] = (target, achieved, panel)
         noise_by_eval_type[et] = tuple(noises)
         calib_info[et] = info
 
     metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
     bin_noises, bin_info = [], {}
     for target in _LABEL_EFF_ALIGNMENT_TARGETS:
-        noise, achieved = _calibrate_noise_for_alignment(
+        noise, achieved, panel = _calibrate_noise_for_alignment(
             "binary", target, metric_name_bin, binary_baseline, n_mc=align_n_mc, seed=seed,
         )
         bin_noises.append(noise)
-        bin_info[noise] = (target, achieved)
+        bin_info[noise] = (target, achieved, panel)
     calib_info["binary"] = bin_info
 
     for et, info in calib_info.items():
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
-        for noise, (target, achieved) in info.items():
-            calib_rows.append((et, noise, metric_name, target, achieved))
+        for noise, (target, achieved, panel) in info.items():
+            calib_rows.append((et, noise, metric_name, target, achieved, panel))
 
     # Sweep PPI_LABEL_EFF_EFFECT_FRACS rather than a single effect size: one
     # es cannot keep the whole N_lab grid in the reference curve's steep
@@ -5806,7 +5886,8 @@ def run_ppi_label_efficiency_check(
                 # %.4f format, so an exact dict lookup can miss on precision --
                 # match to the closest calibrated value instead.
                 closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
-                target, achieved = calib_info[eval_type][closest_noise]
+                target, achieved, _panel = calib_info[eval_type][closest_noise]
+                _r2 = float(_panel.get("rho2", float("nan")))
                 ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
                 equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
                 saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
@@ -5816,6 +5897,8 @@ def run_ppi_label_efficiency_check(
                     alignment_target=target, alignment_value=achieved,
                     n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps,
                     saturated=saturated, effect_frac=effect_frac, mult_lo=lo, mult_hi=hi,
+                    rho2=_r2, predicted_mult=_ppi_predicted_savings(_r2, r.n_lab, r.n),
+                    predicted_mult_asymptotic=_ppi_predicted_savings(_r2, 0, 1),
                 ))
     return results, all_raw, calib_rows
 
@@ -5823,7 +5906,7 @@ def run_ppi_label_efficiency_check(
 def run_ppi_nformula_check(
     n_reps: int, n_boot: int, ref_n_mc: int = 10_000, align_n_mc: int = 50_000, seed: int = 73,
     n_workers: int = 1, progress_mode: str = "bar",
-) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float]]]:
+) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float, dict]]]:
     """N x N_lab x effect_size x judge-quality label-efficiency sweep --
     extends run_ppi_label_efficiency_check (which holds N=PPI_LABEL_EFF_N
     and effect_size=PPI_LABEL_EFF_EFFECT_FRAC fixed) by also sweeping those
@@ -5877,7 +5960,7 @@ def run_ppi_nformula_check(
     needs to be interpretable."""
     results: list[LabelEfficiencyPoint] = []
     all_raw: list[PPIComparisonResult] = []
-    calib_rows: list[tuple[str, float, str, float, float]] = []
+    calib_rows: list[tuple[str, float, str, float, float, dict]] = []
 
     cont_likert_baselines = {et: _ppi_power_baseline(et) for et in ("continuous", "likert")}
     binary_baseline = _ppi_power_baseline_binary()
@@ -5893,26 +5976,26 @@ def run_ppi_nformula_check(
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
         noises, info = [], {}
         for target in _NFORMULA_ALIGNMENT_TARGETS:
-            noise, achieved = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
+            noise, achieved, panel = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
             noises.append(noise)
-            info[noise] = (target, achieved)
+            info[noise] = (target, achieved, panel)
         noise_by_eval_type[et] = tuple(noises)
         calib_info[et] = info
 
     metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
     bin_noises, bin_info = [], {}
     for target in _NFORMULA_ALIGNMENT_TARGETS:
-        noise, achieved = _calibrate_noise_for_alignment(
+        noise, achieved, panel = _calibrate_noise_for_alignment(
             "binary", target, metric_name_bin, binary_baseline, n_mc=align_n_mc, seed=seed,
         )
         bin_noises.append(noise)
-        bin_info[noise] = (target, achieved)
+        bin_info[noise] = (target, achieved, panel)
     calib_info["binary"] = bin_info
 
     for et, info in calib_info.items():
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
-        for noise, (target, achieved) in info.items():
-            calib_rows.append((et, noise, metric_name, target, achieved))
+        for noise, (target, achieved, panel) in info.items():
+            calib_rows.append((et, noise, metric_name, target, achieved, panel))
 
     cont_likert_sources = build_ppi_nformula_sources(noise_by_eval_type=noise_by_eval_type)
     groups = [
@@ -5963,7 +6046,7 @@ def run_ppi_nformula_check(
                 raise ValueError(f"run_ppi_nformula_check: could not parse noise from {r.name!r}")
             noise = float(m.group(1))
             closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
-            target, achieved = calib_info[eval_type][closest_noise]
+            target, achieved, _panel = calib_info[eval_type][closest_noise]
             closest_frac = min(PPI_NFORMULA_EFFECT_FRACS, key=lambda f: abs(f - r.effect_size))
             power_grid = ref_curves[(eval_type, closest_frac)]
             ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
@@ -6068,6 +6151,7 @@ def save_results_artifacts_ppi_label_efficiency(
             "eval_type", "effect_frac", "alignment_metric", "alignment_target", "alignment_value",
             "judge_noise", "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
             "multiplier_lo", "multiplier_hi", "saturated",
+            "rho2", "predicted_mult", "predicted_mult_asymptotic",
         ])
         for r in results:
             mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
@@ -6077,6 +6161,7 @@ def save_results_artifacts_ppi_label_efficiency(
                 f"{r.judge_noise:.4f}", r.n_lab, r.n_reps,
                 f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
                 f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
+                f"{r.rho2:.4f}", f"{r.predicted_mult:.4f}", f"{r.predicted_mult_asymptotic:.4f}",
             ])
     summary_path = out_base / f"{run_stem}_ppi_label_efficiency_summary.log"
     buf = io.StringIO()
@@ -6128,7 +6213,7 @@ def save_results_artifacts_ppi_nformula(
 
 
 def save_results_artifacts_ppi_label_efficiency_raw(
-    *, raw: list[PPIComparisonResult], calib_rows: list[tuple[str, float, str, float, float]],
+    *, raw: list[PPIComparisonResult], calib_rows: list[tuple[str, float, str, float, float, dict]],
     out_dir: str, run_stem: str,
 ) -> list[str]:
     """Persists the RAW, per-method data run_ppi_label_efficiency_check
@@ -6175,12 +6260,60 @@ def save_results_artifacts_ppi_label_efficiency_raw(
     calib_path = out_base / f"{run_stem}_ppi_label_efficiency_calibration.csv"
     with calib_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["eval_type", "judge_noise", "alignment_metric", "alignment_target", "alignment_achieved"])
-        for et, noise, metric_name, target, achieved in calib_rows:
-            writer.writerow([et, f"{noise:.4f}", metric_name, f"{target:.2f}", f"{achieved:.4f}"])
+        writer.writerow(
+            ["eval_type", "judge_noise", "alignment_metric", "alignment_target", "alignment_achieved"]
+            + list(_CALIB_EXTRA_METRIC_COLUMNS)
+        )
+        for et, noise, metric_name, target, achieved, panel in calib_rows:
+            extra = []
+            for col in _CALIB_EXTRA_METRIC_COLUMNS:
+                v = panel.get(col)
+                extra.append("" if v is None or not np.isfinite(v) else f"{float(v):.4f}")
+            writer.writerow(
+                [et, f"{noise:.4f}", metric_name, f"{target:.2f}", f"{achieved:.4f}"] + extra
+            )
     print(f"Saved results: {raw_path}")
     print(f"Saved results: {calib_path}")
     return [str(raw_path), str(calib_path)]
+
+
+_CALIB_EXTRA_METRIC_COLUMNS = (
+    "rho2",
+    "pearson_r",
+    "percent_agreement",
+    "kappa",
+    "weighted_kappa",
+    "linear_weighted_kappa",
+    "gwet_ac1",
+    "pabak",
+    "krippendorff_alpha",
+    "spearman_r",
+    "kendall_tau_b",
+    "icc_21",
+    "lin_ccc",
+)
+"""Extra inter-rater-reliability columns written to the label-efficiency
+CALIBRATION csv (not the results csv): the full alignment panel each judge
+tier actually realized at the llm_noise chosen to hit its nominal target on
+the ONE primary metric (_LABEL_EFF_ALIGNMENT_METRIC -- kappa for binary,
+weighted kappa for likert, Pearson r for continuous).
+
+The point is to make the sweep's central claim falsifiable without a re-run.
+The label-efficiency result is stated as a threshold in judge-human "IRR"
+(see save_ppi_label_efficiency_threshold_plot), and the obvious reviewer
+objection is that "IRR" there means a DIFFERENT statistic for each eval type,
+so the apparent cross-type agreement could be an artifact of that choice.
+With these columns a reader can re-read every tier under a common statistic
+-- Krippendorff's alpha in particular is defined for all three types with
+only its distance function changing (see scenarios/synthetic._alignment_
+metric_dict) -- and check whether the tiers still line up.
+
+The union of all eval types' panels; each row leaves blank whatever its own
+type doesn't define (the chance-corrected categorical metrics need
+categories, so continuous has no kappa/AC1/PABAK). Deliberately NOT added to
+the per-cell results csv: these are properties of the calibrated JUDGE, fixed
+within an (eval_type, target) tier, so repeating them on every method x
+n_lab x es row would be pure duplication."""
 
 
 _LABEL_EFF_MARKER_SHAPES = ("o", "s", "D", "P", "X", "*")
@@ -6561,6 +6694,29 @@ metric-incompatible ones a reader had to mentally re-split by panel.
                 zorder=4,
             )
             legend_handles.setdefault(f"IRR~={target:.1f}", line)
+
+            # Control-variate prediction n_lab / (1 - rho^2*(1 - n_lab/N)),
+            # drawn per tier in that tier's own colour (see
+            # _ppi_predicted_savings). One SHARED legend entry rather than one
+            # per tier -- it is the same theory curve in every case, and the
+            # colour already says which tier it belongs to.
+            #
+            # It is expected to sit ABOVE the measured line at the strong-judge
+            # tiers and converge at the weak ones: the prediction is on the
+            # VARIANCE scale while equiv_n_lab comes from inverting a power
+            # curve, which saturates. Divergence at the top is the power
+            # ceiling, not a failure of the theory -- which is exactly why the
+            # curve is worth drawing on the same axes.
+            pred = [(r.n_lab, r.n_lab * r.predicted_mult) for r in rows
+                    if np.isfinite(getattr(r, "predicted_mult", float("nan")))]
+            if pred:
+                pline, = ax.plot(
+                    [q[0] for q in pred], [min(q[1], y_max) for q in pred],
+                    color=color, linestyle=(0, (1, 1.8)), linewidth=1.2, alpha=0.8, zorder=3,
+                    label="Predicted from rho^2",
+                )
+                legend_handles.setdefault("Predicted from rho^2", pline)
+
             sat_xs = [x for x, r in zip(xs, rows) if r.saturated]
             sat_ys = [y for y, r in zip(ys, rows) if r.saturated]
             if sat_xs:
