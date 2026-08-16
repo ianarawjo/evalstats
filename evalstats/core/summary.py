@@ -2986,12 +2986,24 @@ def _assign_significance_groups(
 
     Templates in the same maximal non-significant rank band share an ID, and
     IDs are non-decreasing down the rank-sorted list (group #1 always holds
-    the rank-1 template). When maximal bands overlap -- e.g. A~B and B~C are
-    each individually non-significant but A~C is significant, a transitivity
-    caveat inherent to critical-difference diagrams (Demsar 2006) -- the
-    whole chain A-B-C is merged into one group, since each entity can only
-    carry a single ID in this table (unlike a CD diagram, which can draw
-    overlapping bands as separate lines).
+    the rank-1 template). For #2 onward, when maximal bands overlap -- e.g.
+    A~B and B~C are each individually non-significant but A~C is
+    significant, the transitivity caveat inherent to critical-difference
+    diagrams (Demsar 2006) -- the whole chain is merged into one group,
+    since each entity can only carry a single ID in this table (unlike a CD
+    diagram, which can draw overlapping bands as separate lines).
+
+    #1 is deliberately NOT extended this way: it's the one tier
+    ``_exec_verdict`` turns into an explicit "tied with X as best" claim, so
+    membership there must mean "provably indistinguishable from the actual
+    top performer" (the single maximal band containing rank 0), not merely
+    "reachable from it via a chain of individually-nonsignificant
+    neighbors". Chaining #1 the same way #2+ do would let a template many
+    links down the chain -- one the rank-1 template IS significantly better
+    than, directly -- inherit a "tied as best" verdict it doesn't deserve.
+    Anything past #1's direct band still gets its own (possibly
+    chain-merged) tier via the normal algorithm, so it correctly reads
+    "Significant drop-off" instead.
     """
     if alpha is None:
         alpha = get_alpha_ci()
@@ -3001,12 +3013,19 @@ def _assign_significance_groups(
     rank_of = {label: i for i, label in enumerate(labels_sorted)}
 
     # For each label, the rightmost rank index reached by any maximal CD band
-    # it belongs to (its own rank if it belongs to none).
+    # it belongs to (its own rank if it belongs to none) -- used for #2+.
     reach = {label: rank_of[label] for label in labels_sorted}
     for group in groups:
         end_idx = max(rank_of[l] for l in group)
         for label in group:
             reach[label] = max(reach[label], end_idx)
+
+    # #1's own (non-transitive) extent: just the single maximal band
+    # containing labels_sorted[0], if any.
+    top_reach = rank_of[labels_sorted[0]]
+    for group in groups:
+        if labels_sorted[0] in group:
+            top_reach = max(top_reach, max(rank_of[l] for l in group))
 
     label_to_group: dict[str, str] = {}
     group_idx = 0
@@ -3014,9 +3033,12 @@ def _assign_significance_groups(
     for idx, label in enumerate(labels_sorted):
         if idx > current_end_idx:
             group_idx += 1
-            current_end_idx = reach[label]
-        else:
+            current_end_idx = top_reach if group_idx == 1 else reach[label]
+        elif group_idx > 1:
             current_end_idx = max(current_end_idx, reach[label])
+        # group_idx == 1 and idx <= current_end_idx: stay pinned at
+        # top_reach regardless of this label's own (possibly further-
+        # reaching) chain -- see the direct-vs-transitive note above.
         label_to_group[label] = f"#{group_idx}"
 
     return label_to_group
