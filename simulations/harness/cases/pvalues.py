@@ -6572,27 +6572,29 @@ metric-incompatible ones a reader had to mentally re-split by panel.
                 # reinforcing "this value is off the chart" rather than
                 # "this value is at the top of the chart".
                 ax.plot(
-                    sat_xs, sat_ys, color=color, marker="^", markersize=11,
-                    markeredgecolor="black", markeredgewidth=0.8, linestyle="none",
+                    sat_xs, sat_ys, color=color, marker="^", markersize=7,
+                    markeredgecolor="black", markeredgewidth=0.7, linestyle="none",
                     clip_on=False, zorder=6,
                 )
                 legend_handles.setdefault(
-                    "saturated (lower bound: true value is higher)",
-                    plt.Line2D([], [], color="gray", marker="^", markersize=9,
-                               markeredgecolor="black", markeredgewidth=0.8, linestyle="none"),
+                    "saturated",
+                    plt.Line2D([], [], color="gray", marker="^", markersize=7,
+                               markeredgecolor="black", markeredgewidth=0.7, linestyle="none"),
                 )
 
         ax.set_xlim(0, x_max)
         ax.set_ylim(0, y_max)
         ax.set_xlabel("Num human labels used")
         ax.set_ylabel("Num human labels a classical test would need" if col == 0 else "")
-        ax.set_title(et.capitalize())
+        # pad clears the saturated caret, which is pinned at y_max with
+        # clip_on=False and so projects ~half a marker height above the axes.
+        ax.set_title(et.capitalize(), pad=10)
         if square:
             ax.set_aspect("equal", adjustable="box")
 
     fig.suptitle(
         "Label Efficiency: Human Labels a Classical Test Would Need to Match PPI's Power",
-        fontsize=11,
+        fontsize=11, y=0.99,
     )
     # One shared legend, ordered "No benefit" -> IRR targets descending ->
     # any non-tier entries (e.g. the saturated marker) -- NOT plain insertion order (legend_handles fills
@@ -6630,7 +6632,7 @@ metric-incompatible ones a reader had to mentally re-split by panel.
     )
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
-        fig.tight_layout(rect=(0, 0, 1, 0.94))
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
     Path(out_path).parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
