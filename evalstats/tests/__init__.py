@@ -1619,15 +1619,7 @@ def _ppi_kruskal_wallis_pairwise(
         # ∞ this F-reference converges back to the chi-square one, so it
         # costs nothing in the well-labeled regime.
         nu = sum(n_lab_per_group)
-        if df == 0:
-            # matrix_rank's own relative tolerance can still zero out here
-            # even though max_eigval cleared the absolute 1e-12 floor above
-            # (e.g. a single pair (k=2) whose bootstrap replicates happened
-            # to have ~zero spread relative to rcond). No Wald/F test is
-            # well-defined at df=0; report no evidence of a difference
-            # rather than dividing by zero in the nu>df branch below.
-            wald_p = 1.0
-        elif nu > df:
+        if nu > df:
             f_stat = wald_stat * (nu - df + 1) / (nu * df)
             wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
         else:
