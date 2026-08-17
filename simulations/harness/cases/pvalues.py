@@ -124,10 +124,12 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import io
 import math
 import multiprocessing as _mp
 import os
+import pathlib
 import re
 import threading
 import time
@@ -5461,7 +5463,61 @@ class LabelEfficiencyPoint:
     NFORMULA_EFFECT_FRACS instead of holding this fixed."""
 
 
+_POWER_CURVE_CACHE_VERSION = 1
+"""Bump this whenever anything that changes a reference curve's VALUES changes
+but is not part of the cache key -- i.e. the data-generation path
+(generate_judge_bias_cell, sample_group_truth, the eval type's shape/anchor
+constants) or _classical_pooled_power_curve's own body. The key covers the
+arguments; it cannot see module-level behaviour, so this constant is the
+manual half of the invariant. Getting it wrong serves a stale curve silently,
+which is exactly the class of bug the inversion self-consistency check exists
+to catch -- but do not rely on that check to notice; bump the version."""
+
+_POWER_CURVE_CACHE_DIR = pathlib.Path("simulations/out/.power_curve_cache")
+"""Where cached reference curves live. Under simulations/out/, which is
+gitignored, so cached curves never enter the repo. Delete the directory to
+invalidate everything, or set PPI_NO_POWER_CURVE_CACHE=1 to bypass."""
+
+
 def _classical_pooled_power_curve(
+    eval_type: str, es: float, methods: tuple, n_values: np.ndarray, n_mc: int, seed: int,
+) -> np.ndarray:
+    """Disk-cached wrapper. The curve is a pure function of its arguments (a
+    seeded Monte Carlo over ground truth only), so it is safe to memoize
+    across runs -- and worth it: at ref_n_mc=10000 the twelve curves a
+    label-efficiency sweep needs cost hours, and every later run, including
+    the official tests, rebuilds exactly the same ones.
+
+    Writes are atomic (temp file + rename), so parallel workers racing on the
+    same key cannot serve a half-written array. A corrupt or unreadable entry
+    is treated as a miss and recomputed rather than raising."""
+    key_src = repr((
+        _POWER_CURVE_CACHE_VERSION, eval_type, f"{float(es):.12g}", tuple(methods),
+        np.asarray(n_values, dtype=float).tobytes(), int(n_mc), int(seed),
+    ))
+    key = hashlib.sha256(key_src.encode()).hexdigest()[:20]
+    path = _POWER_CURVE_CACHE_DIR / f"{eval_type}_nmc{n_mc}_{key}.npy"
+    use_cache = os.environ.get("PPI_NO_POWER_CURVE_CACHE", "") != "1"
+    if use_cache and path.exists():
+        try:
+            cached = np.load(path)
+            if cached.shape == np.asarray(n_values).shape:
+                return cached
+        except Exception:
+            pass  # unreadable/corrupt -> recompute
+    curve = _classical_pooled_power_curve_uncached(eval_type, es, methods, n_values, n_mc, seed)
+    if use_cache:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp.npy")
+            np.save(tmp, curve)
+            os.replace(tmp, path)
+        except Exception:
+            pass  # caching is an optimization; never fail the sweep over it
+    return curve
+
+
+def _classical_pooled_power_curve_uncached(
     eval_type: str, es: float, methods: tuple, n_values: np.ndarray, n_mc: int, seed: int,
 ) -> np.ndarray:
     """Pooled (mean-across-`methods`) classical-test power at effect size
@@ -5517,37 +5573,93 @@ def _classical_pooled_power_curve(
 
 
 def _smooth_monotone_power_curve(n_grid: np.ndarray, power_grid: np.ndarray) -> np.ndarray:
-    """Fit the classical reference curve with a logistic in log N, then
-    re-enforce monotonicity -- replacing raw Monte Carlo points that
-    _equivalent_n_lab would otherwise invert as if their wiggle were signal.
+    """Monotonize the classical reference curve with ISOTONIC REGRESSION, then
+    break exact ties, so _equivalent_n_lab inverts it without bias.
 
-    This is a BIAS fix, not just a smoothing nicety. At ref_n_mc=3000 the raw
-    curve routinely ties across adjacent grid points (measured at
-    effect_frac=0.15: power 0.070 at N=17.1, 19.4 AND 22.1), so np.interp
-    maps a whole range of N to one power and the inversion there is
-    arbitrary -- it resolves to the lowest tied N, biasing equiv_n_lab (and
-    so the multiplier) DOWNWARD exactly in the small-n_lab cells where the
-    curve is flattest. Measured effect of smoothing on real cells:
-    n_lab=15/r=0.30 goes 1.06x -> 1.52x, n_lab=15/r=0.50 goes 1.10x -> 1.62x.
+    Two distinct defects have to be handled, and conflating them is how the
+    previous version went wrong:
 
-    The reference curve's MC error is SHARED by every cell of an eval type
-    (it is built once), so unlike ppi_power's binomial noise it is a
-    systematic offset that raising --effect-reps cannot reduce. Smoothing is
-    the lever that actually addresses it.
+    1. NON-MONOTONE MC WIGGLE. Raw Monte Carlo power is not monotone in N, and
+       np.interp would invert the wiggle as if it were signal. Isotonic
+       regression (sklearn's PAVA) is the minimal fix: it returns the closest
+       non-decreasing curve to the data and imposes NO shape of its own.
 
-    Falls back to the raw curve if the fit degenerates (e.g. a curve that is
-    entirely flat, where the logit transform carries no slope information)."""
-    p = np.clip(np.asarray(power_grid, dtype=float), 1e-4, 1.0 - 1e-4)
-    x = np.log(np.asarray(n_grid, dtype=float))
+    2. EXACT TIES. At low ref_n_mc the raw curve ties across adjacent grid
+       points (measured at effect_frac=0.15: power 0.070 at N=17.1, 19.4 AND
+       22.1). np.interp resolves a tied plateau to its LEFT edge, biasing
+       equiv_n_lab -- and so the multiplier -- downward exactly in the
+       small-n_lab cells where the curve is flattest. Isotonic regression
+       preserves ties (a tied block is already non-decreasing), so it does not
+       address this on its own; a negligible strictly-increasing ramp is added
+       afterwards so ties resolve through the middle of the plateau instead.
+
+    THIS REPLACES A LOGISTIC-IN-LOG-N FIT, WHICH WAS BADLY BIASED. That fit
+    imposed a parametric shape the real curve does not have: measured against
+    a continuous reference curve at ref_n_mc=4000, it put power at N=15 at
+    0.037 where the data said 0.087, and at N=208 at 0.727 where the data said
+    0.595 -- far too steep. The consequence was a self-inconsistent inversion:
+    the human-subset arm, which IS a classical test on exactly n_lab labeled
+    items, inverted to 1.8x n_lab at n_lab=15 and 0.69x at n_lab=200, a 2.6x
+    drift across the grid that multiplied straight into every reported
+    multiplier and reversed its apparent trend in n_lab. Isotonic regression
+    holds the same check to within +/-7% (see
+    _check_inversion_self_consistency, which enforces it on every run).
+
+    The reference curve's MC error is SHARED by every cell of an eval type (it
+    is built once), so unlike ppi_power's binomial noise it is a systematic
+    offset that raising --effect-reps cannot reduce -- monotonizing is still
+    the right lever, just not a parametric one."""
+    from sklearn.isotonic import IsotonicRegression
+
+    p = np.asarray(power_grid, dtype=float)
+    x = np.asarray(n_grid, dtype=float)
     if len(x) < 3 or not np.isfinite(p).all() or float(np.ptp(p)) < 1e-9:
-        return np.maximum.accumulate(np.asarray(power_grid, dtype=float))
-    try:
-        slope, intercept = np.polyfit(x, np.log(p / (1.0 - p)), 1)
-    except (np.linalg.LinAlgError, ValueError):
-        return np.maximum.accumulate(np.asarray(power_grid, dtype=float))
-    if not np.isfinite(slope) or not np.isfinite(intercept) or slope <= 0:
-        return np.maximum.accumulate(np.asarray(power_grid, dtype=float))
-    return np.maximum.accumulate(1.0 / (1.0 + np.exp(-(intercept + slope * x))))
+        return np.maximum.accumulate(p)
+    fitted = IsotonicRegression(increasing=True, out_of_bounds="clip").fit_transform(np.log(x), p)
+    # Break exact ties with a ramp far below MC resolution, so a tied plateau
+    # inverts through its middle rather than collapsing to its left edge.
+    # Headroom is reserved BEFORE adding the ramp: clipping to 1.0 afterwards
+    # would flatten the ramp back into ties wherever the curve saturates.
+    fitted = np.clip(fitted, 0.0, 1.0 - 1e-6)
+    return fitted + np.arange(len(fitted), dtype=float) * 1e-9
+
+
+def _check_inversion_self_consistency(
+    n_lab_values, human_powers, n_grid: np.ndarray, power_grid: np.ndarray,
+    label: str, tol: float = 0.15,
+) -> float:
+    """Assert the power-curve inversion is self-consistent, and warn if not.
+
+    The human-subset arm IS a classical test on exactly n_lab labeled items, so
+    feeding ITS rejection rate back through the same reference curve must
+    return n_lab. Any systematic departure is a bias in the inversion itself,
+    and it multiplies directly into every multiplier this check's caller goes
+    on to report -- so it is checked on every run rather than trusted.
+
+    This is free (the data is already in hand) and it is exactly the test that
+    caught the logistic smoother: it returned ratios from 1.8 down to 0.69
+    across the n_lab grid where a correct inversion returns ~1.0.
+
+    Returns the worst |ratio - 1| seen. Warns rather than raises: a sweep that
+    has already spent hours simulating should surface the problem, not discard
+    the data."""
+    ratios = []
+    for n_lab, hp in zip(n_lab_values, human_powers):
+        if not (n_lab and np.isfinite(hp)):
+            continue
+        inv = _equivalent_n_lab(hp, n_grid, power_grid)
+        if np.isfinite(inv) and inv > 0:
+            ratios.append(inv / float(n_lab))
+    if not ratios:
+        return float("nan")
+    worst = float(np.max(np.abs(np.array(ratios) - 1.0)))
+    if worst > tol:
+        lo, hi = float(np.min(ratios)), float(np.max(ratios))
+        print(f"  !! INVERSION NOT SELF-CONSISTENT [{label}]: the human-subset arm "
+              f"inverts to {lo:.2f}x-{hi:.2f}x its own n_lab (want ~1.00). "
+              f"Multipliers from this eval type are biased by roughly that factor "
+              f"-- see _smooth_monotone_power_curve.")
+    return worst
 
 
 def _ppi_predicted_savings(rho2: float, n_lab: int, n_total: int) -> float:
@@ -5785,7 +5897,7 @@ def _calibrate_noise_for_alignment(
 
 
 def run_ppi_label_efficiency_check(
-    n_reps: int, n_boot: int, ref_n_mc: int = 3000, align_n_mc: int = 20_000, seed: int = 71,
+    n_reps: int, n_boot: int, ref_n_mc: int = 10_000, align_n_mc: int = 20_000, seed: int = 71,
     n_workers: int = 1, progress_mode: str = "bar",
 ) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float, dict]]]:
     """Runs the label-efficiency comparison sweep (continuous/likert via
@@ -5921,6 +6033,15 @@ def run_ppi_label_efficiency_check(
             )
             all_raw.extend(raw)
             pooled = pool_ppi_comparison_across_methods(raw)
+            # Free correctness check on the inversion this loop is about to use
+            # (see _check_inversion_self_consistency). Runs before any
+            # multiplier is derived, so a biased curve is reported at the point
+            # it would start contaminating results.
+            _check_inversion_self_consistency(
+                [q.n_lab for q in pooled],
+                [q.rejects_human_subset / q.n_reps if q.n_reps else float("nan") for q in pooled],
+                n_grid, power_grid, f"{eval_type} es={es:.4f}",
+            )
             metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
             for r in pooled:
                 m = re.match(name_re, r.name)
@@ -5964,8 +6085,8 @@ def run_ppi_nformula_check(
     which run_ppi_label_efficiency_check's own fixed (N=1000, N_lab<=200,
     ratio>=5) design never tested outside of.
 
-    ref_n_mc/align_n_mc default higher than run_ppi_label_efficiency_check's
-    matching defaults (3000/20_000) -- deliberately, not an oversight: this
+    ref_n_mc/align_n_mc match run_ppi_label_efficiency_check's own defaults
+    (10_000/20_000) -- deliberately, not an oversight: this
     check's whole output feeds a regression (fit_nformula_rule_of_thumb.py)
     whose coefficient standard errors are sensitive to per-cell noise in
     `multiplier` (a ratio-of-ratios inversion, worst for continuous's
@@ -6606,12 +6727,20 @@ def save_ppi_label_efficiency_threshold_plot(
     cut = max(below) if below else None
     if cut is not None:
         ax.axvline(cut, color="k", ls=":", lw=1.4, zorder=1)
-        # Sits BELOW the curve, not at the top: the upper-left corner holds
-        # the legend, and the region under the curve to the left of the cut
-        # is empty by construction (that is what being under the cut means).
-        ax.text(cut - 0.012, ymax * 0.42,
-                f"ρ² < {cut:g}: judges not\nworth the trouble\n({pooled[cut]:.2f}× at {cut:g})",
-                fontsize=9, va="center", ha="right", color="#333")
+        txt = f"ρ² < {cut:g}: judges not\nworth the trouble\n({pooled[cut]:.2f}× at {cut:g})"
+        # Which SIDE of the line the label sits on depends on where the cut
+        # landed. Normally it goes left, under the curve, where the region is
+        # empty by construction (that is what being below the cut means). But
+        # when the cut is the leftmost tier there is no room there -- the text
+        # ran off the axis and collided with the y-axis label -- so it flips
+        # right and rises above the curves instead, staying under the
+        # upper-left legend. The cut is data-derived, so both cases occur.
+        if cut <= tiers[0] + 1e-9:
+            ax.text(cut + 0.012, ymax * 0.55, txt, fontsize=9, va="center",
+                    ha="left", color="#333")
+        else:
+            ax.text(cut - 0.012, ymax * 0.42, txt, fontsize=9, va="center",
+                    ha="right", color="#333")
     # The positive marker is the FIRST tier past the cut -- i.e. the cheapest
     # judge quality that is actually worth wiring up. Deliberately not "first
     # tier clearing 1.5x": on the screening run 0.5 measured 1.46x, so that
@@ -6653,6 +6782,133 @@ def save_ppi_label_efficiency_threshold_plot(
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+def save_ppi_label_efficiency_per_method_table(
+    per_method_points: dict, out_dir: str, run_stem: str,
+) -> str:
+    """Per-method label-efficiency table: each method compared against ITS OWN
+    classical power curve.
+
+    This is the fair within-method comparison, and it is the one a reviewer
+    should be shown. The pooled multiplier averages rejection rates across
+    methods and then inverts a pooled curve, which conflates two different
+    things: how much PPI buys for a given test, and how powerful that test was
+    to begin with. Wilcoxon's smaller pooled gain, for instance, is partly just
+    Wilcoxon being a lower-powered test on this data -- inverting PPI-Wilcoxon
+    against CLASSICAL-Wilcoxon separates the two and asks only "how many human
+    labels would a plain Wilcoxon have needed to match PPI-Wilcoxon?".
+
+    It is also the diagnostic that explains binary's pooled outlier: paired_t
+    has ~2x ttest_welch's baseline power on binary AND takes the largest PPI
+    gain, so pooling them and inverting in the curve's steep region inflates
+    the result. Per method, that inflation disappears.
+
+    One row per (eval_type, method, rho^2 tier, n_lab)."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    path = out_base / f"{run_stem}_ppi_label_efficiency_per_method.csv"
+    with path.open("w", newline="", encoding="utf-8") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["eval_type", "method", "rho2_target", "rho2", "n_lab", "effect_frac",
+                         "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
+                         "multiplier_lo", "multiplier_hi", "saturated", "predicted_mult"])
+        for (eval_type, method), pts in sorted(per_method_points.items()):
+            for r in sorted(pts, key=lambda q: (q.alignment_target, q.n_lab, q.effect_frac)):
+                mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
+                writer.writerow([
+                    eval_type, method, f"{r.alignment_target:.2f}", f"{r.rho2:.4f}", r.n_lab,
+                    f"{r.effect_frac:.2f}", r.n_reps, f"{r.ppi_power:.6f}",
+                    f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
+                    f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
+                    f"{r.predicted_mult:.4f}",
+                ])
+    print(f"Saved results: {path}")
+    return str(path)
+
+
+def save_ppi_label_efficiency_plots_per_method(
+    raw: list, calib_rows: list, out_path: str, ref_n_mc: int = 10_000, seed: int = 71,
+) -> tuple[list[str], dict]:
+    """One set of label-efficiency figures PER METHOD, alongside the pooled set.
+
+    Returns (plot paths, {(eval_type, method): points}) so the caller can feed
+    the same points to save_ppi_label_efficiency_per_method_table without
+    rebuilding any reference curves.
+
+    The pooled multiplier averages rejection rates across methods and then
+    inverts a pooled reference curve. That is a nonlinear composition, so it is
+    only trustworthy when the methods it pools have comparable power -- and
+    they do not. Measured on the 300-rep sweep:
+
+      * binary's paired_t has ~2x the baseline power of ttest_welch
+        (human-subset 0.59 vs 0.29) and takes the largest PPI gain in the study
+        (0.580 -> 0.913 at rho^2=0.70). Pooling 0.913 with 0.601 and inverting
+        in the curve's steep upper region produced binary's 4.13x at rho^2=0.70
+        -- an artifact of averaging two very differently-powered tests, not a
+        real cross-type difference.
+      * the rank tests (mwu, wilcoxon) gain systematically less than the
+        mean-based ones (+0.165 vs +0.216 at rho^2=0.70), so pooling them in
+        understates what a mean-based analysis actually achieves, and by more
+        at high judge quality.
+
+    Per-method figures make both visible instead of averaged away. They are
+    cheap -- the reference curves are disk-cached (see
+    _classical_pooled_power_curve), so after the first run each method's curve
+    is a file read -- and diagnostic: a method whose curve looks nothing like
+    its siblings is the signal that pooling is hiding something.
+
+    Every method should also clear the y=x line. A method sitting at or below
+    it is not paying for itself over simply analysing the labeled subset."""
+    import pathlib
+    base = pathlib.Path(out_path)
+    n_grid = np.geomspace(float(_JB_MIN_LAB), 1500.0, 36)
+    tier_of = {(c[0], round(c[1], 4)): c[3] for c in calib_rows}
+    val_of = {(c[0], round(c[1], 4)): c[4] for c in calib_rows}
+    rho_of = {(c[0], round(c[1], 4)): float(c[5].get("rho2", float("nan"))) for c in calib_rows}
+    by_method: dict = defaultdict(list)
+    for r in raw:
+        by_method[(r.eval_type, r.method)].append(r)
+    paths: list[str] = []
+    collected: dict = {}
+    for (eval_type, method), rows in sorted(by_method.items()):
+        pts = []
+        for r in rows:
+            m = re.search(r"noise=(\d+\.\d+)", r.name)
+            if not m:
+                continue
+            nz = float(m.group(1))
+            mf = re.search(r"\.es=([\d.]+?)\.?$", r.name)
+            _frac = float(mf.group(1)) if mf else float("nan")
+            keys = [k for k in tier_of if k[0] == eval_type]
+            if not keys:
+                continue
+            k = min(keys, key=lambda q: abs(q[1] - nz))
+            es = r.effect_size
+            pg = _smooth_monotone_power_curve(
+                n_grid, _classical_pooled_power_curve(eval_type, es, (method,), n_grid, ref_n_mc, 56))
+            pw = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
+            eq = _equivalent_n_lab(pw, n_grid, pg) if np.isfinite(pw) else float("nan")
+            lo, hi = _multiplier_ci(pw, r.n_reps, r.n_lab, n_grid, pg)
+            pts.append(LabelEfficiencyPoint(
+                eval_type=eval_type, judge_noise=nz, alignment_metric="rho2",
+                alignment_target=tier_of[k], alignment_value=val_of[k], n_lab=r.n_lab,
+                n_reps=r.n_reps, ppi_power=pw, equiv_n_lab=eq,
+                effect_frac=_frac, mult_lo=lo, mult_hi=hi,
+                saturated=bool(np.isfinite(pw) and pw >= pg.max() - 1e-9),
+                rho2=rho_of[k], predicted_mult=_ppi_predicted_savings(rho_of[k], r.n_lab, r.n),
+                predicted_mult_asymptotic=_ppi_predicted_savings(rho_of[k], 0, 1)))
+        if not pts:
+            continue
+        collected[(eval_type, method)] = pts
+        tag = f"{eval_type}_{method}"
+        try:
+            paths.append(save_ppi_label_efficiency_plot(
+                _pool_label_eff_across_es(pts), str(base.with_name(f"{base.stem}_bymethod_{tag}{base.suffix}"))))
+        except Exception as exc:
+            print(f"  (per-method plot skipped for {tag}: {exc})")
+    print(f"Saved {len(paths)} per-method label-efficiency plots")
+    return paths, collected
 
 
 def save_ppi_label_efficiency_plots(
@@ -11336,6 +11592,30 @@ def run(args: argparse.Namespace) -> CaseResult:
                         ):
                             output_paths.append(label_eff_plot_path)
                             print(f"Saved plot: {label_eff_plot_path}")
+                        # Per-method views alongside the pooled ones. The pooled
+                        # multiplier inverts an average across methods, which
+                        # conflates "what PPI buys for this test" with "how
+                        # powerful this test is" -- see the per-method table's
+                        # docstring. Reference curves are disk-cached, so after
+                        # the first run this is a file read per method.
+                        try:
+                            pm_paths, pm_points = save_ppi_label_efficiency_plots_per_method(
+                                label_eff_raw, label_eff_calib_rows,
+                                out_path=str(Path(plots_dir) / f"{label_eff_stem}_plot.png"),
+                            )
+                            for pm in pm_paths:
+                                output_paths.append(pm)
+                                print(f"Saved plot: {pm}")
+                            if pm_points:
+                                output_paths.append(save_ppi_label_efficiency_per_method_table(
+                                    pm_points, out_dir=args.out_dir, run_stem=label_eff_stem))
+                        except Exception as exc:
+                            # Diagnostic output must never take down a sweep that
+                            # has already produced its primary artifacts -- but
+                            # say WHAT failed, with the type, so a NameError or
+                            # signature slip is not mistaken for a data problem.
+                            print(f"  (per-method label-efficiency output skipped: "
+                                  f"{type(exc).__name__}: {exc})")
                     key_metrics["ppi_label_efficiency_n_results"] = len(label_eff_results)
 
             # N-formula check (run_ppi_nformula_check): opt-in, separate from
