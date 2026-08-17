@@ -6517,37 +6517,67 @@ def save_ppi_label_efficiency_threshold_plot(
             fontsize=8.5, color="#444", va="center", ha="right")
     ax.axhline(1.0, color="crimson", ls="--", lw=1.3, zorder=1)
 
-    # Marker positions are DERIVED FROM THE MEASURED CURVE, not hardcoded.
-    # They were hardcoded twice before and went stale both times -- once when
-    # the tier ladder changed, and again when the axis moved from each eval
-    # type's own metric to rho^2 (an "≈0.7: ~1.5× savings" label written for
-    # r=0.7 understates by more than double at rho^2=0.7). Interpolating the
-    # pooled median against the round saving levels keeps the annotation
-    # honest for whatever the run actually produced.
-    pooled_med = []
+    # Markers sit at ROUND rho^2 values with the MEASURED multiplier read off
+    # them -- deliberately not the other way around.
+    #
+    # An earlier version interpolated the curve against round multiplier
+    # levels, which put the lines at rho^2 = 0.42 and 0.52. Statistically
+    # fine, useless as a rule of thumb: the reader computes rho^2 and looks
+    # up the consequence, so the MEMORABLE number has to be on the rho^2 axis.
+    # "Below 0.4, not worth the trouble" is something someone repeats from
+    # memory; "below 0.42" is not. (Hardcoding both numbers, the version before that,
+    # went stale twice -- hence reading the multiplier from the data here.)
+    pooled = {}
     for t in tiers:
-        v = [r.equiv_n_lab / r.n_lab for r in rows
-             if r.alignment_target == t and r.n_lab]
-        pooled_med.append(float(np.median(v)) if v else float("nan"))
-    # np.interp needs a non-decreasing table; the pooled curve is monotone in
-    # judge quality up to MC noise, so enforce it rather than bail out.
-    mono = np.maximum.accumulate(np.nan_to_num(pooled_med, nan=0.0))
-    for lvl in (1.25, 1.5, 2.0, 3.0):
-        if not (mono[0] <= lvl <= mono[-1]):
-            continue
-        xv = float(np.interp(lvl, mono, tiers))
-        ax.axvline(xv, color="k", ls=":", lw=1.2, zorder=1)
-        ax.text(xv + 0.005, ymax * 0.92, f"ρ²≈{xv:.2f}:\n{lvl:g}× saving",
-                fontsize=8.5, va="top")
+        v = [r.equiv_n_lab / r.n_lab for r in rows if r.alignment_target == t and r.n_lab]
+        if v:
+            pooled[t] = float(np.median(v))
+    WORTH_IT = 1.25  # matches the shaded band below
+    below = [t for t in tiers if pooled.get(t, np.inf) < WORTH_IT]
+    cut = max(below) if below else None
+    if cut is not None:
+        ax.axvline(cut, color="k", ls=":", lw=1.4, zorder=1)
+        # Sits BELOW the curve, not at the top: the upper-left corner holds
+        # the legend, and the region under the curve to the left of the cut
+        # is empty by construction (that is what being under the cut means).
+        ax.text(cut - 0.012, ymax * 0.42,
+                f"ρ² < {cut:g}: judges not\nworth the trouble\n({pooled[cut]:.2f}× at {cut:g})",
+                fontsize=9, va="center", ha="right", color="#333")
+    # The positive marker is the FIRST tier past the cut -- i.e. the cheapest
+    # judge quality that is actually worth wiring up. Deliberately not "first
+    # tier clearing 1.5x": on the screening run 0.5 measured 1.46x, so that
+    # rule skipped to 0.6 and printed a less memorable threshold than the data
+    # supports. The reader wants the round rho^2 where it starts paying off.
+    past = [t for t in tiers if cut is None or t > cut]
+    if past:
+        g = min(past)
+        ax.axvline(g, color="k", ls=":", lw=1.2, zorder=1)
+        ax.text(g + 0.012, ymax * 0.78,
+                f"ρ² ≈ {g:g}: PPI starts\nto pay for itself ({pooled[g]:.2f}×)",
+                fontsize=9, va="center", color="#333")
+        # Top of the ladder, for the "and if my judge is good?" reader. Only
+        # when it is a distinct tier from the pay-off marker, and drawn to the
+        # RIGHT of its line -- hence the right margin added to xlim below,
+        # since this is the last tier and there is otherwise nothing but the
+        # steeply-rising strong-judge bands to place it on.
+        top = max(tiers)
+        if top > g and top in pooled:
+            ax.axvline(top, color="k", ls=":", lw=1.2, zorder=1)
+            ax.text(top + 0.012, ymax * 0.42,
+                    f"ρ² ≈ {top:g}: substantial\nsavings ({pooled[top]:.2f}×)",
+                    fontsize=9, va="center", color="#333")
     ax.set_xlabel("judge–human agreement  ρ²  (squared Pearson correlation)")
     ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
     ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
     ax.set_xticks(tiers)
+    # Right margin so the top-tier annotation has somewhere to sit that is not
+    # on top of the strong-judge CI bands.
+    ax.set_xlim(tiers[0] - 0.035, tiers[-1] + 0.135)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=9, loc="upper left")
     fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and "
-             "the $N_{lab}$ grid.\nDotted markers are interpolated from the measured pooled median, "
-             "not fixed reference values.", ha="center", fontsize=8.5)
+             "the $N_{lab}$ grid.\nMarkers sit at round ρ² values; the multipliers on them are "
+             "measured, not reference values.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
