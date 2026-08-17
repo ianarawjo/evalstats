@@ -124,6 +124,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import functools
 import hashlib
 import io
 import math
@@ -6817,14 +6818,21 @@ def save_ppi_label_efficiency_per_method_table(
     path = out_base / f"{run_stem}_ppi_label_efficiency_per_method.csv"
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["eval_type", "method", "rho2_target", "rho2", "n_lab", "effect_frac",
+        writer.writerow(["eval_type", "method", "rho2_target", "rho2", "rho2_pearson",
+                         "rho2_spearman", "rank_penalty", "n_lab", "effect_frac",
                          "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
                          "multiplier_lo", "multiplier_hi", "saturated", "predicted_mult"])
         for (eval_type, method), pts in sorted(per_method_points.items()):
             for r in sorted(pts, key=lambda q: (q.alignment_target, q.n_lab, q.effect_frac)):
                 mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
+                # rank_penalty = rho2_pearson - rho2_spearman: how much of the
+                # judge's linear signal a rank-based analysis cannot use. It is
+                # the checkable diagnostic for the PPI-t-test vs PPI-Wilcoxon
+                # gap, computable on a calibration set before any sweep runs.
+                _, _p2, _s2 = _method_rho2(eval_type, round(r.judge_noise, 6), method)
                 writer.writerow([
-                    eval_type, method, f"{r.alignment_target:.2f}", f"{r.rho2:.4f}", r.n_lab,
+                    eval_type, method, f"{r.alignment_target:.2f}", f"{r.rho2:.4f}",
+                    f"{_p2:.4f}", f"{_s2:.4f}", f"{_p2 - _s2:.4f}", r.n_lab,
                     f"{r.effect_frac:.2f}", r.n_reps, f"{r.ppi_power:.6f}",
                     f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
                     f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
@@ -6832,6 +6840,78 @@ def save_ppi_label_efficiency_per_method_table(
                 ])
     print(f"Saved results: {path}")
     return str(path)
+
+
+_METHOD_CORR_KIND = {
+    "ttest":       ("group",  "pearson"),
+    "ttest_welch": ("group",  "pearson"),
+    "mwu":         ("group",  "spearman"),
+    "paired_t":    ("paired", "pearson"),
+    "wilcoxon":    ("paired", "spearman"),
+}
+"""Which correlation governs each method's PPI variance reduction.
+
+PPI++ is a control variate, so the variance reduction is 1 - rho^2 where rho
+correlates the INFLUENCE FUNCTIONS of the labeled estimator and the
+judge-based rectifier. Two things therefore vary by method, and using one
+number for all of them is wrong:
+
+STRUCTURE. A paired test's estimand is a function of the differences
+D = Y_x - Y_y, so its control variate is Dhat = f_x - f_y and the relevant
+correlation is between those, not between the raw scores. These are not the
+same number -- measured on likert at the rho^2=0.70 tier, score-level rho^2 is
+0.700 while Pearson(D, Dhat)^2 is 0.552, because differencing two noisy
+measurements changes the signal-to-noise ratio (and likert's discretisation
+compounds it).
+
+ESTIMAND. A mean-type test has an influence function linear in the values, so
+Pearson is exact. A rank-type test (wilcoxon, mwu) has an influence function
+that is a function of RANKS -- for the signed-rank statistic the Hajek
+projection is 1 - F_D(-d) - theta -- so the governing quantity is the grade
+correlation, i.e. Spearman. That identification is exact under H0 when D and
+Dhat are each symmetric about 0 (then F_D(-D) = 1 - F_D(D), and the reflection
+cancels out of the correlation) and first-order under the local alternatives
+power analysis lives in; away from that regime it is a Spearman-like grade
+correlation of the reflected transforms rather than Spearman exactly.
+
+Applying this fixed two anomalies that score-level rho^2 produced: continuous
+paired_t read 1.08-1.24x its predicted bound (impossible for a control
+variate) and now reads ~1.00, and likert wilcoxon's ratio drifted 0.82 -> 0.65
+across the tiers and is now flat at ~0.90. The residual gap for rank tests is
+real, but it is a level, not a drift."""
+
+
+@functools.lru_cache(maxsize=None)
+def _method_rho2(eval_type: str, judge_noise: float, method: str,
+                 n_mc: int = 60_000, seed: int = 3) -> tuple:
+    """(rho2 for `method`, pearson^2, spearman^2) on this judge's own scale.
+
+    Returns all three so callers can also report the Pearson-minus-Spearman
+    gap, which is the diagnostic for how much a rank-based analysis gives up
+    relative to a mean-based one on the same judge.
+
+    Cached: a sweep asks for the same (eval_type, judge_noise, method) on every
+    n_lab and effect-size cell, and this draws n_mc rows each time."""
+    from scipy.stats import pearsonr, spearmanr
+
+    base = _ppi_power_baseline_binary() if eval_type == "binary" else _ppi_power_baseline(eval_type)
+    kw = dict(base)
+    kw["llm_noise"] = judge_noise
+    sc = JudgeBiasSource(name="_corr", tag="_ref", effect_size=0.0, **kw)
+    cell = generate_judge_bias_cell(replace(sc, n=n_mc), np.random.default_rng(seed))
+    structure, _ = _METHOD_CORR_KIND.get(method, ("group", "pearson"))
+    if structure == "paired":
+        a = np.asarray(cell.truth_x, dtype=float) - np.asarray(cell.truth_y, dtype=float)
+        b = np.asarray(cell.llm_x, dtype=float) - np.asarray(cell.llm_y, dtype=float)
+    else:
+        a = np.asarray(cell.truth_a2, dtype=float)
+        b = np.asarray(cell.llm_a2, dtype=float)
+    if float(np.std(a)) < 1e-12 or float(np.std(b)) < 1e-12:
+        return (float("nan"), float("nan"), float("nan"))
+    p2 = float(pearsonr(a, b).statistic) ** 2
+    s2 = float(spearmanr(a, b).statistic) ** 2
+    _, kind = _METHOD_CORR_KIND.get(method, ("group", "pearson"))
+    return ((s2 if kind == "spearman" else p2), p2, s2)
 
 
 def save_ppi_label_efficiency_plots_per_method(
@@ -6897,6 +6977,9 @@ def save_ppi_label_efficiency_plots_per_method(
             nz = float(m.group(1))
             mf = re.search(r"\.es=([\d.]+?)\.?$", r.name)
             _frac = float(mf.group(1)) if mf else float("nan")
+            # Correlation matching THIS method's structure and estimand, not
+            # the calibration panel's score-level rho^2 -- see _METHOD_CORR_KIND.
+            _mr, _p2, _s2 = _method_rho2(eval_type, round(nz, 6), method)
             keys = [k for k in tier_of if k[0] == eval_type]
             if not keys:
                 continue
@@ -6913,8 +6996,8 @@ def save_ppi_label_efficiency_plots_per_method(
                 n_reps=r.n_reps, ppi_power=pw, equiv_n_lab=eq,
                 effect_frac=_frac, mult_lo=lo, mult_hi=hi,
                 saturated=bool(np.isfinite(pw) and pw >= pg.max() - 1e-9),
-                rho2=rho_of[k], predicted_mult=_ppi_predicted_savings(rho_of[k], r.n_lab, r.n),
-                predicted_mult_asymptotic=_ppi_predicted_savings(rho_of[k], 0, 1)))
+                rho2=_mr, predicted_mult=_ppi_predicted_savings(_mr, r.n_lab, r.n),
+                predicted_mult_asymptotic=_ppi_predicted_savings(_mr, 0, 1)))
         if not pts:
             continue
         collected[(eval_type, method)] = pts
