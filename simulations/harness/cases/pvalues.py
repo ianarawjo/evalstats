@@ -6401,7 +6401,9 @@ def save_ppi_label_efficiency_invariance_plot(
     results: list[LabelEfficiencyPoint], out_path: str,
 ) -> str:
     """Effect-size INVARIANCE figure (appendix): multiplier on y, effect size
-    on x, one line per judge-quality tier, one panel per eval type.
+    on x, one line per rho^2 tier, one panel per eval type. See
+    save_ppi_label_efficiency_invariance_pooled_plot for the pooled companion
+    and why the two carry different claims.
 
     The claim this figure has to make is "the label-efficiency multiplier is a
     property of the JUDGE, not of the effect you happen to be testing", and
@@ -6446,12 +6448,79 @@ def save_ppi_label_efficiency_invariance_plot(
         ax.set_xticks(fracs)
         ax.grid(alpha=0.25)
     axes[0][0].set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
-    axes[0][0].legend(title="judge–human\nagreement", fontsize=8, title_fontsize=8,
+    axes[0][0].legend(title="judge–human\nagreement  ρ²", fontsize=8, title_fontsize=8,
                       loc="upper left", ncol=2)
     fig.suptitle("Label-efficiency multiplier is invariant to effect size (flat lines = invariance)",
                  fontsize=11, y=1.0)
     fig.text(0.5, -0.03, "Each line is one judge-quality tier; points are medians across the "
              "$N_{lab}$ grid, bars are IQR/2. Saturated cells excluded.", ha="center", fontsize=8.5)
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_ppi_label_efficiency_invariance_pooled_plot(
+    results: list[LabelEfficiencyPoint], out_path: str,
+) -> str:
+    """Companion to save_ppi_label_efficiency_invariance_plot: the SAME
+    effect-size invariance claim, but with all three eval types POOLED into
+    one panel, one line per rho^2 tier.
+
+    The per-eval-type version answers "does the multiplier drift with effect
+    size?". This one additionally answers "do the three eval types agree at
+    matched judge quality?" -- and it is only a legitimate figure to draw
+    because the judge-quality axis is now rho^2 for every eval type (see
+    _LABEL_EFF_ALIGNMENT_METRIC). Under the previous per-type metrics, a tier
+    meant kappa=0.6 for binary and Pearson r=0.6 for continuous, which realize
+    different rho^2, so pooling them would have averaged judges of genuinely
+    different quality and the spread bars would have been meaningless.
+
+    So the two figures carry different weight: flat lines here mean the
+    multiplier depends on neither the effect size NOR the data type, only on
+    rho^2 -- which is the single-number rule of thumb's whole premise. The
+    error bars are the spread ACROSS eval types and the N_lab grid combined,
+    so a tight bar is itself the cross-type agreement evidence rather than
+    something a reader has to take on faith from a separate table.
+
+    Keep both: this one is the headline, the per-type panels are what a
+    reviewer asks for when they want to check the pooling was not hiding one
+    badly-behaved arm.
+
+    Medians with IQR/2 bars; saturated points dropped."""
+    import matplotlib.pyplot as plt
+
+    rows = [r for r in results if not r.saturated and np.isfinite(r.equiv_n_lab) and r.n_lab]
+    if not rows:
+        raise ValueError("No non-saturated label-efficiency results to plot.")
+    tiers = sorted({r.alignment_target for r in rows})
+    fracs = sorted({r.effect_frac for r in rows})
+    cmap = plt.cm.viridis
+
+    fig, ax = plt.subplots(figsize=(7.0, 4.8))
+    for i, t in enumerate(tiers):
+        med, err = [], []
+        for ef in fracs:
+            v = [r.equiv_n_lab / r.n_lab for r in rows
+                 if r.alignment_target == t and r.effect_frac == ef]
+            med.append(float(np.median(v)) if v else np.nan)
+            err.append(float(np.percentile(v, 75) - np.percentile(v, 25)) / 2 if len(v) > 2 else 0.0)
+        ax.errorbar(fracs, med, yerr=err, marker="o", ms=5, lw=1.8, capsize=3,
+                    color=cmap(i / max(len(tiers) - 1, 1)), label=f"{t:g}")
+    ax.axhline(1.0, color="crimson", ls="--", lw=1.2, zorder=0)
+    ax.set_xlabel("effect size (fraction of population SD)")
+    ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
+    ax.set_xticks(fracs)
+    ax.grid(alpha=0.25)
+    ax.legend(title="judge–human\nagreement  ρ²", fontsize=8.5, title_fontsize=8.5,
+              loc="upper left", ncol=2)
+    ax.set_title("Label efficiency depends on ρ² alone — not on effect size or data type",
+                 fontsize=11)
+    fig.text(0.5, -0.04, "All three eval types pooled, one line per ρ² tier. Points are medians, "
+             "bars are IQR/2 across\nboth eval types and the $N_{lab}$ grid — so a tight bar IS the "
+             "cross-type agreement. Saturated cells excluded.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -6619,6 +6688,8 @@ def save_ppi_label_efficiency_plots(
         try:
             paths.append(save_ppi_label_efficiency_invariance_plot(
                 results, str(base.with_name(f"{base.stem}_es_invariance{base.suffix}"))))
+            paths.append(save_ppi_label_efficiency_invariance_pooled_plot(
+                results, str(base.with_name(f"{base.stem}_es_invariance_pooled{base.suffix}"))))
         except ValueError:
             pass
         for frac in fracs:
