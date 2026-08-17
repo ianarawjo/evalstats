@@ -5637,7 +5637,7 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
     return float(np.interp(target_power, power_grid, n_grid))
 
 
-_LABEL_EFF_ALIGNMENT_TARGETS = (0.8, 0.7, 0.6, 0.5, 0.4, 0.3)
+_LABEL_EFF_ALIGNMENT_TARGETS = (0.70, 0.60, 0.50, 0.40, 0.30, 0.20)
 """Round, reader-legible judge-quality targets the label-efficiency
 check's noise axis is calibrated to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
@@ -5650,16 +5650,39 @@ would this look with a kappa=0.8 judge" and get a direct answer, rather
 than an uninterpretable llm_noise dial that means something different in
 every eval type."""
 _LABEL_EFF_ALIGNMENT_METRIC = {
-    "continuous": ("pearson_r", "r"),
-    "likert": ("weighted_kappa", "κ"),
-    "binary": ("kappa", "κ"),
+    "continuous": ("rho2", "ρ²"),
+    "likert": ("rho2", "ρ²"),
+    "binary": ("rho2", "ρ²"),
 }
 """Which alignment metric (metric_name, display_symbol) each eval type's
-judge-quality axis is calibrated/labeled by -- the SAME primary-metric
-choice _ALIGNMENT_VIEWS makes for the (separate) alignment sweep, so a
-reader who has seen that sweep recognizes the same metric here."""
+judge-quality axis is calibrated/labeled by -- rho^2, the squared Pearson
+correlation between judge score and human label, for ALL THREE eval types.
 
-_NFORMULA_ALIGNMENT_TARGETS = (0.8, 0.5, 0.3)
+This deliberately does NOT follow _ALIGNMENT_VIEWS' per-eval-type choice
+(kappa / quadratic weighted kappa / Pearson r), which this axis used
+previously. Three reasons, in order of importance:
+
+1. rho^2 is what actually predicts the label-efficiency multiplier. PPI++
+   with tuned lambda is a control variate, so the saving is
+   1/(1 - rho^2*(1 - n_lab/N)) -- see _ppi_predicted_savings. Measured over
+   a 48-cell noise x bias grid, rho^2 collapses all three eval types onto
+   one curve (pooled R^2=0.975, 1.07x spread at matched value) where
+   ICC/CCC manage 0.703/1.58x and Krippendorff's alpha 0.553/1.87x.
+2. A per-eval-type metric made the panels NOT directly comparable. Under
+   the old choice a shared "IRR~=0.8" legend entry meant kappa=0.8 for
+   binary, weighted kappa=0.8 for likert and r=0.8 for continuous, which
+   realize rho^2 = 0.667 / 0.683 / 0.640 respectively -- close enough to
+   look alignable while quietly asserting an equivalence that does not
+   hold. On this axis a tier means the same judge quality in every panel.
+3. It is the unit the rule of thumb is stated in, so the threshold reads
+   directly off the axis instead of needing a per-eval-type conversion.
+
+CONSUMERS MUST NOT RE-SQUARE. `alignment_value` is now already rho^2, not
+rho -- anything deriving (1 - rho^2) from it wants `1 - alignment_value`,
+NOT `1 - alignment_value**2` (see simulations/fit_nformula_rule_of_thumb.py,
+updated alongside this)."""
+
+_NFORMULA_ALIGNMENT_TARGETS = (0.70, 0.45, 0.20)
 """Reduced subset of _LABEL_EFF_ALIGNMENT_TARGETS for run_ppi_nformula_
 check -- the same 3 points build_ppi_label_efficiency_sources' own
 alignment axis used before this session widened it to 6 (see _LABEL_EFF_
@@ -5728,9 +5751,31 @@ def _calibrate_noise_for_alignment(
         sc = JudgeBiasSource(name="_align_cal", tag="_ref", effect_size=0.0, **kw)
         return measure_judge_alignment(sc, n_mc=n_mc, seed=seed)
 
+    # rho^2 is NOT monotone in llm_noise, so it cannot be bisected on
+    # directly. For binary, llm_noise is a flip PROBABILITY (see scenarios/
+    # synthetic._jb_llm_binary): past 0.5 the judge is systematically
+    # INVERTED, and rho^2 -- which discards the sign -- climbs back toward 1.
+    # Measured at the binary baseline: r = 0.850 at noise 0.01, 0.205 at 0.40,
+    # -0.010 at 0.50, -0.855 at 1.0, -1.000 by 2.0, so rho^2 traces
+    # 0.72 -> 0.04 -> 0.00 -> 0.73 -> 1.00. A bisection assuming monotone
+    # decrease sails past the zero crossing and converges on a perfectly
+    # ANTI-correlated judge reported as rho^2 = 1.0 -- which is exactly what
+    # happened on the first run of the rho^2 axis, on every binary tier.
+    #
+    # Bisect on the SIGNED pearson_r against sqrt(target) instead: r IS
+    # monotone decreasing across the whole noise range, so the search is
+    # well-posed for every eval type without per-type bounds. The achieved
+    # value returned below is still rho^2, read from the same final
+    # measurement. (The old per-eval-type metrics did not hit this because
+    # kappa/weighted kappa also go negative under inversion.)
+    search_metric, search_target = metric_name, target
+    if metric_name == "rho2":
+        search_metric = "pearson_r"
+        search_target = float(np.sqrt(max(0.0, target)))
+
     for _ in range(iters):
         mid = (lo + hi) / 2.0
-        if float(_measure_all(mid)[metric_name]) > target:
+        if float(_measure_all(mid)[search_metric]) > search_target:
             lo = mid
         else:
             hi = mid
@@ -6472,7 +6517,7 @@ def save_ppi_label_efficiency_threshold_plot(
         if tiers[0] <= xv <= tiers[-1]:
             ax.axvline(xv, color="k", ls=":", lw=1.2, zorder=1)
             ax.text(xv + 0.005, ymax * 0.92, txt, fontsize=8.5, va="top")
-    ax.set_xlabel("judge–human agreement (inter-rater reliability)")
+    ax.set_xlabel("judge–human agreement  ρ²  (squared Pearson correlation)")
     ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
     ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
     ax.set_xticks(tiers)
@@ -6690,10 +6735,10 @@ metric-incompatible ones a reader had to mentally re-split by panel.
             line, = ax.plot(
                 xs, ys, color=color, marker=marker,
                 markersize=_LABEL_EFF_MARKER_SIZE.get(marker, 5), linewidth=2.0 if is_baseline else 1.4,
-                label=f"IRR~={target:.1f}",
+                label=f"ρ²~={target:.2f}",
                 zorder=4,
             )
-            legend_handles.setdefault(f"IRR~={target:.1f}", line)
+            legend_handles.setdefault(f"ρ²~={target:.2f}", line)
 
             # Control-variate prediction n_lab / (1 - rho^2*(1 - n_lab/N)),
             # drawn per tier in that tier's own colour (see
@@ -6709,9 +6754,15 @@ metric-incompatible ones a reader had to mentally re-split by panel.
             # curve is worth drawing on the same axes.
             pred = [(r.n_lab, r.n_lab * r.predicted_mult) for r in rows
                     if np.isfinite(getattr(r, "predicted_mult", float("nan")))]
+            # Points above the axis ceiling are DROPPED, not clamped to it:
+            # clamping drew a flat run along the top edge that reads as a real
+            # measurement topping out, when it means the prediction is off
+            # scale. y_max is set from measured data, which saturates, so the
+            # strong-judge predictions legitimately exceed it.
+            pred = [q for q in pred if q[1] <= y_max]
             if pred:
                 pline, = ax.plot(
-                    [q[0] for q in pred], [min(q[1], y_max) for q in pred],
+                    [q[0] for q in pred], [q[1] for q in pred],
                     color=color, linestyle=(0, (1, 1.8)), linewidth=1.2, alpha=0.8, zorder=3,
                     label="Predicted from rho^2",
                 )
@@ -6765,7 +6816,7 @@ metric-incompatible ones a reader had to mentally re-split by panel.
         # against a hardcoded "power saturated" and raised IndexError the
         # moment that label's wording changed, since the fallthrough branch
         # assumes an "=" is present.
-        if not label.startswith("IRR"):
+        if not label.startswith("ρ²"):
             return (2, 0.0)
         try:
             return (1, -float(label.rsplit("=", 1)[1]))  # descending IRR target
