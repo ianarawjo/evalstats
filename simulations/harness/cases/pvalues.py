@@ -4993,7 +4993,7 @@ def save_results_artifacts_ppi_comparison(
         ])
         for r in results:
             writer.writerow([
-                r.name, r.tag, r.eval_type, r.method, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
+                r.name, r.tag, r.eval_type, r.method, r.n, r.n_reps, repr(float(r.effect_size)), f"{r.label_frac:.4f}", r.n_lab,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -6390,6 +6390,13 @@ def save_results_artifacts_ppi_label_efficiency_raw(
     method dragging the pooled average down for eval type X" should be
     answerable from a saved CSV, not require re-running the whole check.
 
+    effect_size is written at FULL PRECISION (repr), not rounded. It used to be
+    formatted %.4f, which silently truncated e.g. 0.03015113445777636 to
+    0.0302 -- enough to make any analysis that reads it back disagree with the
+    sweep, and in particular to miss every reference-curve cache entry (those
+    keys are built from the exact effect size), so a reader reconstructing
+    results from this file would quietly rebuild every curve from scratch.
+
     Two CSVs: one row per (scenario, method) cell (same column shape as
     save_results_artifacts_ppi_comparison's raw CSV, for consistency with
     the other comparison-sweep raw exports elsewhere in this file), and a
@@ -6415,7 +6422,7 @@ def save_results_artifacts_ppi_label_efficiency_raw(
             _m_es = re.search(r"\.es=([\d.]+)", r.name)
             writer.writerow([
                 r.name, r.tag, r.eval_type, (_m_es.group(1) if _m_es else ""),
-                r.method, r.n, r.n_reps, f"{r.effect_size:.4f}", f"{r.label_frac:.4f}", r.n_lab,
+                r.method, r.n, r.n_reps, repr(float(r.effect_size)), f"{r.label_frac:.4f}", r.n_lab,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -7314,7 +7321,7 @@ def save_results_artifacts_ppi_nlab_grid(
         ])
         for r in results:
             writer.writerow([
-                r.name, r.tag, r.eval_type, r.method, r.n, r.n_lab, r.n_reps, f"{r.effect_size:.4f}",
+                r.name, r.tag, r.eval_type, r.method, r.n, r.n_lab, r.n_reps, repr(float(r.effect_size)),
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
