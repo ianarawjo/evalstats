@@ -5897,7 +5897,7 @@ def _calibrate_noise_for_alignment(
 
 
 def run_ppi_label_efficiency_check(
-    n_reps: int, n_boot: int, ref_n_mc: int = 10_000, align_n_mc: int = 20_000, seed: int = 71,
+    n_reps: int, n_boot: int, ref_n_mc: int = 3000, align_n_mc: int = 20_000, seed: int = 71,
     n_workers: int = 1, progress_mode: str = "bar",
 ) -> tuple[list[LabelEfficiencyPoint], list[PPIComparisonResult], list[tuple[str, float, str, float, float, dict]]]:
     """Runs the label-efficiency comparison sweep (continuous/likert via
@@ -6085,8 +6085,8 @@ def run_ppi_nformula_check(
     which run_ppi_label_efficiency_check's own fixed (N=1000, N_lab<=200,
     ratio>=5) design never tested outside of.
 
-    ref_n_mc/align_n_mc match run_ppi_label_efficiency_check's own defaults
-    (10_000/20_000) -- deliberately, not an oversight: this
+    ref_n_mc/align_n_mc default higher than run_ppi_label_efficiency_check's
+    matching defaults (3000/20_000) -- deliberately, not an oversight: this
     check's whole output feeds a regression (fit_nformula_rule_of_thumb.py)
     whose coefficient standard errors are sensitive to per-cell noise in
     `multiplier` (a ratio-of-ratios inversion, worst for continuous's
@@ -6828,7 +6828,7 @@ def save_ppi_label_efficiency_per_method_table(
 
 
 def save_ppi_label_efficiency_plots_per_method(
-    raw: list, calib_rows: list, out_path: str, ref_n_mc: int = 10_000, seed: int = 71,
+    raw: list, calib_rows: list, out_path: str, ref_n_mc: int = 3000, seed: int = 71,
 ) -> tuple[list[str], dict]:
     """One set of label-efficiency figures PER METHOD, alongside the pooled set.
 
@@ -6859,7 +6859,17 @@ def save_ppi_label_efficiency_plots_per_method(
     its siblings is the signal that pooling is hiding something.
 
     Every method should also clear the y=x line. A method sitting at or below
-    it is not paying for itself over simply analysing the labeled subset."""
+    it is not paying for itself over simply analysing the labeled subset.
+
+    ref_n_mc MATCHES run_ppi_label_efficiency_check's default on purpose: these
+    figures are read against the pooled ones, and curves built at a different
+    Monte Carlo count are not comparable to them (and would miss the pooled
+    run's cache entries). Measured on the 300-rep sweep, raising it to 10_000
+    moved every pooled tier by under 2% and did not move the threshold at all,
+    while costing ~3x -- the residual inversion error is dominated by
+    conditioning at small effect size (worst deviation 0.158 at es=0.15 vs
+    0.046 at es=0.35), where the power curve is flat and dn/dP is large, not by
+    Monte Carlo noise. More samples cannot fix a flat curve."""
     import pathlib
     base = pathlib.Path(out_path)
     n_grid = np.geomspace(float(_JB_MIN_LAB), 1500.0, 36)
