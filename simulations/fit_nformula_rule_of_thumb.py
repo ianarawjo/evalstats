@@ -76,7 +76,13 @@ def fit_eval_type(df: pd.DataFrame, eval_type: str) -> dict:
     Wald tests' (F, p) pairs."""
     sub = df[(df["eval_type"] == eval_type) & (~df["saturated"])].copy()
     n_excluded = int((df["eval_type"] == eval_type).sum() - len(sub))
-    sub["one_minus_rho2"] = 1.0 - sub["alignment_value"] ** 2
+    # alignment_value IS rho^2 now (see cases/pvalues.py's
+    # _LABEL_EFF_ALIGNMENT_METRIC) -- do NOT square it again. It previously
+    # held each eval type's own metric (kappa / weighted kappa / Pearson r)
+    # and was squared here, which silently treated kappa as if it were a
+    # correlation for binary and likert; that approximation is what the
+    # rho^2 switch removes.
+    sub["one_minus_rho2"] = 1.0 - sub["alignment_value"]
     sub["nlab_over_n"] = sub["n_lab"] / sub["n"]
     sub["y"] = 1.0 / sub["multiplier"]
 

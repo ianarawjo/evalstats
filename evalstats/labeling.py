@@ -42,6 +42,7 @@ import numpy as np
 import pandas as pd
 
 from evalstats.loader import _CANONICAL_ALIASES, _find_col, _detect_score_type
+from evalstats.core.design import detect_paired as _detect_paired
 
 MARKER_COL = "_sampled_for_labeling"
 SYNTHETIC_ITEM_COL = "_row_item"
@@ -69,30 +70,11 @@ class QuitLabeling(Exception):
 # Design detection
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _detect_paired(df: pd.DataFrame, factor_col: Optional[str], item_col: str) -> bool:
-    """True when item ids are (largely) shared across every factor level --
-    the structure evalstats' own loader assumes when building an item-
-    aligned score matrix, and the common case for prompt/model comparisons.
-    False when item pools are substantially disjoint per level (e.g. a
-    genuinely between-subjects design with no shared item id) -- which is a
-    fully supported case here even though compare()'s own examples mostly
-    show the paired case.
-
-    Uses a 90% overlap-with-the-full-item-universe threshold per level
-    rather than requiring exact equality, since a few missing/dropped rows
-    per condition shouldn't flip the sampling strategy.
-    """
-    if factor_col is None or factor_col not in df.columns:
-        return True
-    levels = df[factor_col].dropna().unique()
-    if len(levels) <= 1:
-        return True
-    item_sets = [set(df.loc[df[factor_col] == lvl, item_col].dropna()) for lvl in levels]
-    universe = set.union(*item_sets) if item_sets else set()
-    if not universe:
-        return True
-    overlaps = [len(s) / len(universe) for s in item_sets]
-    return min(overlaps) >= 0.9
+# _detect_paired is now evalstats.core.design.detect_paired (imported above as
+# _detect_paired for backwards compatibility with this module's internal call
+# site) -- moved so evalstats.api.compare() can share the exact same
+# implementation for its design="auto" detection without importing this
+# labeling-CLI-focused module.
 
 
 def _resolve_columns(

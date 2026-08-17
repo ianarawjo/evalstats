@@ -843,6 +843,61 @@ class TestPairedTests:
             f"(near the 0.5 ceiling) for a large, clearly-separated true shift"
         )
 
+    def test_wilcoxon_asymmetric_fold_tie_does_not_zero_out_signal(self):
+        """Regression test for a real-data bug (2026-08-15): when the
+        labeled paired difference is exactly constant (Y_lab == 0, e.g. a
+        proxy-paired null construction that copies the same human label to
+        both sides) AND one cross-fit fold's labeled JUDGE-observed
+        difference also happens to be exactly tied (easy to hit with real
+        Likert-style ratings at n_lab~15), a degenerate-guard bug let a
+        spuriously "confident" lambda=0 from that fold zero out the OTHER
+        fold's entire contribution to both the point estimate and its
+        variance -- driving real-data Type-I error as high as 0.515 on
+        some judge pairs (nominal alpha=0.05). Fixed in evalstats/ppi.py's
+        _walsh_theta_fold_lambda by also checking var_hat_lab_f itself for
+        being ~0, not just relative to var_lab_f.
+
+        Constructs the exact failure shape directly: fold B's 8 labeled
+        items (per _ANALYTIC_TARGET_SEED's fixed permutation of n_lab=15)
+        all get an identical judge-observed diff, while fold A's 7 items
+        carry a real, informative spread. Before the fix this collapsed to
+        a degenerate estimate=0/se=0 (or an erratic one depending on which
+        fold hit the tie) instead of reflecting fold A's real signal.
+        """
+        rng = np.random.default_rng(1)
+        n = 200
+        n_lab = 15
+        x = rng.normal(0, 1, n)
+        y = rng.normal(0, 1, n)
+
+        # Fold split for n_lab=15 under the fixed internal permutation seed
+        # (np.random.default_rng(_ANALYTIC_TARGET_SEED).permutation(15)):
+        # fold A = positions {2,11,3,10,0,4,7}, fold B = the rest.
+        fold_B_pos = [5, 14, 12, 6, 9, 13, 8, 1]
+        fold_A_pos = [2, 11, 3, 10, 0, 4, 7]
+
+        diffs = np.empty(n_lab)
+        diffs[fold_B_pos] = 0.4  # exactly tied -> var_hat_lab_f == 0 for fold B
+        diffs[fold_A_pos] = [0.1, 0.2, -0.1, 0.3, -0.2, 0.15, -0.15]  # real spread
+
+        y[:n_lab] = x[:n_lab] - diffs
+        lab = np.full(n, np.nan)
+        lab[:n_lab] = 0.0  # arbitrary shared "true" value
+        x_lab = lab.copy()
+        y_lab = lab.copy()  # identical -> Y_lab == 0 for every labeled item
+
+        r = wilcoxon(x, y, x_lab, y_lab, print_result=False, n_boot=2000, rng=42)
+        assert r.corrected_p_value is not None
+        se = (r.corrected_ci[1] - r.corrected_ci[0]) / (2 * 1.959963984540054)
+        assert se > 1e-6, (
+            f"corrected SE collapsed to ~0 ({se:.2e}) -- fold B's exact tie "
+            f"zeroed out fold A's real signal instead of reflecting it"
+        )
+        assert r.corrected_estimate is not None and abs(r.corrected_estimate) > 1e-6, (
+            f"corrected estimate collapsed to ~0 ({r.corrected_estimate}) -- "
+            f"fold A's real spread should still show up in the combined estimate"
+        )
+
     def test_wilcoxon_raises_when_no_overlap_in_labeled_positions(self):
         """y_lab all NaN → no position has both x and y labeled → ValueError."""
         rng = np.random.default_rng(83)
@@ -2646,6 +2701,64 @@ class TestKruskalTrueEffect:
             f"seed={seed}: corrected CI ({lo:.3f}, {hi:.3f}) should be entirely "
             f"above 0 for a large true between-group effect"
         )
+
+    def test_exact_ordering_does_not_crash_and_rejects(self):
+        """Regression test for a real-data bug (2026-08-15): a genuine,
+        exactly-known effect (e.g. rank-split positive-control data) can
+        make every pairwise dominance bootstrap replicate land exactly at
+        the boundary (0 or 1) with zero variance -- the labeled/unlabeled
+        data can't help but preserve a strict total ordering across any
+        resample. np.linalg.pinv on that all-zero covariance returns an
+        all-zero pseudo-inverse (it can't represent "infinite precision"),
+        collapsing wald_stat and df to 0 and crashing on a division by
+        zero -- silently swallowed by the real-data harness's per-rep
+        try/except and counted as "failed to detect", which is what
+        collapsed real-data kruskal power from ~0.83 (uncorrected) to
+        ~0.20 (corrected). Fixed in
+        evalstats.tests._ppi_kruskal_wallis_pairwise (and its
+        mnar_experimental sibling) by detecting a fully-degenerate
+        covariance directly and reporting the correct near-certain
+        rejection instead of crashing.
+        """
+        rng = np.random.default_rng(5)
+        n, n_lab = 60, 15
+        # Non-overlapping ranges -> deterministic total ordering
+        # group0 > group1 > group2 for EVERY item, on both the judge
+        # scores and the (identical, zero-noise) labels.
+        truths = [rng.uniform(10, 11, n), rng.uniform(5, 6, n), rng.uniform(0, 1, n)]
+        groups = [t.copy() for t in truths]  # judge == truth exactly (no noise)
+        groups_lab = [np.full(n, np.nan) for _ in range(3)]
+        for i in range(3):
+            idx = rng.choice(n, n_lab, replace=False)
+            groups_lab[i][idx] = truths[i][idx]
+
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=1000, rng=7, print_result=False)
+        assert r.corrected_p_value is not None and r.corrected_p_value < 0.01, (
+            f"expected a confident rejection for an exact, total-ordering effect; "
+            f"got corrected_p_value={r.corrected_p_value}"
+        )
+        assert r.corrected_estimate is not None and r.corrected_estimate > 0.9
+
+    def test_exact_tie_null_does_not_crash_and_accepts(self):
+        """Companion to test_exact_ordering_does_not_crash_and_rejects: a
+        fully-degenerate covariance under a genuine NULL (all groups
+        identical, so every pairwise dominance is exactly 0.5 with zero
+        variance) must resolve to p=1.0 (fail to reject), not a spurious
+        rejection -- confirms the degenerate-covariance fix checks the
+        point estimate's distance from the null, not just its variance.
+        """
+        rng = np.random.default_rng(9)
+        n, n_lab = 60, 15
+        truths = [np.full(n, 3.0), np.full(n, 3.0), np.full(n, 3.0)]
+        groups = [t.copy() for t in truths]
+        groups_lab = [np.full(n, np.nan) for _ in range(3)]
+        for i in range(3):
+            idx = rng.choice(n, n_lab, replace=False)
+            groups_lab[i][idx] = truths[i][idx]
+
+        r = kruskalwallis(*groups, groups_lab=groups_lab, n_boot=1000, rng=11, print_result=False)
+        assert r.corrected_p_value == 1.0
+        assert r.corrected_estimate == 0.0
 
 
 class TestKruskalCIWidthLabelBudget:

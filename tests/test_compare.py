@@ -84,6 +84,29 @@ def test_load_from_raises_on_empty():
         es.load_from(pd.DataFrame())
 
 
+def test_load_from_raises_on_duplicate_column_names():
+    df = pd.DataFrame({
+        "model": ["A", "A", "B", "B"],
+        "item": ["q1", "q2", "q1", "q2"],
+        "score": [1.0, 0.0, 0.0, 1.0],
+    })
+    df_dup = pd.concat([df, df[["score"]]], axis=1)
+    assert list(df_dup.columns) == ["model", "item", "score", "score"]
+    with pytest.raises(EvalLoadError, match="[Dd]uplicate column"):
+        es.load_from(df_dup)
+
+
+def test_compare_raises_clear_error_on_nan_in_factor_column():
+    df = pd.DataFrame({
+        "model": ["A", "A", "B", "B", None],
+        "item": ["q1", "q2", "q1", "q2", "q3"],
+        "score": [1.0, 0.0, 0.0, 1.0, 0.5],
+    })
+    evaldata = es.load_from(df)
+    with pytest.raises(ValueError, match="factor column 'model' contains 1 missing"):
+        es.compare(evaldata, factors="model", metric="score")
+
+
 # ---------------------------------------------------------------------------
 # EvalResults.from_scores
 # ---------------------------------------------------------------------------

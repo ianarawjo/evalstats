@@ -22,6 +22,8 @@ from evalstats.io import from_dataframe
 from evalstats.config import get_alpha_ci, GRADIENT_CI_ALPHAS
 from evalstats.core.router import analyze, analyze_factorial, _analyze_single_lightweight
 from evalstats.core.bundles import AnalysisBundle, MultiModelBundle, AnalysisResult
+from evalstats.core.design import detect_paired
+from evalstats.core.unpaired import compare_unpaired, GroupComparisonResult
 from evalstats.core.stats_utils import correct_pvalues
 from evalstats.core.summary import (
     print_analysis_summary,
@@ -2318,12 +2320,13 @@ def compare(
     n_mc: int = 200,
     min_meaningful_diff=None,  # deferred
     alpha: Optional[float] = None,
-    p_values: bool = False,
-    omnibus: bool = False,
+    p_values: Optional[bool] = None,
+    omnibus: Optional[bool] = None,
     pairwise_test: Literal["auto", "bootstrap", "wilcoxon", "nemenyi"] = "auto",
     show_rank_probabilities: bool = False,
+    design: Literal["auto", "paired", "unpaired"] = "auto",
     **kwargs: Any,
-) -> ComparisonResult:
+) -> Union[ComparisonResult, GroupComparisonResult]:
     """Compare entities along one or more factor axes.
 
     Parameters
@@ -2352,17 +2355,22 @@ def compare(
         metric, e.g. ``secondary_metric={"latency_ms": "min"}`` to find the
         accuracy/latency frontier (``"min"`` for a cost-like metric where
         lower is better, ``"max"`` for a benefit-like one). Currently
-        supports exactly one secondary metric, a complete design (every
-        entity scored on every item for it too), and a single-factor result
+        supports exactly one secondary metric and a single-factor result
         (not yet supported for multi-model/factorial comparisons or seeded
-        R>=3 benchmarks). Both metrics are resampled *jointly* (a shared
-        per-item bootstrap draw, not two independent marginal bootstraps)
-        so that correlation between them (e.g. harder items being both
-        slower and less accurate) is preserved rather than dropped, and a
-        marginally-better point estimate on both axes isn't reported as a
-        confident "dominates" call when the data can't actually support it.
-        See :attr:`ComparisonResult.pareto_status` /
-        :attr:`ComparisonResult.pareto_frontier_probability`.
+        R>=3 benchmarks). On the paired path (default), also requires a
+        complete design (every entity scored on every item for the
+        secondary metric too) and resamples both metrics *jointly* via a
+        shared per-item bootstrap draw (not two independent marginal
+        bootstraps) so correlation between them (e.g. harder items being
+        both slower and less accurate) is preserved rather than dropped —
+        a marginally-better point estimate on both axes isn't reported as
+        a confident "dominates" call when the data can't actually support
+        it. On the unpaired path (``design="unpaired"``), the same idea
+        applies at row granularity instead — see ``design=``'s docstring
+        for exactly how. See :attr:`ComparisonResult.pareto_status` /
+        :attr:`ComparisonResult.pareto_frontier_probability` (also exposed
+        identically on :class:`~evalstats.core.unpaired.GroupComparisonResult`
+        for the unpaired path).
     alpha : float, optional
         Significance level / CI width: ``alpha=0.05`` → 95 % CIs.
         When ``None`` (default), uses the global value set by
@@ -2399,6 +2407,60 @@ def compare(
         than opt-out. Ranking is still computed either way; this only
         controls whether it's surfaced. Can be overridden per-call via the
         same-named argument on ``.summary()``/``.to_dict()``/``.to_frame()``.
+    design : {"auto", "paired", "unpaired"}
+        Experimental design for single-factor comparisons (``factors`` names
+        one column, and no factorial/multi-model second axis applies).
+        ``"auto"`` (default) checks whether items are shared across the
+        compared groups: when they are (the normal within-subjects case —
+        every entity scored on the same items), analysis proceeds exactly
+        as before. When items are disjoint per group (a between-subjects
+        design — e.g. independent user cohorts, one per condition), a
+        ``ValueError`` is raised rather than silently forcing a paired
+        analysis onto unpaired data, since ``compare()``'s default engine
+        assumes paired items. Pass ``design="unpaired"`` to explicitly run
+        the between-subjects path instead: a per-group descriptive summary
+        plus all-pairs comparisons (Kruskal-Wallis omnibus / Mann-Whitney U
+        post-hoc for continuous, likert, and grade metrics; one-way ANOVA /
+        Welch's t-test for binary metrics), Bonferroni-corrected CIs and
+        Holm-corrected p-values, PPI-corrected when ``alignment=`` is
+        passed. Between-subjects data commonly has no natural item/reviewer
+        id at all (e.g. just group + rating) — ``load_from()`` still
+        requires *some* item column to build ``evaldata`` in the first
+        place, so add a throwaway one first if needed, e.g.
+        ``df["item"] = range(len(df))``, before calling ``load_from()``.
+        Returns a :class:`~evalstats.core.unpaired.GroupComparisonResult`
+        instead of :class:`ComparisonResult` — see its ``.summary()``,
+        ``.to_dict()``, ``.to_frame()``, ``.groups_to_frame()``. Pass
+        ``design="paired"`` to force the existing paired analysis even on
+        data that looks between-subjects (matches pre-``design=`` behavior).
+        Not supported for factorial (2+ factor) comparisons; for
+        ``method="lmm"``/``"factorial_lmm"``, which already tolerate
+        unbalanced/disjoint designs natively via random effects; for any
+        other explicit ``method=``/``backend=`` override (the between-
+        subjects engine's CI construction isn't a pluggable-method
+        surface); or together with multi-run (seeded) data.
+        ``secondary_metric=`` (Pareto-front analysis) IS supported here —
+        unlike the paired path's shared-item-index joint bootstrap (every
+        entity resampled at the same item positions), the between-subjects
+        version resamples each group's own rows independently (there's no
+        shared item pool across disjoint groups to preserve correlation
+        through), still preserving each row's own primary/secondary
+        pairing. Populates
+        :attr:`~evalstats.core.unpaired.GroupComparisonResult.pareto_status`/
+        ``pareto_frontier_probability`` exactly like the paired path's own
+        attributes. ``score_range=`` is honored (passed through to the
+        per-group marginal CI's auto-method resolution, same as the paired
+        path). ``n_mc=`` has no effect — the equivalent knob is
+        ``n_bootstrap=``. ``p_values=`` and ``omnibus=`` are honored, but
+        with unpaired-specific *defaults of True* (not ``compare()``'s own
+        ``False``) — leave them unset to get this path's normal, always-
+        shown report; pass ``p_values=False`` to hide the pairwise table's
+        p-value column (the underlying values stay in ``.to_dict()``/
+        ``.to_frame()``), or ``omnibus=False`` to skip running the omnibus
+        test entirely at 3+ groups. ``baseline=``, ``pairwise_test=``, and
+        ``show_rank_probabilities=`` still have no effect on this path —
+        it always reports all-pairs comparisons (no baseline-relative
+        view) and has no rank-probability view.
     **kwargs
         Two uses:
 
@@ -2544,6 +2606,26 @@ def compare(
                         not is_model_comparison and not is_prompt_comparison)
     is_factorial = len(factors_list) >= 2
 
+    # Reject NaN/missing values in factor column(s) early with a clear,
+    # correctly-attributed error -- otherwise a NaN factor value silently
+    # becomes its own group and only surfaces later as a confusing "scores
+    # contain N NaN cells" error that blames the metric column instead.
+    for _f in factors_list:
+        _resolved_factor_col = (
+            model_col if (_f == "model" and model_col and model_col in df.columns) else
+            prompt_col if (_f in {"prompt", "template"} and prompt_col and prompt_col in df.columns) else
+            _f if _f in df.columns else None
+        )
+        if _resolved_factor_col is not None:
+            _n_na_factor = int(df[_resolved_factor_col].isna().sum())
+            if _n_na_factor > 0:
+                raise ValueError(
+                    f"factor column {_resolved_factor_col!r} contains {_n_na_factor} "
+                    "missing (NaN) value(s). Every row must have a value for the "
+                    "factor being compared -- drop or fill these rows before "
+                    "calling compare()."
+                )
+
     # Also handle the case where factor is neither "model" nor "prompt" but names
     # a canonical-alias column directly (e.g. user mapped "llm" → "model", then
     # passes factors="model" which now IS model_col).
@@ -2551,6 +2633,95 @@ def compare(
         factor_col_name = factors_list[0]
         if factor_col_name in df.columns:
             is_canonical_col = True
+
+    # ── design detection / routing (paired vs. unpaired) ─────────────────────
+    # Scoped to "pure" single-factor cases only -- i.e. whichever of paths A/B/C
+    # would run below, and only when that path's own implicit multi-model second
+    # axis (block_col) is absent, since the multi-model/factorial machinery is
+    # out of scope here. Factorial calls and method="lmm"/"factorial_lmm" are
+    # exempt entirely: LMM already tolerates incomplete/disjoint designs via
+    # random effects, and no currently-passing non-LMM call can be affected by
+    # this new check, because the bootstrap path already hard-crashes on
+    # genuinely unpaired data (has_missing) -- so paired-path behavior for every
+    # existing call is unchanged.
+    _design_backend = engine_kwargs.get("method") or engine_kwargs.get("backend")
+    _design_exempt = is_factorial or _design_backend in {"lmm", "factorial_lmm"}
+
+    if _design_exempt:
+        if design == "unpaired":
+            raise ValueError(
+                'design="unpaired" is not supported for factorial (2+ factor) '
+                'comparisons or for method="lmm"/"factorial_lmm", which already '
+                "handle unbalanced/disjoint designs natively via random effects."
+            )
+    else:
+        if is_model_comparison:
+            _design_factor_col = model_col
+            _design_is_pure_single_factor = not (prompt_col and prompt_col in df.columns)
+        elif is_prompt_comparison:
+            _design_factor_col = prompt_col
+            _design_is_pure_single_factor = not (model_col and model_col in df.columns)
+        elif is_canonical_col or (not is_factorial and factors_list[0] in df.columns):
+            _design_factor_col = factors_list[0]
+            _design_is_pure_single_factor = True
+        else:
+            _design_factor_col = None
+            _design_is_pure_single_factor = False
+
+        if _design_is_pure_single_factor and _design_factor_col:
+            if design == "unpaired" and run_col and run_col in df.columns and df[run_col].nunique() > 1:
+                raise ValueError(
+                    f'design="unpaired" does not yet support multi-run (seeded) data '
+                    f"-- column {run_col!r} has more than one run per item. Treating "
+                    "each run as its own row would silently inflate the effective "
+                    "sample size and break the independence assumption the between-"
+                    "subjects tests rely on (same scoping precedent as PPI alignment's "
+                    "own seeded-benchmark refusal). Aggregate runs to a single score "
+                    f"per item first, e.g. df.groupby([{_design_factor_col!r}, "
+                    f"{item_col!r}])[{metric_col!r}].mean().reset_index()."
+                )
+            if design == "unpaired" and _design_backend not in (None, "auto"):
+                raise ValueError(
+                    f'method={_design_backend!r} is not supported together with '
+                    'design="unpaired" -- the between-subjects engine\'s CI '
+                    "construction (Bonferroni/Holm pairwise, Kruskal-Wallis/ANOVA "
+                    "omnibus) isn't a pluggable-method surface the way the paired "
+                    'path is. Drop method= for this comparison. score_range= is '
+                    "still honored."
+                )
+            if design == "unpaired":
+                # Unlike the paired path, this narrower report defaults both
+                # to True (an unpaired-specific default, not compare()'s own
+                # False) -- unset (None, meaning the caller didn't pass
+                # either) preserves the always-shown behavior this path was
+                # built and battle-tested with; an explicit True/False is
+                # honored as a real suppress/show toggle.
+                _up_p_values = True if engine_kwargs.get("p_values") is None else bool(engine_kwargs.get("p_values"))
+                _up_omnibus = True if engine_kwargs.get("omnibus") is None else bool(engine_kwargs.get("omnibus"))
+                return compare_unpaired(
+                    df, factor_col=_design_factor_col, metric_col=metric_col,
+                    item_col=item_col, alignment=alignment, alpha=alpha,
+                    n_boot=engine_kwargs.get("n_bootstrap", 2000),
+                    rng=engine_kwargs.get("rng"),
+                    score_range=engine_kwargs.get("score_range"),
+                    p_values=_up_p_values, omnibus=_up_omnibus,
+                    secondary_metric=secondary_metric,
+                )
+            if design == "auto" and not detect_paired(df, _design_factor_col, item_col):
+                raise ValueError(
+                    f"Data for factor {_design_factor_col!r} looks between-subjects "
+                    "(items are not shared across the compared groups), but "
+                    "compare()'s default analysis assumes within-subjects (paired) "
+                    'data. Pass design="unpaired" to run the between-subjects '
+                    'comparison instead, or design="paired" to force the existing '
+                    "paired analysis anyway."
+                )
+        elif design == "unpaired":
+            raise ValueError(
+                'design="unpaired" is not supported for this comparison (it '
+                "implies a multi-model/multi-template second axis, which is out "
+                "of scope for the between-subjects path)."
+            )
 
     # ── path A: model comparison ──────────────────────────────────────────────
     if is_model_comparison:

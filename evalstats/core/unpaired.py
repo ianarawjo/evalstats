@@ -1,0 +1,871 @@
+"""Between-subjects (unpaired) comparison engine.
+
+Sibling to ``core/paired.py``, not a branch inside it: the paired path's
+entire machinery (``all_pairwise``, ``PairwiseMatrix``, ``PairedDiffResult``)
+is built around item-matched differences (``per_input_diffs``), which has no
+meaning for genuinely disjoint groups (e.g. different, unrelated reviewers
+per app). This module implements the corresponding between-subjects
+statistics as its own self-contained path, dispatched to from
+``evalstats.api.compare()`` when ``design="unpaired"`` (or auto-detected),
+and reuses the existing PPI-corrected test machinery in ``evalstats.tests``
+as its statistical engine rather than reimplementing anything.
+
+Two test families (see ``config.AUTO_UNPAIRED_METHOD_TABLE`` for the
+decision and full rationale):
+
+* **binary** data -- ``anova_oneway`` (omnibus, k>=3 only) + pairwise
+  Welch's ``ttest``-equivalent CIs (mean/proportion difference).
+* **continuous / likert / grade** data -- ``kruskalwallis`` (omnibus,
+  k>=3 only) + pairwise Mann-Whitney-equivalent CIs (stochastic-dominance
+  probability θ=P(a>b)).
+
+At k=2 there is only one possible comparison, so there is no separate
+omnibus test and no multiple-comparison correction to apply (Bonferroni/
+Holm are no-ops at a family size of 1) -- the single pairwise result *is*
+the answer. At k>=3, pairwise CIs get a Bonferroni correction and pairwise
+p-values get a Holm correction, two independent axes mirroring how the
+paired path separates its own simultaneous-CI and p-value-correction
+machinery (see ``core/paired.py``'s ``_simultaneous_cis_router`` and
+``correct_pvalues``).
+"""
+from __future__ import annotations
+
+import contextlib
+import io
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Optional
+
+import numpy as np
+import pandas as pd
+
+from evalstats.config import resolve_auto_unpaired_methods, get_alpha_ci
+from evalstats.core.stats_utils import correct_pvalues
+from evalstats.loader import _CANONICAL_ALIASES, _find_col, _detect_score_type
+
+if TYPE_CHECKING:
+    from evalstats.alignment import AlignmentResult
+
+# Same literal value as evalstats.labeling.SYNTHETIC_ITEM_COL -- kept as an
+# independent local constant rather than imported, since core/ modules
+# shouldn't depend on the CLI-facing labeling module (wrong layering
+# direction); it's a small, deliberate duplication of one string constant.
+SYNTHETIC_ITEM_COL = "_row_item"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Result objects
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class GroupStat:
+    """Descriptive stats + calibrated marginal CI for one group.
+
+    Computed independently per group (own auto-detected data kind, own N,
+    own CI method) via the same machinery ``evalstats.quick.summarize``
+    uses -- there is no rectangular-design requirement here, so unbalanced
+    group sizes are handled naturally.
+    """
+    label: str
+    n: int
+    mean: float
+    std: float
+    ci_low: float
+    ci_high: float
+    method: str
+    multi_ci: Optional[dict] = None  # {alpha: (lo, hi)} gradient CI bands
+
+
+class _GroupStatsAsRobustness:
+    """Minimal ``RobustnessResult``-compatible view over a ``list[GroupStat]``.
+
+    Exists so ``core.summary._print_pareto_section`` -- built for the
+    paired path's ``RobustnessResult`` (per-entity ``.labels``/``.mean``/
+    ``.ci_low``/``.ci_high`` arrays) -- can render the between-subjects
+    Pareto section unmodified: it only ever reads those four attributes, so
+    this adapter is all that's needed to reuse the whole section (including
+    the ASCII scatterplot) rather than reimplementing it.
+    """
+
+    def __init__(self, stats: list[GroupStat]):
+        self.labels = [s.label for s in stats]
+        self.mean = np.array([s.mean for s in stats])
+        self.ci_low = np.array([s.ci_low for s in stats])
+        self.ci_high = np.array([s.ci_high for s in stats])
+
+
+@dataclass
+class GroupDiffResult:
+    """One pairwise between-subjects comparison.
+
+    Not ``PairedDiffResult`` -- there is no ``per_input_diffs`` here, since
+    the two groups' items have no correspondence to difference.
+    """
+    label_a: str
+    label_b: str
+    estimand: str          # "mean_diff" (binary family) or "dominance" (rank-based family)
+    null_value: float       # 0.0 for mean_diff, 0.5 for dominance
+    point_estimate: float
+    ci_low: float
+    ci_high: float          # Bonferroni-corrected at k>=3; nominal alpha at k=2
+    p_value: float          # Holm-corrected at k>=3; raw at k=2
+    raw_p_value: float      # always uncorrected, for transparency
+    n_a: int
+    n_b: int
+
+    @property
+    def significant(self) -> bool:
+        return not (self.ci_low <= self.null_value <= self.ci_high)
+
+
+class _GroupDiffResultsAsPairwiseMatrix:
+    """Minimal ``PairwiseMatrix``-compatible view over a ``list[GroupDiffResult]``.
+
+    Exists so ``core.summary``'s critical-difference-band and executive-
+    summary machinery (``_critical_difference_groups``/
+    ``_assign_significance_groups``/``_print_executive_summary``) -- built
+    for the paired path's ``PairwiseMatrix`` (a ``.get(a, b)`` lookup plus
+    ``.simultaneous_ci_method``) -- can render the between-subjects case
+    unmodified. Those functions only ever read ``.get(a, b).point_diff``/
+    ``.ci_low``/``.ci_high``, and check ``.simultaneous_ci_method is not
+    None`` to decide whether significance is CI-exclusion-based rather than
+    a p-value threshold -- the only branch reached here, since this
+    engine's own ``ci_correction`` already *is* a simultaneous-CI scheme
+    (Bonferroni), so ``simultaneous_ci_method`` is set to a matching
+    sentinel and the p-value-threshold branch never fires.
+    ``point_diff``/``ci_low``/``ci_high`` are the same null-shifted
+    quantities the pairwise table itself displays (Δθ/Δp), so "CI excludes
+    zero" means exactly what it already means there.
+    """
+
+    def __init__(self, pairwise: list["GroupDiffResult"]):
+        self._by_pair: dict[tuple[str, str], tuple[float, float, float]] = {}
+        for p in pairwise:
+            self._by_pair[(p.label_a, p.label_b)] = (
+                p.point_estimate - p.null_value, p.ci_low - p.null_value, p.ci_high - p.null_value,
+            )
+        self.simultaneous_ci_method = "bonferroni"  # any non-None sentinel -- see docstring
+
+    def get(self, a: str, b: str):
+        from types import SimpleNamespace
+        if (a, b) in self._by_pair:
+            point_diff, ci_low, ci_high = self._by_pair[(a, b)]
+            return SimpleNamespace(point_diff=point_diff, ci_low=ci_low, ci_high=ci_high)
+        if (b, a) in self._by_pair:
+            point_diff, ci_low, ci_high = self._by_pair[(b, a)]
+            return SimpleNamespace(point_diff=-point_diff, ci_low=-ci_high, ci_high=-ci_low)
+        raise KeyError(f"no comparison found for ({a}, {b})")
+
+
+@dataclass
+class GroupComparisonResult:
+    """Result of a between-subjects ``compare(design="unpaired")`` call.
+
+    Deliberately a narrower reporting surface than ``ComparisonResult``
+    (no forest-plot brackets) -- per-group means with gradient CIs, a
+    pairwise comparison table (with critical-difference rank bands), the
+    omnibus test when k>=3, an executive summary leaderboard, and a
+    Pareto-front section when ``secondary_metric=`` was passed.
+    """
+    factor_col: str
+    metric_col: str
+    item_col: str
+    item_col_synthetic: bool
+    score_type: str          # "binary" | "continuous" | "likert" | "grade"
+    family: str              # "binary_proportion" | "rank_based"
+    groups: list[GroupStat]
+    pairwise: list[GroupDiffResult]
+    omnibus_test_name: Optional[str]     # None at k=2 -- no separate omnibus test
+    omnibus_statistic: Optional[float]
+    omnibus_p_value: Optional[float]              # uncorrected
+    omnibus_corrected_p_value: Optional[float]     # PPI-corrected, when alignment given
+    alpha: float
+    n_pairs: int
+    ci_correction: str        # "bonferroni" or "none" (k=2, single comparison)
+    pvalue_correction: str    # "holm" or "none" (k=2, single comparison)
+    ppi_applied: bool
+    alignment_result: Optional["AlignmentResult"] = None
+    show_p_values: bool = True
+    pareto: Optional[dict] = None
+
+    # ── convenience accessors ──────────────────────────────────────────────
+
+    @property
+    def labels(self) -> list[str]:
+        return [g.label for g in self.groups]
+
+    @property
+    def pareto_status(self) -> Optional[dict]:
+        """Per-group three-state Pareto classification, or ``None``.
+
+        Populated only when ``compare(design="unpaired", secondary_metric=...)``
+        was passed. Mirrors :attr:`~evalstats.api.ComparisonResult.pareto_status`
+        exactly -- keys are group labels, values are
+        :class:`~evalstats.core.pareto.ParetoStatus`.
+        """
+        return self.pareto["statuses"] if self.pareto is not None else None
+
+    @property
+    def pareto_frontier_probability(self) -> Optional[dict]:
+        """Per-group ``P(group is Pareto-optimal)``, or ``None``.
+
+        Populated only when ``compare(design="unpaired", secondary_metric=...)``
+        was passed. Mirrors
+        :attr:`~evalstats.api.ComparisonResult.pareto_frontier_probability`.
+        """
+        if self.pareto is None:
+            return None
+        result = self.pareto["result"]
+        return dict(zip(result.labels, result.p_frontier.tolist()))
+
+    def _group(self, label: str) -> GroupStat:
+        for g in self.groups:
+            if g.label == label:
+                return g
+        raise KeyError(f"no group {label!r}; available: {self.labels}")
+
+    def _pair(self, label_a: str, label_b: str) -> GroupDiffResult:
+        for p in self.pairwise:
+            if {p.label_a, p.label_b} == {label_a, label_b}:
+                return p
+        raise KeyError(f"no pairwise result for ({label_a!r}, {label_b!r})")
+
+    # ── reporting ───────────────────────────────────────────────────────────
+
+    def summary(self) -> None:
+        from evalstats.core.summary import print_group_comparison_summary
+        print_group_comparison_summary(self)
+
+    def plot(self, **kwargs):
+        raise NotImplementedError(
+            "GroupComparisonResult.plot() is not implemented yet -- between-"
+            "subjects plotting is scoped for a later phase. Use .summary() "
+            "or .to_frame() in the meantime."
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "design": "unpaired",
+            "factor_col": self.factor_col,
+            "metric_col": self.metric_col,
+            "item_col": self.item_col,
+            "item_col_synthetic": self.item_col_synthetic,
+            "score_type": self.score_type,
+            "family": self.family,
+            "alpha": self.alpha,
+            "ppi_applied": self.ppi_applied,
+            "groups": {
+                g.label: {
+                    "n": g.n, "mean": g.mean, "ci_low": g.ci_low,
+                    "ci_high": g.ci_high, "method": g.method,
+                }
+                for g in self.groups
+            },
+            "omnibus": (
+                None if self.omnibus_test_name is None else {
+                    "test_name": self.omnibus_test_name,
+                    "statistic": self.omnibus_statistic,
+                    "p_value": self.omnibus_p_value,
+                    "corrected_p_value": self.omnibus_corrected_p_value,
+                }
+            ),
+            "pairwise": [
+                {
+                    "a": p.label_a, "b": p.label_b, "estimand": p.estimand,
+                    "point_estimate": p.point_estimate,
+                    "ci_low": p.ci_low, "ci_high": p.ci_high,
+                    "p_value": p.p_value, "raw_p_value": p.raw_p_value,
+                    "significant": p.significant,
+                    "n_a": p.n_a, "n_b": p.n_b,
+                }
+                for p in self.pairwise
+            ],
+            "ci_correction": self.ci_correction,
+            "pvalue_correction": self.pvalue_correction,
+            **self._pareto_to_dict(),
+        }
+
+    def _pareto_to_dict(self) -> dict:
+        if self.pareto is None:
+            return {}
+        pareto_groups: dict[str, dict] = {}
+        p_frontier = self.pareto_frontier_probability
+        for label, st in self.pareto["statuses"].items():
+            entry: dict = {"status": st.status, "p_pareto_optimal": float(p_frontier[label])}
+            if st.dominated_by:
+                entry["dominated_by"] = list(st.dominated_by)
+            if st.ambiguous_vs:
+                entry["ambiguous_vs"] = list(st.ambiguous_vs)
+            pareto_groups[str(label)] = entry
+        return {
+            "pareto": {
+                "secondary_metric": self.pareto["secondary_metric"],
+                "direction": self.pareto["direction"],
+                "groups": pareto_groups,
+            }
+        }
+
+    def to_frame(self) -> pd.DataFrame:
+        """One row per pairwise comparison."""
+        rows = [
+            {
+                "a": p.label_a, "b": p.label_b, "estimand": p.estimand,
+                "point_estimate": p.point_estimate,
+                "ci_low": p.ci_low, "ci_high": p.ci_high,
+                "p_value": p.p_value, "raw_p_value": p.raw_p_value,
+                "significant": p.significant,
+                "n_a": p.n_a, "n_b": p.n_b,
+            }
+            for p in self.pairwise
+        ]
+        return pd.DataFrame(rows)
+
+    def groups_to_frame(self) -> pd.DataFrame:
+        """One row per group (descriptive stats)."""
+        rows = [
+            {"label": g.label, "n": g.n, "mean": g.mean,
+             "ci_low": g.ci_low, "ci_high": g.ci_high, "method": g.method}
+            for g in self.groups
+        ]
+        return pd.DataFrame(rows).set_index("label")
+
+
+class _GroupComparisonResultAsBundle:
+    """Minimal ``AnalysisBundle``-compatible view over a
+    ``GroupComparisonResult``, so ``core.summary._print_executive_summary``
+    (built for the paired path) can render the between-subjects executive
+    summary leaderboard unmodified. It only ever reads ``.rank_dist.labels``,
+    ``.robustness.{mean,ci_low,ci_high}``, ``.pairwise`` (a
+    ``PairwiseMatrix``-compatible lookup), ``.seed_variance`` (always
+    ``None`` here -- no run/seed axis exists for between-subjects data, by
+    construction: ``design="unpaired"`` refuses multi-run data outright),
+    and ``.resolved_ci_method`` (only to decide the "Wilson-flat CI" column
+    header).
+    """
+
+    def __init__(self, result: "GroupComparisonResult"):
+        from types import SimpleNamespace
+        self.rank_dist = SimpleNamespace(labels=result.labels)
+        self.robustness = _GroupStatsAsRobustness(result.groups)
+        self.pairwise = _GroupDiffResultsAsPairwiseMatrix(result.pairwise)
+        self.seed_variance = None
+        self.resolved_ci_method = result.groups[0].method if result.groups else None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# FWER helpers
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _bonferroni_alpha(alpha: float, n_pairs: int) -> float:
+    """Bonferroni-adjusted alpha for a family of n_pairs comparisons.
+
+    Deliberately Bonferroni, not Šidák: Šidák's exactness needs (near-)
+    independence between the pairwise statistics, which is unverified for
+    this bootstrap's dependence structure (pairs sharing a group are
+    correlated). Bonferroni's union bound holds regardless.
+    """
+    return alpha if n_pairs <= 1 else alpha / n_pairs
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Pairwise engines -- one PPI + one non-PPI function per family. Both take a
+# list of group arrays (any k>=2 -- Bonferroni/Holm no-op at n_pairs=1, so
+# the k=2 case doesn't need separate code) and return a dict with "pairs",
+# a point-estimate array, "ci_lo"/"ci_hi", and "pair_p" (uncorrected).
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rank_based_pairwise_ppi(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], alpha: float, n_boot: int, rng,
+) -> dict:
+    """θ_ab = P_mid(a>b) for every pair, PPI-corrected. Thin wrapper around
+    the private kruskalwallis machinery -- valid at any k>=2 (kruskalwallis's
+    own docstring: "For k=2 groups Kruskal-Wallis reduces to Mann-Whitney;
+    this pairwise-θ framework is the direct generalization to k>2"), so this
+    is reused uniformly rather than special-casing k=2 through mannwhitney().
+    """
+    from evalstats.tests import _ppi_kruskal_wallis_pairwise
+    out = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha, n_boot, rng)
+    return {
+        "pairs": out["pairs"], "point": out["theta_hat"],
+        "ci_lo": out["ci_lo"], "ci_hi": out["ci_hi"], "pair_p": out["pair_p"],
+    }
+
+
+def _rank_based_pairwise_uncorrected(
+    groups: list[np.ndarray], alpha: float, n_boot: int, rng,
+) -> dict:
+    """Non-PPI analog of :func:`_rank_based_pairwise_ppi` -- a stripped-down
+    copy of ``_ppi_kruskal_wallis_pairwise`` with the rectifier terms
+    removed (plain bootstrap of the same θ_ab estimator, no human labels).
+    """
+    from evalstats.tests import _kw_pairwise_thetas
+    rng = np.random.default_rng(rng)
+    k = len(groups)
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    n_per_group = [len(g) for g in groups]
+    theta_hat = _kw_pairwise_thetas(groups, pairs)
+
+    boots = np.empty((n_boot, len(pairs)))
+    for bi in range(n_boot):
+        resampled = [groups[j][rng.integers(0, n_per_group[j], n_per_group[j])] for j in range(k)]
+        boots[bi] = _kw_pairwise_thetas(resampled, pairs)
+
+    ci_lo = np.percentile(boots, 100 * alpha / 2, axis=0)
+    ci_hi = np.percentile(boots, 100 * (1 - alpha / 2), axis=0)
+    pair_p = 2.0 * np.minimum((boots <= 0.5).mean(axis=0), (boots >= 0.5).mean(axis=0))
+    pair_p = np.minimum(pair_p, 1.0)
+    return {"pairs": pairs, "point": theta_hat, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+
+
+def _binary_pairwise_ppi(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], alpha: float, power_tune: bool = True,
+) -> dict:
+    """Δp = mean(a) - mean(b) for every pair, PPI-corrected via the exact
+    closed-form construction ``ttest()`` itself uses for the independent,
+    labeled case (``_ppi_two_sample_t_interval``) -- called directly
+    (bypassing the public wrapper) the same way the rank-based family calls
+    ``_ppi_kruskal_wallis_pairwise`` directly, so both families are handled
+    consistently and neither changes ``evalstats.tests``' public contract.
+    """
+    from evalstats.tests import _ppi_two_sample_t_interval
+    k = len(groups)
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    point = np.empty(len(pairs))
+    ci_lo = np.empty(len(pairs))
+    ci_hi = np.empty(len(pairs))
+    pair_p = np.empty(len(pairs))
+    for idx, (a, b) in enumerate(pairs):
+        res = _ppi_two_sample_t_interval(
+            groups[a], groups[b], groups_lab[a], groups_lab[b], alpha, power_tune=power_tune,
+        )
+        point[idx] = res.estimate
+        ci_lo[idx] = res.ci_low
+        ci_hi[idx] = res.ci_high
+        pair_p[idx] = res.p_value
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+
+
+def _binary_pairwise_uncorrected(groups: list[np.ndarray], alpha: float) -> dict:
+    """Non-PPI analog: ordinary Welch's t-interval per pair (closed-form,
+    via scipy -- no bootstrap needed since this has no PPI rectifier).
+    """
+    from scipy.stats import ttest_ind
+    k = len(groups)
+    pairs = [(a, b) for a in range(k) for b in range(a + 1, k)]
+    point = np.empty(len(pairs))
+    ci_lo = np.empty(len(pairs))
+    ci_hi = np.empty(len(pairs))
+    pair_p = np.empty(len(pairs))
+    for idx, (a, b) in enumerate(pairs):
+        r = ttest_ind(groups[a], groups[b], equal_var=False)
+        ci = r.confidence_interval(confidence_level=1.0 - alpha)
+        point[idx] = float(np.mean(groups[a]) - np.mean(groups[b]))
+        ci_lo[idx] = float(ci.low)
+        ci_hi[idx] = float(ci.high)
+        pair_p[idx] = float(r.pvalue)
+    return {"pairs": pairs, "point": point, "ci_lo": ci_lo, "ci_hi": ci_hi, "pair_p": pair_p}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-group descriptive stats
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _compute_group_stats(
+    labels: list[str], arrays: list[np.ndarray], *, alpha: float, n_bootstrap: int, rng,
+    score_range: Optional[tuple[float, float]] = None,
+    lab_arrays: Optional[list[np.ndarray]] = None,
+) -> list[GroupStat]:
+    """Per-group mean + calibrated marginal CI (with gradient multi_ci
+    bands), computed independently per group -- the exact same building
+    block ``evalstats.quick.summarize`` uses internally, called directly
+    here (with multi_ci=True, which summarize()'s own public signature
+    doesn't expose) rather than through that quick-primitive wrapper.
+
+    ``lab_arrays``, when given (PPI alignment is active), makes this a PPI-
+    corrected marginal mean per group instead of a raw one -- mirroring
+    ``evalstats.api._run_alignment_ppi``'s own single-sample correction
+    exactly (same ``is_binary_scores``/``is_bounded_01_scores`` ->
+    ``resolve_ppi_auto_methods`` -> ``_ppi_robustness_dispatch`` chain, same
+    ``GRADIENT_CI_ALPHAS`` sweep for the gradient bands), just applied per
+    between-subjects group instead of per paired-path entity. Every group is
+    guaranteed to have at least one label by this point -- the caller
+    (``compare_unpaired``) already validates that and raises before this is
+    ever reached otherwise -- so there is no paired-path-style "entity has
+    zero labels, keep its uncorrected estimate" fallback needed here.
+    """
+    from evalstats.core.router import resolve_auto_robustness_method
+    from evalstats.core.variance import robustness_metrics
+
+    ppi_applied = lab_arrays is not None
+    if ppi_applied:
+        from evalstats.config import resolve_ppi_auto_methods, GRADIENT_CI_ALPHAS
+        from evalstats.core.resampling import is_binary_scores, is_bounded_01_scores
+        # A single import here, not per-call to compare_unpaired -- avoids the
+        # api.py <-> core/unpaired.py circular import (api.py imports
+        # compare_unpaired from this module at module scope).
+        from evalstats.api import _ppi_robustness_dispatch
+
+        pooled = np.concatenate(arrays)
+        if is_binary_scores(pooled):
+            data_kind = "binary"
+        elif is_bounded_01_scores(pooled):
+            data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
+        _, ppi_robustness_method = resolve_ppi_auto_methods(data_kind)
+
+    out = []
+    for i, (label, arr) in enumerate(zip(labels, arrays)):
+        if ppi_applied:
+            lab_arr = lab_arrays[i]
+            res = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, alpha, n_bootstrap, rng)
+            multi_ci = {}
+            for a in GRADIENT_CI_ALPHAS:
+                g = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, a, n_bootstrap, rng)
+                multi_ci[a] = (float(g.ci_low), float(g.ci_high))
+            out.append(GroupStat(
+                label=label, n=int(arr.size), mean=float(res.estimate), std=float(np.std(arr)),
+                ci_low=float(res.ci_low), ci_high=float(res.ci_high),
+                method=ppi_robustness_method, multi_ci=multi_ci,
+            ))
+            continue
+
+        a2d = arr.reshape(1, -1)
+        _, robustness_method, resolved_score_range, _ = resolve_auto_robustness_method(
+            a2d, score_range=score_range, stacklevel=4,
+        )
+        rob = robustness_metrics(
+            a2d, ["_"],
+            n_bootstrap=n_bootstrap, rng=rng, alpha=alpha,
+            statistic="mean", marginal_method=robustness_method,
+            multi_ci=True, score_range=resolved_score_range,
+        )
+        multi_ci = (
+            {a: (float(lo[0]), float(hi[0])) for a, (lo, hi) in rob.multi_ci.items()}
+            if rob.multi_ci is not None else None
+        )
+        out.append(GroupStat(
+            label=label, n=int(arr.size), mean=float(rob.mean[0]), std=float(rob.std[0]),
+            ci_low=float(rob.ci_low[0]) if rob.ci_low is not None else float("nan"),
+            ci_high=float(rob.ci_high[0]) if rob.ci_high is not None else float("nan"),
+            method=robustness_method, multi_ci=multi_ci,
+        ))
+    return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Main dispatcher
+# ─────────────────────────────────────────────────────────────────────────────
+
+def compare_unpaired(
+    df: pd.DataFrame,
+    *,
+    factor_col: str,
+    metric_col: str,
+    item_col: Optional[str] = None,
+    alignment: Optional[dict] = None,
+    alpha: Optional[float] = None,
+    n_boot: int = 2000,
+    rng=None,
+    score_range: Optional[tuple[float, float]] = None,
+    p_values: bool = True,
+    omnibus: bool = True,
+    secondary_metric: Optional[dict] = None,
+) -> GroupComparisonResult:
+    """Between-subjects comparison engine -- see module docstring.
+
+    Parameters
+    ----------
+    df : pd.DataFrame
+        Long-format data with at least ``factor_col`` and ``metric_col``.
+    factor_col : str
+        Column identifying which group each row belongs to.
+    metric_col : str
+        Numeric score column to compare.
+    item_col : str, optional
+        Row/item identifier column. When not given, auto-detected via the
+        same canonical aliases ``load_from()`` uses; when none of those
+        match either, a synthetic positional id is used (each row is its
+        own item) -- between-subjects data commonly has no natural item id
+        at all (e.g. just group + rating, no reviewer id).
+    alignment : dict, optional
+        ``{metric_col: AlignmentResult}``, matching ``compare()``'s own
+        ``alignment=`` convention exactly -- the caller has already run
+        ``judge_alignment()``; this just consumes the result (splitting its
+        human-label column by group) and displays it inline.
+    alpha : float, optional
+        Significance level. Defaults to :func:`evalstats.get_alpha_ci`.
+    n_boot : int
+        Bootstrap resamples for the rank-based family's pairwise CIs
+        (unused by the binary family, which is closed-form).
+    rng : optional
+        Seed or ``np.random.Generator``.
+    score_range : (float, float), optional
+        Explicit metric bounds (e.g. ``(1, 5)`` for a Likert scale), passed
+        through to the per-group marginal CI's auto-method resolution
+        (matches ``compare()``'s own ``score_range=`` engine kwarg). When
+        ``None`` (default), bounds are auto-detected per group, same as
+        the paired path's own default.
+    p_values : bool
+        Whether ``.summary()`` prints the pairwise table's p-value column
+        (and the p-value-correction footnote at k>=3). Defaults to
+        ``True`` here (an unpaired-specific default, deliberately not
+        ``compare()``'s own ``False`` -- p-values are core to reading this
+        narrower report, not an opt-in extra). The underlying
+        ``GroupDiffResult.p_value``/``raw_p_value`` fields are always
+        computed and available via ``.to_dict()``/``.to_frame()``
+        regardless of this flag; it only controls console display.
+    omnibus : bool
+        Whether the omnibus test (Kruskal-Wallis/ANOVA, k>=3 only) is run
+        at all. Defaults to ``True`` here (again, not ``compare()``'s own
+        ``False``). When ``False``, ``omnibus_test_name`` and friends stay
+        ``None`` even at k>=3 -- unlike ``p_values``, this skips the
+        *computation*, not just the display, mirroring the paired path's
+        own ``if omnibus and len(labels) >= 3:`` gate.
+    secondary_metric : dict, optional
+        ``{column_name: "min" | "max"}``, matching ``compare()``'s own
+        ``secondary_metric=`` convention exactly. Runs an uncertainty-aware
+        Pareto-front analysis between ``metric_col`` and this second column,
+        via :func:`~evalstats.core.pareto.pareto_bootstrap_unpaired` -- a
+        per-group joint bootstrap (each group's own rows resampled
+        together, preserving the row-level primary/secondary correlation),
+        not the paired path's shared-item-index bootstrap (there's no
+        shared item pool to preserve correlation across between disjoint
+        groups). Populates :attr:`GroupComparisonResult.pareto`/
+        ``.pareto_status``/``.pareto_frontier_probability``.
+
+    Returns
+    -------
+    GroupComparisonResult
+    """
+    if factor_col not in df.columns:
+        raise ValueError(f"factor_col {factor_col!r} not found in data.")
+    if metric_col not in df.columns:
+        raise ValueError(f"metric_col {metric_col!r} not found in data.")
+
+    secondary_col = None
+    secondary_direction = None
+    if secondary_metric is not None:
+        if not isinstance(secondary_metric, dict) or len(secondary_metric) != 1:
+            raise ValueError(
+                "secondary_metric= must be a dict with exactly one entry, "
+                "e.g. secondary_metric={'latency_ms': 'min'}."
+            )
+        (secondary_col, secondary_direction), = secondary_metric.items()
+        if secondary_direction not in ("min", "max"):
+            raise ValueError(
+                f"secondary_metric={{{secondary_col!r}: {secondary_direction!r}}} -- "
+                "direction must be 'min' or 'max'."
+            )
+        if secondary_col not in df.columns:
+            raise ValueError(f"secondary_metric column {secondary_col!r} not found in data.")
+
+    if alpha is None:
+        alpha = get_alpha_ci()
+    rng = np.random.default_rng(rng)
+
+    resolved_item = item_col or _find_col(df, _CANONICAL_ALIASES["item"])
+    item_synthetic = resolved_item is None
+    if item_synthetic:
+        resolved_item = SYNTHETIC_ITEM_COL
+    elif resolved_item not in df.columns:
+        raise ValueError(f"item_col {resolved_item!r} not found in data.")
+
+    groups_df = dict(tuple(df.groupby(factor_col, sort=False)))
+    labels = [str(k) for k in groups_df.keys()]
+    if len(labels) < 2:
+        raise ValueError(
+            f"factor_col {factor_col!r} has only {len(labels)} distinct value(s) -- "
+            "need at least 2 groups to compare."
+        )
+
+    score_type = _detect_score_type(df[metric_col].dropna())
+    family, _, _ = resolve_auto_unpaired_methods(score_type)
+
+    ppi_applied = alignment is not None and metric_col in alignment
+    alignment_result = alignment[metric_col] if ppi_applied else None
+    human_col = None
+    if ppi_applied:
+        human_col = alignment_result.human_col
+        if human_col not in df.columns:
+            raise ValueError(
+                f"alignment result's human_groundtruth column {human_col!r} "
+                "not found in data."
+            )
+
+    # Build group_arrays and (if PPI) group_lab_arrays from the SAME per-group
+    # slice so a dropped NaN-score row drops its label in lockstep -- keeping
+    # positional alignment between the two, which the PPI machinery below
+    # requires. Drop NaN per group with a warning (don't silently produce a
+    # NaN-poisoned CI/omnibus stat, or crash deep inside a closed-form CI
+    # helper) -- matches evalstats.quick._clean_1d's own drop-and-warn
+    # convention for flat, unstructured score lists. Unlike the paired path's
+    # hard-error on missing cells (which protects item *alignment*, a concern
+    # that doesn't exist here -- there's no cross-group pairing to break).
+    # When secondary_metric= is given, a row is only usable if BOTH metrics
+    # are present -- the row-level (primary, secondary) pairing is exactly
+    # what the Pareto joint bootstrap needs preserved, so both arrays must
+    # drop the same rows in lockstep, not be cleaned independently.
+    import warnings as _warnings
+    group_arrays: list[np.ndarray] = []
+    group_lab_arrays: Optional[list[np.ndarray]] = [] if ppi_applied else None
+    secondary_arrays: Optional[list[np.ndarray]] = [] if secondary_col else None
+    for lbl, key in zip(labels, groups_df.keys()):
+        sub = groups_df[key]
+        scores = sub[metric_col].to_numpy(dtype=float)
+        is_nan = np.isnan(scores)
+        sec_scores = None
+        if secondary_col:
+            sec_scores = sub[secondary_col].to_numpy(dtype=float)
+            is_nan = is_nan | np.isnan(sec_scores)
+        n_missing = int(is_nan.sum())
+        if n_missing > 0:
+            _warnings.warn(
+                f"group {lbl!r}: dropped {n_missing} NaN (missing) value(s) out of "
+                f"{scores.size}; computed from the remaining {scores.size - n_missing}.",
+                UserWarning, stacklevel=4,
+            )
+            scores = scores[~is_nan]
+        if scores.size == 0:
+            raise ValueError(f"group {lbl!r} has no valid (non-NaN) scores.")
+        group_arrays.append(scores)
+        if ppi_applied:
+            group_lab_arrays.append(sub[human_col].to_numpy(dtype=float)[~is_nan])
+        if secondary_col:
+            secondary_arrays.append(sec_scores[~is_nan])
+
+    if ppi_applied:
+        zero_labeled = [
+            lbl for lbl, labs in zip(labels, group_lab_arrays) if np.all(np.isnan(labs))
+        ]
+        if zero_labeled:
+            raise ValueError(
+                f"Group(s) {zero_labeled!r} have zero labeled items. Every group "
+                "needs at least one human label for PPI correction -- otherwise "
+                "its rectifier term is undefined and any comparison touching it "
+                "degenerates to a point estimate at the null with no real signal."
+            )
+        # Same minimum-label-count enforcement (>=15 total human labels,
+        # warn below 30) every other PPI caller in evalstats.tests goes
+        # through -- unpaired.py calls the *private* pairwise engines below
+        # directly (bypassing the public ttest()/kruskalwallis()/etc.
+        # wrappers, which do this themselves), so it must sanitize here or
+        # the correction can silently run on too few labels (a near-zero-
+        # width, spuriously confident CI) or crash on a zero-labeled group.
+        from evalstats.tests import _sanitize_multigroup_ppi_labels
+        group_lab_arrays = _sanitize_multigroup_ppi_labels(
+            group_arrays, group_lab_arrays, repeated=False,
+            test_label="between-subjects comparison",
+        )
+
+    group_stats = _compute_group_stats(
+        labels, group_arrays, alpha=alpha, n_bootstrap=n_boot, rng=rng,
+        score_range=score_range,
+        lab_arrays=group_lab_arrays if ppi_applied else None,
+    )
+
+    k = len(labels)
+    n_pairs = k * (k - 1) // 2
+    ci_alpha = _bonferroni_alpha(alpha, n_pairs)
+
+    # ── Omnibus test (k>=3 only -- at k=2 there's nothing to protect against,
+    # the single pairwise comparison already answers the whole question) ────
+    #
+    # Suppressed stdout: every evalstats.tests function with labels given
+    # unconditionally prints its own alignment report via _run_alignment_
+    # report -- NOT gated by print_result (that only gates the TestResult's
+    # own .summary()). That internal report re-runs judge_alignment() from
+    # scratch with no selection= (always "unknown"), which would print a
+    # second, worse, differently-labeled alignment report right in the
+    # middle of ours -- we already print the caller's real, correctly-
+    # disclosed AlignmentResult once via the PPI banner above. Left as-is
+    # in evalstats.tests itself (existing, validated, widely-used behavior
+    # for direct callers of that module -- not something to change here);
+    # suppressed only at this call site.
+    omnibus_test_name = omnibus_statistic = omnibus_p_value = omnibus_corrected_p_value = None
+    if k >= 3 and omnibus:
+        with contextlib.redirect_stdout(io.StringIO()) if ppi_applied else contextlib.nullcontext():
+            if family == "binary_proportion":
+                from evalstats.tests import anova_oneway
+                om = anova_oneway(
+                    *group_arrays, groups_lab=group_lab_arrays if ppi_applied else None,
+                    alpha=alpha, n_boot=n_boot, rng=rng, print_result=False,
+                )
+                omnibus_test_name = "One-way ANOVA (independent)"
+            else:
+                from evalstats.tests import kruskalwallis
+                om = kruskalwallis(
+                    *group_arrays, groups_lab=group_lab_arrays if ppi_applied else None,
+                    alpha=alpha, n_boot=n_boot, rng=rng, print_result=False,
+                )
+                omnibus_test_name = "Kruskal-Wallis test"
+        omnibus_statistic = float(om.statistic)
+        omnibus_p_value = float(om.p_value)
+        omnibus_corrected_p_value = (
+            float(om.corrected_p_value) if om.corrected_p_value is not None else None
+        )
+
+    # ── Pairwise table (all k>=2 -- Bonferroni/Holm no-op at n_pairs=1) ─────
+    if family == "binary_proportion":
+        pw = (
+            _binary_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha)
+            if ppi_applied else _binary_pairwise_uncorrected(group_arrays, ci_alpha)
+        )
+        estimand, null_value = "mean_diff", 0.0
+    else:
+        pw = (
+            _rank_based_pairwise_ppi(group_arrays, group_lab_arrays, ci_alpha, n_boot, rng)
+            if ppi_applied else _rank_based_pairwise_uncorrected(group_arrays, ci_alpha, n_boot, rng)
+        )
+        estimand, null_value = "dominance", 0.5
+
+    raw_p = np.asarray(pw["pair_p"], dtype=float)
+    corrected_p = correct_pvalues(raw_p, method="holm") if n_pairs > 1 else raw_p.copy()
+
+    pairwise = [
+        GroupDiffResult(
+            label_a=labels[i], label_b=labels[j], estimand=estimand, null_value=null_value,
+            point_estimate=float(pw["point"][idx]),
+            ci_low=float(pw["ci_lo"][idx]), ci_high=float(pw["ci_hi"][idx]),
+            p_value=float(corrected_p[idx]), raw_p_value=float(raw_p[idx]),
+            n_a=int(group_arrays[i].size), n_b=int(group_arrays[j].size),
+        )
+        for idx, (i, j) in enumerate(pw["pairs"])
+    ]
+
+    pareto_dict = None
+    if secondary_col:
+        from evalstats.core.pareto import (
+            pareto_bootstrap_unpaired, classify_pareto_status, orient_higher_is_better,
+        )
+        secondary_oriented = [orient_higher_is_better(arr, secondary_direction) for arr in secondary_arrays]
+        pareto_result = pareto_bootstrap_unpaired(
+            group_arrays, secondary_oriented, labels, n_bootstrap=n_boot, rng=rng,
+        )
+        secondary_group_stats = _compute_group_stats(
+            labels, secondary_arrays, alpha=alpha, n_bootstrap=n_boot, rng=rng,
+        )
+        pareto_dict = {
+            "secondary_metric": secondary_col,
+            "direction": secondary_direction,
+            "result": pareto_result,
+            "statuses": classify_pareto_status(pareto_result, alpha=alpha),
+            # Reuses core.summary._print_pareto_section's display unmodified
+            # (see _GroupStatsAsRobustness) -- same keys the paired path's
+            # own pareto dict uses.
+            "primary_robustness": _GroupStatsAsRobustness(group_stats),
+            "secondary_robustness": _GroupStatsAsRobustness(secondary_group_stats),
+        }
+
+    return GroupComparisonResult(
+        factor_col=factor_col, metric_col=metric_col,
+        item_col=resolved_item, item_col_synthetic=item_synthetic,
+        score_type=score_type, family=family,
+        groups=group_stats, pairwise=pairwise,
+        omnibus_test_name=omnibus_test_name, omnibus_statistic=omnibus_statistic,
+        omnibus_p_value=omnibus_p_value, omnibus_corrected_p_value=omnibus_corrected_p_value,
+        alpha=alpha, n_pairs=n_pairs,
+        ci_correction="bonferroni" if n_pairs > 1 else "none",
+        pvalue_correction="holm" if n_pairs > 1 else "none",
+        ppi_applied=ppi_applied, alignment_result=alignment_result,
+        show_p_values=p_values, pareto=pareto_dict,
+    )

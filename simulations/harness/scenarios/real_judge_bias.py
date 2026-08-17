@@ -399,9 +399,53 @@ def generate_real_twogroup_null_cell(
     return judge_a_scores, judge_b_scores, lab_a, lab_b
 
 
+def _independent_rater_copies(
+    lab: np.ndarray, rng: np.random.Generator, rater_noise_sd: float, n_copies: int,
+) -> list[np.ndarray]:
+    """``n_copies`` copies of ``lab`` (revealed items, NaN for the rest),
+    each perturbed by its OWN independent mean-zero Gaussian draw (std
+    ``rater_noise_sd``, clipped back to [0, 1] -- the shared rescaled
+    score range every dataset here uses) if ``rater_noise_sd > 0``, else
+    exact unperturbed copies.
+
+    Exact copies (``rater_noise_sd == 0``) are what every proxy-paired/
+    repeated null construction in this module used exclusively before
+    2026-08-15: a single human rating stands in for "the ground truth" on
+    every arm, since these datasets only ever collected ONE rating per
+    item. That's a defensible way to build a KNOWN-exactly-zero true
+    difference for a Type-I check, but it's also an unrealistically
+    idealized one -- two genuinely independent human ratings of the same
+    item essentially never agree to floating-point precision, and testing
+    calibration ONLY at that exact-tie boundary was found (2026-08-15) to
+    trigger a real degenerate-variance bug in wilcoxon's cross-fit power-
+    tuning (see results_why_ppi_shrink_1_over_0.md's real-data wilcoxon
+    addendum) that a more realistic small-noise construction would have
+    masked less severely. Independent (not shared) per-copy noise is
+    essential: jittering `lab` once and copying the jittered result would
+    still leave every arm identically tied to each other, just at a
+    different constant -- the whole point is breaking that tie while
+    keeping E[copy_i] equal across every copy, so the null (true
+    difference exactly 0 in expectation) stays valid regardless of
+    `rater_noise_sd`. Clipping to [0, 1] doesn't reintroduce a systematic
+    difference between copies: it's the same symmetric clip applied to
+    the same distribution of noise draws on every copy, not a directional
+    adjustment to any one of them.
+    """
+    if rater_noise_sd <= 0.0:
+        return [lab.copy() for _ in range(n_copies)]
+    mask = ~np.isnan(lab)
+    n_lab = int(mask.sum())
+    copies = []
+    for _ in range(n_copies):
+        c = lab.copy()
+        c[mask] = np.clip(c[mask] + rng.normal(0.0, rater_noise_sd, n_lab), 0.0, 1.0)
+        copies.append(c)
+    return copies
+
+
 def generate_real_paired_null_cell(
     corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
-    judge_a: str, judge_b: str,
+    judge_a: str, judge_b: str, *, rater_noise_sd: float = 0.0,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """WOR-draw n items ONCE (not 2n -- both "conditions" are the SAME
     items) and read them through two DIFFERENT judges -- an EXACT Type-I
@@ -412,9 +456,13 @@ def generate_real_paired_null_cell(
     truth of condition B" distinct from condition A's), with each judge's
     own real noise/bias driving the comparison instead of a synthetic
     model. label_frac reveals the SAME items' human labels for both
-    conditions (there's one ground truth per item, not one per judge), so
-    lab_x and lab_y are identical (copied, not aliased, so nothing
-    downstream can mutate one and silently affect the other).
+    conditions (there's one ground truth per item, not one per judge).
+
+    ``rater_noise_sd`` (default 0.0, the original exact-tie behavior):
+    see :func:`_independent_rater_copies`'s docstring for why a nonzero
+    value (independent per-arm noise, not a shared jitter) is a more
+    realistic stand-in for two independent human ratings while keeping
+    this an exact Type-I null in expectation.
 
     Feeds cases/ppi_real.py's paired-null check (wilcoxon/paired_t/
     bayes_bootstrap/bootstrap_t/tango -- the PPI test methods that need a
@@ -426,7 +474,8 @@ def generate_real_paired_null_cell(
     llm_y = corpus.judge_scores[judge_b][idx]
     human = corpus.human_label[idx]
     lab = _reveal_labels(human, label_frac, rng)
-    return llm_x, llm_y, lab, lab.copy()
+    lab_x, lab_y = _independent_rater_copies(lab, rng, rater_noise_sd, 2)
+    return llm_x, llm_y, lab_x, lab_y
 
 
 def generate_real_omnibus_independent_null_cell(
@@ -461,7 +510,7 @@ def generate_real_omnibus_independent_null_cell(
 
 def generate_real_omnibus_repeated_null_cell(
     corpus: RealJudgeBiasCorpus, rng: np.random.Generator, n: int, label_frac: float,
-    judge_a: str, judge_b: str, judge_c: str,
+    judge_a: str, judge_b: str, judge_c: str, *, rater_noise_sd: float = 0.0,
 ) -> tuple[list[np.ndarray], list[np.ndarray]]:
     """The 3-condition generalization of generate_real_paired_null_cell:
     WOR-draw n items ONCE (all three "conditions" are the SAME items) and
@@ -470,9 +519,11 @@ def generate_real_omnibus_repeated_null_cell(
     item, since judge_a/judge_b/judge_c are all noisy/biased reads of the
     IDENTICAL human_label). label_frac reveals the SAME items' human labels
     for all three conditions (one ground truth per item, not one per
-    judge), so the three groups_lab arrays are identical (each copied, not
-    aliased, matching generate_real_paired_null_cell's lab/lab.copy()
-    convention).
+    judge).
+
+    ``rater_noise_sd``: see generate_real_paired_null_cell's docstring and
+    :func:`_independent_rater_copies` -- same rationale and mechanism,
+    just producing 3 independent copies instead of 2.
 
     Feeds cases/ppi_real.py's omnibus-repeated check (anova_rep/friedman --
     the 3-condition analogue of the paired check's wilcoxon/paired_t/
@@ -484,7 +535,7 @@ def generate_real_omnibus_repeated_null_cell(
     idx = rng.choice(corpus.corpus_size, size=n, replace=False)
     groups = [corpus.judge_scores[jm][idx] for jm in (judge_a, judge_b, judge_c)]
     lab = _reveal_labels(corpus.human_label[idx], label_frac, rng)
-    groups_lab = [lab.copy(), lab.copy(), lab.copy()]
+    groups_lab = _independent_rater_copies(lab, rng, rater_noise_sd, 3)
     return groups, groups_lab
 
 

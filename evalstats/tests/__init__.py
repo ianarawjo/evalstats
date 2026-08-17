@@ -1574,22 +1574,67 @@ def _ppi_kruskal_wallis_pairwise(
     # smaller df in whatever corner the covariance genuinely is
     # near-singular, rather than assuming it always is.
     eigvals = np.linalg.eigvalsh(cov)
-    df = int(np.linalg.matrix_rank(cov, tol=rcond * float(eigvals.max())))
+    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
 
-    # Finite-sample (Hotelling's T²-style) correction: a chi-square reference
-    # is only the n→∞ limit of the Wald statistic's distribution, and is
-    # known to be mildly anti-conservative (too many rejections) whenever the
-    # covariance is estimated from a small effective sample — exactly the
-    # regime of a sparse labeled set. ν is the total labeled observations
-    # across groups (the classical Hotelling "n" feeding the covariance
-    # estimate); as ν → ∞ this F-reference converges back to the chi-square
-    # one, so it costs nothing in the well-labeled regime.
-    nu = sum(n_lab_per_group)
-    if nu > df:
-        f_stat = wald_stat * (nu - df + 1) / (nu * df)
-        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    if max_eigval <= 1e-12:
+        # Every pairwise dominance estimate has (numerically) EXACTLY zero
+        # bootstrap variance -- confirmed to happen on real data whenever
+        # the labeled subsample preserves a strict, deterministic group
+        # ordering (e.g. an exact rank-split positive control: the labeled
+        # human-side theta is 1.0/0.0 on every possible resample, since
+        # resampling can't undo a strict ordering), combined with a small
+        # enough power-tuning lambda that the judge-side variance
+        # contribution also rounds to zero. np.linalg.pinv on an all-zero
+        # covariance returns an all-zero pseudo-inverse (it can't represent
+        # "infinite precision"), which silently collapses wald_stat to 0
+        # -- indistinguishable, from the Wald statistic alone, from "no
+        # information", even though zero uncertainty around a nonzero
+        # effect is the most CONFIDENT result a test can report, not an
+        # absent one. df then also collapses to 0, which crashed this
+        # function outright (ZeroDivisionError in the nu>df branch below)
+        # rather than reporting the correct near-certain rejection --
+        # silently swallowed by cases/ppi_real.py's per-rep try/except and
+        # counted as "failed to detect", which is what collapsed real-data
+        # kruskal power from ~0.83 (uncorrected) to ~0.20 (corrected) on
+        # exactly these strong-effect scenarios. Bypasses wald_stat/pinv
+        # entirely here and falls back to the same "check the point
+        # estimate directly" idiom every other closed-form PPI backend
+        # uses for an se<=0 degenerate case (e.g.
+        # evalstats.ppi._analytic_walsh_theta_correct).
+        wald_stat = 0.0
+        df = 0
+        wald_p = 0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0
     else:
-        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+        cov_pinv = np.linalg.pinv(cov, rcond=rcond)
+        wald_stat = float(diff @ cov_pinv @ diff)
+        df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
+
+        # Finite-sample (Hotelling's T²-style) correction: a chi-square
+        # reference is only the n→∞ limit of the Wald statistic's
+        # distribution, and is known to be mildly anti-conservative (too
+        # many rejections) whenever the covariance is estimated from a
+        # small effective sample — exactly the regime of a sparse labeled
+        # set. ν is the total labeled observations across groups (the
+        # classical Hotelling "n" feeding the covariance estimate); as ν →
+        # ∞ this F-reference converges back to the chi-square one, so it
+        # costs nothing in the well-labeled regime.
+        nu = sum(n_lab_per_group)
+        if nu > df:
+            f_stat = wald_stat * (nu - df + 1) / (nu * df)
+            wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+        else:
+            wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+
+    # Per-pair two-sided bootstrap p-values, same convention as
+    # TestResult.corrected_p_value's own definition (2*min(P(boot<=0.5),
+    # P(boot>=0.5))) -- exposed alongside `boots` itself (additive, not a
+    # contract change: existing callers only read the keys below already
+    # present) so a caller building its own multi-pair FWER correction
+    # (e.g. Holm across a family of pairs) has real per-pair p-values to
+    # correct, not just the single omnibus wald_p. See
+    # evalstats/core/unpaired.py.
+    pair_p = 2.0 * np.minimum((boots <= 0.5).mean(axis=0), (boots >= 0.5).mean(axis=0))
+    pair_p = np.minimum(pair_p, 1.0)
 
     return {
         "pairs": pairs,
@@ -1598,6 +1643,8 @@ def _ppi_kruskal_wallis_pairwise(
         "ci_hi": ci_hi,
         "wald_stat": wald_stat,
         "wald_p": wald_p,
+        "boots": boots,
+        "pair_p": pair_p,
     }
 
 
@@ -1724,22 +1771,35 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
     cov = np.atleast_2d(np.cov(boots, rowvar=False, ddof=1))
     diff = theta_hat - 0.5
     rcond = 1e-8
-    cov_pinv = np.linalg.pinv(cov, rcond=rcond)
-    wald_stat = float(diff @ cov_pinv @ diff)
     # df = the pseudo-inverse's OWN rank, not a hardcoded k-1 -- same fix,
     # same reasoning as _ppi_kruskal_wallis_pairwise's df (see that
     # function's docstring): pairwise DOMINANCE probabilities aren't linear
     # combinations of k group effects the way mean differences are, so
     # their covariance is generically full rank C(k,2), not k-1.
     eigvals = np.linalg.eigvalsh(cov)
-    df = int(np.linalg.matrix_rank(cov, tol=rcond * float(eigvals.max())))
+    max_eigval = float(eigvals.max()) if eigvals.size else 0.0
 
-    nu = sum(n_lab_per_group)
-    if nu > df:
-        f_stat = wald_stat * (nu - df + 1) / (nu * df)
-        wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+    if max_eigval <= 1e-12:
+        # See _ppi_kruskal_wallis_pairwise's identical degenerate-cov guard
+        # for the full mechanism (a real, exact-ordering positive-control
+        # effect can drive bootstrap variance to exactly 0, which pinv
+        # treats as "no information" rather than "perfect certainty" --
+        # crashing on a division by df=0 instead of reporting a confident
+        # rejection).
+        wald_stat = 0.0
+        df = 0
+        wald_p = 0.0 if bool(np.any(np.abs(diff) > 1e-9)) else 1.0
     else:
-        wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
+        cov_pinv = np.linalg.pinv(cov, rcond=rcond)
+        wald_stat = float(diff @ cov_pinv @ diff)
+        df = int(np.linalg.matrix_rank(cov, tol=rcond * max_eigval))
+
+        nu = sum(n_lab_per_group)
+        if nu > df:
+            f_stat = wald_stat * (nu - df + 1) / (nu * df)
+            wald_p = float(_scipy_stats.f.sf(f_stat, dfn=df, dfd=nu - df + 1)) if f_stat > 0 else 1.0
+        else:
+            wald_p = float(_scipy_stats.chi2.sf(wald_stat, df=df)) if wald_stat > 0 else 1.0
 
     return {
         "pairs": pairs,
@@ -3119,13 +3179,14 @@ def _ppi_anova_independent_f_stat(
     ``_ppi_anova_independent_p_value`` returned None for (a group with zero
     labels).
 
-    ``power_tune`` (default *False*, matching every existing caller):
-    EXPERIMENTAL -- see the docstring inside the ``if power_tune:`` branch
-    below for why this needed a different per-group construction than the
-    ``power_tune=False`` branch's fixed-lambda=1 one, not just a lambda<1
-    plug-in. Not yet validated at the harness level; see
+    ``power_tune`` (default *True*, matching every existing caller): see
+    the docstring inside the ``if power_tune:`` branch below for why this
+    needed a different per-group construction than the ``power_tune=False``
+    branch's fixed-lambda=1 one, not just a lambda<1 plug-in, and for the
+    pooled-lambda fix (2026-08-15) to a real-data Type-I inflation found
+    with the original per-group-lambda version of this construction; see
     ``simulations/out/results_why_ppi_shrink_1_over_0.md``'s ANOVA
-    power-tuning addendum for the investigation in progress."""
+    power-tuning addenda for the full investigation."""
     masks = [~np.isnan(g_lab) for g_lab in groups_lab]
     n_lab_arr = np.array([int(m.sum()) for m in masks], dtype=float)
 
@@ -3163,32 +3224,64 @@ def _ppi_anova_independent_f_stat(
         # should hold for ANY lambda, not just 1 -- AS LONG AS `denom`
         # below is also built from this same per-group variance, not the
         # power_tune=False branch's lambda=1-specific inflation formula.
-        from evalstats.ppi import _analytic_mean_point_se
+        #
+        # Lambda is estimated ONCE, POOLED across all k groups' labeled+
+        # unlabeled data (evalstats.ppi._pooled_k_group_lambda), not
+        # independently per group -- per-group lambda estimation was found
+        # (2026-08-15, real-data validation) to systematically UNDERSTATE
+        # `denom` (mean(ss_between)/(k-1) exceeded mean(denom) by ~14%
+        # under a real MCAR null): each group's lambda is chosen
+        # specifically to minimize THAT group's own reported variance
+        # using that same finite sample's noisy moments, an
+        # "argmin-then-evaluate-at-the-argmin" optimism bias distinct from
+        # lambda's own sampling uncertainty (which
+        # evalstats.ppi._lambda_var_inflation already separately corrects
+        # for). Pooling increases the effective sample lambda is estimated
+        # from, shrinking that optimism gap -- see _pooled_k_group_lambda's
+        # docstring and simulations/out/results_why_ppi_shrink_1_over_0.md's
+        # real-data ANOVA addendum for the full ground-truth validation
+        # (real + synthetic, null + power, no regression found anywhere).
+        from evalstats.ppi import (
+            _analytic_mean_point_se_given_lambda, _pooled_k_group_lambda,
+        )
+
+        fully_labeled = [len(g[~m]) == 0 for g, m in zip(groups, masks)]
+        pool_idx = [i for i, fl in enumerate(fully_labeled) if not fl]
+        if pool_idx:
+            lam, var_lam = _pooled_k_group_lambda(
+                [groups_lab[i][masks[i]] for i in pool_idx],
+                [groups[i][masks[i]] for i in pool_idx],
+                [groups[i][~masks[i]] for i in pool_idx],
+            )
+        else:
+            lam, var_lam = 1.0, 0.0
 
         corr_means = np.empty(k)
         var_ppi_per_group = np.empty(k)
+        r_terms = np.zeros(k)
         for i, (g, g_lab, mask) in enumerate(zip(groups, groups_lab, masks)):
             Y_lab_i = g_lab[mask]
             Y_hat_lab_i = g[mask]
             Y_hat_unlab_i = g[~mask]
-            if len(Y_hat_unlab_i) == 0:
-                # This group is fully labeled -- _analytic_mean_point_se
-                # raises on an empty unlabeled residual (see its own
-                # docstring), so fall back to the human-labeled mean
-                # directly: the power_tune=False branch's fixed-lambda=1
-                # construction (g.mean() + (g_lab[mask].mean() -
-                # g[mask].mean())) reduces to exactly this when mask is
-                # all True, so this stays consistent with that branch at
-                # 100% labeling.
+            if fully_labeled[i]:
+                # This group is fully labeled -- lambda/the judge-side
+                # rectifier plays no role for it at all, so it's excluded
+                # from the pooled lambda estimate above too (see
+                # pool_idx). Fall back to the human-labeled mean directly:
+                # the power_tune=False branch's fixed-lambda=1 construction
+                # (g.mean() + (g_lab[mask].mean() - g[mask].mean()))
+                # reduces to exactly this when mask is all True, so this
+                # stays consistent with that branch at 100% labeling.
                 est_i = float(Y_lab_i.mean())
                 n_lab_i = len(Y_lab_i)
-                se_i = float(np.sqrt(np.var(Y_lab_i, ddof=1) / n_lab_i)) if n_lab_i > 1 else 0.0
+                var_i = float(np.var(Y_lab_i, ddof=1) / n_lab_i) if n_lab_i > 1 else 0.0
             else:
-                est_i, se_i, _, _, _, _, _ = _analytic_mean_point_se(
-                    Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, power_tune=True,
+                est_i, var_i, _, _, _, r_term_i, _ = _analytic_mean_point_se_given_lambda(
+                    Y_lab_i, Y_hat_lab_i, Y_hat_unlab_i, lam,
                 )
+                r_terms[i] = r_term_i
             corr_means[i] = est_i
-            var_ppi_per_group[i] = se_i * se_i
+            var_ppi_per_group[i] = var_i
     else:
         # PPI-corrected group means: μ̂ᵢ_PPI = mean(llm_all_i) + (mean(human_lab_i) - mean(llm_lab_i))
         corr_means = np.array([
@@ -3217,7 +3310,20 @@ def _ppi_anova_independent_f_stat(
         # by Var[μ̂ᵢ_LLM] rather than ms_within directly; leaving that out
         # was an initial bug caught by validate_anova_power_tune.py (Type-I
         # went to 1.0 -- denom came out ~nᵢ times too small).
-        inflation_per_group = var_ppi_per_group * ns / ms_within
+        #
+        # var_ppi_per_group deliberately excludes lambda's own estimation
+        # uncertainty (_analytic_mean_point_se_given_lambda's docstring --
+        # a pooled/shared lambda needs that added jointly, not once per
+        # group). Added here as r_term_i^2 * var_lam per group, same
+        # MEAN-scale-to-Var[μ̂ᵢ_LLM] weighting as the base term; a
+        # first-order approximation (treats the shared-lambda perturbation
+        # as an independent per-group addition rather than deriving
+        # SS_between's full induced covariance structure under a
+        # perfectly-correlated-across-groups lambda) that the ground-truth
+        # Monte Carlo validation (see this branch's docstring above) found
+        # sufficient in practice -- no residual miscalibration or power
+        # cost detected on any tested cell.
+        inflation_per_group = (var_ppi_per_group + (r_terms ** 2) * var_lam) * ns / ms_within
     else:
         # Per-group LLM noise variance σ_llm_i² from labeled residuals (llm − human),
         # AND per-group Cov(true, noise) from the same labeled subset.

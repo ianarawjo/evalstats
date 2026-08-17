@@ -526,6 +526,121 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
     raise AssertionError(f"no AUTO_PVALUE_CORRECTION_METHOD_TABLE rule matched n={n}")
 
 
+# ---------------------------------------------------------------------------
+# Between-subjects (unpaired) design routing -- compare(design="unpaired")
+# ---------------------------------------------------------------------------
+# Separate from AUTO_ANALYZE_METHOD_TABLE above (which is paired-only): that
+# table's data_kind taxonomy ("binary"/"bounded_01"/"likert"/"unbounded") is
+# also different from the one used here ("binary"/"continuous"/"likert"/
+# "grade", matching evalstats.loader._detect_score_type -- kept local rather
+# than imported to avoid coupling this low-level module to the loader, same
+# reasoning as DataKind above being declared locally rather than imported).
+#
+# Deliberately just two rows, decided after extensive discussion, not derived
+# mechanically from AUTO_ANALYZE_METHOD_TABLE's finer-grained routing:
+#
+#   binary -> anova_oneway (omnibus) + ttest (pairwise, Welch's). The
+#   textbook-correct test for comparing proportions is chi-square/Fisher's
+#   exact, but neither has PPI correction machinery in this codebase, and
+#   deriving one would be new, unvalidated statistical work. Treating a 0/1
+#   outcome as a numeric mean and reusing the already-validated ttest/
+#   anova_oneway PPI paths (the "linear probability model" approach) gives
+#   Δp (proportion difference) with a CI -- the effect size a reader expects
+#   for a binary outcome -- using entirely existing, validated machinery.
+#   Known, accepted limitation: t-intervals on binary/bounded data can
+#   produce out-of-[0,1]/[-1,1] CIs at extreme proportions or small N (why
+#   the *paired* path uses Tango instead of a generic t-interval for binary
+#   data -- there is no between-subjects Tango equivalent today). A
+#   deliberate patch, not a clean solution.
+#
+#   continuous / likert / grade -> kruskalwallis (omnibus + θ_ab pairwise
+#   post-hoc) + mannwhitney (the k=2 special case -- Kruskal-Wallis reduces
+#   to Mann-Whitney at k=2). Reports a stochastic-dominance probability
+#   θ=P(a>b), not a mean difference -- less immediately interpretable for
+#   continuous data than Δmean would be, but this is the only validated
+#   multi-group (k>=3) pairwise mechanism in the codebase for any score
+#   type; a Tukey-HSD-style joint mean-difference post-hoc for continuous
+#   data does not exist and would itself be new, unvalidated work.
+#   "grade" is treated as "continuous" here (closest existing behavior) --
+#   flagged as an assumption needing real-data validation, not a settled
+#   choice (see PLAN §5).
+UnpairedScoreType = Literal["binary", "continuous", "likert", "grade"]
+UnpairedFamily = Literal["binary_proportion", "rank_based"]
+
+
+@dataclass(frozen=True)
+class AutoUnpairedRule:
+    """One row of the ``compare(design="unpaired")`` routing table."""
+    score_type: UnpairedScoreType
+    family: UnpairedFamily
+    omnibus_method: str    # "anova_oneway" or "kruskalwallis"
+    pairwise_method: str   # "ttest" or "mannwhitney"
+    reason: str
+
+
+AUTO_UNPAIRED_METHOD_TABLE: tuple[AutoUnpairedRule, ...] = (
+    AutoUnpairedRule(
+        score_type="binary", family="binary_proportion",
+        omnibus_method="anova_oneway", pairwise_method="ttest",
+        reason=(
+            "No PPI-corrected chi-square/Fisher's-exact exists in this "
+            "codebase; treating the 0/1 outcome as a numeric mean and "
+            "reusing the validated anova_oneway/ttest PPI paths reports "
+            "the proportion difference a reader expects for a binary "
+            "outcome, using entirely existing machinery. Known limitation: "
+            "t-intervals on proportions can misbehave at extreme values or "
+            "small N."
+        ),
+    ),
+    AutoUnpairedRule(
+        score_type="continuous", family="rank_based",
+        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
+        reason=(
+            "Kruskal-Wallis's θ_ab pairwise post-hoc is the only validated "
+            "k>=3 pairwise mechanism in this codebase for any score type; "
+            "a PPI-corrected Tukey-HSD-style mean-difference post-hoc does "
+            "not exist and would be new, unvalidated statistical work."
+        ),
+    ),
+    AutoUnpairedRule(
+        score_type="likert", family="rank_based",
+        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
+        reason="Ordinal data -- rank-based tests are the standard HCI convention.",
+    ),
+    AutoUnpairedRule(
+        score_type="grade", family="rank_based",
+        omnibus_method="kruskalwallis", pairwise_method="mannwhitney",
+        reason=(
+            "Treated as continuous for this table (closest existing "
+            "behavior) -- unvalidated assumption, see PLAN §5."
+        ),
+    ),
+)
+
+
+def resolve_auto_unpaired_methods(score_type: str) -> tuple[UnpairedFamily, str, str]:
+    """Resolve ``compare(design="unpaired")``'s routing to
+    ``(family, omnibus_method, pairwise_method)`` -- see
+    :data:`AUTO_UNPAIRED_METHOD_TABLE`.
+
+    ``family`` is returned directly (not re-derived from ``pairwise_method``
+    by the caller) so the table stays the actual source of truth for which
+    engine runs -- editing a row here changes behavior, rather than editing
+    ``omnibus_method``/``pairwise_method`` silently doing nothing because
+    some other call site re-derives family from a hardcoded string check.
+
+    The *k=2* special case (``mannwhitney``/``ttest`` used directly, no
+    omnibus test needed since there's only one comparison) is handled by
+    the caller (``evalstats.core.unpaired``), not this table.
+    """
+    for rule in AUTO_UNPAIRED_METHOD_TABLE:
+        if rule.score_type == score_type:
+            return rule.family, rule.omnibus_method, rule.pairwise_method
+    raise AssertionError(
+        f"no AUTO_UNPAIRED_METHOD_TABLE rule matched score_type={score_type!r}"
+    )
+
+
 def set_alpha_ci(alpha: float) -> None:
     """Set the default significance level used across all CI analyses.
 

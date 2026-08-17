@@ -592,6 +592,101 @@ def test_assign_significance_groups_keeps_clear_winner_in_group_1():
     assert groups["google/gemma-3-4b-it"] == "#2"
 
 
+def _pdr(a: str, b: str, *, point_diff: float, p_value: float) -> PairedDiffResult:
+    return PairedDiffResult(
+        template_a=a, template_b=b, point_diff=point_diff, std_diff=0.05,
+        ci_low=point_diff - 0.1, ci_high=point_diff + 0.1, p_value=p_value,
+        test_method="bootstrap", n_inputs=50, per_input_diffs=np.zeros(50, dtype=float),
+        n_runs=1, statistic="mean", wilcoxon_p=None,
+    )
+
+
+def test_assign_significance_groups_merges_chained_bands_and_stays_monotonic():
+    # Regression test for a bug where an isolated performer sandwiched
+    # between two overlapping (chained) non-significance bands got assigned
+    # a *later* group number than lower-ranked entities below it, making
+    # the Grp column non-monotonic down the rank-sorted table.
+    #
+    # Rank order: G04 > G03 > G02 > G01 > G00. G03 is significantly
+    # different from everyone (isolated). G02~G01 and G01~G00 are each
+    # individually non-significant (a chain), but G02~G00 is significant --
+    # the classic critical-difference transitivity gap (Demsar 2006).
+    labels_sorted = ["G04", "G03", "G02", "G01", "G00"]
+    nonsig_pairs = {("G02", "G01"), ("G01", "G00")}
+
+    pairwise_results: dict[tuple[str, str], PairedDiffResult] = {}
+    for i, a in enumerate(labels_sorted):
+        for b in labels_sorted[i + 1:]:
+            is_nonsig = (a, b) in nonsig_pairs or (b, a) in nonsig_pairs
+            pairwise_results[(a, b)] = _pdr(
+                a, b, point_diff=0.1, p_value=0.5 if is_nonsig else 0.001,
+            )
+
+    pairwise = PairwiseMatrix(
+        labels=labels_sorted, results=pairwise_results, correction_method="holm", friedman=None,
+    )
+
+    groups = _assign_significance_groups(pairwise, labels_sorted)
+
+    # G03 is strictly isolated and ranked #2 by mean -- it must not be
+    # pushed behind the (lower-ranked) G02/G01/G00 chain.
+    assert groups["G04"] == "#1"
+    assert groups["G03"] == "#2"
+    # The chained trio merges into a single group, since none of them can
+    # carry two IDs at once in this one-ID-per-entity table.
+    assert groups["G02"] == groups["G01"] == groups["G00"] == "#3"
+
+    # General regression guard: group numbers must be non-decreasing down
+    # the rank-sorted list, for any input -- not just this scenario.
+    numbers = [int(groups[label].lstrip("#")) for label in labels_sorted]
+    assert numbers == sorted(numbers)
+
+
+def test_assign_significance_groups_number_1_does_not_chain_past_direct_ties():
+    # Regression test for a misleading executive-summary verdict: when a
+    # chain touches rank 0 itself (top~2nd non-sig, 2nd~3rd non-sig, but
+    # top~3rd directly SIGNIFICANT), #2+ tiers are allowed to merge chains
+    # (see test_..._merges_chained_bands_and_stays_monotonic above), but #1
+    # must NOT -- _exec_verdict turns #1 membership into an explicit "tied
+    # with X as best" claim, so it has to mean "provably indistinguishable
+    # from the actual top performer," not "reachable via a chain of
+    # individually-nonsignificant neighbors." Found via a real case: the
+    # top-ranked entity (ClipCraze) was directly significantly better than
+    # a same-#1-tier entity four ranks down (FlipFlop), chained through two
+    # intermediate non-significant links -- the exec summary claimed
+    # FlipFlop was "Tied with 5 others as best" when the pairwise table
+    # right above it showed FlipFlop significantly worse than the top.
+    labels_sorted = ["A", "B", "C", "D"]
+    nonsig_pairs = {("A", "B"), ("B", "C")}  # A~B~C chained; A~C is NOT listed -> significant
+
+    pairwise_results: dict[tuple[str, str], PairedDiffResult] = {}
+    for i, a in enumerate(labels_sorted):
+        for b in labels_sorted[i + 1:]:
+            is_nonsig = (a, b) in nonsig_pairs or (b, a) in nonsig_pairs
+            pairwise_results[(a, b)] = _pdr(
+                a, b, point_diff=0.1, p_value=0.5 if is_nonsig else 0.001,
+            )
+
+    pairwise = PairwiseMatrix(
+        labels=labels_sorted, results=pairwise_results, correction_method="holm", friedman=None,
+    )
+
+    groups = _assign_significance_groups(pairwise, labels_sorted)
+
+    # A (top) and B are directly non-significant -> both #1.
+    assert groups["A"] == "#1"
+    assert groups["B"] == "#1"
+    # C is significantly different from A (the top) despite chaining
+    # through B -- must NOT inherit A's "#1" tied-for-best tier.
+    assert groups["C"] != "#1"
+    # D is significant vs both B and C (unrelated to their chain) -- its
+    # own, later tier, not merged with C's.
+    assert groups["D"] != groups["C"]
+
+    numbers = [int(groups[label].lstrip("#")) for label in labels_sorted]
+    assert numbers == sorted(numbers)
+
+
 def test_single_clear_winner_label_detects_unique_statistical_winner():
     labels = ["Prompt A", "Prompt B", "Prompt C"]
     results: dict[tuple[str, str], PairedDiffResult] = {
