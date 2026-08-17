@@ -6383,14 +6383,18 @@ re-render of the same results produces an identical figure."""
 
 
 _LABEL_EFF_PANEL_TITLES = {
-    "binary": "Binary (Cohen's $\\kappa$)",
-    "continuous": "Continuous (Pearson $r$)",
-    "likert": "Likert (weighted $\\kappa$)",
+    "binary": "Binary",
+    "continuous": "Continuous",
+    "likert": "Likert",
 }
-"""Panel titles naming each eval type's own alignment metric -- the axis is
-"judge-human agreement" generically, but the STATISTIC differs per eval type
-(see _LABEL_EFF_ALIGNMENT_METRIC), and a reader comparing panels needs to
-know they are not the same number."""
+"""Panel titles -- just the eval type now. They previously named each panel's
+own alignment statistic ("Binary (Cohen's kappa)", "Continuous (Pearson r)",
+"Likert (weighted kappa)") because the axis genuinely differed per panel and a
+reader comparing them needed to know the numbers were not commensurable. Every
+eval type is now calibrated on the SAME statistic, rho^2 (see
+_LABEL_EFF_ALIGNMENT_METRIC), so naming a per-type metric here would assert a
+difference that no longer exists -- and name the wrong statistic besides. The
+shared axis label carries what the number is."""
 
 
 def save_ppi_label_efficiency_invariance_plot(
@@ -6512,11 +6516,29 @@ def save_ppi_label_efficiency_threshold_plot(
     ax.text(tiers[-1], 1.10, "not worth the trouble\n(<1.25× saving)  ",
             fontsize=8.5, color="#444", va="center", ha="right")
     ax.axhline(1.0, color="crimson", ls="--", lw=1.3, zorder=1)
-    for xv, txt in ((0.5, "≈0.5: PPI starts\nto pay for itself"),
-                    (0.7, "≈0.7: ~1.5×\nlabel savings")):
-        if tiers[0] <= xv <= tiers[-1]:
-            ax.axvline(xv, color="k", ls=":", lw=1.2, zorder=1)
-            ax.text(xv + 0.005, ymax * 0.92, txt, fontsize=8.5, va="top")
+
+    # Marker positions are DERIVED FROM THE MEASURED CURVE, not hardcoded.
+    # They were hardcoded twice before and went stale both times -- once when
+    # the tier ladder changed, and again when the axis moved from each eval
+    # type's own metric to rho^2 (an "≈0.7: ~1.5× savings" label written for
+    # r=0.7 understates by more than double at rho^2=0.7). Interpolating the
+    # pooled median against the round saving levels keeps the annotation
+    # honest for whatever the run actually produced.
+    pooled_med = []
+    for t in tiers:
+        v = [r.equiv_n_lab / r.n_lab for r in rows
+             if r.alignment_target == t and r.n_lab]
+        pooled_med.append(float(np.median(v)) if v else float("nan"))
+    # np.interp needs a non-decreasing table; the pooled curve is monotone in
+    # judge quality up to MC noise, so enforce it rather than bail out.
+    mono = np.maximum.accumulate(np.nan_to_num(pooled_med, nan=0.0))
+    for lvl in (1.25, 1.5, 2.0, 3.0):
+        if not (mono[0] <= lvl <= mono[-1]):
+            continue
+        xv = float(np.interp(lvl, mono, tiers))
+        ax.axvline(xv, color="k", ls=":", lw=1.2, zorder=1)
+        ax.text(xv + 0.005, ymax * 0.92, f"ρ²≈{xv:.2f}:\n{lvl:g}× saving",
+                fontsize=8.5, va="top")
     ax.set_xlabel("judge–human agreement  ρ²  (squared Pearson correlation)")
     ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
     ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
@@ -6524,8 +6546,8 @@ def save_ppi_label_efficiency_threshold_plot(
     ax.grid(alpha=0.25)
     ax.legend(fontsize=9, loc="upper left")
     fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and "
-             "the $N_{lab}$ grid.\nBelow ≈0.5 agreement the multiplier is 1.0–1.2×: PPI recovers "
-             "little over simply labeling by hand.", ha="center", fontsize=8.5)
+             "the $N_{lab}$ grid.\nDotted markers are interpolated from the measured pooled median, "
+             "not fixed reference values.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
