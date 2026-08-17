@@ -6896,7 +6896,7 @@ def save_ppi_label_efficiency_plots_per_method(
             k = min(keys, key=lambda q: abs(q[1] - nz))
             es = r.effect_size
             pg = _smooth_monotone_power_curve(
-                n_grid, _classical_pooled_power_curve(eval_type, es, (method,), n_grid, ref_n_mc, 56))
+                n_grid, _classical_pooled_power_curve(eval_type, es, (method,), n_grid, ref_n_mc, seed))
             pw = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
             eq = _equivalent_n_lab(pw, n_grid, pg) if np.isfinite(pw) else float("nan")
             lo, hi = _multiplier_ci(pw, r.n_reps, r.n_lab, n_grid, pg)
@@ -11612,6 +11612,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             pm_paths, pm_points = save_ppi_label_efficiency_plots_per_method(
                                 label_eff_raw, label_eff_calib_rows,
                                 out_path=str(Path(plots_dir) / f"{label_eff_stem}_plot.png"),
+                                seed=args.seed + 14,
                             )
                             for pm in pm_paths:
                                 output_paths.append(pm)
