@@ -2620,18 +2620,35 @@ def build_ppi_label_efficiency_sources_binary(
     caller would want alignment-calibrated values here instead. label_frac
     is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=PPI_LABEL_EFF_N,
     same as the non-binary builder -- see its docstring for why."""
-    # Binary now carries the family axis for real: _jb_llm_binary implements
-    # "contaminated" as heterogeneous flip rates (see _contaminated_flip_probs).
+    # Binary emits the GAUSSIAN arm only -- MEASURED, not assumed.
     #
-    # Worth doing even though binary runs no rank tests
-    # (_COMPARISON_METHODS_BINARY excludes mwu/wilcoxon -- ranks are
-    # uninformative on 0/1 data): without it, binary's multipliers would be
-    # measured ONLY under a uniform-error judge while continuous/likert are
-    # measured across both regimes, so any cross-eval-type comparison would
-    # flatter binary. A uniform flip probability also asserts every item is
-    # equally hard, which no real judge satisfies.
+    # _jb_llm_binary does implement "contaminated" for real (heterogeneous flip
+    # rates, see _contaminated_flip_probs), and it does produce different data.
+    # It does not produce different RESULTS: at n=400k, phi = 0.6296 gaussian
+    # vs 0.6287 contaminated. Item hardness is drawn independently of truth, so
+    # E[Y*Yhat] = E[Y]*(1 - pbar) and the confusion matrix depends only on the
+    # MEAN flip rate -- which _contaminated_flip_probs conserves by
+    # construction. phi is the whole of rho for a mean estimand, and binary
+    # runs only mean tests, so the two arms are statistically identical.
+    #
+    # Emitting the arm anyway cost 96 of 576 cells (17% of the sweep) to
+    # re-measure a null that a two-second direct phi computation establishes
+    # far more precisely than 300-rep sweep cells could.
+    #
+    # An earlier version of this comment excluded binary because noise_family
+    # was a no-op here; that was right for the wrong reason. The distinction
+    # matters if anyone revisits: binary is insensitive to heterogeneity that
+    # is INDEPENDENT OF TRUTH. It would NOT be insensitive to hardness shared
+    # across the paired conditions (a genuinely ambiguous item is ambiguous in
+    # both arms, so its errors would not cancel in D = Y_x - Y_y), which is the
+    # design to try if a consequential binary shape axis is ever wanted.
+    # Hardness correlated with truth is a different thing again -- that is
+    # differential bias, which already has its own axis.
+    _gauss_only = tuple(f for f in noise_families if f[1] == "gaussian") or noise_families[:1]
     by_fam = (noise_levels if isinstance(noise_levels, dict)
-              else {fam: tuple(noise_levels) for fam, _nf, _ in noise_families})
+              else {fam: tuple(noise_levels) for fam, _nf, _ in _gauss_only})
+    by_fam = {k: v for k, v in by_fam.items() if k in {f[0] for f in _gauss_only}}
+    noise_families = _gauss_only
 
     def _kwargs(n_lab_target: int, noise: float, nf: str, fam_kw: dict) -> dict:
         kw = _ppi_power_baseline_binary()

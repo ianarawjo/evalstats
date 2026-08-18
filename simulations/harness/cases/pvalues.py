@@ -6077,17 +6077,14 @@ def run_ppi_label_efficiency_check(
             noise_by_eval_type[(et, fam)] = tuple(noises)
             calib_info[(et, fam)] = info
 
-    # Binary calibrates per family too. Its "contaminated" arm is heterogeneous
-    # FLIP RATES (scenarios.synthetic._contaminated_flip_probs), not additive
-    # noise -- binary errors have no magnitude, so the analogue redistributes
-    # the same marginal error rate onto a minority of hard items. Binary runs
-    # no rank tests and so gains no rank bonus from this, but it must still be
-    # measured across both regimes: otherwise binary's multipliers come from a
-    # uniform-error judge while continuous/likert's come from both, and any
-    # cross-eval-type comparison flatters binary.
+    # Binary calibrates on the gaussian arm only. Its contaminated arm is
+    # implemented and produces different data, but statistically identical
+    # results (phi 0.6296 vs 0.6287 at n=400k) -- see
+    # build_ppi_label_efficiency_sources_binary for the derivation and for the
+    # design that WOULD make binary shape-sensitive.
     metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
     bin_noises_by_fam: dict[str, tuple[float, ...]] = {}
-    for fam, nf, fam_kw in PPI_LABEL_EFF_NOISE_FAMILIES:
+    for fam, nf, fam_kw in [f for f in PPI_LABEL_EFF_NOISE_FAMILIES if f[1] == "gaussian"]:
         fam_baseline = {**binary_baseline, "noise_family": nf, **fam_kw}
         noises, info = [], {}
         for target in _LABEL_EFF_ALIGNMENT_TARGETS:
@@ -6140,6 +6137,8 @@ def run_ppi_label_efficiency_check(
             for et, methods in (("continuous", _COMPARISON_METHODS),
                                 ("likert", _COMPARISON_METHODS),
                                 ("binary", _COMPARISON_METHODS_BINARY)):
+                if et == "binary" and fam not in bin_noises_by_fam:
+                    continue  # gaussian-only; see the calibration note above
                 src = [x for x in (binary_sources if et == "binary" else cont_likert_sources)
                        if x.eval_type == et and x.noise_family == fam]
                 groups.append((et, fam, src, methods,
