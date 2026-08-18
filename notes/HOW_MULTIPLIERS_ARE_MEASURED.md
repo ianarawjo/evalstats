@@ -1,0 +1,173 @@
+# How label-efficiency multipliers are measured, and how the measurement fooled us
+
+**Status:** implemented (`LabelEfficiencyPoint.inversion_ratio` /
+`.inversion_clamped` / `.well_conditioned`, `_INVERSION_DEV_TOL` in
+`simulations/harness/cases/pvalues.py`). Reproduce the validating instrument
+with `python -m simulations.investigate_inversion_conditioning correlations`
+and `... bound`.
+
+Fourth note in the sequence. `WHY_WILCOXON_USES_SPEARMAN.md` established which
+correlation each test's influence function implies;
+`RANK_PPI_TAIL_SENSITIVITY.md` showed judge-error shape controls the gap;
+`WHICH_RHO_FOR_WHICH_TEST.md` asked whether the rho^2 rule survives that. This
+note is about something different and more embarrassing: **for a while, a
+defect in how we measured the multiplier was being read as a defect in the
+estimator.**
+
+## The setup
+
+The multiplier is measured by inverting a classical power curve: take the PPI
+arm's rejection rate, ask what n a human-only classical test would need to
+reach it, divide by `n_lab`. That inversion is only as good as its
+conditioning. Where the reference curve is flat -- small effect size, small
+`n_lab` -- `dn/dP` is large, so the binomial noise in a rejection rate maps to
+a huge swing in equivalent n.
+
+This produced a specific, plausible, wrong story. Continuous `wilcoxon`'s
+measured/predicted ratio fell **0.84 -> 0.71** across the judge-quality tiers,
+which reads as "rank-based PPI degrades as the judge improves" -- an
+interesting finding, and a publishable-sounding one. It was an artifact.
+
+## The instrument that settled it
+
+The trick is that PPI's variance reduction can be measured **without any power
+curve at all**. In the infinite-unlabeled-pool limit,
+
+```
+VRF = 1 - corr(theta_hat_lab, theta_hat_pred_lab)^2
+```
+
+so resampling labeled sets and correlating the two sample statistics measures
+the governing `rho^2` directly: no lambda tuning, no inversion, no saturation,
+no reference curve. Running the real estimator on the same design and
+comparing its achieved variance to `1 - rho^2*(1 - n_lab/N)` then separates
+*correlation error* from *estimator shortfall* from *measurement artifact*.
+
+That is `simulations/investigate_inversion_conditioning.py`, and it is the
+reason the conclusions below are trustworthy: every claim is cross-checked by
+two instruments with no shared machinery.
+
+### What it found
+
+**The correlations were never the problem.** Across 24 cells the named
+shortcuts the sweep uses land essentially on the identity:
+
+| test | correlation used | slope | intercept | R^2 |
+|---|---|---|---|---|
+| `wilcoxon` | Spearman on differences `D` | 0.987 | +0.001 | 0.997 |
+| `mwu` | Spearman on group scores | 0.977 | +0.022 | 0.9994 |
+
+**The estimators mostly attain their bounds.** Actual variance vs the
+finite-pool bound (1.00 = attains it; above 1.00 = leaves efficiency on the
+table):
+
+| | rho^2=0.2 | 0.4 | 0.7 |
+|---|---|---|---|
+| `mwu` continuous | 1.011 | 1.002 | 1.011 |
+| `mwu` likert | 1.177 | 1.236 | 1.243 |
+| `wilcoxon` continuous | 1.008 | 1.047 | 1.099 |
+| `wilcoxon` likert | 0.968 | 0.950 | 0.898 |
+
+Continuous MWU hits its bound exactly. Likert MWU falls short by a flat
+~20% -- a **level, not a drift**, and a genuine discreteness cost. Nothing
+here resembles the 0.84 -> 0.71 slide the power-scale measurement reported,
+which is what proved the slide was ours.
+
+## The fix: gate, don't divide
+
+The human-subset arm is a classical test on exactly `n_lab` labeled items and
+**uses no judge scores at all**, so feeding its rejection rate back through the
+same curve must return `n_lab`. That makes it an independent probe of each
+cell's conditioning -- it measures the curve, not the thing being estimated.
+Cells whose probe lands more than `_INVERSION_DEV_TOL` (0.15) from 1.00 are
+excluded, exactly as `saturated` already excludes the opposite end of the
+curve.
+
+**The first attempt was to divide by it, and that is wrong.** If the inversion
+were *biased*, dividing each multiplier by the probe would cancel the bias.
+It is not biased -- pooled, its median is 0.97-1.01 per eval_type x method.
+The failure mode is **variance**: the same run spans 0.28 to 7.50 across
+cells. Dividing therefore removes nothing and injects that spread into every
+number. Measured, it pushed continuous `paired_t` from 0.029 to 0.083 mean
+deviation and produced 5 cells *above* the control-variate bound, which is
+impossible. Recording this because "correct for the bias you can measure" is
+the obvious move and it makes things worse.
+
+## The clamp trap
+
+`_equivalent_n_lab` inverts with `np.interp`, which **clamps** at `n_grid`'s
+endpoints rather than extrapolating. The human arm at the smallest `n_lab` has
+power near alpha, at or below the curve's left edge, so its inversion pins to
+`n_grid.min() == _JB_MIN_LAB ==` that same `n_lab` and returns a ratio of
+exactly 1.000 however ill-conditioned the cell actually is.
+
+Measured: **53% of `n_lab=15` cells returned exactly 1.000, and none returned
+below it**, against a median of 0.91 at `n_lab=20`. A gate that passes the
+worst-conditioned corner of the design because the arithmetic cannot express
+failure there is worse than no gate. Clamped inversions are now explicitly
+untrusted.
+
+The tell that this was right: retention became monotone in both axes, which is
+what conditioning predicts and what the pre-clamp-fix version violated.
+
+| axis | retention |
+|---|---|
+| `n_lab` 15 -> 200 | 24% -> 85% |
+| effect_frac 0.15 -> 0.35 | 43% -> 75% |
+
+61% of cells survive overall.
+
+## What it fixed
+
+Continuous `wilcoxon`, measured/predicted by tier:
+
+| | 0.2 | 0.3 | 0.4 | 0.5 | 0.6 | 0.7 |
+|---|---|---|---|---|---|---|
+| before | 0.84 | 0.80 | 0.82 | 0.77 | 0.90 | **0.71** |
+| after | 0.98 | 0.91 | 0.84 | 0.98 | 0.93 | **0.95** |
+
+The drift is gone. The evidence that this is a real fix rather than a filter
+tuned to flatter results is that the gated power-scale numbers now
+independently reproduce the variance-scale instrument:
+
+| cell | power scale (gated) | variance scale | agree? |
+|---|---|---|---|
+| likert `wilcoxon` | 0.94 flat | ~0.94 | yes |
+| likert `mwu` | 0.82 plateau | 0.80-0.85 | yes |
+
+Note especially that **`mwu` is not pulled to 1.00**. The gate removes
+measurement artifact and leaves the genuine discreteness shortfall standing.
+A filter that made everything agree with theory would be evidence of
+overfitting; one that removes a drift and preserves a level is doing its job.
+
+## Caveats
+
+- The bound `1 - rho^2*(1 - n_lab/N)` was derived and validated for the MEAN
+  case and is applied here to U-statistics with the labeled set nested inside
+  N. Continuous MWU hitting it at 1.011/1.002/1.011 is decent evidence it
+  transfers, but likert `wilcoxon`'s sub-1.00 readings (0.968/0.950/0.898) are
+  exactly where a mean-case approximation would show up. At 400 reps the SE on
+  a variance ratio is ~7%, so those are 0.5-1.5 SE below 1.00 and cannot be
+  cleanly separated from noise. Checked and ruled out: shrinkage (bias <=3%,
+  and the human-only comparator carries the same mild bias).
+- The before/after numbers come from **replaying the saved 300-rep raw results
+  through the gated code path**, not from a fresh sweep. That CSV predates the
+  effect-size rounding fix and stores the *frac* in its `effect_size` column,
+  so the true effect sizes had to be recovered from the source builder. A
+  native run is the real confirmation and has not been done.
+- Binary's top tier is **unaffected and still wrong**: `paired_t` 1.17 and
+  `ttest_welch` 1.38, both above the bound. Unrelated to inversion
+  conditioning; still open.
+- `_INVERSION_DEV_TOL = 0.15` is a judgement call, not a derived threshold.
+  Tightening it monotonically improves the worst offender and costs cell count;
+  see the constant's docstring for the sweep that chose it.
+
+## The transferable lesson
+
+A measurement pipeline with a conditioning problem does not fail loudly. It
+produces smooth, monotone, interpretable trends that invite mechanistic
+explanation -- here, a story about rank estimators degrading with judge
+quality that survived several rounds of scrutiny because it was internally
+consistent and directionally plausible. What killed it was building a second
+instrument that shared no machinery with the first. Before explaining a
+gradient, check that the ruler is straight.

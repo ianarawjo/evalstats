@@ -29,7 +29,7 @@ So the mapping we use is:
 | `ttest`, `ttest_welch` | Pearson, group scores |
 | `paired_t` | Pearson, paired differences |
 | `wilcoxon` | **Spearman, paired differences** |
-| `mwu` | Spearman, group scores *(see caveat below)* |
+| `mwu` | Spearman, group scores *(derivation below)* |
 
 ## Why Spearman for the signed-rank test
 
@@ -57,6 +57,54 @@ reflection cancels), and first-order under the local alternatives that power
 analysis lives in. Away from that regime it is a Spearman-like grade
 correlation of the reflected transforms rather than Spearman exactly.
 
+## Why Spearman for Mann-Whitney too, and why "placements" are not needed
+
+MWU's mapping was originally a placeholder -- the derivation above is for the
+*signed-rank* statistic, and MWU is a different object. It has since been
+derived and checked, and the mapping stands.
+
+For `theta = P(X < Y)` the Hoeffding decomposition gives **two** influence
+functions, one per group:
+
+```
+g_A(x) = 1 - G(x) - theta        g_B(y) = F(y) - theta
+```
+
+Each observation's IF is the *opposite* group's CDF evaluated at it -- these
+are **placements** (Orban-Wolfe), and with ties the mid-distribution form
+`P(X<y) + 0.5*P(X=y)`. This is the exact analogue of the signed-rank caveat:
+Wilcoxon's IF equals the own-rank transform only under symmetry about 0; MWU's
+equals it only under `F = G`. Same law, and in each case the named-correlation
+reduction is a null-regime identity. The correct general object is the
+**placement correlation**, a weighted mixture of both groups' covariances.
+
+**And in our regime it makes no difference.** Measured over 24 cells
+(`investigate_inversion_conditioning correlations`), placement correlation and
+Spearman-on-scores agree to ~1%, and both track the directly-measured
+governing `rho^2`:
+
+| predictor | slope | intercept | R^2 | max abs dev |
+|---|---|---|---|---|
+| Spearman on scores | 0.977 | +0.022 | 0.9994 | 8.7% |
+| placement correlation | 0.989 | +0.019 | 0.9992 | 8.8% |
+
+The reason is that the placement/Spearman split only opens up **far from the
+null**, and a power sweep by construction lives at local alternatives. Measured
+across our entire effect ladder, `theta = P_mid(X>Y)` sits at 0.393-0.461 --
+between 0.04 and 0.11 from the null -- and `Var(F(Y))` is 0.78-0.93 x 1/12,
+not the heavy compression a well-separated design would produce.
+
+So: adopt placements if you want the assumption removed, but do not expect them
+to fix anything. An external derivation predicted they would close a 20-30% gap
+in likert `mwu`; they move the prediction by about 1%. **The gap was never in
+the correlation** -- see `HOW_MULTIPLIERS_ARE_MEASURED.md`.
+
+Note the contrast that matters for the paper: `wilcoxon` is paired, so its
+Spearman must be computed on the differences `D` and the score-level tier label
+is the *wrong* x-coordinate (0.70 on scores is 0.49 on differences). `mwu` is a
+two-group test with no differencing, so score-level Spearman is already right
+and the tier label means what it says.
+
 ## Why "differences, not scores" mattered more than Pearson-vs-Spearman
 
 This was the larger of the two corrections and the less obvious one. Measured
@@ -79,7 +127,7 @@ refinement on top.
 |---|---|---|
 | continuous `paired_t` | **1.16** (exceeds the bound -- impossible) | 1.03 |
 | likert `paired_t` | 0.82 | 1.02 |
-| likert `wilcoxon` | 0.71, drifting 0.82 -> 0.65 across tiers | **0.92, flat** |
+| likert `wilcoxon` | 0.71, drifting 0.82 -> 0.65 across tiers | **0.94, flat** |
 
 (measured / predicted; 1.00 = achieves the control-variate bound)
 
@@ -97,20 +145,23 @@ heavy-tailed data, where a regression-trained judge nails the extremes
 (inflating Pearson) while scrambling the central ranks that Wilcoxon actually
 depends on.
 
-## Open, and honestly unresolved
+## Since resolved
 
-- **continuous `wilcoxon` still drifts** (0.84 -> 0.71 across tiers, pooled
-  0.81). Likert's drift closed; continuous's did not. Difference-Spearman is
-  not the whole story there.
-- **`mwu`'s mapping is inferred, not derived.** The derivation above is for the
-  *signed-rank* statistic. MWU is an independent-groups rank test whose
-  influence function involves the cross-sample CDF `F_X(Y)`, which is not
-  obviously Spearman on marginal scores. Suggestively, likert `mwu` did not
-  drift before this change and does now (0.88 -> 0.71) -- which is evidence the
-  mapping may be wrong rather than evidence it is right. Treat it as a
-  placeholder.
+- **continuous `wilcoxon`'s drift was ours, not the estimator's.** The
+  0.84 -> 0.71 slide was a power-curve inversion artifact; with ill-conditioned
+  cells gated out it reads 0.98/0.91/0.84/0.98/0.93/0.95 across the tiers, flat.
+  See `HOW_MULTIPLIERS_ARE_MEASURED.md`.
+- **`mwu`'s mapping is now derived, not inferred** (section above), and the
+  likert `mwu` drift that made it look wrong was the same inversion artifact.
+  What survives gating is a *level*, ~0.82, confirmed independently at the
+  variance scale (0.80-0.85) -- a real discreteness cost in the estimator, not
+  a correlation error.
+
+## Open
+
 - **binary at the top tier** (`rho^2 = 0.7`) remains anomalous (`paired_t` 1.17,
-  `ttest_welch` 1.32) for reasons unrelated to this change.
+  `ttest_welch` 1.38) -- above the control-variate bound, which is impossible.
+  Unrelated to this change and unaffected by the inversion gate.
 
 ## Provenance
 

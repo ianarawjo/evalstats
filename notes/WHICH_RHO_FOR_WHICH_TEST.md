@@ -6,8 +6,10 @@ argues for is already implemented (`_METHOD_CORR_KIND` in
 rule-of-thumb section does not yet say it. Reproduce with
 `python simulations/investigate_rho2_noise_shape_invariance.py`.
 
-Third note in a sequence. `WHY_WILCOXON_USES_SPEARMAN.md` established which
-correlation each method's influence function implies.
+Third note in a sequence (a fourth, `HOW_MULTIPLIERS_ARE_MEASURED.md`, covers
+how the multiplier itself is measured and the inversion artifact that briefly
+masqueraded as an estimator defect). `WHY_WILCOXON_USES_SPEARMAN.md` established
+which correlation each method's influence function implies.
 `RANK_PPI_TAIL_SENSITIVITY.md` showed that judge-error *shape* controls the gap
 between them. This note asks the question those two raise: **if the rule of
 thumb is stated in rho^2, and rho^2 moves with judge noise shape, is the rule of
