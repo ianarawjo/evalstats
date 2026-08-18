@@ -1389,9 +1389,63 @@ def _jb_llm_repeated(
     raise ValueError(f"Unknown noise_family: {noise_family!r}")
 
 
+def _contaminated_flip_probs(
+    noise_level: float, contam_frac: float, contam_scale: float,
+) -> tuple[float, float]:
+    """Binary analogue of _contaminated_noise_stds: split one symmetric flip
+    probability into an "easy item" rate and a "hard item" rate, holding the
+    MARGINAL flip rate at `noise_level` so llm_noise keeps its calibrated
+    meaning across noise families.
+
+    Solving (1-f)*p_easy + f*(scale*p_easy) = noise_level gives
+
+        p_easy = noise_level / ((1 - f) + f * scale),   p_hard = scale * p_easy
+
+    This is the right analogue because the continuous model preserves total
+    error VARIANCE across families while redistributing it across items; on
+    0/1 data the natural conserved quantity is the total error RATE, since a
+    binary error has no magnitude to redistribute -- only a probability.
+
+    Why this is worth modeling even though binary runs no rank tests: a
+    uniform flip probability asserts that every item is equally hard, which no
+    real judge satisfies. Concentrating the same total error budget on a
+    minority of hard items is both more realistic AND strictly harder for PPI,
+    because the rectifier's variance depends on how the judge's errors are
+    distributed, not just how many there are.
+
+    `contam_scale` is CAPPED at the largest value that keeps p_hard <= 1 while
+    still conserving the marginal. p_hard <= 1 requires
+
+        scale * (noise_level - f) <= 1 - f,
+
+    so for noise_level > f the ceiling is (1 - f) / (noise_level - f); below
+    that there is no constraint. At f=0.10 the requested scale=5 is feasible up
+    to noise_level=0.28 and drops to 3.0 by noise_level=0.40.
+
+    Capping rather than clipping matters. Clipping p_hard at 1.0 leaves the
+    marginal BELOW noise_level -- measured 0.357 against a requested 0.40 --
+    which makes the contaminated arm quietly CLEANER than the gaussian one it
+    is supposed to be matched against, exactly inverting the comparison. The
+    cap instead trades contamination severity (which is a free parameter) for
+    the matched marginal error rate (which the whole design depends on), and
+    degrades smoothly: at high error rates a binary judge simply cannot
+    concentrate its mistakes as sharply, because it is already wrong so often.
+    """
+    f = float(np.clip(contam_frac, 0.0, 1.0))
+    rate = float(np.clip(noise_level, 0.0, 1.0))
+    scale = float(contam_scale)
+    if rate > f and scale * (rate - f) > (1.0 - f):
+        scale = (1.0 - f) / (rate - f)
+    denom = (1.0 - f) + f * scale
+    p_easy = float(np.clip(rate / denom if denom > 0 else rate, 0.0, 1.0))
+    p_hard = float(np.clip(scale * p_easy, 0.0, 1.0))
+    return p_easy, p_hard
+
+
 def _jb_llm_binary(
     truth: np.ndarray, bias: float, noise_level: float, rng: np.random.Generator,
     extra: np.ndarray | float = 0.0,
+    noise_family: str = "gaussian", contam_frac: float = 0.10, contam_scale: float = 4.0,
 ) -> np.ndarray:
     """Binary analogue of _jb_llm: turn a 0/1 ground-truth array into a 0/1
     "LLM judge" array via a confusion-matrix (flip-probability) model,
@@ -1417,10 +1471,43 @@ def _jb_llm_binary(
     individual items toward judge=1 or judge=0 rather than the whole group
     uniformly -- the same distinction _jb_llm's `bias` (constant) vs.
     `extra` (per-item) draws for the continuous/Likert/grades judge model.
+
+    `noise_family` (see _contaminated_flip_probs): "gaussian" gives every item
+    the same flip probability; "contaminated" concentrates the SAME marginal
+    flip rate on a `contam_frac` minority of "hard" items, which are flipped
+    `contam_scale` times more often. Item hardness is drawn independently of
+    truth, so this adds error heterogeneity WITHOUT adding bias -- the two
+    families have the same expected confusion matrix and differ only in how
+    the errors cluster across items.
+
+    Previously this ignored noise_family entirely, which silently made a
+    "contaminated" binary judge byte-identical to a gaussian one.
     """
     total_bias = bias + extra
     flip_neg = np.clip(noise_level - total_bias / 2.0, 0.0, 1.0)  # P(judge=0 | truth=1)
     flip_pos = np.clip(noise_level + total_bias / 2.0, 0.0, 1.0)  # P(judge=1 | truth=0)
+    if noise_family == "contaminated":
+        # Split EACH direction's own flip probability, rather than deriving one
+        # shared multiplier from _contaminated_flip_probs(1.0, ...). The
+        # multiplier form looks equivalent but is not: at frac=0.10/scale=5 it
+        # asks for a hard-item multiplier of 3.57, which clips at 1.0 and drags
+        # the marginal error rate DOWN (0.25 -> 0.18) -- i.e. the contaminated
+        # arm would come out quietly CLEANER than the gaussian one instead of
+        # equally noisy but less evenly so. Splitting the actual probabilities
+        # keeps p_hard = scale * p_easy inside [0,1] for any rate where
+        # scale*rate/denom <= 1, which covers the calibrated range.
+        #
+        # Hardness is drawn ONCE per item and applied to both directions, so an
+        # item is hard regardless of its truth value -- heterogeneity without
+        # bias. Pulling the two directions apart is `bias`'s job and conflating
+        # them here would confound this axis with differential bias.
+        is_hard = rng.random(len(truth)) < contam_frac
+        fn_easy, fn_hard = _contaminated_flip_probs(float(flip_neg), contam_frac, contam_scale)
+        fp_easy, fp_hard = _contaminated_flip_probs(float(flip_pos), contam_frac, contam_scale)
+        flip_neg = np.where(is_hard, fn_hard, fn_easy)
+        flip_pos = np.where(is_hard, fp_hard, fp_easy)
+    elif noise_family != "gaussian":
+        raise ValueError(f"Unknown noise_family: {noise_family!r}")
     u = rng.random(len(truth))
     is_pos = truth >= 0.5
     return np.where(is_pos, (u >= flip_neg).astype(float), (u < flip_pos).astype(float))
@@ -2424,9 +2511,48 @@ already independently meaningful elsewhere in this harness, not picked to
 make the fit look clean."""
 
 
+PPI_LABEL_EFF_NOISE_FAMILIES: tuple[tuple[str, str, dict], ...] = (
+    ("gaussian",     "gaussian",     {}),
+    ("contaminated", "contaminated", {"contam_frac": 0.10, "contam_scale": 5.0}),
+)
+"""Judge-error SHAPE axis for the label-efficiency sweep, crossed with the
+existing judge-quality (llm_noise) axis.
+
+Motivation: every other axis in this harness varies how MUCH the judge errs;
+this one varies HOW. That matters because rank-based tests (wilcoxon/mwu) are
+sensitive to it and mean-based tests are not, so a Gaussian-only sweep silently
+reports the rank tests' worst case as if it were their typical case. Under
+Gaussian judge noise Spearman runs BELOW Pearson (rho_S^2 - rho_P^2 ~= -0.02),
+which costs rank tests label efficiency; under contaminated noise it runs above
+(~+0.11), which pays them back. See notes/RANK_PPI_TAIL_SENSITIVITY.md and
+notes/RANK_VS_PARAMETRIC_CROSSOVER.md.
+
+"contaminated" at frac=0.10/scale=5.0 models "judge is mostly right,
+occasionally catastrophically wrong" -- a 10% chance of an error 5x the usual
+width. Total noise variance is held identical to the gaussian arm's by
+_contaminated_noise_stds, so llm_noise means the same thing in both and the
+calibrated tiers stay comparable; only the distribution of that variance across
+items changes.
+
+Entries are (LABEL, noise_family, kwargs). The label names the arm in scenario
+names, CSV columns and figure filenames; noise_family is the value _jb_llm
+dispatches on and is restricted to "gaussian"/"contaminated". They are kept
+separate so a second contamination SEVERITY is a one-line addition --
+("contaminated-mild", "contaminated", {"contam_frac": 0.10, "contam_scale": 3.0})
+-- rather than a collision, since two arms would otherwise share the key
+"contaminated" in every per-family dict.
+
+Cost: one extra family doubles the label-efficiency cell count (288 -> 576).
+It does NOT invalidate the classical reference-curve cache -- those curves draw
+ground truth only and never touch judge scores (see
+cases/pvalues.py's _classical_pooled_power_curve_uncached), so they are
+judge-shape-independent by construction and stay warm across this change."""
+
+
 def build_ppi_label_efficiency_sources(
-    noise_by_eval_type: dict[str, tuple[float, ...]] | None = None,
+    noise_by_eval_type: dict[tuple[str, str], tuple[float, ...]] | None = None,
     effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC,
+    noise_families: tuple[tuple[str, dict], ...] = PPI_LABEL_EFF_NOISE_FAMILIES,
 ) -> list[JudgeBiasSource]:
     """Label-fraction x judge-quality grid for the label-efficiency /
     effective-sample-size check (cases/pvalues.py's save_ppi_label_
@@ -2453,32 +2579,38 @@ def build_ppi_label_efficiency_sources(
     uses -- NOT PPI_COMPARISON_LABEL_FRACS, which was tuned for N=100 and
     would scale N_lab up to 60-160 at N=400 instead of holding it fixed."""
     noise_by_eval_type = noise_by_eval_type or {
-        et: tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
+        (et, fam): tuple(_jb_bias_magnitude(et, frac) for frac in PPI_LABEL_EFF_NOISE_LEVELS)
         for et in PPI_LABEL_EFF_EVAL_TYPES
+        for fam, _nf, _ in noise_families
     }
 
-    def _kwargs(et: str, n_lab_target: int, noise: float) -> dict:
+    def _kwargs(et: str, n_lab_target: int, noise: float, nf: str, fam_kw: dict) -> dict:
         kw = _ppi_power_baseline(et)
         kw["n"] = PPI_LABEL_EFF_N
         kw["label_frac"] = n_lab_target / PPI_LABEL_EFF_N
         kw["llm_noise"] = noise
+        kw["noise_family"] = nf
+        kw.update(fam_kw)
         return kw
 
     return [
         JudgeBiasSource(
-            name=f"labeleff.{et}.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}", tag="label_eff",
+            name=f"labeleff.{et}.fam={fam}.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}",
+            tag="label_eff",
             effect_size=_jb_effect_magnitude(et, effect_frac),
-            **_kwargs(et, n_lab_target, noise),
+            **_kwargs(et, n_lab_target, noise, nf, fam_kw),
         )
         for et in PPI_LABEL_EFF_EVAL_TYPES
-        for noise in noise_by_eval_type[et]
+        for fam, nf, fam_kw in noise_families
+        for noise in noise_by_eval_type[(et, fam)]
         for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
     ]
 
 
 def build_ppi_label_efficiency_sources_binary(
-    noise_levels: tuple[float, ...] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    noise_levels: tuple[float, ...] | dict[str, tuple[float, ...]] = PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
     effect_frac: float = PPI_LABEL_EFF_EFFECT_FRAC,
+    noise_families: tuple[tuple[str, dict], ...] = PPI_LABEL_EFF_NOISE_FAMILIES,
 ) -> list[JudgeBiasSource]:
     """Binary analogue of build_ppi_label_efficiency_sources, restricted to
     _COMPARISON_METHODS_BINARY (ttest_welch/paired_t -- see that constant's
@@ -2488,20 +2620,37 @@ def build_ppi_label_efficiency_sources_binary(
     caller would want alignment-calibrated values here instead. label_frac
     is back-solved from PPI_LABEL_EFF_NLAB_TARGETS at N=PPI_LABEL_EFF_N,
     same as the non-binary builder -- see its docstring for why."""
-    def _kwargs(n_lab_target: int, noise: float) -> dict:
+    # Binary now carries the family axis for real: _jb_llm_binary implements
+    # "contaminated" as heterogeneous flip rates (see _contaminated_flip_probs).
+    #
+    # Worth doing even though binary runs no rank tests
+    # (_COMPARISON_METHODS_BINARY excludes mwu/wilcoxon -- ranks are
+    # uninformative on 0/1 data): without it, binary's multipliers would be
+    # measured ONLY under a uniform-error judge while continuous/likert are
+    # measured across both regimes, so any cross-eval-type comparison would
+    # flatter binary. A uniform flip probability also asserts every item is
+    # equally hard, which no real judge satisfies.
+    by_fam = (noise_levels if isinstance(noise_levels, dict)
+              else {fam: tuple(noise_levels) for fam, _nf, _ in noise_families})
+
+    def _kwargs(n_lab_target: int, noise: float, nf: str, fam_kw: dict) -> dict:
         kw = _ppi_power_baseline_binary()
         kw["n"] = PPI_LABEL_EFF_N
         kw["label_frac"] = n_lab_target / PPI_LABEL_EFF_N
         kw["llm_noise"] = noise
+        kw["noise_family"] = nf
+        kw.update(fam_kw)
         return kw
 
     return [
         JudgeBiasSource(
-            name=f"labeleff.binary.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}", tag="label_eff_binary",
+            name=f"labeleff.binary.fam={fam}.noise={noise:.4f}.lab={n_lab_target}.es={effect_frac:.2f}",
+            tag="label_eff_binary",
             effect_size=_jb_effect_magnitude_binary(effect_frac),
-            **_kwargs(n_lab_target, noise),
+            **_kwargs(n_lab_target, noise, nf, fam_kw),
         )
-        for noise in noise_levels
+        for fam, nf, fam_kw in noise_families
+        for noise in by_fam[fam]
         for n_lab_target in PPI_LABEL_EFF_NLAB_TARGETS
     ]
 
@@ -3886,8 +4035,12 @@ def generate_judge_bias_cell(
     truth_a2 = _marginal(n1)
     truth_b2 = _marginal(n2, es)
     if scenario.eval_type == "binary":
-        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a))
-        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng, extra=_confound(truth_b2, scenario.confound_shift_b))
+        llm_a2 = _jb_llm_binary(truth_a2, bias_a, noise1, rng, extra=_confound(truth_a2, scenario.confound_shift_a),
+                                noise_family=scenario.noise_family, contam_frac=scenario.contam_frac,
+                                contam_scale=scenario.contam_scale)
+        llm_b2 = _jb_llm_binary(truth_b2, bias_b, noise2, rng, extra=_confound(truth_b2, scenario.confound_shift_b),
+                                noise_family=scenario.noise_family, contam_frac=scenario.contam_frac,
+                                contam_scale=scenario.contam_scale)
     else:
         llm_a2 = _jb_llm(
             truth_a2, bias_a, noise1, rng, slope=slope_a, anchor=anchor,

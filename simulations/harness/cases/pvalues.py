@@ -213,6 +213,7 @@ from ..scenarios.synthetic import (
     build_ppi_nformula_sources_binary,
     PPI_LABEL_EFF_NOISE_LEVELS,
     PPI_LABEL_EFF_NOISE_LEVELS_BINARY,
+    PPI_LABEL_EFF_NOISE_FAMILIES,
     PPI_LABEL_EFF_EFFECT_FRAC,
     PPI_LABEL_EFF_EFFECT_FRACS,
     PPI_LABEL_EFF_N,
@@ -5444,6 +5445,21 @@ class LabelEfficiencyPoint:
     control-variate bound, which is impossible."""
 
     inversion_clamped: bool = False
+    noise_family: str = "gaussian"
+    """Judge-error SHAPE this cell was simulated under -- "gaussian" or
+    "contaminated" (scenarios.synthetic.PPI_LABEL_EFF_NOISE_FAMILIES).
+
+    Crossed with the judge-QUALITY axis (alignment_value), not nested inside
+    it: total judge-error variance is held identical across families, so a
+    given alignment tier means the same thing in both and the two arms are
+    directly comparable at matched rho^2.
+
+    Exists because rank tests are sensitive to error shape and mean tests are
+    not. A gaussian-only sweep reports wilcoxon/mwu's WORST case as if it were
+    typical: Spearman runs below Pearson under gaussian judge noise and above
+    it under contaminated, so the rank penalty this sweep measures reverses
+    sign on a realistically erratic judge. See
+    notes/RANK_VS_PARAMETRIC_CROSSOVER.md."""
     """Whether inversion_ratio came from a CLAMPED inversion and so carries no
     information about conditioning.
 
@@ -6029,7 +6045,9 @@ def run_ppi_label_efficiency_check(
         achieved, not only the one it was tuned on."""
     results: list[LabelEfficiencyPoint] = []
     all_raw: list[PPIComparisonResult] = []
-    calib_rows: list[tuple[str, float, str, float, float, dict]] = []
+    # 7-tuple here (trailing noise_family); run_ppi_nformula_check still emits
+    # the 6-tuple form, so the shared CSV writer below tolerates both.
+    calib_rows: list[tuple[str, float, str, float, float, dict, str]] = []
 
     cont_likert_baselines = {et: _ppi_power_baseline(et) for et in ("continuous", "likert")}
     binary_baseline = _ppi_power_baseline_binary()
@@ -6037,32 +6055,54 @@ def run_ppi_label_efficiency_check(
     # Calibrate llm_noise -> target alignment level, per eval type, BEFORE
     # building the comparison-sweep sources (which need the calibrated
     # noise values as input, not the other way around).
-    noise_by_eval_type: dict[str, tuple[float, ...]] = {}
-    calib_info: dict[str, dict[float, tuple[float, float, dict]]] = {}  # eval_type -> {calibrated_noise: (target, achieved, all_metrics)}
+    # Calibration runs PER (eval_type, noise_family), not once per eval type.
+    # llm_noise -> alignment is family-dependent: at matched total error
+    # variance a contaminated judge concentrates its errors on a few items, so
+    # the same llm_noise lands on a different Pearson r than the gaussian arm
+    # does. Calibrating once and reusing would silently put the two arms on
+    # different judge-quality tiers, which is precisely the confound this axis
+    # exists to remove.
+    noise_by_eval_type: dict[tuple[str, str], tuple[float, ...]] = {}
+    calib_info: dict[tuple[str, str], dict[float, tuple[float, float, dict]]] = {}
     for et, baseline in cont_likert_baselines.items():
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        for fam, nf, fam_kw in PPI_LABEL_EFF_NOISE_FAMILIES:
+            fam_baseline = {**baseline, "noise_family": nf, **fam_kw}
+            noises, info = [], {}
+            for target in _LABEL_EFF_ALIGNMENT_TARGETS:
+                noise, achieved, panel = _calibrate_noise_for_alignment(
+                    et, target, metric_name, fam_baseline, n_mc=align_n_mc, seed=seed)
+                noises.append(noise)
+                info[noise] = (target, achieved, panel)
+            noise_by_eval_type[(et, fam)] = tuple(noises)
+            calib_info[(et, fam)] = info
+
+    # Binary calibrates per family too. Its "contaminated" arm is heterogeneous
+    # FLIP RATES (scenarios.synthetic._contaminated_flip_probs), not additive
+    # noise -- binary errors have no magnitude, so the analogue redistributes
+    # the same marginal error rate onto a minority of hard items. Binary runs
+    # no rank tests and so gains no rank bonus from this, but it must still be
+    # measured across both regimes: otherwise binary's multipliers come from a
+    # uniform-error judge while continuous/likert's come from both, and any
+    # cross-eval-type comparison flatters binary.
+    metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
+    bin_noises_by_fam: dict[str, tuple[float, ...]] = {}
+    for fam, nf, fam_kw in PPI_LABEL_EFF_NOISE_FAMILIES:
+        fam_baseline = {**binary_baseline, "noise_family": nf, **fam_kw}
         noises, info = [], {}
         for target in _LABEL_EFF_ALIGNMENT_TARGETS:
-            noise, achieved, panel = _calibrate_noise_for_alignment(et, target, metric_name, baseline, n_mc=align_n_mc, seed=seed)
+            noise, achieved, panel = _calibrate_noise_for_alignment(
+                "binary", target, metric_name_bin, fam_baseline, n_mc=align_n_mc, seed=seed,
+            )
             noises.append(noise)
             info[noise] = (target, achieved, panel)
-        noise_by_eval_type[et] = tuple(noises)
-        calib_info[et] = info
+        bin_noises_by_fam[fam] = tuple(noises)
+        calib_info[("binary", fam)] = info
 
-    metric_name_bin, _ = _LABEL_EFF_ALIGNMENT_METRIC["binary"]
-    bin_noises, bin_info = [], {}
-    for target in _LABEL_EFF_ALIGNMENT_TARGETS:
-        noise, achieved, panel = _calibrate_noise_for_alignment(
-            "binary", target, metric_name_bin, binary_baseline, n_mc=align_n_mc, seed=seed,
-        )
-        bin_noises.append(noise)
-        bin_info[noise] = (target, achieved, panel)
-    calib_info["binary"] = bin_info
-
-    for et, info in calib_info.items():
+    for (et, fam), info in calib_info.items():
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
         for noise, (target, achieved, panel) in info.items():
-            calib_rows.append((et, noise, metric_name, target, achieved, panel))
+            calib_rows.append((et, noise, metric_name, target, achieved, panel, fam))
 
     # Sweep PPI_LABEL_EFF_EFFECT_FRACS rather than a single effect size: one
     # es cannot keep the whole N_lab grid in the reference curve's steep
@@ -6088,16 +6128,23 @@ def run_ppi_label_efficiency_check(
         cont_likert_sources = build_ppi_label_efficiency_sources(
             noise_by_eval_type=noise_by_eval_type, effect_frac=effect_frac,
         )
-        groups = [
-            ("continuous", [s for s in cont_likert_sources if s.eval_type == "continuous"],
-             _COMPARISON_METHODS, r"labeleff\.continuous\.noise=([\d.]+)\.lab=[\d.]+"),
-            ("likert", [s for s in cont_likert_sources if s.eval_type == "likert"],
-             _COMPARISON_METHODS, r"labeleff\.likert\.noise=([\d.]+)\.lab=[\d.]+"),
-            ("binary", build_ppi_label_efficiency_sources_binary(
-                noise_levels=tuple(bin_noises), effect_frac=effect_frac),
-             _COMPARISON_METHODS_BINARY, r"labeleff\.binary\.noise=([\d.]+)\.lab=[\d.]+"),
-        ]
-        for eval_type, sources, methods, name_re in groups:
+        binary_sources = build_ppi_label_efficiency_sources_binary(
+            noise_levels=bin_noises_by_fam, effect_frac=effect_frac,
+        )
+        # One group per (eval_type, noise_family): each needs its own
+        # reference curve lookup and its own calibration table, and grouping
+        # them together would pool two different judge-error shapes into one
+        # multiplier.
+        groups = []
+        for fam, _nf, _fam_kw in PPI_LABEL_EFF_NOISE_FAMILIES:
+            for et, methods in (("continuous", _COMPARISON_METHODS),
+                                ("likert", _COMPARISON_METHODS),
+                                ("binary", _COMPARISON_METHODS_BINARY)):
+                src = [x for x in (binary_sources if et == "binary" else cont_likert_sources)
+                       if x.eval_type == et and x.noise_family == fam]
+                groups.append((et, fam, src, methods,
+                               rf"labeleff\.{et}\.fam={fam}\.noise=([\d.]+)\.lab=[\d.]+"))
+        for eval_type, noise_family, sources, methods, name_re in groups:
             if not sources:
                 continue
             es = sources[0].effect_size
@@ -6121,7 +6168,7 @@ def run_ppi_label_efficiency_check(
             _check_inversion_self_consistency(
                 [q.n_lab for q in pooled],
                 [q.rejects_human_subset / q.n_reps if q.n_reps else float("nan") for q in pooled],
-                n_grid, power_grid, f"{eval_type} es={es:.4f}",
+                n_grid, power_grid, f"{eval_type}/{noise_family} es={es:.4f}",
             )
             metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[eval_type]
             for r in pooled:
@@ -6132,8 +6179,9 @@ def run_ppi_label_efficiency_check(
                 # The scenario name round-trips the calibrated noise through a
                 # %.4f format, so an exact dict lookup can miss on precision --
                 # match to the closest calibrated value instead.
-                closest_noise = min(calib_info[eval_type], key=lambda n: abs(n - noise))
-                target, achieved, _panel = calib_info[eval_type][closest_noise]
+                _cal = calib_info[(eval_type, noise_family)]
+                closest_noise = min(_cal, key=lambda n: abs(n - noise))
+                target, achieved, _panel = _cal[closest_noise]
                 _r2 = float(_panel.get("rho2", float("nan")))
                 ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
                 equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
@@ -6156,6 +6204,7 @@ def run_ppi_label_efficiency_check(
                     rho2=_r2, predicted_mult=_ppi_predicted_savings(_r2, r.n_lab, r.n),
                     predicted_mult_asymptotic=_ppi_predicted_savings(_r2, 0, 1),
                     inversion_ratio=inv_ratio, inversion_clamped=inv_clamped,
+                    noise_family=noise_family,
                 ))
     return results, all_raw, calib_rows
 
@@ -6527,16 +6576,23 @@ def save_results_artifacts_ppi_label_efficiency_raw(
     with calib_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
         writer.writerow(
-            ["eval_type", "judge_noise", "alignment_metric", "alignment_target", "alignment_achieved"]
+            ["eval_type", "noise_family", "judge_noise", "alignment_metric",
+             "alignment_target", "alignment_achieved"]
             + list(_CALIB_EXTRA_METRIC_COLUMNS)
         )
-        for et, noise, metric_name, target, achieved, panel in calib_rows:
+        for row in calib_rows:
+            # run_ppi_label_efficiency_check appends a 7th element (the judge
+            # noise_family it calibrated under); run_ppi_nformula_check does
+            # not, and has no family axis. Default rather than require, so the
+            # two callers can share this writer.
+            et, noise, metric_name, target, achieved, panel = row[:6]
+            fam = row[6] if len(row) > 6 else "gaussian"
             extra = []
             for col in _CALIB_EXTRA_METRIC_COLUMNS:
                 v = panel.get(col)
                 extra.append("" if v is None or not np.isfinite(v) else f"{float(v):.4f}")
             writer.writerow(
-                [et, f"{noise:.4f}", metric_name, f"{target:.2f}", f"{achieved:.4f}"] + extra
+                [et, fam, f"{noise:.4f}", metric_name, f"{target:.2f}", f"{achieved:.4f}"] + extra
             )
     print(f"Saved results: {raw_path}")
     print(f"Saved results: {calib_path}")
@@ -6910,21 +6966,26 @@ def save_ppi_label_efficiency_per_method_table(
     path = out_base / f"{run_stem}_ppi_label_efficiency_per_method.csv"
     with path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["eval_type", "method", "rho2_target", "rho2", "rho2_pearson",
+        writer.writerow(["eval_type", "noise_family", "method", "rho2_target", "rho2",
+                         "rho2_pearson",
                          "rho2_spearman", "rank_penalty", "n_lab", "effect_frac",
                          "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
                          "multiplier_lo", "multiplier_hi", "saturated", "predicted_mult",
                          "inversion_ratio", "inversion_clamped", "well_conditioned"])
-        for (eval_type, method), pts in sorted(per_method_points.items()):
+        for key, pts in sorted(per_method_points.items()):
+            eval_type, noise_family, method = key
             for r in sorted(pts, key=lambda q: (q.alignment_target, q.n_lab, q.effect_frac)):
                 mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
                 # rank_penalty = rho2_pearson - rho2_spearman: how much of the
                 # judge's linear signal a rank-based analysis cannot use. It is
                 # the checkable diagnostic for the PPI-t-test vs PPI-Wilcoxon
                 # gap, computable on a calibration set before any sweep runs.
-                _, _p2, _s2 = _method_rho2(eval_type, round(r.judge_noise, 6), method)
+                # SIGN FLIPS with noise_family -- negative (a rank BONUS) under
+                # a contaminated judge. That reversal is the point of the
+                # noise_family axis; see notes/RANK_VS_PARAMETRIC_CROSSOVER.md.
+                _, _p2, _s2 = _method_rho2(eval_type, round(r.judge_noise, 6), method, noise_family)
                 writer.writerow([
-                    eval_type, method, f"{r.alignment_target:.2f}", f"{r.rho2:.4f}",
+                    eval_type, noise_family, method, f"{r.alignment_target:.2f}", f"{r.rho2:.4f}",
                     f"{_p2:.4f}", f"{_s2:.4f}", f"{_p2 - _s2:.4f}", r.n_lab,
                     f"{r.effect_frac:.2f}", r.n_reps, f"{r.ppi_power:.6f}",
                     f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
@@ -6976,7 +7037,7 @@ real, but it is a level, not a drift."""
 
 
 @functools.lru_cache(maxsize=None)
-def _method_rho2(eval_type: str, judge_noise: float, method: str,
+def _method_rho2(eval_type: str, judge_noise: float, method: str, noise_family: str = "gaussian",
                  n_mc: int = 60_000, seed: int = 3) -> tuple:
     """(rho2 for `method`, pearson^2, spearman^2) on this judge's own scale.
 
@@ -6991,6 +7052,15 @@ def _method_rho2(eval_type: str, judge_noise: float, method: str,
     base = _ppi_power_baseline_binary() if eval_type == "binary" else _ppi_power_baseline(eval_type)
     kw = dict(base)
     kw["llm_noise"] = judge_noise
+    # Must match the cell being predicted: at matched total error variance a
+    # contaminated judge yields a HIGHER Spearman than a gaussian one, so
+    # reusing the gaussian correlation here would under-predict the
+    # contaminated arm's rank-test multipliers by exactly the effect this axis
+    # was added to measure.
+    _fam_map = {lab: (nf, kws) for lab, nf, kws in PPI_LABEL_EFF_NOISE_FAMILIES}
+    _nf, _kws = _fam_map.get(noise_family, (noise_family, {}))
+    kw["noise_family"] = _nf
+    kw.update(_kws)
     sc = JudgeBiasSource(name="_corr", tag="_ref", effect_size=0.0, **kw)
     cell = generate_judge_bias_cell(replace(sc, n=n_mc), np.random.default_rng(seed))
     structure, _ = _METHOD_CORR_KIND.get(method, ("group", "pearson"))
@@ -7054,15 +7124,20 @@ def save_ppi_label_efficiency_plots_per_method(
     import pathlib
     base = pathlib.Path(out_path)
     n_grid = np.geomspace(float(_JB_MIN_LAB), 1500.0, 36)
-    tier_of = {(c[0], round(c[1], 4)): c[3] for c in calib_rows}
-    val_of = {(c[0], round(c[1], 4)): c[4] for c in calib_rows}
-    rho_of = {(c[0], round(c[1], 4)): float(c[5].get("rho2", float("nan"))) for c in calib_rows}
+    # Keys carry noise_family: the two arms calibrate to DIFFERENT llm_noise
+    # values for the same tier, so a family-blind nearest-noise match can
+    # silently attribute a contaminated cell to a gaussian tier.
+    _fam = lambda c: (c[6] if len(c) > 6 else "gaussian")
+    tier_of = {(c[0], _fam(c), round(c[1], 4)): c[3] for c in calib_rows}
+    val_of = {(c[0], _fam(c), round(c[1], 4)): c[4] for c in calib_rows}
+    rho_of = {(c[0], _fam(c), round(c[1], 4)): float(c[5].get("rho2", float("nan"))) for c in calib_rows}
     by_method: dict = defaultdict(list)
     for r in raw:
-        by_method[(r.eval_type, r.method)].append(r)
+        _fm = re.search(r"\.fam=([a-z]+)\.", r.name)
+        by_method[(r.eval_type, _fm.group(1) if _fm else "gaussian", r.method)].append(r)
     paths: list[str] = []
     collected: dict = {}
-    for (eval_type, method), rows in sorted(by_method.items()):
+    for (eval_type, noise_family, method), rows in sorted(by_method.items()):
         pts = []
         for r in rows:
             m = re.search(r"noise=(\d+\.\d+)", r.name)
@@ -7073,11 +7148,11 @@ def save_ppi_label_efficiency_plots_per_method(
             _frac = float(mf.group(1)) if mf else float("nan")
             # Correlation matching THIS method's structure and estimand, not
             # the calibration panel's score-level rho^2 -- see _METHOD_CORR_KIND.
-            _mr, _p2, _s2 = _method_rho2(eval_type, round(nz, 6), method)
-            keys = [k for k in tier_of if k[0] == eval_type]
+            _mr, _p2, _s2 = _method_rho2(eval_type, round(nz, 6), method, noise_family)
+            keys = [k for k in tier_of if k[0] == eval_type and k[1] == noise_family]
             if not keys:
                 continue
-            k = min(keys, key=lambda q: abs(q[1] - nz))
+            k = min(keys, key=lambda q: abs(q[2] - nz))
             es = r.effect_size
             pg = _smooth_monotone_power_curve(
                 n_grid, _classical_pooled_power_curve(eval_type, es, (method,), n_grid, ref_n_mc, seed))
@@ -7098,11 +7173,14 @@ def save_ppi_label_efficiency_plots_per_method(
                 saturated=bool(np.isfinite(pw) and pw >= pg.max() - 1e-9),
                 rho2=_mr, predicted_mult=_ppi_predicted_savings(_mr, r.n_lab, r.n),
                 predicted_mult_asymptotic=_ppi_predicted_savings(_mr, 0, 1),
-                inversion_ratio=_ir, inversion_clamped=_ic))
+                inversion_ratio=_ir, inversion_clamped=_ic,
+                noise_family=noise_family))
         if not pts:
             continue
-        collected[(eval_type, method)] = pts
-        tag = f"{eval_type}_{method}"
+        collected[(eval_type, noise_family, method)] = pts
+        # Family in the filename: without it the two arms' figures collide and
+        # the second silently overwrites the first.
+        tag = f"{eval_type}_{noise_family}_{method}"
         try:
             paths.append(save_ppi_label_efficiency_plot(
                 _pool_label_eff_across_es(pts), str(base.with_name(f"{base.stem}_bymethod_{tag}{base.suffix}"))))
@@ -7110,6 +7188,71 @@ def save_ppi_label_efficiency_plots_per_method(
             print(f"  (per-method plot skipped for {tag}: {exc})")
     print(f"Saved {len(paths)} per-method label-efficiency plots")
     return paths, collected
+
+
+def save_ppi_label_efficiency_noise_family_plot(
+    results: list[LabelEfficiencyPoint], out_path: str,
+) -> str:
+    """The robustness figure: does the rule of thumb survive a judge whose
+    errors are NOT Gaussian?
+
+    Every other label-efficiency figure holds judge-error SHAPE fixed at
+    gaussian and varies how much the judge errs. This one puts the two shapes
+    side by side at matched judge-quality tiers, per method, and asks whether
+    the measured multiplier still tracks what rho^2 predicts.
+
+    What to look for, per panel:
+      * mean-based methods (ttest*/paired_t) should be INSENSITIVE to shape --
+        their influence function is linear in the values, so Pearson is the
+        whole story and the two arms should overlay;
+      * rank-based methods (wilcoxon/mwu) should IMPROVE under contamination
+        relative to gaussian, because Spearman degrades more slowly than
+        Pearson when a judge's errors concentrate on a few items.
+
+    A reader who only takes one thing from this figure should take: the
+    gaussian-only sweep reports the rank tests' worst case. Points are pooled
+    across the effect-size arms and drop saturated/ill-conditioned cells, the
+    same way save_ppi_label_efficiency_plot does."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+
+    usable = [r for r in results if not r.saturated and getattr(r, "well_conditioned", True)]
+    if not usable:
+        raise ValueError("save_ppi_label_efficiency_noise_family_plot: no usable points")
+    fams = sorted({r.noise_family for r in usable})
+    if len(fams) < 2:
+        raise ValueError(
+            f"save_ppi_label_efficiency_noise_family_plot: needs >=2 noise families, saw {fams}")
+
+    ets = sorted({r.eval_type for r in usable})
+    fig, axes = plt.subplots(1, len(ets), figsize=(5.4 * len(ets), 4.9), squeeze=False)
+    style = {"gaussian": ("o-", "#3b76af"), "contaminated": ("s--", "#c0392b")}
+    for ax, et in zip(axes[0], ets):
+        for fam in fams:
+            agg = defaultdict(list)
+            for r in usable:
+                if r.eval_type == et and r.noise_family == fam and r.n_lab:
+                    agg[round(r.alignment_target, 3)].append(r.equiv_n_lab / r.n_lab)
+            if not agg:
+                continue
+            xs = sorted(agg)
+            ys = [float(np.median(agg[x])) for x in xs]
+            mk, col = style.get(fam, ("^:", "#61a05f"))
+            ax.plot(xs, ys, mk, color=col, lw=2.1, ms=6, label=f"{fam} judge")
+        ax.axhline(1.0, color="grey", ls=":", lw=1)
+        ax.set_title(et, fontsize=11)
+        ax.set_xlabel(r"judge quality tier  ($\rho^2$, score level)")
+        ax.grid(alpha=.25); ax.set_axisbelow(True)
+    axes[0][0].set_ylabel("label-efficiency multiplier")
+    axes[0][0].legend(fontsize=9, loc="upper left")
+    fig.suptitle("Does the rule of thumb survive a non-Gaussian judge?\n"
+                 "same judge-quality tiers, two judge-error shapes", fontsize=11.5)
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
 
 
 def save_ppi_label_efficiency_plots(
@@ -7131,10 +7274,46 @@ def save_ppi_label_efficiency_plots(
     clamped to n_grid's edge and would drag any average it enters).
 
     Returns every path written, overall first."""
-    paths = [save_ppi_label_efficiency_plot(_pool_label_eff_across_es(results), out_path, square=square)]
+    # The headline figure is GAUSSIAN-ONLY, deliberately. Averaging the
+    # noise-family arms into one multiplier would make the headline number
+    # depend on an arbitrary 50/50 mix of judge-error regimes that corresponds
+    # to no real population of judges. Keeping it to one stated regime means
+    # the number has a definition; the family comparison gets its own figure
+    # below, where the effect is shown rather than averaged away.
+    # To blend instead, drop this filter -- now that binary carries a real
+    # contaminated arm the blend is at least consistent across eval types.
+    # Three factorial views of the same sweep:
+    #   out_path              -- AVERAGED over judge-error shapes (main text)
+    #   {stem}_fam_gaussian   -- gaussian judge only     (supplementary)
+    #   {stem}_fam_contaminated -- contaminated judge only (supplementary)
+    # The averaged one is the headline because it quantifies the multiplier a
+    # practitioner should expect without assuming a judge-error shape; the
+    # per-family ones are what license that average, by showing how much the
+    # two regimes actually differ. See _pool_label_eff_across_es' docstring for
+    # why the blend is opt-in rather than the pooling default.
     base = Path(out_path)
+    paths = [save_ppi_label_efficiency_plot(
+        _pool_label_eff_across_es(results, across_noise_families=True), out_path, square=square)]
+    for fam in sorted({r.noise_family for r in results}):
+        fam_rows = [r for r in results if r.noise_family == fam]
+        if not fam_rows:
+            continue
+        try:
+            paths.append(save_ppi_label_efficiency_plot(
+                _pool_label_eff_across_es(fam_rows),
+                str(base.with_name(f"{base.stem}_fam_{fam}{base.suffix}")), square=square))
+        except Exception as exc:
+            print(f"  (per-family figure skipped for {fam}: {type(exc).__name__}: {exc})")
     # The two analysis figures: es-invariance (which licenses pooling across
     # arms at all) and the practitioner-facing agreement threshold.
+    # Judge-error-SHAPE robustness (only when the sweep actually ran >1
+    # family). Non-fatal: it is a supplementary figure, and a sweep filtered
+    # to a single family is a legitimate way to run.
+    try:
+        paths.append(save_ppi_label_efficiency_noise_family_plot(
+            results, str(base.with_name(f"{base.stem}_noisefamily{base.suffix}"))))
+    except Exception as exc:
+        print(f"  (noise-family figure skipped: {type(exc).__name__}: {exc})")
     try:
         paths.append(save_ppi_label_efficiency_threshold_plot(
             results, str(base.with_name(f"{base.stem}_threshold{base.suffix}"))))
@@ -7155,24 +7334,54 @@ def save_ppi_label_efficiency_plots(
                 continue
             # readable suffix: foo_es0p35.png
             sub_path = base.with_name(f"{base.stem}_es{f'{frac:.2f}'.replace('.', 'p')}{base.suffix}")
-            paths.append(save_ppi_label_efficiency_plot(subset, str(sub_path), square=square))
+            # Blended to match the headline: these arms exist to check that the
+            # headline multiplier is effect-size invariant, so they have to be
+            # the same quantity it is.
+            paths.append(save_ppi_label_efficiency_plot(
+                _pool_label_eff_across_es(subset, across_noise_families=True),
+                str(sub_path), square=square))
     return paths
 
 
-def _pool_label_eff_across_es(results: list[LabelEfficiencyPoint]) -> list[LabelEfficiencyPoint]:
+def _pool_label_eff_across_es(
+    results: list[LabelEfficiencyPoint], *, across_noise_families: bool = False,
+) -> list[LabelEfficiencyPoint]:
     """Average equiv_n_lab/ppi_power across the effect-size arms, per
-    (eval_type, alignment_target, n_lab). Saturated points are dropped
-    first; a cell with nothing left stays saturated so the plot's own
-    saturation handling still fires."""
+    (eval_type, noise_family, alignment_target, n_lab). Saturated points are
+    dropped first; a cell with nothing left stays saturated so the plot's own
+    saturation handling still fires.
+
+    `across_noise_families=True` additionally averages the judge-error-shape
+    arms together, collapsing to (eval_type, alignment_target, n_lab). This is
+    OPT-IN rather than the default because it silently blends two different
+    judge-error regimes into one multiplier, and the resulting number depends
+    on the mix of families the sweep happened to run (today an even split,
+    which matches no measured population of real judges). It is the right
+    default for a main-text figure that wants one multiplier per judge-quality
+    tier averaged over error shapes; it is the wrong one for any comparison
+    ACROSS eval types unless every eval type carries the same families -- which
+    is why binary's contaminated arm had to be implemented for real rather than
+    skipped (see scenarios.synthetic._contaminated_flip_probs)."""
     from collections import defaultdict
     buckets: dict[tuple, list[LabelEfficiencyPoint]] = defaultdict(list)
     for r in results:
-        buckets[(r.eval_type, r.alignment_target, r.n_lab)].append(r)
+        # noise_family is part of the key: pooling across it would average two
+        # DIFFERENT judge-error regimes into one multiplier. Before binary had
+        # a contaminated arm that was worse than untidy -- continuous/likert
+        # blended two regimes while binary contributed only its clean one, so
+        # cross-eval-type comparison silently flattered binary.
+        _fam_key = "_all" if across_noise_families else r.noise_family
+        buckets[(r.eval_type, _fam_key, r.alignment_target, r.n_lab)].append(r)
     pooled: list[LabelEfficiencyPoint] = []
-    for (_et, _tgt, _nl), rows in buckets.items():
+    for (_et, _fam, _tgt, _nl), rows in buckets.items():
         usable = [r for r in rows if not r.saturated and r.well_conditioned and np.isfinite(r.equiv_n_lab)]
         src = usable or rows
         ref = src[0]
+        # A blended point averages BOTH regimes, so it must not keep whichever
+        # family happened to sort first in its bucket -- that label would claim
+        # a gaussian-only measurement for a mixed one. Relabel explicitly.
+        if across_noise_families and len({r.noise_family for r in src}) > 1:
+            ref = replace(ref, noise_family="averaged")
         pooled.append(replace(
             ref,
             ppi_power=float(np.mean([r.ppi_power for r in src])),
