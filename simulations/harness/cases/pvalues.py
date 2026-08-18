@@ -7345,8 +7345,26 @@ def save_ppi_label_efficiency_noise_family_plot(
         ax.set_title(et, fontsize=11)
         ax.set_xlabel(r"judge quality tier  ($\rho^2$, score level)")
         ax.grid(alpha=.25); ax.set_axisbelow(True)
+        # An eval type with only one family is not a broken panel -- binary's
+        # judge is a flip-probability model with no error-magnitude
+        # distribution to vary. Say so on the panel, or the single line reads
+        # as a plotting failure.
+        if len({r.noise_family for r in usable if r.eval_type == et}) < 2:
+            ax.text(0.5, 0.04, "no error-shape axis\n(flip-probability judge)",
+                    transform=ax.transAxes, ha="center", va="bottom",
+                    fontsize=8, color="#777", style="italic")
     axes[0][0].set_ylabel("label-efficiency multiplier")
-    axes[0][0].legend(fontsize=9, loc="upper left")
+    # Build the legend from EVERY panel's handles, not axes[0][0]'s. The first
+    # panel may carry only one family (binary does), in which case a legend
+    # taken from it silently omits the contaminated series that the panels
+    # actually being compared depend on.
+    _seen, _h, _l = set(), [], []
+    for ax in axes[0]:
+        for h, lab in zip(*ax.get_legend_handles_labels()):
+            if lab not in _seen:
+                _seen.add(lab); _h.append(h); _l.append(lab)
+    if _h:
+        axes[0][0].legend(_h, _l, fontsize=9, loc="upper left")
     fig.suptitle("Does the rule of thumb survive a non-Gaussian judge?\n"
                  "same judge-quality tiers, two judge-error shapes", fontsize=11.5)
     fig.tight_layout()
