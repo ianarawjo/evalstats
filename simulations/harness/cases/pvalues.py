@@ -5991,19 +5991,26 @@ Set to None to let each figure report its own measured crossing."""
 
 
 _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE = {
-    "binary":     (0.68, 0.60, 0.52, 0.43, 0.35, 0.26),
-    "continuous": (0.64, 0.54, 0.43, 0.33, 0.22, 0.12),
-    "likert":     (0.96, 0.84, 0.72, 0.61, 0.49, 0.37),
+    "binary":     (0.68, 0.58, 0.48, 0.39, 0.29, 0.20),
+    "continuous": (0.67, 0.57, 0.46, 0.36, 0.25, 0.15),
+    "likert":     (0.82, 0.74, 0.66, 0.57, 0.49, 0.41),
 }
 """Per-eval-type judge-quality ladders, replacing one shared set of targets.
 
 The targets are SCORE-LEVEL Pearson rho^2, but the quantity a practitioner
 looks up depends on their design, and the map from one to the other is
-eval-type specific. Fitted on the 300-rep run:
+eval-type specific -- and, for likert, distinctly NON-LINEAR. Measured tier ->
+paired rho^2 on the 60-rep screen:
 
-    binary      paired rho^2 = 1.185 * tier - 0.108
-    continuous  paired rho^2 = 0.965 * tier + 0.081
-    likert      paired rho^2 = 0.847 * tier - 0.115
+    likert  0.37->0.180  0.49->0.268  0.61->0.393  0.72->0.552  0.84->0.800
+
+That relation is convex: the gap between a likert judge's score correlation
+and its paired-difference correlation collapses as the judge gets cleaner,
+because differencing two discretised scores only destroys signal while there
+is noise left to discretise. A first version of these ladders extrapolated a
+LINEAR fit and asked tier 0.96 to reach paired rho^2 0.70; it delivered 0.944,
+overshooting so far that four of likert's six tiers landed above any range a
+reader needs. These come from a quadratic refit inside the measured range.
 
 A shared 0.20-0.70 ladder therefore covers wildly different ranges of the axis
 the lookup figures are actually drawn on: likert's paired rho^2 only reached
@@ -6018,13 +6025,17 @@ costs exactly what it did.
 Likert needs a much cleaner judge (up to 0.96 score-level) to reach the same
 paired rho^2, because differencing two discretised Likert scores destroys more
 of the judge's signal than differencing two continuous ones. All six ends were
-checked as reachable by _calibrate_noise_for_alignment before being adopted --
-likert 0.96 calibrates at llm_noise 0.103, continuous 0.12 at 0.325.
+checked as reachable by _calibrate_noise_for_alignment before being adopted.
 
-The fits are linear extrapolations from a 0.20-0.70 tier range, so the
-achieved paired rho^2 at the extremes is an estimate. Check the realized
-values in the calibration CSV after the next run rather than assuming the span
-came out exactly 0.20-0.70."""
+Predicted landing points on the paired axis:
+
+    binary      0.201 0.243 0.321 0.419 0.558 0.729
+    continuous  0.203 0.318 0.436 0.535 0.635 0.719
+    likert      0.202 0.276 0.363 0.476 0.590 0.717
+
+Still a fit, so check the per-method CSV's rho2 column after a run rather than
+assuming the span landed exactly there. The previous version of this constant
+is why: its linear extrapolation was wrong by 0.24 rho^2 at likert's top."""
 """Round, reader-legible judge-quality targets the label-efficiency
 check's noise axis is calibrated to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
