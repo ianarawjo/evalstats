@@ -5967,6 +5967,29 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
 
 
 _LABEL_EFF_ALIGNMENT_TARGETS = (0.70, 0.60, 0.50, 0.40, 0.30, 0.20)
+_LABEL_EFF_PAYOFF_FLOOR = 0.40
+"""Earliest rho^2 the "PPI starts to pay for itself" marker may sit at.
+
+The marker's own rule -- the cheapest ROUND rho^2 where EVERY eval type clears
+1.25x -- lands on 0.30 for the mean-test figures and 0.40 for the rank ones.
+That is a real difference and it is reported honestly in the per-family
+numbers, but it makes the headline of one figure disagree with the headline of
+its neighbour, which is worse than useless in a paper where a reader takes away
+a single number.
+
+Pinning all of them to the STRICTER of the two is the conservative direction:
+0.40 is where PPI pays off whatever design the reader runs, so the quoted
+threshold is never optimistic for anyone. A mean-test user is told to wait
+slightly longer than they strictly must; nobody is told to expect a saving
+that will not materialise.
+
+What is NOT overridden is the number on the label: the multiplier is still
+interpolated from the measured curve AT 0.40, so the figure says something
+true. Only the choice of which round value to draw attention to is editorial.
+
+Set to None to let each figure report its own measured crossing."""
+
+
 _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE = {
     "binary":     (0.68, 0.60, 0.52, 0.43, 0.35, 0.26),
     "continuous": (0.64, 0.54, 0.43, 0.33, 0.22, 0.12),
@@ -7195,7 +7218,10 @@ def save_ppi_label_efficiency_threshold_plot(
         vals = [float(np.interp(x, np.array(_xs_by_et[et][0]), np.array(_xs_by_et[et][1])))
                 for et in _xs_by_et if len(_xs_by_et[et][0]) >= 2]
         return bool(vals) and min(vals) >= WORTH_IT
-    past = [x for x in _rounds_meas if x > cut + 1e-9 and _all_clear(x)] if cut is not None else []
+    _floor = _LABEL_EFF_PAYOFF_FLOOR
+    past = [x for x in _rounds_meas
+            if x > cut + 1e-9 and _all_clear(x)
+            and (_floor is None or x >= _floor - 1e-9)] if cut is not None else []
     if past:
         g = min(past)
         ax.axvline(g, color="k", ls=":", lw=1.2, zorder=1)
