@@ -93,6 +93,43 @@ deviation and produced 5 cells *above* the control-variate bound, which is
 impossible. Recording this because "correct for the bias you can measure" is
 the obvious move and it makes things worse.
 
+## The root cause, found later: curves built at the wrong effect size
+
+Everything above is real and the gate is worth keeping, but it treated a
+SYMPTOM. On 2026-08-18 the actual cause turned up:
+`save_ppi_label_efficiency_plots_per_method` passed `r.effect_size` to
+`_classical_pooled_power_curve`. `PPIComparisonResult.effect_size` is the
+eval-type-RELATIVE FRACTION -- its own docstring says so, and says it is
+metadata rather than what `generate_judge_bias_cell` reads -- not the absolute
+magnitude the curve builder needs. The pooled path was always correct, using
+`sources[0].effect_size`.
+
+So every PER-METHOD reference curve was built at es = 0.15-0.35 (a fraction)
+instead of the eval type's true magnitude, and the error went in DIFFERENT
+DIRECTIONS per eval type, which is exactly why it never looked like one clean
+offset:
+
+| eval type | true es | curve built at | consequence |
+|---|---|---|---|
+| continuous | 0.018-0.042 | 0.15-0.35 | far too powerful -> every inversion clamped to the grid floor (97% clamped, 0% well-conditioned) |
+| likert | 0.172-0.401 | 0.15-0.35 | too weak -> overshoot, median inversion 2.881 |
+| binary | 0.131-0.306 | 0.15-0.35 | too weak -> overshoot, median inversion 1.621 |
+
+against a target of 1.000. After the fix all three read median exactly 1.000
+and per-method retention goes 3.1% -> 36.2% (pooled 62.7%) at 60 reps.
+
+**How it was caught, which is the reusable part:** the gate's retention did not
+improve between a 10-rep and a 60-rep run (2.9% -> 3.1%). Monte Carlo noise has
+to shrink with reps; a systematic error does not. That single comparison ruled
+out the entire "needs more reps" hypothesis and pointed at the curve.
+
+**What this means for the numbers below.** The retention figures and the
+clamp-trap analysis stand -- they are properties of the inversion, not of the
+effect size. But every per-method MULTIPLIER measured before the fix is
+invalid, including the ones this note used to characterise the artifact. The
+gate was doing real work, just not for the reason recorded here: it was
+rejecting cells whose curves were simply wrong.
+
 ## The clamp trap
 
 `_equivalent_n_lab` inverts with `np.interp`, which **clamps** at `n_grid`'s

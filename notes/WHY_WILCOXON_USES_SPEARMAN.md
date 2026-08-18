@@ -125,15 +125,36 @@ refinement on top.
 
 | method | score-level rho^2 | own correlation |
 |---|---|---|
-| continuous `paired_t` | **1.16** (exceeds the bound -- impossible) | 1.03 |
-| likert `paired_t` | 0.82 | 1.02 |
-| likert `wilcoxon` | 0.71, drifting 0.82 -> 0.65 across tiers | **0.94, flat** |
+| continuous `paired_t` | **1.16** (exceeds the bound -- impossible) | 1.02 |
+| likert `paired_t` | 0.82 | 1.01 |
+| likert `wilcoxon` | 0.71, drifting 0.82 -> 0.65 across tiers | **0.97, flat** |
 
 (measured / predicted; 1.00 = achieves the control-variate bound)
 
-The paired mean-tests now sit at 1.01-1.03, i.e. they hit the bound. Likert
-Wilcoxon's *drift* is gone -- what remains is a level, not a degradation, which
-is a materially different claim about rank-based PPI.
+**CORRECTED 2026-08-18.** The right-hand column previously read 1.03 / 1.02 /
+0.94, from per-method reference curves built at the wrong effect size -- see
+`HOW_MULTIPLIERS_ARE_MEASURED.md`. Re-derived on fixed curves (60-rep run,
+gated, gaussian arm, median measured/predicted):
+
+| eval type | `paired_t` | `wilcoxon` | `mwu` | `ttest` | `ttest_welch` |
+|---|---|---|---|---|---|
+| continuous | 1.018 | **0.998** | 0.970 | 0.955 | 1.000 |
+| likert | 1.007 | **0.973** | 0.855 | 0.959 | 0.968 |
+| binary | 0.960 | -- | -- | -- | 0.987 |
+
+**This retracts the central quantitative claim this note used to make.**
+Wilcoxon attains 0.97-1.00 of its own bound, statistically indistinguishable
+from `paired_t` at 1.01-1.02. Rank-based PPI does NOT carry a systematic
+shortfall of 8-19%; the earlier 0.81/0.92 figures were the wrong-effect-size
+artifact. The one genuinely short method is likert `mwu` at 0.855, in both
+noise families -- and `mwu` is the method whose Spearman mapping was inferred
+rather than derived.
+
+What survives independently: `investigate_rho2_sufficiency.py` measures
+attainment WITHOUT any power curve and finds `wilcoxon` 0.954 +/- 0.022 against
+`paired_t` 0.987 +/- 0.028. So a real gap exists -- about 3%, not 8-19%.
+
+These are 60-rep numbers and provisional; the full sweep supersedes them.
 
 ## The `rank_penalty` diagnostic
 
@@ -169,8 +190,10 @@ The influence-function argument came from an external analysis reviewing two
 other derivations; the numbers above are our own measurements on the 300-rep
 sweep in `simulations/out/labeleff_rho2_full/`. The claim that rank-based PPI
 falls short of the mean-based bound is, as far as we know, novel -- no prior
-work applies PPI to rank statistics -- so it should be reported as a finding
-with the caveats above, not as a defect to be explained away.
+work applies PPI to rank statistics. **But see the correction above: on fixed
+curves the shortfall is ~3% (curve-free instrument) rather than the 8-19% this
+note originally reported, and is not distinguishable from zero in the sweep
+itself.** Report the small gap, not a general rank deficit.
 
 ## See also: is this shortfall just our Gaussian DGP?
 

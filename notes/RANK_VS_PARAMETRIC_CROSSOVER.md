@@ -48,6 +48,14 @@ it is *much* smaller than the raw multiplier gap the main sweep shows -- most of
 that gap is the rank penalty rho_S^2 < rho_P^2, which is a judge property, not a
 test property.
 
+**These numbers are the trustworthy ones, and that mattered.** This experiment
+never inverts a power curve, so it was unaffected when the sweep's per-method
+curves turned out to be built at the wrong effect size (2026-08-18, see
+`HOW_MULTIPLIERS_ARE_MEASURED.md`). The sweep had been reporting `wilcoxon` at
+0.81-0.92; on fixed curves it reads 0.97-1.00, which agrees with the ~3% gap
+measured here far better than the old figures did. Two instruments with no
+shared machinery now agree, which is the whole reason for running both.
+
 ## 2. The power crossover is real and locatable
 
 Contamination fraction `eps` moves rho_S^2 continuously while rho_P^2 is pinned
@@ -84,10 +92,18 @@ deficit: `ARE/(1 - rho_S^2*(1-f)) > 1/(1 - rho_P^2*(1-f))`. It does not fit.
 
 Folding in the measured attainment gap (`ARE_eff = 3/pi * 0.954/0.987 = 0.923`)
 closes roughly half, and fully explains the 0.70 tier. **The rest is
-unexplained.** Ranks need a larger bonus in the power domain than the variance
-domain accounts for, and the discrepancy grows as the judge gets worse. Likely
-related to `WHY_WILCOXON_USES_SPEARMAN.md`'s open continuous-wilcoxon drift;
-not established.
+unexplained**, and it got MORE puzzling rather than less on 2026-08-18: the
+sweep's per-method curves were being built at the wrong effect size, and once
+fixed the sweep's own `wilcoxon` attainment rose from 0.81-0.92 to 0.97-1.00.
+So the residual can no longer be attributed to a large rank shortfall in the
+sweep -- both clean instruments now say 0-3%, while the crossover still behaves
+as though ranks pay ~10% in the power domain. That is a genuine open
+discrepancy between a variance-domain and a power-domain measurement of what
+should be the same quantity, not a known artifact.
+
+The earlier note that this was "likely related to the continuous-wilcoxon
+drift" is withdrawn: that drift was the wrong-effect-size artifact and no
+longer exists.
 
 ## What to report
 
@@ -98,8 +114,9 @@ is intrinsic:
 2. the rank penalty rho_S^2 < rho_P^2 (~-0.02 under Gaussian) -- **a property of
    the judge's error shape, which reverses to +0.11 under a contaminated
    judge**;
-3. an attainment deficit of ~3% (0.954 vs 0.987), plus an unexplained further
-   deficit visible only in the power domain.
+3. an attainment deficit of ~3% (0.954 vs 0.987, curve-free measurement;
+   the sweep itself now reads 0.97-1.00 and cannot distinguish it from zero),
+   plus an unexplained further deficit visible only in the power domain.
 
 The main sweep reports their sum as though all three were intrinsic. They are
 not, and (2) is the largest of them.
