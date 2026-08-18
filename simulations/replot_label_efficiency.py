@@ -42,6 +42,7 @@ from simulations.harness.cases.pvalues import (
     _METHOD_CORR_KIND,
     _method_rho2,
     _ppi_predicted_savings,
+    save_ppi_label_efficiency_lookup_grid,
     save_ppi_label_efficiency_threshold_plot,
     LabelEfficiencyPoint,
     PPIComparisonResult,
@@ -163,6 +164,11 @@ def main() -> None:
                     sub, str(out / f"labeleff_threshold_{lbl}.png"), corr_kind=kind))
             except Exception as exc:
                 print(f"  (threshold [{lbl}] skipped: {type(exc).__name__}: {exc})")
+        try:
+            written.append(save_ppi_label_efficiency_lookup_grid(
+                pm_points, str(out / "labeleff_lookup_grid.png")))
+        except Exception as exc:
+            print(f"  (lookup grid skipped: {type(exc).__name__}: {exc})")
         try:
             written.append(save_ppi_label_efficiency_noise_family_plot(
                 pm_points, str(out / "labeleff_plot_noisefamily.png")))

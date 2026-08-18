@@ -7466,6 +7466,106 @@ def save_ppi_rho2_robustness_plots(
     return paths
 
 
+_LOOKUP_PANELS = (
+    (("group", "pearson"),   "Between-subjects $t$-test",   "Pearson on scores"),
+    (("paired", "pearson"),  "Within-subjects paired $t$",  "Pearson on paired differences"),
+    (("group", "spearman"),  "Mann–Whitney",                "Spearman on scores"),
+    (("paired", "spearman"), "Wilcoxon signed-rank",        "Spearman on paired differences"),
+)
+"""The four (structure, correlation) combinations _METHOD_CORR_KIND maps
+methods onto, each with the design a practitioner would recognise and the
+statistic they must actually compute."""
+
+
+def save_ppi_label_efficiency_lookup_grid(per_method_points: dict, out_path: str) -> str:
+    """Practitioner lookup: one panel per experimental design, each stating the
+    statistic to measure and reading the multiplier off it.
+
+    The two-figure split (parametric vs rank) fixed WHICH CORRELATION, but not
+    WHICH DATA it is computed on, and those are independent axes. A parametric
+    panel pooling ttest/ttest_welch (correlate raw SCORES) with paired_t
+    (correlate paired DIFFERENCES) puts two different measurements on one
+    x-axis, and they diverge: mean gap 0.094 rho^2, up to 0.197 on likert,
+    where the same judge reads 0.440 on scores and 0.261 on differences. A
+    within-subjects likert user looking up 0.26 would land on a curve built
+    partly from judges whose SCORES correlate at 0.44.
+
+    Splitting on the full (structure, correlation) pair makes each panel
+    unambiguous, so the caption can be an instruction rather than a caveat:
+    find your design, compute the named statistic on a pilot set, read across.
+
+    x is each eval type's OWN realized rho^2 -- see
+    save_ppi_label_efficiency_threshold_plot for why drawing them at a pooled
+    mean silently shifts whichever eval type sits furthest from it.
+
+    Panels with no methods (binary has no rank tests) are annotated rather than
+    left blank."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from collections import defaultdict
+
+    WORTH_IT = 1.25
+    marks = {"binary": "o", "continuous": "s", "likert": "^"}
+    cols = {"binary": "#2166ac", "continuous": "#1a9850", "likert": "#b2182b"}
+
+    # (structure, corr) -> eval_type -> tier -> [multipliers], plus realized rho^2
+    cell: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    rho: dict = defaultdict(lambda: defaultdict(lambda: defaultdict(list)))
+    for (et, _fam, method), vals in per_method_points.items():
+        kind = _METHOD_CORR_KIND.get(method)
+        if kind is None:
+            continue
+        for r in vals:
+            if r.saturated or not getattr(r, "well_conditioned", True) or not r.n_lab:
+                continue
+            cell[kind][et][r.alignment_target].append(r.equiv_n_lab / r.n_lab)
+            if np.isfinite(r.rho2):
+                rho[kind][et][r.alignment_target].append(r.rho2)
+    if not cell:
+        raise ValueError("save_ppi_label_efficiency_lookup_grid: no usable points")
+
+    fig, axes = plt.subplots(2, 2, figsize=(11.4, 8.6), sharey=False)
+    for ax, (kind, design, measure) in zip(axes.ravel(), _LOOKUP_PANELS):
+        ymax, drew = 1.0, False
+        for et in ("binary", "continuous", "likert"):
+            tiers = sorted(t for t in cell[kind].get(et, {})
+                           if cell[kind][et][t] and rho[kind][et].get(t))
+            if len(tiers) < 2:
+                continue
+            xs = [float(np.mean(rho[kind][et][t])) for t in tiers]
+            ys = [float(np.median(cell[kind][et][t])) for t in tiers]
+            ax.plot(xs, ys, marker=marks[et], color=cols[et], lw=2, ms=6,
+                    label=_LABEL_EFF_PANEL_TITLES.get(et, et), zorder=3)
+            ymax = max(ymax, max(ys)); drew = True
+        if not drew:
+            ax.text(0.5, 0.5, "no tests of this kind\non this data type",
+                    transform=ax.transAxes, ha="center", va="center",
+                    fontsize=9, color="#888", style="italic")
+            ax.set_xticks([]); ax.set_yticks([])
+        else:
+            ax.axhspan(0.95, WORTH_IT, color="grey", alpha=0.16, zorder=0)
+            for t in np.round(np.arange(0.1, 0.95, 0.1), 2):
+                ax.axvline(t, color="#bbb", lw=0.7, alpha=0.55, zorder=0)
+            ax.axhline(1.0, color="#c0392b", ls="--", lw=1.1, alpha=.8, zorder=1)
+            ax.grid(alpha=0.2, axis="y"); ax.set_axisbelow(True)
+            ax.legend(fontsize=8, loc="upper left")
+        ax.set_title(f"{design}\nmeasure: {measure}", fontsize=10)
+    for ax in axes[1]:
+        ax.set_xlabel("judge–human agreement  ρ²  (measured as named above)")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("label-efficiency multiplier")
+    fig.suptitle("Find your design, measure that statistic on a pilot set, read across",
+                 fontsize=12)
+    fig.text(0.5, 0.005, "Shaded band: savings under 1.25×, not worth restructuring a "
+             "pipeline for. Points sit at each data type's own measured ρ².",
+             ha="center", fontsize=8.5)
+    fig.tight_layout(rect=(0, 0.02, 1, 1))
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def save_ppi_label_efficiency_noise_family_plot(
     per_method_points: dict, out_path: str,
 ) -> str:
@@ -12392,6 +12492,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                                     except Exception as exc:
                                         print(f"  (threshold figure [{_lbl}] skipped: "
                                               f"{type(exc).__name__}: {exc})")
+                                try:
+                                    _lg = save_ppi_label_efficiency_lookup_grid(
+                                        pm_points,
+                                        str(Path(plots_dir) / f"{label_eff_stem}_plot_lookup_grid.png"))
+                                    output_paths.append(_lg)
+                                    print(f"Saved plot: {_lg}")
+                                except Exception as exc:
+                                    print(f"  (lookup grid skipped: {type(exc).__name__}: {exc})")
                                 try:
                                     _nf = save_ppi_label_efficiency_noise_family_plot(
                                         pm_points,
