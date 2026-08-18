@@ -6454,7 +6454,13 @@ def save_results_artifacts_ppi_label_efficiency(
             # PPI_LABEL_EFF_EFFECT_FRACS, so without it the arms are not
             # separable after the fact and the es-invariance check (which is
             # the point of sweeping) cannot be reproduced from the CSV.
-            "eval_type", "effect_frac", "alignment_metric", "alignment_target", "alignment_value",
+            # noise_family right after eval_type: together they are the
+            # grouping key every downstream analysis needs, and without it the
+            # two judge-error-shape arms are indistinguishable in this file
+            # except by cross-referencing judge_noise against the calibration
+            # CSV (they calibrate to DIFFERENT llm_noise for the same tier).
+            "eval_type", "noise_family", "effect_frac", "alignment_metric",
+            "alignment_target", "alignment_value",
             "judge_noise", "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
             "multiplier_lo", "multiplier_hi", "saturated",
             "rho2", "predicted_mult", "predicted_mult_asymptotic",
@@ -6463,7 +6469,7 @@ def save_results_artifacts_ppi_label_efficiency(
         for r in results:
             mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
             writer.writerow([
-                r.eval_type, f"{r.effect_frac:.2f}", r.alignment_metric,
+                r.eval_type, r.noise_family, f"{r.effect_frac:.2f}", r.alignment_metric,
                 f"{r.alignment_target:.2f}", f"{r.alignment_value:.4f}",
                 f"{r.judge_noise:.4f}", r.n_lab, r.n_reps,
                 f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
@@ -6557,13 +6563,19 @@ def save_results_artifacts_ppi_label_efficiency_raw(
             # embeds ".es=<frac>") so the per-method rows stay separable by
             # sweep arm without having to re-derive it from effect_size,
             # whose absolute value differs per eval type.
-            "name", "tag", "eval_type", "effect_frac", "method", "n", "n_reps", "effect_size", "label_frac", "n_lab",
+            "name", "tag", "eval_type", "noise_family", "effect_frac", "method", "n", "n_reps",
+            "effect_size", "label_frac", "n_lab",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in raw:
             _m_es = re.search(r"\.es=([\d.]+)", r.name)
+            # Same treatment as effect_frac above: recovered from the scenario
+            # name rather than left implicit, so the arms stay separable
+            # without every consumer having to re-parse the name themselves.
+            _m_fam = re.search(r"\.fam=([a-z]+)\.", r.name)
             writer.writerow([
-                r.name, r.tag, r.eval_type, (_m_es.group(1) if _m_es else ""),
+                r.name, r.tag, r.eval_type, (_m_fam.group(1) if _m_fam else "gaussian"),
+                (_m_es.group(1) if _m_es else ""),
                 r.method, r.n, r.n_reps, repr(float(r.effect_size)), f"{r.label_frac:.4f}", r.n_lab,
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
