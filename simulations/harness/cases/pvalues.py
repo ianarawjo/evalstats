@@ -7766,26 +7766,16 @@ metric-incompatible ones a reader had to mentally re-split by panel.
             # "measured, but not reportable"; a reader needs to see that the
             # cell exists and why the line stops, and the distinction between
             # the two failure modes is in the CSV for anyone who needs it.
-            sat_xs = [x for x, r in zip(xs, rows) if not _usable(r)]
-            sat_ys = [y_max] * len(sat_xs)
-            if sat_xs:
-                # Plotted in this tier's own color (a saturated point is
-                # still that tier's data), but the shared legend swatch for
-                # "power saturated" is a separate, neutral-gray proxy --
-                # the category isn't tied to any one tier's color.
-                # clip_on=False so the caret straddles the axis line itself,
-                # reinforcing "this value is off the chart" rather than
-                # "this value is at the top of the chart".
-                ax.plot(
-                    sat_xs, sat_ys, color=color, marker="^", markersize=7,
-                    markeredgecolor="black", markeredgewidth=0.7, linestyle="none",
-                    clip_on=False, zorder=6,
-                )
-                legend_handles.setdefault(
-                    "off scale / not reported",
-                    plt.Line2D([], [], color="gray", marker="^", markersize=7,
-                               markeredgecolor="black", markeredgewidth=0.7, linestyle="none"),
-                )
+            # Unusable cells are NOT drawn. The line already breaks at them
+            # (NaN in the y-series), so the gap is visible; adding a marker at
+            # the axis ceiling on top of that put a symbol where no value was
+            # measured, and readers consistently read it as a data point near
+            # the top rather than as an absence. A broken line says "nothing
+            # here" without asserting a magnitude.
+            #
+            # The count of omitted cells is reported by the caller rather than
+            # drawn, so it can go in a caption where it can be explained -- see
+            # the retention numbers in HOW_MULTIPLIERS_ARE_MEASURED.md.
 
         ax.set_xlim(0, x_max)
         ax.set_ylim(0, y_max)
