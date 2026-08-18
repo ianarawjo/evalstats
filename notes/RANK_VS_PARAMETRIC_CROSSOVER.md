@@ -52,8 +52,9 @@ test property.
 never inverts a power curve, so it was unaffected when the sweep's per-method
 curves turned out to be built at the wrong effect size (2026-08-18, see
 `HOW_MULTIPLIERS_ARE_MEASURED.md`). The sweep had been reporting `wilcoxon` at
-0.81-0.92; on fixed curves it reads 0.97-1.00, which agrees with the ~3% gap
-measured here far better than the old figures did. Two instruments with no
+0.81-0.92; on fixed curves at 300 reps it reads 0.90-0.94 against `paired_t`'s
+1.01-1.02, a 5-10% gap that brackets the ~3% measured here far better than the
+old figures did. Two instruments with no
 shared machinery now agree, which is the whole reason for running both.
 
 ## 2. The power crossover is real and locatable
@@ -114,9 +115,9 @@ is intrinsic:
 2. the rank penalty rho_S^2 < rho_P^2 (~-0.02 under Gaussian) -- **a property of
    the judge's error shape, which reverses to +0.11 under a contaminated
    judge**;
-3. an attainment deficit of ~3% (0.954 vs 0.987, curve-free measurement;
-   the sweep itself now reads 0.97-1.00 and cannot distinguish it from zero),
-   plus an unexplained further deficit visible only in the power domain.
+3. an attainment deficit of 3-10%: 0.954 vs 0.987 by the curve-free
+   measurement, 0.90-0.94 vs 1.01-1.02 in the 300-rep sweep. Real, but far
+   smaller than the 8-19% the wrong-effect-size curves reported.
 
 The main sweep reports their sum as though all three were intrinsic. They are
 not, and (2) is the largest of them.

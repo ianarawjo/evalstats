@@ -133,28 +133,35 @@ refinement on top.
 
 **CORRECTED 2026-08-18.** The right-hand column previously read 1.03 / 1.02 /
 0.94, from per-method reference curves built at the wrong effect size -- see
-`HOW_MULTIPLIERS_ARE_MEASURED.md`. Re-derived on fixed curves (60-rep run,
-gated, gaussian arm, median measured/predicted):
+`HOW_MULTIPLIERS_ARE_MEASURED.md`. Re-derived on fixed curves at 300 reps,
+gaussian arm, median measured/predicted:
 
 | eval type | `paired_t` | `wilcoxon` | `mwu` | `ttest` | `ttest_welch` |
 |---|---|---|---|---|---|
-| continuous | 1.018 | **0.998** | 0.970 | 0.955 | 1.000 |
-| likert | 1.007 | **0.973** | 0.855 | 0.959 | 0.968 |
-| binary | 0.960 | -- | -- | -- | 0.987 |
+| continuous | 1.017 | **0.901** | 0.997 | 0.966 | 0.943 |
+| likert | 1.024 | **0.941** | 0.855 | 0.954 | 0.974 |
+| binary | 1.010 | -- | -- | -- | 0.932 |
+
+Pooled over both judge-noise families: `paired_t` 1.018-1.057, `wilcoxon`
+0.934-0.949, `mwu` 0.921-0.927, `ttest` 0.962-0.969, `ttest_welch` 0.951-0.972.
 
 **This retracts the central quantitative claim this note used to make.**
-Wilcoxon attains 0.97-1.00 of its own bound, statistically indistinguishable
-from `paired_t` at 1.01-1.02. Rank-based PPI does NOT carry a systematic
-shortfall of 8-19%; the earlier 0.81/0.92 figures were the wrong-effect-size
-artifact. The one genuinely short method is likert `mwu` at 0.855, in both
-noise families -- and `mwu` is the method whose Spearman mapping was inferred
+Wilcoxon attains 0.90-0.95 of its own bound against `paired_t`'s 1.01-1.02 --
+a gap of roughly 5-10%, not the 8-19% the wrong-effect-size curves reported,
+and not the near-parity a first 60-rep pass suggested. `mwu` on likert is the
+weakest at 0.855, and `mwu` is the method whose Spearman mapping was inferred
 rather than derived.
 
-What survives independently: `investigate_rho2_sufficiency.py` measures
-attainment WITHOUT any power curve and finds `wilcoxon` 0.954 +/- 0.022 against
-`paired_t` 0.987 +/- 0.028. So a real gap exists -- about 3%, not 8-19%.
+Two independent confirmations that the small gap is real and the large one was
+not:
 
-These are 60-rep numbers and provisional; the full sweep supersedes them.
+- `investigate_rho2_sufficiency.py` measures attainment with NO power curve
+  and finds `wilcoxon` 0.954 +/- 0.022 against `paired_t` 0.987 +/- 0.028.
+- The sweep's own curve-free `variance_multiplier` (see
+  `PPIComparisonResult.var_human_subset`) agrees with the inverted multiplier
+  to a median ratio of 0.992 wherever both are defined.
+
+
 
 ## The `rank_penalty` diagnostic
 

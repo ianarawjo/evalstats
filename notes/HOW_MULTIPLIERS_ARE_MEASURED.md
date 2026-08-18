@@ -116,7 +116,14 @@ offset:
 | binary | 0.131-0.306 | 0.15-0.35 | too weak -> overshoot, median inversion 1.621 |
 
 against a target of 1.000. After the fix all three read median exactly 1.000
-and per-method retention goes 3.1% -> 36.2% (pooled 62.7%) at 60 reps.
+and per-method retention goes 3.1% -> 36.2% (pooled 62.7%) at 60 reps, and to
+74.1% (pooled 87.5%) at 300.
+
+At 300 reps the remaining losses split 13.8% ill-conditioned (shrinks as
+1/sqrt(reps)), 11.4% clamped and 2.0% saturated. The latter two are structural
+-- np.interp cannot express an answer outside the grid, and PPI's power cannot
+be inverted once it passes the curve's ceiling -- so ~13% is a floor no rep
+count reaches past.
 
 **How it was caught, which is the reusable part:** the gate's retention did not
 improve between a 10-rep and a 60-rep run (2.9% -> 3.1%). Monte Carlo noise has
@@ -198,6 +205,29 @@ overfitting; one that removes a drift and preserves a level is doing its job.
 - `_INVERSION_DEV_TOL = 0.15` is a judgement call, not a derived threshold.
   Tightening it monotonically improves the worst offender and costs cell count;
   see the constant's docstring for the sweep that chose it.
+
+## The measurement that needs none of this
+
+The whole apparatus above -- the gate, the clamp handling, the conditioning
+analysis -- exists to rescue a multiplier obtained by inverting a power curve.
+The control-variate factor is a VARIANCE RATIO by definition, so it can be
+measured as one instead: run both arms, take Var(classical)/Var(PPI) across
+replicates, and no curve is involved at any point.
+
+That is `PPIComparisonResult.var_human_subset` / `var_ppi`, surfaced as
+`variance_multiplier`. It reports in 100% of cells against the inverted
+multiplier's ~49% at 60 reps, and where both are defined they agree to a
+median ratio of 0.992.
+
+It also settled the binary anomaly this note's gate could only flag: measured
+over 3000 replicates the true variance ratio sits at 0.92-0.95 of the
+control-variate bound at every binary tier, while the inverted multiplier
+reported 1.24-1.37x of it at the top tier. PPI never beat its bound; the
+inversion did.
+
+The inverted multiplier is still worth reporting -- it is in the unit a
+practitioner acts on, "this many labels" -- but it is the derived quantity,
+and where the two disagree the variance ratio is the one to believe.
 
 ## The transferable lesson
 
