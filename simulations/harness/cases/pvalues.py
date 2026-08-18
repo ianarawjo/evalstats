@@ -6945,6 +6945,7 @@ def save_ppi_label_efficiency_threshold_plot(
     rng = np.random.default_rng(_ANALYTIC_PLOT_SEED)
 
     fig, ax = plt.subplots(figsize=(7.2, 5.0))
+    _xs_by_et: dict = {}
     ymax = 1.0
     for et in eval_types:
         med, lo, hi = [], [], []
@@ -6957,6 +6958,8 @@ def save_ppi_label_efficiency_threshold_plot(
             med.append(float(np.median(v)))
             lo.append(float(np.percentile(b, 2.5))); hi.append(float(np.percentile(b, 97.5)))
         ymax = max(ymax, float(np.nanmax(hi)))
+        _xs_by_et[et] = ([x for x, m in zip(xs_plot, med) if np.isfinite(m)],
+                         [m for m in med if np.isfinite(m)])
         ax.plot(xs_plot, med, marker=marks.get(et, "o"), color=cols.get(et), lw=2, ms=6,
                 label=_LABEL_EFF_PANEL_TITLES.get(et, et), zorder=3)
         ax.fill_between(xs_plot, lo, hi, color=cols.get(et), alpha=0.18, zorder=2)
@@ -7000,7 +7003,15 @@ def save_ppi_label_efficiency_threshold_plot(
     _ok = np.isfinite(_px) & np.isfinite(_py)
     _px, _py = _px[_ok], _py[_ok]
     _at = (lambda x: float(np.interp(x, _px, _py))) if len(_px) >= 2 else (lambda x: float("nan"))
-    _rounds = [float(v) for v in np.round(np.arange(0.2, max(xs_plot) + 1e-9, 0.1), 2)]
+    # Round up so the grid COVERS the data: the rank panel's top tier realizes
+    # at 0.67, and stopping at the last round value below it left the axis
+    # ending at 0.6 with a visible stub of curve past the final gridline.
+    _hi_round = float(np.ceil(max(xs_plot) * 10 - 1e-9) / 10)
+    _rounds = [float(v) for v in np.round(np.arange(0.2, _hi_round + 1e-9, 0.1), 2)]
+    # Annotations may only sit where the curve was MEASURED -- np.interp clamps
+    # past the last point, so quoting a multiplier at 0.7 when the data stops at
+    # 0.67 would silently reprint the 0.67 value under a rounder label.
+    _rounds_meas = [v for v in _rounds if v <= max(xs_plot) + 1e-9]
 
     # Leftmost annotated line is always 0.20 -- the anchor the rule of thumb is
     # quoted against, whether or not the curve happens to cross 1.25x there.
@@ -7022,7 +7033,16 @@ def save_ppi_label_efficiency_threshold_plot(
     # Pay-off marker: the cheapest ROUND rho^2 whose interpolated multiplier
     # clears WORTH_IT. The reader wants a round number to aim at, not the exact
     # crossing point.
-    past = [x for x in _rounds if x > cut + 1e-9 and _at(x) >= WORTH_IT] if cut is not None else []
+    # The pay-off marker requires EVERY eval type to clear WORTH_IT there, not
+    # just the pooled median. A median can clear 1.25x while the weakest data
+    # type is still at 1.16x, which would print a threshold that does not hold
+    # for the reader who happens to have Likert data. "Worth it whatever your
+    # data looks like" is the claim a rule of thumb should make.
+    def _all_clear(x):
+        vals = [float(np.interp(x, np.array(_xs_by_et[et][0]), np.array(_xs_by_et[et][1])))
+                for et in _xs_by_et if len(_xs_by_et[et][0]) >= 2]
+        return bool(vals) and min(vals) >= WORTH_IT
+    past = [x for x in _rounds_meas if x > cut + 1e-9 and _all_clear(x)] if cut is not None else []
     if past:
         g = min(past)
         ax.axvline(g, color="k", ls=":", lw=1.2, zorder=1)
@@ -7032,7 +7052,7 @@ def save_ppi_label_efficiency_threshold_plot(
         # Top of the ladder, for the "and if my judge is good?" reader. Only
         # when it is a distinct round value from the pay-off marker, and drawn
         # to the RIGHT of its line -- hence the right margin on xlim below.
-        top = max(_rounds)
+        top = max(_rounds_meas)
         if top > g + 1e-9:
             ax.axvline(top, color="k", ls=":", lw=1.2, zorder=1)
             # Placed relative to the BAND ceiling, not as a fraction of ymax.
@@ -7040,7 +7060,18 @@ def save_ppi_label_efficiency_threshold_plot(
             # near 2.8, the pooled one near 4.6), and a fixed fraction put this
             # label inside the shaded band on the shorter ones, directly on top
             # of the band's own caption.
-            ax.text(top + 0.012, WORTH_IT + 0.20 * (ymax - WORTH_IT),
+            # Above the HIGHEST curve at this x, not at a fixed height: the
+            # curves fan out towards the strong-judge end, so any fixed
+            # placement eventually runs through one of them.
+            # Max over [top, right edge], not just AT top: the label extends
+            # rightwards and the curves keep climbing under it, so clearing
+            # them only at its anchor still let the steepest one cross the text.
+            _scan = np.linspace(top, max(xs_plot), 24)
+            _here = [float(np.max(np.interp(_scan, np.array(_xs_by_et[et][0]),
+                                            np.array(_xs_by_et[et][1]))))
+                     for et in _xs_by_et if len(_xs_by_et[et][0]) >= 2]
+            _y_top = max(_here) + 0.06 * (ymax - WORTH_IT) if _here else WORTH_IT
+            ax.text(top + 0.012, min(_y_top, ymax * 0.97),
                     f"ρ² ≈ {top:g}: substantial\nsavings ({_at(top):.2f}×)",
                     fontsize=9, va="center", color="#333")
     ax.set_xlabel(
