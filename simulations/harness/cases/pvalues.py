@@ -5967,6 +5967,41 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
 
 
 _LABEL_EFF_ALIGNMENT_TARGETS = (0.70, 0.60, 0.50, 0.40, 0.30, 0.20)
+_LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE = {
+    "binary":     (0.68, 0.60, 0.52, 0.43, 0.35, 0.26),
+    "continuous": (0.64, 0.54, 0.43, 0.33, 0.22, 0.12),
+    "likert":     (0.96, 0.84, 0.72, 0.61, 0.49, 0.37),
+}
+"""Per-eval-type judge-quality ladders, replacing one shared set of targets.
+
+The targets are SCORE-LEVEL Pearson rho^2, but the quantity a practitioner
+looks up depends on their design, and the map from one to the other is
+eval-type specific. Fitted on the 300-rep run:
+
+    binary      paired rho^2 = 1.185 * tier - 0.108
+    continuous  paired rho^2 = 0.965 * tier + 0.081
+    likert      paired rho^2 = 0.847 * tier - 0.115
+
+A shared 0.20-0.70 ladder therefore covers wildly different ranges of the axis
+the lookup figures are actually drawn on: likert's paired rho^2 only reached
+0.505 at the top tier while continuous's never fell below 0.251. The
+within-subjects likert panel simply had no data above 0.53, and no continuous
+panel had any below 0.25.
+
+These ladders are each eval type's own 0.20-0.70 span on the PAIRED axis,
+inverted through the fits above. Same six tiers per eval type, so the sweep
+costs exactly what it did.
+
+Likert needs a much cleaner judge (up to 0.96 score-level) to reach the same
+paired rho^2, because differencing two discretised Likert scores destroys more
+of the judge's signal than differencing two continuous ones. All six ends were
+checked as reachable by _calibrate_noise_for_alignment before being adopted --
+likert 0.96 calibrates at llm_noise 0.103, continuous 0.12 at 0.325.
+
+The fits are linear extrapolations from a 0.20-0.70 tier range, so the
+achieved paired rho^2 at the extremes is an estimate. Check the realized
+values in the calibration CSV after the next run rather than assuming the span
+came out exactly 0.20-0.70."""
 """Round, reader-legible judge-quality targets the label-efficiency
 check's noise axis is calibrated to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
@@ -6186,10 +6221,11 @@ def run_ppi_label_efficiency_check(
     calib_info: dict[tuple[str, str], dict[float, tuple[float, float, dict]]] = {}
     for et, baseline in cont_likert_baselines.items():
         metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        _targets = _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE.get(et, _LABEL_EFF_ALIGNMENT_TARGETS)
         for fam, nf, fam_kw in PPI_LABEL_EFF_NOISE_FAMILIES:
             fam_baseline = {**baseline, "noise_family": nf, **fam_kw}
             noises, info = [], {}
-            for target in _LABEL_EFF_ALIGNMENT_TARGETS:
+            for target in _targets:
                 noise, achieved, panel = _calibrate_noise_for_alignment(
                     et, target, metric_name, fam_baseline, n_mc=align_n_mc, seed=seed)
                 noises.append(noise)
@@ -6207,7 +6243,8 @@ def run_ppi_label_efficiency_check(
     for fam, nf, fam_kw in [f for f in PPI_LABEL_EFF_NOISE_FAMILIES if f[1] == "gaussian"]:
         fam_baseline = {**binary_baseline, "noise_family": nf, **fam_kw}
         noises, info = [], {}
-        for target in _LABEL_EFF_ALIGNMENT_TARGETS:
+        for target in _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE.get(
+                "binary", _LABEL_EFF_ALIGNMENT_TARGETS):
             noise, achieved, panel = _calibrate_noise_for_alignment(
                 "binary", target, metric_name_bin, fam_baseline, n_mc=align_n_mc, seed=seed,
             )
