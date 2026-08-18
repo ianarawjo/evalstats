@@ -4429,6 +4429,26 @@ class PPIComparisonResult:
     rejects_llm_impute: int = 0
     rejects_ppi: int = 0
     n_failed: int = 0
+    var_human_subset: float = float("nan")
+    """Variance of the human-subset arm's POINT ESTIMATE across replicates.
+
+    With var_ppi this yields a label-efficiency multiplier needing no power
+    curve: the control-variate factor IS a variance ratio, and
+    Var(classical)/Var(PPI) measures it directly -- no inversion, so no flat
+    region, no clamping, no conditioning gate, and every cell reports.
+
+    That matters because the power-curve route demonstrably breaks where the
+    curve flattens. On binary's top tier (a 2% flip-rate judge) the inverted
+    multiplier ran 1.24-1.37x the control-variate bound -- impossible -- while
+    the direct variance ratio came in at 0.94x of it, i.e. sound. The excess
+    was entirely inversion error, not the estimator.
+
+    NaN when the arm produced too few finite estimates to take a variance."""
+    var_ppi: float = float("nan")
+    """Variance of the PPI estimator's point estimate. See var_human_subset."""
+    n_est: int = 0
+    """Replicates behind var_*: both arms must have produced a finite estimate
+    in the SAME replicate, so this can sit below n_reps."""
 
 
 def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
@@ -4586,7 +4606,28 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
     return float(scipy_stats.wilcoxon(a, b, alternative="two-sided").pvalue)
 
 
-def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int, power_tune: bool = True) -> float:
+def _classical_point_estimate(a: np.ndarray, b: np.ndarray, method: str, structure: str) -> float:
+    """The classical arm's POINT ESTIMATE of the same estimand the PPI arm
+    targets, so their variances across replicates are a ratio of like for like.
+
+    Mirrors _classical_pvalue's dispatch: mean difference for the t-tests,
+    P(X>Y) midrank for Mann-Whitney, Walsh-average theta for Wilcoxon -- the
+    functionals evalstats.ppi.correct is asked to correct in each case.
+
+    Exists for the variance-route multiplier (see
+    PPIComparisonResult.var_human_subset), which sidesteps the power-curve
+    inversion entirely."""
+    if structure == "group":
+        if method in (TTEST.name, TTEST_WELCH.name):
+            return float(np.mean(a) - np.mean(b))
+        return float(_p_x_gt_y_midrank(a, b) - 0.5)
+    if method == PAIRED_T.name:
+        return float(np.mean(np.asarray(a) - np.asarray(b)))
+    from evalstats.ppi import paired_walsh_midrank_theta
+    return float(paired_walsh_midrank_theta(np.asarray(a) - np.asarray(b)))
+
+
+def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int, power_tune: bool = True, return_result: bool = False):
     """The SAME PPI-corrected call _run_ppi_cell uses for this method
     (_ppi_two_sample_t_interval for ttest/ttest_welch, _ppi_two_sample /
     _ppi_two_sample_midrank_corrected for the other "group" methods,
@@ -4607,20 +4648,26 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
             # differs between them (equal_var=True vs False). Closed-form
             # construction (see the matching _run_ppi_cell TTEST/
             # TTEST_WELCH blocks for why -- Addendum 29/31/32).
-            return _ppi_two_sample_t_interval(a, b, a_lab, b_lab, _ALPHA, power_tune=power_tune).p_value
+            _r = _ppi_two_sample_t_interval(a, b, a_lab, b_lab, _ALPHA, power_tune=power_tune)
+            return _r if return_result else _r.p_value
         if method == MWU_MNAR_EXPERIMENTAL.name:
-            return _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
+            _r = _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
+            return _r if return_result else _r.p_value
         if method == MWU_MNAR_POOLED.name:
-            return _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
+            _r = _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
+            return _r if return_result else _r.p_value
         if method == MWU_ADAPTIVE.name:
-            return _ppi_two_sample_adaptive(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
+            _r = _ppi_two_sample_adaptive(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
+            return _r if return_result else _r.p_value
         if method == MWU_RIDGE.name:
-            return _ppi_two_sample_ridge_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed).p_value
+            _r = _ppi_two_sample_ridge_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
+            return _r if return_result else _r.p_value
         # MWU (global rectifier): what _COMPARISON_METHODS actually uses --
         # see that constant's docstring for why it's the default over
         # mwu_mnar_experimental's local rectifier.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
-        return _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune).p_value
+        _r = _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune)
+        return _r if return_result else _r.p_value
     # paired_t: np.mean. wilcoxon: paired_walsh_midrank_theta (evalstats.ppi --
     # a Hodges-Lehmann Walsh-average midrank-sign statistic), NOT np.median --
     # see that function's docstring for why the median of a paired difference
@@ -4629,7 +4676,8 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
     # simpler per-item sign proportion (tried first) also isn't safe (severely
     # inflated Type-I error at small n_lab against real, heavily-tied data).
     statistic = np.mean if method == PAIRED_T.name else paired_walsh_midrank_theta
-    return _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic, power_tune=power_tune).p_value
+    _r = _ppi_paired_arrays(a, b, a_lab, b_lab, statistic, _ALPHA, n_boot, seed, rectifier_func=statistic, power_tune=power_tune)
+    return _r if return_result else _r.p_value
 
 
 def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:
@@ -4719,6 +4767,8 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
     count IS the shared count."""
     rng = np.random.default_rng(seed)
     rejects = {"all_human": 0, "human_subset": 0, "llm_only": 0, "llm_impute": 0, "ppi": 0}
+    _est_hs: list = []   # human-subset point estimates, for the variance route
+    _est_ppi: list = []  # PPI point estimates, paired with _est_hs by replicate
     n_failed = 0
     n_lab_realized = 0
     structure = _COMPARISON_METHOD_STRUCTURE[method]
@@ -4771,10 +4821,14 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
             except Exception:
                 pass
 
+            _e_hs = float("nan")
             if subset_ok:
                 try:
                     p_human_subset = classical(truth_subset_groups)
                     rejects["human_subset"] += int(p_human_subset < _ALPHA)
+                    if not is_omnibus:
+                        _e_hs = _classical_point_estimate(
+                            truth_subset_groups[0], truth_subset_groups[1], method, structure)
                 except Exception:
                     pass
 
@@ -4784,11 +4838,19 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
                     p_ppi = _ppi_comparison_pvalue_omnibus(llm_groups, lab_groups, method, n_boot, ppi_seed)
                     rejects["ppi"] += int(p_ppi is not None and p_ppi < _ALPHA)
                 else:
-                    p_ppi = _ppi_comparison_pvalue(
+                    _res = _ppi_comparison_pvalue(
                         llm_groups[0], llm_groups[1], lab_groups[0], lab_groups[1], method, structure, n_boot, ppi_seed,
-                        power_tune=power_tune,
+                        power_tune=power_tune, return_result=True,
                     )
+                    p_ppi = float(_res.p_value)
                     rejects["ppi"] += int(p_ppi < _ALPHA)
+                    # Pair the two arms by REPLICATE: a variance ratio built
+                    # from two differently-filtered sets of replicates is not a
+                    # ratio of anything.
+                    _e_ppi = float(getattr(_res, "estimate", float("nan")))
+                    if np.isfinite(_e_hs) and np.isfinite(_e_ppi):
+                        _est_hs.append(_e_hs)
+                        _est_ppi.append(_e_ppi)
             except Exception:
                 n_failed += 1
 
@@ -4798,6 +4860,9 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
         rejects_all_human=rejects["all_human"], rejects_human_subset=rejects["human_subset"],
         rejects_llm_only=rejects["llm_only"], rejects_llm_impute=rejects["llm_impute"],
         rejects_ppi=rejects["ppi"], n_failed=n_failed,
+        var_human_subset=float(np.var(_est_hs)) if len(_est_hs) > 2 else float("nan"),
+        var_ppi=float(np.var(_est_ppi)) if len(_est_ppi) > 2 else float("nan"),
+        n_est=len(_est_ppi),
     )
 
 
@@ -5445,6 +5510,27 @@ class LabelEfficiencyPoint:
     control-variate bound, which is impossible."""
 
     inversion_clamped: bool = False
+    variance_multiplier: float = float("nan")
+    """Label-efficiency multiplier measured as Var(classical)/Var(PPI) across
+    replicates, with NO power curve involved.
+
+    The control-variate factor is a variance ratio by definition, so this
+    measures it directly instead of inverting a power curve to recover it. It
+    has no flat-curve regime, no clamping and no conditioning gate -- it
+    reports in every cell, including the ~26% the inverted multiplier discards.
+
+    Use it to CHECK `equiv_n_lab / n_lab`, not to replace it: the inverted
+    multiplier is in the unit a practitioner acts on ("this many labels"),
+    while this is the quantity the theory actually bounds. Where they disagree,
+    this is the trustworthy one -- on binary's top tier the inverted multiplier
+    ran 1.24-1.37x the control-variate bound, which is impossible, while this
+    read 0.94x of it. Validated against the bound directly: 0.996 of it for a
+    near-perfect judge (48.58x measured vs 48.80x predicted) and 0.944 at a
+    calibrated mid tier.
+
+    NaN on pooled-across-method rows: per-method estimands are on different
+    scales (a mean difference and a Walsh theta are not commensurable), so
+    their variances cannot be averaged -- only their ratios can."""
     noise_family: str = "gaussian"
     """Judge-error SHAPE this cell was simulated under -- "gaussian" or
     "contaminated" (scenarios.synthetic.PPI_LABEL_EFF_NOISE_FAMILIES).
@@ -6266,6 +6352,9 @@ def run_ppi_label_efficiency_check(
                                                else _ppi_predicted_savings(_r2, 0, 1)),
                     inversion_ratio=inv_ratio, inversion_clamped=inv_clamped,
                     noise_family=noise_family,
+                    variance_multiplier=(r.var_human_subset / r.var_ppi
+                                         if getattr(r, "var_ppi", 0)
+                                         and np.isfinite(r.var_ppi) else float("nan")),
                 ))
     return results, all_raw, calib_rows
 
@@ -6625,7 +6714,8 @@ def save_results_artifacts_ppi_label_efficiency_raw(
             # sweep arm without having to re-derive it from effect_size,
             # whose absolute value differs per eval type.
             "name", "tag", "eval_type", "noise_family", "effect_frac", "method", "n", "n_reps",
-            "effect_size", "label_frac", "n_lab",
+            "effect_size", "label_frac", "n_lab", "var_human_subset", "var_ppi",
+            "n_est", "variance_multiplier",
             "rate_all_human", "rate_human_subset", "rate_llm_only", "rate_llm_impute", "rate_ppi", "n_failed",
         ])
         for r in raw:
@@ -6638,6 +6728,9 @@ def save_results_artifacts_ppi_label_efficiency_raw(
                 r.name, r.tag, r.eval_type, (_m_fam.group(1) if _m_fam else "gaussian"),
                 (_m_es.group(1) if _m_es else ""),
                 r.method, r.n, r.n_reps, repr(float(r.effect_size)), f"{r.label_frac:.4f}", r.n_lab,
+                repr(float(r.var_human_subset)), repr(float(r.var_ppi)), r.n_est,
+                (repr(float(r.var_human_subset / r.var_ppi))
+                 if getattr(r, "var_ppi", 0) and np.isfinite(r.var_ppi) else ""),
                 f"{r.rejects_all_human / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_human_subset / r.n_reps:.8f}" if r.n_reps else "",
                 f"{r.rejects_llm_only / r.n_reps:.8f}" if r.n_reps else "",
@@ -7158,7 +7251,8 @@ def save_ppi_label_efficiency_per_method_table(
                          "rho2_spearman", "rank_penalty", "n_lab", "effect_frac",
                          "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
                          "multiplier_lo", "multiplier_hi", "saturated", "predicted_mult",
-                         "inversion_ratio", "inversion_clamped", "well_conditioned"])
+                         "inversion_ratio", "inversion_clamped", "well_conditioned",
+                         "variance_multiplier"])
         for key, pts in sorted(per_method_points.items()):
             eval_type, noise_family, method = key
             for r in sorted(pts, key=lambda q: (q.alignment_target, q.n_lab, q.effect_frac)):
@@ -7179,6 +7273,7 @@ def save_ppi_label_efficiency_per_method_table(
                     f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
                     f"{r.predicted_mult:.4f}",
                     f"{r.inversion_ratio:.4f}", r.inversion_clamped, r.well_conditioned,
+                    f"{r.variance_multiplier:.4f}",
                 ])
     print(f"Saved results: {path}")
     return str(path)
@@ -7375,7 +7470,10 @@ def save_ppi_label_efficiency_plots_per_method(
                 rho2=_mr, predicted_mult=_ppi_predicted_savings(_mr, r.n_lab, r.n),
                 predicted_mult_asymptotic=_ppi_predicted_savings(_mr, 0, 1),
                 inversion_ratio=_ir, inversion_clamped=_ic,
-                noise_family=noise_family))
+                noise_family=noise_family,
+                variance_multiplier=(r.var_human_subset / r.var_ppi
+                                     if getattr(r, "var_ppi", 0)
+                                     and np.isfinite(r.var_ppi) else float("nan"))))
         if not pts:
             continue
         collected[(eval_type, noise_family, method)] = pts
