@@ -6887,9 +6887,11 @@ def save_ppi_label_efficiency_threshold_plot(
     agreement, with the practically-useless region shaded.
 
     ONE TEST FAMILY PER FIGURE, and each plotted against ITS OWN correlation.
-    `corr_kind` is "pearson" (mean-based tests) or "spearman" (rank-based),
-    matching _METHOD_CORR_KIND; callers pass per-method points already
-    filtered to one kind.
+    `corr_kind` is "pearson" (mean-based tests), "spearman" (rank-based), or
+    "mixed" -- every method pooled, each contributing its OWN correlation, so
+    the x-axis is "whichever rho^2 governs your test". The per-family figures
+    are the honest ones to act on; "mixed" is the single-number summary for a
+    reader who has not yet chosen a test.
 
     This split is not cosmetic. The x-axis is the number a practitioner
     measures on a pilot set and looks up, so it has to be the number that
@@ -7030,22 +7032,28 @@ def save_ppi_label_efficiency_threshold_plot(
             ax.text(_x_of[top] + 0.012, ymax * 0.42,
                     f"ρ² ≈ {_x_of[top]:.2f}: substantial\nsavings ({pooled[top]:.2f}×)",
                     fontsize=9, va="center", color="#333")
-    ax.set_xlabel("judge–human agreement  ρ²  (squared Pearson correlation)"
-                  if corr_kind == "pearson" else
-                  "judge–human agreement  ρ²  (squared Spearman correlation, on paired differences)")
+    ax.set_xlabel(
+        "judge–human agreement  ρ²  (squared Pearson correlation)" if corr_kind == "pearson"
+        else "judge–human agreement  ρ²  (squared Spearman correlation, on paired differences)"
+        if corr_kind == "spearman"
+        else "judge–human agreement  ρ²  (Pearson for mean tests, Spearman for rank tests)")
     ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
     ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
-    # Ticks at the MEASURED rho^2 of each tier, not the tier label: the tiers
-    # are round only in score-level Pearson, and this axis may be Spearman.
-    ax.set_xticks([round(x, 2) for x in xs_plot])
+    # Ticks on ROUND values, not on the measured tier positions. The data sits
+    # where it was measured (which is why the markers are off-round), but a
+    # reader looking up "my judge scores 0.4" needs 0.4 to be findable on the
+    # axis. Gridlines at the same places make that lookup a straight read down.
+    _lo_tick = 0.2
+    _ticks = np.round(np.arange(_lo_tick, max(xs_plot) + 0.1001, 0.1), 2)
+    ax.set_xticks(_ticks)
+    for _t in _ticks:
+        ax.axvline(_t, color="#bbb", lw=0.7, ls="-", alpha=0.55, zorder=0)
     # Right margin so the top-tier annotation has somewhere to sit that is not
     # on top of the strong-judge CI bands.
-    ax.set_xlim(min(xs_plot) - 0.035, max(xs_plot) + 0.135)
+    ax.set_xlim(min(min(xs_plot), _lo_tick) - 0.035, max(xs_plot) + 0.135)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=9, loc="upper left")
-    fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and "
-             "the $N_{lab}$ grid.\nMarkers sit at each judge tier's REALIZED ρ² for this test family,\nnot at the round value it was calibrated to; multipliers are "
-             "measured, not reference values.", ha="center", fontsize=8.5)
+    fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and the $N_{lab}$ grid.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -12301,10 +12309,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 # into its y-axis pointed Wilcoxon users at the
                                 # wrong statistic.
                                 for _kind, _lbl in (("pearson", "parametric"),
-                                                    ("spearman", "rank")):
+                                                    ("spearman", "rank"),
+                                                    ("mixed", "pooled")):
                                     _sub = [q for k, v in pm_points.items()
                                             for q in v
-                                            if _METHOD_CORR_KIND.get(k[2], (None, "pearson"))[1] == _kind]
+                                            if _kind == "mixed"
+                                            or _METHOD_CORR_KIND.get(k[2], (None, "pearson"))[1] == _kind]
                                     if not _sub:
                                         continue
                                     try:

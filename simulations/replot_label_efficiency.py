@@ -151,9 +151,11 @@ def main() -> None:
     if pm_points:
         written.append(save_ppi_label_efficiency_per_method_table(
             pm_points, out_dir=str(out), run_stem="labeleff"))
-        for kind, lbl in (("pearson", "parametric"), ("spearman", "rank")):
+        for kind, lbl in (("pearson", "parametric"), ("spearman", "rank"),
+                          ("mixed", "pooled")):
             sub = [q for k, v in pm_points.items() for q in v
-                   if _METHOD_CORR_KIND.get(k[2], (None, "pearson"))[1] == kind]
+                   if kind == "mixed"
+                   or _METHOD_CORR_KIND.get(k[2], (None, "pearson"))[1] == kind]
             if not sub:
                 continue
             try:
