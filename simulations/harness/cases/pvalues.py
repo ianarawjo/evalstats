@@ -6934,12 +6934,21 @@ def save_ppi_label_efficiency_threshold_plot(
     # matches the main-text figure's convention (see
     # save_ppi_label_efficiency_plots): the reported number is expected over
     # judge-error shapes rather than conditioned on one.
+    # PER EVAL TYPE, not pooled. The same calibration tier realizes as very
+    # different rho^2 across eval types -- at tier 0.50 the parametric figure
+    # has binary at 0.476, continuous at 0.518 and likert at 0.379, a spread of
+    # 0.139. Drawing all three at the pooled mean put likert's curve ~0.08 to
+    # the RIGHT of where a likert user would measure their own judge, which on
+    # a look-up figure is the error that actually misleads someone.
     _x_of = {}
     for t in tiers:
-        v = [r.rho2 for r in rows if r.alignment_target == t and np.isfinite(r.rho2)]
-        _x_of[t] = float(np.mean(v)) if v else t
-    tiers = [t for t in tiers if np.isfinite(_x_of[t])]
-    xs_plot = [_x_of[t] for t in tiers]
+        for et in eval_types:
+            v = [r.rho2 for r in rows
+                 if r.alignment_target == t and r.eval_type == et and np.isfinite(r.rho2)]
+            _x_of[(t, et)] = float(np.mean(v)) if v else float("nan")
+    xs_plot = [v for v in _x_of.values() if np.isfinite(v)]
+    if not xs_plot:
+        raise ValueError("No finite rho^2 to place points on.")
     marks = {"binary": "o", "continuous": "s", "likert": "^"}
     cols = {"binary": "#2166ac", "continuous": "#1a9850", "likert": "#b2182b"}
     rng = np.random.default_rng(_ANALYTIC_PLOT_SEED)
@@ -6958,11 +6967,15 @@ def save_ppi_label_efficiency_threshold_plot(
             med.append(float(np.median(v)))
             lo.append(float(np.percentile(b, 2.5))); hi.append(float(np.percentile(b, 97.5)))
         ymax = max(ymax, float(np.nanmax(hi)))
-        _xs_by_et[et] = ([x for x, m in zip(xs_plot, med) if np.isfinite(m)],
-                         [m for m in med if np.isfinite(m)])
-        ax.plot(xs_plot, med, marker=marks.get(et, "o"), color=cols.get(et), lw=2, ms=6,
+        _xe = [_x_of[(t, et)] for t in tiers]
+        _keep = [i for i, (x, m) in enumerate(zip(_xe, med)) if np.isfinite(x) and np.isfinite(m)]
+        _xk = [_xe[i] for i in _keep]
+        _mk = [med[i] for i in _keep]
+        _xs_by_et[et] = (_xk, _mk)
+        ax.plot(_xk, _mk, marker=marks.get(et, "o"), color=cols.get(et), lw=2, ms=6,
                 label=_LABEL_EFF_PANEL_TITLES.get(et, et), zorder=3)
-        ax.fill_between(xs_plot, lo, hi, color=cols.get(et), alpha=0.18, zorder=2)
+        ax.fill_between(_xk, [lo[i] for i in _keep], [hi[i] for i in _keep],
+                        color=cols.get(et), alpha=0.18, zorder=2)
 
     ax.axhspan(0.95, 1.25, color="grey", alpha=0.16, zorder=0)
     # Label the shaded band in its EMPTY right half: every eval type has
@@ -6998,11 +7011,16 @@ def save_ppi_label_efficiency_threshold_plot(
     # its own precision. Snapping the LINES to round values while reading the
     # multiplier off the curve keeps the number quotable and still measured --
     # what moves is where we sample the curve, not what the curve says.
-    _px = np.array(xs_plot, dtype=float)
-    _py = np.array([pooled.get(t, np.nan) for t in tiers], dtype=float)
-    _ok = np.isfinite(_px) & np.isfinite(_py)
-    _px, _py = _px[_ok], _py[_ok]
-    _at = (lambda x: float(np.interp(x, _px, _py))) if len(_px) >= 2 else (lambda x: float("nan"))
+    def _at(x):
+        """Median across eval types of their own curves at rho^2 = x.
+
+        The quoted multiplier is the typical one; the MARKER position is set by
+        _all_clear, i.e. the worst eval type. Those answer different questions
+        -- "what will I get" versus "is it worth it for everyone" -- and the
+        figure states both."""
+        v = [float(np.interp(x, np.array(_xs_by_et[et][0]), np.array(_xs_by_et[et][1])))
+             for et in _xs_by_et if len(_xs_by_et[et][0]) >= 2]
+        return float(np.median(v)) if v else float("nan")
     # Round up so the grid COVERS the data: the rank panel's top tier realizes
     # at 0.67, and stopping at the last round value below it left the axis
     # ending at 0.6 with a visible stub of curve past the final gridline.
@@ -7019,16 +7037,21 @@ def save_ppi_label_efficiency_threshold_plot(
     if cut is not None:
         ax.axvline(cut, color="k", ls=":", lw=1.4, zorder=1)
         txt = f"ρ² < {cut:g}: judges not\nworth the trouble\n({_at(cut):.2f}× at {cut:g})"
-        # Which SIDE the label sits on: normally left, under the curve, where
-        # the region is empty by construction. At the axis's left edge there is
-        # no room there, so it goes right instead -- high enough to clear the
-        # upper-left legend.
-        if cut <= min(xs_plot) + 0.02:
-            ax.text(cut + 0.012, WORTH_IT + 0.42 * (ymax - WORTH_IT), txt,
-                    fontsize=9, va="center", ha="left", color="#333")
-        else:
-            ax.text(cut - 0.012, WORTH_IT + 0.28 * (ymax - WORTH_IT), txt,
-                    fontsize=9, va="center", ha="right", color="#333")
+        # Always to the RIGHT of the line, above the curves in its own x-span.
+        #
+        # The old rule chose left-or-right by comparing `cut` to min(xs_plot),
+        # which broke once `cut` was pinned to 0.20: a panel whose lowest
+        # measured point sits below 0.20 (parametric starts at 0.171) failed the
+        # "near the left edge" test and got pushed LEFT into a gap ~0.06 wide,
+        # where the text ran off the axis and through the y-label. There is
+        # never meaningful room left of 0.20, because the axis starts there.
+        _scan_c = np.linspace(cut, min(cut + 0.25, max(xs_plot)), 24)
+        _under = [float(np.max(np.interp(_scan_c, np.array(_xs_by_et[et][0]),
+                                         np.array(_xs_by_et[et][1]))))
+                  for et in _xs_by_et if len(_xs_by_et[et][0]) >= 2]
+        _y_cut = (max(_under) + 0.08 * (ymax - WORTH_IT)) if _under else WORTH_IT
+        ax.text(cut + 0.012, min(_y_cut, ymax * 0.97), txt,
+                fontsize=9, va="center", ha="left", color="#333")
 
     # Pay-off marker: the cheapest ROUND rho^2 whose interpolated multiplier
     # clears WORTH_IT. The reader wants a round number to aim at, not the exact
