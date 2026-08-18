@@ -8223,9 +8223,9 @@ metric-incompatible ones a reader had to mentally re-split by panel.
                 pline, = ax.plot(
                     [q[0] for q in pred], [q[1] for q in pred],
                     color=color, linestyle=(0, (1, 1.8)), linewidth=1.2, alpha=0.8, zorder=3,
-                    label="Predicted from rho^2",
+                    label="Predicted from ρ²",
                 )
-                legend_handles.setdefault("Predicted from rho^2", pline)
+                legend_handles.setdefault("Predicted from ρ²", pline)
 
             # y_max explicitly, NOT ys: ys now carries NaN at every unusable
             # cell so the connecting line breaks there (see above), and reading
