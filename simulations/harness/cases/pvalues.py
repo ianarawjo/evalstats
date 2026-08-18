@@ -5695,9 +5695,43 @@ def _smooth_monotone_power_curve(n_grid: np.ndarray, power_grid: np.ndarray) -> 
     return fitted + np.arange(len(fitted), dtype=float) * 1e-9
 
 
-_INVERSION_DEV_TOL = 0.15
+_INVERSION_DEV_TOL = 0.25
 """How far a cell's human-subset arm may invert from its own n_lab and still
 be reported (see LabelEfficiencyPoint.inversion_ratio/well_conditioned).
+
+**RE-TUNED 0.15 -> 0.25 on 2026-08-18.** The original 0.15 was calibrated
+against per-method curves built at the WRONG effect size (see
+"The root cause" section of this note's companion,
+HOW_MULTIPLIERS_ARE_MEASURED.md, and commit a57906a). Those curves made the
+inversion systematically biased -- medians of 0.375 / 1.621 / 2.881 by eval
+type against a target of 1.000 -- so a tight gate was the only thing keeping
+the numbers sane, and the tolerance was in effect compensating for a bug.
+
+With correct curves the inversion is unbiased (median exactly 1.000 for all
+three eval types), so the gate now only has variance to remove, and it was
+removing far more data than necessary. Swept on the fixed 60-rep run,
+attainment is flat while retention nearly doubles:
+
+    tol    kept    paired_t  wilcoxon   mwu   ttest_welch
+    0.15   34.6%      0.992     0.976  0.926        0.991
+    0.20   42.7%      0.999     0.980  0.919        0.975
+    0.25   50.0%      1.008     0.975  0.928        0.975
+    0.30   55.1%      1.010     0.973  0.927        0.974
+    0.40   62.7%      1.021     0.966  0.915        0.974
+    0.60   70.6%      1.028     0.972  0.900        0.967
+
+0.25 keeps 50% against 0.15's 34.6% and moves no method's attainment by more
+than 0.016. The upper limit is set by `paired_t`: past 0.30 it drifts above
+1.000, which is impossible -- no estimator beats its own control-variate
+bound -- so that drift is contamination from ill-conditioned cells leaking
+back in, and it is the signal that the gate has been loosened too far.
+
+At higher rep counts the deviation shrinks as 1/sqrt(reps), so this same
+tolerance retains more: the 60-rep deviations scaled to 300 reps put expected
+retention near 70%.
+
+The ORIGINAL calibration note, retained because the method is still the right
+one even though the numbers it produced were measured on broken curves:
 
 Chosen from the 300-rep sweep by sweeping the gate and watching where each
 method's measured/predicted ratio settles. Tightening it monotonically pulls
@@ -7291,82 +7325,112 @@ def save_ppi_rho2_robustness_plots(
 
 
 def save_ppi_label_efficiency_noise_family_plot(
-    results: list[LabelEfficiencyPoint], out_path: str,
+    per_method_points: dict, out_path: str,
 ) -> str:
     """The robustness figure: does the rule of thumb survive a judge whose
     errors are NOT Gaussian?
 
-    Every other label-efficiency figure holds judge-error SHAPE fixed at
-    gaussian and varies how much the judge errs. This one puts the two shapes
-    side by side at matched judge-quality tiers, per method, and asks whether
-    the measured multiplier still tracks what rho^2 predicts.
+    Laid out as eval_type (columns) x TEST FAMILY (rows), because the pooled
+    view actively hides the result. Pooled across methods, contamination looks
+    like it helps continuous (+0.03..+0.35) and hurts likert (-0.03..-0.24) --
+    opposite directions, which reads as incoherent. Split by family the same
+    effect appears in both:
 
-    What to look for, per panel:
-      * mean-based methods (ttest*/paired_t) should be INSENSITIVE to shape --
-        their influence function is linear in the values, so Pearson is the
-        whole story and the two arms should overlay;
-      * rank-based methods (wilcoxon/mwu) should IMPROVE under contamination
-        relative to gaussian, because Spearman degrades more slowly than
-        Pearson when a judge's errors concentrate on a few items.
+        continuous   mean tests -0.07   rank tests +0.32
+        likert       mean tests -0.25   rank tests -0.04
 
-    A reader who only takes one thing from this figure should take: the
-    gaussian-only sweep reports the rank tests' worst case. Points are pooled
-    across the effect-size arms and drop saturated/ill-conditioned cells, the
-    same way save_ppi_label_efficiency_plot does."""
+    i.e. contamination costs mean-based tests and spares rank-based ones
+    everywhere; likert's overall drop is a discretisation cost (clipping and
+    ties destroy information for every test) sitting on top of that. Averaging
+    the two families together cancels the signal and leaves only a net sign
+    that flips between eval types.
+
+    Rows are keyed off _METHOD_CORR_KIND's correlation kind -- "pearson"
+    methods use the values directly and so are the parametric row, "spearman"
+    methods are functions of ranks -- rather than a hardcoded name list, so a
+    newly added method lands in the right row automatically.
+
+    Takes save_ppi_label_efficiency_plots_per_method's `collected` mapping,
+    keyed (eval_type, noise_family, method), NOT the pooled
+    LabelEfficiencyPoint list: the pooled points have already averaged the
+    method axis away, which is exactly the axis this figure needs."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     from collections import defaultdict
 
-    usable = [r for r in results if not r.saturated and getattr(r, "well_conditioned", True)]
-    if not usable:
+    rows_spec = [("parametric (t-tests)", "pearson"), ("non-parametric (rank tests)", "spearman")]
+    pts = defaultdict(list)
+    for (et, fam, method), vals in per_method_points.items():
+        kind = _METHOD_CORR_KIND.get(method, (None, "pearson"))[1]
+        for r in vals:
+            if not r.saturated and getattr(r, "well_conditioned", True) and r.n_lab:
+                pts[(et, kind, fam)].append(r)
+    if not pts:
         raise ValueError("save_ppi_label_efficiency_noise_family_plot: no usable points")
-    fams = sorted({r.noise_family for r in usable})
+    ets = sorted({k[0] for k in pts}, key=lambda e: ("binary", "continuous", "likert").index(e)
+                 if e in ("binary", "continuous", "likert") else 99)
+    fams = sorted({k[2] for k in pts})
     if len(fams) < 2:
-        raise ValueError(
-            f"save_ppi_label_efficiency_noise_family_plot: needs >=2 noise families, saw {fams}")
+        raise ValueError(f"needs >=2 noise families, saw {fams}")
 
-    ets = sorted({r.eval_type for r in usable})
-    fig, axes = plt.subplots(1, len(ets), figsize=(5.4 * len(ets), 4.9), squeeze=False)
+    fig, axes = plt.subplots(len(rows_spec), len(ets), figsize=(4.6 * len(ets), 7.4),
+                             squeeze=False, sharex=True)
     style = {"gaussian": ("o-", "#3b76af"), "contaminated": ("s--", "#c0392b")}
-    for ax, et in zip(axes[0], ets):
-        for fam in fams:
-            agg = defaultdict(list)
-            for r in usable:
-                if r.eval_type == et and r.noise_family == fam and r.n_lab:
+    for ri, (row_label, kind) in enumerate(rows_spec):
+        for ci, et in enumerate(ets):
+            ax = axes[ri][ci]
+            drew = False
+            for fam in fams:
+                agg = defaultdict(list)
+                for r in pts.get((et, kind, fam), []):
                     agg[round(r.alignment_target, 3)].append(r.equiv_n_lab / r.n_lab)
-            if not agg:
-                continue
-            xs = sorted(agg)
-            ys = [float(np.median(agg[x])) for x in xs]
-            mk, col = style.get(fam, ("^:", "#61a05f"))
-            ax.plot(xs, ys, mk, color=col, lw=2.1, ms=6, label=f"{fam} judge")
-        ax.axhline(1.0, color="grey", ls=":", lw=1)
-        ax.set_title(et, fontsize=11)
-        ax.set_xlabel(r"judge quality tier  ($\rho^2$, score level)")
-        ax.grid(alpha=.25); ax.set_axisbelow(True)
-        # An eval type with only one family is not a broken panel -- binary's
-        # judge is a flip-probability model with no error-magnitude
-        # distribution to vary. Say so on the panel, or the single line reads
-        # as a plotting failure.
-        if len({r.noise_family for r in usable if r.eval_type == et}) < 2:
-            ax.text(0.5, 0.04, "no error-shape axis\n(flip-probability judge)",
-                    transform=ax.transAxes, ha="center", va="bottom",
-                    fontsize=8, color="#777", style="italic")
-    axes[0][0].set_ylabel("label-efficiency multiplier")
-    # Build the legend from EVERY panel's handles, not axes[0][0]'s. The first
-    # panel may carry only one family (binary does), in which case a legend
-    # taken from it silently omits the contaminated series that the panels
-    # actually being compared depend on.
+                if not agg:
+                    continue
+                xs = sorted(agg)
+                ys = [float(np.median(agg[x])) for x in xs]
+                mk, col = style.get(fam, ("^:", "#61a05f"))
+                ax.plot(xs, ys, mk, color=col, lw=2.1, ms=6, label=f"{fam} judge")
+                drew = True
+            ax.axhline(1.0, color="grey", ls=":", lw=1)
+            ax.grid(alpha=.25); ax.set_axisbelow(True)
+            if ri == 0:
+                ax.set_title(et, fontsize=11.5)
+            if ri == len(rows_spec) - 1:
+                ax.set_xlabel(r"judge quality tier  ($\rho^2$, score level)")
+            if ci == 0:
+                ax.set_ylabel(f"{row_label}\nlabel-efficiency multiplier", fontsize=9.5)
+            if not drew:
+                # binary has no rank row: _COMPARISON_METHODS_BINARY excludes
+                # mwu/wilcoxon because ranks are uninformative on 0/1 data.
+                # Say so, or an empty panel reads as a plotting failure.
+                ax.text(0.5, 0.5, "no rank tests on 0/1 data\n(ranks carry no information there)",
+                        transform=ax.transAxes, ha="center", va="center",
+                        fontsize=8.5, color="#888", style="italic")
+                # Strip the y scale. Matplotlib's default 0-1 range on an empty
+                # panel reads as a multiplier axis running below 1.0, i.e. as
+                # measurements showing PPI doing WORSE than labels alone --
+                # the opposite of this figure's claim, asserted by an axis with
+                # no data behind it. Keep the frame so the grid stays aligned.
+                ax.set_yticks([])
+                for side in ("left", "right", "top"):
+                    ax.spines[side].set_visible(False)
+                ax.grid(False)
+            elif len({k[2] for k in pts if k[0] == et and k[1] == kind}) < 2:
+                ax.text(0.5, 0.04, "no error-shape axis\n(flip-probability judge)",
+                        transform=ax.transAxes, ha="center", va="bottom",
+                        fontsize=8, color="#777", style="italic")
     _seen, _h, _l = set(), [], []
-    for ax in axes[0]:
-        for h, lab in zip(*ax.get_legend_handles_labels()):
-            if lab not in _seen:
-                _seen.add(lab); _h.append(h); _l.append(lab)
+    for row in axes:
+        for ax in row:
+            for h, lab in zip(*ax.get_legend_handles_labels()):
+                if lab not in _seen:
+                    _seen.add(lab); _h.append(h); _l.append(lab)
     if _h:
         axes[0][0].legend(_h, _l, fontsize=9, loc="upper left")
     fig.suptitle("Does the rule of thumb survive a non-Gaussian judge?\n"
-                 "same judge-quality tiers, two judge-error shapes", fontsize=11.5)
+                 "same judge-quality tiers, two judge-error shapes, split by test family",
+                 fontsize=11.5)
     fig.tight_layout()
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -7424,14 +7488,6 @@ def save_ppi_label_efficiency_plots(
             print(f"  (per-family figure skipped for {fam}: {type(exc).__name__}: {exc})")
     # The two analysis figures: es-invariance (which licenses pooling across
     # arms at all) and the practitioner-facing agreement threshold.
-    # Judge-error-SHAPE robustness (only when the sweep actually ran >1
-    # family). Non-fatal: it is a supplementary figure, and a sweep filtered
-    # to a single family is a legitimate way to run.
-    try:
-        paths.append(save_ppi_label_efficiency_noise_family_plot(
-            results, str(base.with_name(f"{base.stem}_noisefamily{base.suffix}"))))
-    except Exception as exc:
-        print(f"  (noise-family figure skipped: {type(exc).__name__}: {exc})")
     # Supplementary robustness pair (disk-cached; only the first sweep pays).
     try:
         paths += save_ppi_rho2_robustness_plots(out_path)
@@ -12173,6 +12229,22 @@ def run(args: argparse.Namespace) -> CaseResult:
                             if pm_points:
                                 output_paths.append(save_ppi_label_efficiency_per_method_table(
                                     pm_points, out_dir=args.out_dir, run_stem=label_eff_stem))
+                                # Judge-error-SHAPE robustness. Lives here
+                                # rather than in the pooled bundle because it
+                                # splits by test family, which the pooled
+                                # points have already averaged away -- and that
+                                # average cancels the effect (see the figure's
+                                # docstring). Non-fatal: a sweep filtered to one
+                                # noise family is a legitimate way to run.
+                                try:
+                                    _nf = save_ppi_label_efficiency_noise_family_plot(
+                                        pm_points,
+                                        str(Path(plots_dir) / f"{label_eff_stem}_plot_noisefamily.png"))
+                                    output_paths.append(_nf)
+                                    print(f"Saved plot: {_nf}")
+                                except Exception as exc:
+                                    print(f"  (noise-family figure skipped: "
+                                          f"{type(exc).__name__}: {exc})")
                         except Exception as exc:
                             # Diagnostic output must never take down a sweep that
                             # has already produced its primary artifacts -- but
