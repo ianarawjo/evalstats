@@ -8023,6 +8023,22 @@ def _pool_label_eff_across_es(
             saturated=not usable,
             mult_lo=float(np.mean([r.mult_lo for r in src])),
             mult_hi=float(np.mean([r.mult_hi for r in src])),
+            # The PREDICTION has to be averaged over the same arms the
+            # measurement is. It does not vary across effect-size arms (it is a
+            # function of rho^2, n_lab and N), so this was harmless while
+            # pooling was effect-size only -- but it DOES vary across noise
+            # families, by 8.5% on average and up to 0.38x, so inheriting
+            # src[0]'s value drew the dashed line for whichever family happened
+            # to sort first against a solid line averaging both.
+            predicted_mult=float(np.mean([r.predicted_mult for r in src
+                                          if np.isfinite(r.predicted_mult)] or [float("nan")])),
+            predicted_mult_asymptotic=float(np.mean([r.predicted_mult_asymptotic for r in src
+                                                     if np.isfinite(r.predicted_mult_asymptotic)]
+                                                    or [float("nan")])),
+            rho2=float(np.mean([r.rho2 for r in src if np.isfinite(r.rho2)] or [float("nan")])),
+            variance_multiplier=float(np.mean([r.variance_multiplier for r in src
+                                               if np.isfinite(r.variance_multiplier)]
+                                              or [float("nan")])),
         ))
     return pooled
 
