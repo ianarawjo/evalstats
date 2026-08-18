@@ -39,8 +39,10 @@ from simulations.harness.scenarios.synthetic import PPI_LABEL_EFF_N
 from simulations.harness.cases.pvalues import (
     _COMPARISON_METHODS,
     _COMPARISON_METHODS_BINARY,
+    _METHOD_CORR_KIND,
     _method_rho2,
     _ppi_predicted_savings,
+    save_ppi_label_efficiency_threshold_plot,
     LabelEfficiencyPoint,
     PPIComparisonResult,
     _pool_label_eff_across_es,
@@ -149,6 +151,16 @@ def main() -> None:
     if pm_points:
         written.append(save_ppi_label_efficiency_per_method_table(
             pm_points, out_dir=str(out), run_stem="labeleff"))
+        for kind, lbl in (("pearson", "parametric"), ("spearman", "rank")):
+            sub = [q for k, v in pm_points.items() for q in v
+                   if _METHOD_CORR_KIND.get(k[2], (None, "pearson"))[1] == kind]
+            if not sub:
+                continue
+            try:
+                written.append(save_ppi_label_efficiency_threshold_plot(
+                    sub, str(out / f"labeleff_threshold_{lbl}.png"), corr_kind=kind))
+            except Exception as exc:
+                print(f"  (threshold [{lbl}] skipped: {type(exc).__name__}: {exc})")
         try:
             written.append(save_ppi_label_efficiency_noise_family_plot(
                 pm_points, str(out / "labeleff_plot_noisefamily.png")))

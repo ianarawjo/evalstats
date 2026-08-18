@@ -6881,9 +6881,30 @@ def save_ppi_label_efficiency_invariance_pooled_plot(
 
 def save_ppi_label_efficiency_threshold_plot(
     results: list[LabelEfficiencyPoint], out_path: str, n_boot: int = 3000,
+    corr_kind: str = "pearson",
 ) -> str:
     """"How good must the judge be?" figure: multiplier vs judge-human
     agreement, with the practically-useless region shaded.
+
+    ONE TEST FAMILY PER FIGURE, and each plotted against ITS OWN correlation.
+    `corr_kind` is "pearson" (mean-based tests) or "spearman" (rank-based),
+    matching _METHOD_CORR_KIND; callers pass per-method points already
+    filtered to one kind.
+
+    This split is not cosmetic. The x-axis is the number a practitioner
+    measures on a pilot set and looks up, so it has to be the number that
+    actually governs THEIR test. A pooled figure labelled "squared Pearson
+    correlation" whose y-axis averaged rank tests in with mean tests told a
+    Wilcoxon user to read their threshold off the wrong statistic -- and the
+    two differ substantially: at a judge whose score-level Pearson rho^2 is
+    0.50, difference-level Spearman rho^2 ranges 0.47-0.61 depending on the
+    shape of the judge's errors (see notes/WHICH_RHO_FOR_WHICH_TEST.md).
+
+    x positions come from each cell's MEASURED rho^2 for that method, not from
+    the calibration tier. The tiers are defined by score-level Pearson, which
+    is the right x only for the group-structure mean tests; everything else
+    sits somewhere else on the axis, and drawing it at the tier would put the
+    point at a coordinate the practitioner would never measure.
 
     This is the figure a practitioner actually acts on -- it answers "is my
     judge good enough to be worth wiring up?" in the unit they care about
@@ -6906,6 +6927,17 @@ def save_ppi_label_efficiency_threshold_plot(
         raise ValueError("No non-saturated label-efficiency results to plot.")
     eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in rows)]
     tiers = sorted({r.alignment_target for r in rows})
+    # Tier -> the rho^2 a practitioner would actually MEASURE for this family,
+    # averaged over the noise families present. Pooling the families here
+    # matches the main-text figure's convention (see
+    # save_ppi_label_efficiency_plots): the reported number is expected over
+    # judge-error shapes rather than conditioned on one.
+    _x_of = {}
+    for t in tiers:
+        v = [r.rho2 for r in rows if r.alignment_target == t and np.isfinite(r.rho2)]
+        _x_of[t] = float(np.mean(v)) if v else t
+    tiers = [t for t in tiers if np.isfinite(_x_of[t])]
+    xs_plot = [_x_of[t] for t in tiers]
     marks = {"binary": "o", "continuous": "s", "likert": "^"}
     cols = {"binary": "#2166ac", "continuous": "#1a9850", "likert": "#b2182b"}
     rng = np.random.default_rng(_ANALYTIC_PLOT_SEED)
@@ -6923,16 +6955,16 @@ def save_ppi_label_efficiency_threshold_plot(
             med.append(float(np.median(v)))
             lo.append(float(np.percentile(b, 2.5))); hi.append(float(np.percentile(b, 97.5)))
         ymax = max(ymax, float(np.nanmax(hi)))
-        ax.plot(tiers, med, marker=marks.get(et, "o"), color=cols.get(et), lw=2, ms=6,
+        ax.plot(xs_plot, med, marker=marks.get(et, "o"), color=cols.get(et), lw=2, ms=6,
                 label=_LABEL_EFF_PANEL_TITLES.get(et, et), zorder=3)
-        ax.fill_between(tiers, lo, hi, color=cols.get(et), alpha=0.18, zorder=2)
+        ax.fill_between(xs_plot, lo, hi, color=cols.get(et), alpha=0.18, zorder=2)
 
     ax.axhspan(0.95, 1.25, color="grey", alpha=0.16, zorder=0)
     # Label the shaded band in its EMPTY right half: every eval type has
     # climbed above 1.25x by the upper agreement tiers, so the band is clear
     # there, whereas the left half is exactly where the low-agreement points
     # sit and any label collides with them.
-    ax.text(tiers[-1], 1.10, "not worth the trouble\n(<1.25× saving)  ",
+    ax.text(xs_plot[-1], 1.10, "not worth the trouble\n(<1.25× saving)  ",
             fontsize=8.5, color="#444", va="center", ha="right")
     ax.axhline(1.0, color="crimson", ls="--", lw=1.3, zorder=1)
 
@@ -6955,8 +6987,12 @@ def save_ppi_label_efficiency_threshold_plot(
     below = [t for t in tiers if pooled.get(t, np.inf) < WORTH_IT]
     cut = max(below) if below else None
     if cut is not None:
-        ax.axvline(cut, color="k", ls=":", lw=1.4, zorder=1)
-        txt = f"ρ² < {cut:g}: judges not\nworth the trouble\n({pooled[cut]:.2f}× at {cut:g})"
+        _xcut = _x_of[cut]
+        ax.axvline(_xcut, color="k", ls=":", lw=1.4, zorder=1)
+        # Printed in the MEASURED metric, not the calibration tier: the
+        # tier is defined by score-level Pearson, and for a rank-test
+        # figure that is not the number the reader will measure.
+        txt = f"ρ² < {_xcut:.2f}: judges not\nworth the trouble\n({pooled[cut]:.2f}× at {_xcut:.2f})"
         # Which SIDE of the line the label sits on depends on where the cut
         # landed. Normally it goes left, under the curve, where the region is
         # empty by construction (that is what being below the cut means). But
@@ -6965,10 +7001,10 @@ def save_ppi_label_efficiency_threshold_plot(
         # right and rises above the curves instead, staying under the
         # upper-left legend. The cut is data-derived, so both cases occur.
         if cut <= tiers[0] + 1e-9:
-            ax.text(cut + 0.012, ymax * 0.55, txt, fontsize=9, va="center",
+            ax.text(_xcut + 0.012, ymax * 0.55, txt, fontsize=9, va="center",
                     ha="left", color="#333")
         else:
-            ax.text(cut - 0.012, ymax * 0.42, txt, fontsize=9, va="center",
+            ax.text(_xcut - 0.012, ymax * 0.42, txt, fontsize=9, va="center",
                     ha="right", color="#333")
     # The positive marker is the FIRST tier past the cut -- i.e. the cheapest
     # judge quality that is actually worth wiring up. Deliberately not "first
@@ -6978,9 +7014,10 @@ def save_ppi_label_efficiency_threshold_plot(
     past = [t for t in tiers if cut is None or t > cut]
     if past:
         g = min(past)
-        ax.axvline(g, color="k", ls=":", lw=1.2, zorder=1)
-        ax.text(g + 0.012, ymax * 0.78,
-                f"ρ² ≈ {g:g}: PPI starts\nto pay for itself ({pooled[g]:.2f}×)",
+        _xg = _x_of[g]
+        ax.axvline(_xg, color="k", ls=":", lw=1.2, zorder=1)
+        ax.text(_xg + 0.012, ymax * 0.78,
+                f"ρ² ≈ {_xg:.2f}: PPI starts\nto pay for itself ({pooled[g]:.2f}×)",
                 fontsize=9, va="center", color="#333")
         # Top of the ladder, for the "and if my judge is good?" reader. Only
         # when it is a distinct tier from the pay-off marker, and drawn to the
@@ -6989,21 +7026,25 @@ def save_ppi_label_efficiency_threshold_plot(
         # steeply-rising strong-judge bands to place it on.
         top = max(tiers)
         if top > g and top in pooled:
-            ax.axvline(top, color="k", ls=":", lw=1.2, zorder=1)
-            ax.text(top + 0.012, ymax * 0.42,
-                    f"ρ² ≈ {top:g}: substantial\nsavings ({pooled[top]:.2f}×)",
+            ax.axvline(_x_of[top], color="k", ls=":", lw=1.2, zorder=1)
+            ax.text(_x_of[top] + 0.012, ymax * 0.42,
+                    f"ρ² ≈ {_x_of[top]:.2f}: substantial\nsavings ({pooled[top]:.2f}×)",
                     fontsize=9, va="center", color="#333")
-    ax.set_xlabel("judge–human agreement  ρ²  (squared Pearson correlation)")
+    ax.set_xlabel("judge–human agreement  ρ²  (squared Pearson correlation)"
+                  if corr_kind == "pearson" else
+                  "judge–human agreement  ρ²  (squared Spearman correlation, on paired differences)")
     ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
     ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
-    ax.set_xticks(tiers)
+    # Ticks at the MEASURED rho^2 of each tier, not the tier label: the tiers
+    # are round only in score-level Pearson, and this axis may be Spearman.
+    ax.set_xticks([round(x, 2) for x in xs_plot])
     # Right margin so the top-tier annotation has somewhere to sit that is not
     # on top of the strong-judge CI bands.
-    ax.set_xlim(tiers[0] - 0.035, tiers[-1] + 0.135)
+    ax.set_xlim(min(xs_plot) - 0.035, max(xs_plot) + 0.135)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=9, loc="upper left")
     fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and "
-             "the $N_{lab}$ grid.\nMarkers sit at round ρ² values; the multipliers on them are "
+             "the $N_{lab}$ grid.\nMarkers sit at each judge tier's REALIZED ρ² for this test family,\nnot at the round value it was calibrated to; multipliers are "
              "measured, not reference values.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
@@ -7521,11 +7562,10 @@ def save_ppi_label_efficiency_plots(
         paths += save_ppi_rho2_robustness_plots(out_path)
     except Exception as exc:
         print(f"  (rho^2 robustness figures skipped: {type(exc).__name__}: {exc})")
-    try:
-        paths.append(save_ppi_label_efficiency_threshold_plot(
-            results, str(base.with_name(f"{base.stem}_threshold{base.suffix}"))))
-    except ValueError:
-        pass
+    # The threshold figure now needs per-method points (one figure per test
+    # family, each on its own correlation), so it is emitted from the
+    # per-method block alongside the noise-family figure -- not here, where
+    # only pooled points are available.
     fracs = sorted({r.effect_frac for r in results})
     if len(fracs) > 1:
         try:
@@ -12254,6 +12294,29 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 # average cancels the effect (see the figure's
                                 # docstring). Non-fatal: a sweep filtered to one
                                 # noise family is a legitimate way to run.
+                                # "How good must the judge be?" -- ONE FIGURE PER
+                                # TEST FAMILY, each against its own
+                                # correlation. A single pooled figure labelled
+                                # "squared Pearson" but averaging rank tests
+                                # into its y-axis pointed Wilcoxon users at the
+                                # wrong statistic.
+                                for _kind, _lbl in (("pearson", "parametric"),
+                                                    ("spearman", "rank")):
+                                    _sub = [q for k, v in pm_points.items()
+                                            for q in v
+                                            if _METHOD_CORR_KIND.get(k[2], (None, "pearson"))[1] == _kind]
+                                    if not _sub:
+                                        continue
+                                    try:
+                                        _tp = save_ppi_label_efficiency_threshold_plot(
+                                            _sub,
+                                            str(Path(plots_dir) / f"{label_eff_stem}_plot_threshold_{_lbl}.png"),
+                                            corr_kind=_kind)
+                                        output_paths.append(_tp)
+                                        print(f"Saved plot: {_tp}")
+                                    except Exception as exc:
+                                        print(f"  (threshold figure [{_lbl}] skipped: "
+                                              f"{type(exc).__name__}: {exc})")
                                 try:
                                     _nf = save_ppi_label_efficiency_noise_family_plot(
                                         pm_points,
