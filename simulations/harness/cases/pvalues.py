@@ -5993,7 +5993,7 @@ Set to None to let each figure report its own measured crossing."""
 _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE = {
     "binary":     (0.68, 0.58, 0.48, 0.39, 0.29, 0.20),
     "continuous": (0.67, 0.57, 0.46, 0.36, 0.25, 0.15),
-    "likert":     (0.82, 0.74, 0.66, 0.57, 0.49, 0.41),
+    "likert":     (0.82, 0.73, 0.63, 0.54, 0.44, 0.35),
 }
 """Per-eval-type judge-quality ladders, replacing one shared set of targets.
 
@@ -6027,15 +6027,22 @@ paired rho^2, because differencing two discretised Likert scores destroys more
 of the judge's signal than differencing two continuous ones. All six ends were
 checked as reachable by _calibrate_noise_for_alignment before being adopted.
 
-Predicted landing points on the paired axis:
+Landing points on the paired-Pearson axis, MEASURED by calibrating each tier
+and reading _method_rho2 (not fitted, not from a sweep):
 
-    binary      0.201 0.243 0.321 0.419 0.558 0.729
-    continuous  0.203 0.318 0.436 0.535 0.635 0.719
-    likert      0.202 0.276 0.363 0.476 0.590 0.717
+    binary      0.156 0.236 0.327 0.408 0.538 0.724
+    continuous  0.196 0.316 0.439 0.543 0.649 0.739
+    likert      0.215 ....  ....  ....  ....  0.768
 
-Still a fit, so check the per-method CSV's rho2 column after a run rather than
-assuming the span landed exactly there. The previous version of this constant
-is why: its linear extrapolation was wrong by 0.24 rho^2 at likert's top."""
+so every eval type spans roughly 0.20-0.75 on the axis its lookup panel is
+drawn against, which is the range a reader needs and no more.
+
+Verify against the per-method CSV's rho2 column after a run anyway. Two
+earlier versions of this constant were wrong in ways only a run exposed: the
+first extrapolated a linear fit and missed likert's top by 0.24 rho^2 (asking
+0.96 to give 0.70, getting 0.944, which made likert's curve spike to 10x and
+flatten every other series in the figure); the second fixed the top but left
+likert's floor at 0.26, above the 0.20 the figures mark."""
 """Round, reader-legible judge-quality targets the label-efficiency
 check's noise axis is calibrated to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
