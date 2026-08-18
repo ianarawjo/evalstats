@@ -238,3 +238,51 @@ quality that survived several rounds of scrutiny because it was internally
 consistent and directionally plausible. What killed it was building a second
 instrument that shared no machinery with the first. Before explaining a
 gradient, check that the ruler is straight.
+
+## Binary's top-tier overshoot: diagnosed
+
+Binary's strongest judge tier reported a multiplier 1.23x its own
+control-variate bound -- impossible, and the single most flaggable number in
+the figures. Resolved 2026-08-18.
+
+**It is not the estimator.** Measured directly over 3000 replicates, the true
+variance ratio Var(classical)/Var(PPI) sits at 0.92-0.95 of the bound at every
+binary tier, top one included (0.948 at n_lab=60, 0.944 at n_lab=200). PPI
+never beats its bound. See the variance-route section above.
+
+**It is not high power per se.** Attainment does rise with ppi_power, but only
+weakly (Spearman 0.345), and binary's other five tiers sit at 0.950-0.982
+despite reaching comparable powers:
+
+    tier   0.2    0.3    0.4    0.5    0.6    0.7
+    att   0.982  0.950  0.979  0.959  0.971  1.227
+
+**It is the reference curve running out of range.** Binary's classical power
+curve saturates far earlier than the others', so most of the n_grid carries no
+information:
+
+    eval / method            n at P=0.95   n at P=0.99   % of grid still rising
+    binary     paired_t              57            80            36%
+    binary     ttest_welch          222           317            67%
+    likert     paired_t             117           167            53%
+    continuous paired_t             499           681            81%
+
+Binary paired_t exhausts its curve by n~80 of a grid running to 1500. Past
+that the curve is flat at ~1.0 -- 19 of its 35 adjacent grid points hold
+literally tied raw power, against 2 for continuous -- and
+_smooth_monotone_power_curve's tie-breaking (a 1e-9 ramp) is what an inversion
+landing there actually reads. The strongest tier is precisely where PPI's
+power is high enough to land in that flat region, which is why only that tier
+shows it.
+
+**What to do about it.** Nothing, in the inverted multiplier: this is the
+inversion's known failure mode arriving where the design guarantees it will,
+and the conditioning gate cannot catch it because the affected cells are
+neither clamped (the answer is inside the grid) nor saturated (ppi_power sits
+below the curve's max). Report `variance_multiplier` for these cells instead
+-- it needs no curve and reads 0.94 of the bound, which is the sound number.
+
+A grid extending past 1500 would NOT help; the problem is the curve reaching
+1.0, not the grid ending. What would help is a larger n_grid resolution below
+n=100 for binary, or simply reading binary's multipliers off the variance
+route.
