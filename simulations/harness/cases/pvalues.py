@@ -7634,7 +7634,28 @@ metric-incompatible ones a reader had to mentally re-split by panel.
             # 390" when it actually means ">= 500, truly >= 800". Pinning to
             # the ceiling plus a caret marker says "runs off the top", which
             # is what a lower bound should look like.
-            ys = [y_max if r.saturated else r.equiv_n_lab for r in rows]
+            # UNUSABLE cells break the line instead of being drawn through.
+            #
+            # Pinning a saturated cell to y_max and letting the polyline run
+            # through it manufactures a spike that no measurement supports: the
+            # line dives to the ceiling and back for a cell whose value is not
+            # known, and a reader cannot tell that excursion from a real
+            # non-monotonicity. Binary's small-n_lab corner was unreadable for
+            # exactly this reason -- the pooled cells there have every
+            # constituent point filtered out (saturated = not usable), so the
+            # spikes were drawn entirely from cells carrying no information.
+            #
+            # A NaN in the y-series makes matplotlib lift the pen, so the line
+            # shows only the segments joining cells that were actually
+            # measured. The markers are still drawn at the ceiling afterwards,
+            # so "this cell exists and runs off the top" is still visible --
+            # only the fictitious connecting segments are gone.
+            #
+            # Ill-conditioned cells are treated the same way: an inversion the
+            # gate refuses to report should not anchor a line segment either.
+            def _usable(r):
+                return not r.saturated and getattr(r, "well_conditioned", True)
+            ys = [r.equiv_n_lab if _usable(r) else float("nan") for r in rows]
             color = cmap(0.15 + 0.7 * i / max(1, len(targets) - 1))
             is_baseline = target == baseline_target
             marker = _LABEL_EFF_MARKER_SHAPES[i % len(_LABEL_EFF_MARKER_SHAPES)]
@@ -7680,8 +7701,17 @@ metric-incompatible ones a reader had to mentally re-split by panel.
                 )
                 legend_handles.setdefault("Predicted from rho^2", pline)
 
-            sat_xs = [x for x, r in zip(xs, rows) if r.saturated]
-            sat_ys = [y for y, r in zip(ys, rows) if r.saturated]
+            # y_max explicitly, NOT ys: ys now carries NaN at every unusable
+            # cell so the connecting line breaks there (see above), and reading
+            # the caret positions back out of it would place them all at NaN
+            # and silently draw nothing.
+            #
+            # Covers ill-conditioned cells as well as saturated ones. Both are
+            # "measured, but not reportable"; a reader needs to see that the
+            # cell exists and why the line stops, and the distinction between
+            # the two failure modes is in the CSV for anyone who needs it.
+            sat_xs = [x for x, r in zip(xs, rows) if not _usable(r)]
+            sat_ys = [y_max] * len(sat_xs)
             if sat_xs:
                 # Plotted in this tier's own color (a saturated point is
                 # still that tier's data), but the shared legend swatch for
@@ -7696,7 +7726,7 @@ metric-incompatible ones a reader had to mentally re-split by panel.
                     clip_on=False, zorder=6,
                 )
                 legend_handles.setdefault(
-                    "saturated",
+                    "off scale / not reported",
                     plt.Line2D([], [], color="gray", marker="^", markersize=7,
                                markeredgecolor="black", markeredgewidth=0.7, linestyle="none"),
                 )
