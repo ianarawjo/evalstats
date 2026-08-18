@@ -5425,6 +5425,60 @@ class LabelEfficiencyPoint:
     """1/(1 - rho2), the large-unlabeled-pool limit. Carried alongside the
     exact form purely so a reader can see how far apart they are at this
     design point; do not report it as the headline number."""
+    inversion_ratio: float = float("nan")
+    """What THIS cell's human-subset arm inverts to, divided by its own n_lab.
+
+    The human-subset arm is a classical test on exactly n_lab labeled items,
+    so a faithful inversion returns n_lab and this is 1.00. It involves no
+    judge scores at all, which is what makes it usable as a filter: it
+    measures the reference curve's local conditioning, not the quantity being
+    estimated.
+
+    Pooled over a whole sweep the inversion is close to unbiased (median
+    0.97-1.01 per eval_type x method on the 300-rep run), so the failure mode
+    is VARIANCE, not bias -- the same run spans 0.28 to 7.50 across cells.
+    That is why this is a gate (`well_conditioned`) rather than a divisor:
+    dividing the multiplier by it removes no bias and injects that spread
+    into every number. Measured, dividing pushed continuous paired_t from
+    0.029 to 0.083 mean deviation and created 5 cells above the
+    control-variate bound, which is impossible."""
+
+    inversion_clamped: bool = False
+    """Whether inversion_ratio came from a CLAMPED inversion and so carries no
+    information about conditioning.
+
+    _equivalent_n_lab inverts with np.interp, which clamps to n_grid's
+    endpoints instead of extrapolating. The human-subset arm at the smallest
+    n_lab has power near alpha, at or below the reference curve's left edge,
+    so its inversion pins to n_grid.min() == _JB_MIN_LAB == that same n_lab --
+    returning a ratio of exactly 1.000 no matter how ill-conditioned the cell
+    actually is. Measured on the 300-rep run, 53% of n_lab=15 cells returned
+    exactly 1.000 and NONE returned below it, against a median of 0.91 at
+    n_lab=20.
+
+    That is a false pass in the worst-conditioned corner of the design
+    (smallest n_lab, smallest effect), which is exactly where the gate is
+    supposed to bite -- so a clamped cell is treated as unconditioned rather
+    than trusted."""
+
+    @property
+    def well_conditioned(self) -> bool:
+        """Whether this cell's power-curve inversion is trustworthy enough to
+        report, i.e. |inversion_ratio - 1| <= _INVERSION_DEV_TOL.
+
+        Ill-conditioned cells are those where the reference power curve is
+        flat (small effect size, small n_lab), so dn/dP is large and the
+        binomial noise in a rejection rate maps to a huge swing in equivalent
+        n. Filtering on them is the direct analogue of `saturated`, which
+        excludes the opposite end of the same curve.
+
+        Callers should require `not saturated and well_conditioned` before
+        using `equiv_n_lab`. NaN (never measured) counts as conditioned so
+        older results stay usable; a clamped inversion does NOT (see
+        `inversion_clamped`)."""
+        if self.inversion_clamped:
+            return False
+        return not np.isfinite(self.inversion_ratio) or abs(self.inversion_ratio - 1.0) <= _INVERSION_DEV_TOL
     """95% interval on the multiplier (equiv_n_lab / n_lab), from
     propagating ppi_power's binomial SE through the reference curve's LOCAL
     slope -- see _multiplier_ci. Reporting the multiplier without this
@@ -5623,6 +5677,32 @@ def _smooth_monotone_power_curve(n_grid: np.ndarray, power_grid: np.ndarray) -> 
     # would flatten the ramp back into ties wherever the curve saturates.
     fitted = np.clip(fitted, 0.0, 1.0 - 1e-6)
     return fitted + np.arange(len(fitted), dtype=float) * 1e-9
+
+
+_INVERSION_DEV_TOL = 0.15
+"""How far a cell's human-subset arm may invert from its own n_lab and still
+be reported (see LabelEfficiencyPoint.inversion_ratio/well_conditioned).
+
+Chosen from the 300-rep sweep by sweeping the gate and watching where each
+method's measured/predicted ratio settles. Tightening it monotonically pulls
+in the cells that the flat part of the power curve had distorted, and leaves
+the already-clean methods alone:
+
+    gate      kept   continuous wilcoxon   continuous paired_t   likert mwu
+    none      2243   0.81 (dev 0.194)      1.03 (dev 0.029)      0.83 (0.168)
+    0.25      1910   0.87 (dev 0.133)      1.02 (dev 0.030)      0.84 (0.161)
+    0.15      1525   0.90 (dev 0.096)      1.02 (dev 0.026)      0.85 (0.150)
+    0.10      1223   0.93 (dev 0.072)      1.01 (dev 0.035)      0.87 (0.132)
+
+0.15 keeps ~68% of cells. Going tighter buys continuous wilcoxon a little
+more and starts costing paired_t precision as the surviving cell count falls.
+
+Note what does NOT happen: likert mwu improves but plateaus around 0.85-0.87
+rather than converging to 1.00. That is the intended behaviour -- an
+independent variance-scale measurement (no power curve, no inversion) puts
+likert mwu at 1.18-1.24x its own control-variate bound, a genuine
+discreteness cost in the estimator. The gate is meant to remove measurement
+artifact, not real shortfall, and here it demonstrably separates the two."""
 
 
 def _check_inversion_self_consistency(
@@ -6059,6 +6139,15 @@ def run_ppi_label_efficiency_check(
                 equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
                 saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
                 lo, hi = _multiplier_ci(ppi_power, r.n_reps, r.n_lab, n_grid, power_grid)
+                # Same curve, same inversion, but on the arm that uses no
+                # judge scores -- so it measures this cell's conditioning
+                # without touching what is being estimated. See
+                # LabelEfficiencyPoint.inversion_ratio.
+                _hp = r.rejects_human_subset / r.n_reps if r.n_reps else float("nan")
+                _inv_h = _equivalent_n_lab(_hp, n_grid, power_grid) if np.isfinite(_hp) else float("nan")
+                inv_ratio = _inv_h / r.n_lab if (r.n_lab and np.isfinite(_inv_h)) else float("nan")
+                inv_clamped = bool(np.isfinite(_inv_h) and (
+                    _inv_h <= n_grid.min() + 1e-9 or _inv_h >= n_grid.max() - 1e-9))
                 results.append(LabelEfficiencyPoint(
                     eval_type=eval_type, judge_noise=noise, alignment_metric=metric_name,
                     alignment_target=target, alignment_value=achieved,
@@ -6066,6 +6155,7 @@ def run_ppi_label_efficiency_check(
                     saturated=saturated, effect_frac=effect_frac, mult_lo=lo, mult_hi=hi,
                     rho2=_r2, predicted_mult=_ppi_predicted_savings(_r2, r.n_lab, r.n),
                     predicted_mult_asymptotic=_ppi_predicted_savings(_r2, 0, 1),
+                    inversion_ratio=inv_ratio, inversion_clamped=inv_clamped,
                 ))
     return results, all_raw, calib_rows
 
@@ -6319,6 +6409,7 @@ def save_results_artifacts_ppi_label_efficiency(
             "judge_noise", "n_lab", "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
             "multiplier_lo", "multiplier_hi", "saturated",
             "rho2", "predicted_mult", "predicted_mult_asymptotic",
+            "inversion_ratio", "inversion_clamped", "well_conditioned",
         ])
         for r in results:
             mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
@@ -6329,6 +6420,7 @@ def save_results_artifacts_ppi_label_efficiency(
                 f"{r.ppi_power:.6f}", f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
                 f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
                 f"{r.rho2:.4f}", f"{r.predicted_mult:.4f}", f"{r.predicted_mult_asymptotic:.4f}",
+                f"{r.inversion_ratio:.4f}", r.inversion_clamped, r.well_conditioned,
             ])
     summary_path = out_base / f"{run_stem}_ppi_label_efficiency_summary.log"
     buf = io.StringIO()
@@ -6551,7 +6643,7 @@ def save_ppi_label_efficiency_invariance_plot(
     (their equiv_n_lab is clamped -- see LabelEfficiencyPoint.saturated)."""
     import matplotlib.pyplot as plt
 
-    rows = [r for r in results if not r.saturated and np.isfinite(r.equiv_n_lab)]
+    rows = [r for r in results if not r.saturated and r.well_conditioned and np.isfinite(r.equiv_n_lab)]
     if not rows:
         raise ValueError("No non-saturated label-efficiency results to plot.")
     eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in rows)]
@@ -6621,7 +6713,7 @@ def save_ppi_label_efficiency_invariance_pooled_plot(
     Medians with IQR/2 bars; saturated points dropped."""
     import matplotlib.pyplot as plt
 
-    rows = [r for r in results if not r.saturated and np.isfinite(r.equiv_n_lab) and r.n_lab]
+    rows = [r for r in results if not r.saturated and r.well_conditioned and np.isfinite(r.equiv_n_lab) and r.n_lab]
     if not rows:
         raise ValueError("No non-saturated label-efficiency results to plot.")
     tiers = sorted({r.alignment_target for r in rows})
@@ -6680,7 +6772,7 @@ def save_ppi_label_efficiency_threshold_plot(
     (licensed by save_ppi_label_efficiency_invariance_plot's result)."""
     import matplotlib.pyplot as plt
 
-    rows = [r for r in results if not r.saturated and np.isfinite(r.equiv_n_lab)]
+    rows = [r for r in results if not r.saturated and r.well_conditioned and np.isfinite(r.equiv_n_lab)]
     if not rows:
         raise ValueError("No non-saturated label-efficiency results to plot.")
     eval_types = [et for et in ("binary", "continuous", "likert") if any(r.eval_type == et for r in rows)]
@@ -6821,7 +6913,8 @@ def save_ppi_label_efficiency_per_method_table(
         writer.writerow(["eval_type", "method", "rho2_target", "rho2", "rho2_pearson",
                          "rho2_spearman", "rank_penalty", "n_lab", "effect_frac",
                          "n_reps", "ppi_power", "equiv_n_lab", "multiplier",
-                         "multiplier_lo", "multiplier_hi", "saturated", "predicted_mult"])
+                         "multiplier_lo", "multiplier_hi", "saturated", "predicted_mult",
+                         "inversion_ratio", "inversion_clamped", "well_conditioned"])
         for (eval_type, method), pts in sorted(per_method_points.items()):
             for r in sorted(pts, key=lambda q: (q.alignment_target, q.n_lab, q.effect_frac)):
                 mult = r.equiv_n_lab / r.n_lab if r.n_lab else float("nan")
@@ -6837,6 +6930,7 @@ def save_ppi_label_efficiency_per_method_table(
                     f"{r.equiv_n_lab:.4f}", f"{mult:.4f}",
                     f"{r.mult_lo:.4f}", f"{r.mult_hi:.4f}", r.saturated,
                     f"{r.predicted_mult:.4f}",
+                    f"{r.inversion_ratio:.4f}", r.inversion_clamped, r.well_conditioned,
                 ])
     print(f"Saved results: {path}")
     return str(path)
@@ -6990,6 +7084,12 @@ def save_ppi_label_efficiency_plots_per_method(
             pw = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
             eq = _equivalent_n_lab(pw, n_grid, pg) if np.isfinite(pw) else float("nan")
             lo, hi = _multiplier_ci(pw, r.n_reps, r.n_lab, n_grid, pg)
+            # Per-method conditioning gate, against THIS method's own curve --
+            # see LabelEfficiencyPoint.inversion_ratio.
+            _hp = r.rejects_human_subset / r.n_reps if r.n_reps else float("nan")
+            _ih = _equivalent_n_lab(_hp, n_grid, pg) if np.isfinite(_hp) else float("nan")
+            _ir = _ih / r.n_lab if (r.n_lab and np.isfinite(_ih)) else float("nan")
+            _ic = bool(np.isfinite(_ih) and (_ih <= n_grid.min() + 1e-9 or _ih >= n_grid.max() - 1e-9))
             pts.append(LabelEfficiencyPoint(
                 eval_type=eval_type, judge_noise=nz, alignment_metric="rho2",
                 alignment_target=tier_of[k], alignment_value=val_of[k], n_lab=r.n_lab,
@@ -6997,7 +7097,8 @@ def save_ppi_label_efficiency_plots_per_method(
                 effect_frac=_frac, mult_lo=lo, mult_hi=hi,
                 saturated=bool(np.isfinite(pw) and pw >= pg.max() - 1e-9),
                 rho2=_mr, predicted_mult=_ppi_predicted_savings(_mr, r.n_lab, r.n),
-                predicted_mult_asymptotic=_ppi_predicted_savings(_mr, 0, 1)))
+                predicted_mult_asymptotic=_ppi_predicted_savings(_mr, 0, 1),
+                inversion_ratio=_ir, inversion_clamped=_ic))
         if not pts:
             continue
         collected[(eval_type, method)] = pts
@@ -7069,7 +7170,7 @@ def _pool_label_eff_across_es(results: list[LabelEfficiencyPoint]) -> list[Label
         buckets[(r.eval_type, r.alignment_target, r.n_lab)].append(r)
     pooled: list[LabelEfficiencyPoint] = []
     for (_et, _tgt, _nl), rows in buckets.items():
-        usable = [r for r in rows if not r.saturated and np.isfinite(r.equiv_n_lab)]
+        usable = [r for r in rows if not r.saturated and r.well_conditioned and np.isfinite(r.equiv_n_lab)]
         src = usable or rows
         ref = src[0]
         pooled.append(replace(
