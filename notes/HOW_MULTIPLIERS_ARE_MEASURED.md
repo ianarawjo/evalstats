@@ -283,6 +283,23 @@ below the curve's max). Report `variance_multiplier` for these cells instead
 -- it needs no curve and reads 0.94 of the bound, which is the sound number.
 
 A grid extending past 1500 would NOT help; the problem is the curve reaching
-1.0, not the grid ending. What would help is a larger n_grid resolution below
-n=100 for binary, or simply reading binary's multipliers off the variance
-route.
+1.0, not the grid ending.
+
+**A fourth gate criterion was tried and does not work.** The obvious move,
+given the diagnosis above, is to flag cells whose equiv_n_lab lands past the n
+where the curve reaches P=0.99 -- i.e. in the region carrying no information.
+Measured: it flags 4.6% of binary cells and moves the top tier from 1.227 to
+**1.247**, slightly worse. The excess is spread across the tier rather than
+concentrated in the cells that land furthest out, so the criterion removes
+cells roughly at random with respect to the thing it is meant to catch. Do not
+re-attempt without evidence that the affected cells are separable at all.
+
+**The variance route does not visibly separate them at 60 reps either.** It
+reads 1.116 on that tier against the inverted route's 1.290 -- better, but
+still above the bound, and 27.7% of all its cells exceed 1.05 against the
+inverted route's 31.3%. That is sampling noise, not a second anomaly: a
+variance taken over 60 replicates carries ~18% standard error, so the ratio
+carries ~26%. The clean 0.92-0.95 figures quoted above come from 3000
+replicates at fixed design points, not from a 60-rep sweep. Expect the sweep's
+variance_multiplier to become decisive around 300 reps (~11% SE) and not
+before.
