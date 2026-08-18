@@ -7190,6 +7190,81 @@ def save_ppi_label_efficiency_plots_per_method(
     return paths, collected
 
 
+_PPI_ROBUSTNESS_CACHE_VERSION = 1
+"""Bump to invalidate every cached robustness result below. The cache key
+already covers every argument, so this is only for changes to the COMPUTATION
+that the arguments cannot see (a different estimator, a changed DGP)."""
+_PPI_ROBUSTNESS_CACHE_DIR = pathlib.Path("simulations/out/.ppi_robustness_cache")
+
+
+def _robustness_cached(name: str, key_parts: tuple, compute):
+    """Disk-memoize one robustness table.
+
+    These checks are pure seeded Monte Carlo with no dependence on the sweep's
+    own data, so they are safe to reuse across runs -- and worth it: together
+    they cost ~35 min, which would otherwise be paid by every sweep including
+    the official tests, to recompute a number that cannot have changed.
+
+    Same discipline as _classical_pooled_power_curve: atomic temp+rename so
+    parallel workers cannot serve a half-written file, an unreadable entry is
+    a miss rather than an error, and PPI_NO_ROBUSTNESS_CACHE=1 bypasses."""
+    key = hashlib.sha256(repr((_PPI_ROBUSTNESS_CACHE_VERSION, name) + key_parts).encode()).hexdigest()[:20]
+    path = _PPI_ROBUSTNESS_CACHE_DIR / f"{name}_{key}.csv"
+    use_cache = os.environ.get("PPI_NO_ROBUSTNESS_CACHE", "") != "1"
+    if use_cache and path.exists():
+        try:
+            return pd.read_csv(path)
+        except Exception:
+            pass
+    df = compute()
+    if use_cache:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(f".{os.getpid()}.tmp.csv")
+            df.to_csv(tmp, index=False)
+            os.replace(tmp, path)
+        except Exception:
+            pass  # caching is an optimization; never fail the sweep over it
+    return df
+
+
+def save_ppi_rho2_robustness_plots(
+    out_path: str, reps: int = 1500, seed: int = 61,
+) -> list[str]:
+    """The two supplementary figures behind "the rule of thumb holds up".
+
+    Both come from dedicated experiments rather than the sweep grid, because
+    each needs something the grid cannot give:
+
+      sufficiency -- pins Pearson rho^2 ANALYTICALLY across judge-error shapes
+        (kappa = sqrt(1/target - 1) fixes it exactly whatever the shape, since
+        Pearson sees only second moments) and asks whether the multiplier is a
+        function of rho^2 alone. The grid's tiers are CALIBRATED, not pinned,
+        so it cannot isolate shape this way. Answer: 0.987 +/- 0.028 for
+        paired_t vs rho_P^2, 0.954 +/- 0.022 for wilcoxon vs rho_S^2 -- each
+        family against its own correlation.
+
+      crossover -- locates where PPI power swaps between rank-based and
+        parametric tests as contamination moves rho_S^2 at pinned rho_P^2.
+
+    See notes/RANK_VS_PARAMETRIC_CROSSOVER.md and
+    notes/WHICH_RHO_FOR_WHICH_TEST.md. Results are disk-cached
+    (_robustness_cached), so only the first sweep pays for them."""
+    from simulations.investigate_rho2_sufficiency import run as _suff_run
+    from simulations.investigate_rank_parametric_crossover import run as _cross_run
+    from simulations.plot_rank_crossover_and_sufficiency import (
+        plot_crossover as _plot_cross, plot_sufficiency as _plot_suff,
+    )
+    base = pathlib.Path(out_path)
+    suff = _robustness_cached("sufficiency", (reps, 20, seed), lambda: _suff_run(reps, 20, seed))
+    cross = _robustness_cached("crossover", (reps, 500, 17), lambda: _cross_run(reps, 500, 17))
+    paths = [
+        _plot_suff(suff, str(base.with_name(f"{base.stem}_rho2_sufficiency{base.suffix}"))),
+        _plot_cross(cross, str(base.with_name(f"{base.stem}_rank_crossover{base.suffix}"))),
+    ]
+    return paths
+
+
 def save_ppi_label_efficiency_noise_family_plot(
     results: list[LabelEfficiencyPoint], out_path: str,
 ) -> str:
@@ -7314,6 +7389,11 @@ def save_ppi_label_efficiency_plots(
             results, str(base.with_name(f"{base.stem}_noisefamily{base.suffix}"))))
     except Exception as exc:
         print(f"  (noise-family figure skipped: {type(exc).__name__}: {exc})")
+    # Supplementary robustness pair (disk-cached; only the first sweep pays).
+    try:
+        paths += save_ppi_rho2_robustness_plots(out_path)
+    except Exception as exc:
+        print(f"  (rho^2 robustness figures skipped: {type(exc).__name__}: {exc})")
     try:
         paths.append(save_ppi_label_efficiency_threshold_plot(
             results, str(base.with_name(f"{base.stem}_threshold{base.suffix}"))))

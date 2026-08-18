@@ -44,7 +44,22 @@ from simulations.harness.scenarios import synthetic as S
 
 
 def _build(job):
-    """Build one curve. Returns (label, seconds, was_already_cached)."""
+    """Build one cache entry. Returns (label, seconds, None).
+
+    Two job shapes: power curves (the bulk) and the two rho^2 robustness
+    tables, which are equally pure-seeded and equally worth warming -- they
+    cost ~17 min each and every sweep would otherwise recompute them."""
+    if job[0] == "_robustness":
+        _, which, label, reps, seed = job
+        t = time.time()
+        from simulations.harness.cases.pvalues import _robustness_cached
+        if which == "sufficiency":
+            from simulations.investigate_rho2_sufficiency import run as r
+            _robustness_cached("sufficiency", (reps, 20, seed), lambda: r(reps, 20, seed))
+        else:
+            from simulations.investigate_rank_parametric_crossover import run as r
+            _robustness_cached("crossover", (reps, 500, 17), lambda: r(reps, 500, 17))
+        return label, time.time() - t, None
     eval_type, es, methods, label, n_mc, seed = job
     n_grid = np.geomspace(float(_JB_MIN_LAB), 1500.0, 36)
     t = time.time()
@@ -70,7 +85,11 @@ def _jobs(n_mc: int, seed: int):
             out.append((eval_type, es, tuple(methods), f"{eval_type} es={ef:.2f} pooled", n_mc, seed))
             for m in methods:
                 out.append((eval_type, es, (m,), f"{eval_type} es={ef:.2f} {m}", n_mc, seed))
-    return out
+    # Put the two long robustness jobs FIRST: they are the longest single
+    # tasks, so starting them last would leave one worker running alone after
+    # every curve is done.
+    return [("_robustness", "sufficiency", "rho2 sufficiency", 1500, 61),
+            ("_robustness", "crossover", "rank/parametric crossover", 1500, 61)] + out
 
 
 def main() -> None:
