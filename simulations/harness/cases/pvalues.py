@@ -7464,8 +7464,31 @@ def _method_rho2(eval_type: str, judge_noise: float, method: str, noise_family: 
         a = np.asarray(cell.truth_x, dtype=float) - np.asarray(cell.truth_y, dtype=float)
         b = np.asarray(cell.llm_x, dtype=float) - np.asarray(cell.llm_y, dtype=float)
     else:
-        a = np.asarray(cell.truth_a2, dtype=float)
-        b = np.asarray(cell.llm_a2, dtype=float)
+        # BOTH groups, each centred on its own mean, then concatenated.
+        #
+        # A two-sample estimand's influence function spans both groups, so its
+        # control-variate correlation is the WITHIN-GROUP pooled one. Reading
+        # group A alone was wrong whenever the judge's quality differs between
+        # groups -- which is exactly what bias_type="differential" creates.
+        #
+        # It went unnoticed because for continuous and likert the differential
+        # bias is an additive OFFSET, and Pearson is shift-invariant, so the two
+        # groups' rho^2 agree to 4 decimal places. Binary's bias is a change in
+        # FLIP PROBABILITY, which does move phi: at the cleanest tier group A
+        # (biased) reads 0.712 while group B reads 0.923. Using A alone
+        # under-predicted the bound by a factor of 1.244 at n_lab=200 -- almost
+        # exactly the 1.24-1.40 "impossible" overshoot binary's top tier showed
+        # in the group-structure methods, while its paired methods, which never
+        # took this branch, sat at a healthy 0.94.
+        #
+        # Centring per group before pooling is what makes this the within-group
+        # correlation rather than one inflated by the between-group difference.
+        _a1 = np.asarray(cell.truth_a2, dtype=float)
+        _b1 = np.asarray(cell.llm_a2, dtype=float)
+        _a2 = np.asarray(getattr(cell, "truth_b2", _a1), dtype=float)
+        _b2 = np.asarray(getattr(cell, "llm_b2", _b1), dtype=float)
+        a = np.concatenate([_a1 - _a1.mean(), _a2 - _a2.mean()])
+        b = np.concatenate([_b1 - _b1.mean(), _b2 - _b2.mean()])
     if float(np.std(a)) < 1e-12 or float(np.std(b)) < 1e-12:
         return (float("nan"), float("nan"), float("nan"))
     p2 = float(pearsonr(a, b).statistic) ** 2
