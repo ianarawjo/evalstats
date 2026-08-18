@@ -6215,7 +6215,30 @@ def run_ppi_label_efficiency_check(
                 _cal = calib_info[(eval_type, noise_family)]
                 closest_noise = min(_cal, key=lambda n: abs(n - noise))
                 target, achieved, _panel = _cal[closest_noise]
-                _r2 = float(_panel.get("rho2", float("nan")))
+                # The pooled multiplier averages across `methods`, so its
+                # prediction must average the SAME methods' own correlations.
+                # The calibration panel's rho2 is SCORE-level, which is right
+                # only for group-structure tests -- paired tests (paired_t,
+                # wilcoxon) operate on differences D = Y_x - Y_y, whose
+                # correlation is a different number.
+                #
+                # It is usually smaller, so using score-level over-predicted
+                # and looked harmless. Not always: binary's top tier is a 2%
+                # flip-rate judge where difference-level rho^2 CROSSES ABOVE
+                # score-level (0.775 vs 0.700), so the prediction came out too
+                # LOW and the measured multiplier appeared to beat its own
+                # control-variate bound by 1.37x -- an impossibility, and the
+                # single most flaggable thing in the figure.
+                #
+                # Averaging the per-method predictions (rather than predicting
+                # from an averaged rho^2) matches how the multiplier itself is
+                # pooled. _method_rho2 is lru_cached, so this is one extra
+                # measurement per (eval_type, noise, method, family), not per
+                # cell.
+                _m_r2 = [_method_rho2(eval_type, round(noise, 6), _m, noise_family)[0]
+                         for _m in methods]
+                _m_r2 = [v for v in _m_r2 if np.isfinite(v)]
+                _r2 = float(np.mean(_m_r2)) if _m_r2 else float(_panel.get("rho2", float("nan")))
                 ppi_power = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
                 equiv = _equivalent_n_lab(ppi_power, n_grid, power_grid) if np.isfinite(ppi_power) else float("nan")
                 saturated = bool(np.isfinite(ppi_power) and ppi_power >= power_grid.max() - 1e-9)
@@ -6234,8 +6257,13 @@ def run_ppi_label_efficiency_check(
                     alignment_target=target, alignment_value=achieved,
                     n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps,
                     saturated=saturated, effect_frac=effect_frac, mult_lo=lo, mult_hi=hi,
-                    rho2=_r2, predicted_mult=_ppi_predicted_savings(_r2, r.n_lab, r.n),
-                    predicted_mult_asymptotic=_ppi_predicted_savings(_r2, 0, 1),
+                    rho2=_r2,
+                    predicted_mult=(float(np.mean([_ppi_predicted_savings(v, r.n_lab, r.n)
+                                                   for v in _m_r2])) if _m_r2
+                                    else _ppi_predicted_savings(_r2, r.n_lab, r.n)),
+                    predicted_mult_asymptotic=(float(np.mean([_ppi_predicted_savings(v, 0, 1)
+                                                              for v in _m_r2])) if _m_r2
+                                               else _ppi_predicted_savings(_r2, 0, 1)),
                     inversion_ratio=inv_ratio, inversion_clamped=inv_clamped,
                     noise_family=noise_family,
                 ))

@@ -33,7 +33,14 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
+import numpy as np
+
+from simulations.harness.scenarios.synthetic import PPI_LABEL_EFF_N
 from simulations.harness.cases.pvalues import (
+    _COMPARISON_METHODS,
+    _COMPARISON_METHODS_BINARY,
+    _method_rho2,
+    _ppi_predicted_savings,
     LabelEfficiencyPoint,
     PPIComparisonResult,
     _pool_label_eff_across_es,
@@ -51,9 +58,18 @@ def _one(run_dir: str, suffix: str) -> str:
     return hits[-1]  # newest by timestamped name
 
 
-def _points(results_csv: str) -> list[LabelEfficiencyPoint]:
+def _points(results_csv: str, *, refix_rho2: bool = True) -> list[LabelEfficiencyPoint]:
+    """`refix_rho2` recomputes predicted_mult from each cell's OWN methods'
+    correlations rather than trusting the CSV's stored value.
+
+    Runs before 2026-08-18 stored a prediction derived from the SCORE-level
+    rho^2 in the calibration panel, which is wrong for the paired tests in the
+    pool -- most visibly for binary's top tier, where difference-level rho^2
+    crosses above score-level and the stored prediction was too low, making the
+    measured multiplier look like it beat its own bound. Recomputing here means
+    a finished run's figures can be corrected without re-simulating."""
     df = pd.read_csv(results_csv)
-    return [LabelEfficiencyPoint(
+    pts = [LabelEfficiencyPoint(
         eval_type=t.eval_type, judge_noise=t.judge_noise, alignment_metric=t.alignment_metric,
         alignment_target=t.alignment_target, alignment_value=t.alignment_value, n_lab=t.n_lab,
         ppi_power=t.ppi_power, equiv_n_lab=t.equiv_n_lab, n_reps=t.n_reps, saturated=t.saturated,
@@ -62,6 +78,25 @@ def _points(results_csv: str) -> list[LabelEfficiencyPoint]:
         inversion_clamped=t.inversion_clamped,
         noise_family=getattr(t, "noise_family", "gaussian"),
     ) for t in df.itertuples()]
+    if refix_rho2:
+        from dataclasses import replace as _replace
+        out = []
+        for p in pts:
+            methods = (_COMPARISON_METHODS_BINARY if p.eval_type == "binary"
+                       else _COMPARISON_METHODS)
+            r2 = [_method_rho2(p.eval_type, round(p.judge_noise, 6), m, p.noise_family)[0]
+                  for m in methods]
+            r2 = [v for v in r2 if np.isfinite(v)]
+            if not r2:
+                out.append(p); continue
+            out.append(_replace(
+                p, rho2=float(np.mean(r2)),
+                predicted_mult=float(np.mean([_ppi_predicted_savings(v, p.n_lab, PPI_LABEL_EFF_N)
+                                              for v in r2])),
+                predicted_mult_asymptotic=float(np.mean([_ppi_predicted_savings(v, 0, 1)
+                                                         for v in r2]))))
+        pts = out
+    return pts
 
 
 def _raw_and_calib(raw_csv: str, calib_csv: str):
