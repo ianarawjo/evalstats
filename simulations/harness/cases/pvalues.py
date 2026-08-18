@@ -5991,9 +5991,9 @@ Set to None to let each figure report its own measured crossing."""
 
 
 _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE = {
-    "binary":     (0.68, 0.58, 0.48, 0.39, 0.29, 0.20),
-    "continuous": (0.67, 0.57, 0.46, 0.36, 0.25, 0.15),
-    "likert":     (0.82, 0.73, 0.63, 0.54, 0.44, 0.35),
+    "binary":     (0.72, 0.62, 0.51, 0.41, 0.30, 0.20),
+    "continuous": (0.76, 0.64, 0.51, 0.39, 0.26, 0.14),
+    "likert":     (0.80, 0.67, 0.55, 0.42, 0.30, 0.17),
 }
 """Per-eval-type judge-quality ladders, replacing one shared set of targets.
 
@@ -6027,22 +6027,55 @@ paired rho^2, because differencing two discretised Likert scores destroys more
 of the judge's signal than differencing two continuous ones. All six ends were
 checked as reachable by _calibrate_noise_for_alignment before being adopted.
 
-Landing points on the paired-Pearson axis, MEASURED by calibrating each tier
-and reading _method_rho2 (not fitted, not from a sweep):
+These must cover 0.20-0.70 on FOUR axes at once, because the lookup grid
+draws one panel per (structure, correlation) pair and each maps from the tier
+differently. Measured spans (calibrate the tier, read _method_rho2 -- no sweep
+needed):
 
-    binary      0.156 0.236 0.327 0.408 0.538 0.724
-    continuous  0.196 0.316 0.439 0.543 0.649 0.739
-    likert      0.215 ....  ....  ....  ....  0.768
+    eval         group-Pearson  paired-Pearson  group-Spearman  paired-Spearman
+    binary          0.20-0.73      0.16-0.80          --               --
+    continuous      0.14-0.76      0.18-0.82      0.13-0.72        0.16-0.77
+    likert          0.20-0.86      0.10-0.73      0.20-0.86        0.09-0.70
 
-so every eval type spans roughly 0.20-0.75 on the axis its lookup panel is
-drawn against, which is the range a reader needs and no more.
+Likert's group and paired axes sit ~0.18 apart, so no six-tier ladder covers
+0.20-0.70 on both without overshooting one of them. Overshoot is harmless --
+gaps are not -- so the ladders are set wide enough that every axis covers the
+range, and some run past it.
 
-Verify against the per-method CSV's rho2 column after a run anyway. Two
+Verify against the per-method CSV's rho2 column after a run anyway. Three
 earlier versions of this constant were wrong in ways only a run exposed: the
-first extrapolated a linear fit and missed likert's top by 0.24 rho^2 (asking
-0.96 to give 0.70, getting 0.944, which made likert's curve spike to 10x and
-flatten every other series in the figure); the second fixed the top but left
-likert's floor at 0.26, above the 0.20 the figures mark."""
+first extrapolated a LINEAR fit and missed likert's top by 0.24 rho^2 (asking
+0.96 to give 0.70, getting 0.944, which spiked likert's curve to 10x and
+flattened every other series); the second fixed the top but left likert's
+floor at 0.26, above the 0.20 the figures mark; the third covered the paired
+axes but left MWU's group-Spearman panel short at both ends. Check all four
+axes, not the one being looked at."""
+
+
+_LABEL_EFF_NOMINAL_TIERS = (0.70, 0.60, 0.50, 0.40, 0.30, 0.20)
+"""Round labels for the judge-quality tiers, by ladder POSITION.
+
+Once each eval type calibrates to its own targets, `alignment_target` takes
+3 x 6 = 18 distinct values and any legend keyed on it grows to 18 entries at
+arbitrary spacing -- which is what happened. The ladders are built so position
+k means the same judge-quality band in every eval type, so position is the
+thing worth labelling, and labelling it in round 0.1 steps keeps the legend
+readable and comparable across panels.
+
+The achieved score-level value is not lost: it stays in `alignment_value` and
+in the calibration CSV."""
+
+
+def _nominal_tier(eval_type: str, target: float) -> float:
+    """Map an eval type's own calibration target to its round ladder label.
+
+    Falls back to the target itself for anything not on a known ladder, so
+    callers outside the label-efficiency sweep are unaffected."""
+    lad = _LABEL_EFF_ALIGNMENT_TARGETS_BY_EVAL_TYPE.get(eval_type)
+    if not lad or len(lad) != len(_LABEL_EFF_NOMINAL_TIERS):
+        return float(target)
+    i = min(range(len(lad)), key=lambda k: abs(lad[k] - target))
+    return float(_LABEL_EFF_NOMINAL_TIERS[i])
 """Round, reader-legible judge-quality targets the label-efficiency
 check's noise axis is calibrated to hit, per eval type -- six points
 spanning "substantial/almost perfect" down to "fair" on the Landis & Koch
@@ -6418,7 +6451,7 @@ def run_ppi_label_efficiency_check(
                     _inv_h <= n_grid.min() + 1e-9 or _inv_h >= n_grid.max() - 1e-9))
                 results.append(LabelEfficiencyPoint(
                     eval_type=eval_type, judge_noise=noise, alignment_metric=metric_name,
-                    alignment_target=target, alignment_value=achieved,
+                    alignment_target=_nominal_tier(eval_type, target), alignment_value=achieved,
                     n_lab=r.n_lab, ppi_power=ppi_power, equiv_n_lab=equiv, n_reps=r.n_reps,
                     saturated=saturated, effect_frac=effect_frac, mult_lo=lo, mult_hi=hi,
                     rho2=_r2,
@@ -7544,7 +7577,8 @@ def save_ppi_label_efficiency_plots_per_method(
             _ic = bool(np.isfinite(_ih) and (_ih <= n_grid.min() + 1e-9 or _ih >= n_grid.max() - 1e-9))
             pts.append(LabelEfficiencyPoint(
                 eval_type=eval_type, judge_noise=nz, alignment_metric="rho2",
-                alignment_target=tier_of[k], alignment_value=val_of[k], n_lab=r.n_lab,
+                alignment_target=_nominal_tier(eval_type, tier_of[k]),
+                alignment_value=val_of[k], n_lab=r.n_lab,
                 n_reps=r.n_reps, ppi_power=pw, equiv_n_lab=eq,
                 effect_frac=_frac, mult_lo=lo, mult_hi=hi,
                 saturated=bool(np.isfinite(pw) and pw >= pg.max() - 1e-9),
