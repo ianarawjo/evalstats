@@ -120,3 +120,23 @@ sweep in `simulations/out/labeleff_rho2_full/`. The claim that rank-based PPI
 falls short of the mean-based bound is, as far as we know, novel -- no prior
 work applies PPI to rank statistics -- so it should be reported as a finding
 with the caveats above, not as a defect to be explained away.
+
+## See also: is this shortfall just our Gaussian DGP?
+
+Wilcoxon is ~5% less efficient than the paired t-test under normality (ARE =
+3/pi; McKean 2003) and *more* efficient under heavy tails, so the natural
+suspicion is that the shortfall recorded above is the textbook ARE in disguise,
+and that a different data-generating process would reverse it.
+
+It is not the ARE -- that cancels out of a within-method ratio, and both tests
+are measured falling equally short of their own bounds under a Gaussian DGP.
+But the suspicion is half right: **Gaussian judge errors are the one case where
+ranks lose.** Give the judge Laplace, t_3, or contaminated errors, holding
+Pearson fixed, and the rank penalty becomes a rank bonus large enough to flip
+which test wins on power. Our sims use `rng.normal` judge noise throughout, so
+the multipliers reported here are a *lower bound* for rank tests.
+
+Full write-up, supporting measurements, the practical judge-error-mode taxonomy,
+and a differential-bias mechanism that `rho_S^2` is structurally blind to:
+**`notes/RANK_PPI_TAIL_SENSITIVITY.md`** (reproduce with
+`python -m simulations.investigate_rank_ppi_tail_sensitivity`).
