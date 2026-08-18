@@ -303,3 +303,51 @@ carries ~26%. The clean 0.92-0.95 figures quoted above come from 3000
 replicates at fixed design points, not from a 60-rep sweep. Expect the sweep's
 variance_multiplier to become decisive around 300 reps (~11% SE) and not
 before.
+
+### A real Type I bug, which turns out NOT to be the cause
+
+An external analysis proposed that binary's overshoot is a calibration leak
+rather than an estimator or inversion problem: at a 2% flip rate the rectifier
+residuals are nonzero only on discordant items, so with probability
+~(1-p_disc)^n_lab a replicate sees NO discordance, the variance estimate
+degenerates, and the test rejects almost always -- inflating power and Type I
+alike, worst at small n_lab.
+
+**The Type I half is correct.** Measured under a true null (800 reps,
+alpha=0.05):
+
+    tier   n_lab   Type I   P(no discordance)
+    0.70      15    0.160        0.155
+    0.70      30    0.079        0.039
+    0.70      60    0.056        0.001
+    0.70     200    0.049        0.000
+    0.50     any    0.046-0.072  ~0
+    0.20     any    0.052-0.068  ~0
+
+Tier-specific, n_lab-dependent, and the excess (0.110) tracks P(no
+discordance) (0.155). This is a genuine calibration bug in its own right and
+should be fixed -- a variance floor, t critical values keyed to observed
+discordances, or a bootstrap that cannot collapse. Note the realised
+discordance rate is well above the nominal 2%, because
+_ppi_power_baseline_binary also applies a bias term that pulls the two flip
+probabilities apart.
+
+**But it does not explain the multiplier overshoot.** The analysis proposed
+its own validation -- bin the excess by n_lab and check it decays like
+(1-p_disc)^n_lab. It does the opposite:
+
+    n_lab      15     20     30     40     60     90    130    200
+    tier 0.70   0.973  1.137  1.306  1.195  1.174  1.320  1.408  1.344
+    Type I      0.160    --   0.079    --   0.056    --     --   0.049
+
+Spearman(excess, n_lab) = +0.881. The overshoot GROWS with n_lab while the
+Type I inflation shrinks; at n_lab=15, where the variance estimate degenerates
+most often, the multiplier is fine (0.973), and at n_lab=200, where Type I is
+exactly nominal, it is worst (1.344).
+
+So the two phenomena are separate. Whatever drives the multiplier excess
+scales with n_lab -- consistent with the classical-side story (higher n_lab ->
+higher PPI power -> inversion lands further up the flattening curve) rather
+than with variance degeneracy. That remains unresolved; note only that the
+leading candidate has now been tested and eliminated, by the test its own
+proposer suggested.
