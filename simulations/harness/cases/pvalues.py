@@ -7164,7 +7164,21 @@ def save_ppi_label_efficiency_plots_per_method(
             if not keys:
                 continue
             k = min(keys, key=lambda q: abs(q[2] - nz))
-            es = r.effect_size
+            # PPIComparisonResult.effect_size is the eval-type-RELATIVE
+            # FRACTION (see its docstring), not the absolute magnitude
+            # _classical_pooled_power_curve needs -- the pooled path in
+            # run_ppi_label_efficiency_check correctly uses
+            # sources[0].effect_size, the JudgeBiasSource field. Passing the
+            # fraction here built every per-method reference curve at the wrong
+            # effect size, in a different DIRECTION per eval type: continuous's
+            # true es is 0.018-0.042 so a 0.15 curve was far too powerful and
+            # every inversion clamped to the grid minimum (97% clamped, 0% well
+            # conditioned); likert's is 0.17-0.40 and binary's 0.13, so those
+            # curves were too weak and their inversions overshot (median 2.88
+            # and 1.62 against a target of 1.00). Pooled results were never
+            # affected.
+            es = (_jb_effect_magnitude_binary(_frac) if eval_type == "binary"
+                  else _jb_effect_magnitude(eval_type, _frac))
             pg = _smooth_monotone_power_curve(
                 n_grid, _classical_pooled_power_curve(eval_type, es, (method,), n_grid, ref_n_mc, seed))
             pw = r.rejects_ppi / r.n_reps if r.n_reps else float("nan")
