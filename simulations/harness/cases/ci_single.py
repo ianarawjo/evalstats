@@ -71,7 +71,10 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, eval_type_label, eval_type_group
+from ..latex_tables import (
+    booktabs_table, escape_latex, eval_type_label, eval_type_group,
+    coverage_cell, mark_best_and_runnerup,
+)
 from ..scenarios import CISource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -906,6 +909,13 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     group-pure method's row; an "all" Eval-types value was a symptom of
     exactly this, not a meaningful category of its own, so no row's Eval
     types column is ever "all" here.
+
+    Rows are grouped by eval-type group (all binary, then all numeric),
+    separated by a midrule, so each block's Score column can be marked with
+    the block's best (bold) and runner-up (underline) -- matching
+    ci_paired.latex_overall_summary's layout, for a consistent reading
+    convention across both tables. Coverage cells (aggregate and per-n) are
+    shaded by coverage_cell to flag miscalibration at a glance.
     """
     target = 1.0 - alpha
     eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
@@ -933,11 +943,23 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     for (g, m, _n) in agg:
         method_groups[m].add(g)
 
+    group_order = ["binary", "numeric"]
+    groups_present = sorted(
+        {g for methods in method_groups.values() for g in methods},
+        key=lambda g: group_order.index(g) if g in group_order else len(group_order),
+    )
+
     rows = []
-    for m in method_labels:
-        groups = sorted(method_groups[m])  # ["binary"], ["numeric"], or both
-        multi_group = len(groups) > 1
-        for g in groups:
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        group_start = len(rows)
+        score_vals: list[float] = []
+        for m in method_labels:
+            if g not in method_groups[m]:
+                continue
+            multi_group = len(method_groups[m]) > 1
             per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
             all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
             per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
@@ -961,7 +983,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
-                f"{mc:.3f}" if np.isfinite(mc) else "-",
+                coverage_cell(mc, target),
                 f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
@@ -971,8 +993,14 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             for n in sizes_present:
                 c_n, t_n = per_n_counts.get((m, n), (0, 0))
                 cov_n = c_n / t_n if t_n > 0 else float("nan")
-                row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+                row.append(coverage_cell(cov_n, target))
             rows.append(row)
+            score_vals.append(ms)
+
+        score_col = 4  # Method, Coverage, MC band, Mean width, Score
+        decorated = mark_best_and_runnerup([r[score_col] for r in rows[group_start:]], score_vals)
+        for i, cell in enumerate(decorated):
+            rows[group_start + i][score_col] = cell
 
     return booktabs_table(
         caption=(
@@ -985,6 +1013,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 

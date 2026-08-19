@@ -97,7 +97,7 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex
+from ..latex_tables import booktabs_table, escape_latex, coverage_cell, mark_best_and_runnerup
 from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -1359,7 +1359,13 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     from only that type's own data, rather than one row averaging across
     incomparable scales/regimes (see _report_eval_type_group's docstring for
     why this is now a 3-way split, not the 2-way binary/numeric split an
-    earlier version of this function used)."""
+    earlier version of this function used).
+
+    Within each eval-type block (separated by a midrule), the Score column's
+    best value is bold and the runner-up is underlined -- see
+    latex_tables.mark_best_and_runnerup. Coverage cells (aggregate and
+    per-n) are shaded by latex_tables.coverage_cell to flag miscalibration
+    at a glance."""
     target = 1.0 - alpha
     non_null = [r for r in results if not r.is_null]
     method_labels = [m.name for m in order_present_methods({r.method for r in non_null})]
@@ -1391,6 +1397,8 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     for g in groups_present:
         if rows:
             rule_before.add(len(rows))
+        group_start = len(rows)
+        score_vals: list[float] = []
         for m in method_labels:
             if g not in method_groups[m]:
                 continue
@@ -1417,7 +1425,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
-                f"{mc:.3f}" if np.isfinite(mc) else "-",
+                coverage_cell(mc, target),
                 f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
@@ -1427,8 +1435,14 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             for n in sizes_present:
                 c_n, t_n = per_n_counts.get((m, n), (0, 0))
                 cov_n = c_n / t_n if t_n > 0 else float("nan")
-                row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
+                row.append(coverage_cell(cov_n, target))
             rows.append(row)
+            score_vals.append(ms)
+
+        score_col = 4  # Method, Coverage, MC band, Mean width, Score
+        decorated = mark_best_and_runnerup([r[score_col] for r in rows[group_start:]], score_vals)
+        for i, cell in enumerate(decorated):
+            rows[group_start + i][score_col] = cell
 
     return booktabs_table(
         caption=(

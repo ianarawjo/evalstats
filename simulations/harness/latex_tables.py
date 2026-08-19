@@ -8,6 +8,8 @@ already aggregated for the plain-text report -- this module only formats.
 
 from __future__ import annotations
 
+import math
+
 NUMERIC_EVAL_TYPES = {"continuous", "likert", "grades"}
 
 
@@ -49,6 +51,64 @@ def eval_type_label(covered: set[str], all_present: set[str]) -> str:
     if covered == {"binary"}:
         return "binary"
     return ", ".join(sorted(covered))
+
+
+def coverage_cell(cov: float, target: float) -> str:
+    """Format a coverage value, shading it with \\cellcolor when it falls
+    outside the acceptable band around `target` -- so miscalibration is
+    visible at a glance instead of requiring the reader to parse every
+    number. Requires \\usepackage[table]{xcolor} in the including document.
+
+    Undercoverage (below `target - 0.001`) shades red; over-conservative
+    coverage (above `target + 0.02`) shades blue. Shading intensity scales
+    linearly with distance outside that band, from faint at the edge to
+    near-saturated at `target - 0.15` (red) or at 1.0 -- the hard ceiling a
+    coverage proportion can't exceed (blue) -- rather than a hard two-tier
+    cutoff, since a fixed threshold would make two adjacent values (e.g.
+    0.948 vs 0.950) look categorically different when they're barely
+    distinguishable.
+    """
+    if cov is None or not math.isfinite(cov):
+        return "-"
+    text = f"{cov:.3f}"
+    lower_bad = target - 0.001
+    upper_bad = target + 0.02
+    if cov < lower_bad:
+        red_anchor = target - 0.15
+        frac = min(1.0, (lower_bad - cov) / (lower_bad - red_anchor))
+        pct = round(15 + 50 * frac)
+        return f"\\cellcolor{{red!{pct}}}{text}"
+    if cov > upper_bad:
+        frac = min(1.0, (cov - upper_bad) / (1.0 - upper_bad))
+        pct = round(15 + 50 * frac)
+        return f"\\cellcolor{{blue!{pct}}}{text}"
+    return text
+
+
+def mark_best_and_runnerup(cells: list[str], values: list[float]) -> list[str]:
+    """Wrap the best (lowest) value's cell in \\textbf{}, and the runner-up's
+    in \\underline{} -- e.g. for one table block's Score column, where lower
+    is better. `cells` and `values` must be parallel; a non-finite value
+    (NaN/inf, i.e. no data for that row) is excluded from ranking but its
+    cell is still returned unmodified. Only the Score column gets this
+    treatment, not Coverage or Width -- Score already combines coverage-miss
+    and width into one number, so marking it alone gives a single unambiguous
+    "best" per block instead of risking Score and Coverage disagreeing on
+    which row wins.
+    """
+    ranked = sorted(
+        (i for i, v in enumerate(values) if v is not None and math.isfinite(v)),
+        key=lambda i: values[i],
+    )
+    out = list(cells)
+    if not ranked:
+        return out
+    best = ranked[0]
+    out[best] = f"\\textbf{{{cells[best]}}}"
+    if len(ranked) > 1:
+        runner_up = ranked[1]
+        out[runner_up] = f"\\underline{{{cells[runner_up]}}}"
+    return out
 
 
 def booktabs_table(
