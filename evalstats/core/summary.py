@@ -1504,6 +1504,24 @@ def _print_pairwise_section(
         )
         pair_low = -pair_max_abs
         pair_high = pair_max_abs
+        # Clamp the shared axis ONCE for the whole block, not per row. A single
+        # unbounded pair (paired._degenerate_pair_ci on zero-variance
+        # differences with no declared score_range) makes pair_max_abs
+        # infinite, and letting each row fall back to its own finite window
+        # would silently put the rows on different scales -- two intervals of
+        # identical width drawn at different lengths -- while the legend still
+        # advertises one axis. The whole point of a shared axis is that bars
+        # are comparable down the column, so the finite rows must keep sharing
+        # it and the legend must report the axis actually drawn.
+        if not (np.isfinite(pair_low) and np.isfinite(pair_high)):
+            _cands: list[float] = []
+            for row in rows[:max_pairs]:
+                for key in ("point_diff", "ci_low", "ci_high"):
+                    _cands.append(float(row[key]))
+                _cands.append(float(row["point_diff"] - row["std_diff"]))
+                _cands.append(float(row["point_diff"] + row["std_diff"]))
+            _cands.append(0.0)  # the zero reference is always drawn
+            pair_low, pair_high = _finite_axis(pair_low, pair_high, tuple(_cands))
         # gradient mode always produces a gradient (synthesized when multi_ci is absent)
         _any_multi_ci = (style == "gradient") or any(
             row.get("multi_ci") is not None for row in rows[:max_pairs]
@@ -2491,6 +2509,36 @@ def _synth_multi_ci_from_se(
     }
 
 
+def _finite_axis(
+    axis_low: float,
+    axis_high: float,
+    candidates: tuple[float, ...],
+) -> tuple[float, float]:
+    """Return a finite (axis_low, axis_high) for the ASCII interval plots.
+
+    Substitutes the spread of whatever finite values the row does carry when a
+    supplied bound is non-finite, and falls back to a unit window around 0 when
+    nothing finite is available. Purely a drawing concern -- the printed
+    numeric bounds are untouched.
+    """
+    lo, hi = float(axis_low), float(axis_high)
+    if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+        return lo, hi
+    finite = [float(c) for c in candidates if c is not None and np.isfinite(float(c))]
+    if np.isfinite(lo):
+        finite.append(lo)
+    if np.isfinite(hi):
+        finite.append(hi)
+    if not finite:
+        return -1.0, 1.0
+    f_lo, f_hi = min(finite), max(finite)
+    if f_hi <= f_lo:
+        pad = max(abs(f_lo), 1.0) * 0.5
+        return f_lo - pad, f_hi + pad
+    pad = (f_hi - f_lo) * 0.15
+    return f_lo - pad, f_hi + pad
+
+
 def _choose_interval_line(
     *,
     mean: float,
@@ -2506,7 +2554,31 @@ def _choose_interval_line(
     multi_ci: Optional[dict[float, tuple[float, float]]] = None,
 ) -> str:
     """Dispatch to gradient or line renderer based on style and data availability."""
+    # A non-finite bound is a real result, not a bug: paired._degenerate_pair_ci
+    # reports (-inf, +inf) for a zero-variance difference on unbounded data,
+    # where no finite interval has guaranteed coverage. Both renderers map a
+    # value onto an axis via (x - axis_low) / (axis_high - axis_low), which is
+    # NaN when the axis itself is infinite, so clamp the drawn axis to the
+    # finite information in the row. The interval still *prints* as -inf/inf in
+    # the CI Low/CI High columns -- this only bounds the little ASCII plot, and
+    # an interval that runs off both ends of it is the correct picture.
+    axis_low, axis_high = _finite_axis(
+        axis_low, axis_high,
+        candidates=(mean, ci_low, ci_high, spread_low, spread_high, reference),
+    )
     effective_multi_ci = multi_ci
+    if not (np.isfinite(ci_low) and np.isfinite(ci_high)):
+        # The primary interval is unbounded, but the gradient bands handed in
+        # can still be zero-width: paired.py builds its `mci` dict per alpha
+        # from the method's own CI function, and t_interval_ci_1d keeps its
+        # (mean, mean) contract on a zero-variance sample. The renderer
+        # normally trusts multi_ci over the primary CI, which here would draw
+        # a single opaque block at the point estimate -- the exact picture of
+        # false certainty this branch exists to retract -- immediately beside
+        # a printed -inf/+inf. Drop the bands and draw the primary interval,
+        # so the plot says what the numbers say. Whether that marginal
+        # contract should itself move is a separate, statistical question.
+        effective_multi_ci = None
     if style == "gradient" and effective_multi_ci is None:
         # Synthesize gradient from the primary CI via normal z-scaling.
         # Appropriate for Wald-type CIs (LMM); a reasonable approximation elsewhere.
@@ -3709,6 +3781,23 @@ def _print_next_steps_guidance(
     gaps = [abs(float(r.point_diff)) for r in pair_results]
     max_ci_half = max(ci_halves)
     max_gap = max(gaps)
+
+    if not np.isfinite(max_ci_half):
+        # An unbounded interval -- paired._degenerate_pair_ci reports
+        # (-inf, +inf) for a pair whose per-input differences are all
+        # identical when the metric has no declared bounds. Every branch
+        # below scales a target sample size by max_ci_half, so they would
+        # either print "~inf" as guidance or, where the projection is
+        # rounded to an int, raise OverflowError outright. The useful advice
+        # here isn't about sample size at all: bounds are what make the
+        # interval finite, so ask for them and stop.
+        print()
+        print("  At least one comparison has an unbounded interval: its per-input")
+        print("  differences are all identical, and this metric has no declared")
+        print("  range, so its mean can't be bounded at any confidence level.")
+        print("  More inputs won't resolve that on their own -- pass")
+        print("  score_range=(min, max) to get a finite interval.")
+        return
 
     # Entity-level grouping — mirrors the executive summary leaderboard
     labels = list(bundle.rank_dist.labels)

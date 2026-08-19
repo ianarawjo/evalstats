@@ -136,6 +136,74 @@ def is_binary_scores(scores: np.ndarray) -> bool:
     return bool(np.all((finite == 0.0) | (finite == 1.0)))
 
 
+def binary_routing_applies(
+    scores: np.ndarray,
+    score_range: Optional[tuple[float, float]] = None,
+    *,
+    stacklevel: int = 3,
+) -> bool:
+    """Whether all-{0, 1} *scores* should route to the binary CI methods.
+
+    :func:`is_binary_scores` answers a question about the *sample*: are these
+    values all 0 or 1? Routing needs the question about the *population*: is
+    this metric Bernoulli? Those come apart whenever the caller has declared a
+    ``score_range`` wider than [0, 1] -- a 1-5 Likert scale where every
+    response landed on the floor, or a 0-100 grade where this particular
+    sample happens to contain only 0s and 1s. Treating those as Bernoulli
+    repeats the mistake :func:`degenerate_sample_ci` exists to avoid: reading
+    the sample's observed support as the population's support, when the
+    caller has explicitly said the metric ranges wider. The consequences are
+    concrete -- an all-floor 1-5 Likert sample used to get Wilson's
+    ``[0.886, 1.0]``, whose lower bound sits *below* the scale's minimum and
+    which opens downward from data that can only go up.
+
+    So an explicitly passed ``score_range`` wins: it is a direct statement
+    about the metric, while binary detection is an inference from the values
+    that happened to be sampled. A ``score_range`` of exactly (0, 1) agrees
+    with the detection and changes nothing, and passing nothing at all leaves
+    auto-detection fully in charge -- the overwhelmingly common case, which
+    behaves exactly as before.
+
+    Parameters
+    ----------
+    scores : np.ndarray
+        Any-shape score array.
+    score_range : (float, float), optional
+        The metric's declared bounds, or None if the caller didn't say.
+    stacklevel : int
+        Passed through to ``warnings.warn`` so the override is reported at
+        the user's own call site.
+
+    Returns
+    -------
+    bool
+        True to use the binary methods (Wilson/Newcombe/Tango), False to fall
+        through to the bounds-aware continuous/Likert routing.
+    """
+    if not is_binary_scores(scores):
+        return False
+    if score_range is None:
+        return True
+    lo, hi = float(score_range[0]), float(score_range[1])
+    if lo == 0.0 and hi == 1.0:
+        return True
+    warnings.warn(
+        f"All scores are 0 or 1, which would normally auto-detect as binary "
+        f"data, but score_range={score_range} was given explicitly -- so this "
+        "is being treated as bounded numeric data on that scale, not as a "
+        "Bernoulli metric. The explicit range wins because a sample "
+        "containing only 0s and 1s doesn't establish that the metric can't "
+        "take other values (e.g. every response landing on a Likert scale's "
+        "floor, or a 0-100 grade where this sample happened to score only 0 "
+        "or 1); the binary methods would treat that unseen headroom as "
+        "impossible. Drop score_range (or pass score_range=(0, 1)) if the "
+        "metric really is binary.",
+        UserWarning,
+        stacklevel=stacklevel,
+    )
+    return False
+
+
 def detect_quantization_step(scores: np.ndarray) -> Optional[float]:
     """Detect whether *scores* sit on a consistent quantization grid (e.g.
     integer-valued Likert responses, or a percentage grade rounded to whole
@@ -625,6 +693,11 @@ def beta_ci_1d(
     vals = np.asarray(values, dtype=float)
     x_bar = float(np.mean(vals))
     s2 = float(np.var(vals, ddof=1))
+    if n > 1 and float(np.ptp(vals)) == 0.0:
+        # Constant sample: the MOM fit is undefined and the t-interval this
+        # used to fall back to is itself zero-width here. Same binomial
+        # worst-case bound logit_t_ci_1d uses -- see degenerate_sample_ci.
+        return degenerate_sample_ci(float(vals[0]), n, alpha)
     if s2 <= 0.0 or not np.isfinite(s2) or x_bar <= 0.0 or x_bar >= 1.0:
         return t_interval_ci_1d(vals, alpha)
     # Method-of-moments: concentration κ = a+b from mean and variance
@@ -646,6 +719,76 @@ _LOGIT_T_BOUNDARY_EPS = 1e-9
 """Tolerance for treating an out-of-[0,1] value as floating-point rounding
 noise (e.g. 1.0000000000000004 from an upstream `score * scale` rescale)
 rather than genuinely bad data -- see logit_t_ci_1d's docstring."""
+
+
+def degenerate_sample_ci(
+    value: float, n: int, alpha: float, lo: float = 0.0, hi: float = 1.0,
+) -> tuple[float, float]:
+    """Conservative CI for E[X] when all *n* observed values are identical.
+
+    A zero-variance sample carries no information about spread, so every
+    variance-driven interval (the delta method, the t-interval, any
+    resampling scheme) degenerates to zero width and covers the truth with
+    probability 0 whenever the population isn't genuinely a point mass. That
+    isn't a rounding artifact -- it's the honest answer to the wrong
+    question. The right question is what the sample *does* pin down.
+
+    Treat "X == value" as a Bernoulli success. Observing n successes out of n
+    gives the exact (Clopper-Pearson) lower confidence bound
+
+        p = P(X = value) >= (alpha/2) ** (1/n)
+
+    and the remaining 1-p of the mass is unconstrained within the metric's
+    known bounds [lo, hi]. So
+
+        E[X]  in  [p*value + (1-p)*lo,  p*value + (1-p)*hi]
+
+    covers E[X] for *any* configuration of that unseen mass whenever the
+    bound on p holds: the interval's endpoints are attained exactly at the
+    worst cases (all remaining mass at lo, or all at hi), and both endpoints
+    move monotonically in p (the gap between the truth and the endpoint is
+    (p - p_lo)*(value - lo) >= 0 at the bottom and (p - p_lo)*(value - hi)
+    <= 0 at the top). And when the bound fails -- true p < p_lo -- a
+    degenerate sample only arises with probability p**n < alpha/2 in the
+    first place, so the branch contributes at most alpha/2 to the overall
+    miss rate.
+
+    For all-successes binary data (value == hi == 1, lo == 0) this reduces to
+    exactly the two-sided Clopper-Pearson interval [(alpha/2)**(1/n), 1],
+    which is the answer the binary methods already give -- so the bounded
+    continuous path and the binary path agree at the boundary instead of
+    disagreeing by the full width of the interval.
+
+    The price is conservatism: width is (1-p)*(hi-lo), roughly
+    ln(2/alpha)*(hi-lo)/n -- about 0.15 at n=25 on a [0,1] metric, shrinking
+    like 1/n. That is the correct price for a sample that shows no spread at
+    all, and it is only ever paid on samples that would otherwise have been
+    reported with false certainty.
+
+    Parameters
+    ----------
+    value : float
+        The single value every observation took, assumed within [lo, hi].
+    n : int
+        Number of observations (>= 1).
+    alpha : float
+        Significance level (1 - confidence level).
+    lo, hi : float
+        The metric's known bounds. Callers working on a rescaled [0, 1] axis
+        (see ``stats_utils.rescaled_ci``) should leave these at the default
+        and let the wrapper map the result back.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        Interval clamped to [lo, hi].
+    """
+    if n < 1:
+        return (lo, hi)
+    p = float(alpha / 2.0) ** (1.0 / n)
+    ci_low = p * value + (1.0 - p) * lo
+    ci_high = p * value + (1.0 - p) * hi
+    return (max(lo, ci_low), min(hi, ci_high))
 
 
 def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[float, float]:
@@ -725,6 +868,22 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[flo
     in either -- the noisy third-moment estimate at small n cancels out any
     theoretical gain -- so it isn't offered as an option.
 
+    A **zero-variance sample** (every value identical, which includes the
+    all-0s and all-1s boundary cases) is handed to
+    :func:`degenerate_sample_ci` rather than being reported as the zero-width
+    interval the delta method implies. This matters on saturated metrics: on
+    a one-inflated DGP at 95% inflation, 36% of n=20 samples come out
+    constant, and before this fallback existed those reps dragged marginal
+    coverage from a nominal 95% down to 60% -- while coverage *conditional*
+    on a non-degenerate sample stayed at 94.6%. The transform was never the
+    problem; the zero-width branch was, and it is shared with
+    ``t_interval``/``beta``/the bootstrap methods rather than being specific
+    to logit-t. See ``simulations/harness/scenarios/synthetic.py``'s
+    ``cont-{zero,one}-inflated-extreme`` shapes, added so the suite actually
+    reaches the regime where this fires (the pre-existing 70%-inflation
+    shapes produce a constant sample <3% of the time even at n=10, which is
+    why routine sweeps gave a clean bill of health here).
+
     Parameters
     ----------
     values : np.ndarray
@@ -759,7 +918,15 @@ def logit_t_ci_1d(values: np.ndarray, alpha: float, order: int = 1) -> tuple[flo
         vals = np.clip(vals, 0.0, 1.0)
     x_bar = float(np.mean(vals))
     se = float(np.std(vals, ddof=1)) / np.sqrt(n)
+    if float(np.ptp(vals)) == 0.0:
+        # Zero-variance sample (all values identical -- including the all-0s
+        # and all-1s boundary cases). The delta method has nothing to
+        # propagate here and would report a zero-width interval; hand off to
+        # the binomial worst-case bound instead. See degenerate_sample_ci.
+        return degenerate_sample_ci(float(vals[0]), n, alpha)
     if se <= 0.0 or not np.isfinite(se) or x_bar <= 0.0 or x_bar >= 1.0:
+        # Only reachable now for non-finite input (NaN/inf), since within
+        # [0, 1] both x_bar == 0 and x_bar == 1 imply a constant sample.
         return (x_bar, x_bar)
     # Delta method: SE of logit(x̄) ≈ SE(x̄) / (x̄(1−x̄))
     logit_mean = float(np.log(x_bar / (1.0 - x_bar)))

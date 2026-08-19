@@ -20,7 +20,11 @@ from evalstats.core.paired import (
     _joint_bootstrap_critical_value,
     all_pairwise,
 )
-from evalstats.core.resampling import tango_paired_ci, tango_paired_ci_from_diffs
+from evalstats.core.resampling import (
+    degenerate_sample_ci,
+    tango_paired_ci,
+    tango_paired_ci_from_diffs,
+)
 
 
 def _rng(seed: int = 0) -> np.random.Generator:
@@ -630,14 +634,50 @@ def test_bonferroni_empty_pairs_returns_empty():
     assert _bonferroni_simultaneous_cis({}, [], ci=0.95) == {}
 
 
-def test_bonferroni_degenerate_zero_variance():
-    """When all diffs are identical, SE=0; CI should degenerate to a point."""
+def test_bonferroni_degenerate_zero_variance_unbounded_is_infinite():
+    """When all diffs are identical, SE=0 and no variance-driven interval is
+    computable. With no bounds on the data there is nothing left to fall back
+    on, so the CI is (-inf, +inf) -- explicitly NOT the zero-width point
+    interval this used to return, which claimed certainty from a sample that
+    contains no spread at all."""
     scores = np.ones((2, 30))
     labels = ["a", "b"]
     results, pairs = _make_results(scores, labels)
-    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
+    with pytest.warns(UserWarning, match="zero variance"):
+        cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95)
     lo, hi = cis[pairs[0]]
-    assert lo == hi
+    assert lo == -np.inf and hi == np.inf
+
+
+def test_bonferroni_degenerate_zero_variance_bounded_is_finite_and_wide():
+    """Given the diff bounds, the same zero-variance pair gets the conservative
+    Clopper-Pearson-based bound instead of an infinite (or zero-width) one."""
+    scores = np.ones((2, 30))
+    labels = ["a", "b"]
+    results, pairs = _make_results(scores, labels)
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95, diff_bounds=(-1.0, 1.0))
+    lo, hi = cis[pairs[0]]
+    assert np.isfinite(lo) and np.isfinite(hi)
+    assert lo < hi, "zero-variance pair must not get a zero-width interval"
+    assert -1.0 <= lo <= 0.0 <= hi <= 1.0
+    # Matches resampling.degenerate_sample_ci at the Bonferroni-adjusted alpha
+    # (k=1 here, so alpha_adj == alpha).
+    expected = degenerate_sample_ci(0.0, 30, 0.05, -1.0, 1.0)
+    np.testing.assert_allclose((lo, hi), expected, atol=1e-12)
+
+
+def test_bonferroni_degenerate_constant_nonzero_offset_covers_zero():
+    """The reported failure: two arms with a constant offset (A = 0.9, B = 0.8
+    on every item). The pair is the only one in the family, so it skips
+    Sidak/boot entirely and lands on the Bonferroni fallback. It must not come
+    back as (0.1, 0.1)."""
+    scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8)])
+    labels = ["a", "b"]
+    results, pairs = _make_results(scores, labels, method="logit_t", score_range=(0.0, 1.0))
+    cis = _bonferroni_simultaneous_cis(results, pairs, ci=0.95, diff_bounds=(-1.0, 1.0))
+    lo, hi = cis[pairs[0]]
+    assert lo < 0.1 < hi, f"expected an interval around 0.1, got ({lo}, {hi})"
+    assert hi - lo > 0.05
 
 
 # --- Router tests ---
@@ -1025,3 +1065,103 @@ def test_sidak_simultaneous_coverage_near_nominal():
         f"Sidak(tango) simultaneous coverage {coverage:.3f} outside [0.85, 1.00]; "
         f"expected >= {ci_level}."
     )
+
+
+def test_router_two_arm_constant_offset_does_not_override_with_zero_width():
+    """End-to-end through all_pairwise: exactly two arms with a constant offset
+    (the k=1 case, which skips Sidak/boot by construction and always lands on
+    the Bonferroni fallback). The simultaneous CI must not replace the
+    method's own interval with a zero-width one at the point estimate."""
+    scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8)])
+    mat = all_pairwise(
+        scores, ["a", "b"], method="logit_t", score_range=(0.0, 1.0),
+        multi_ci=True, rng=_rng(0),
+    )
+    assert mat.simultaneous_ci_method == "bonferroni"
+    r = mat.results[("a", "b")]
+    assert r.ci_low < r.ci_high, "zero-width simultaneous CI on a k=1 comparison"
+    assert r.ci_low < r.point_diff < r.ci_high
+    # k=1 makes Bonferroni's adjustment an exact no-op, so the simultaneous CI
+    # should land on the method's own interval at the same alpha rather than
+    # overriding it.
+    np.testing.assert_allclose((r.ci_low, r.ci_high), r.multi_ci[0.05], atol=1e-12)
+
+
+def test_router_k3_constant_offset_wider_than_k1():
+    """The same degenerate pair inside a 3-arm family gets a *wider* interval
+    (alpha/3 rather than alpha), not a narrower or zero-width one."""
+    k1 = all_pairwise(
+        np.vstack([np.full(30, 0.9), np.full(30, 0.8)]), ["a", "b"],
+        method="logit_t", score_range=(0.0, 1.0), rng=_rng(0),
+    ).results[("a", "b")]
+    k3 = all_pairwise(
+        np.vstack([np.full(30, 0.9), np.full(30, 0.8), np.full(30, 0.7)]), ["a", "b", "c"],
+        method="logit_t", score_range=(0.0, 1.0), rng=_rng(0),
+    ).results[("a", "b")]
+    assert k3.ci_low < k3.ci_high
+    assert (k3.ci_high - k3.ci_low) > (k1.ci_high - k1.ci_low)
+
+
+def test_router_mixed_family_degenerate_pair_stays_finite():
+    """One degenerate pair alongside two ordinary ones: the ordinary pairs keep
+    their normal intervals and the degenerate one is not zero-width."""
+    rng = _rng(3)
+    scores = np.vstack([np.full(30, 0.9), np.full(30, 0.8), rng.uniform(0.2, 0.6, 30)])
+    mat = all_pairwise(
+        scores, ["a", "b", "c"], method="logit_t", score_range=(0.0, 1.0),
+        n_bootstrap=400, rng=_rng(0),
+    )
+    for pair, r in mat.results.items():
+        assert np.isfinite(r.ci_low) and np.isfinite(r.ci_high), pair
+        assert r.ci_low < r.ci_high, f"{pair}: zero-width simultaneous CI"
+
+
+def test_router_binary_degenerate_pair_uses_binary_diff_bounds():
+    """All-1 vs all-0 binary arms: diffs are a constant +1, the extreme of the
+    [-1, 1] diff support, so the interval runs up to (but not past) 1."""
+    scores = np.vstack([np.ones(30), np.zeros(30)])
+    mat = all_pairwise(scores, ["a", "b"], method="tango", rng=_rng(0))
+    r = mat.results[("a", "b")]
+    assert r.ci_low < 1.0 and r.ci_high == pytest.approx(1.0)
+    assert r.ci_low > 0.0
+
+
+def test_router_unbounded_degenerate_pair_not_zero_width_on_boot_route():
+    """Unbounded data, k=3, one degenerate pair among two ordinary ones: the
+    joint bootstrap succeeds (the other pairs carry variance), so the family
+    does NOT reach the Bonferroni fallback. The degenerate pair must still not
+    come back zero-width -- t_interval_ci_1d, the bounds-agnostic ci_func,
+    keeps its own (mean, mean) contract, so the router wraps it."""
+    rng = _rng(3)
+    scores = np.vstack([np.full(30, 9.0), np.full(30, 8.0), rng.normal(5.0, 2.0, 30)])
+    with pytest.warns(UserWarning, match="zero variance"):
+        mat = all_pairwise(
+            scores, ["a", "b", "c"], method="t_interval",
+            n_bootstrap=400, rng=_rng(0),
+        )
+    assert mat.simultaneous_ci_method == "boot"
+    deg = mat.results[("a", "b")]
+    assert (deg.ci_low, deg.ci_high) == (-np.inf, np.inf)
+    for pair in (("a", "c"), ("b", "c")):
+        r = mat.results[pair]
+        assert np.isfinite(r.ci_low) and np.isfinite(r.ci_high)
+        assert r.ci_low < r.point_diff < r.ci_high
+
+
+def test_router_unbounded_degenerate_pair_sidak_route_matches_boot():
+    """Same, forced onto the Sidak route -- both k>=3 constructions share the
+    wrapped ci_func, so neither can emit a zero-width interval."""
+    rng = _rng(3)
+    scores = np.vstack([np.full(20, 9.0), np.full(20, 8.0), rng.normal(5.0, 2.0, 20)])
+    with pytest.warns(UserWarning, match="zero variance"):
+        cis, used, _ = _simultaneous_cis_router(
+            scores=scores,
+            results=all_pairwise(scores, ["a", "b", "c"], method="t_interval",
+                                 simultaneous_ci=False, rng=_rng(0)).results,
+            pairs=[("a", "b"), ("a", "c"), ("b", "c")],
+            labels=["a", "b", "c"], method="t_interval", ci=0.95,
+            n_bootstrap=400, rng=_rng(0), statistic="mean", prefer="sidak",
+        )
+    assert used == "sidak"
+    assert cis[("a", "b")] == (-np.inf, np.inf)
+    assert np.isfinite(cis[("a", "c")][0])

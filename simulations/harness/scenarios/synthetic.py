@@ -222,6 +222,25 @@ CONTINUOUS_SHAPES: list[ShapeSpec] = [
         custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.70, 1.0, rng.beta(4.0, 2.0, n)),
     ),
     ShapeSpec(
+        "cont-one-inflated-extreme", "continuous", "custom", suite_tier="expanded",
+        # 95% flat ones -- a saturated/ceilinged metric (a benchmark a strong
+        # model has essentially solved). This exists specifically to reach the
+        # regime where a *whole sample* comes out constant: at 95% inflation
+        # that happens for 36% of n=20 samples and 7% of n=50 samples, versus
+        # <3% at n=10 for the 70%-inflated shapes above -- which is why the
+        # 70% shapes gave every variance-driven CI method a clean bill of
+        # health on a failure mode that collapses their coverage to ~60%.
+        # See resampling.degenerate_sample_ci.
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.95, 1.0, rng.beta(4.0, 2.0, n)),
+    ),
+    ShapeSpec(
+        "cont-zero-inflated-extreme", "continuous", "custom", suite_tier="expanded",
+        # 95% flat zeros -- the floor mirror of the shape above (a metric
+        # almost everything scores 0 on, e.g. an exact-match rate on a hard
+        # task). Same degenerate-sample rates, same purpose.
+        custom_sampler=lambda rng, n: np.where(rng.random(n) < 0.95, 0.0, rng.beta(2.0, 4.0, n)),
+    ),
+    ShapeSpec(
         "cont-mixture", "continuous", "custom", suite_tier="expanded",
         # Two different Beta populations blended together (55%/45%) instead
         # of one -- e.g. an eval where two distinct strategies get used.

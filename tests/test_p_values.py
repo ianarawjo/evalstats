@@ -510,3 +510,71 @@ class TestCLIOutputShowsPValues:
         # Explicit defaults: both false/auto → no p-value column.
         out = self._run(tmp_path, capsys, {"p_values": False, "pairwise_test": "auto"})
         assert not _has_p_column(out)
+
+
+# ---------------------------------------------------------------------------
+# Zero-variance paired differences (see paired._paired_t_pvalue)
+# ---------------------------------------------------------------------------
+
+class TestDegenerateDiffPValue:
+    """A constant non-zero difference vector drives the paired t statistic to
+    infinity, so scipy returns exactly 0.0 -- certainty from a sample with no
+    variance estimate in it. The t/logit-t/NIG paths floor that at the exact
+    two-sided sign-test p-value instead, matching what the binary/Tango and
+    sign_test paths already report on the same input."""
+
+    @staticmethod
+    def _scores(n=30, a=0.9, b=0.8):
+        return np.vstack([np.full(n, a), np.full(n, b)])
+
+    @pytest.mark.parametrize(
+        "method,kwargs",
+        [
+            ("t_interval", {}),
+            ("logit_t", {"score_range": (0.0, 1.0)}),
+            ("nig", {"score_range": (0.0, 1.0)}),
+        ],
+    )
+    def test_constant_offset_p_is_sign_test_not_zero(self, method, kwargs):
+        from evalstats.core.paired import pairwise_differences
+
+        n = 30
+        r = pairwise_differences(
+            self._scores(n), 0, 1, "a", "b", method=method, **kwargs
+        )
+        assert r.p_value > 0.0, "p of exactly 0 from a zero-variance sample"
+        assert r.p_value == pytest.approx(2.0 ** (1 - n))
+
+    def test_matches_sign_test_path_on_the_same_data(self):
+        from evalstats.core.paired import pairwise_differences
+
+        scores = self._scores()
+        p_logit = pairwise_differences(
+            scores, 0, 1, "a", "b", method="logit_t", score_range=(0.0, 1.0)
+        ).p_value
+        p_sign = pairwise_differences(
+            scores, 0, 1, "a", "b", method="sign_test"
+        ).p_value
+        assert p_logit == pytest.approx(p_sign)
+
+    def test_all_zero_diffs_still_p_one(self):
+        from evalstats.core.paired import pairwise_differences
+
+        scores = self._scores(a=0.8, b=0.8)
+        r = pairwise_differences(
+            scores, 0, 1, "a", "b", method="logit_t", score_range=(0.0, 1.0)
+        )
+        assert r.p_value == pytest.approx(1.0)
+
+    def test_non_degenerate_p_value_untouched(self):
+        """The floor is scoped to zero-variance diffs -- a genuinely tiny
+        t-test p-value from data that has spread is left alone."""
+        from evalstats.core.paired import pairwise_differences
+        from evalstats.tests import ttest as _ttest
+
+        rng = np.random.default_rng(11)
+        scores = np.vstack([rng.normal(0.9, 0.01, 40), rng.normal(0.8, 0.01, 40)])
+        r = pairwise_differences(scores, 0, 1, "a", "b", method="t_interval")
+        expected = float(_ttest(scores[0], scores[1], paired=True, print_result=False).p_value)
+        assert r.p_value == pytest.approx(expected)
+        assert r.p_value < 2.0 ** (1 - 40)

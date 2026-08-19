@@ -801,7 +801,7 @@ def resolve_auto_robustness_method(
     tuple[str, str, tuple[float, float] or None, str]
         ``(pairwise_method, robustness_method, resolved_score_range, data_kind)``.
     """
-    from .resampling import is_binary_scores, resolve_score_bounds, detect_quantization_step
+    from .resampling import binary_routing_applies, resolve_score_bounds, detect_quantization_step
 
     if run_scores.ndim == 3:
         R = run_scores.shape[2]
@@ -814,7 +814,9 @@ def resolve_auto_robustness_method(
         raise ValueError(f"eval_type must be 'likert', 'continuous', or None, got {eval_type!r}")
 
     resolved_score_range: Optional[tuple[float, float]] = None
-    if is_binary_scores(run_scores):
+    # An explicitly passed score_range wider than [0, 1] overrides binary
+    # auto-detection (and says so) -- see binary_routing_applies.
+    if binary_routing_applies(run_scores, score_range, stacklevel=stacklevel + 1):
         data_kind = "binary"
         if eval_type is not None:
             warnings.warn(

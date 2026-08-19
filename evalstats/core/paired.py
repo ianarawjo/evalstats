@@ -47,6 +47,8 @@ from .resampling import (
     logit_t_ci_1d,
     nig_ci_1d,
     bayes_paired_diff_ci,
+    binary_routing_applies,
+    degenerate_sample_ci,
     is_binary_scores,
     is_lopsided_binary,
     _stat,
@@ -399,6 +401,54 @@ class PairwiseMatrix:
                 if i != j:
                     mat[i, j] = self.get(a, b).point_diff
         return mat
+
+
+def _paired_t_pvalue(
+    values_a: np.ndarray, values_b: np.ndarray, diffs: np.ndarray,
+) -> float:
+    """Paired t-test p-value, with an exact sign-test floor on zero-variance
+    differences.
+
+    Delegates to :func:`evalstats.tests.ttest`'s uncorrected paired path so
+    the scipy call has a single implementation, then guards the one input
+    where that p-value is not just imprecise but degenerate: a **constant
+    non-zero** difference vector (every ``a_i - b_i`` identical, e.g. arm A
+    scores 0.9 on every item and arm B scores 0.8). There ``s = 0``, so
+    ``t = d/(s/sqrt(M))`` diverges and scipy returns exactly ``0.0`` --
+    certainty that the effect is non-zero, obtained from a sample that
+    contains no variance estimate at all.
+
+    That number is indefensible on its own terms, and it also sits badly
+    next to the companion interval, which on this same input is now the
+    deliberately wide :func:`~evalstats.core.resampling.degenerate_sample_ci`
+    bound (see :func:`_bonferroni_simultaneous_cis`) and can straddle 0. The
+    two are not actually in conflict -- they answer different questions: an
+    all-same-sign difference vector *does* rule out a null symmetric about
+    0, while still leaving the *mean* unbounded away from 0, because the
+    unobserved tail mass the CI has to allow for could sit anywhere in the
+    metric's range. But that reading only survives if the p-value is a real
+    number from a stated test rather than a divide-by-zero artifact.
+
+    The replacement is :func:`~evalstats.tests._paired_sign_test_p`, the
+    exact two-sided sign test, which on M identical non-zero differences is
+    ``binomtest(M, M, 0.5) = 2 * 0.5**M``. This is the strongest claim the
+    data supports without a variance estimate -- it uses only the signs,
+    which is all a zero-spread sample actually pins down -- and it is not a
+    new convention here: the binary/Tango and ``sign_test`` paths already
+    report exactly this number on the same input (2**-29 at M=30), so this
+    makes the continuous paths agree with them instead of reporting 0.
+
+    Applied as ``max()`` rather than a straight substitution, so it can only
+    ever widen the p-value, and only on the degenerate branch -- a genuinely
+    tiny t-test p-value from data that *does* have spread is left alone.
+    """
+    t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
+    p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
+    if len(diffs) >= 1 and float(np.ptp(diffs)) == 0.0:
+        # Zero-variance differences. (_paired_sign_test_p itself returns 1.0
+        # for the all-zero case, which is the right answer there too.)
+        return max(p_value, _paired_sign_test_p(diffs))
+    return p_value
 
 
 def pairwise_differences(
@@ -765,10 +815,7 @@ def pairwise_differences(
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         ci_low, ci_high = t_interval_ci_1d(diffs, alpha_val)
-        # Delegates to evalstats.tests.ttest (uncorrected paired path) so the
-        # scipy call has a single implementation.
-        t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
-        p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
+        p_value = _paired_t_pvalue(values_a, values_b, diffs)
         mci = {_a: t_interval_ci_1d(diffs, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
@@ -804,8 +851,7 @@ def pairwise_differences(
         diff_span = (score_range[1] - score_range[0]) if score_range is not None else 1.0
         diff_lo, diff_hi = -diff_span, diff_span
         ci_low, ci_high = rescaled_ci(logit_t_ci_1d, diffs, alpha_val, diff_lo, diff_hi)
-        t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
-        p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
+        p_value = _paired_t_pvalue(values_a, values_b, diffs)
         mci = (
             {_a: rescaled_ci(logit_t_ci_1d, diffs, _a, diff_lo, diff_hi) for _a in GRADIENT_CI_ALPHAS}
             if multi_ci else None
@@ -843,8 +889,7 @@ def pairwise_differences(
         diff_lo, diff_hi = -diff_span, diff_span
         _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
         ci_low, ci_high = rescaled_ci(_nig_paired, diffs, alpha_val, diff_lo, diff_hi)
-        t_result = _es_ttest(values_a, values_b, paired=True, print_result=False)
-        p_value = float(t_result.p_value) if np.isfinite(t_result.p_value) else 1.0
+        p_value = _paired_t_pvalue(values_a, values_b, diffs)
         mci = (
             {_a: rescaled_ci(_nig_paired, diffs, _a, diff_lo, diff_hi) for _a in GRADIENT_CI_ALPHAS}
             if multi_ci else None
@@ -1618,10 +1663,84 @@ def _max_stat_simultaneous_cis(
     return _apply_max_t_cis(boot_stats, point_ests, pairs, ci)
 
 
+def _degenerate_pair_ci(
+    point_diff: float,
+    M: int,
+    alpha: float,
+    diff_bounds: Optional[tuple[float, float]],
+) -> tuple[float, float]:
+    """CI for a pair whose paired differences carry no variance information.
+
+    Covers both degenerate inputs :func:`_bonferroni_simultaneous_cis` can
+    hit: ``M < 2`` (a single paired observation, or none) and a constant
+    difference vector (``se`` numerically 0). In both, every variance-driven
+    construction -- the t-interval, the delta method, any resampling scheme
+    -- collapses to the zero-width interval ``(point_diff, point_diff)``,
+    which asserts the effect is *exactly* ``point_diff`` with certainty and
+    covers the truth with probability 0 unless the difference really is a
+    point mass. See :func:`~evalstats.core.resampling.degenerate_sample_ci`
+    for the bound used instead and why it is the honest answer.
+
+    Marginal coverage on a paired DGP that reaches this branch often
+    (difference = +0.1 with probability p, -0.5 otherwise, so the truth is
+    *near* the atom but not at it; 4000 reps, diff bounds [-1, 1],
+    nominal 95%)::
+
+        n    p     P(degenerate)   coverage before   coverage after
+        10   0.90      0.36             0.641            0.999
+        10   0.99      0.90             0.099            1.000
+        20   0.97      0.55             0.453            1.000
+        30   0.90      0.05             0.951            0.998
+        30   0.99      0.73             0.267            1.000
+
+    -- i.e. the old branch missed on *every* degenerate rep (the truth is
+    never exactly the atom), so coverage tracked ``1 - P(degenerate)`` and
+    collapsed as the branch fired more often. The new bound is conservative
+    rather than nominal (~100%, the price
+    :func:`~evalstats.core.resampling.degenerate_sample_ci` documents), and
+    is only ever paid on samples that would otherwise have been reported
+    with false certainty.
+
+    *diff_bounds* is the support of a single paired difference, ``(-(hi-lo),
+    hi-lo)`` for a metric ranging over ``[lo, hi]`` -- not the metric's own
+    bounds. The router resolves it per data kind (see
+    :func:`_simultaneous_cis_router`).
+
+    When *diff_bounds* is ``None`` -- the unbounded data kind, i.e. no
+    ``score_range`` and non-binary scores -- the result is
+    ``(-inf, +inf)``. That is not a punt: for a distribution with unbounded
+    support, no finite confidence interval for the mean has guaranteed
+    coverage over all distributions (Bahadur-Savage), and a zero-variance
+    sample is exactly the case where nothing else is left to lean on. An
+    infinite interval says "this tells you nothing about the mean", which is
+    true; the zero-width one said the opposite. Callers who want a finite
+    answer here should pass ``score_range`` -- the interval then narrows to
+    the ``degenerate_sample_ci`` bound, whose width is roughly
+    ``ln(2/alpha) * 2*(hi-lo)/M``. Emits a ``UserWarning`` saying so, since
+    an ``inf`` bound appearing in a report deserves an explanation.
+    """
+    if diff_bounds is None:
+        warnings.warn(
+            "Simultaneous CI: a pair's per-input differences have zero "
+            "variance (all identical) and the data has no known bounds "
+            "(non-binary scores, no score_range given), so its mean cannot "
+            "be bounded at any confidence level and the interval is "
+            "reported as (-inf, +inf). Pass score_range=(min, max) to get "
+            "the finite conservative interval instead.",
+            UserWarning,
+            stacklevel=3,
+        )
+        return (float("-inf"), float("inf"))
+    lo, hi = float(diff_bounds[0]), float(diff_bounds[1])
+    value = float(min(max(point_diff, lo), hi)) if np.isfinite(point_diff) else lo
+    return degenerate_sample_ci(value, M, alpha, lo, hi)
+
+
 def _bonferroni_simultaneous_cis(
     results: dict[tuple[str, str], "PairedDiffResult"],
     pairs: list[tuple[str, str]],
     ci: float,
+    diff_bounds: Optional[tuple[float, float]] = None,
 ) -> dict[tuple[str, str], tuple[float, float]]:
     """Bonferroni-corrected simultaneous CIs via per-pair paired t-intervals.
 
@@ -1631,6 +1750,26 @@ def _bonferroni_simultaneous_cis(
     This makes the result independent of the original CI method, so it
     works as a universal fallback for non-bootstrap methods such as
     ``'newcombe'``, ``'tango'``, and ``'bayes_binary'``.
+
+    It is also the *only* construction that runs for a **single pair**
+    (k=1): :func:`_simultaneous_cis_router` gates Sidak/boot on
+    ``len(pairs) > 1``, so a two-arm comparison lands here unconditionally.
+    That makes the degenerate branches below load-bearing for the most
+    common shape of comparison there is, not just an edge case in a large
+    family -- they used to return ``(point_diff, point_diff)``, so
+    ``compare()`` on two arms with a constant offset (arm A ≡ 0.9, arm B ≡
+    0.8) reported a zero-width CI at exactly the point estimate, and it
+    *overrode* the underlying method's own correct interval on the same
+    result object. They now delegate to :func:`_degenerate_pair_ci`.
+
+    Parameters
+    ----------
+    diff_bounds : tuple[float, float], optional
+        Support of a single paired difference, ``(-(hi-lo), hi-lo)`` for a
+        metric over ``[lo, hi]``. Used *only* on the degenerate branches;
+        the ordinary t-interval path ignores it. ``None`` (the default)
+        means no bounds are known -- see :func:`_degenerate_pair_ci` for
+        what that yields and why.
 
     Returns
     -------
@@ -1652,11 +1791,15 @@ def _bonferroni_simultaneous_cis(
         diffs = r.per_input_diffs
         M = len(diffs)
         if M < 2:
-            sim_cis[pair] = (float(r.point_diff), float(r.point_diff))
+            sim_cis[pair] = _degenerate_pair_ci(
+                float(r.point_diff), M, alpha_adj, diff_bounds,
+            )
             continue
         se = float(np.std(diffs, ddof=1)) / np.sqrt(M)
         if se < 1e-12:
-            sim_cis[pair] = (float(r.point_diff), float(r.point_diff))
+            sim_cis[pair] = _degenerate_pair_ci(
+                float(r.point_diff), M, alpha_adj, diff_bounds,
+            )
             continue
         t_crit = float(_scipy_stats.t.ppf(1.0 - alpha_adj / 2.0, df=M - 1))
         half = t_crit * se
@@ -2026,6 +2169,43 @@ def _simultaneous_cis_router(
         *max_t_pvalues* maps each pair to its max-T p-value only when
         *method_used* is ``'max_t'``; empty dict otherwise.
     """
+    # Resolve the data kind once, up front, rather than inside the Sidak/boot
+    # branch: every route can end at the Bonferroni fallback (max-T returning
+    # empty, a joint bootstrap that degenerates, prefer="bonferroni", or a
+    # single pair, which skips Sidak/boot by construction), and that fallback
+    # needs the diff bounds too -- they are what lets it produce a real
+    # interval instead of a zero-width one on a constant difference vector.
+    # See _degenerate_pair_ci.
+    #
+    # Same explicit-score_range-wins rule as the main router uses -- see
+    # resampling.binary_routing_applies. The warning is emitted there, at
+    # the routing decision, not repeated per pair.
+    is_binary = binary_routing_applies(scores, score_range)
+    if is_binary:
+        data_kind = "binary"
+    elif score_range is not None:
+        # eval_type="likert" (explicit or auto-resolved upstream via
+        # detect_quantization_step()) or an explicit method="nig" call
+        # both route to the NIG-widened branch below -- see this
+        # function's docstring for why (validated fix for logit-t's
+        # paired-diff rounding-cancellation failure mode, which gets
+        # worse, not better, as Sidak's alpha_adj shrinks with k).
+        data_kind = "likert" if (eval_type == "likert" or method == "nig") else "bounded_01"
+    else:
+        data_kind = "unbounded"
+
+    # Support of a single paired difference: two scores in [lo, hi] differ by
+    # at most hi-lo in either direction, so the diff spans [-(hi-lo), hi-lo]
+    # -- the same widened span the logit_t/NIG paths rescale onto. Binary
+    # data is [0, 1] whether or not a score_range was passed.
+    if data_kind == "binary":
+        diff_bounds: Optional[tuple[float, float]] = (-1.0, 1.0)
+    elif score_range is not None:
+        _span = float(score_range[1]) - float(score_range[0])
+        diff_bounds = (-_span, _span)
+    else:
+        diff_bounds = None
+
     if prefer == "max_t" and method in _SIMULTANEOUS_CI_BOOTSTRAP_METHODS:
         cis, max_t_pvalues = _max_stat_simultaneous_cis(
             scores=scores,
@@ -2054,20 +2234,6 @@ def _simultaneous_cis_router(
         # outlier-contaminated median), so route k=1 through the plain
         # Bonferroni fallback below rather than attempting the k>=3-only
         # constructions at all.
-        is_binary = is_binary_scores(scores)
-        if is_binary:
-            data_kind = "binary"
-        elif score_range is not None:
-            # eval_type="likert" (explicit or auto-resolved upstream via
-            # detect_quantization_step()) or an explicit method="nig" call
-            # both route to the NIG-widened branch below -- see this
-            # function's docstring for why (validated fix for logit-t's
-            # paired-diff rounding-cancellation failure mode, which gets
-            # worse, not better, as Sidak's alpha_adj shrinks with k).
-            data_kind = "likert" if (eval_type == "likert" or method == "nig") else "bounded_01"
-        else:
-            data_kind = "unbounded"
-
         resolved = prefer
         if prefer == "auto":
             n_items = scores.shape[1]
@@ -2079,20 +2245,35 @@ def _simultaneous_cis_router(
         if data_kind == "binary":
             ci_func = tango_paired_ci_from_diffs
         elif data_kind == "bounded_01":
-            diff_span = score_range[1] - score_range[0]
-            diff_lo, diff_hi = -diff_span, diff_span
+            diff_lo, diff_hi = diff_bounds  # type: ignore[misc]
 
             def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi):
                 return rescaled_ci(logit_t_ci_1d, diffs, alpha, _lo, _hi)
         elif data_kind == "likert":
-            diff_span = score_range[1] - score_range[0]
-            diff_lo, diff_hi = -diff_span, diff_span
+            diff_lo, diff_hi = diff_bounds  # type: ignore[misc]
             _nig_paired = functools.partial(nig_ci_1d, b0=_NIG_PAIRED_DIFF_B0)
 
             def ci_func(diffs, alpha, _lo=diff_lo, _hi=diff_hi, _fn=_nig_paired):
                 return rescaled_ci(_fn, diffs, alpha, _lo, _hi)
         else:
-            ci_func = t_interval_ci_1d
+            # Unbounded: t_interval_ci_1d still returns (mean, mean) on a
+            # constant difference vector -- the marginal contract that
+            # degenerate_sample_ci deliberately left alone, since with no
+            # bounds there is nothing for it to fall back on. Left as-is,
+            # that reintroduces exactly the zero-width interval this router's
+            # Bonferroni fallback now refuses to emit, on any family where
+            # sidak/boot succeed (k>=3 with at least one non-degenerate pair
+            # to carry the joint bootstrap). Route the degenerate case
+            # through the same _degenerate_pair_ci the fallback uses so both
+            # branches give one answer, without changing t_interval_ci_1d
+            # itself or any marginal path that depends on it.
+            def ci_func(diffs, alpha):
+                M = len(diffs)
+                if M < 2 or float(np.ptp(diffs)) == 0.0:
+                    return _degenerate_pair_ci(
+                        float(np.mean(diffs)) if M else 0.0, M, alpha, None,
+                    )
+                return t_interval_ci_1d(diffs, alpha)
 
         if resolved == "sidak":
             cis = _sidak_simultaneous_cis(results=results, pairs=pairs, ci=ci, ci_func=ci_func)
@@ -2106,8 +2287,12 @@ def _simultaneous_cis_router(
             if cis:
                 return cis, "boot", {}
 
-    # Fallback (and prefer="bonferroni"): Bonferroni t-intervals work for any method.
-    cis = _bonferroni_simultaneous_cis(results=results, pairs=pairs, ci=ci)
+    # Fallback (and prefer="bonferroni"): Bonferroni t-intervals work for any
+    # method. diff_bounds only affects its zero-variance branch, where it is
+    # the difference between a real interval and a zero-width one.
+    cis = _bonferroni_simultaneous_cis(
+        results=results, pairs=pairs, ci=ci, diff_bounds=diff_bounds,
+    )
     return cis, "bonferroni", {}
 
 

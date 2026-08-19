@@ -2230,6 +2230,17 @@ def _run_simultaneous_ci_cell(
     # Tango nor Logit-t is one.
     ci_func = _canonical_ci_func(source.eval_type)
     has_canonical = ci_func is not None
+    # Same diff span the canonical ci_func above is built on -- a difference of
+    # two [lo, hi] scores ranges over [-(hi-lo), hi-lo]. Consumed only by
+    # _bonferroni_simultaneous_cis' zero-variance branch, where it is the
+    # difference between a conservative interval and an infinite one. Comes
+    # from EVAL_TYPE_SCALE_BOUNDS rather than from has_canonical, so "grades"
+    # (no canonical ci_func modeled here, but a known [0, 100] scale) still
+    # gets a finite bound on that branch.
+    _bonf_diff_bounds = None
+    if source.eval_type in EVAL_TYPE_SCALE_BOUNDS:
+        _s_lo, _s_hi = EVAL_TYPE_SCALE_BOUNDS[source.eval_type]
+        _bonf_diff_bounds = (-(_s_hi - _s_lo), _s_hi - _s_lo)
     base_methods = [m.name for m in SIMULTANEOUS_CI_METHODS]
     canonical_methods = [m.name for m in CANONICAL_SIMULTANEOUS_CI_METHODS] if has_canonical else []
     all_methods = base_methods + canonical_methods
@@ -2322,7 +2333,10 @@ def _run_simultaneous_ci_cell(
                 bonf_cis: dict = {}
                 if need["bonferroni"]:
                     _t0 = time.perf_counter()
-                    bonf_cis = _bonferroni_simultaneous_cis(results=matrix_raw.results, pairs=pairs, ci=ci)
+                    bonf_cis = _bonferroni_simultaneous_cis(
+                        results=matrix_raw.results, pairs=pairs, ci=ci,
+                        diff_bounds=_bonf_diff_bounds,
+                    )
                     agg_time[("bonferroni", condition)] += time.perf_counter() - _t0
 
                 # max-T: call _simultaneous_cis_router directly (the same
