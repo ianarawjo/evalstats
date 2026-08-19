@@ -112,6 +112,13 @@ def _raw_and_calib(raw_csv: str, calib_csv: str):
         rejects_llm_only=int(round(t.rate_llm_only * t.n_reps)),
         rejects_llm_impute=int(round(t.rate_llm_impute * t.n_reps)),
         rejects_ppi=int(round(t.rate_ppi * t.n_reps)), n_failed=t.n_failed,
+        # Carry the variance-route fields. Omitting them left
+        # variance_multiplier NaN on every replotted point even though the raw
+        # CSV holds the values, silently disabling the curve-free multiplier in
+        # anything rebuilt from disk.
+        var_human_subset=float(getattr(t, "var_human_subset", float("nan"))),
+        var_ppi=float(getattr(t, "var_ppi", float("nan"))),
+        n_est=int(getattr(t, "n_est", 0) or 0),
     ) for t in pd.read_csv(raw_csv).itertuples()]
 
     cdf = pd.read_csv(calib_csv)
