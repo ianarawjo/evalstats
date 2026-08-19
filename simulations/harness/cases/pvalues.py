@@ -5986,10 +5986,18 @@ _LABEL_EFF_FIGURE_TITLES = os.environ.get("PPI_NO_FIGURE_TITLES", "") != "1"
 
 Set PPI_NO_FIGURE_TITLES=1 for publication figures. Journal and conference
 figures carry their content in the caption; an in-figure title duplicates it
-and costs vertical space, which matters most for the multi-panel ones. Panel
-labels (Binary/Continuous/Likert, the four design names in the lookup grid)
-are NOT titles in this sense and are always drawn -- they identify axes rather
-than restating the caption."""
+and costs vertical space, which matters most for the multi-panel ones.
+
+Also suppresses the in-figure footnote strip (the fig.text() line under each
+axes explaining what the bands and points are). That is a subcaption, and a
+figure with both a subcaption and a LaTeX caption makes the reader check two
+places for one explanation -- so the flag moves that content into the caption
+too. Anything suppressed here MUST be restated in the LaTeX caption; see
+paper/appendix_label_efficiency.tex.
+
+Panel labels (Binary/Continuous/Likert, the four design names in the lookup
+grid) are NOT titles in this sense and are always drawn -- they identify axes
+rather than restating the caption."""
 
 
 _LABEL_EFF_PAYOFF_FLOOR = 0.40
@@ -7032,8 +7040,9 @@ def save_ppi_label_efficiency_invariance_plot(
     if _LABEL_EFF_FIGURE_TITLES:
         fig.suptitle("Label-efficiency multiplier is invariant to effect size (flat lines = invariance)",
                  fontsize=11, y=1.0)
-    fig.text(0.5, -0.03, "Each line is one judge-quality tier; points are medians across the "
-             "$N_{lab}$ grid, bars are IQR/2. Saturated cells excluded.", ha="center", fontsize=8.5)
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.text(0.5, -0.03, "Each line is one judge-quality tier; points are medians across the "
+                 "$N_{lab}$ grid, bars are IQR/2. Saturated cells excluded.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -7099,9 +7108,10 @@ def save_ppi_label_efficiency_invariance_pooled_plot(
     if _LABEL_EFF_FIGURE_TITLES:
         ax.set_title("Label efficiency depends on ρ² alone — not on effect size or data type",
                  fontsize=11)
-    fig.text(0.5, -0.04, "All three eval types pooled, one line per ρ² tier. Points are medians, "
-             "bars are IQR/2 across\nboth eval types and the $N_{lab}$ grid — so a tight bar IS the "
-             "cross-type agreement. Saturated cells excluded.", ha="center", fontsize=8.5)
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.text(0.5, -0.04, "All three eval types pooled, one line per ρ² tier. Points are medians, "
+                 "bars are IQR/2 across\nboth eval types and the $N_{lab}$ grid — so a tight bar IS the "
+                 "cross-type agreement. Saturated cells excluded.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -7353,7 +7363,8 @@ def save_ppi_label_efficiency_threshold_plot(
     ax.set_xlim(min(min(xs_plot), _lo_tick) - 0.035, max(xs_plot) + 0.135)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=9, loc="upper left")
-    fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and the $N_{lab}$ grid.", ha="center", fontsize=8.5)
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.text(0.5, -0.04, "Bands are bootstrap 95% CIs on the median, pooled over effect sizes and the $N_{lab}$ grid.", ha="center", fontsize=8.5)
     with warnings.catch_warnings():
         warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
         fig.tight_layout()
@@ -7822,9 +7833,10 @@ def save_ppi_label_efficiency_lookup_grid(per_method_points: dict, out_path: str
     if _LABEL_EFF_FIGURE_TITLES:
         fig.suptitle("Find your design, measure that statistic on a pilot set, read across",
                  fontsize=12)
-    fig.text(0.5, 0.005, "Shaded band: savings under 1.25×, not worth restructuring a "
-             "pipeline for. Points sit at each data type's own measured ρ².",
-             ha="center", fontsize=8.5)
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.text(0.5, 0.005, "Shaded band: savings under 1.25×, not worth restructuring a "
+                 "pipeline for. Points sit at each data type's own measured ρ².",
+                 ha="center", fontsize=8.5)
     fig.tight_layout(rect=(0, 0.02, 1, 1))
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
