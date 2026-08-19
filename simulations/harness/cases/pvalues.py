@@ -5981,6 +5981,17 @@ def _equivalent_n_lab(target_power: float, n_grid: np.ndarray, power_grid: np.nd
 
 
 _LABEL_EFF_ALIGNMENT_TARGETS = (0.70, 0.60, 0.50, 0.40, 0.30, 0.20)
+_LABEL_EFF_FIGURE_TITLES = os.environ.get("PPI_NO_FIGURE_TITLES", "") != "1"
+"""Whether label-efficiency figures draw their own headline title.
+
+Set PPI_NO_FIGURE_TITLES=1 for publication figures. Journal and conference
+figures carry their content in the caption; an in-figure title duplicates it
+and costs vertical space, which matters most for the multi-panel ones. Panel
+labels (Binary/Continuous/Likert, the four design names in the lookup grid)
+are NOT titles in this sense and are always drawn -- they identify axes rather
+than restating the caption."""
+
+
 _LABEL_EFF_PAYOFF_FLOOR = 0.40
 """Earliest rho^2 the "PPI starts to pay for itself" marker may sit at.
 
@@ -7018,7 +7029,8 @@ def save_ppi_label_efficiency_invariance_plot(
     axes[0][0].set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
     axes[0][0].legend(title="judge–human\nagreement  ρ²", fontsize=8, title_fontsize=8,
                       loc="upper left", ncol=2)
-    fig.suptitle("Label-efficiency multiplier is invariant to effect size (flat lines = invariance)",
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.suptitle("Label-efficiency multiplier is invariant to effect size (flat lines = invariance)",
                  fontsize=11, y=1.0)
     fig.text(0.5, -0.03, "Each line is one judge-quality tier; points are medians across the "
              "$N_{lab}$ grid, bars are IQR/2. Saturated cells excluded.", ha="center", fontsize=8.5)
@@ -7084,7 +7096,8 @@ def save_ppi_label_efficiency_invariance_pooled_plot(
     ax.grid(alpha=0.25)
     ax.legend(title="judge–human\nagreement  ρ²", fontsize=8.5, title_fontsize=8.5,
               loc="upper left", ncol=2)
-    ax.set_title("Label efficiency depends on ρ² alone — not on effect size or data type",
+    if _LABEL_EFF_FIGURE_TITLES:
+        ax.set_title("Label efficiency depends on ρ² alone — not on effect size or data type",
                  fontsize=11)
     fig.text(0.5, -0.04, "All three eval types pooled, one line per ρ² tier. Points are medians, "
              "bars are IQR/2 across\nboth eval types and the $N_{lab}$ grid — so a tight bar IS the "
@@ -7324,7 +7337,8 @@ def save_ppi_label_efficiency_threshold_plot(
         if corr_kind == "spearman"
         else "judge–human agreement  ρ²  (Pearson for mean tests, Spearman for rank tests)")
     ax.set_ylabel("label-efficiency multiplier\n(equivalent human labels / actual labels)")
-    ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
+    if _LABEL_EFF_FIGURE_TITLES:
+        ax.set_title("How good must an LLM judge be before PPI saves labeling effort?", fontsize=11)
     # Ticks on ROUND values, not on the measured tier positions. The data sits
     # where it was measured (which is why the markers are off-round), but a
     # reader looking up "my judge scores 0.4" needs 0.4 to be findable on the
@@ -7805,7 +7819,8 @@ def save_ppi_label_efficiency_lookup_grid(per_method_points: dict, out_path: str
         ax.set_xlabel("judge–human agreement  ρ²  (measured as named above)")
     for ax in axes[:, 0]:
         ax.set_ylabel("label-efficiency multiplier")
-    fig.suptitle("Find your design, measure that statistic on a pilot set, read across",
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.suptitle("Find your design, measure that statistic on a pilot set, read across",
                  fontsize=12)
     fig.text(0.5, 0.005, "Shaded band: savings under 1.25×, not worth restructuring a "
              "pipeline for. Points sit at each data type's own measured ρ².",
@@ -7920,7 +7935,8 @@ def save_ppi_label_efficiency_noise_family_plot(
                     _seen.add(lab); _h.append(h); _l.append(lab)
     if _h:
         axes[0][0].legend(_h, _l, fontsize=9, loc="upper left")
-    fig.suptitle("Does the rule of thumb survive a non-Gaussian judge?\n"
+    if _LABEL_EFF_FIGURE_TITLES:
+        fig.suptitle("Does the rule of thumb survive a non-Gaussian judge?\n"
                  "same judge-quality tiers, two judge-error shapes, split by test family",
                  fontsize=11.5)
     fig.tight_layout()
