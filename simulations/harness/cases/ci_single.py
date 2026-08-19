@@ -71,10 +71,7 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import (
-    booktabs_table, escape_latex, eval_type_label, eval_type_group,
-    coverage_cell, mark_best_and_runnerup,
-)
+from ..latex_tables import booktabs_table, escape_latex, coverage_cell, mark_best_and_runnerup
 from ..scenarios import CISource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -895,55 +892,63 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
+def _report_eval_type_group(et: str) -> str:
+    """Short per-eval-type group label for ci_single.py's own LaTeX table --
+    FINER than the shared latex_tables.eval_type_group (which only splits
+    binary vs. a single "numeric" bucket covering continuous+likert+grades
+    together). Mirrors ci_paired.py's _report_eval_type_group: likert gets
+    its own block rather than being averaged into "numeric" alongside
+    continuous, since that average would mix two different scales/regimes
+    into a number that isn't comparable to either group-pure method's row.
+    Local to this file rather than folded into latex_tables.py, since that
+    utility is also used by csv_to_latex_summary.py,
+    csv_to_simultaneous_ci_summary.py, and pvalues.py, which still want the
+    coarser 2-way split."""
+    return {"binary": "bin", "continuous": "cont", "likert": "lik", "grades": "grades"}.get(et, et)
+
+
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
     """LaTeX booktabs version of print_report's OVERALL SUMMARY block, plus
     one coverage column per sample size actually swept, appended to the
     right -- the aggregate "Coverage" column collapses across n and can hide
     miscalibration that only shows up at small or large sample sizes.
 
-    Methods that ran on both eval-type groups (binary and numeric) get two
-    rows -- "<method> (binary)" and "<method> (numeric)" -- each computed
-    from only that group's data, rather than one row averaging across both.
-    Averaging Cov/Width/Score across binary and numeric data mixes two
-    different scales/regimes into a number that isn't comparable to any
-    group-pure method's row; an "all" Eval-types value was a symptom of
-    exactly this, not a meaningful category of its own, so no row's Eval
-    types column is ever "all" here.
+    Methods that ran on more than one eval-type group get one row per group
+    -- "<method> (bin)"/"<method> (cont)"/"<method> (lik)" -- each computed
+    from only that group's own data, rather than one row averaging across
+    incomparable scales/regimes.
 
-    Rows are grouped by eval-type group (all binary, then all numeric),
-    separated by a midrule, so each block's Score column can be marked with
-    the block's best (bold) and runner-up (underline) -- matching
-    ci_paired.latex_overall_summary's layout, for a consistent reading
-    convention across both tables. Coverage cells (aggregate and per-n) are
-    shaded by coverage_cell to flag miscalibration at a glance.
+    Rows are grouped by eval-type group (all bin, then all cont, then all
+    lik), separated by a midrule, so each block's Score column can be
+    marked with the block's best (bold) and runner-up (underline) --
+    matching ci_paired.latex_overall_summary's layout, for a consistent
+    reading convention across both tables. Coverage cells (aggregate and
+    per-n) are shaded by coverage_cell to flag miscalibration at a glance.
     """
     target = 1.0 - alpha
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
     sizes_present = sorted({r.n for r in results})
 
-    # (group, method, n) -> list[(cov, width, score)] -- group ("binary"/"numeric")
-    # replaces raw eval_type as the aggregation key, so a method never gets
-    # averaged across both groups in one row.
+    # (group, method, n) -> list[(cov, width, score)] -- group ("bin"/"cont"/
+    # "lik"/"grades") replaces raw eval_type as the aggregation key, so a
+    # method never gets averaged across two groups in one row.
     agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
-    method_group_types: dict[tuple[str, str], set[str]] = defaultdict(set)
     for r in results:
-        g = eval_type_group(r.eval_type)
+        g = _report_eval_type_group(r.eval_type)
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
         agg[(g, r.method, r.n)].append((cov, width, score))
         c_prev, t_prev = agg_counts[(g, r.method, r.n)]
         agg_counts[(g, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
-        method_group_types[(r.method, g)].add(r.eval_type)
 
     method_groups: dict[str, set[str]] = defaultdict(set)
     for (g, m, _n) in agg:
         method_groups[m].add(g)
 
-    group_order = ["binary", "numeric"]
+    group_order = ["bin", "cont", "lik", "grades"]
     groups_present = sorted(
         {g for methods in method_groups.values() for g in methods},
         key=lambda g: group_order.index(g) if g in group_order else len(group_order),
@@ -973,11 +978,10 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 per_n_counts[(m, n)] = (c, t)
 
             mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
-            avg_ms, se_ms = _time_stats(
-                [r for r in results if r.method == m and eval_type_group(r.eval_type) == g]
+            avg_ms, _ = _time_stats(
+                [r for r in results if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
-            time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
-            et_label = eval_type_label(method_group_types[(m, g)], eval_types_present)
+            time_str = f"{avg_ms:.3f}" if np.isfinite(avg_ms) else "-"
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
@@ -985,7 +989,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
                 time_str,
-                et_label,
+                g,
             ]
             for n in sizes_present:
                 c_n, t_n = per_n_counts.get((m, n), (0, 0))
@@ -1003,11 +1007,12 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         caption=(
             f"ci\\_single: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
             "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
-            "Methods tested on both binary and numeric data are reported as two rows, one per eval-type "
-            "group, so no row averages across incomparable scales."
+            "Methods tested on more than one eval type are reported as one row per type "
+            "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
+            "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_single_overall",
-        columns=["Method", "Coverage", "Width", "Score", "Time (ms)", "Eval types"]
+        columns=["Method", "Coverage", "Width", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,

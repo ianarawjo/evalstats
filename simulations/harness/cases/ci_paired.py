@@ -1416,10 +1416,10 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 per_n_counts[(m, n)] = (c, t)
 
             mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
-            avg_ms, se_ms = _time_stats(
+            avg_ms, _ = _time_stats(
                 [r for r in non_null if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
-            time_str = f"${avg_ms:.3f} \\pm {se_ms:.3f}$" if np.isfinite(avg_ms) else "-"
+            time_str = f"{avg_ms:.3f}" if np.isfinite(avg_ms) else "-"
             label = f"{escape_latex(m)} ({g})" if multi_group else escape_latex(m)
             row = [
                 label,
@@ -1450,7 +1450,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Coverage", "Width", "Score", "Time (ms)", "Eval types"]
+        columns=["Method", "Coverage", "Width", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
