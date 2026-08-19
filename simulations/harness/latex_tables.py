@@ -132,8 +132,9 @@ def booktabs_table(
         body_lines.append(" & ".join(row) + r" \\")
     body = "\n".join(body_lines)
     return (
-        "\\begin{table}[ht]\n"
+        "\\begin{table*}[t]\n"
         "\\centering\n"
+        "\\footnotesize\n"
         f"\\begin{{tabular}}{{{col_align}}}\n"
         "\\toprule\n"
         f"{header}\n"
@@ -143,5 +144,5 @@ def booktabs_table(
         "\\end{tabular}\n"
         f"\\caption{{{caption}}}\n"
         f"\\label{{{label}}}\n"
-        "\\end{table}\n"
+        "\\end{table*}\n"
     )

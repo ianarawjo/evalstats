@@ -1416,8 +1416,6 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 per_n_counts[(m, n)] = (c, t)
 
             mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
-            c_tot, t_tot = all_counts[m]
-            _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
             avg_ms, se_ms = _time_stats(
                 [r for r in non_null if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
@@ -1426,7 +1424,6 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             row = [
                 label,
                 coverage_cell(mc, target),
-                f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
                 time_str,
@@ -1439,21 +1436,21 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             rows.append(row)
             score_vals.append(ms)
 
-        score_col = 4  # Method, Coverage, MC band, Mean width, Score
+        score_col = 3  # Method, Coverage, Width, Score
         decorated = mark_best_and_runnerup([r[score_col] for r in rows[group_start:]], score_vals)
         for i, cell in enumerate(decorated):
             rows[group_start + i][score_col] = cell
 
     return booktabs_table(
         caption=(
-            f"ci\\_paired: overall CI coverage summary (nominal {target:.0%}, reps/cell={n_reps}). "
+            f"ci\\_paired: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
             "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
             "Methods tested on more than one eval type are reported as one row per type "
             "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Coverage", "95\\% MC band", "Mean width", "Score", "Time (ms)", "Eval types"]
+        columns=["Method", "Coverage", "Width", "Score", "Time (ms)", "Eval types"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
