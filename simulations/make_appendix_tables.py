@@ -35,22 +35,30 @@ def cell(m, lo, hi, p=2, times=False):
     return f"{m:.{p}f}{x}\\,{{\\tiny[{lo:.{p}f},{hi:.{p}f}]}}"
 
 u = r[r.well_conditioned & ~r.saturated]
+NLABS = [30, 90, 200]          # 15 is too sparse to report (likert has none)
+TIERS = [0.7, 0.6, 0.5, 0.4, 0.3, 0.2]
 L = []
 L.append(r"\begin{table}[t]\centering\small")
-L.append(r"\caption{Label-efficiency multiplier by data type and judge quality. "
-         r"Median over the $n_{lab}$ grid and four effect sizes, with bootstrap 95\% CIs. "
-         r"A multiplier of $2\times$ means PPI matched the classical test's power on half "
-         r"the human labels.}")
+L.append(r"\caption{Label-efficiency multiplier by data type, judge quality and "
+         r"labeling budget. Each cell is the median over the four effect-size arms with a "
+         r"bootstrap 95\% CI; $2\times$ means PPI matched the classical test's power on half "
+         r"the human labels. Rows are the judge--human agreement $\rho^2$ a practitioner "
+         r"would measure on a pilot set (Pearson for mean-based tests, Spearman for "
+         r"rank-based; see Figure~\ref{fig:le-lookup}). Cells failing the inversion "
+         r"conditioning check are excluded, and $n_{lab}=15$ is omitted entirely for lack of "
+         r"usable cells.}")
 L.append(r"\label{tab:le-mult}")
-L.append(r"\begin{tabular}{lcccccc}\toprule")
-L.append(r" & \multicolumn{6}{c}{judge--human agreement $\rho^2$} \\ \cmidrule(lr){2-7}")
-L.append(r"data type & 0.2 & 0.3 & 0.4 & 0.5 & 0.6 & 0.7 \\ \midrule")
+L.append(r"\begin{tabular}{r|" + "c" * len(NLABS) + r"}\toprule")
+L.append(r"$\rho^2$ & " + " & ".join(rf"$n_{{lab}}={n}$" for n in NLABS) + r" \\")
 for et, lbl in (('binary', 'Binary'), ('continuous', 'Continuous'), ('likert', 'Likert')):
-    cs = []
-    for t in (0.2, 0.3, 0.4, 0.5, 0.6, 0.7):
-        g = u[(u.eval_type == et) & (u.alignment_target == t)]
-        cs.append(cell(*bci(g.multiplier), times=True))
-    L.append(lbl + " & " + " & ".join(cs) + r" \\")
+    L.append(r"\midrule \multicolumn{" + str(len(NLABS) + 1) +
+             r"}{l}{\textbf{" + lbl + r"}} \\")
+    for t in TIERS:
+        cs = []
+        for n in NLABS:
+            g = u[(u.eval_type == et) & (u.alignment_target == t) & (u.n_lab == n)]
+            cs.append("--" if len(g) < 3 else cell(*bci(g.multiplier), times=True))
+        L.append(f"{t:.2f} & " + " & ".join(cs) + r" \\")
 L.append(r"\bottomrule\end{tabular}\end{table}")
 L.append("")
 
