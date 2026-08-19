@@ -1450,7 +1450,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Coverage", "Width", "Score $\\downarrow$", "Time (ms)", "Type"]
+        columns=["Method", "Cov", "Width", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
