@@ -67,9 +67,18 @@ def coverage_cell(cov: float, target: float) -> str:
     cutoff, since a fixed threshold would make two adjacent values (e.g.
     0.948 vs 0.950) look categorically different when they're barely
     distinguishable.
+
+    The threshold comparison uses the same 3-decimal rounding as the
+    displayed text, not the raw float -- otherwise a value like 0.9486
+    prints as "0.949" (matching the stated 0.949 threshold) but would still
+    shade red, which reads as a bug: a cell that visibly equals the
+    boundary shouldn't render on the wrong side of it. Coverage this close
+    to nominal is within Monte Carlo noise anyway, not a real miscalibration
+    signal.
     """
     if cov is None or not math.isfinite(cov):
         return "-"
+    cov = round(cov, 3)
     text = f"{cov:.3f}"
     lower_bad = target - 0.001
     upper_bad = target + 0.02
