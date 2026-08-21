@@ -145,9 +145,6 @@ with warnings.catch_warnings():
         _ppi_anova_repeated_p_value,
         _ppi_friedman_p_value,
         _ppi_kruskal_wallis_pairwise,
-        _ppi_anova_independent,
-        _ppi_anova_repeated,
-        _ppi_friedman,
         _ppi_lmm_p_value,
         _anova_between_variance_from_groups,
         _repeated_condition_variance,
@@ -1198,122 +1195,30 @@ _EFFECT_ANOVA_TESTS = ("anova_ind", "anova_rep", "friedman")
 
 
 def _run_one_effect_anova(args: tuple) -> tuple[int, dict[str, tuple[float, float, float, float]]]:
-    """Effect-size bias/coverage pass for anova_ind/anova_rep/friedman only.
+    """DEFUNCT: always returns no results.
 
-    These three deliberately use closed-form, bootstrap-free p-value
-    functions in ``_run_one`` to keep the (high-rep) Type I sweep fast —
-    there is no "free" bootstrap result to read an estimate/CI off of, the
-    way there is for ttest/mw/wilcoxon/kruskal. Getting their corrected
-    point estimate at all means calling their bootstrap-based scalar
-    function (``_ppi_anova_independent`` etc. — the same one the public
-    ``anova_oneway()``/``friedman()`` API already calls for `corrected_estimate`
-    in normal use, so this isn't introducing a new kind of computation, just
-    a new place that runs it). To avoid multiplying that cost by the Type I
-    sweep's (potentially large) --reps, this runs as a separate pass with
-    its own, typically much smaller, --effect-reps count.
+    This pass used to read a corrected point estimate/CI for
+    anova_ind/anova_rep/friedman off the bootstrap-based scalar functions
+    ``_ppi_anova_independent``/``_ppi_anova_repeated``/``_ppi_friedman``,
+    on the stated premise that they were "the same one the public
+    anova_oneway()/friedman() API already calls for corrected_estimate in
+    normal use". That premise stopped being true when those tests moved to
+    the closed-form noncentral-F pipeline: the public API takes its
+    estimate and CI from ``_ppi_anova_independent_ci`` /
+    ``_ppi_anova_repeated_ci`` / ``_ppi_friedman_ci``, leaving the three
+    scalar functions with no caller but this one. They have since been
+    removed, so this pass was measuring a path that no longer shipped and
+    now cannot run at all.
+
+    Left in place, gutted rather than deleted, because the surrounding
+    Type I sweep (ttest/mw/wilcoxon/kruskal/lmm) is unaffected and still
+    works. To revive the effect-size pass, point it at the ``*_ci``
+    functions the public API actually uses -- note they return
+    ``(estimate, ci_low, ci_high)`` and carry no ``llm_estimate``, so the
+    4-tuple this returns needs rethinking rather than a drop-in swap.
     """
-    sc_idx, seed, n_boot, active_tests = args
-    sc: Scenario = SCENARIOS[sc_idx]
-    rng = np.random.default_rng(seed)
-
-    n1 = sc.n
-    n2 = sc.n2 if sc.n2 is not None else sc.n
-    n3 = sc.n3 if sc.n3 is not None else sc.n
-    anchor = _mu_null(sc.dist)
-    noise1 = sc.llm_noise
-    noise2 = sc.llm_noise2 if sc.llm_noise2 is not None else sc.llm_noise
-    noise3 = sc.llm_noise3 if sc.llm_noise3 is not None else sc.llm_noise
-    (bias_a, bias_b, bias_c), (slope_a, slope_b, slope_c) = _judge_params_3(sc)
-
-    effect_results: dict[str, tuple[float, float, float, float]] = {}
-
-    def _rng_seed() -> int:
-        return int(rng.integers(0, 2 ** 31))
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-
-        if "anova_ind" in active_tests:
-            try:
-                truth_a3 = _sample_truth(sc.dist, n1, rng)
-                truth_b3 = _sample_truth(sc.dist, n2, rng)
-                truth_c3 = _sample_truth(sc.dist, n3, rng)
-                llm_a3 = _llm(truth_a3, bias_a, noise1, rng, slope=slope_a, anchor=anchor)
-                llm_b3 = _llm(truth_b3, bias_b, noise2, rng, slope=slope_b, anchor=anchor)
-                llm_c3 = _llm(truth_c3, bias_c, noise3, rng, slope=slope_c, anchor=anchor)
-                lab_a3 = _labels_independent(
-                    truth_a3, sc.label_frac, rng,
-                    mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
-                )
-                lab_b3 = _labels_independent(
-                    truth_b3, sc.label_frac, rng,
-                    mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
-                )
-                lab_c3 = _labels_independent(
-                    truth_c3, sc.label_frac, rng,
-                    mnar=sc.label_mnar, mnar_strength=sc.mnar_strength, mnar_mode=sc.mnar_mode,
-                )
-                ppi = _ppi_anova_independent(
-                    [llm_a3, llm_b3, llm_c3], [lab_a3, lab_b3, lab_c3],
-                    ALPHA, n_boot, _rng_seed(),
-                )
-                effect_results["anova_ind"] = (ppi.estimate, ppi.ci_low, ppi.ci_high, ppi.llm_estimate)
-            except Exception:
-                pass
-
-        if "anova_rep" in active_tests or "friedman" in active_tests:
-            try:
-                if sc.dist == "binary":
-                    p_sub3 = rng.uniform(0.2, 0.8, n1)
-                    truth_A = rng.binomial(1, p_sub3, n1).astype(float)
-                    truth_B = rng.binomial(1, p_sub3, n1).astype(float)
-                    truth_C = rng.binomial(1, p_sub3, n1).astype(float)
-                else:
-                    base_3 = rng.normal(_mu_null(sc.dist), _SIGMA_SUB, n1)
-                    truth_A = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
-                    truth_B = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
-                    truth_C = base_3 + rng.normal(0.0, _SIGMA_COND, n1)
-                llm_A, llm_B, llm_C = _llm_repeated(
-                    [truth_A, truth_B, truth_C],
-                    [bias_a, bias_b, bias_c],
-                    [noise1, noise2, noise3],
-                    [slope_a, slope_b, slope_c],
-                    rng,
-                    anchor=anchor,
-                    corr=sc.repeated_corr,
-                )
-                lab_A, lab_B, lab_C = _labels_shared(
-                    [truth_A, truth_B, truth_C],
-                    sc.label_frac,
-                    rng,
-                    mnar=sc.label_mnar,
-                    mnar_strength=sc.mnar_strength,
-                    mnar_mode=sc.mnar_mode,
-                )
-
-                if "anova_rep" in active_tests:
-                    try:
-                        ppi = _ppi_anova_repeated(
-                            [llm_A, llm_B, llm_C], [lab_A, lab_B, lab_C],
-                            ALPHA, n_boot, _rng_seed(),
-                        )
-                        effect_results["anova_rep"] = (ppi.estimate, ppi.ci_low, ppi.ci_high, ppi.llm_estimate)
-                    except Exception:
-                        pass
-
-                if "friedman" in active_tests:
-                    try:
-                        ppi = _ppi_friedman(
-                            [llm_A, llm_B, llm_C], [lab_A, lab_B, lab_C],
-                            ALPHA, n_boot, _rng_seed(),
-                        )
-                        effect_results["friedman"] = (ppi.estimate, ppi.ci_low, ppi.ci_high, ppi.llm_estimate)
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-
-    return sc_idx, effect_results
+    sc_idx, _seed, _n_boot, _active_tests = args
+    return sc_idx, {}
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────

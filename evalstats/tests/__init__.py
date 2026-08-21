@@ -1311,8 +1311,9 @@ def _ppi_kruskal_wallis(
     rng,
 ):
     """PPI correction for the Kruskal-Wallis mean-squared pairwise-dominance
-    estimand. Structurally identical to ``_ppi_anova_independent`` — only the
-    estimator function differs.
+    estimand, feeding ``kruskalwallis()``'s ``corrected_estimate``/
+    ``corrected_ci``. Structurally the independent-groups ANOVA
+    construction with a dominance estimator swapped in.
     """
     from evalstats.ppi import correct
 
@@ -1353,17 +1354,43 @@ def _ppi_kruskal_wallis(
         rng=rng,
         compute_pvalue=False,
         # Deliberately hardcoded, NOT inherited from correct()'s own
-        # default: kruskalwallis()'s corrected_p_value comes from
-        # _ppi_kruskal_wallis_pairwise's SEPARATE, bespoke joint bootstrap
-        # (not power-tuned -- see that function's docstring), which does
-        # not yet have a matching multivariate power-tuning derivation.
-        # Letting this estimate/CI silently pick up correct()'s bare
-        # default while the p-value stays vanilla would desync
-        # corrected_estimate/corrected_ci from corrected_p_value -- caught
-        # via a dry run of correct()'s default flip breaking
-        # test_corrected_estimate_equals_llm_plus_rectifier. Revisit once
-        # _ppi_kruskal_wallis_pairwise also gets power-tuning (see
-        # explore-ppi-plus-plus branch's follow-up list).
+        # default. KEEP IT FALSE -- but NOT for the reason this comment
+        # used to give.
+        #
+        # The original rationale was that kruskalwallis()'s
+        # corrected_p_value came from _ppi_kruskal_wallis_pairwise's
+        # joint bootstrap, which was "not power-tuned", and said to
+        # "revisit once _ppi_kruskal_wallis_pairwise also gets
+        # power-tuning". It got it (power_tune defaults True there), and
+        # this pin was never revisited -- so the stated justification has
+        # been false since, and kruskalwallis() does ship a power-tuned
+        # p-value beside a lambda=1 estimate/CI.
+        #
+        # That desync turns out to be the GOOD configuration, so the flag
+        # stays put and only the reasoning changes. Flipping this to True
+        # collapses the corrected CI's null coverage, measured over 400
+        # replicates at k=3, n=300/group, n_lab=80, true H0 (all group
+        # means equal):
+        #
+        #     judge bias [2,0,0]   lambda=1: 0.938 covered, width 0.200
+        #                          tuned:    0.460 covered, width 0.049
+        #     judge bias [0,0,0]   lambda=1: 0.993 covered, width 0.043
+        #                          tuned:    0.950 covered, width 0.037
+        #
+        # i.e. it fails precisely under the differential judge bias PPI
+        # exists to correct. The point estimate is equally biased either
+        # way (+0.0064 vs +0.0062 against a true 0); power-tuning simply
+        # shrinks the interval ~4x around that upward bias. The root cause
+        # is this path's naive percentile-bootstrap CI, which is
+        # anti-conservative for a variance-like estimand bounded below by
+        # zero -- exactly what _noncentral_f_ci_lambda was introduced to
+        # fix for the ANOVA/Friedman family, and which this estimand never
+        # migrated to. lambda=1's excess width was masking that, so this
+        # pin is load-bearing by accident.
+        #
+        # Revisit only after giving this estimand a boundary-aware CI (the
+        # noncentral-F test-inversion treatment, or a bias-corrected
+        # bootstrap); re-run the coverage table above before flipping.
         power_tune=False,
     )
 
@@ -2979,142 +3006,6 @@ def _friedman_rank_variance(matrix: np.ndarray) -> float:
         return 0.0
     ranks = _scipy_stats.rankdata(matrix, axis=1, method="average")
     return _repeated_condition_variance(ranks)
-
-
-def _ppi_anova_independent(
-    groups: list[np.ndarray],
-    groups_lab: list[np.ndarray],
-    alpha: float,
-    n_boot: int,
-    rng,
-):
-    """PPI correction for independent-groups one-way ANOVA effect estimand."""
-    from evalstats.ppi import correct
-
-    k = len(groups)
-    masks = [~np.isnan(lab_arr) for lab_arr in groups_lab]
-
-    # Y_hat_unlab/X_unlab must be DISJOINT from the labeled positions -- see
-    # _ppi_two_sample and evalstats.ppi.correct's docstring.
-    Y_hat_unlab = np.concatenate([g[~mask] for g, mask in zip(groups, masks)])
-    X_unlab = np.concatenate([
-        np.full(int((~mask).sum()), gid, dtype=int) for gid, mask in enumerate(masks)
-    ])
-
-    Y_lab = np.concatenate([
-        lab_arr[mask] for lab_arr, mask in zip(groups_lab, masks)
-    ])
-    Y_hat_lab = np.concatenate([
-        g[mask] for g, mask in zip(groups, masks)
-    ])
-    X_lab = np.concatenate([
-        np.full(int(mask.sum()), gid, dtype=int) for gid, mask in enumerate(masks)
-    ])
-
-    if len(Y_lab) == 0:
-        raise ValueError("No labeled items found in groups_lab.")
-
-    def _estimand(Y, X):
-        return _anova_between_variance_from_labeled(Y, X, n_groups=k)
-
-    return correct(
-        _estimand,
-        Y_lab=Y_lab,
-        Y_hat_lab=Y_hat_lab,
-        Y_hat_unlab=Y_hat_unlab,
-        X_lab=X_lab,
-        X_unlab=X_unlab,
-        alpha=alpha,
-        n_boot=n_boot,
-        rng=rng,
-        compute_pvalue=False,
-        power_tune=False,  # hardcoded, not inherited -- see _ppi_kruskal_wallis's matching comment
-    )
-
-
-def _ppi_anova_repeated(
-    groups: list[np.ndarray],
-    groups_lab: list[np.ndarray],
-    alpha: float,
-    n_boot: int,
-    rng,
-):
-    """PPI correction for repeated-measures one-way ANOVA effect estimand."""
-    from evalstats.ppi import correct
-
-    labels_mat = np.column_stack(groups_lab)
-    overlap = np.all(~np.isnan(labels_mat), axis=1)
-    if overlap.sum() == 0:
-        raise ValueError(
-            "No subjects have labels in all conditions in groups_lab."
-        )
-
-    # Y_hat_unlab must be DISJOINT from the labeled subjects -- see
-    # _ppi_two_sample and evalstats.ppi.correct's docstring.
-    all_subjects = np.column_stack(groups)
-    Y_hat_unlab = all_subjects[~overlap]
-    Y_hat_lab = all_subjects[overlap]
-    Y_lab = labels_mat[overlap]
-
-    return correct(
-        _repeated_condition_variance,
-        Y_lab=Y_lab,
-        Y_hat_lab=Y_hat_lab,
-        Y_hat_unlab=Y_hat_unlab,
-        X_lab=None,
-        X_unlab=None,
-        alpha=alpha,
-        n_boot=n_boot,
-        rng=rng,
-        compute_pvalue=False,
-        power_tune=False,  # hardcoded, not inherited -- see _ppi_kruskal_wallis's matching comment
-    )
-
-
-def _ppi_friedman(
-    groups: list[np.ndarray],
-    groups_lab: list[np.ndarray],
-    alpha: float,
-    n_boot: int,
-    rng,
-):
-    """PPI correction for the Friedman (rank-variance) estimand.
-
-    Structurally identical to :func:`_ppi_anova_repeated` — only the
-    estimator function differs (rank variance instead of raw-score
-    variance).  A subject is in the labeled set only when it has human
-    labels in *all* conditions, since ranking needs the whole row; this
-    reuses the same overlap mask as the repeated-measures ANOVA case.
-    """
-    from evalstats.ppi import correct
-
-    labels_mat = np.column_stack(groups_lab)
-    overlap = np.all(~np.isnan(labels_mat), axis=1)
-    if overlap.sum() == 0:
-        raise ValueError(
-            "No subjects have labels in all conditions in groups_lab."
-        )
-
-    # Y_hat_unlab must be DISJOINT from the labeled subjects -- see
-    # _ppi_two_sample and evalstats.ppi.correct's docstring.
-    all_subjects = np.column_stack(groups)
-    Y_hat_unlab = all_subjects[~overlap]
-    Y_hat_lab = all_subjects[overlap]
-    Y_lab = labels_mat[overlap]
-
-    return correct(
-        _friedman_rank_variance,
-        Y_lab=Y_lab,
-        Y_hat_lab=Y_hat_lab,
-        Y_hat_unlab=Y_hat_unlab,
-        X_lab=None,
-        X_unlab=None,
-        alpha=alpha,
-        n_boot=n_boot,
-        rng=rng,
-        compute_pvalue=False,
-        power_tune=False,  # hardcoded, not inherited -- see _ppi_kruskal_wallis's matching comment
-    )
 
 
 def _noncentral_f_ci_lambda(f_obs: float, dfn: float, dfd: float, alpha: float) -> tuple[float, float]:
@@ -5159,6 +5050,10 @@ def kruskalwallis(
         human_sparse = np.concatenate(groups_lab)
         ar = _run_alignment_report(llm_all, human_sparse)
 
+        # NOTE: these two deliberately run in DIFFERENT lambda regimes --
+        # the estimate/CI at lambda=1, the p-value power-tuned. That is not
+        # an oversight; see _ppi_kruskal_wallis's comment for the coverage
+        # measurements that keep it that way.
         ppi = _ppi_kruskal_wallis(groups, groups_lab, alpha, n_boot, rng)
         if method == "mnar_experimental":
             pw = _ppi_kruskal_wallis_pairwise_mnar_experimental(groups, groups_lab, alpha, n_boot, rng)
