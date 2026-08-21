@@ -87,6 +87,7 @@
   .hit { color:var(--ok); font-weight:600; }
   .miss { color:var(--bad); font-weight:600; }
   .mid { color:var(--warn); font-weight:500; }
+  .bite { color:var(--bad); font-weight:700; background:var(--bad-bg); }
   .tnote { font-size:.83rem; color:var(--ink-faint); margin:0 0 1.2rem; line-height:1.5; }
 
   .verdict { display:grid; gap:1px; background:var(--rule); border:1px solid var(--rule);
@@ -280,16 +281,16 @@
     <p>A drift that only appears where the study is already saturated costs nothing. So the exhibit below reports two things per cell of the (d, N<sub>lab</sub>) plane: the <strong>error</strong> a planner suffers by using the paper's frozen named correlation instead of the truth, and the <strong>power</strong> of the corrected test there. A cell only matters if the error is material <em>and</em> the decision is still live.</p>
 
     <div class="wide"><div class="tablewrap"><table>
-      <caption>err / power per cell. Judge held at r = 0.8, N = 1000, k = 3. Error depends on N<sub>lab</sub> as well as d, through the (1 − N<sub>lab</sub>/N) factor.</caption>
+      <caption>err / power per cell. Judge held at r = 0.8, N = 1000, k = 3. Error depends on N<sub>lab</sub> as well as d, through the (1 − N<sub>lab</sub>/N) factor. ✱ marks a cell where the error exceeds 10% while power is still below 0.99. Each recipe is evaluated as a practitioner would compute it, on data containing the effect.</caption>
       <thead><tr><th>Test</th><th class="num">d</th><th class="num">true ρ²</th>
       <th class="num">N<sub>lab</sub>=15</th><th class="num">N<sub>lab</sub>=50</th><th class="num">N<sub>lab</sub>=200</th></tr></thead>
       <tbody>
-        <tr><td class="label">friedman</td><td class="num">0.25</td><td class="num">0.415</td><td class="num">−1.3% / 0.24</td><td class="num">−1.2% / 0.68</td><td class="num">−0.9% / 1.00</td></tr>
-        <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.391</td><td class="num">+2.7% / 0.72</td><td class="num">+2.6% / 1.00</td><td class="num">+2.0% / 1.00</td></tr>
-        <tr><td class="label"></td><td class="num">0.75</td><td class="num">0.376</td><td class="num">+5.2% / 0.97</td><td class="num">+4.9% / 1.00</td><td class="num">+3.7% / 1.00</td></tr>
-        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.359</td><td class="num">+7.9% / 1.00</td><td class="num">+7.5% / 1.00</td><td class="num">+5.7% / 1.00</td></tr>
-        <tr><td class="label"></td><td class="num">1.5</td><td class="num">0.310</td><td class="num miss">+16.0% / 1.00</td><td class="num miss">+15.1% / 1.00</td><td class="num miss">+11.6% / 1.00</td></tr>
-        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.258</td><td class="num miss">+24.5% / 1.00</td><td class="num miss">+23.1% / 1.00</td><td class="num miss">+17.7% / 1.00</td></tr>
+        <tr><td class="label">friedman</td><td class="num">0.25</td><td class="num">0.415</td><td class="num">+1.0% / 0.24</td><td class="num">+0.9% / 0.68</td><td class="num">+0.7% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.391</td><td class="num bite">+11.6% / 0.72 ✱</td><td class="num miss">+10.9% / 1.00</td><td class="num">+8.2% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">0.75</td><td class="num">0.376</td><td class="num bite">+27.1% / 0.97 ✱</td><td class="num miss">+25.2% / 1.00</td><td class="num miss">+18.5% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.359</td><td class="num miss">+47.0% / 1.00</td><td class="num miss">+43.4% / 1.00</td><td class="num miss">+30.8% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">1.5</td><td class="num">0.310</td><td class="num miss">+120.2% / 1.00</td><td class="num miss">+107.6% / 1.00</td><td class="num miss">+69.3% / 1.00</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.258</td><td class="num miss">+247.3% / 1.00</td><td class="num miss">+211.1% / 1.00</td><td class="num miss">+119.1% / 1.00</td></tr>
 
         <tr><td class="label">wilcoxon</td><td class="num">0.25</td><td class="num">0.623</td><td class="num">−1.3% / 0.17</td><td class="num">−1.2% / 0.47</td><td class="num">−0.8% / 0.93</td></tr>
         <tr><td class="label"></td><td class="num">0.5</td><td class="num">0.616</td><td class="num">+0.4% / 0.54</td><td class="num">+0.3% / 0.96</td><td class="num">+0.2% / 1.00</td></tr>
@@ -316,11 +317,17 @@
 
     <div class="answer">
       <span class="lbl">The boundary, stated exactly</span>
-      <p>Over the full 120-cell grid the two regions are <strong>disjoint</strong>. 31 cells have power below 0.99; the largest planning error among them is <strong>+8.5%</strong>. 40 cells have a planning error above 10%; the <em>minimum</em> power among them is <strong>1.000</strong>. Per test, the largest error anywhere the decision is still live: friedman +5.2%, kruskal +4.9%, wilcoxon +8.0%, mwu +8.5%.</p>
+      <p>The answer splits by test. For <strong>Mann–Whitney, Wilcoxon and Kruskal–Wallis the two regions are disjoint</strong>: the largest planning error in any cell whose power is below 0.99 is +8.5% (mwu), +8.0% (wilcoxon), +4.9% (kruskal). For <strong>Friedman they overlap</strong>: three cells (✱ above, plus d = 0.5 at N<sub>lab</sub> = 30, error +11.3% at power 0.96) carry an error above 10% while the test outcome is still in doubt, reaching <strong>+27.1% at power 0.97</strong>.</p>
     </div>
 
-    <p>So the "negligible in practice" claim survives, but it should be stated as a boundary rather than a reassurance: <strong>the frozen recipe is accurate to under 9% wherever the test outcome is still in doubt, and only becomes badly wrong once the effect is large enough that the study is saturated at any labeling budget considered here.</strong> That is a defensible sentence for the appendix; "the drift is small" is not, because at d = 2 it reaches +38%.</p>
-    <p>Two honest qualifications. The error is <em>not</em> negligible for <strong>estimation</strong> — a reported N<sub>eff</sub>, or a CI width on a dominance probability, is wrong by that full 10–38% at moderate-to-large effects regardless of whether the test rejects. And the grid stops at N<sub>lab</sub> = 15, the library's own minimum; the region is thin enough that a different judge quality or a design outside this grid could open it.</p>
+    <p>So the "negligible in practice" claim holds for three of the four rank tests and <strong>fails for Friedman</strong>. For the three it survives as a bounded statement rather than a reassurance: the recipe is accurate to under 9% wherever the outcome is still in doubt, and only becomes badly wrong once the study is saturated at every budget considered here. "The drift is small" is not defensible for any of them — at d = 2 it reaches +38% for Wilcoxon — but it is at least confined to designs where nothing hinges on it.</p>
+
+    <h3>Why Friedman breaks the pattern: its recipe is not shift-invariant</h3>
+    <p>The other three recipes are Spearman correlations of a quantity the effect merely <em>shifts</em> — the paired differences for Wilcoxon, condition-centred scores for Mann–Whitney and Kruskal–Wallis. Ranks cannot see a location shift, so those recipes return the same number whether they are computed on near-null data or on data with a large effect. Measured across d = 0 → 2 they are flat to four decimal places. That is why it does not matter where a practitioner computes them, and why their error stays modest: it is only the truth that moves away beneath a stationary estimate.</p>
+    <p>Friedman's recipe is different in kind. "Average the per-participant Spearman correlations" is computed on <em>within-row ranks</em>, and a condition effect changes the distribution of those ranks rather than shifting a variable. So it is not shift-invariant, and measured on data containing the effect — which is what the paper instructs — it <strong>rises by 94%</strong> across the same range (0.411 → 0.797) while the truth falls from 0.418 to 0.258. The recipe and the target move in opposite directions, and the error compounds from both ends: +47% at d = 1.0, +247% at d = 2.0.</p>
+    <p class="tnote">This corrects an earlier version of this exhibit, which evaluated every recipe at its null value. That is harmless for the three shift-invariant recipes — null and on-data agree exactly — but it understated Friedman's error several-fold and reported no biting cells. The figures above use each recipe as a practitioner would actually compute it.</p>
+
+    <p>Two qualifications that apply throughout. The error is <em>not</em> negligible for <strong>estimation</strong> — a reported N<sub>eff</sub>, or a CI width on a dominance probability, is wrong by the full amount at moderate-to-large effects regardless of whether the test rejects. And the grid stops at N<sub>lab</sub> = 15, the library's own minimum; for the three well-behaved tests the margin is thin enough that a different judge quality or a design outside this grid could open it.</p>
 
     <h3>Power here is measured, not assumed</h3>
     <p>Power was first obtained through the N<sub>eff</sub> identity — PPI at N<sub>lab</sub> should have the precision of a human-only analysis at N<sub>eff</sub> — which is thousands of times cheaper than driving the corrected test. That proxy was then checked against the real corrected test at four cells, and <em>it failed at one</em>: wilcoxon at d = 0.5, N<sub>lab</sub> = 15 read 0.541 by proxy against 0.410 measured directly. The N<sub>eff</sub> identity is asymptotic, and N<sub>lab</sub> = 15 is exactly where the library warns about small-sample behaviour. Since the proxy errs <em>optimistic</em> about power — the direction that could hide a biting cell — every cell with error above 10% was re-measured with the actual corrected test at its smallest N<sub>lab</sub>. All nine came back at power ≥ 0.996 (eight at 1.000; wilcoxon at d = 1.5, N<sub>lab</sub> = 15 at 0.996), so the disjointness above rests on direct measurement rather than the proxy.</p>
@@ -344,7 +351,7 @@
     <p>The sign is set purely by the direction of transport. Green is conservative (under-predicts N<sub>eff</sub>, so you over-label); red is anti-conservative. <strong>A strong pilot planning a subtler study is safe; a weak pilot planning a stronger one is not</strong> — and the frozen recipe behaves like a pilot permanently stuck at d ≈ 0.3, so it is anti-conservative at every target above that. This is the finding I would promote out of a footnote: it indicts the standard workflow of validating a judge once, on whatever data was handy, and reusing that number as a constant.</p>
 
     <h3>The fix: correlate influence functions, not scores</h3>
-    <p>The named correlations are shift-invariant, which is precisely why they cannot follow a moving target — they are frozen snapshots of the influence-function correlation at the null. Computing the influence functions as plug-ins on the observed data instead makes them adapt automatically. Testing that directly, with the Hájek projection ψ(i) = #{j : D<sub>i</sub>+D<sub>j</sub> &gt; 0}/n for Wilcoxon and empirical placements F<sub>Y</sub>(x) for Mann–Whitney:</p>
+    <p>Three of the four named correlations are shift-invariant, which is precisely why they cannot follow a moving target — they are frozen snapshots of the influence-function correlation at the null. Friedman's is worse than frozen: being computed on within-row ranks it is not shift-invariant at all, and moves <em>away</em> from the target rather than merely standing still. Computing the influence functions as plug-ins on the observed data instead makes them adapt automatically. Testing that directly, with the Hájek projection ψ(i) = #{j : D<sub>i</sub>+D<sub>j</sub> &gt; 0}/n for Wilcoxon and empirical placements F<sub>Y</sub>(x) for Mann–Whitney:</p>
     <div class="wide"><div class="tablewrap"><table>
       <caption>Ratio of each recipe's ρ² to the true ρ². A recipe that tracks stays at 1.00 down the column.</caption>
       <thead><tr><th>Test</th><th class="num">d</th><th class="num">true ρ²</th><th class="num">plug-in IF</th><th class="num">ratio</th><th class="num">frozen named</th><th class="num">ratio</th></tr></thead>
@@ -357,7 +364,7 @@
         <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.527</td><td class="num">0.541</td><td class="num hit">1.03</td><td class="num">0.618</td><td class="num miss">1.17</td></tr>
       </tbody>
     </table></div></div>
-    <p>The plug-in tracks flat (0.98–1.00 for Wilcoxon, 1.02–1.03 for Mann–Whitney) while the frozen recipe walks off to 1.32 and 1.17. Mann–Whitney's constant ~2% overshoot is a level, not a drift — plausibly the placement estimator's own small-sample bias, and not chased down here. This is the same result as the doubly-centred recipes for the repeated-measures tests: those <em>are</em> plug-in influence functions, which is why they tracked the decline where the named correlation could not. The named correlations are best understood as the null-case shortcut, correct at d = 0 and degrading from there.</p>
+    <p>The plug-in tracks flat (0.98–1.00 for Wilcoxon, 1.02–1.03 for Mann–Whitney) while the named recipe walks off to 1.32 and 1.17. Mann–Whitney's constant ~2% overshoot is a level, not a drift — plausibly the placement estimator's own small-sample bias, and not chased down here. This is the same result as the doubly-centred recipes for the repeated-measures tests: those <em>are</em> plug-in influence functions, which is why they tracked the decline where the named correlation could not. The named correlations are best understood as the null-case shortcut, correct at d = 0 and degrading from there.</p>
   </section>
 
   <!-- ─────────────── recommendations ─────────────── -->
