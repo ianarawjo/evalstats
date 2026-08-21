@@ -63,6 +63,16 @@ class AlignmentResult:
         judge is systematically biased in absolute scale despite tracking
         human relative ordering.  ``None`` for binary score types, where ICC
         isn't computed.
+    test : str or None
+        The test named via ``test=``, if any -- see :func:`judge_alignment`.
+        For a single condition, only ``"mean_estimate"`` is valid (no
+        comparison to linearize against).
+    test_metric : dict or None
+        Set iff ``test`` was given: the correlation entry (same shape as
+        ``alignment_metrics``' entries, with ``multiplier``/``n_eff`` added)
+        that governs ``test``'s PPI variance reduction. For
+        ``test="mean_estimate"`` this is identical to ``alignment_metrics
+        ["pearson_r"]``. :attr:`n_eff`/:attr:`multiplier` read from here.
     """
 
     def __init__(
@@ -78,6 +88,8 @@ class AlignmentResult:
         representativeness: dict,
         bias_check: Optional[dict] = None,
         selection: str = "unknown",
+        test: Optional[str] = None,
+        test_metric: Optional[dict] = None,
     ) -> None:
         self.llm_metric = llm_metric
         self.human_col = human_col
@@ -89,6 +101,31 @@ class AlignmentResult:
         self.representativeness = representativeness
         self.bias_check = bias_check
         self.selection = selection
+        self.test = test
+        self.test_metric = test_metric
+
+    @property
+    def n_eff(self) -> float:
+        """Effective human-label sample size for the ``test=`` you
+        specified -- see :func:`judge_alignment`'s ``test=`` docs. Raises
+        if you didn't pass ``test=``."""
+        return self._require_test()["n_eff"]
+
+    @property
+    def multiplier(self) -> float:
+        """Label-efficiency savings multiplier for the ``test=`` you
+        specified. Raises if you didn't pass ``test=``."""
+        return self._require_test()["multiplier"]
+
+    def _require_test(self) -> dict:
+        if self.test_metric is None:
+            raise ValueError(
+                "No test= was given to judge_alignment(), so there's no single "
+                "n_eff/multiplier answer -- inspect .alignment_metrics directly "
+                "(raw Pearson/Spearman r, not test-specific), or re-call with "
+                "test='mean_estimate'."
+            )
+        return self.test_metric
 
     # ── sampling ─────────────────────────────────────────────────────────────
 
@@ -1397,6 +1434,7 @@ def _judge_alignment_core(
     slice_exclude_cols: frozenset = frozenset(),
     labeled_mask: Optional[np.ndarray] = None,
     selection: str = "unknown",
+    test: Optional[str] = None,
     warn_stacklevel: int = 3,
 ) -> AlignmentResult:
     """Shared core behind both :func:`judge_alignment` call forms: fits the
@@ -1531,6 +1569,24 @@ def _judge_alignment_core(
             stacklevel=warn_stacklevel,
         )
 
+    for key in ("pearson_r", "spearman_r"):
+        if key in alignment_metrics:
+            mult, n_eff = _n_eff(alignment_metrics[key]["estimate"], n_labeled, n_total)
+            alignment_metrics[key]["multiplier"] = mult
+            alignment_metrics[key]["n_eff"] = n_eff
+
+    test_metric = None
+    if test is not None:
+        if test != "mean_estimate":
+            raise ValueError(
+                f"test={test!r} needs a comparison (2+ conditions) -- pass a "
+                "{name: (judge_scores, human_scores)} dict instead of plain "
+                "arrays, or use test='mean_estimate' for a single-condition "
+                "estimate (no comparison)."
+            )
+        test_metric = dict(alignment_metrics["pearson_r"])
+        test_metric["label"] = "mean_estimate rho"
+
     return AlignmentResult(
         llm_metric=llm_metric,
         human_col=human_groundtruth,
@@ -1542,6 +1598,8 @@ def _judge_alignment_core(
         representativeness=rep,
         bias_check=bias_check,
         selection=selection,
+        test=test,
+        test_metric=test_metric,
     )
 
 
@@ -1625,6 +1683,7 @@ def _judge_alignment_from_arrays(
     human_groundtruth: Optional[str],
     alpha: float,
     selection: str = "unknown",
+    test: Optional[str] = None,
 ) -> AlignmentResult:
     judge_full = np.asarray(judge_scores, dtype=float)
     human_full = np.asarray(human_scores, dtype=float)
@@ -1692,7 +1751,7 @@ def _judge_alignment_from_arrays(
         llm_metric=llm_metric or "judge", human_groundtruth=human_groundtruth or "human",
         alpha=alpha, n_total=n_total, all_llm=all_llm,
         slice_df=None, slice_labeled_mask=None,
-        labeled_mask=position_mask, selection=selection,
+        labeled_mask=position_mask, selection=selection, test=test,
         warn_stacklevel=4,
     )
 
@@ -1856,17 +1915,24 @@ def _linearize_mannwhitney(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _linearize_kruskal(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
-    """Spearman-of-within-condition-ranks, pooled across conditions -- the
+    """Spearman of within-condition-CENTERED, pooled values -- the
     validated recipe for Kruskal-Wallis (notes/omnibus_label_efficiency.html
-    Method 2): within EACH condition, rank-transform judge and human values
-    separately, then pool (concatenate) across conditions and correlate the
-    pooled rank arrays. Mirrors _linearize_mean's "between" branch, with a
-    rank transform in place of mean-centering as the per-condition
-    normalization (ranking within a condition already removes
-    location/scale). Drifts mildly optimistic at large effects (a milder
-    version of Friedman's much larger drift) -- serviceable per the note,
-    treat as a ceiling rather than a point estimate for a large expected
-    effect."""
+    Method 2): each condition's judge/human values centered on that
+    condition's own mean (removing the between-condition location signal,
+    exactly like _linearize_mean's "between" branch), THEN pooled
+    (concatenated) across conditions, THEN rank-transformed as one combined
+    array -- NOT ranked within each condition separately first. Spearman
+    correlation of the pooled-then-globally-ranked residuals is, by
+    definition, Pearson correlation of their ranks; that's what's returned
+    here for the caller to correlate. (Ranking within each condition
+    separately before pooling -- an earlier, wrong version of this
+    function -- discards the very between-condition-relative information
+    centering-then-pooling is supposed to preserve, and empirically came
+    out suspiciously perfectly flat across effect sizes, unlike the note's
+    documented "mild drift" -- a sign it wasn't computing the validated
+    recipe.) Drifts mildly optimistic at large effects per the note --
+    serviceable, treat as a ceiling rather than a point estimate for a
+    large expected effect."""
     from scipy.stats import rankdata
 
     judge_parts, human_parts = [], []
@@ -1876,11 +1942,11 @@ def _linearize_kruskal(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
         jj, hh = j[mask], h[mask]
         if len(jj) == 0:
             continue
-        judge_parts.append(rankdata(jj))
-        human_parts.append(rankdata(hh))
-    judge = np.concatenate(judge_parts) if judge_parts else np.array([])
-    human = np.concatenate(human_parts) if human_parts else np.array([])
-    return judge, human
+        judge_parts.append(jj - jj.mean())
+        human_parts.append(hh - hh.mean())
+    judge_pooled = np.concatenate(judge_parts) if judge_parts else np.array([])
+    human_pooled = np.concatenate(human_parts) if human_parts else np.array([])
+    return rankdata(judge_pooled), rankdata(human_pooled)
 
 
 def _linearize_friedman(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
@@ -1962,10 +2028,10 @@ def _pearson_spearman_metrics(
 ) -> dict:
     """Pearson r and Spearman r (point estimate + bootstrap CI) between two
     already-prepared 1-D arrays -- the shared low-level computation behind
-    both the multi-condition pairwise path below and :func:`label_efficiency`,
-    so there is exactly one place this math lives. Callers are responsible
-    for whatever differencing/pooling/masking the two arrays need before
-    calling this (see :func:`_condition_pair_arrays`).
+    the multi-condition pairwise path below, so there is exactly one place
+    this math lives. Callers are responsible for whatever
+    differencing/pooling/masking the two arrays need before calling this
+    (see :func:`_condition_pair_arrays`).
     """
     n = len(judge)
 
@@ -1984,7 +2050,7 @@ def _pearson_spearman_metrics(
         "what": f"Linear correlation coefficient between judge and human values{what_suffix}.",
         "why": (
             "Governs the label-efficiency multiplier for parametric/mean-based "
-            "tests (t-test, ANOVA, mean estimation) -- see label_efficiency()."
+            "tests (t-test, ANOVA, mean estimation) -- see judge_alignment()'s test=."
         ),
         "interpretation": interp, "example": example,
     }
@@ -1995,7 +2061,7 @@ def _pearson_spearman_metrics(
         "what": f"Rank correlation coefficient between judge and human values{what_suffix}.",
         "why": (
             "Governs the label-efficiency multiplier for rank-based tests "
-            "(Mann-Whitney, Wilcoxon, Friedman) -- see label_efficiency()."
+            "(Mann-Whitney, Wilcoxon, Friedman) -- see judge_alignment()'s test=."
         ),
         "interpretation": interp, "example": example,
     }
@@ -2115,6 +2181,30 @@ class PairwiseAlignmentResult:
         (not decomposable into pairs) -- see the relevant
         ``_linearize_*`` function's docstring for the recipe and its
         Monte-Carlo validation in notes/omnibus_label_efficiency.html.
+    condition_counts : dict[str, tuple[int, int]]
+        ``name -> (n_labeled, n_total)`` for each condition, as passed --
+        for reporting "N_lab and N per condition/measure" alongside the
+        correlations above. Not used in any correlation/N_eff computation
+        itself (those use the labeled OVERLAP / pooled totals actually
+        involved in each specific pair or the whole design).
+    selection : str
+        How the labeled subset was chosen -- see :func:`judge_alignment`'s
+        ``selection=``. Same MCAR-assumption warning as the single-
+        condition form when left at ``"unknown"``.
+
+    Every metric dict in ``pairwise_metrics``/``test_pairwise_metrics``/
+    ``omnibus_metric`` also carries ``multiplier``/``n_eff`` (the
+    label-efficiency savings implied by that correlation, at the N/N_lab
+    actually spanned by that specific correlation -- summed across the
+    conditions it pools, for a "between" pair/omnibus, or a single
+    condition's N for a "within" one, where every condition shares the
+    same items by construction). **Unresolved caveat**: empirical
+    validation found these multi-condition ``multiplier``/``n_eff`` values
+    off by a stable, non-noise factor (~2x high for "between", ~0.6x low
+    for "within") against directly-measured PPI variance reduction -- see
+    :func:`_attach_savings`'s docstring. The correlation estimates
+    themselves are on firmer footing; treat the multiplier/n_eff numbers
+    here as provisional until this is root-caused.
 
     Notes
     -----
@@ -2127,15 +2217,27 @@ class PairwiseAlignmentResult:
 
     def __init__(
         self, *, conditions: list, design: str, pairwise_metrics: dict,
+        condition_counts: dict, selection: str = "unknown",
         test: Optional[str] = None, test_pairwise_metrics: Optional[dict] = None,
         omnibus_metric: Optional[dict] = None,
     ) -> None:
         self.conditions = conditions
         self.design = design
         self.pairwise_metrics = pairwise_metrics
+        self.condition_counts = condition_counts
+        self.selection = selection
         self.test = test
         self.test_pairwise_metrics = test_pairwise_metrics
         self.omnibus_metric = omnibus_metric
+
+    @staticmethod
+    def _print_metric(d: dict) -> None:
+        print(
+            f"    {d['label']:<28} {d['estimate']:+.3f}  "
+            f"95% CI [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]  (n={d['n']})"
+        )
+        if "n_eff" in d:
+            print(f"        multiplier = {d['multiplier']:.2f}x   N_eff = {d['n_eff']:.0f}  (N={d['N']})")
 
     def summary(self) -> None:
         """Print one line per pair per metric."""
@@ -2143,6 +2245,9 @@ class PairwiseAlignmentResult:
         print("─" * 58)
         print(f"Conditions : {', '.join(self.conditions)}")
         print(f"Design     : {self.design}-subjects")
+        for name in self.conditions:
+            n_lab, n_tot = self.condition_counts[name]
+            print(f"  {name}: N_lab={n_lab}, N={n_tot} ({100.0*n_lab/n_tot:.1f}% labeled)")
         if len(self.conditions) > 2:
             print(
                 "Note: pairwise correlations below are not independent of "
@@ -2150,31 +2255,60 @@ class PairwiseAlignmentResult:
             )
         print()
         if self.omnibus_metric is not None:
-            d = self.omnibus_metric
             print(f"test={self.test!r} (whole-design, all {len(self.conditions)} conditions):")
-            print(
-                f"    {d['label']:<28} {d['estimate']:+.3f}  "
-                f"95% CI [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]  (n={d['n']})"
-            )
+            self._print_metric(self.omnibus_metric)
             print()
         for (a, b), metrics in self.pairwise_metrics.items():
             print(f"{a} vs {b}:")
             for entry in metrics.values():
-                print(
-                    f"    {entry['label']:<28} {entry['estimate']:+.3f}  "
-                    f"95% CI [{entry['ci_low']:+.3f}, {entry['ci_high']:+.3f}]  (n={entry['n']})"
-                )
+                self._print_metric(entry)
             if self.test_pairwise_metrics is not None:
-                d = self.test_pairwise_metrics[(a, b)]
-                print(
-                    f"    {d['label']:<28} {d['estimate']:+.3f}  "
-                    f"95% CI [{d['ci_low']:+.3f}, {d['ci_high']:+.3f}]  (n={d['n']})"
-                )
+                self._print_metric(self.test_pairwise_metrics[(a, b)])
             print()
 
 
+def _pair_total_n(conditions: dict, names: list, design: str) -> int:
+    """Total (labeled+unlabeled) item count spanned by a correlation over
+    `names`' conditions: one condition's length for design="within" (every
+    condition shares the same items by construction, enforced elsewhere),
+    or the sum across conditions for design="between" (independent groups,
+    pooled)."""
+    if design == "within":
+        return len(np.asarray(conditions[names[0]][0]))
+    return sum(len(np.asarray(conditions[n][0])) for n in names)
+
+
+def _attach_savings(metric: dict, N: int) -> dict:
+    """Attach multiplier/n_eff to a correlation metric dict, using `N`
+    (see :func:`_pair_total_n`) as the savings formula's total item count.
+
+    CAVEAT, unresolved: empirical Monte Carlo validation (comparing this
+    formula's predicted multiplier against Var(classical)/Var(PPI-corrected)
+    measured directly from evalstats.tests.wilcoxon/mannwhitney on
+    synthetic two-condition data) found a STABLE, non-noise discrepancy for
+    multi-condition (pairwise) designs specifically -- consistently ~2x too
+    high for a "between" (independent-groups, pooled-N) pair, ~0.6x too low
+    for a "within" (paired) pair, unchanged across effect sizes and after
+    increasing precision (reps/n_boot). The correlation/rho values
+    themselves behaved sensibly throughout (Friedman/anova_rep's
+    effect-invariance properties were independently reproduced exactly).
+    This suggests the bug, if any, is in how N/N_lab combine here for a
+    POOLED two-condition design, not in the linearization math -- but the
+    root cause was not found before this had to ship. The single-condition
+    path (:attr:`AlignmentResult.n_eff`, unchanged from before this
+    function existed) is NOT implicated. Treat PairwiseAlignmentResult's
+    multiplier/n_eff as unverified until this is resolved; the correlation
+    estimates alongside them are on firmer footing."""
+    mult, n_eff = _n_eff(metric["estimate"], metric["n"], N)
+    metric["N"] = N
+    metric["multiplier"] = mult
+    metric["n_eff"] = n_eff
+    return metric
+
+
 def _judge_alignment_pairwise(
-    conditions: dict, *, design: Optional[str], alpha: float, test: Optional[str] = None,
+    conditions: dict, *, design: Optional[str], alpha: float,
+    test: Optional[str] = None, selection: str = "unknown", warn_stacklevel: int = 3,
 ) -> PairwiseAlignmentResult:
     if len(conditions) < 2:
         raise ValueError(
@@ -2182,6 +2316,8 @@ def _judge_alignment_pairwise(
             "For a single condition, call judge_alignment(judge_scores, human_scores) "
             "with plain arrays instead."
         )
+    if selection not in _VALID_SELECTIONS:
+        raise ValueError(f"selection={selection!r} -- must be one of {_VALID_SELECTIONS}.")
 
     resolved_design = design
     if test is not None:
@@ -2205,7 +2341,45 @@ def _judge_alignment_pairwise(
             "different math."
         )
 
+    if selection == "unknown":
+        warnings.warn(
+            "judge_alignment() was not told how the labeled subset was "
+            "selected (selection=). Every correction it and "
+            "compare(alignment=...) apply assumes the labeled items are a "
+            "random sample of the full item pool -- pass selection='random' "
+            "to confirm that's the case, or selection='manual'/'stratified' "
+            "if not, so this is a deliberate acknowledgment rather than an "
+            "unexamined default.",
+            UserWarning, stacklevel=warn_stacklevel,
+        )
+    elif selection == "manual":
+        warnings.warn(
+            "selection='manual': the labeled subset was NOT randomly "
+            "sampled. PPI/alignment correction assumes random sampling "
+            "(MCAR) to be valid -- with a manually-chosen subset, the "
+            "corrected estimates and CIs compare()/judge_alignment() report "
+            "may be miscalibrated, not just imprecise. Treat them as "
+            "informal unless the alignment set is re-sampled at random.",
+            UserWarning, stacklevel=warn_stacklevel,
+        )
+    elif selection == "stratified":
+        warnings.warn(
+            "selection='stratified': evalstats' current correction doesn't "
+            "account for stratification weights, so this is only valid if "
+            "each stratum was itself sampled uniformly at random and the "
+            "strata are otherwise ignorable for the metric being judged. "
+            "If items were hand-picked within strata, treat corrected "
+            "estimates as potentially biased, same as selection='manual'.",
+            UserWarning, stacklevel=warn_stacklevel,
+        )
+
     names = list(conditions.keys())
+    condition_counts = {}
+    for n in names:
+        j, h = conditions[n]
+        h = np.asarray(h, dtype=float)
+        condition_counts[n] = (int((~np.isnan(h)).sum()), len(h))
+
     rng = np.random.default_rng(42)
     pairwise_metrics = {}
     for name_a, name_b in combinations(names, 2):
@@ -2214,7 +2388,8 @@ def _judge_alignment_pairwise(
         judge, human = _condition_pair_arrays(
             judge_a, human_a, judge_b, human_b, design=resolved_design, label_a=name_a, label_b=name_b,
         )
-        pairwise_metrics[(name_a, name_b)] = _pearson_spearman_metrics(
+        pair_n = _pair_total_n(conditions, [name_a, name_b], resolved_design)
+        metrics = _pearson_spearman_metrics(
             judge, human, alpha=alpha, rng=rng,
             pearson_label="Pearson r", spearman_label="Spearman r",
             what_suffix=(
@@ -2222,6 +2397,9 @@ def _judge_alignment_pairwise(
                 else f" between {name_a} and {name_b}, within-group centered"
             ),
         )
+        for m in metrics.values():
+            _attach_savings(m, pair_n)
+        pairwise_metrics[(name_a, name_b)] = metrics
 
     test_pairwise_metrics = None
     omnibus_metric = None
@@ -2232,19 +2410,24 @@ def _judge_alignment_pairwise(
             for name_a, name_b in combinations(names, 2):
                 pair = {name_a: conditions[name_a], name_b: conditions[name_b]}
                 jl, hl, _ = _linearize_for_test(pair, test=test, design=resolved_design)
-                test_pairwise_metrics[(name_a, name_b)] = _single_metric(
+                pair_n = _pair_total_n(conditions, [name_a, name_b], resolved_design)
+                m = _single_metric(
                     jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (test-correct)",
                     why=f"The correlation that actually governs {test}'s PPI variance reduction, not raw Pearson/Spearman.",
                 )
+                test_pairwise_metrics[(name_a, name_b)] = _attach_savings(m, pair_n)
         else:
             jl, hl, _ = _linearize_for_test(conditions, test=test, design=resolved_design)
-            omnibus_metric = _single_metric(
+            whole_n = _pair_total_n(conditions, names, resolved_design)
+            m = _single_metric(
                 jl, hl, alpha=alpha, rng=rng, label=f"{test} rho (whole-design)",
                 why=f"{test}'s own validated correlation across all conditions at once -- not decomposable into pairs.",
             )
+            omnibus_metric = _attach_savings(m, whole_n)
 
     return PairwiseAlignmentResult(
         conditions=names, design=resolved_design, pairwise_metrics=pairwise_metrics,
+        condition_counts=condition_counts, selection=selection,
         test=test, test_pairwise_metrics=test_pairwise_metrics, omnibus_metric=omnibus_metric,
     )
 
@@ -2306,9 +2489,10 @@ def judge_alignment(
        the data: "within" (paired/repeated-measures -- the same
        items/participants in every condition) or "between" (independent
        groups) -- two conditions look identical positionally either way,
-       but need different math. See :func:`label_efficiency` for turning
-       these correlations into an actual "how many effective human labels
-       do I have" number.
+       but need different math. Every correlation reported also carries
+       ``multiplier``/``n_eff`` -- see :attr:`PairwiseAlignmentResult
+       .pairwise_metrics` -- so there's no separate function to call for
+       "how many effective human labels do I have."
 
     Every form fits a Bayesian calibration model that can later be used to
     propagate judge uncertainty into downstream comparisons (forms 1-2
@@ -2328,19 +2512,23 @@ def judge_alignment(
         Form 3 only. Required there unless ``test=`` implies a design. See
         form 3 above.
     test : str, optional
-        Form 3 only. One of ``"ttest"``, ``"wilcoxon"``, ``"mannwhitney"``
-        (exactly 2 conditions), or ``"anova_oneway"``, ``"kruskalwallis"``,
-        ``"friedman"`` (2+ conditions). When given, computes the
-        correlation that actually governs that test's PPI variance
-        reduction -- for a 2-condition-only test, one number per pair
-        (:attr:`PairwiseAlignmentResult.test_pairwise_metrics`); for a test
-        that spans the whole design, one number across all conditions at
-        once (:attr:`PairwiseAlignmentResult.omnibus_metric`) -- e.g. with
-        3+ conditions and ``test="friedman"``, you get BOTH Friedman's own
-        whole-design number AND the raw pairwise breakdown (useful for
-        planning post-hoc pairwise tests). See :data:`_TEST_STRUCTURE` and
-        each ``_linearize_*`` function for the recipe/validation behind
-        each test.
+        One of ``"ttest"``, ``"wilcoxon"``, ``"mannwhitney"`` (exactly 2
+        conditions), ``"anova_oneway"``, ``"kruskalwallis"``, ``"friedman"``
+        (2+ conditions, form 3 only), or ``"mean_estimate"`` (form 1/2
+        only -- a single condition, no comparison, e.g. a one-sample
+        mean/proportion estimate). When given, computes the correlation
+        that actually governs that test's PPI variance reduction, and
+        unlocks :attr:`AlignmentResult.n_eff`/:attr:`.multiplier` (forms
+        1-2) -- for a 2-condition-only test in form 3, one number per pair
+        (:attr:`PairwiseAlignmentResult.test_pairwise_metrics`, also the
+        number to use for planning pairwise post-hoc tests with 3+
+        conditions); for a test that spans the whole design, one number
+        across all conditions at once
+        (:attr:`PairwiseAlignmentResult.omnibus_metric`) -- e.g. with 3+
+        conditions and ``test="friedman"``, you get BOTH Friedman's own
+        whole-design number AND the raw pairwise breakdown. See
+        :data:`_TEST_STRUCTURE` and each ``_linearize_*`` function for the
+        recipe/validation behind each test.
     llm_metric : str, optional
         Form 1: column name of the LLM judge scores (required). Form 2:
         optional display name for the judge, used only in printed reports.
@@ -2373,21 +2561,31 @@ def judge_alignment(
 
     Notes
     -----
-    ``alignment_metrics`` always includes both ``pearson_r`` and
-    ``spearman_r`` (alongside the score-type-specific metrics: percent
-    agreement/Cohen's κ for binary, weighted κ/ICC(2,1) for likert,
-    ICC(2,1) for continuous/grade). Which one governs a PPI-corrected
-    hypothesis test's variance reduction depends on that test's estimand:
-    use Pearson's r² for parametric/mean-based tests ($t$-test, paired
-    $t$-test, mean estimation) and Spearman's r² for rank-based tests
-    (Mann-Whitney, Wilcoxon signed-rank).
+    ``alignment_metrics`` (forms 1-2) and ``pairwise_metrics`` (form 3)
+    always include both raw ``pearson_r`` and ``spearman_r`` (alongside
+    score-type-specific metrics: percent agreement/Cohen's κ for binary,
+    weighted κ/ICC(2,1) for likert, ICC(2,1) for continuous/grade) --
+    reported for comparability to prior work. These are NOT simply "Pearson
+    for mean-based tests, Spearman for rank-based tests": that split is the
+    naive recipe, and for every rank-based test (Mann-Whitney, Wilcoxon,
+    Kruskal-Wallis, Friedman) it drifts with effect size -- confirmed via
+    Monte Carlo to overstate ``n_eff`` by -13% to +89% depending on the
+    test and effect size (see :data:`_TEST_STRUCTURE`'s docstring and
+    notes/omnibus_label_efficiency.html). The correlation that actually
+    governs a given test's PPI variance reduction is a Pearson correlation
+    on a TEST-SPECIFIC linearization of the raw values (identity for
+    mean-type tests, a genuine transform -- Hájek projection, empirical
+    placements, or centered ranks -- for rank-type ones); pass ``test=`` to
+    get it, rather than reading ``pearson_r``/``spearman_r`` directly for a
+    rank-based test.
 
-If you're comparing 2+ conditions (a study arm, a timepoint, anything with
-    its own judge/human scores), use form 3 above rather than doing this by
-    hand -- it computes the right correlation automatically for both
-    within-subjects (paired-difference) and between-subjects (pooled,
-    within-group-centered) designs, and covers 3+ conditions via every
-    pairwise comparison.
+    If you're comparing 2+ conditions (a study arm, a timepoint, anything
+    with its own judge/human scores), use form 3 above rather than form
+    1/2 called once per condition -- it computes the right correlation
+    automatically for both within-subjects (paired-difference) and
+    between-subjects (pooled, within-group-centered) designs, and covers
+    3+ conditions via every pairwise comparison (plus, with ``test=``, an
+    omnibus test's own whole-design number where applicable).
 
     Returns
     -------
@@ -2402,7 +2600,9 @@ If you're comparing 2+ conditions (a study arm, a timepoint, anything with
                 "positional argument -- each dict value is already a "
                 "(judge_scores, human_scores) pair."
             )
-        return _judge_alignment_pairwise(judge_scores_or_evaldata, design=design, alpha=alpha, test=test)
+        return _judge_alignment_pairwise(
+            judge_scores_or_evaldata, design=design, alpha=alpha, test=test, selection=selection,
+        )
 
     from evalstats.loader import EvalResults
 
@@ -2437,12 +2637,13 @@ If you're comparing 2+ conditions (a study arm, a timepoint, anything with
         judge_scores_or_evaldata, human_scores,
         all_judge_scores=all_judge_scores, score_type=score_type,
         llm_metric=llm_metric, human_groundtruth=human_groundtruth, alpha=alpha,
-        selection=selection,
+        selection=selection, test=test,
     )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# label_efficiency -- "how many effective human labels do I have"
+# Label-efficiency savings formula, shared by AlignmentResult.n_eff/
+# .multiplier and PairwiseAlignmentResult's per-metric multiplier/n_eff.
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _n_eff(r: float, n_lab: int, N: int) -> tuple[float, float]:
@@ -2460,265 +2661,3 @@ def _n_eff(r: float, n_lab: int, N: int) -> tuple[float, float]:
     return mult, n_lab * mult
 
 
-class LabelEfficiencyResult:
-    """How many effective human labels a set of judge/human scores gives
-    you -- see :func:`label_efficiency`.
-
-    Attributes
-    ----------
-    n_lab, N : int
-        Labeled item count and total dataset size used.
-    mean_based, rank_based : dict
-        ``{"r": ..., "r_ci": (lo, hi), "multiplier": ..., "n_eff": ...}``,
-        from RAW Pearson r / Spearman r on the (differenced/pooled) scores
-        -- kept for comparability to prior work, NOT necessarily correct
-        for the test you're actually running. ``rank_based`` in particular
-        is the naive recipe found to drift with effect size for every
-        rank-based test (see :data:`_TEST_STRUCTURE`'s docstring) -- prefer
-        ``test_result`` (below) whenever you know your test.
-    test : str or None
-        The test name passed to :func:`label_efficiency`, if any.
-    test_result : dict or None
-        Present iff ``test`` was given: ``{"r": ..., "r_ci": ..., "multiplier": ...,
-        "n_eff": ...}`` from the CORRECT, test-specific linearized
-        correlation (identity for mean-type tests, matching ``mean_based``
-        exactly; a genuine transform -- Hajek projection, empirical
-        placements, or centered ranks -- for rank-based ones, which will
-        generally NOT match ``rank_based`` when a real effect is present).
-        :attr:`n_eff`/:attr:`multiplier` read from here.
-    """
-
-    def __init__(
-        self, *, n_lab: int, N: int, mean_based: dict, rank_based: dict,
-        test: Optional[str] = None, test_result: Optional[dict] = None,
-    ) -> None:
-        self.n_lab = n_lab
-        self.N = N
-        self.mean_based = mean_based
-        self.rank_based = rank_based
-        self.test = test
-        self.test_result = test_result
-
-    @property
-    def n_eff(self) -> float:
-        """N_eff for the ``test=`` you specified. Raises if you didn't."""
-        return self._require_test()["n_eff"]
-
-    @property
-    def multiplier(self) -> float:
-        """Savings multiplier for the ``test=`` you specified. Raises if you didn't."""
-        return self._require_test()["multiplier"]
-
-    def _require_test(self) -> dict:
-        if self.test_result is None:
-            raise ValueError(
-                "No test= was given to label_efficiency(), so there's no single "
-                "answer -- use .mean_based/.rank_based directly (raw, not "
-                "test-specific), or re-call with test='ttest'/'wilcoxon'/etc."
-            )
-        return self.test_result
-
-    def summary(self) -> None:
-        print("Label efficiency")
-        print("─" * 58)
-        print(f"Labeled items : {self.n_lab} of {self.N} total ({100.0*self.n_lab/self.N:.1f}%)")
-        print()
-        if self.test_result is not None:
-            d = self.test_result
-            print(f"test={self.test!r} (correct for this test):")
-            print(f"    r = {d['r']:+.3f}   multiplier = {d['multiplier']:.2f}x   N_eff = {d['n_eff']:.0f}")
-            print()
-        if self.mean_based != self.rank_based:
-            for name, d in (("Raw Pearson r (mean-based tests)", self.mean_based),
-                            ("Raw Spearman r (rank-based tests -- see caveat)", self.rank_based)):
-                print(f"{name}:")
-                print(f"    r = {d['r']:+.3f}   multiplier = {d['multiplier']:.2f}x   N_eff = {d['n_eff']:.0f}")
-        if self.test_result is not None and self.mean_based != self.rank_based \
-                and self.mean_based["n_eff"] != self.test_result["n_eff"] \
-                and self.rank_based["n_eff"] != self.test_result["n_eff"]:
-            print(
-                "\nNote: the raw rows above are naive (Pearson/Spearman on raw scores) "
-                "and can overstate N_eff once a real effect is present -- use the "
-                f"test={self.test!r} row above, not these, for your actual analysis."
-            )
-        print()
-
-
-class PairwiseLabelEfficiencyResult:
-    """:class:`LabelEfficiencyResult` for every pair among 2+ named
-    conditions, PLUS (when ``test=`` spans the whole design, e.g.
-    ``"friedman"``) a single whole-design result -- see
-    :func:`label_efficiency`. Same "not independent across pairs with 3+
-    conditions" caveat as :class:`PairwiseAlignmentResult`.
-
-    Attributes
-    ----------
-    pairwise : dict[tuple[str, str], LabelEfficiencyResult]
-        One entry per pair, using RAW Pearson/Spearman (``.mean_based``/
-        ``.rank_based``) plus, when ``test`` needs exactly 2 conditions,
-        that test's correct linearized ``.test_result`` per pair.
-    omnibus : LabelEfficiencyResult or None
-        Set when ``test`` spans 2+ conditions at once (anova_oneway,
-        kruskalwallis, friedman): that test's own whole-design N_eff,
-        computed across all conditions together.
-    """
-
-    def __init__(
-        self, *, conditions: list, design: str, pairwise: dict,
-        test: Optional[str] = None, omnibus: Optional["LabelEfficiencyResult"] = None,
-    ) -> None:
-        self.conditions = conditions
-        self.design = design
-        self.pairwise = pairwise
-        self.test = test
-        self.omnibus = omnibus
-
-    def summary(self) -> None:
-        print("Pairwise label efficiency")
-        print("─" * 58)
-        print(f"Conditions : {', '.join(self.conditions)}")
-        print(f"Design     : {self.design}-subjects")
-        print()
-        if self.omnibus is not None:
-            print(f"test={self.test!r} (whole-design, all {len(self.conditions)} conditions):")
-            self.omnibus.summary()
-        for (a, b), result in self.pairwise.items():
-            print(f"{a} vs {b}:")
-            result.summary()
-
-
-def label_efficiency(
-    judge_scores_or_conditions,
-    human_scores=None,
-    *,
-    N: int,
-    design: Optional[str] = None,
-    test: Optional[str] = None,
-    alpha: float = 0.05,
-) -> "LabelEfficiencyResult | PairwiseLabelEfficiencyResult":
-    """How many effective human labels does PPI correction give you?
-
-    Answers "how many human labels a *classical* (non-PPI) analysis would
-    need to match your PPI-corrected analysis's precision" -- see
-    ``N_eff = N_lab / (1 - rho^2 * (1 - N_lab/N))`` in the package docs /
-    paper guidance. No statistics background needed to use this: hand it
-    your data, and read off the row matching the test you're already
-    planning to run.
-
-    Two call forms, matching :func:`judge_alignment`'s:
-
-    1. ``label_efficiency(judge_scores, human_scores, N=1000)`` -- a single
-       set of judge/human scores (e.g. for a one-sample mean/proportion
-       estimate, no comparison). Returns a :class:`LabelEfficiencyResult`.
-    2. ``label_efficiency({"pre": (judge_a, human_a), "post": (judge_b, human_b)},
-       N=1000, design="within")`` -- 2+ named conditions you're about to
-       compare, exactly like :func:`judge_alignment`'s form 3 (same
-       ``design=`` requirement and meaning). Returns a
-       :class:`PairwiseLabelEfficiencyResult`, one entry per pair.
-
-    Every result reports BOTH raw Pearson r and raw Spearman r-derived
-    numbers (for comparability to prior work), PLUS -- when you pass
-    ``test=`` -- the CORRECT test-specific number via ``.n_eff``/
-    ``.multiplier``. Use ``test=`` whenever you know your test: the raw
-    rank-based row is a naive approximation that overstates N_eff once a
-    real effect is present (see :class:`LabelEfficiencyResult`'s
-    docstring), so it should not be read as "the" answer for a rank-based
-    test on its own. ``test`` is one of ``"ttest"``, ``"wilcoxon"``,
-    ``"mannwhitney"`` (exactly 2 conditions/one comparison), or
-    ``"anova_oneway"``, ``"kruskalwallis"``, ``"friedman"`` (2+
-    conditions), or ``"mean_estimate"`` (form 1 only -- a single
-    condition, no comparison, e.g. a one-sample mean/proportion estimate).
-
-    Parameters
-    ----------
-    judge_scores_or_conditions : array-like or dict
-        Every item's judge score (form 1), or a
-        ``{name: (judge_scores, human_scores)}`` dict of 2+ named
-        conditions (form 2).
-    human_scores : array-like, optional
-        Same length, ``NaN`` for unlabeled items (form 1 only).
-    N : int
-        Total dataset size (labeled + unlabeled items). Required -- this
-        function has no way to know it from the labeled data alone.
-    design : {"within", "between"}, optional
-        Form 2 only. Required there unless ``test=`` implies a design --
-        see :func:`judge_alignment`.
-    test : str, optional
-        See above. Determines ``.n_eff``/``.multiplier``.
-    alpha : float
-        Significance level for the underlying correlation's CI.
-
-    Returns
-    -------
-    LabelEfficiencyResult or PairwiseLabelEfficiencyResult
-    """
-    def _raw_result(metrics: dict, n_lab: int, test_metric: Optional[dict] = None) -> LabelEfficiencyResult:
-        pr = metrics["pearson_r"]
-        sr = metrics["spearman_r"]
-        p_mult, p_n_eff = _n_eff(pr["estimate"], n_lab, N)
-        s_mult, s_n_eff = _n_eff(sr["estimate"], n_lab, N)
-        test_result = None
-        if test_metric is not None:
-            t_mult, t_n_eff = _n_eff(test_metric["estimate"], test_metric["n"], N)
-            test_result = {
-                "r": test_metric["estimate"], "r_ci": (test_metric["ci_low"], test_metric["ci_high"]),
-                "multiplier": t_mult, "n_eff": t_n_eff,
-            }
-        return LabelEfficiencyResult(
-            n_lab=n_lab, N=N,
-            mean_based={"r": pr["estimate"], "r_ci": (pr["ci_low"], pr["ci_high"]), "multiplier": p_mult, "n_eff": p_n_eff},
-            rank_based={"r": sr["estimate"], "r_ci": (sr["ci_low"], sr["ci_high"]), "multiplier": s_mult, "n_eff": s_n_eff},
-            test=test, test_result=test_result,
-        )
-
-    if isinstance(judge_scores_or_conditions, dict):
-        if human_scores is not None:
-            raise TypeError(
-                "label_efficiency(conditions_dict, ...) doesn't take a second "
-                "positional argument -- each dict value is already a "
-                "(judge_scores, human_scores) pair."
-            )
-        pairwise_result = _judge_alignment_pairwise(judge_scores_or_conditions, design=design, alpha=alpha, test=test)
-        pairwise = {
-            pair: _raw_result(
-                metrics, metrics["pearson_r"]["n"],
-                test_metric=(pairwise_result.test_pairwise_metrics or {}).get(pair),
-            )
-            for pair, metrics in pairwise_result.pairwise_metrics.items()
-        }
-        omnibus = (
-            _raw_result(
-                {"pearson_r": pairwise_result.omnibus_metric, "spearman_r": pairwise_result.omnibus_metric},
-                pairwise_result.omnibus_metric["n"], test_metric=pairwise_result.omnibus_metric,
-            ) if pairwise_result.omnibus_metric is not None else None
-        )
-        return PairwiseLabelEfficiencyResult(
-            conditions=pairwise_result.conditions, design=pairwise_result.design,
-            pairwise=pairwise, test=test, omnibus=omnibus,
-        )
-
-    if human_scores is None:
-        raise TypeError(
-            "label_efficiency(judge_scores, human_scores, N=...) requires both "
-            "arrays; or pass a {name: (judge_scores, human_scores)} dict of 2+ "
-            "conditions with design= for a comparison."
-        )
-    judge = np.asarray(judge_scores_or_conditions, dtype=float)
-    human = np.asarray(human_scores, dtype=float)
-    mask = ~np.isnan(human)
-    n_lab = int(mask.sum())
-    if n_lab < 3:
-        raise ValueError(f"Not enough labeled items (n={n_lab}) to compute a correlation.")
-    if test is not None and test != "mean_estimate":
-        raise ValueError(
-            f"test={test!r} needs a comparison (2+ conditions) -- pass a "
-            "{name: (judge_scores, human_scores)} dict instead, or use "
-            "test='mean_estimate' for a single-condition estimate."
-        )
-    rng = np.random.default_rng(42)
-    metrics = _pearson_spearman_metrics(
-        judge[mask], human[mask], alpha=alpha, rng=rng,
-        pearson_label="Pearson r", spearman_label="Spearman r",
-    )
-    test_metric = metrics["pearson_r"] if test == "mean_estimate" else None
-    return _raw_result(metrics, n_lab, test_metric=test_metric)
