@@ -7468,7 +7468,105 @@ Applying this fixed two anomalies that score-level rho^2 produced: continuous
 paired_t read 1.08-1.24x its predicted bound (impossible for a control
 variate) and now reads ~1.00, and likert wilcoxon's ratio drifted 0.82 -> 0.65
 across the tiers and is now flat at ~0.90. The residual gap for rank tests is
-real, but it is a level, not a drift."""
+real, but it is a level, not a drift.
+
+TODO -- THE FOUR OMNIBUS METHODS (anova_ind, anova_rep, friedman, kruskal)
+ARE DELIBERATELY ABSENT. 4571c6e routed 3+ conditions through pairwise
+comparisons rather than guess at an omnibus formula, on the grounds that no
+omnibus formula was validated anywhere in this codebase. It has since been
+measured -- see notes/omnibus_label_efficiency.html (8000 reps/cell,
+k in {3,4,5,7}, seven judge pathologies, recipes verified by inverting
+N_eff = N_lab/(1 - rho^2 (1 - N_lab/N)) back to the rho^2 the data implies).
+Wiring them up needs three things:
+
+1. THE ENTRIES.
+
+       "anova_ind": ("group",  "pearson")
+       "kruskal":   ("group",  "spearman")
+       "anova_rep": ("double", "pearson")     # new structure, see (2)
+       "friedman":  ("double", "spearman")    # new structure, on RANKS
+
+   "group" already does the right thing for the independent pair -- centre
+   each condition on its own mean, then pool -- it only needs generalising
+   past the two hardcoded groups (truth_a2/truth_b2) to k of them. Do NOT
+   substitute "average the per-condition correlations": the algebra sums
+   covariances and variances rather than averaging their ratios, and
+   averaging over-predicts N_eff by 19% (168 vs a measured 141) as soon as
+   one condition's judge is noisier than the others. For kruskal that pooled
+   fix is unavailable -- ranking within a condition equalises the variances
+   pooling needs, so pooled and averaged coincide -- and the harmonic mean of
+   the per-condition rho_S^2 is the better estimator there (measured 139 vs
+   142 on the same cell where averaging reads 163).
+
+2. A NEW "double" STRUCTURE, for the two repeated-measures methods:
+   row-centre each subject's k values AND column-centre each condition, on
+   the human and judge matrices alike, then pool every cell into one
+   correlation. For friedman, rank each subject's row FIRST and column-centre
+   the ranks. Row-centring alone -- which is what the paper's footnote
+   currently says, and the obvious thing to reach for -- leaves the
+   between-condition means in. Judge and human share those means exactly, so
+   pooling scores them as agreement, but they carry no CROSS-SUBJECT variance
+   and cross-subject variance is the only variance the test's denominator
+   sees; the judge ends up credited for reproducing the very effect under
+   test. At k=5, d=1.0 that promises 445 effective labels against a measured
+   240 (anova_rep) and 310 against 156 (friedman).
+
+3. THE EFFECT-SIZE LANDMINE (see the standing caveat below -- it already
+   applies to wilcoxon/mwu, and applies harder to friedman/kruskal).
+   anova_rep is the one omnibus addition free of it.
+
+   Relatedly, N_lab counts SUBJECTS and not labeled cells for anova_rep and
+   friedman, and their labeling must cover complete subject rows.
+
+CAVEAT ON THE ENTRIES ALREADY HERE -- rho IS NOT EFFECT-INVARIANT FOR THE
+RANK METHODS, and _method_rho2 assumes it is (it builds its cell at
+effect_size=0.0 and caches on (eval_type, judge_noise, method), with no
+effect-size term). Measured with judge quality HELD FIXED at r=0.8 while the
+true effect d varies, rho^2 recovered by inverting the measured multiplier:
+
+    method     d=0      d=0.5    d=1.0    d=2.0     drift
+    ttest      0.6292   0.6292   0.6292   0.6292    -0.0%   <- exact
+    paired_t   0.6502   0.6502   0.6502   0.6502    +0.0%   <- exact
+    anova_rep  0.6419   0.6419   0.6419   0.6419    +0.0%   <- exact
+    mwu        0.6043   0.5997   0.5839   0.5267   -12.8%
+    kruskal    0.6082   0.5985   0.5766   0.5235   -13.9%
+    wilcoxon   0.6250   0.6163   0.5859   0.4664   -25.4%
+    friedman   0.4181   0.3907   0.3591   0.2583   -38.2%
+
+The split is MEAN vs RANK, not omnibus vs pairwise. It is not a contradiction
+of PPI theory: variance reduction is 1 - rho^2 with rho correlating INFLUENCE
+FUNCTIONS, and for a mean psi(y)=y-mu makes rho a plain Pearson correlation,
+invariant to a location shift (hence exactly flat). Rank and dominance
+estimands have psi involving the CDF, whose shape changes as the groups
+separate. What is violated is only the assumption that rho is a property of
+the JUDGE ALONE; for rank estimands it is a property of the judge AND the
+design.
+
+The recipes in this dict are effect-invariant BY CONSTRUCTION -- Spearman is
+unchanged by a location shift -- so they do not track that decline. Measured
+flat at 0.6175 (wilcoxon) and 0.6169 (mwu) across the whole d range, against
+a truth that falls, the N_eff error is:
+
+    wilcoxon  -1.5% at d=0  ->  +6.4% at d=1  ->  +30.6% at d=2
+    mwu       +2.5%         ->  +6.7%         ->  +18.2%
+
+This was never caught because PPI_LABEL_EFF_EFFECT_FRACS sweeps only
+0.15-0.35, where the drift is ~0.3% -- the existing es-invariance validation
+is not wrong, just scoped to small effects. Note the null is exactly where
+the effect-invariant recipe and the truth COINCIDE, so no null-only check can
+catch this. Fixing it means threading effect_size into _method_rho2's cell
+and cache key for the rank methods.
+
+Mechanism, if it needs re-deriving: the rank atom SATURATES. As the groups
+separate almost every row lands in the true order, so the residual variation
+is carried by rare order flips, and the human's flip mass shrinks faster than
+the judge's (the judge's difference carries extra variance, so at the same
+threshold it sits further out on a wider distribution) -- the two sides'
+flips decouple. Confirmed by a noiseless judge showing NO drift at all
+(multiplier ~10.2-10.4, rho^2 ~ 1.00 out to d=4), by drift scaling with judge
+noise (-32% at r=.95, -59% at r=.8, -75% at r=.6), and by t3 errors cutting
+friedman's drift from -62% to -13% (polynomial tails keep the two flip masses
+comparable). See notes/omnibus_label_efficiency.html."""
 
 
 @functools.lru_cache(maxsize=None)
