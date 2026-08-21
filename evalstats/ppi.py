@@ -1016,9 +1016,43 @@ def _pooled_two_group_lambda(
     partially cancels in the difference rather than adding in
     quadrature).
     """
-    Y_lab = np.concatenate([Y_lab_a, Y_lab_b])
-    Y_hat_lab = np.concatenate([Y_hat_lab_a, Y_hat_lab_b])
-    Y_hat_unlab = np.concatenate([Y_hat_unlab_a, Y_hat_unlab_b])
+    # Each group is centred on its OWN mean before pooling, so lambda is
+    # estimated from WITHIN-group moments -- which is what lambda* is defined
+    # by. Pooling the raw values instead lets the between-group separation
+    # enter both cov_lab_hatlab and the variances below; they do not grow in
+    # the proportion that preserves the ratio, so lam_raw gets dragged toward
+    # n_all/(n_all + n_lab) and away from the optimum as the groups separate.
+    # Measured on unbounded Gaussians with judge quality pinned, uncentred:
+    # lambda 0.609 -> 0.789 over d = 0 -> 3 and the label-efficiency
+    # multiplier 2.36 -> 2.02, while the human-only arm's variance is
+    # bit-for-bit constant. Centred, both are exactly flat (lambda 0.5748,
+    # multiplier 2.3499 at every d) and land on the oracle (2.3553).
+    #
+    # This does NOT weaken the MNAR protection pooling was adopted for. That
+    # works because lambda DROPS under MNAR, discounting a rectifier whose
+    # covariance signal is untrustworthy, and centring leaves that intact:
+    # binary/mnar_strong 0.2205 -> 0.2256, binary/mnar_mild 0.5540 -> 0.5669.
+    # The two mechanisms do not overlap -- under MNAR the covariance signal is
+    # already crushed, so there is no between-group inflation to remove.
+    # Validated over binary+continuous x mcar/mnar_mild/mnar_strong x
+    # d in {0,0.5,1,2,3}, 2000 reps: worst coverage loss -0.0035, worst Type-I
+    # increase +0.0025, and bias IMPROVED in all but one cell (continuous/mcar
+    # +0.043 -> +0.011 SE at d=1). See the same treatment's rationale in
+    # cases/pvalues.py's _method_rho2, which already centres per group before
+    # pooling for the correlation, for the same reason.
+    #
+    # NOTE: _pooled_k_group_lambda below has the identical defect and is NOT
+    # fixed here -- it has only been checked at the estimator-variance level
+    # (a judge whose per-condition bias reverses the condition ordering costs
+    # 3.77x against 8.84x achievable), never for Type-I/coverage the way this
+    # function now has been. Do that validation before changing it.
+    def _c(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return x - x.mean() if x.size else x
+
+    Y_lab = np.concatenate([_c(Y_lab_a), _c(Y_lab_b)])
+    Y_hat_lab = np.concatenate([_c(Y_hat_lab_a), _c(Y_hat_lab_b)])
+    Y_hat_unlab = np.concatenate([_c(Y_hat_unlab_a), _c(Y_hat_unlab_b)])
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
