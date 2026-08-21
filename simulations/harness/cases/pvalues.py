@@ -4491,7 +4491,7 @@ def _ppi_source_effect_frac(sc: JudgeBiasSource) -> float:
         if not m:
             raise ValueError(f"_ppi_source_effect_frac: could not parse es label from {sc.name!r}")
         return PPI_FACTORIAL_EFFECT_FRACS[m.group(1)]
-    if sc.tag in ("nformula", "nformula_binary"):
+    if sc.tag in ("nformula", "nformula_binary", "rho_drift"):
         m = re.search(r"\.es=([\d.]+)$", sc.name)
         if not m:
             raise ValueError(f"_ppi_source_effect_frac: could not parse es frac from {sc.name!r}")
@@ -6690,6 +6690,388 @@ def print_ppi_label_efficiency_report(results: list[LabelEfficiencyPoint]) -> No
                 flag = "  (saturated, lower bound)" if r.saturated else ""
                 print(f"      {r.n_lab:>8} {r.ppi_power:>10.3f} {r.equiv_n_lab:>12.1f} {mult:>10.2f}x{flag}")
     print()
+
+
+PPI_RHO_DRIFT_EFFECT_FRACS = (0.0, 0.25, 0.5, 1.0, 1.5, 2.0)
+"""Effect sizes (in population-SD units, per _jb_effect_magnitude) the
+rho-drift check sweeps.
+
+Deliberately MUCH wider than PPI_LABEL_EFF_EFFECT_FRACS (0.15-0.35). That
+narrow band is right for its own purpose -- keeping the N_lab grid inside the
+reference power curve's steep middle -- but it is exactly why the effect
+dependence this check exists to measure went unnoticed: across 0.15-0.35 the
+drift is ~0.3%, indistinguishable from Monte Carlo noise. It only becomes
+visible past d ~ 0.5, and the interesting regime runs to d = 2 where the rank
+statistics saturate. 0.0 is included as the anchor every named correlation is
+implicitly calibrated at."""
+
+PPI_RHO_DRIFT_ALIGNMENT_TARGET = 0.64
+"""Single judge-quality tier (score-level rho^2) the drift sweep pins every
+cell to, via _calibrate_noise_for_alignment.
+
+The whole measurement rests on judge quality being HELD FIXED while the effect
+moves -- a sweep that varied both would confound exactly what it is trying to
+separate. One tier rather than _LABEL_EFF_ALIGNMENT_TARGETS' several, because
+the drift is a property of the estimand rather than of judge quality: quality
+sets how FAST rho falls (-32%/-59%/-75% at r = .95/.8/.6 for friedman), not
+whether it does. 0.64 == r 0.8, the middle tier, chosen so the fall has room
+to be visible without the judge being so good that rho^2 starts near its
+ceiling."""
+
+
+@dataclass
+class RhoDriftPoint:
+    """One (eval_type, method, effect_frac) cell of the rho-drift check."""
+    eval_type: str
+    method: str
+    effect_frac: float
+    judge_noise: float
+    alignment_value: float
+    """Achieved score-level rho^2 for the judge at this tier -- the quantity a
+    named correlation recipe estimates, and which is constant by construction
+    across every effect_frac in the sweep."""
+    n: int
+    n_lab: int
+    n_reps: int
+    variance_multiplier: float
+    """Var(human-subset estimate) / Var(PPI estimate) over replicates, from
+    PPIComparisonResult.var_human_subset / .var_ppi -- the same
+    direct-variance route LabelEfficiencyPoint.variance_multiplier uses, with
+    no power curve to invert."""
+    rho2_implied: float
+    """The rho^2 the measured multiplier implies, by inverting the N_eff
+    formula: rho2 = (1 - 1/M) / (1 - n_lab/N). THIS is the quantity the
+    label-efficiency formula actually needs. It is what drifts."""
+    rho2_recipe: float
+    """What this method's named-correlation recipe returns (_method_rho2, via
+    _METHOD_CORR_KIND). NaN for methods with no entry -- currently the four
+    omnibus tests, deliberately (see _METHOD_CORR_KIND's TODO)."""
+    n_eff_implied: float
+    n_eff_recipe: float
+    n_eff_error: float
+    """n_eff_recipe / n_eff_implied - 1: the error a planner suffers by using
+    the named recipe. NaN when the method has no recipe entry."""
+
+
+def run_ppi_rho_drift_check(
+    n_reps: int,
+    n_boot: int,
+    seed: int,
+    effect_fracs: tuple[float, ...] = PPI_RHO_DRIFT_EFFECT_FRACS,
+    n_lab_target: int = 100,
+    eval_types: tuple[str, ...] = ("continuous",),
+    align_n_mc: int = 20_000,
+    n_workers: int = 1,
+    progress_mode: str = "bar",
+) -> tuple[list[RhoDriftPoint], list[tuple]]:
+    """Is rho^2 a property of the JUDGE, or of the judge AND the design?
+
+    Every label-efficiency number in this harness assumes the former:
+    _method_rho2 builds its cell at effect_size=0.0 and caches on
+    (eval_type, judge_noise, method), with no effect-size term. This check
+    tests that assumption directly by holding judge quality pinned at
+    PPI_RHO_DRIFT_ALIGNMENT_TARGET and sweeping the true effect, then
+    inverting the measured multiplier back to the rho^2 it implies.
+
+    The assumption holds EXACTLY for the mean-type estimands and fails for
+    every rank/dominance one, because PPI's variance reduction is 1 - rho^2
+    with rho correlating INFLUENCE FUNCTIONS: for a mean psi(y) = y - mu, so
+    rho is a plain Pearson correlation that a location shift cannot move,
+    while rank and dominance estimands have psi involving the CDF, whose shape
+    changes as the groups separate. Reference values from the standalone
+    investigation this check productionises (judge r = 0.8, d = 0 -> 2):
+
+        ttest, paired_t     flat to 4 dp      <- measured here
+        mwu -12.8%, wilcoxon -25.4%           <- measured here
+        anova_rep flat; kruskal -13.9%;       <- NOT measured here, see the
+        friedman -38.2%                          method-selection comment below
+
+    Expect the two mean-type methods to come back flat and the two rank ones
+    to fall. A mean-type method showing drift is a bug in the measurement, not
+    a finding -- its invariance is exact algebra, so it doubles as this
+    check's own control.
+
+    The named recipes cannot track that: Spearman is shift-invariant, so for
+    mwu/wilcoxon/kruskal it stands still while the target falls away beneath
+    it, and friedman's (mean per-participant Spearman, computed on within-row
+    ranks) is not shift-invariant at all -- it RISES ~94% as the truth falls.
+    Hence rho2_recipe alongside rho2_implied here: the gap between the two
+    columns is the finding, not either column alone.
+
+    Returns (points, calib_rows) -- calib_rows in the same shape
+    run_ppi_label_efficiency_check emits, so it can reuse
+    save_results_artifacts_ppi_label_efficiency_raw's calibration writer.
+    """
+    from simulations.harness.scenarios.synthetic import PPI_LABEL_EFF_N
+
+    points: list[RhoDriftPoint] = []
+    calib_rows: list[tuple] = []
+    label_frac = n_lab_target / PPI_LABEL_EFF_N
+
+    for et in eval_types:
+        baseline = (_ppi_power_baseline_binary() if et == "binary"
+                    else _ppi_power_baseline(et))
+        metric_name, _ = _LABEL_EFF_ALIGNMENT_METRIC[et]
+        # One calibration per eval type -- alignment is measured off group A,
+        # which never carries the injected effect, so it is independent of
+        # effect_frac (see _calibrate_noise_for_alignment's docstring). That
+        # independence is what lets one noise value serve every effect cell.
+        noise, achieved, panel = _calibrate_noise_for_alignment(
+            et, PPI_RHO_DRIFT_ALIGNMENT_TARGET, metric_name, baseline,
+            n_mc=align_n_mc, seed=seed,
+        )
+        calib_rows.append((et, noise, metric_name, PPI_RHO_DRIFT_ALIGNMENT_TARGET,
+                           achieved, panel, "gaussian"))
+
+        # _COMPARISON_METHODS only -- NOT _COMPARISON_METHODS_OMNIBUS. This
+        # check reads PPIComparisonResult.var_human_subset/.var_ppi, and
+        # _run_ppi_comparison_cell deliberately populates those for two-group
+        # structures only (its omnibus branch records a p-value and nothing
+        # else, since _classical_point_estimate is two-group). Including the
+        # omnibus methods here would emit silent NaN rows. Extending the check
+        # to them needs an omnibus point-estimate route in
+        # _run_ppi_comparison_cell FIRST -- pair that work with the omnibus
+        # entries _METHOD_CORR_KIND's TODO describes, since neither is useful
+        # without the other.
+        methods = (_COMPARISON_METHODS_BINARY if et == "binary"
+                   else _COMPARISON_METHODS)
+        for frac in effect_fracs:
+            # baseline already carries eval_type/n/label_frac/llm_noise --
+            # override those four rather than passing them alongside it.
+            kw = {**baseline, "n": PPI_LABEL_EFF_N, "label_frac": label_frac,
+                  "llm_noise": noise}
+            sc = JudgeBiasSource(
+                name=f"rho_drift.{et}.es={frac}", tag="rho_drift",
+                effect_size=_jb_effect_magnitude(et, frac), **kw,
+            )
+            for method in methods:
+                # Stable per-method offset: hash() on str is salted per
+                # process (PYTHONHASHSEED), which would make this check
+                # irreproducible run to run. The SAME offset is used at every
+                # effect_frac on purpose -- common random numbers across the
+                # sweep, so the drift is measured against a shared draw rather
+                # than against independent noise.
+                m_off = int(hashlib.sha256(method.encode()).hexdigest()[:8], 16) % 10_000
+                r = _run_ppi_comparison_cell(sc, n_reps=n_reps, n_boot=n_boot,
+                                             seed=seed + m_off, method=method)
+                mult = (r.var_human_subset / r.var_ppi
+                        if np.isfinite(r.var_human_subset) and r.var_ppi > 0
+                        else float("nan"))
+                frac_unlab = 1.0 - r.n_lab / sc.n if sc.n else float("nan")
+                implied = ((1.0 - 1.0 / mult) / frac_unlab
+                           if np.isfinite(mult) and mult > 0 and frac_unlab > 0
+                           else float("nan"))
+                recipe = (_method_rho2(et, noise, method)[0]
+                          if method in _METHOD_CORR_KIND else float("nan"))
+                ne_i = (_ppi_predicted_savings(implied, r.n_lab, sc.n) * r.n_lab
+                        if np.isfinite(implied) else float("nan"))
+                ne_r = (_ppi_predicted_savings(recipe, r.n_lab, sc.n) * r.n_lab
+                        if np.isfinite(recipe) else float("nan"))
+                points.append(RhoDriftPoint(
+                    eval_type=et, method=method, effect_frac=frac,
+                    judge_noise=noise, alignment_value=achieved,
+                    n=sc.n, n_lab=r.n_lab, n_reps=n_reps,
+                    variance_multiplier=mult, rho2_implied=implied,
+                    rho2_recipe=recipe, n_eff_implied=ne_i, n_eff_recipe=ne_r,
+                    n_eff_error=(ne_r / ne_i - 1.0
+                                 if np.isfinite(ne_i) and np.isfinite(ne_r) and ne_i > 0
+                                 else float("nan")),
+                ))
+    return points, calib_rows
+
+
+def print_ppi_rho_drift_report(points: list[RhoDriftPoint]) -> None:
+    """Console counterpart of run_ppi_rho_drift_check.
+
+    One block per eval type: rows are methods, columns are effect sizes,
+    cells are rho2_implied. A correct effect-invariance assumption shows as a
+    flat row; the drift column summarises first-to-last movement. The recipe
+    columns follow, since the gap between implied and recipe is the point."""
+    if not points:
+        print("  (no rho-drift results)")
+        return
+    for et in sorted({p.eval_type for p in points}):
+        sub = [p for p in points if p.eval_type == et]
+        fracs = sorted({p.effect_frac for p in sub})
+        methods = sorted({p.method for p in sub})
+        align = sub[0].alignment_value
+        n, n_lab = sub[0].n, sub[0].n_lab
+        print(f"\n  eval_type={et}  judge rho^2={align:.3f} (held fixed)  "
+              f"N={n}  N_lab={n_lab}  reps={sub[0].n_reps}")
+        print(f"    {'method':<12}" + "".join(f"{'d=' + str(f):>9}" for f in fracs)
+              + f"{'drift':>9}{'recipe':>9}{'N_eff err':>11}")
+        for m in methods:
+            row = {p.effect_frac: p for p in sub if p.method == m}
+            vals = [row[f].rho2_implied if f in row else float("nan") for f in fracs]
+            first, last = vals[0], vals[-1]
+            drift = (last / first - 1.0
+                     if np.isfinite(first) and np.isfinite(last) and first > 0
+                     else float("nan"))
+            rec = row[fracs[0]].rho2_recipe if fracs[0] in row else float("nan")
+            err = row[fracs[-1]].n_eff_error if fracs[-1] in row else float("nan")
+            print(f"    {m:<12}" + "".join(f"{v:>9.4f}" for v in vals)
+                  + f"{drift:>+8.1%}"
+                  + (f"{rec:>9.4f}" if np.isfinite(rec) else f"{'--':>9}")
+                  + (f"{err:>+10.1%}" if np.isfinite(err) else f"{'--':>11}"))
+        print("\n    drift = rho^2 at the largest effect vs the smallest, with the judge")
+        print("    unchanged. Flat is the assumption _method_rho2 makes; see")
+        print("    _METHOD_CORR_KIND's standing caveat for which methods break it.")
+        print("    recipe/N_eff err are blank for methods with no _METHOD_CORR_KIND entry.")
+
+        # CONTROL. ttest/ttest_welch/paired_t estimate means, whose influence
+        # function is linear in the value, so their rho is a plain Pearson
+        # correlation that a location shift cannot move -- their invariance is
+        # exact algebra, not an empirical regularity. If they drift, the
+        # measurement is picking up something other than the influence-function
+        # structure it is trying to isolate, and the rank rows cannot be read as
+        # that structure either. Surfaced rather than left for a reader to
+        # notice, because a silently confounded drift number is worse than none.
+        ctrl = [m for m in methods if m in (TTEST.name, TTEST_WELCH.name, PAIRED_T.name)]
+        drifts = {}
+        for m in ctrl:
+            row = {p.effect_frac: p for p in sub if p.method == m}
+            v = [row[f].rho2_implied if f in row else float("nan") for f in fracs]
+            if np.isfinite(v[0]) and np.isfinite(v[-1]) and v[0] > 0:
+                drifts[m] = v[-1] / v[0] - 1.0
+        if drifts:
+            worst = max(drifts, key=lambda m: abs(drifts[m]))
+            mag = abs(drifts[worst])
+            verdict = "OK" if mag <= 0.05 else "*** CONTROL FAILED ***"
+            print(f"\n    control (mean-type, must be flat): worst |drift| = "
+                  f"{mag:.1%} ({worst})  {verdict}")
+            if mag > 0.05:
+                print("    The mean-type methods' invariance is exact algebra, so a drift this")
+                print("    large means the measured numbers include an effect the influence-")
+                print("    function account does not predict. Treat every row as confounded.")
+                print()
+                print("    STATUS (2026-08-21). One cause has been found and FIXED, one is")
+                print("    open, so a failure here is not necessarily the same failure twice:")
+                print()
+                print("    FIXED -- evalstats.ppi._pooled_two_group_lambda pooled the two")
+                print("    groups UNCENTERED, so as they separated the between-group term")
+                print("    entered both the covariance and the variances and dragged lambda")
+                print("    toward n_all/(n_all+n_lab). It now centres each group first, and")
+                print("    ttest/ttest_welch went from -8%/-6% drift to bit-for-bit flat.")
+                print()
+                print("    OPEN -- paired_t still drifts (+5.3% at 1200 reps) and does NOT")
+                print("    route through that lambda: it took the 'pair' structure's own PPI")
+                print("    path, and the mechanism there is undiagnosed. Its sign is also")
+                print("    opposite (rho RISES with the effect), so it is a different effect,")
+                print("    not a residue of the same one.")
+                print()
+                print("    While any control row is non-flat, the rank rows measure the")
+                print("    SHIPPED estimator's realized multiplier -- a legitimate quantity,")
+                print("    but not the influence-function drift the docstring describes.")
+
+
+def save_ppi_rho_drift_plot(points: list[RhoDriftPoint], out_path: str) -> str:
+    """The rho-drift figure: a GRID of small multiples, one panel per method
+    (columns) per eval type (rows). Each panel carries exactly two lines --
+    the rho^2 the N_eff formula NEEDS (solid, measured) against the rho^2 the
+    named recipe RETURNS (dashed, flat by construction for a shift-invariant
+    recipe) -- with the gap between them shaded, because that gap IS the error
+    a planner suffers.
+
+    Panels are per METHOD rather than the one-panel-per-eval-type layout the
+    rest of this module uses (save_ppi_label_efficiency_plot etc.). That
+    convention is right when a panel holds a few series; here it would put
+    5 methods x 2 lines = 10 series in one axes and bury the only comparison
+    that matters. Small multiples keep every panel at two lines, let the
+    mean-vs-rank split read straight across the row, and stay legible when
+    methods are added.
+
+    Mean-type methods are labelled "(control)": their invariance is exact
+    algebra, so their solid line MUST be flat, and the rank panels can only be
+    read as influence-function drift once the control panels are. See
+    print_ppi_rho_drift_report's control block for the current status."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    ets = sorted({p.eval_type for p in points})
+    methods = sorted({p.method for p in points})
+    ctrl_names = {TTEST.name, TTEST_WELCH.name, PAIRED_T.name}
+    nrow, ncol = len(ets), len(methods)
+    fig, axes = plt.subplots(nrow, ncol, figsize=(2.55 * ncol, 2.85 * nrow),
+                             squeeze=False, sharey="row")
+    NEED, REC = "#1B3A5C", "#C1553B"
+    for r, et in enumerate(ets):
+        sub_et = [p for p in points if p.eval_type == et]
+        fracs = sorted({p.effect_frac for p in sub_et})
+        for c, m in enumerate(methods):
+            ax = axes[r][c]
+            row = {p.effect_frac: p for p in sub_et if p.method == m}
+            if not row:
+                ax.set_visible(False)
+                continue
+            need = [row[f].rho2_implied if f in row else float("nan") for f in fracs]
+            rec = next((row[f].rho2_recipe for f in fracs
+                        if f in row and np.isfinite(row[f].rho2_recipe)), float("nan"))
+            if np.isfinite(rec):
+                ax.fill_between(fracs, need, [rec] * len(fracs),
+                                color=REC, alpha=0.13, lw=0)
+                ax.plot(fracs, [rec] * len(fracs), "--", color=REC, lw=1.6,
+                        label=r"recipe gives")
+            ax.plot(fracs, need, "-o", color=NEED, lw=2.0, ms=3.4,
+                    label=r"formula needs")
+            is_ctrl = m in ctrl_names
+            ax.set_title(m + ("\n(control — must be flat)" if is_ctrl else ""),
+                         fontsize=8.5, color="#5A6570" if is_ctrl else "#14181C")
+            ax.grid(axis="y", color="#E3E6E4", lw=0.6)
+            ax.set_axisbelow(True)
+            ax.tick_params(labelsize=7.5)
+            if r == nrow - 1:
+                ax.set_xlabel("effect size $d$", fontsize=8)
+            if c == 0:
+                ax.set_ylabel(f"{et}\n" + r"$\rho^2$", fontsize=8.5)
+            if r == 0 and c == 0:
+                ax.legend(fontsize=7, frameon=False, loc="best")
+    align = points[0].alignment_value
+    fig.suptitle(r"Judge quality held fixed ($\rho^2$ = "
+                 f"{align:.2f}) in every panel — only the true effect changes",
+                 fontsize=9.5, y=1.0)
+    fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_results_artifacts_ppi_rho_drift(
+    points: list[RhoDriftPoint], out_dir: str, run_stem: str,
+) -> list[str]:
+    """CSV + summary log for run_ppi_rho_drift_check, mirroring
+    save_results_artifacts_ppi_nformula's shape (its own writer rather than a
+    branch inside the label-efficiency one -- different row type, different
+    columns)."""
+    out_base = Path(out_dir)
+    out_base.mkdir(parents=True, exist_ok=True)
+    written: list[str] = []
+
+    csv_path = out_base / f"{run_stem}_ppi_rho_drift_results.csv"
+    with open(csv_path, "w", newline="") as fh:
+        w = csv.writer(fh)
+        w.writerow(["eval_type", "method", "effect_frac", "judge_noise",
+                    "alignment_value", "n", "n_lab", "n_reps",
+                    "variance_multiplier", "rho2_implied", "rho2_recipe",
+                    "n_eff_implied", "n_eff_recipe", "n_eff_error"])
+        for p in points:
+            w.writerow([p.eval_type, p.method, f"{p.effect_frac}", repr(p.judge_noise),
+                        repr(p.alignment_value), p.n, p.n_lab, p.n_reps,
+                        repr(p.variance_multiplier), repr(p.rho2_implied),
+                        repr(p.rho2_recipe), repr(p.n_eff_implied),
+                        repr(p.n_eff_recipe), repr(p.n_eff_error)])
+    written.append(str(csv_path))
+
+    summary_path = out_base / f"{run_stem}_ppi_rho_drift_summary.log"
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        print_ppi_rho_drift_report(points)
+    summary_path.write_text(buf.getvalue(), encoding="utf-8")
+    written.append(str(summary_path))
+    for path in written:
+        print(f"Saved results: {path}")
+    return written
 
 
 def print_ppi_nformula_report(results: list[LabelEfficiencyPoint]) -> None:
@@ -11506,6 +11888,29 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "that includes N explicitly and holds across effect sizes, distinct from --mode "
                               "ppi's main label-efficiency path. See official_args_ppi_nformula for a ready-made "
                               "official-precision preset, selectable on its own from the --official-tests menu.")
+    parser.add_argument("--rho-drift-check", action="store_true", default=False,
+                         help="ppi mode: run the rho effect-size drift check (run_ppi_rho_drift_check) -- "
+                              "holds judge quality pinned at PPI_RHO_DRIFT_ALIGNMENT_TARGET and sweeps the "
+                              "TRUE EFFECT (PPI_RHO_DRIFT_EFFECT_FRACS, much wider than the label-efficiency "
+                              "check's 0.15-0.35), then inverts the measured multiplier back to the rho^2 it "
+                              "implies. Tests _method_rho2's standing assumption that rho is a property of the "
+                              "judge alone: exact for the mean-type estimands, false for every rank/dominance "
+                              "one (see _METHOD_CORR_KIND's caveat). Opt-in, default off. See "
+                              "official_args_ppi_rho_drift for a ready-made official-precision preset, "
+                              "selectable on its own from the --official-tests menu.")
+    parser.add_argument("--rho-drift-reps", type=int, default=200, metavar="N",
+                         help="ppi mode: reps for --rho-drift-check (default 200). This check reads a VARIANCE "
+                              "ratio rather than inverting a power curve, so it needs reps for precision on a "
+                              "second moment -- roughly sqrt(2/reps) relative error, i.e. ~10%% at 200 and ~3%% "
+                              "at 2000. Drifts below ~5%% need the higher tier to be distinguishable from noise.")
+    parser.add_argument("--rho-drift-n-boot", type=int, default=500, metavar="N",
+                         help="ppi mode: PPI bootstrap resample count for --rho-drift-check (default 500).")
+    parser.add_argument("--rho-drift-nlab", type=int, default=100, metavar="N",
+                         help="ppi mode: N_lab for --rho-drift-check (default 100, at N=PPI_LABEL_EFF_N). "
+                              "label_frac is back-solved from it, the same absolute-N_lab convention "
+                              "build_ppi_label_efficiency_sources uses.")
+    parser.add_argument("--rho-drift-effects", type=float, nargs="+", default=None, metavar="D",
+                         help="ppi mode: override PPI_RHO_DRIFT_EFFECT_FRACS for --rho-drift-check.")
     parser.add_argument("--nformula-reps", type=int, default=100, metavar="N",
                          help="ppi mode: reps for --nformula-check (default 100, a screening-tier rep count -- "
                               "bump toward --effect-reps for a publication-precision confirmation pass, see "
@@ -11769,6 +12174,39 @@ def official_args_ppi_nformula(base_seed: int = 42) -> argparse.Namespace:
     return args
 
 
+def official_args_ppi_rho_drift(base_seed: int = 42) -> argparse.Namespace:
+    """Official-test preset for JUST the rho effect-size drift check
+    (run_ppi_rho_drift_check) -- split out the same way
+    official_args_ppi_nformula and official_args_ppi_factorial are, so
+    --official-tests can run it on its own without the (much slower) base
+    Type-I sweep or the other --mode ppi checks.
+
+    rho_drift_reps is set to 2000, an order of magnitude above the CLI
+    default and above the tier the other secondary checks use. That is not
+    over-provisioning: this check reads a VARIANCE ratio directly rather than
+    inverting a power curve, so its precision goes as sqrt(2/reps) -- ~10%%
+    relative at 200 reps, which would swamp the sub-5%% drifts that separate
+    "flat" (the mean-type methods, whose whole claim is exact invariance) from
+    "mildly drifting". The rank methods' -13%% to -38%% would survive 200 reps;
+    proving the mean-type ones FLAT is what needs the precision.
+
+    Continuous only. The drift is a property of the estimand's influence
+    function, not of the eval type, and continuous is the cheapest place to
+    show it without discretisation muddying the rank statistics."""
+    args = official_args_ppi(base_seed)
+    args.no_typeI_check = True
+    args.no_effect_check = True
+    args.no_power_check = True
+    args.no_comparison_check = True
+    args.no_label_efficiency_check = True
+    args.rho_drift_check = True
+    args.rho_drift_reps = 2000
+    args.rho_drift_n_boot = args.ppi_n_boot
+    args.rho_drift_nlab = 100
+    args.eval_types = ["continuous"]
+    return args
+
+
 def official_args_ppi_factorial_likert7(base_seed: int = 42) -> argparse.Namespace:
     """Same as official_args_ppi_factorial, except likert scenarios are
     generated on a 1-7 scale instead of the standard 1-5 (factorial_likert_max
@@ -11940,6 +12378,7 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
         ("synthetic (ppi factorial only, binary)", official_args_ppi_factorial_binary(base_seed)),
         ("synthetic (ppi n-formula check only)", official_args_ppi_nformula(base_seed)),
+        ("synthetic (ppi rho effect-size drift check only)", official_args_ppi_rho_drift(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
         ("real data (pairwise + multiarm)", real_official_args(base_seed)),
         ("real data (pairwise)", real_official_args_pairwise(base_seed)),
@@ -12950,6 +13389,42 @@ def run(args: argparse.Namespace) -> CaseResult:
                             out_dir=args.out_dir, run_stem=nformula_stem,
                         )
                     key_metrics["ppi_nformula_n_results"] = len(nformula_results)
+
+            # rho effect-size drift check (run_ppi_rho_drift_check): opt-in,
+            # and deliberately its own toggle rather than another arm of the
+            # label-efficiency check -- it sweeps a DIFFERENT axis (the true
+            # effect, held wide) with judge quality pinned, which is the exact
+            # inverse of what the label-efficiency check holds fixed.
+            if getattr(args, "rho_drift_check", False):
+                rd_reps = getattr(args, "rho_drift_reps", 200)
+                rd_n_boot = getattr(args, "rho_drift_n_boot", 500)
+                rd_effects = tuple(getattr(args, "rho_drift_effects", None)
+                                   or PPI_RHO_DRIFT_EFFECT_FRACS)
+                rd_eval_types = tuple(args.eval_types) if args.eval_types else ("continuous",)
+                print(f"\npvalues simulation (PPI-corrected, rho effect-size drift check) -- "
+                      f"reps={rd_reps}, n_boot={rd_n_boot}, effects={list(rd_effects)}")
+                rd_points, rd_calib = run_ppi_rho_drift_check(
+                    n_reps=rd_reps, n_boot=rd_n_boot, seed=args.seed + 16,
+                    effect_fracs=rd_effects,
+                    n_lab_target=getattr(args, "rho_drift_nlab", 100),
+                    eval_types=rd_eval_types,
+                    n_workers=getattr(args, "workers", 1), progress_mode=args.progress,
+                )
+                if rd_points:
+                    print_ppi_rho_drift_report(rd_points)
+                    rd_stem = f"pvalues_ppi_rho_drift_reps{rd_reps}_{stamp}"
+                    if args.save_results == "save":
+                        output_paths += save_results_artifacts_ppi_rho_drift(
+                            points=rd_points, out_dir=args.out_dir, run_stem=rd_stem,
+                        )
+                    if args.plots == "save":
+                        rd_plot = save_ppi_rho_drift_plot(
+                            rd_points,
+                            str(Path(plots_dir) / f"{rd_stem}_rho_vs_effect.png"),
+                        )
+                        output_paths.append(rd_plot)
+                        print(f"Saved plot: {rd_plot}")
+                    key_metrics["ppi_rho_drift_n_results"] = len(rd_points)
 
             if getattr(args, "factorial_check", False):
                 factorial_likert_max = getattr(args, "factorial_likert_max", 5)
