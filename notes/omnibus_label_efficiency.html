@@ -109,7 +109,7 @@
   <header class="mast">
     <p class="eyebrow">Monte Carlo verification · evalstats</p>
     <h1>Which ρ do the four PPI omnibus tests actually follow?</h1>
-    <p class="standfirst">The N<sub>eff</sub> equation itself is exact for all four. Only the choice of ρ is in question — and for the two repeated-measures tests, the paper names the wrong one.</p>
+    <p class="standfirst">The N<sub>eff</sub> equation itself is exact for all four. Only the choice of ρ is in question — and for the two repeated-measures tests, the paper names the wrong one. A second finding: ρ is a fixed property of the judge only for the mean-based tests.</p>
   </header>
 
   <section>
@@ -233,8 +233,46 @@
       doubly-centred ρ²&nbsp; 0.409 → 0.394 → 0.356&nbsp;&nbsp;<span class="an">falls, and matches</span>
     </div>
     <p>At the null the two candidates coincide (0.409) — which is why the error is invisible in a null calibration check and only appears once there is a real effect to detect. At k = 5, d = 1.0 the paper's recipe reaches 0.752 against an implied 0.398: it would promise 310 effective labels where 100 human labels buy 156. Across all six rows the doubly-centred recipe stays within 3% of ρ²<sub>implied</sub> (median under 1%), while the average per-participant Spearman runs 17% to 89% high everywhere except the null, where the two candidates are indistinguishable.</p>
-    <p><strong>Why Friedman's ρ falls with the effect.</strong> Ranking is a nonlinear transform. As conditions separate, each participant's ranking becomes near-deterministic and the residual rank variation is carried by rare order flips, whose judge–human agreement is weaker than that of the bulk variation. The average per-participant Spearman moves the other way for the obvious reason: judge and humans increasingly reproduce the same true ordering, and that shared ordering is counted as agreement.</p>
-    <p>This has a practical consequence worth stating in the paper: <strong>a pilot with a strong manipulation will overstate what the same judge buys in a study with a subtler one</strong> — Friedman is the one test here where the judge-quality number is not portable across effect sizes.</p>
+    <p><strong>Why Friedman's ρ falls with the effect.</strong> The rank atom <em>saturates</em>. As conditions separate almost every participant's row lands in the true order, so the residual variation is carried by rare order flips — and the human's flip mass shrinks faster than the judge's, because the judge's difference carries extra variance and so sits further out on a wider distribution at the same threshold. The two sides' flips decouple, and the correlation goes with them. The average per-participant Spearman moves the other way for the obvious reason: judge and humans increasingly reproduce the same true ordering, and that shared ordering counts as agreement.</p>
+    <p>Four predictions from that mechanism, all confirmed. <strong>ρ² → 0</strong>: at d = 4 it reaches 0.083 and the multiplier is 1.08, i.e. PPI buys essentially nothing. <strong>The human's ranks go deterministic faster</strong>: P(row in true order) is 0.9951 vs the judge's 0.9758 at d = 4, and the flip-mass ratio (1−p<sub>h</sub>)/(1−p<sub>f</sub>) falls monotonically from 1.00 to 0.20. <strong>A noiseless judge shows no drift whatsoever</strong> — multiplier 10.2–10.4, ρ² ≈ 1.00 at every d out to 4 — which is the decisive control: the rank transform alone does not cause drift, judge–human decoupling does. And <strong>drift scales with judge noise</strong>: −32% at r = 0.95, −59% at 0.8, −75% at 0.6. A further prediction made before measuring also held: under t₃ errors the drift collapses from −62% to −13%, since polynomial tails keep the two flip masses comparable.</p>
+    <p>Practical consequence for the paper: <strong>a pilot with a strong manipulation overstates what the same judge buys in a study with a subtler one.</strong> Friedman's judge-quality number is not portable across effect sizes.</p>
+  </section>
+
+  <section>
+    <h2><span class="kicker">The general rule</span>ρ is fixed for mean tests and drifts for every rank test</h2>
+    <p>Friedman is the extreme case, not a special one. Running the same axis across every method family — judge held fixed at r = 0.8, only the true effect moving — splits them exactly:</p>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>ρ² recovered by inverting the measured multiplier. The judge never changes; a ρ that is a property of the judge alone would be flat.</caption>
+      <thead><tr><th>Method</th><th class="num">d=0</th><th class="num">d=0.5</th><th class="num">d=1.0</th><th class="num">d=2.0</th><th class="num">drift</th></tr></thead>
+      <tbody>
+        <tr><td class="label">ttest</td><td class="num">0.6292</td><td class="num">0.6292</td><td class="num">0.6292</td><td class="num">0.6292</td><td class="num hit">−0.0%</td></tr>
+        <tr><td class="label">paired_t</td><td class="num">0.6502</td><td class="num">0.6502</td><td class="num">0.6502</td><td class="num">0.6502</td><td class="num hit">+0.0%</td></tr>
+        <tr><td class="label">anova_rm</td><td class="num">0.6419</td><td class="num">0.6419</td><td class="num">0.6419</td><td class="num">0.6419</td><td class="num hit">+0.0%</td></tr>
+        <tr><td class="label">mwu</td><td class="num">0.6043</td><td class="num">0.5997</td><td class="num">0.5839</td><td class="num">0.5267</td><td class="num mid">−12.8%</td></tr>
+        <tr><td class="label">kruskal</td><td class="num">0.6082</td><td class="num">0.5985</td><td class="num">0.5766</td><td class="num">0.5235</td><td class="num mid">−13.9%</td></tr>
+        <tr><td class="label">wilcoxon</td><td class="num">0.6250</td><td class="num">0.6163</td><td class="num">0.5859</td><td class="num">0.4664</td><td class="num miss">−25.4%</td></tr>
+        <tr><td class="label">friedman</td><td class="num">0.4181</td><td class="num">0.3907</td><td class="num">0.3591</td><td class="num">0.2583</td><td class="num miss">−38.2%</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>The split is <strong>mean versus rank</strong>, not omnibus versus pairwise. The three mean-type methods are invariant to four decimal places — for the repeated one the invariance is exact algebra, not numerics: the effect enters its atom as an additive constant that cancels out of every variance, so the measured multiplier is bit-for-bit identical at every d. Every rank or dominance estimand drifts down.</p>
+    <p><strong>This does not contradict PPI theory.</strong> The variance reduction is 1 − ρ² where ρ correlates <em>influence functions</em>. For a mean, ψ(y) = y − μ, so ρ is the plain Pearson correlation and a location shift cannot move it. Rank and dominance estimands have ψ involving the CDF, whose shape changes as groups separate. The drift is what theory predicts once it is applied to a nonlinear functional. What fails is the weaker, unstated assumption that <strong>ρ is a property of the judge alone</strong> — for rank estimands it is a property of the judge <em>and</em> the design.</p>
+    <p>So the paper should not present ρ<sub>S</sub>² as a portable judge score for its rank-based tests. Measure it at the effect size being planned for, or treat a pilot value as an upper bound.</p>
+
+    <h3>The same issue is already live in the simulation harness</h3>
+    <p><code>wilcoxon</code> and <code>mwu</code> are in <code>_METHOD_CORR_KIND</code> today, and <code>_method_rho2</code> builds its cell at <code>effect_size=0.0</code> with no effect-size term in the cache key. Their recipes are effect-invariant by construction — Spearman cannot see a location shift — so they sit flat at 0.6175 and 0.6169 across the whole range while the truth falls away beneath them:</p>
+    <div class="wide"><div class="tablewrap"><table>
+      <caption>N<sub>eff</sub> the shipped recipe predicts, against the N<sub>eff</sub> measured. N = 1000, N<sub>lab</sub> = 100.</caption>
+      <thead><tr><th>Method</th><th class="num">d</th><th class="num">true ρ²</th><th class="num">recipe ρ²</th><th class="num">N<sub>eff</sub> true</th><th class="num">N<sub>eff</sub> recipe</th><th class="num">error</th></tr></thead>
+      <tbody>
+        <tr><td class="label">wilcoxon</td><td class="num">0.0</td><td class="num">0.6250</td><td class="num">0.6175</td><td class="num">229</td><td class="num">225</td><td class="num hit">−1.5%</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.5859</td><td class="num">0.6175</td><td class="num">212</td><td class="num">225</td><td class="num mid">+6.4%</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.4664</td><td class="num">0.6175</td><td class="num">172</td><td class="num">225</td><td class="num miss">+30.6%</td></tr>
+        <tr><td class="label">mwu</td><td class="num">0.0</td><td class="num">0.6043</td><td class="num">0.6169</td><td class="num">219</td><td class="num">225</td><td class="num hit">+2.5%</td></tr>
+        <tr><td class="label"></td><td class="num">1.0</td><td class="num">0.5839</td><td class="num">0.6169</td><td class="num">211</td><td class="num">225</td><td class="num mid">+6.7%</td></tr>
+        <tr><td class="label"></td><td class="num">2.0</td><td class="num">0.5267</td><td class="num">0.6169</td><td class="num">190</td><td class="num">225</td><td class="num miss">+18.2%</td></tr>
+      </tbody>
+    </table></div></div>
+    <p>It went unnoticed because <code>PPI_LABEL_EFF_EFFECT_FRACS</code> sweeps 0.15–0.35, where the drift is about 0.3%. The existing invariance validation is not wrong — it is scoped to small effects, and the null is precisely where an effect-invariant recipe and the truth coincide, so no null-only check could have caught it.</p>
   </section>
 
   <!-- ─────────────── recommendations ─────────────── -->
@@ -255,7 +293,8 @@
   <footer>
     <h2>Evidence base, and what it does not cover</h2>
     <p><strong>Measurement.</strong> Each cell resamples fresh data 8000 times and records the atom vector's components directly, so the multiplier is a measured variance ratio rather than a linearised prediction; the aggregation is the contrast-space trace the shipped F-statistics use in their own denominators. Candidate ρ² values come from a separate 300,000-participant population draw, so they are independent of the replicate simulation they are compared against. The atom re-implementation was verified against the shipped pipelines non-circularly — <code>_ppi_anova_repeated_f_stat</code> and <code>_ppi_friedman_f_stat</code> expose <code>f_corr</code> and <code>denom</code>, from which ‖P·atom‖² is recoverable from the return value alone; it matches to 2×10⁻¹⁶.</p>
-    <p><strong>Coverage.</strong> k ∈ {3,4,5}; d ∈ {0, 0.5, 1.0}; judge pathologies covering per-condition bias, per-condition noise, per-condition slope, monotone squashing, subject-level bias, contaminated and t₃ error. Across all of them the recommended recipes hold to ±4% (median ~1%).</p>
+    <p><strong>Coverage.</strong> k ∈ {3,4,5,7}; d ∈ {0 … 4}; judge pathologies covering per-condition bias, per-condition noise, per-condition slope, monotone squashing, subject-level bias, contaminated and t₃ error. Across all of them the recommended recipes hold to ±4% (median ~1%).</p>
+    <p><strong>The effect-size result specifically</strong> was checked by three routes that fail independently. (1) <em>Split-sample λ</em> — λ estimated on one half of the replicates and the variance evaluated on the other half, so "argmin evaluated at its own argmin" optimism cannot manufacture a trend. (2) <em>Oracle λ</em> from a separately seeded run. (3) <em>The library's own analytic variance</em>, with no replicate Monte Carlo at all: <code>_ppi_friedman_f_stat</code>'s <code>denom</code> yields trace(P·Var·P) directly, compared against the human-only covariance the library itself forms. Friedman's ρ² across d = 0 → 3 reads 0.406 → 0.158 (split-sample), 0.406 → 0.158 (oracle), 0.404 → 0.104 (library analytic); route 3 sits slightly lower throughout because it includes the λ-uncertainty inflation term, which is the conservative direction. Over the same range <code>anova_rm</code> is bit-for-bit constant on all three. Additional controls: subject variance is exactly irrelevant (identical to 4 dp at σ_u = 1 vs 4), as within-row ranks require; and the effect pattern matters (linear spacing drifts −62%, one raised condition −23%).</p>
     <p><strong>Limits.</strong> All synthetic — no real judge data. Judge quality is fixed at ρ = 0.8 in the tables above; the full sweep covered 0.5–0.97. The multiplier is a precision measure, validated end-to-end against power at one design point per test, not swept. Monte Carlo precision on a variance ratio at 8000 replicates is roughly ±1.6%, so differences under ~3% between candidates should not be read as real. Two earlier weaknesses were found and corrected in a second pass: an end-to-end Friedman check had run at d = 0.11, where the competing recipes nearly coincide and so cannot be distinguished, and the recipe comparison had been run only at k = 3, which understated the error.</p>
   </footer>
 </div>
