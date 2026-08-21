@@ -11601,12 +11601,21 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     tests x reps -- by far the slowest piece of --mode ppi). Safe to isolate
     this way because the factorial sweep is fully self-contained: its own
     sources (build_ppi_factorial_sources), its own run_ppi_comparison_
-    simulation call, no dependency on the Type-I/effect/power/comparison
-    checks' results -- this is a real subset of official_args_ppi's work,
-    not an approximation of it. Disables every other --mode ppi check via
-    --no-typeI-check/--no-effect-check/--no-power-check/
-    --no-comparison-check (all opt-out; harmless to set even though
-    official_args_ppi doesn't set them, since their defaults already run).
+    simulation call, no dependency on the Type-I/effect/power/comparison/
+    label-efficiency checks' results -- this is a real subset of
+    official_args_ppi's work, not an approximation of it. Disables every
+    other --mode ppi check via --no-typeI-check/--no-effect-check/
+    --no-power-check/--no-comparison-check/--no-label-efficiency-check (all
+    opt-out; harmless to set even though official_args_ppi doesn't set them,
+    since their defaults already run). label-efficiency in particular is
+    NOT free to leave on here the way the others are "harmless" to
+    explicitly disable: it defaults to running (reps=200, n_boot=1000,
+    independent of factorial_reps/factorial_n_boot) and isn't scoped by
+    any factorial_check flag, so omitting this line would silently run it
+    as an uninvited addition to what this preset's name/docstring promise
+    is "JUST" the factorial sweep -- caught when a --factorial-check-only
+    dry run kept running well past when the (tiny, --factorial-reps 2)
+    factorial checks should have finished.
 
     factorial_omnibus=True: also runs the 4 omnibus/multi-group tests
     (anova_ind/anova_rep/friedman/kruskal -- _COMPARISON_METHODS_OMNIBUS)
@@ -11629,6 +11638,7 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     args.no_effect_check = True
     args.no_power_check = True
     args.no_comparison_check = True
+    args.no_label_efficiency_check = True
     args.factorial_omnibus = True
     return args
 
