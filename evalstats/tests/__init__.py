@@ -164,8 +164,6 @@ class TestResult:
         elif test == "mannwhitney":
             return "P(X > Y)"
         elif test == "wilcoxon":
-            if ex.get("ppi_method") == "hajek_experimental":
-                return "mean Hajek signed-rank score (linearized Wilcoxon, centered at 0 under H0)"
             return "Walsh-average midrank-sign statistic (Hodges-Lehmann-style, centered at 0 under H0)"
         elif test == "anova":
             return (
@@ -694,500 +692,6 @@ def _midrank_theta(x: np.ndarray, y: np.ndarray) -> float:
 # for the full rationale and its known small-n_lab extreme-tie residual.
 
 
-def _ppi_two_sample_midrank_corrected(
-    a: np.ndarray,
-    b: np.ndarray,
-    a_lab: np.ndarray,
-    b_lab: np.ndarray,
-    alpha: float,
-    n_boot: int,
-    rng,
-    n_strata: int = 2,
-    min_lab_per_bin: int = 5,
-) -> "PPIResult":
-    """PPI correction for the two-sample mid-rank estimand ``P_mid(A>B) - 0.5``,
-    using a per-group local (score-binned) rectifier instead of
-    :func:`_ppi_two_sample`'s single global one.
-
-    **Why this exists.** Feeding the mid-rank estimator into the generic
-    :func:`_ppi_two_sample` (``estimate = f(Ŷ_unlab) + [f(Y_lab) - f(Ŷ_hat_lab)]``)
-    is exact for a mean (linear, shift-invariant), but can be badly
-    miscalibrated for ``P_mid(X>Y)`` when the labeled subset is drawn
-    non-uniformly with respect to score (MNAR labeling correlated with the
-    true score, e.g. "double-check the highest-scoring items"). A rank
-    statistic's sensitivity to a fixed additive bias depends on the local
-    density of scores near the comparison, which differs between a
-    score-truncated labeled slice and the full population, especially for
-    coarse/discrete (Likert) scales where the truncated slice is tie-heavy.
-    Computing ``f`` once on the truncated labeled slice and once on the full
-    unlabeled population, then adding the difference, extrapolates a
-    locally-estimated sensitivity across a region where it doesn't hold.
-
-    **The fix.** Never compute the rank statistic on the labeled slice on
-    its own. Instead, for each group separately: bin that group's own items
-    (labeled + unlabeled) into ``n_strata`` quantile bins of that group's own
-    LLM score, and for each unlabeled item, correct its score by the local
-    (per-bin) mean human-minus-LLM discrepancy among that group's own
-    labeled items in the same bin -- falling back to that group's global
-    discrepancy when a bin has fewer than ``min_lab_per_bin`` of that
-    group's labeled items (partial pooling; needed because n_lab is often
-    only 15-80 total, split across bins and groups). Labeled items use their
-    known human value directly. A single mid-rank comparison is then run
-    once, on the two full (corrected) groups -- unlike a stratified rank
-    test (e.g. van Elteren), this never splits the actual group-vs-group
-    comparison by score, because LLM score is not an independent covariate
-    here: it's exactly the variable the group-specific judge bias shifts,
-    so stratifying the comparison by it would condition on a variable
-    downstream of the effect being tested (a collider). Localizing only
-    the calibration (per-group, per-item) avoids that.
-
-    Bin edges are fixed once per group from that group's full (labeled +
-    unlabeled) LLM-score sample and held fixed across the bootstrap -- the
-    same simplification standard stratified-bootstrap analyses use, and
-    consistent with :func:`_ppi_two_sample`'s own choice not to recompute
-    anything derived from the full sample inside the bootstrap loop.
-
-    **Collider fix (labeled items are binned by truth, not by their own LLM
-    score).** Binning a labeled item by its own (noisy) LLM score -- the
-    variable unlabeled items have to be binned by, since their true value
-    isn't known -- is fine under MCAR labeling, but under MNAR labeling
-    that selects items by their true score, it creates a collider: an item
-    only lands in a bin its true score wouldn't predict if it also happened
-    to draw an unusually extreme noise value. Conditioning on both
-    "selected via MNAR-on-truth" and "landed in this LLM-score bin" at once
-    selects specifically for those extreme-noise items, contaminating that
-    bin's sample rectifier even when the judge has no systematic bias at
-    all. Binning labeled items by their true value instead removes this
-    collider, since conditioning on truth (independent of the judge's noise
-    by construction) doesn't select for extreme noise draws.
-
-    Not a complete fix -- a residual under MNAR labeling remains in some
-    cells, and this rectifier costs real calibration under ordinary MCAR
-    labeling relative to the plain global rectifier (:func:`_ppi_two_sample`)
-    at small labeled samples combined with real judge bias. For that
-    reason :func:`evalstats.tests.mannwhitney` defaults to
-    :func:`_ppi_two_sample` (``method="global"``); this function remains
-    available via ``method="mnar_experimental"`` for anyone deliberately
-    studying the MNAR-robustness question. See
-    ``simulations/harness/cases/pvalues.py --mode ppi``'s judge-bias sweep
-    for the calibration studies behind this.
-    """
-    from evalstats.ppi import PPIResult
-
-    rng = np.random.default_rng(rng)
-
-    mask_a = ~np.isnan(a_lab)
-    mask_b = ~np.isnan(b_lab)
-    if mask_a.sum() == 0 and mask_b.sum() == 0:
-        raise ValueError("No labeled items found in a_lab or b_lab.")
-
-    llm_unlab_a, llm_unlab_b = a[~mask_a], b[~mask_b]
-    llm_lab_a, llm_lab_b = a[mask_a], b[mask_b]
-    truth_lab_a, truth_lab_b = a_lab[mask_a], b_lab[mask_b]
-
-    def _bin_edges(llm_all: np.ndarray) -> np.ndarray:
-        if n_strata <= 1:
-            return np.array([])
-        qs = np.linspace(0, 100, n_strata + 1)[1:-1]
-        return np.percentile(llm_all, qs)
-
-    edges_a = _bin_edges(a)
-    edges_b = _bin_edges(b)
-    bin_unlab_a = np.searchsorted(edges_a, llm_unlab_a, side="right")
-    bin_unlab_b = np.searchsorted(edges_b, llm_unlab_b, side="right")
-    # Labeled items are binned by their TRUE (human) value, not their own
-    # noisy LLM score -- see this function's docstring, "Collider fix" below,
-    # for why binning them by LLM score instead is itself a source of
-    # Type-I inflation under MNAR labeling.
-    bin_lab_a = np.searchsorted(edges_a, truth_lab_a, side="right")
-    bin_lab_b = np.searchsorted(edges_b, truth_lab_b, side="right")
-
-    def _correct_unlab(llm_unlab, bin_unlab, llm_lab, bin_lab, truth_lab) -> np.ndarray:
-        global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
-        rects = np.full(max(n_strata, 1), global_rect)
-        for k in range(max(n_strata, 1)):
-            m = bin_lab == k
-            if m.sum() >= min_lab_per_bin:
-                rects[k] = float(np.mean(truth_lab[m]) - np.mean(llm_lab[m]))
-        return llm_unlab + rects[bin_unlab]
-
-    def _point_estimate(lu_a, bu_a, ll_a, bl_a, tl_a, lu_b, bu_b, ll_b, bl_b, tl_b) -> float:
-        corr_unlab_a = _correct_unlab(lu_a, bu_a, ll_a, bl_a, tl_a)
-        corr_unlab_b = _correct_unlab(lu_b, bu_b, ll_b, bl_b, tl_b)
-        combined_a = np.concatenate([tl_a, corr_unlab_a])
-        combined_b = np.concatenate([tl_b, corr_unlab_b])
-        return _midrank_theta(combined_a, combined_b)
-
-    estimate = _point_estimate(
-        llm_unlab_a, bin_unlab_a, llm_lab_a, bin_lab_a, truth_lab_a,
-        llm_unlab_b, bin_unlab_b, llm_lab_b, bin_lab_b, truth_lab_b,
-    )
-
-    # Informational-only global summaries (reported for PPIResult parity with
-    # _ppi_two_sample) -- NOT used to compute `estimate`/`ci_low`/`ci_high`/
-    # `p_value` above, which come from the per-group local correction.
-    f_unlab = _midrank_theta(llm_unlab_a, llm_unlab_b) if (len(llm_unlab_a) and len(llm_unlab_b)) else \
-        _midrank_theta(a[~mask_a], b[~mask_b])
-    f_lab = _midrank_theta(truth_lab_a, truth_lab_b)
-    f_hat_lab = _midrank_theta(llm_lab_a, llm_lab_b)
-
-    n_unlab_a, n_unlab_b = len(llm_unlab_a), len(llm_unlab_b)
-    n_lab_a, n_lab_b = len(llm_lab_a), len(llm_lab_b)
-
-    boots = np.empty(n_boot)
-    for i in range(n_boot):
-        idx_ua = rng.integers(0, n_unlab_a, n_unlab_a) if n_unlab_a else np.empty(0, dtype=int)
-        idx_ub = rng.integers(0, n_unlab_b, n_unlab_b) if n_unlab_b else np.empty(0, dtype=int)
-        idx_la = rng.integers(0, n_lab_a, n_lab_a) if n_lab_a else np.empty(0, dtype=int)
-        idx_lb = rng.integers(0, n_lab_b, n_lab_b) if n_lab_b else np.empty(0, dtype=int)
-        boots[i] = _point_estimate(
-            llm_unlab_a[idx_ua], bin_unlab_a[idx_ua], llm_lab_a[idx_la], bin_lab_a[idx_la], truth_lab_a[idx_la],
-            llm_unlab_b[idx_ub], bin_unlab_b[idx_ub], llm_lab_b[idx_lb], bin_lab_b[idx_lb], truth_lab_b[idx_lb],
-        )
-
-    lo = float(np.percentile(boots, 100 * alpha / 2))
-    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
-    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
-    p_value = min(max(p_value, 0.0), 1.0)
-
-    return PPIResult(
-        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
-        llm_estimate=float(f_unlab), human_estimate=float(f_lab),
-        rectifier=float(f_lab - f_hat_lab), p_value=p_value,
-    )
-
-
-def _ppi_two_sample_midrank_corrected_pooled(
-    a: np.ndarray,
-    b: np.ndarray,
-    a_lab: np.ndarray,
-    b_lab: np.ndarray,
-    alpha: float,
-    n_boot: int,
-    rng,
-    n_strata: int = 2,
-    min_lab_per_bin: int = 5,
-) -> "PPIResult":
-    """Backs :func:`mannwhitney`'s ``method="local"``. Variant of
-    :func:`_ppi_two_sample_midrank_corrected` with an identical rectifier
-    mechanism (same per-group, per-score-bin local rectifier, same
-    truth-based bin assignment for labeled items, same hard
-    ``min_lab_per_bin`` global-fallback cutoff) -- the only change is the
-    bootstrap resampling scheme.
-
-    ``_ppi_two_sample_midrank_corrected`` draws four separate resamples
-    (group A unlabeled, group B unlabeled, group A labeled, group B
-    labeled), each fixing that group's own count exactly on every
-    replicate. :func:`evalstats.ppi.correct` (what the global-rectifier
-    sibling, ``_ppi_two_sample``, actually uses) instead pools group A +
-    group B's unlabeled items into one array and draws a single resample
-    from that combined pool (via its ``X_unlab`` covariate convention, same
-    for the labeled pool) -- letting the group split vary
-    replicate-to-replicate the way a real single multinomial resample of
-    "all n_lab labeled items" naturally would, rather than conditioning on
-    the observed split. This function mirrors that pooled convention
-    instead, keeping every other design choice unchanged, and improves on
-    both MCAR and MNAR calibration relative to the four-way-resample
-    version -- see :func:`mannwhitney`'s ``method`` parameter docstring
-    for the summary and ``simulations/harness/cases/pvalues.py``'s
-    MWU_MNAR_POOLED method for the calibration study.
-    """
-    from evalstats.ppi import PPIResult
-
-    rng = np.random.default_rng(rng)
-
-    mask_a = ~np.isnan(a_lab)
-    mask_b = ~np.isnan(b_lab)
-    if mask_a.sum() == 0 and mask_b.sum() == 0:
-        raise ValueError("No labeled items found in a_lab or b_lab.")
-
-    llm_unlab_a, llm_unlab_b = a[~mask_a], b[~mask_b]
-    llm_lab_a, llm_lab_b = a[mask_a], b[mask_b]
-    truth_lab_a, truth_lab_b = a_lab[mask_a], b_lab[mask_b]
-
-    def _bin_edges(llm_all: np.ndarray) -> np.ndarray:
-        if n_strata <= 1:
-            return np.array([])
-        qs = np.linspace(0, 100, n_strata + 1)[1:-1]
-        return np.percentile(llm_all, qs)
-
-    edges_a = _bin_edges(a)
-    edges_b = _bin_edges(b)
-    bin_unlab_a = np.searchsorted(edges_a, llm_unlab_a, side="right")
-    bin_unlab_b = np.searchsorted(edges_b, llm_unlab_b, side="right")
-    # Labeled items binned by TRUE value, not their own noisy LLM score --
-    # see _ppi_two_sample_midrank_corrected's docstring ("Collider fix") for
-    # why binning by LLM score instead is itself a source of Type-I
-    # inflation under MNAR labeling.
-    bin_lab_a = np.searchsorted(edges_a, truth_lab_a, side="right")
-    bin_lab_b = np.searchsorted(edges_b, truth_lab_b, side="right")
-
-    # -- Pool group A + group B into single arrays, tagging each item with
-    # its ORIGINAL group (0=A, 1=B) and its (group-specific) bin index, so
-    # both travel together through a single pooled resample -- mirroring
-    # evalstats.ppi.correct's X_unlab/X_lab covariate convention exactly. --
-    n_unlab_a, n_unlab_b = len(llm_unlab_a), len(llm_unlab_b)
-    n_lab_a, n_lab_b = len(llm_lab_a), len(llm_lab_b)
-    n_unlab_total = n_unlab_a + n_unlab_b
-    n_lab_total = n_lab_a + n_lab_b
-
-    pool_unlab_llm = np.concatenate([llm_unlab_a, llm_unlab_b])
-    pool_unlab_bin = np.concatenate([bin_unlab_a, bin_unlab_b])
-    pool_unlab_grp = np.concatenate([np.zeros(n_unlab_a, dtype=int), np.ones(n_unlab_b, dtype=int)])
-
-    pool_lab_llm = np.concatenate([llm_lab_a, llm_lab_b])
-    pool_lab_truth = np.concatenate([truth_lab_a, truth_lab_b])
-    pool_lab_bin = np.concatenate([bin_lab_a, bin_lab_b])
-    pool_lab_grp = np.concatenate([np.zeros(n_lab_a, dtype=int), np.ones(n_lab_b, dtype=int)])
-
-    def _correct_unlab(llm_unlab, bin_unlab, llm_lab, bin_lab, truth_lab) -> np.ndarray:
-        global_rect = float(np.mean(truth_lab) - np.mean(llm_lab)) if len(truth_lab) > 0 else 0.0
-        rects = np.full(max(n_strata, 1), global_rect)
-        for k in range(max(n_strata, 1)):
-            m = bin_lab == k
-            if m.sum() >= min_lab_per_bin:
-                rects[k] = float(np.mean(truth_lab[m]) - np.mean(llm_lab[m]))
-        return llm_unlab + rects[bin_unlab]
-
-    def _point_estimate(unlab_llm, unlab_bin, unlab_grp, lab_llm, lab_truth, lab_bin, lab_grp) -> float:
-        ga, gb = lab_grp == 0, lab_grp == 1
-        ua, ub = unlab_grp == 0, unlab_grp == 1
-        corr_unlab_a = _correct_unlab(unlab_llm[ua], unlab_bin[ua], lab_llm[ga], lab_bin[ga], lab_truth[ga])
-        corr_unlab_b = _correct_unlab(unlab_llm[ub], unlab_bin[ub], lab_llm[gb], lab_bin[gb], lab_truth[gb])
-        combined_a = np.concatenate([lab_truth[ga], corr_unlab_a])
-        combined_b = np.concatenate([lab_truth[gb], corr_unlab_b])
-        return _midrank_theta(combined_a, combined_b)
-
-    estimate = _point_estimate(
-        pool_unlab_llm, pool_unlab_bin, pool_unlab_grp,
-        pool_lab_llm, pool_lab_truth, pool_lab_bin, pool_lab_grp,
-    )
-
-    f_unlab = _midrank_theta(llm_unlab_a, llm_unlab_b) if (n_unlab_a and n_unlab_b) else \
-        _midrank_theta(a[~mask_a], b[~mask_b])
-    f_lab = _midrank_theta(truth_lab_a, truth_lab_b)
-    f_hat_lab = _midrank_theta(llm_lab_a, llm_lab_b)
-
-    boots = np.empty(n_boot)
-    for i in range(n_boot):
-        idx_u = rng.integers(0, n_unlab_total, n_unlab_total) if n_unlab_total else np.empty(0, dtype=int)
-        idx_l = rng.integers(0, n_lab_total, n_lab_total) if n_lab_total else np.empty(0, dtype=int)
-        boots[i] = _point_estimate(
-            pool_unlab_llm[idx_u], pool_unlab_bin[idx_u], pool_unlab_grp[idx_u],
-            pool_lab_llm[idx_l], pool_lab_truth[idx_l], pool_lab_bin[idx_l], pool_lab_grp[idx_l],
-        )
-
-    lo = float(np.percentile(boots, 100 * alpha / 2))
-    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
-    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
-    p_value = min(max(p_value, 0.0), 1.0)
-
-    return PPIResult(
-        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
-        llm_estimate=float(f_unlab), human_estimate=float(f_lab),
-        rectifier=float(f_lab - f_hat_lab), p_value=p_value,
-    )
-
-
-def _ppi_two_sample_ridge_corrected(
-    a: np.ndarray,
-    b: np.ndarray,
-    a_lab: np.ndarray,
-    b_lab: np.ndarray,
-    alpha: float,
-    n_boot: int,
-    rng,
-    ridge_k: float = 2.0,
-    min_lab_for_slope: int = 5,
-) -> "PPIResult":
-    """Available via :func:`mannwhitney`'s ``method="ridge"``. Replaces
-    "local"'s step-function per-bin rectifier with a smooth, ridge-shrunk
-    linear rectifier: fits ``diff = truth_lab - llm_lab ~ beta0 +
-    beta1*(llm_lab - mean(llm_lab))`` per group via ridge regression
-    (penalty ``lam = ridge_k * Sxx``, i.e. ``ridge_k`` is
-    dimensionless/scale-free -- 0 = plain OLS slope, large = shrinks toward
-    the flat/global-only intercept beta0), then applies the fitted line to
-    each unlabeled item at its own score. Same pooled-bootstrap resampling
-    scheme as :func:`_ppi_two_sample_midrank_corrected_pooled` ("local") --
-    only the rectifier's functional form changed.
-
-    Why a linear rectifier: "local"'s step-function rectifier can carry a
-    real point-estimate bias when, within a bin, the judge's bias
-    (truth - llm) is strongly correlated with the item's own llm score --
-    a real slope a flat per-bin mean can't capture, especially combined
-    with the labeled and unlabeled subsamples having different mean llm
-    scores within the same bin. An unshrunk linear fit of that relationship
-    removes most of the bias but at a large variance cost when llm scores
-    are heavily compressed/skewed (an OLS slope becomes leverage-sensitive
-    in that regime). Ridge-shrinking the slope trades off between the two,
-    converging at large ``ridge_k`` to the flat-rectifier behavior. Two
-    automatic shrinkage-strength selectors (empirical-Bayes/SE-based,
-    closed-form LOOCV) were tried and rejected: both under-shrink, since
-    they only measure in-sample/interpolation risk rather than the
-    extrapolation risk to wherever the unlabeled items' scores actually
-    sit. ``ridge_k=2.0`` is therefore a fixed constant (mirroring how
-    :func:`evalstats.ppi.correct` fixes its own power-tune shrinkage
-    constant), not a fully data-adaptive-per-call value -- an open question
-    for future work. See
-    ``simulations/out/mwu_ridge_validation/VALIDATION_SUMMARY.md`` for the
-    calibration and power figures behind this method.
-    """
-    from evalstats.ppi import PPIResult
-
-    rng = np.random.default_rng(rng)
-
-    mask_a = ~np.isnan(a_lab)
-    mask_b = ~np.isnan(b_lab)
-    if mask_a.sum() == 0 and mask_b.sum() == 0:
-        raise ValueError("No labeled items found in a_lab or b_lab.")
-
-    llm_unlab_a, llm_unlab_b = a[~mask_a], b[~mask_b]
-    llm_lab_a, llm_lab_b = a[mask_a], b[mask_b]
-    truth_lab_a, truth_lab_b = a_lab[mask_a], b_lab[mask_b]
-
-    n_unlab_a, n_unlab_b = len(llm_unlab_a), len(llm_unlab_b)
-    n_lab_a, n_lab_b = len(llm_lab_a), len(llm_lab_b)
-    n_unlab_total = n_unlab_a + n_unlab_b
-    n_lab_total = n_lab_a + n_lab_b
-
-    pool_unlab_llm = np.concatenate([llm_unlab_a, llm_unlab_b])
-    pool_unlab_grp = np.concatenate([np.zeros(n_unlab_a, dtype=int), np.ones(n_unlab_b, dtype=int)])
-
-    pool_lab_llm = np.concatenate([llm_lab_a, llm_lab_b])
-    pool_lab_truth = np.concatenate([truth_lab_a, truth_lab_b])
-    pool_lab_grp = np.concatenate([np.zeros(n_lab_a, dtype=int), np.ones(n_lab_b, dtype=int)])
-
-    def _correct_unlab(llm_unlab: np.ndarray, llm_lab: np.ndarray, truth_lab: np.ndarray) -> np.ndarray:
-        n = len(llm_lab)
-        if n == 0:
-            return llm_unlab
-        diff = truth_lab - llm_lab
-        beta0 = float(np.mean(diff))
-        if n < min_lab_for_slope:
-            return llm_unlab + beta0
-        xbar = float(np.mean(llm_lab))
-        x = llm_lab - xbar
-        Sxx = float(np.sum(x * x))
-        if Sxx <= 1e-12:
-            return llm_unlab + beta0
-        lam = ridge_k * Sxx
-        beta1 = float(np.sum(x * (diff - beta0)) / (Sxx + lam))
-        return llm_unlab + beta0 + beta1 * (llm_unlab - xbar)
-
-    def _point_estimate(unlab_llm, unlab_grp, lab_llm, lab_truth, lab_grp) -> float:
-        ga, gb = lab_grp == 0, lab_grp == 1
-        ua, ub = unlab_grp == 0, unlab_grp == 1
-        corr_unlab_a = _correct_unlab(unlab_llm[ua], lab_llm[ga], lab_truth[ga])
-        corr_unlab_b = _correct_unlab(unlab_llm[ub], lab_llm[gb], lab_truth[gb])
-        combined_a = np.concatenate([lab_truth[ga], corr_unlab_a])
-        combined_b = np.concatenate([lab_truth[gb], corr_unlab_b])
-        return _midrank_theta(combined_a, combined_b)
-
-    estimate = _point_estimate(
-        pool_unlab_llm, pool_unlab_grp,
-        pool_lab_llm, pool_lab_truth, pool_lab_grp,
-    )
-
-    f_unlab = _midrank_theta(llm_unlab_a, llm_unlab_b) if (n_unlab_a and n_unlab_b) else \
-        _midrank_theta(a[~mask_a], b[~mask_b])
-    f_lab = _midrank_theta(truth_lab_a, truth_lab_b)
-    f_hat_lab = _midrank_theta(llm_lab_a, llm_lab_b)
-
-    boots = np.empty(n_boot)
-    for i in range(n_boot):
-        idx_u = rng.integers(0, n_unlab_total, n_unlab_total) if n_unlab_total else np.empty(0, dtype=int)
-        idx_l = rng.integers(0, n_lab_total, n_lab_total) if n_lab_total else np.empty(0, dtype=int)
-        boots[i] = _point_estimate(
-            pool_unlab_llm[idx_u], pool_unlab_grp[idx_u],
-            pool_lab_llm[idx_l], pool_lab_truth[idx_l], pool_lab_grp[idx_l],
-        )
-
-    lo = float(np.percentile(boots, 100 * alpha / 2))
-    hi = float(np.percentile(boots, 100 * (1 - alpha / 2)))
-    p_value = float(2.0 * min(np.mean(boots <= 0.0), np.mean(boots >= 0.0)))
-    p_value = min(max(p_value, 0.0), 1.0)
-
-    return PPIResult(
-        estimate=float(estimate), ci_low=lo, ci_high=hi, alpha=alpha,
-        llm_estimate=float(f_unlab), human_estimate=float(f_lab),
-        rectifier=float(f_lab - f_hat_lab), p_value=p_value,
-    )
-
-
-_ADAPTIVE_DISCRETENESS_THRESHOLD = 0.7
-"""Cutoff for evalstats.tests._ppi_two_sample_adaptive's unique_fraction
-check: below this, the labeled sample looks coarse/discrete enough to use
-the local rectifier; at or above it, continuous enough to use the global
-one. Validated empirically (30 draws x label_frac in {0.15, 0.20, 0.40,
-0.80} x eval_type): continuous is ALWAYS exactly 1.0 (zero ties expected
-from a continuous distribution), grades is ALWAYS >= 0.967, likert is
-ALWAYS <= 0.333 -- 0.7 sits in the middle of that gap with wide margin on
-both sides, so the choice isn't sensitive to the exact cutoff."""
-
-
-def _ppi_two_sample_adaptive(
-    a: np.ndarray,
-    b: np.ndarray,
-    a_lab: np.ndarray,
-    b_lab: np.ndarray,
-    alpha: float,
-    n_boot: int,
-    rng,
-    power_tune: bool = True,
-    discreteness_threshold: float = _ADAPTIVE_DISCRETENESS_THRESHOLD,
-) -> "PPIResult":
-    """Dispatches to :func:`_ppi_two_sample_midrank_corrected_pooled` ("local")
-    or :func:`_ppi_two_sample` ("global") based on how discrete the labeled
-    (truth) values look -- ``evalstats.tests.mannwhitney``'s ``method="adaptive"``.
-
-    Why this exists: "local" (see that function's docstring, and
-    ``mannwhitney``'s ``method`` parameter) dominates "global" on
-    calibration in most regimes, including MCAR, but costs real power for
-    continuous data specifically -- combining labeled-truth values with
-    corrected-unlabeled values into one array before computing a single
-    rank statistic is a genuinely less efficient estimator for
-    smooth/continuous data than computing three separate rank statistics
-    and linearly combining them, independent of bin granularity.
-    Dispatching between the two estimator constructions based on how
-    discrete the data looks captures the best of both.
-
-    Discreteness check: ``unique_fraction = n_unique(combined labeled
-    truth) / n_labeled``. See ``_ADAPTIVE_DISCRETENESS_THRESHOLD``'s
-    docstring for the empirical separation this is based on. Checked on
-    the labeled (truth) values, not the observable judge scores -- the
-    judge's own scores are essentially always continuous-valued (real-
-    valued noise added on top of the truth) even for Likert data, so they
-    carry no discreteness signal; the human-labeled ground truth does.
-
-    Known limitation, and why this is not ``mannwhitney``'s default: the
-    discreteness threshold was tuned against synthetic data's clean
-    separation between continuous (unique_fraction≈1.0) and Likert
-    (≤0.333) data. Real continuous scores that are rounded or averaged
-    (e.g. WMT DA ratings) can land in an ambiguous middle zone
-    (unique_fraction ~0.4-0.5), dispatching to "local" on data where
-    "local"'s real-data Type-I cost is far worse than synthetic validation
-    suggests. Left available as an explicit opt-in (``method="adaptive"``)
-    pending a better discreteness signal. See ``mannwhitney``'s ``method``
-    parameter and ``simulations/harness/cases/pvalues.py``'s MWU_ADAPTIVE
-    validation for the calibration studies behind this.
-
-    ``power_tune`` is forwarded to the "global" branch only (see
-    :func:`_ppi_two_sample`'s parameter of the same name) -- the "local"
-    branch has no power-tuning support, same as ``_ppi_two_sample_
-    midrank_corrected_pooled`` on its own.
-    """
-    mask_a, mask_b = ~np.isnan(a_lab), ~np.isnan(b_lab)
-    truth = np.concatenate([a_lab[mask_a], b_lab[mask_b]])
-    unique_frac = len(np.unique(truth)) / len(truth) if len(truth) else 1.0
-
-    if unique_frac < discreteness_threshold:
-        return _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, alpha, n_boot, rng)
-    return _ppi_two_sample(
-        a, b, a_lab, b_lab, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5,
-        alpha, n_boot, rng, power_tune=power_tune,
-    )
-
-
 # ─────────────────────────────────────────────────────────────────────────────
 # Non-PPI paired/binary p-value helpers
 #
@@ -1686,13 +1190,35 @@ def _ppi_kruskal_wallis_pairwise_mnar_experimental(
 ) -> dict:
     """Corrected counterpart to :func:`_ppi_kruskal_wallis_pairwise`, using a
     per-group local (score-binned) rectifier instead of that function's
-    single global one -- the same fix :func:`_ppi_two_sample_midrank_corrected`
-    applies to two-group Mann-Whitney, generalized from 2 groups to k groups
-    / all C(k,2) pairs jointly. See that function's docstring for the full
-    mechanism and rationale (why a global rectifier is miscalibrated for
-    rank/dominance estimands under MNAR labeling, and why labeled items must
-    be binned by truth rather than by their own noisy LLM score to avoid a
-    collider); this function applies the identical fix per group.
+    single global one, generalized from 2 groups to k groups / all C(k,2)
+    pairs jointly.
+
+    Rationale for the local rectifier: a single global rectifier is exactly
+    correct for a mean, but a rank/dominance estimand is not a mean of a
+    fixed per-item quantity -- an item's contribution depends on the rest of
+    the sample -- so under labeling that is non-uniform with respect to score
+    (MNAR, e.g. "double-check the highest-scoring items") a global rectifier
+    is miscalibrated. Correcting within score bins restores calibration by
+    matching each unlabeled item to labeled items of comparable score.
+    Labeled items are binned by their TRUE (human) value rather than by their
+    own noisy LLM score: binning by the LLM score conditions on a variable
+    that both the truth and the judge error feed into, which is a collider,
+    and induces a spurious in-bin correlation that biases the per-bin
+    discrepancy.
+
+    WARNING -- the two-group sibling of this rectifier was REMOVED on
+    2026-08-21 for being unvalidated and badly broken on binary data, and
+    this function is the same construction one level up. Measured on binary
+    (0/1) outcomes under plain MCAR at a real effect, the two-group local
+    rectifiers returned point estimates 57-76% too large in magnitude
+    (coverage 0.00-0.06 against a nominal 0.95). Cause: binning by score is
+    degenerate when the judge score takes ~2 distinct values and nearly
+    everything ties, so each bin's discrepancy is estimated from a
+    near-empty, highly selected set. Continuous and Likert data were clean
+    in the same test. This function inherits that failure mode whenever
+    ``groups`` is coarse/binary -- ``n_strata`` bins over a 2-valued score
+    cannot work. It survived removal only because it was scoped to the
+    deliberate MNAR-robustness question; do not use it on binary data.
 
     For each group separately (not per pair -- a group's correction must be
     the same regardless of which other group it's being compared against,
@@ -1887,93 +1413,6 @@ def _ppi_paired_arrays(
         rng=rng,
         compute_pvalue=True,
         rectifier_func=rectifier_func,
-        power_tune=power_tune,
-    )
-
-
-def _wilcoxon_hajek_scores(
-    diffs: np.ndarray,
-    abs_ref_sorted: np.ndarray,
-) -> np.ndarray:
-    """Per-item signed-rank scores for a Hajek-projection-style linearization.
-
-    For each paired difference ``d_i``, computes
-
-    ``sign(d_i) * (2 * F_mid(|d_i|) - 1)``
-
-    where ``F_mid`` is the empirical CDF (with mid-ranks for ties) of
-    ``|D|`` from a fixed reference sample. This is the canonical influence-
-    function form of the Wilcoxon signed-rank linear rank statistic.
-    """
-    diffs = np.asarray(diffs, dtype=float)
-    if diffs.size == 0:
-        return np.empty(0, dtype=float)
-
-    abs_d = np.abs(diffs)
-    n_ref = len(abs_ref_sorted)
-    if n_ref == 0:
-        return np.zeros_like(abs_d, dtype=float)
-
-    n_lt = np.searchsorted(abs_ref_sorted, abs_d, side="left")
-    n_le = np.searchsorted(abs_ref_sorted, abs_d, side="right")
-    f_mid = (n_lt + 0.5 * (n_le - n_lt)) / n_ref
-    return np.sign(diffs) * (2.0 * f_mid - 1.0)
-
-
-def _ppi_wilcoxon_hajek_experimental(
-    a: np.ndarray,
-    b: np.ndarray,
-    a_lab: np.ndarray,
-    b_lab: np.ndarray,
-    alpha: float,
-    n_boot: int,
-    rng,
-    power_tune: bool = True,
-):
-    """Experimental PPI correction for Wilcoxon via Hajek-projection scores.
-
-    This is intentionally experimental and NOT the default Wilcoxon path.
-
-    Strategy:
-      1) Build a fixed score transform from the full LLM paired-difference
-         distribution ``D_hat = a - b``:
-         ``phi(d) = sign(d) * (2*F_mid_hat(|d|) - 1)``.
-      2) Apply PPI to the *mean* of ``phi(d)`` on unlabeled/labeled slices.
-
-    Freezing ``phi`` from the full LLM sample gives a linearized (mean-type)
-    target inspired by the Hajek projection of the Wilcoxon signed-rank
-    statistic. It is useful for head-to-head calibration/power experiments,
-    but it does not yet have a full finite-sample theory in this module.
-    """
-    from evalstats.ppi import correct
-
-    mask = ~np.isnan(a_lab) & ~np.isnan(b_lab)
-    if mask.sum() == 0:
-        raise ValueError(
-            "No positions have human labels for both groups in a_lab and b_lab."
-        )
-
-    llm_diffs = a - b
-    abs_ref_sorted = np.sort(np.abs(llm_diffs))
-
-    def _phi(arr: np.ndarray) -> np.ndarray:
-        return _wilcoxon_hajek_scores(arr, abs_ref_sorted)
-
-    diffs_unlab = llm_diffs[~mask]
-    diffs_lab_llm = llm_diffs[mask]
-    diffs_lab_true = (a_lab - b_lab)[mask]
-
-    return correct(
-        np.mean,
-        Y_lab=_phi(diffs_lab_true),
-        Y_hat_lab=_phi(diffs_lab_llm),
-        Y_hat_unlab=_phi(diffs_unlab),
-        X_lab=None,
-        X_unlab=None,
-        alpha=alpha,
-        n_boot=n_boot,
-        rng=rng,
-        compute_pvalue=True,
         power_tune=power_tune,
     )
 
@@ -4161,7 +3600,6 @@ def mannwhitney(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "global",
     power_tune: bool = True,
 ) -> TestResult:
     """Mann-Whitney U test with optional PPI correction.
@@ -4184,93 +3622,22 @@ def mannwhitney(
     x_lab, y_lab : array-like, optional
         Human labels for the same items, same length as *x* and *y*,
         with ``NaN`` for unlabeled items.
-    method : {"ridge", "adaptive", "local", "global", "mnar_experimental"}
-        Which PPI correction to use for the mid-rank estimand (default
-        ``"global"``).
-
-        ``"global"`` (:func:`_ppi_two_sample`) applies a single rectifier
-        (no per-bin structure) -- simple, and exactly correct for a mean,
-        but under labeling that's non-uniform with respect to score (e.g.
-        "double-check the highest-scoring items") combined with real judge
-        bias and coarse/discrete scales, this rank estimand can be
-        miscalibrated under MNAR labeling. This is what the harness's
-        ``--official-tests`` "mwu" entry always exercises: the three
-        dispatch sites in ``cases/pvalues.py`` call
-        :func:`_ppi_two_sample` directly rather than reading this
-        function's ``method`` default, so keep them in sync when changing
-        it.
-
-        ``"ridge"`` (:func:`_ppi_two_sample_ridge_corrected`) replaces
-        "local"'s step-function per-bin rectifier with a smooth,
-        ridge-shrunk linear one: fits ``diff = truth_lab - llm_lab ~
-        beta0 + beta1*(llm_lab - mean(llm_lab))`` per group via ridge
-        regression (penalty ``lam = ridge_k * Sxx``, ``ridge_k=2.0``
-        fixed, dimensionless/scale-free), then applies the fitted line to
-        each unlabeled item at its own score -- a continuous dial between
-        "local"-like (unshrunk slope) and "global"-like (beta1 shrunk to
-        0) behavior, in the spirit of PPI++'s own power-tuning shrinkage.
-        Matches "global"'s MCAR calibration, close to "local"'s MNAR
-        calibration, and has the best power of the four correction
-        methods on both continuous and Likert data. ``ridge_k=2.0`` is a
-        fixed constant, not data-adaptive per call. See
-        ``_ppi_two_sample_ridge_corrected``'s docstring for the derivation.
-
-        ``"adaptive"`` (:func:`_ppi_two_sample_adaptive`) dispatches
-        between ``"local"`` and ``"global"`` based on how discrete the
-        labeled (truth) values look (``unique_fraction = n_unique /
-        n_labeled`` on the combined group A + B labeled sample; below
-        ``_ADAPTIVE_DISCRETENESS_THRESHOLD``=0.7 uses "local", at or above
-        uses "global"). On real, moderately-discretized-but-genuinely-
-        continuous data (e.g. WMT DA scores averaged across a few
-        annotators), this threshold can misclassify continuous data as
-        discrete and inherit "local"'s real-data MCAR Type-I cost -- not
-        recommended for data with real judge bias unless the discreteness
-        signal has been checked on that data first.
-
-        ``"local"`` (:func:`_ppi_two_sample_midrank_corrected_pooled`) is
-        a per-group, per-score-bin local rectifier, computed with a
-        pooled bootstrap resample (group A + B's unlabeled items
-        resampled together as one draw, same for the labeled items --
-        matching :func:`evalstats.ppi.correct`'s own resampling
-        convention). Strictly dominates "global" on calibration under
-        MNAR labeling with no MCAR regression on synthetic data, but its
-        real-data (continuous, biased-judge) Type-I cost can exceed what
-        synthetic validation suggests, and its continuous-data power is
-        below "global"'s -- not the default for either reason. Still
-        preferable to "mnar_experimental" if you want a non-adaptive
-        local rectifier specifically (e.g. deliberately studying
-        Likert-only behavior without the dispatch).
-
-        ``"mnar_experimental"`` (:func:`_ppi_two_sample_midrank_corrected`)
-        is "local"'s predecessor: the same per-group, per-score-bin
-        rectifier, but with a stratified (four separate per-group,
-        per-labeled/unlabeled resamples, each fixing that group's own
-        count exactly every replicate) bootstrap instead of "local"'s
-        pooled one. Costs real calibration under ordinary MCAR labeling
-        relative to "local", for the same MNAR fix. Kept for reproducing
-        older results or for deliberately studying the stratified-resample
-        construction -- not recommended for new work.
-
-        See ``simulations/harness/cases/pvalues.py --mode ppi`` (methods
-        ``mwu`` / ``mwu_mnar_experimental`` / ``mwu_mnar_pooled`` /
-        ``mwu_adaptive`` / ``mwu_ridge``) for the calibration studies
-        behind these methods.
+    alpha : float
+        Two-sided significance level for the PPI confidence interval
+        (default 0.05).
+    n_boot : int
+        Bootstrap replicates for the PPI interval (default 2000).
+    rng : int | np.random.Generator | None
+        Seed or generator for the bootstrap.
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
     power_tune : bool
         Use PPI++'s variance-minimizing power-tuning weight λ instead of
         fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
-        ``power_tune`` parameter). Only applies to ``method="global"``
-        (and, on the branch where ``method="adaptive"`` dispatches to it,
-        i.e. continuous-looking data); ignored (has no effect) for
-        ``method="ridge"``, ``"local"``, or ``"mnar_experimental"``, and
-        on "adaptive"'s discrete/Likert-looking branch, all of which use
-        their own local-rectifier bootstrap without power-tuning. Pass
-        ``power_tune=False`` (with ``method="global"``) to reproduce the
-        original PPI estimator exactly. The value actually used is on the
-        returned ``TestResult.lam`` (``None`` for "ridge"/"local"/
-        "mnar_experimental").
+        ``power_tune`` parameter). Pass ``power_tune=False`` to reproduce
+        the original PPI estimator exactly. The value actually used is on
+        the returned ``TestResult.lam``.
 
     Examples
     --------
@@ -4279,9 +3646,6 @@ def mannwhitney(
     >>> result = es.tests.mannwhitney(llm_x, llm_y, human_x, human_y)  # positional
     >>> result = es.tests.mannwhitney(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
-    if method not in ("ridge", "adaptive", "local", "global", "mnar_experimental"):
-        raise ValueError(f'method must be "ridge", "adaptive", "local", "global", or "mnar_experimental"; got {method!r}.')
-
     x = _coerce(x)
     y = _coerce(y)
 
@@ -4297,7 +3661,7 @@ def mannwhitney(
         "p_x_gt_y": p_x_gt_y,
         "estimand": "P(X > Y)",
         "n_boot": n_boot,
-        "ppi_method": method,
+        "ppi_method": "global",
     }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = lam = None
@@ -4318,21 +3682,12 @@ def mannwhitney(
             np.concatenate([x_lab, y_lab]),
         )
 
-        if method == "ridge":
-            ppi = _ppi_two_sample_ridge_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
-        elif method == "adaptive":
-            ppi = _ppi_two_sample_adaptive(x, y, x_lab, y_lab, alpha, n_boot, rng, power_tune=power_tune)
-        elif method == "local":
-            ppi = _ppi_two_sample_midrank_corrected_pooled(x, y, x_lab, y_lab, alpha, n_boot, rng)
-        elif method == "mnar_experimental":
-            ppi = _ppi_two_sample_midrank_corrected(x, y, x_lab, y_lab, alpha, n_boot, rng)
-        else:
-            # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
-            # any distribution (including discrete/Likert). Estimand θ = P_mid - 0.5 → 0.
-            def _auc_shifted(xa, ya):
-                return _p_x_gt_y_midrank(xa, ya) - 0.5
+        # Mid-rank convention: P_mid(X>Y) = P(X>Y) + 0.5·P(X=Y) = 0.5 under H₀ for
+        # any distribution (including discrete/Likert). Estimand θ = P_mid - 0.5 → 0.
+        def _auc_shifted(xa, ya):
+            return _p_x_gt_y_midrank(xa, ya) - 0.5
 
-            ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng, power_tune=power_tune)
+        ppi = _ppi_two_sample(x, y, x_lab, y_lab, _auc_shifted, alpha, n_boot, rng, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate + 0.5       # report as P(X>Y)
         corrected_ci       = (ppi.ci_low + 0.5, ppi.ci_high + 0.5)
@@ -4375,14 +3730,13 @@ def wilcoxon(
     n_boot: int = 2000,
     rng=None,
     print_result: bool = True,
-    method: str = "current",
     power_tune: bool = True,
 ) -> TestResult:
     """Wilcoxon signed-rank test with optional PPI correction.
 
     Uncorrected: ``scipy.stats.wilcoxon(x, y)`` (two-sided, paired by position).
 
-    PPI estimand (``method="current"``, default):
+    PPI estimand:
     ``theta = P_mid(Walsh_ij > 0) − 0.5``, where ``Walsh_ij = (d_i + d_j) / 2``
     for every pair ``i <= j`` of paired LLM differences ``d = x − y``
     (including self-pairs) -- the exact sign-statistic construction behind
@@ -4409,17 +3763,6 @@ def wilcoxon(
     better power than the percentile bootstrap across the full n_lab
     range with no calibration cost.
 
-    Experimental alternative (``method="hajek_experimental"``): builds a
-    fixed, full-sample LLM score transform
-    ``phi(d)=sign(d)*(2*F_mid_hat(|d|)-1)`` (Hajek-projection-inspired
-    Wilcoxon linearization), then runs PPI on the mean of ``phi(d)``. Not
-    recommended: its PPI-corrected power falls below its own classical
-    (labels-only) power under real judge bias, because freezing the
-    ``phi`` reference distribution from the full (potentially
-    judge-biased) LLM sample rather than from truth's own scale gives the
-    point estimate frequently the wrong sign/magnitude. Kept for
-    head-to-head benchmarking only.
-
     Pairing is by array position (``x[i]`` paired with ``y[i]``), exactly as
     in ``scipy.stats.wilcoxon``.  A position enters the labeled set only when
     *both* ``x_lab[i]`` and ``y_lab[i]`` are non-NaN.
@@ -4434,11 +3777,6 @@ def wilcoxon(
     print_result : bool
         Print a summary table to stdout (default True).  Pass ``False`` to
         suppress output when calling from automated pipelines.
-    method : {"current", "hajek_experimental"}
-        Which PPI correction path to use when labels are supplied.
-        ``"current"`` is the Walsh-average midrank-sign estimand described
-        above (matches the simulation harness's "wilcoxon").
-        ``"hajek_experimental"`` uses a linearized signed-rank score mean.
     power_tune : bool
         Use PPI++'s variance-minimizing power-tuning weight λ instead of
         fixed λ=1 (default True -- see :func:`evalstats.ppi.correct`'s
@@ -4454,9 +3792,6 @@ def wilcoxon(
     >>> result = es.tests.wilcoxon(llm_x, llm_y, human_x, human_y)    # positional
     >>> result = es.tests.wilcoxon(llm_x, llm_y, x_lab=human_x, y_lab=human_y)
     """
-    if method not in ("current", "hajek_experimental"):
-        raise ValueError(f'method must be "current" or "hajek_experimental"; got {method!r}.')
-
     x = _coerce(x)
     y = _coerce(y)
 
@@ -4488,7 +3823,7 @@ def wilcoxon(
         "n_pairs": len(x),
         "median_diff": median_diff,
         "n_boot": n_boot,
-        "ppi_method": method,
+        "ppi_method": "current",
     }
 
     corrected_estimate = corrected_ci = corrected_p = rectifier = lam = None
@@ -4511,26 +3846,14 @@ def wilcoxon(
             np.where(_pair_mask, x_lab - y_lab, np.nan),
         )
 
-        if method == "hajek_experimental":
-            ppi = _ppi_wilcoxon_hajek_experimental(
-                x,
-                y,
-                x_lab,
-                y_lab,
-                alpha,
-                n_boot,
-                rng,
-                power_tune=power_tune,
-            )
-        else:
-            # paired_walsh_midrank_theta (evalstats.ppi), matched as BOTH
-            # statistic and rectifier -- see this function's docstring for
-            # why this replaced the earlier mean-rectifier (biased) and
-            # matched-median (power-collapses under ties) attempts, and why
-            # it's kept one-to-one with what the simulation harness
-            # validates as "wilcoxon".
-            ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, paired_walsh_midrank_theta, alpha, n_boot, rng,
-                                     rectifier_func=paired_walsh_midrank_theta, power_tune=power_tune)
+        # paired_walsh_midrank_theta (evalstats.ppi), matched as BOTH
+        # statistic and rectifier -- see this function's docstring for
+        # why this replaced the earlier mean-rectifier (biased) and
+        # matched-median (power-collapses under ties) attempts, and why
+        # it's kept one-to-one with what the simulation harness
+        # validates as "wilcoxon".
+        ppi = _ppi_paired_arrays(x, y, x_lab, y_lab, paired_walsh_midrank_theta, alpha, n_boot, rng,
+                                 rectifier_func=paired_walsh_midrank_theta, power_tune=power_tune)
 
         corrected_estimate = ppi.estimate
         corrected_ci       = (ppi.ci_low, ppi.ci_high)

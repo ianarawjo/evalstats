@@ -1853,14 +1853,27 @@ def _linearize_mean(conditions: dict, design: str) -> tuple[np.ndarray, np.ndarr
 
 def _linearize_wilcoxon(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     """Hajek-projection linearization for Wilcoxon signed-rank (paired,
-    exactly 2 conditions). Reuses evalstats.tests._wilcoxon_hajek_scores --
-    already implemented and used there for wilcoxon(method='hajek_experimental')
-    -- applied to the judge-side and human-side paired differences
-    separately, each using its own empirical |difference| distribution as
-    reference. This is the canonical influence-function form of the signed-
-    rank statistic; the raw-Spearman-of-differences recipe it replaces
-    drifts -25% by d=2 (notes/omnibus_label_efficiency.html)."""
-    from evalstats.tests import _wilcoxon_hajek_scores
+    exactly 2 conditions): the judge-side and human-side paired differences
+    are each mapped through ``evalstats.ppi._walsh_theta_h1_components``,
+    the per-item empirical Hajek projection ``h1(d) = P(D > -d)`` (mid-ranks
+    for ties) of the Walsh/Hodges-Lehmann estimand ``wilcoxon()`` actually
+    uses. That is the SAME production function
+    ``_analytic_walsh_theta_correct``/``_walsh_theta_analytic_variance``
+    already build their variance estimates from, so the correlation
+    reported here is taken against the very quantity the correction's own
+    variance is computed on, rather than a re-derived lookalike.
+
+    Note this is deliberately NOT ``sign(d) * (2*F_{|D|}(|d|) - 1)``: that
+    expands to ``4*F_D(d) - sign(d) - 2``, which is not affine in
+    ``F_D(d)`` (the ``sign`` term survives) and is non-monotonic in ``d``,
+    returning about -1 just above zero and about +1 just below it. An
+    earlier version of this function used exactly that (borrowed from the
+    since-removed ``hajek_experimental`` path) and measured about 0.6x the
+    directly-measured ``Var(classical)/Var(PPI)``.
+
+    Replaces the raw-Spearman-of-differences recipe, which drifts -25% by
+    d=2 (notes/omnibus_label_efficiency.html)."""
+    from evalstats.ppi import _walsh_theta_h1_components
 
     names = list(conditions.keys())
     if len(names) != 2:
@@ -1871,25 +1884,44 @@ def _linearize_wilcoxon(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     if not (len(ja) == len(ha) == len(jb) == len(hb)):
         raise ValueError("wilcoxon requires both conditions to have the same length (same items in the same order).")
     mask = ~np.isnan(ha) & ~np.isnan(hb)
-    judge_diff = ja[mask] - jb[mask]
-    human_diff = ha[mask] - hb[mask]
-    judge = _wilcoxon_hajek_scores(judge_diff, np.sort(np.abs(judge_diff)))
-    human = _wilcoxon_hajek_scores(human_diff, np.sort(np.abs(human_diff)))
+    judge = _walsh_theta_h1_components(ja[mask] - jb[mask])
+    human = _walsh_theta_h1_components(ha[mask] - hb[mask])
     return judge, human
 
 
 def _linearize_mannwhitney(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     """Empirical placement-value linearization for Mann-Whitney/Wilcoxon
-    rank-sum (independent groups, exactly 2 conditions). For item x_i in
-    group A, its score is x_i's mid-rank PLACEMENT within group B's
-    empirical distribution (and symmetrically, sign-flipped, for group B
-    items within group A) -- the same searchsorted-based mid-rank
+    rank-sum (independent groups, exactly 2 conditions), the influence
+    function of the ``theta = P(X > Y)`` estimand ``mannwhitney()`` uses.
+
+    For item ``x_i`` in group A the score is ``F_Y(x_i)``, its mid-rank
+    placement within group B; for item ``y_j`` in group B it is
+    ``P(X > y_j) = 1 - F_X(y_j)``. Built on the same searchsorted mid-rank
     construction already used and tested in
-    evalstats.tests._p_x_gt_y_midrank for the point estimate itself, here
-    extracted PER ITEM instead of summed to one P(X>Y) number. Pearson
-    correlation is shift-invariant, so no extra centering by theta is
-    needed before correlating judge-side vs. human-side placements. The
-    raw-Spearman recipe this replaces drifts -13% by d=2
+    ``evalstats.tests._p_x_gt_y_midrank`` for the point estimate itself,
+    extracted PER ITEM instead of summed to one ``P(X > Y)`` number.
+
+    Both halves are then centered on their OWN mean before pooling. Two
+    reasons, and skipping either one was a real measured bug:
+
+    1. Sign, not negation. An earlier version scored group B as
+       ``-F_X(y_j)`` rather than ``1 - F_X(y_j)``. Both have the same
+       spread, but their MEANS differ by 1 (``theta - 1`` vs ``theta``),
+       so pooling put the two halves a constant ~1.0 apart on both the
+       judge and human side -- a lockstep offset that both sides share and
+       that Pearson therefore scores as agreement. Measured effect: rho^2
+       inflated to ~0.92-0.98 and the predicted multiplier roughly 2x the
+       directly-measured ``Var(classical)/Var(PPI)``.
+    2. Per-group centering. Even with the correct sign, the pooled
+       correlation must be the WITHIN-group one: any between-group
+       difference in mean placement is shared by judge and humans and
+       would again be counted as agreement. This is the same failure mode
+       -- and the same fix -- as the uncentered pooling corrected in
+       ``_pooled_two_group_lambda``, and as ``_linearize_mean``'s
+       "between" branch, which centers each condition before pooling for
+       exactly this reason.
+
+    The raw-Spearman recipe this replaces drifts -13% by d=2
     (notes/omnibus_label_efficiency.html)."""
     names = list(conditions.keys())
     if len(names) != 2:
@@ -1909,8 +1941,13 @@ def _linearize_mannwhitney(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
         n_le = np.searchsorted(y_sorted, x, side="right")
         return (n_lt + 0.5 * (n_le - n_lt)) / len(y)
 
-    judge = np.concatenate([placement(ja, jb), -placement(jb, ja)])
-    human = np.concatenate([placement(ha, hb), -placement(hb, ha)])
+    def _pool(a_scores: np.ndarray, b_scores: np.ndarray) -> np.ndarray:
+        if len(a_scores) == 0 or len(b_scores) == 0:
+            return np.array([])
+        return np.concatenate([a_scores - a_scores.mean(), b_scores - b_scores.mean()])
+
+    judge = _pool(placement(ja, jb), 1.0 - placement(jb, ja))
+    human = _pool(placement(ha, hb), 1.0 - placement(hb, ha))
     return judge, human
 
 
@@ -2198,13 +2235,13 @@ class PairwiseAlignmentResult:
     actually spanned by that specific correlation -- summed across the
     conditions it pools, for a "between" pair/omnibus, or a single
     condition's N for a "within" one, where every condition shares the
-    same items by construction). **Unresolved caveat**: empirical
-    validation found these multi-condition ``multiplier``/``n_eff`` values
-    off by a stable, non-noise factor (~2x high for "between", ~0.6x low
-    for "within") against directly-measured PPI variance reduction -- see
-    :func:`_attach_savings`'s docstring. The correlation estimates
-    themselves are on firmer footing; treat the multiplier/n_eff numbers
-    here as provisional until this is root-caused.
+    same items by construction). These are the ORACLE bound -- the
+    efficiency available at the variance-minimizing lambda, validated to
+    within 1.7% against direct oracle-lambda simulation. A particular
+    corrected test may realize less, since ``evalstats.tests`` sometimes
+    trades efficiency for calibration when choosing lambda; see
+    :func:`_attach_savings`'s docstring for the measured size of that gap
+    for ``wilcoxon(power_tune=True)``.
 
     Notes
     -----
@@ -2282,23 +2319,37 @@ def _attach_savings(metric: dict, N: int) -> dict:
     """Attach multiplier/n_eff to a correlation metric dict, using `N`
     (see :func:`_pair_total_n`) as the savings formula's total item count.
 
-    CAVEAT, unresolved: empirical Monte Carlo validation (comparing this
-    formula's predicted multiplier against Var(classical)/Var(PPI-corrected)
-    measured directly from evalstats.tests.wilcoxon/mannwhitney on
-    synthetic two-condition data) found a STABLE, non-noise discrepancy for
-    multi-condition (pairwise) designs specifically -- consistently ~2x too
-    high for a "between" (independent-groups, pooled-N) pair, ~0.6x too low
-    for a "within" (paired) pair, unchanged across effect sizes and after
-    increasing precision (reps/n_boot). The correlation/rho values
-    themselves behaved sensibly throughout (Friedman/anova_rep's
-    effect-invariance properties were independently reproduced exactly).
-    This suggests the bug, if any, is in how N/N_lab combine here for a
-    POOLED two-condition design, not in the linearization math -- but the
-    root cause was not found before this had to ship. The single-condition
-    path (:attr:`AlignmentResult.n_eff`, unchanged from before this
-    function existed) is NOT implicated. Treat PairwiseAlignmentResult's
-    multiplier/n_eff as unverified until this is resolved; the correlation
-    estimates alongside them are on firmer footing."""
+    VALIDATED. With ``lam*`` the variance-minimizing PPI++ weight, the
+    algebra gives ``Var_min = (V_h/n_lab) * [1 - rho^2 * (n_unlab/N)]``,
+    i.e. exactly ``multiplier = 1/(1 - rho^2*(1 - n_lab/N))`` with ``rho``
+    the correlation of the two sides' INFLUENCE FUNCTIONS. Confirmed
+    numerically against a direct oracle-lambda simulation (no bootstrap,
+    N=1000, n_lab=200, 4000 reps): predicted/oracle multiplier ratios were
+    0.975 / 1.009 / 1.017 for wilcoxon and 0.987 / 1.008 / 0.993 for
+    mannwhitney at d = 0 / 0.3-0.5 / 1.0 -- within 1.7% and stable across
+    effect sizes.
+
+    Note the ``N`` passed here cannot itself be a source of error: the
+    multiplier depends on ``N`` and ``n_lab`` only through their RATIO, and
+    pooling equal-sized groups preserves that ratio exactly (60/300 =
+    120/600). An earlier revision of this docstring blamed a measured
+    discrepancy on "N-aggregation"; that was wrong on both counts -- see
+    :func:`_linearize_mannwhitney` and :func:`_linearize_wilcoxon` for the
+    two real (now-fixed) bugs, which were in the linearizations.
+
+    ONE STANDING CAVEAT, and it is about the library's lambda, not this
+    formula: ``multiplier``/``n_eff`` are the ORACLE bound -- what is
+    achievable at the variance-minimizing lambda. ``evalstats.tests``
+    deliberately does not always use that lambda. In particular
+    ``wilcoxon(power_tune=True)`` evaluates the human term's variance under
+    H0 (sign-flip null variance) rather than plug-in, a deliberate
+    calibration trade documented in
+    ``evalstats.ppi._analytic_walsh_theta_correct``. That lambda is
+    intentionally sub-optimal, and drifts further from optimal as the true
+    effect moves away from H0 -- measured at n_lab=60, the realized
+    multiplier fell to ~1/1.17 of this bound at d=0 and ~1/1.74 at d=0.3.
+    So report these as "the efficiency this judge makes available", not as
+    a guarantee of what a particular corrected test will realize."""
     mult, n_eff = _n_eff(metric["estimate"], metric["n"], N)
     metric["N"] = N
     metric["multiplier"] = mult

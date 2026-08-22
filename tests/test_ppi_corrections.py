@@ -919,61 +919,6 @@ class TestPairedTests:
         with pytest.raises(ValueError):
             wilcoxon(a, b)
 
-    def test_wilcoxon_invalid_method_raises(self):
-        rng = np.random.default_rng(860)
-        a, b, al, bl = _paired(rng, n=120, n_lab=40)
-        with pytest.raises(ValueError, match="method must be"):
-            wilcoxon(a, b, x_lab=al, y_lab=bl, method="not_a_method", n_boot=120, rng=860)
-
-    def test_wilcoxon_hajek_experimental_runs_and_is_reproducible(self):
-        rng = np.random.default_rng(861)
-        a, b, al, bl = _paired(
-            rng,
-            n=200,
-            mu_a=3.0,
-            mu_b=3.0,
-            bias_a=1.5,
-            bias_b=0.0,
-            n_lab=60,
-            llm_noise=0.2,
-        )
-
-        kwargs = dict(x_lab=al, y_lab=bl, method="hajek_experimental", n_boot=250, rng=861)
-        r1 = wilcoxon(a, b, **kwargs)
-        r2 = wilcoxon(a, b, **kwargs)
-
-        assert np.isfinite(r1.corrected_estimate)
-        assert np.isfinite(r1.corrected_p_value)
-        assert r1.extra.get("ppi_method") == "hajek_experimental"
-        assert r1.corrected_ci[0] <= r1.corrected_ci[1]
-
-        assert r1.corrected_estimate == pytest.approx(r2.corrected_estimate, abs=1e-12)
-        assert r1.corrected_p_value == pytest.approx(r2.corrected_p_value, abs=1e-12)
-
-    def test_wilcoxon_hajek_experimental_head_to_head_sanity(self):
-        """Both PPI paths should pull a large LLM-only false signal toward 0.
-
-        This does NOT assert one method dominates; it only guards against
-        gross regressions in the experimental branch.
-        """
-        rng = np.random.default_rng(862)
-        a, b, al, bl = _paired(
-            rng,
-            n=260,
-            mu_a=3.0,
-            mu_b=3.0,
-            bias_a=2.0,
-            bias_b=0.0,
-            n_lab=70,
-            llm_noise=0.15,
-        )
-
-        r_current = wilcoxon(a, b, x_lab=al, y_lab=bl, method="current", n_boot=300, rng=862)
-        r_hajek = wilcoxon(a, b, x_lab=al, y_lab=bl, method="hajek_experimental", n_boot=300, rng=862)
-
-        assert abs(r_current.corrected_estimate) < 0.6
-        assert abs(r_hajek.corrected_estimate) < 0.6
-
 
 # ─── Mann-Whitney specifics ───────────────────────────────────────────────────
 
