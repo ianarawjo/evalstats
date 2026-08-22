@@ -5,7 +5,7 @@ large power gains and no Type-I inflation across an n_lab x noise grid).
 
 Crosses bias_magnitude x label_mechanism x n -- specifically targeting MNAR
 labeling, the known failure mode for other PPI rectifiers in this codebase
-(mwu_mnar_experimental, kruskal_mnar_experimental, friedman all show real
+(kruskal_mnar_experimental, friedman all show real
 MCAR-cost or MNAR-residual tradeoffs). Deliberately small (18 cells) and
 closed-form (no bootstrap), so this runs in well under a minute even at a
 few thousand reps/cell -- NOT the full --factorial-check-binary sweep.

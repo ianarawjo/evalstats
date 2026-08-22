@@ -384,7 +384,7 @@ def generate_real_twogroup_null_cell(
     judge bias, a dirtier signal).
 
     Only independent-samples tests apply to this structure (ttest,
-    ttest_welch, mwu, mwu_mnar_experimental) -- for a genuine PAIRED
+    ttest_welch, mwu) -- for a genuine PAIRED
     structure (same items, not disjoint groups), see
     generate_real_paired_null_cell below, which already used two different
     judges from the start."""

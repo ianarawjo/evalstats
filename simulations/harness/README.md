@@ -502,8 +502,8 @@ same way `evalstats.core.resampling` is.
     `--factorial-omnibus`): after the main OFAT sweep and the factorial
     sweep's original four two-group tests were confirmed reasonably
     calibrated (at the time including `mwu_corr`'s local-rectifier fix,
-    since reverted -- see `MWU`/`MWU_MNAR_EXPERIMENTAL`'s `Method` docstring
-    in `methods.py` for the current status and why), extended
+    since reverted, and as of 2026-08-21 removed outright -- see `MWU`'s
+    comment in `methods.py` for the current status and why), extended
     `build_ppi_factorial_sources`'s combined-factor
     stress test to four omnibus/multi-group tests too --
     `ANOVA_IND`/`ANOVA_REP`/`FRIEDMAN`/`KRUSKAL` -- to check whether they

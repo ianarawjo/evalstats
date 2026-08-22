@@ -227,6 +227,16 @@ _ALL_PARAMS    = [pytest.param(*c[:3], id=c[3]) for c in ALL_CASES]
 # 0.0518 -- "local" ties or beats "global" overall despite this one
 # elevated corner) -- see simulations/harness/cases/pvalues.py's
 # MWU_MNAR_POOLED validation for the full grid.
+#
+# EPILOGUE (2026-08-21): the "local" default was later reverted to "global",
+# and on this date the entire local-rectifier family ("local",
+# "mnar_experimental", "ridge", "adaptive") was REMOVED, along with
+# mannwhitney's "method" parameter -- none was in the harness's official
+# test set or covered by any test here, and all proved badly broken on
+# binary data even under MCAR. The elevated-residual property recorded
+# above is why the revert happened; the binary breakage is why the code is
+# gone. Seed 909 stays: it is exercised against "global", which is what it
+# has run against since the revert.
 _SEEDS = [101, 303, 606, 707, 909]
 
 

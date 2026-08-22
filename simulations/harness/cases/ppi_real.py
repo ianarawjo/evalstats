@@ -29,8 +29,8 @@ Nine checks:
       random draws from the identical population, so their TRUE, human-
       label means are equal) -- but read group A through judge_a and group
       B through judge_b, not the same judge reading both. Runs the
-      independent-samples tests (ttest/ttest_welch/mwu/
-      mwu_mnar_experimental) PPI correction is supposed to keep calibrated,
+      independent-samples tests (ttest/ttest_welch/mwu) PPI correction is
+      supposed to keep calibrated,
       with real noise/skew/judge-bias characteristics instead of synthetic
       ones. Deliberately cross-judge, not same-judge-reads-both: a single
       judge reading two random halves of the same population applies its
@@ -87,8 +87,8 @@ Nine checks:
       reasoning as the two-group check (see generate_real_
       omnibus_independent_null_cell). Runs anova_ind and kruskal (NOT
       kruskal_mnar_experimental -- see _omnibus_independent_methods_for's
-      docstring for why, same reasoning as dropping mwu_mnar_experimental
-      from the two-group check). With k judge models, all C(k, 3) triples
+      docstring for why, same reasoning as dropping the local-rectifier
+      MWU variants from the two-group check). With k judge models, all C(k, 3) triples
       are checked (capped by --max-triples).
 
   omnibus-repeated Type-I null (3-condition, cross-judge)
@@ -159,9 +159,6 @@ with warnings.catch_warnings():
         _ppi_single_logit_t,
         _ppi_single_t_interval,
         _ppi_two_sample,
-        _ppi_two_sample_midrank_corrected,
-        _ppi_two_sample_adaptive,
-        _ppi_two_sample_ridge_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -177,7 +174,7 @@ with warnings.catch_warnings():
     )
 
 from ..methods import (
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
@@ -337,9 +334,8 @@ def _run_real_twogroup_cell(
     real data, cross-judge -- see generate_real_twogroup_null_cell's
     docstring for why group A and group B are read through two DIFFERENT
     judges, not the same one), mirroring pvalues.py's _run_ppi_cell
-    independent-groups branches (ttest/ttest_welch/mwu/
-    mwu_mnar_experimental only -- see _run_real_paired_cell for the
-    paired-samples family)."""
+    independent-groups branches (ttest/ttest_welch/mwu only -- see
+    _run_real_paired_cell for the paired-samples family)."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -379,32 +375,8 @@ def _run_real_twogroup_cell(
                 except Exception:
                     pass
 
-            if MWU_MNAR_EXPERIMENTAL.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_midrank_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_ADAPTIVE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_adaptive(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_RIDGE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_ridge_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
     return corrected, uncorrected
 
@@ -623,8 +595,8 @@ def _run_real_twogroup_power_cell(
 ) -> tuple[dict[str, int], dict[str, int]]:
     """n_reps replicates of the two-group power check (rank-split real data,
     cross-judge -- see generate_real_twogroup_power_cell), mirroring
-    _run_real_twogroup_cell's test battery exactly (ttest/ttest_welch/mwu/
-    mwu_mnar_experimental) -- only the cell generator differs."""
+    _run_real_twogroup_cell's test battery exactly (ttest/ttest_welch/mwu)
+    -- only the cell generator differs."""
     rng = np.random.default_rng(seed)
     corrected: dict[str, int] = {t: 0 for t in methods}
     uncorrected: dict[str, int] = {t: 0 for t in methods}
@@ -664,32 +636,8 @@ def _run_real_twogroup_power_cell(
                 except Exception:
                     pass
 
-            if MWU_MNAR_EXPERIMENTAL.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_midrank_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_ADAPTIVE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_adaptive(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
-            if MWU_RIDGE.name in methods:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(a, b, alternative="two-sided").pvalue)
-                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_ridge_corrected(a, b, lab_a, lab_b, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    pass
 
     return corrected, uncorrected
 
@@ -1088,21 +1036,15 @@ def _twogroup_methods_for(eval_type: str) -> list[str]:
     # binary's massive ties break the rank-based judge-bias noise model
     # there, same restriction applies here.
     #
-    # MWU_MNAR_EXPERIMENTAL (the local-rectifier MWU variant) deliberately
-    # not included: it exists specifically to trade some MCAR calibration
-    # for MNAR robustness (see evalstats.tests.mannwhitney's method
-    # docstring), but this check's real-data labeling is MCAR by
-    # construction (generate_real_twogroup_null_cell's _reveal_labels
-    # call), so there's no MNAR risk here for the local rectifier to buy
-    # anything against -- it would only ever look worse than plain MWU on
-    # this check, never better, for reasons that have nothing to do with
-    # either method's actual quality.
-    #
-    # MWU_ADAPTIVE/MWU_RIDGE excluded here too, matching
-    # PPI_OFFICIAL_TEST_METHODS' own exclusion of every non-default MWU
-    # variant in methods.py -- this pathway shows only the actual default
-    # (plain MWU, method="global"). Both remain fully runnable via this
-    # same function for anyone who wants them.
+    # The local-rectifier MWU variants (mwu_mnar_experimental,
+    # mwu_mnar_pooled, mwu_adaptive, mwu_ridge) were removed outright on
+    # 2026-08-21 -- see MWU's comment in methods.py. They had never been in
+    # PPI_OFFICIAL_TEST_METHODS and were never right for this check anyway:
+    # they traded MCAR calibration for MNAR robustness, but this check's
+    # real-data labeling is MCAR by construction
+    # (generate_real_twogroup_null_cell's _reveal_labels call), so there was
+    # no MNAR risk here for a local rectifier to buy anything against. MWU
+    # (the global rectifier) is now the only midrank correction.
     base = [TTEST.name, TTEST_WELCH.name]
     return base if eval_type == "binary" else base + [MWU.name]
 
@@ -1140,8 +1082,8 @@ def _omnibus_independent_methods_for(eval_type: str) -> list[str]:
     # the twogroup/paired families.
     #
     # KRUSKAL_MNAR_EXPERIMENTAL deliberately NOT included, for the identical
-    # reason MWU_MNAR_EXPERIMENTAL was dropped from the twogroup check (see
-    # _twogroup_methods_for's docstring): it trades some MCAR calibration
+    # reason the local-rectifier MWU variants were dropped from the twogroup
+    # check (see _twogroup_methods_for): it trades some MCAR calibration
     # for MNAR robustness, but this check's real-data labeling is MCAR by
     # construction, so there's no MNAR risk here for its local rectifier to
     # buy anything against.

@@ -457,40 +457,36 @@ TTEST_WELCH = Method("ttest_welch", "#d62728")
 TANGO_FIXED_LAMBDA = Method("tango_fixed_lambda", "#41b6c4")  # teal -- distinct from TANGO's default grey
 # MWU family: five PPI corrections for the same classical test (Mann-Whitney
 # U / independent two-group mid-rank estimand P_mid(A>B)-0.5), matching
-# evalstats.tests.mannwhitney's "method" values one-to-one -- see that
-# function's docstring for the full mechanism/tradeoff of each. MWU="global"
-# (the default), MWU_MNAR_EXPERIMENTAL="mnar_experimental",
-# MWU_MNAR_POOLED (not directly selectable via mannwhitney(), the pooled-
-# resampling variant "local" is built on), MWU_ADAPTIVE="adaptive",
-# MWU_RIDGE="ridge". cases/ppi_real.py's twogroup check dropped
-# MWU_MNAR_EXPERIMENTAL from its default plots since real-data judge bias
-# isn't MNAR, so there's nothing there for the local rectifier to buy over
-# MWU -- see _twogroup_methods_for's docstring.
+# MWU is evalstats.tests.mannwhitney's only PPI correction (the global
+# rectifier). Four local-rectifier variants -- mwu_mnar_experimental,
+# mwu_mnar_pooled, mwu_adaptive, mwu_ridge -- were REMOVED on 2026-08-21:
+# none was ever in PPI_OFFICIAL_TEST_METHODS or exercised by a single unit
+# test, and all three local-rectifier constructions proved badly broken on
+# binary data even under plain MCAR (coverage 0.00-0.06 at a real effect vs
+# MWU's 0.989; see evalstats.tests._ppi_kruskal_wallis_pairwise_mnar_experimental's
+# docstring for the mechanism). mannwhitney's "method" parameter went with
+# them.
 MWU = Method("mwu", "#2ca02c")
-MWU_MNAR_EXPERIMENTAL = Method("mwu_mnar_experimental", "#9467bd")
-MWU_MNAR_POOLED = Method("mwu_mnar_pooled", "#c5b0d5")  # lighter tint of MWU_MNAR_EXPERIMENTAL's purple
-MWU_ADAPTIVE = Method("mwu_adaptive", "#98df8a")  # light tint of MWU's green
-MWU_RIDGE = Method("mwu_ridge", "#c49c94")  # muted brown -- distinct from the MWU family's greens/purples
 ANOVA_IND = Method("anova_ind", "#e6550d")
 ANOVA_REP = Method("anova_rep", "#fd8d3c")
 FRIEDMAN = Method("friedman", "#756bb1")  # purple -- distinct from the anova_*/lmm_* families
 # KRUSKAL/KRUSKAL_MNAR_EXPERIMENTAL: two PPI corrections for the same
-# omnibus test, the MWU/MWU_MNAR_EXPERIMENTAL story generalized one level up
+# omnibus test -- the two-group global-vs-local rectifier story generalized one level up
 # (k independent groups instead of 2) -- see
 # evalstats.tests.kruskalwallis's "method" docstring for the full
 # mechanism/tradeoff. KRUSKAL="global" (the default, global rectifier),
 # KRUSKAL_MNAR_EXPERIMENTAL="mnar_experimental" (local rectifier: fixes MNAR
 # labeling at the cost of MCAR calibration, kept for direct comparison and
 # for anyone deliberately studying MNAR robustness). Same color convention
-# as MWU/MWU_MNAR_EXPERIMENTAL: the default occupies the original primary
-# shade, the alternate gets a lighter tint.
+# convention: the default occupies the original primary shade, the
+# alternate gets a lighter tint.
 KRUSKAL = Method("kruskal", "#e377c2")  # pink -- distinct from the anova_*/lmm_* families
 KRUSKAL_MNAR_EXPERIMENTAL = Method("kruskal_mnar_experimental", "#f2b6d4")  # lighter tint
 LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, TANGO_FIXED_LAMBDA, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, TANGO_FIXED_LAMBDA, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -500,18 +496,19 @@ PPI_OFFICIAL_TEST_METHODS for that."""
 PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
-        MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, KRUSKAL_MNAR_EXPERIMENTAL,
+        KRUSKAL_MNAR_EXPERIMENTAL,
         LMM, LMM_FACTORIAL, LMM_RUNS, TANGO_FIXED_LAMBDA,
     )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
-PPI_TEST_METHODS entry except mwu_mnar_experimental/kruskal_mnar_experimental
-(both fix real MNAR-labeling miscalibration in their global-rectifier
-sibling, but cost real MCAR calibration doing so -- see
-evalstats.tests.mannwhitney's and kruskalwallis's "method" docstrings).
-Both remain selectable via --tests mwu_mnar_experimental / --tests
-kruskal_mnar_experimental for direct comparison or studying MNAR robustness
-deliberately.
+PPI_TEST_METHODS entry except kruskal_mnar_experimental (it fixes real
+MNAR-labeling miscalibration in its global-rectifier sibling, but costs real
+MCAR calibration doing so -- see evalstats.tests.kruskalwallis's "method"
+docstring). It remains selectable via --tests kruskal_mnar_experimental for
+direct comparison or studying MNAR robustness deliberately. Its two-group
+counterpart mwu_mnar_experimental, and the mwu_mnar_pooled/mwu_adaptive/
+mwu_ridge variants, were removed entirely on 2026-08-21 -- see MWU's
+comment above.
 
 lmm/lmm_factorial/lmm_runs are excluded from the official set: not
 currently part of the reported result set, so there's no point paying their
@@ -538,7 +535,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, MWU_MNAR_EXPERIMENTAL, MWU_MNAR_POOLED, MWU_ADAPTIVE, MWU_RIDGE, TANGO_FIXED_LAMBDA,
+    TTEST, TTEST_WELCH, MWU, TANGO_FIXED_LAMBDA,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]

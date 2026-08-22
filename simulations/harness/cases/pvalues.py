@@ -158,10 +158,6 @@ with warnings.catch_warnings():
     from evalstats.tests import (
         _ppi_two_sample,
         _ppi_two_sample_t_interval,
-        _ppi_two_sample_midrank_corrected,
-        _ppi_two_sample_midrank_corrected_pooled,
-        _ppi_two_sample_adaptive,
-        _ppi_two_sample_ridge_corrected,
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
@@ -283,10 +279,6 @@ from ..methods import (
     TTEST,
     TTEST_WELCH,
     MWU,
-    MWU_MNAR_EXPERIMENTAL,
-    MWU_MNAR_POOLED,
-    MWU_ADAPTIVE,
-    MWU_RIDGE,
     ANOVA_IND,
     ANOVA_REP,
     FRIEDMAN,
@@ -3553,41 +3545,9 @@ def _run_ppi_cell(
                 except Exception:
                     failed[MWU.name] += 1
 
-            if MWU_MNAR_EXPERIMENTAL.name in active_tests:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MWU_MNAR_EXPERIMENTAL.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_midrank_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_MNAR_EXPERIMENTAL.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    failed[MWU_MNAR_EXPERIMENTAL.name] += 1
 
-            if MWU_MNAR_POOLED.name in active_tests:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MWU_MNAR_POOLED.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_midrank_corrected_pooled(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_MNAR_POOLED.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    failed[MWU_MNAR_POOLED.name] += 1
 
-            if MWU_ADAPTIVE.name in active_tests:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MWU_ADAPTIVE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_adaptive(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_ADAPTIVE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    failed[MWU_ADAPTIVE.name] += 1
 
-            if MWU_RIDGE.name in active_tests:
-                try:
-                    p_u = float(scipy_stats.mannwhitneyu(cell.llm_a2, cell.llm_b2, alternative="two-sided").pvalue)
-                    uncorrected[MWU_RIDGE.name] += int(p_u < _ALPHA)
-                    r = _ppi_two_sample_ridge_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    corrected[MWU_RIDGE.name] += int(r.p_value < _ALPHA)
-                except Exception:
-                    failed[MWU_RIDGE.name] += 1
 
             if WILCOXON.name in active_tests:
                 try:
@@ -3923,7 +3883,7 @@ def run_ppi_simulation(
 # ---------------------------------------------------------------------------
 
 _PPI_EFFECT_TESTS = (
-    TTEST.name, TTEST_WELCH.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, MWU_MNAR_POOLED.name, MWU_ADAPTIVE.name, MWU_RIDGE.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
+    TTEST.name, TTEST_WELCH.name, MWU.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
     BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
     PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name, PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 )
@@ -4063,33 +4023,9 @@ def _run_ppi_effect_cell(
                 except Exception:
                     pass
 
-            if MWU_MNAR_EXPERIMENTAL.name in active_tests:
-                try:
-                    r = _ppi_two_sample_midrank_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    out[MWU_MNAR_EXPERIMENTAL.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
-                except Exception:
-                    pass
 
-            if MWU_MNAR_POOLED.name in active_tests:
-                try:
-                    r = _ppi_two_sample_midrank_corrected_pooled(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    out[MWU_MNAR_POOLED.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
-                except Exception:
-                    pass
 
-            if MWU_ADAPTIVE.name in active_tests:
-                try:
-                    r = _ppi_two_sample_adaptive(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    out[MWU_ADAPTIVE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
-                except Exception:
-                    pass
 
-            if MWU_RIDGE.name in active_tests:
-                try:
-                    r = _ppi_two_sample_ridge_corrected(cell.llm_a2, cell.llm_b2, cell.lab_a2, cell.lab_b2, _ALPHA, n_boot, _rng_seed())
-                    out[MWU_RIDGE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
-                except Exception:
-                    pass
 
             if WILCOXON.name in active_tests:
                 try:
@@ -4518,12 +4454,12 @@ build_judge_bias_sources) and _COMPARISON_METHODS + _COMPARISON_METHODS_
 OMNIBUS (9 = 5 + 4) line up exactly, letting the factorial-sourced
 Type-I-by-test violin plot (save_ppi_factorial_typeI_violin_plot) show the
 same 9 tests the OFAT-sourced one does. Uses MWU (evalstats.tests.
-_ppi_two_sample's single-global-rectifier midrank correction), not
-MWU_MNAR_EXPERIMENTAL (evalstats.tests._ppi_two_sample_midrank_corrected's
-per-group, per-score-bin local rectifier) -- the local rectifier fixes
-real MNAR-labeling miscalibration MWU has, but costs real MCAR calibration
-doing so -- see MWU/MWU_MNAR_EXPERIMENTAL's Method docstring in
-methods.py for the full writeup. Given this project's stance that PPI
+_ppi_two_sample's single-global-rectifier midrank correction). A
+per-group, per-score-bin local-rectifier alternative existed
+(mwu_mnar_experimental and three variants): it fixed real MNAR-labeling
+miscalibration MWU has, but cost real MCAR calibration doing so, and was
+removed on 2026-08-21 after proving badly broken on binary data even under
+MCAR -- see MWU's comment in methods.py. Given this project's stance that PPI
 requires MCAR labeling and treats MNAR as a documented, out-of-scope
 limitation, paying that MCAR cost for MNAR robustness is the wrong trade
 here too -- same reasoning _COMPARISON_METHODS_OMNIBUS already applies to
@@ -4552,8 +4488,9 @@ repeated-3-group structure (A/B/C) -- see _COMPARISON_METHOD_STRUCTURE's
 _ppi_kruskal_wallis_pairwise's single-global-rectifier Wald test), not
 KRUSKAL_MNAR_EXPERIMENTAL (evalstats.tests.
 _ppi_kruskal_wallis_pairwise_mnar_experimental's per-group, per-score-bin
-local rectifier) -- the same choice _COMPARISON_METHODS makes for MWU vs.
-MWU_MNAR_EXPERIMENTAL, and for a documented reason, not an oversight: the
+local rectifier) -- the same choice _COMPARISON_METHODS makes for MWU
+(whose local-rectifier alternatives were removed outright), and for a
+documented reason, not an oversight: the
 local rectifier fixes the same combined bias x MNAR-labeling x coarse-scale
 x large-N miscalibration MWU/kruskal's global rectifier both have, but
 costs real MCAR calibration doing so in both cases -- a regression it
@@ -4572,7 +4509,7 @@ filtered subset of `results`) for their own "mean_of_4_omnibus" summary,
 kept in its own report section/log rather than merged into the headline
 _COMPARISON_METHODS one."""
 _COMPARISON_METHOD_STRUCTURE = {
-    TTEST.name: "group", TTEST_WELCH.name: "group", MWU_MNAR_EXPERIMENTAL.name: "group", MWU_MNAR_POOLED.name: "group", MWU_ADAPTIVE.name: "group", MWU_RIDGE.name: "group", MWU.name: "group",
+    TTEST.name: "group", TTEST_WELCH.name: "group", MWU.name: "group",
     PAIRED_T.name: "pair", WILCOXON.name: "pair",
     ANOVA_IND.name: "group3", KRUSKAL.name: "group3", KRUSKAL_MNAR_EXPERIMENTAL.name: "group3",
     ANOVA_REP.name: "pair3", FRIEDMAN.name: "pair3",
@@ -4608,7 +4545,7 @@ def _classical_pvalue(a: np.ndarray, b: np.ndarray, method: str, structure: str)
     for a given method uses the SAME test, just on different input arrays,
     so the comparison is apples-to-apples per method (e.g. the "oracle"
     all_human/human_subset arms run Mann-Whitney on truth for the
-    "mwu"/"mwu_mnar_experimental" method-rows, not always a t-test)."""
+    "mwu" method-rows, not always a t-test)."""
     if structure == "group":
         if method == TTEST.name:
             return float(scipy_stats.ttest_ind(a, b, equal_var=True).pvalue)
@@ -4643,11 +4580,10 @@ def _classical_point_estimate(a: np.ndarray, b: np.ndarray, method: str, structu
 
 def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_lab: np.ndarray, method: str, structure: str, n_boot: int, seed: int, power_tune: bool = True, return_result: bool = False):
     """The SAME PPI-corrected call _run_ppi_cell uses for this method
-    (_ppi_two_sample_t_interval for ttest/ttest_welch, _ppi_two_sample /
-    _ppi_two_sample_midrank_corrected for the other "group" methods,
-    _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
-    ttest/ttest_welch/mwu/mwu_mnar_experimental/paired_t/wilcoxon blocks,
-    which this mirrors exactly).
+    (_ppi_two_sample_t_interval for ttest/ttest_welch, _ppi_two_sample for
+    mwu, _ppi_paired_arrays for "pair" methods -- see _run_ppi_cell's
+    ttest/ttest_welch/mwu/paired_t/wilcoxon blocks, which this mirrors
+    exactly).
 
     power_tune : forwarded to _ppi_two_sample_t_interval/_ppi_two_sample/
     _ppi_paired_arrays as-is (see evalstats.ppi.correct's power_tune
@@ -4664,21 +4600,9 @@ def _ppi_comparison_pvalue(a: np.ndarray, b: np.ndarray, a_lab: np.ndarray, b_la
             # TTEST_WELCH blocks for why -- Addendum 29/31/32).
             _r = _ppi_two_sample_t_interval(a, b, a_lab, b_lab, _ALPHA, power_tune=power_tune)
             return _r if return_result else _r.p_value
-        if method == MWU_MNAR_EXPERIMENTAL.name:
-            _r = _ppi_two_sample_midrank_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
-            return _r if return_result else _r.p_value
-        if method == MWU_MNAR_POOLED.name:
-            _r = _ppi_two_sample_midrank_corrected_pooled(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
-            return _r if return_result else _r.p_value
-        if method == MWU_ADAPTIVE.name:
-            _r = _ppi_two_sample_adaptive(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
-            return _r if return_result else _r.p_value
-        if method == MWU_RIDGE.name:
-            _r = _ppi_two_sample_ridge_corrected(a, b, a_lab, b_lab, _ALPHA, n_boot, seed)
-            return _r if return_result else _r.p_value
-        # MWU (global rectifier): what _COMPARISON_METHODS actually uses --
-        # see that constant's docstring for why it's the default over
-        # mwu_mnar_experimental's local rectifier.
+        # MWU (global rectifier): the only midrank PPI correction --
+        # see _COMPARISON_METHODS's docstring for why the local-rectifier
+        # alternatives were removed rather than kept as options.
         estimator = lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5  # noqa: E731
         _r = _ppi_two_sample(a, b, a_lab, b_lab, estimator, _ALPHA, n_boot, seed, power_tune=power_tune)
         return _r if return_result else _r.p_value
@@ -4707,6 +4631,108 @@ def _classical_pvalue_omnibus(groups: list[np.ndarray], method: str) -> float:
     if method == FRIEDMAN.name:
         return _uncorrected_friedman_p_value(groups)
     return _uncorrected_kruskal_p_value(groups)  # KRUSKAL.name / KRUSKAL_MNAR_EXPERIMENTAL.name (same uncorrected test)
+
+
+def _classical_point_estimate_omnibus(groups: list[np.ndarray], method: str) -> float:
+    """Omnibus counterpart to _classical_point_estimate: a SCALAR summary of
+    the same estimand each omnibus correction targets, so the classical and
+    PPI arms' variances are a ratio of like for like.
+
+    The estimand per method, chosen to match what the shipped correction
+    actually corrects rather than to be uniform:
+
+      anova_ind  weighted between-group variance of the group means
+                 (_anova_between_variance_from_groups)
+      anova_rep  between-condition variance after removing subject means
+                 (_repeated_condition_variance)
+      friedman   condition variance of WITHIN-SUBJECT ranks
+                 (_friedman_rank_variance) -- the rank analogue of anova_rep
+      kruskal    mean squared pairwise dominance theta. Kruskal is the odd
+                 one out: its correction estimates a VECTOR of pairwise
+                 P_mid(a>b) values (see _kw_pairwise_thetas' docstring on why
+                 global pooled ranks cannot be subset to the labeled items),
+                 not a variance component, so the scalar summary is taken on
+                 that vector instead.
+
+    NOTE this defines a NEW estimand for the variance-route multiplier where
+    none existed -- previously _run_ppi_comparison_cell recorded a p-value
+    only for omnibus methods and left var_human_subset/var_ppi as NaN. The
+    resulting multiplier is only meaningful if the same functional is read
+    off both arms, which is why the PPI side
+    (:func:`_ppi_point_estimate_omnibus`) recovers the SAME quantity rather
+    than reusing the f-statistic directly."""
+    from evalstats.tests import (
+        _anova_between_variance_from_groups, _repeated_condition_variance,
+        _friedman_rank_variance, _kw_pairwise_thetas,
+    )
+    if method == ANOVA_IND.name:
+        return float(_anova_between_variance_from_groups(groups))
+    if method in (ANOVA_REP.name, FRIEDMAN.name):
+        # pair3: every condition must hold the SAME subjects in the same
+        # order (_COMPARISON_CELL_FIELDS marks it "shared" masking), which is
+        # what makes column_stack meaningful. Return NaN rather than raising
+        # on a ragged input -- the caller treats NaN as "this replicate
+        # contributes no paired point", which is the right outcome, whereas
+        # an exception there would be swallowed and look like a pass.
+        lens = {len(g) for g in groups}
+        if len(lens) != 1 or lens == {0}:
+            return float("nan")
+        mat = np.column_stack(groups)
+        return float(_repeated_condition_variance(mat) if method == ANOVA_REP.name
+                     else _friedman_rank_variance(mat))
+    k = len(groups)
+    pairs = [(i, j) for i in range(k) for j in range(i + 1, k)]
+    th = _kw_pairwise_thetas(groups, pairs)
+    return float(np.mean(np.asarray(th, dtype=float) ** 2))
+
+
+def _ppi_point_estimate_omnibus(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], method: str,
+    n_boot: int, seed: int, power_tune: bool = True,
+) -> float:
+    """PPI-corrected counterpart of :func:`_classical_point_estimate_omnibus`,
+    read off the SAME shipped corrections whose p-values
+    _ppi_comparison_pvalue_omnibus uses -- so the variance ratio measures the
+    shipped behaviour, not a re-implementation.
+
+    For the three F-based methods the corrected between-condition variance is
+    recovered from the returned dict as ``f_corr * dfn * denom / scale``:
+    ``f_corr = (SS_condition/dfn) / denom`` by construction, so that product
+    is ``SS_condition``, and ``scale`` is the same N (or n_subjects*k) the
+    classical helpers divide by -- putting both arms on one variance scale.
+    Verified numerically against _anova_between_variance_from_groups.
+
+    Kruskal instead exposes its corrected estimand directly as ``theta_hat``,
+    so the same mean-square summary is applied to that vector.
+
+    Returns NaN when the correction declines to fit (the F-stat helpers can
+    return None on a degenerate fit), matching how the p-value route treats
+    that case."""
+    from evalstats.tests import (
+        _ppi_anova_independent_f_stat, _ppi_anova_repeated_f_stat,
+        _ppi_friedman_f_stat, _ppi_kruskal_wallis_pairwise,
+    )
+    k = len(groups)
+    try:
+        if method == ANOVA_IND.name:
+            d = _ppi_anova_independent_f_stat(groups, groups_lab, k=k, power_tune=power_tune)
+        elif method == ANOVA_REP.name:
+            d = _ppi_anova_repeated_f_stat(groups, groups_lab, k=k, power_tune=power_tune)
+        elif method == FRIEDMAN.name:
+            d = _ppi_friedman_f_stat(groups, groups_lab, k=k, power_tune=power_tune)
+        else:
+            pw = _ppi_kruskal_wallis_pairwise(groups, groups_lab, alpha=_ALPHA,
+                                              n_boot=n_boot, rng=seed)
+            th = np.asarray(pw["theta_hat"], dtype=float)
+            return float(np.mean(th ** 2)) if th.size else float("nan")
+        if not d:
+            return float("nan")
+        scale = float(d.get("scale", 0.0))
+        if scale <= 0:
+            return float("nan")
+        return float(d["f_corr"]) * float(d["dfn"]) * float(d["denom"]) / scale
+    except Exception:
+        return float("nan")
 
 
 def _ppi_comparison_pvalue_omnibus(
@@ -4840,7 +4866,9 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
                 try:
                     p_human_subset = classical(truth_subset_groups)
                     rejects["human_subset"] += int(p_human_subset < _ALPHA)
-                    if not is_omnibus:
+                    if is_omnibus:
+                        _e_hs = _classical_point_estimate_omnibus(truth_subset_groups, method)
+                    else:
                         _e_hs = _classical_point_estimate(
                             truth_subset_groups[0], truth_subset_groups[1], method, structure)
                 except Exception:
@@ -4851,6 +4879,14 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
                 if is_omnibus:
                     p_ppi = _ppi_comparison_pvalue_omnibus(llm_groups, lab_groups, method, n_boot, ppi_seed)
                     rejects["ppi"] += int(p_ppi is not None and p_ppi < _ALPHA)
+                    # Same replicate-pairing rule as the two-group branch
+                    # below: both arms must come from the SAME replicate or
+                    # the variance ratio is a ratio of nothing.
+                    _e_ppi = _ppi_point_estimate_omnibus(
+                        llm_groups, lab_groups, method, n_boot, ppi_seed, power_tune=power_tune)
+                    if np.isfinite(_e_hs) and np.isfinite(_e_ppi):
+                        _est_hs.append(_e_hs)
+                        _est_ppi.append(_e_ppi)
                 else:
                     _res = _ppi_comparison_pvalue(
                         llm_groups[0], llm_groups[1], lab_groups[0], lab_groups[1], method, structure, n_boot, ppi_seed,
@@ -6765,6 +6801,95 @@ class RhoDriftPoint:
     n_eff_error: float
     """n_eff_recipe / n_eff_implied - 1: the error a planner suffers by using
     the named recipe. NaN when the method has no recipe entry."""
+    rho2_evalstats: float = float("nan")
+    """What the SHIPPED LIBRARY returns for this method -- the test-specific
+    linearization in evalstats.alignment (_linearize_for_test), i.e. the
+    number judge_alignment(..., test=...) hands a user and builds its n_eff
+    from.
+
+    Deliberately distinct from rho2_recipe. rho2_recipe is THIS HARNESS's
+    own named-correlation table (_METHOD_CORR_KIND: raw Spearman for the
+    rank methods), which is effect-invariant by construction and therefore
+    cannot track rho2_implied once a real effect exists. The library instead
+    correlates each estimand's INFLUENCE FUNCTION -- Hajek projection for
+    wilcoxon, empirical placements for mwu, identity for the mean-type ones
+    -- which can track. Plotting both against rho2_implied is the point: it
+    shows whether the number a user actually receives is the one the N_eff
+    formula needs.
+
+    NaN when evalstats.alignment has no linearization for this method, or
+    the cell's structure doesn't supply the arrays it needs."""
+
+
+_RHO_DRIFT_EVALSTATS_TEST = {
+    TTEST.name:        ("ttest", "between"),
+    TTEST_WELCH.name:  ("ttest", "between"),
+    PAIRED_T.name:     ("ttest", "within"),
+    MWU.name:          ("mannwhitney", "between"),
+    WILCOXON.name:     ("wilcoxon", "within"),
+    ANOVA_IND.name:    ("anova_oneway", "between"),
+    ANOVA_REP.name:    ("anova_oneway", "within"),
+    KRUSKAL.name:      ("kruskalwallis", "between"),
+    FRIEDMAN.name:     ("friedman", "within"),
+}
+"""Harness method name -> (evalstats.alignment test name, design) for
+_rho_drift_evalstats_rho2. Maps this harness's own method vocabulary onto
+judge_alignment's public `test=` values, so the drift plot can show what the
+SHIPPED library would report for the same cell. anova_rep maps to
+anova_oneway/"within" because that is exactly what judge_alignment calls a
+repeated-measures one-way design (see _linearize_mean's within branch, which
+double-centres at k>2)."""
+
+
+def _rho_drift_evalstats_rho2(sc: JudgeBiasSource, method: str, seed: int,
+                              n_mc: int = 40_000) -> float:
+    """rho^2 as the SHIPPED library computes it -- evalstats.alignment's
+    test-specific linearization -- measured on the same fresh draw
+    _rho_drift_score_rho2 uses, at this cell's own effect size.
+
+    Reads the structure-appropriate truth/llm arrays via
+    _COMPARISON_CELL_FIELDS (the same map _run_ppi_comparison_cell uses),
+    builds the {condition: (judge, human)} dict judge_alignment's
+    multi-condition form expects, and takes Pearson r^2 of the linearized
+    pair. Human arrays are passed dense (no NaN) because this is a
+    large-sample measurement of the judge, not a labeled-subset estimate.
+
+    Returns NaN rather than raising if the method has no mapping or the cell
+    lacks the fields -- a missing line in one panel is a better failure than
+    taking down the whole sweep."""
+    mapped = _RHO_DRIFT_EVALSTATS_TEST.get(method)
+    if mapped is None:
+        return float("nan")
+    test_name, design = mapped
+    # _COMPARISON_METHOD_STRUCTURE maps method -> a plain STRING ("group",
+    # "pair", "group3", "pair3"), unlike _METHOD_CORR_KIND's (structure, kind)
+    # tuple -- and it is the only one of the two that covers the omnibus
+    # methods (_METHOD_CORR_KIND has no entries for them; see its TODO). Read
+    # the string map first so all nine methods resolve.
+    structure = _COMPARISON_METHOD_STRUCTURE.get(method)
+    if structure is None:
+        structure = (_METHOD_CORR_KIND.get(method, (None, None)))[0]
+    if structure in ("paired", "pair"):
+        structure = "pair"
+    if structure not in _COMPARISON_CELL_FIELDS:
+        return float("nan")
+    llm_fields, _lab_fields, truth_fields, _mask_kind = _COMPARISON_CELL_FIELDS[structure]
+
+    try:
+        from evalstats.alignment import _linearize_for_test
+        from scipy.stats import pearsonr
+        cell = generate_judge_bias_cell(replace(sc, n=n_mc), np.random.default_rng(seed))
+        conditions = {}
+        for i, (lf, tf) in enumerate(zip(llm_fields, truth_fields)):
+            judge = np.asarray(getattr(cell, lf), dtype=float)
+            human = np.asarray(getattr(cell, tf), dtype=float)
+            conditions[chr(ord("A") + i)] = (judge, human)
+        jl, hl = _linearize_for_test(conditions, test=test_name, design=design)[:2]
+        if len(jl) < 3 or float(np.std(jl)) < 1e-12 or float(np.std(hl)) < 1e-12:
+            return float("nan")
+        return float(pearsonr(jl, hl).statistic) ** 2
+    except Exception:
+        return float("nan")
 
 
 def _rho_drift_score_rho2(sc: JudgeBiasSource, method: str, seed: int,
@@ -6870,18 +6995,19 @@ def run_ppi_rho_drift_check(
         calib_rows.append((et, noise, metric_name, PPI_RHO_DRIFT_ALIGNMENT_TARGET,
                            achieved, panel, "gaussian"))
 
-        # _COMPARISON_METHODS only -- NOT _COMPARISON_METHODS_OMNIBUS. This
-        # check reads PPIComparisonResult.var_human_subset/.var_ppi, and
-        # _run_ppi_comparison_cell deliberately populates those for two-group
-        # structures only (its omnibus branch records a p-value and nothing
-        # else, since _classical_point_estimate is two-group). Including the
-        # omnibus methods here would emit silent NaN rows. Extending the check
-        # to them needs an omnibus point-estimate route in
-        # _run_ppi_comparison_cell FIRST -- pair that work with the omnibus
-        # entries _METHOD_CORR_KIND's TODO describes, since neither is useful
-        # without the other.
+        # Now includes _COMPARISON_METHODS_OMNIBUS. The blocker this comment
+        # used to describe -- _run_ppi_comparison_cell populating
+        # var_human_subset/var_ppi for two-group structures only, so omnibus
+        # rows came back silent NaN -- was removed by adding
+        # _classical_point_estimate_omnibus / _ppi_point_estimate_omnibus,
+        # which read a matched scalar functional off both arms (see those
+        # functions for the per-method estimand and why kruskal differs).
+        # _METHOD_CORR_KIND still has no omnibus entries, so rho2_recipe stays
+        # NaN for these four and their panels show no dashed recipe line --
+        # rho2_evalstats (what the shipped library reports) and rho2_score are
+        # plotted for them regardless, which is the comparison that matters.
         methods = (_COMPARISON_METHODS_BINARY if et == "binary"
-                   else _COMPARISON_METHODS)
+                   else _COMPARISON_METHODS + _COMPARISON_METHODS_OMNIBUS)
         for frac in effect_fracs:
             # baseline already carries eval_type/n/label_frac/llm_noise --
             # override those four rather than passing them alongside it.
@@ -6911,6 +7037,7 @@ def run_ppi_rho_drift_check(
                 recipe = (_method_rho2(et, noise, method)[0]
                           if method in _METHOD_CORR_KIND else float("nan"))
                 score = _rho_drift_score_rho2(sc, method, seed + m_off)
+                es_rho2 = _rho_drift_evalstats_rho2(sc, method, seed + m_off)
                 ne_i = (_ppi_predicted_savings(implied, r.n_lab, sc.n) * r.n_lab
                         if np.isfinite(implied) else float("nan"))
                 ne_r = (_ppi_predicted_savings(recipe, r.n_lab, sc.n) * r.n_lab
@@ -6920,7 +7047,7 @@ def run_ppi_rho_drift_check(
                     judge_noise=noise, alignment_value=achieved,
                     n=sc.n, n_lab=r.n_lab, n_reps=n_reps,
                     variance_multiplier=mult, rho2_implied=implied,
-                    rho2_recipe=recipe, rho2_score=score,
+                    rho2_recipe=recipe, rho2_score=score, rho2_evalstats=es_rho2,
                     n_eff_implied=ne_i, n_eff_recipe=ne_r,
                     n_eff_error=(ne_r / ne_i - 1.0
                                  if np.isfinite(ne_i) and np.isfinite(ne_r) and ne_i > 0
@@ -7070,7 +7197,7 @@ def save_ppi_rho_drift_plot(points: list[RhoDriftPoint], out_path: str) -> str:
     nrow, ncol = len(ets), len(methods)
     fig, axes = plt.subplots(nrow, ncol, figsize=(2.55 * ncol, 2.85 * nrow),
                              squeeze=False, sharey="row")
-    NEED, REC = "#1B3A5C", "#C1553B"
+    NEED, REC, SCORE, EVAL = "#1B3A5C", "#C1553B", "#8A8F98", "#1E8A6E"
     for r, et in enumerate(ets):
         sub_et = [p for p in points if p.eval_type == et]
         fracs = sorted({p.effect_frac for p in sub_et})
@@ -7087,15 +7214,45 @@ def save_ppi_rho_drift_plot(points: list[RhoDriftPoint], out_path: str) -> str:
                 ax.fill_between(fracs, need, [rec] * len(fracs),
                                 color=REC, alpha=0.13, lw=0)
                 ax.plot(fracs, [rec] * len(fracs), "--", color=REC, lw=1.6,
-                        label=r"recipe gives")
+                        label=r"harness recipe")
+            # rho2_score: the CONTROL reference. A mean-type method's rho MUST
+            # equal this (its influence function is linear in the value), and
+            # this is NOT flat in the bounded harness scenario -- so "tracks
+            # rho2_score", not "is flat", is what the control panels have to
+            # be read against. See RhoDriftPoint.rho2_score.
+            sco = [row[f].rho2_score if f in row else float("nan") for f in fracs]
+            if any(np.isfinite(s) for s in sco):
+                ax.plot(fracs, sco, ":", color=SCORE, lw=1.5, label=r"score-level $\rho^2$")
+            # rho2_evalstats: what the SHIPPED library reports for this method.
+            ev = [row[f].rho2_evalstats if f in row else float("nan") for f in fracs]
+            if any(np.isfinite(e) for e in ev):
+                ax.plot(fracs, ev, "-s", color=EVAL, lw=1.5, ms=3.0, alpha=0.9,
+                        label=r"evalstats reports")
             ax.plot(fracs, need, "-o", color=NEED, lw=2.0, ms=3.4,
                     label=r"formula needs")
             is_ctrl = m in ctrl_names
-            ax.set_title(m + ("\n(control — must be flat)" if is_ctrl else ""),
+            # NOT "must be flat": rho2_score is itself not flat in this
+            # bounded scenario, and a mean-type method's rho must equal
+            # rho2_score, not a constant. See RhoDriftPoint.rho2_score --
+            # paired_t tracks it within 1% while failing flatness by +5.3%.
+            ax.set_title(m + ("\n(control — must track score)" if is_ctrl else ""),
                          fontsize=8.5, color="#5A6570" if is_ctrl else "#14181C")
             ax.grid(axis="y", color="#E3E6E4", lw=0.6)
             ax.set_axisbelow(True)
             ax.tick_params(labelsize=7.5)
+            # rho^2 is bounded [0, 1] by definition, so clamp the view there.
+            # Without this, ONE bad cell destroys every panel: the axes are
+            # sharey="row", and rho2_implied is a ratio of two measured
+            # variances that blows up (seen at -494) when reps are too few for
+            # the denominator to be stable. Points outside the domain are a
+            # measurement failure, not a finding -- so clip them, but SAY the
+            # panel is clipped rather than silently dropping them off-screen.
+            _off = sum(1 for v in need + sco + ev
+                       if np.isfinite(v) and not (-0.02 <= v <= 1.02))
+            ax.set_ylim(-0.02, 1.02)
+            if _off:
+                ax.text(0.98, 0.03, f"{_off} off-scale", transform=ax.transAxes,
+                        ha="right", va="bottom", fontsize=6.5, color=REC)
             if r == nrow - 1:
                 ax.set_xlabel("effect size $d$", fontsize=8)
             if c == 0:
@@ -7130,12 +7287,14 @@ def save_results_artifacts_ppi_rho_drift(
         w.writerow(["eval_type", "method", "effect_frac", "judge_noise",
                     "alignment_value", "n", "n_lab", "n_reps",
                     "variance_multiplier", "rho2_implied", "rho2_recipe", "rho2_score",
+                    "rho2_evalstats",
                     "n_eff_implied", "n_eff_recipe", "n_eff_error"])
         for p in points:
             w.writerow([p.eval_type, p.method, f"{p.effect_frac}", repr(p.judge_noise),
                         repr(p.alignment_value), p.n, p.n_lab, p.n_reps,
                         repr(p.variance_multiplier), repr(p.rho2_implied),
-                        repr(p.rho2_recipe), repr(p.rho2_score), repr(p.n_eff_implied),
+                        repr(p.rho2_recipe), repr(p.rho2_score), repr(p.rho2_evalstats),
+                        repr(p.n_eff_implied),
                         repr(p.n_eff_recipe), repr(p.n_eff_error)])
     written.append(str(csv_path))
 
@@ -10700,10 +10859,7 @@ def save_results_artifacts_ppi(*, results: list[PPIResult], alpha: float, out_di
 # ---------------------------------------------------------------------------
 
 _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
-    TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test", MWU_MNAR_EXPERIMENTAL.name: "Mann-Whitney U (corrected)",
-    MWU_MNAR_POOLED.name: "Mann-Whitney U (corrected, pooled resample)",
-    MWU_ADAPTIVE.name: "Mann-Whitney U (adaptive)",
-    MWU_RIDGE.name: "Mann-Whitney U (ridge)",
+    TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test",
     MWU.name: "Mann-Whitney U",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
     BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score",
@@ -12205,8 +12361,8 @@ def official_args_ppi_factorial(base_seed: int = 42) -> argparse.Namespace:
     checking whether anova/friedman/kruskal (kruskal in particular already
     flagged as a milder, more diffuse Type-I outlier in the OFAT sweep) also
     hold up here, or blow up the way MWU's global rectifier did before the
-    (since-reverted, see MWU/MWU_MNAR_EXPERIMENTAL in methods.py) local-
-    rectifier fix temporarily replaced it. NOT set on official_args_ppi/
+    (since-reverted, and since removed entirely -- see MWU in methods.py)
+    local-rectifier fix temporarily replaced it. NOT set on official_args_ppi/
     official_args_ppi_no_lmm (the "run
     everything" presets, already by far the slowest --mode ppi variants) --
     only this standalone factorial-only preset, so the extra cost (roughly
@@ -12498,7 +12654,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=[TTEST.name, MWU.name, MWU_MNAR_EXPERIMENTAL.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
+        tests=[TTEST.name, MWU.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         factorial_check=True, factorial_reps=2, factorial_n_boot=50, factorial_alignment_mc=200,
         factorial_check_binary=True,
@@ -12706,9 +12862,9 @@ def run(args: argparse.Namespace) -> CaseResult:
 
         if "ppi" in modes:
             # Default (no --tests) runs the OFFICIAL subset -- excludes
-            # mwu_mnar_experimental/kruskal_mnar_experimental (their local
-            # rectifiers cost real MCAR calibration; see methods.py) but
-            # both stay selectable explicitly via --tests for comparison.
+            # kruskal_mnar_experimental (its local rectifier costs real MCAR
+            # calibration; see methods.py) but it stays selectable
+            # explicitly via --tests for comparison.
             active_tests = args.tests if args.tests else [m.name for m in PPI_OFFICIAL_TEST_METHODS]
             print(f"\npvalues simulation (PPI-corrected) -- tests={active_tests}")
             jb_sources = build_judge_bias_sources() + build_judge_bias_sources_binary()
