@@ -1958,10 +1958,42 @@ def _ppi_single_bootstrap_t(a: np.ndarray, a_lab: np.ndarray, alpha: float, n_bo
 
 
 _PPI_MIN_DISCORDANT = 10
-"""Discordant (human != judge) labeled items below which a binary PPI
-interval is flagged as unreliable -- see _ppi_single_wilson. Coverage tracks
-this count and reaches nominal at roughly 10; below ~5 no construction tested
-holds calibration."""
+"""Discordant (human != judge) labeled items below which a binary PPI interval
+routes to the continuity-corrected score interval and warns -- see
+_ppi_single_wilson. Coverage tracks this count (not n_lab or judge accuracy
+separately, which matter only through their product) and reaches nominal at
+roughly 10."""
+
+_PPI_SCC_CORRECTION = 0.125
+"""Continuity correction for the low-discordant branch's SCC interval -- the
+"SCC-S" value Chang et al. (2024) recommend as the best coverage/width balance.
+
+That branch is deliberately CONSERVATIVE here (~0.99 against a nominal 0.95),
+and that is not a tuning failure or a transcription error. Three things were
+checked before accepting it:
+
+1. The implementation is faithful. evalstats.core.resampling.tango_scc_paired_ci
+   reproduces the paper's own Figure 1 (N=30, p_a=0.20, nominal 0.95): plain
+   score 0.911-0.947 turning anti-conservative as Delta grows, SCC-S
+   0.948-0.975, SCC-L always conservative -- matching their reported
+   ~0.925-0.955 / ~0.955-0.978 / "always conservative". The conservatism here
+   comes from our regime, not from the method: their simulations have many
+   discordant pairs, this branch has ~2.
+
+2. c is a STEP, not a dial. Coverage goes 0.910 at c=0 and ~0.988 at c=0.02,
+   then stays flat through c=0.125. With ~2 discordant items the counts are
+   integers, so any c>0 moves the quartic roots into a different integer
+   regime. There is no c that lands on 0.95.
+
+3. Interpolating the two intervals (w*SCC + (1-w)*Tango) does give a
+   continuous dial, but it cannot reach nominal either, because plain Tango is
+   ITSELF conservative in this regime at symmetric base rates (0.970-0.990 at
+   p=0.50/0.80 with w=0). The over-coverage is a property of a discrete
+   statistic with ~2 events, not of the correction.
+
+So the choice is ~0.91 (anti-conservative) or ~0.99 (conservative), with
+nothing in between available. Conservative is the correct side to err on, and
+the accompanying warning tells the caller to label more items."""
 
 
 def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
@@ -2087,7 +2119,36 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
 
         se_unlab = float(np.sqrt(sigma2_f / n_all)) if n_all > 1 else 0.0
         z_crit = float(_norm_dist.ppf(1.0 - alpha / 2.0))
-        r_lo, r_hi = tango_paired_ci_from_diffs(rect_items, alpha)
+
+        # Plain Tango is a large-sample score approximation and itself
+        # under-covers once the discordant counts get very small -- measured
+        # 0.910 at ~2 discordant items (p=0.95, n_lab=30, N=5000), which is
+        # the regime this whole branch exists for. Route those cells to the
+        # continuity-corrected SCC interval instead (Chang et al. 2024,
+        # tango_scc_paired_ci at the paper's recommended c=0.125 "SCC-S"),
+        # which is built for exactly that small-count case.
+        #
+        # Routed, not adopted wholesale: SCC over-covers where plain Tango is
+        # already fine (0.985-0.994 against nominal 0.95, at ~1.3x the width),
+        # so using it everywhere would trade one miscalibration for another.
+        # Measured, coverage (width):
+        #
+        #   discordant  regime                plain Tango      SCC        routed
+        #   ~2          n_lab=30, flip .08   0.910 (0.18)  0.994 (0.23)  0.994
+        #   ~36         n_lab=120, flip .30  0.952 (0.16)  0.954 (0.17)  0.952
+        #   ~9          n_lab=60, flip .15   0.952 (0.19)  0.960 (0.22)  0.960
+        #
+        # i.e. nominal where the data supports it, conservative where it does
+        # not -- and never anti-conservative, which is the correct failure
+        # direction when information is genuinely scarce.
+        _n_disc = int(np.count_nonzero(rect_items))
+        if _n_disc < _PPI_MIN_DISCORDANT:
+            from evalstats.core.resampling import tango_scc_paired_ci
+            r_lo, r_hi = tango_scc_paired_ci(
+                values_lab_true, values_lab_llm, alpha, c=_PPI_SCC_CORRECTION,
+            )
+        else:
+            r_lo, r_hi = tango_paired_ci_from_diffs(rect_items, alpha)
         half_lo = float(np.sqrt(max(rectifier - r_lo, 0.0) ** 2 + (z_crit * se_unlab) ** 2))
         half_hi = float(np.sqrt(max(r_hi - rectifier, 0.0) ** 2 + (z_crit * se_unlab) ** 2))
         ci_low = max(0.0, estimate - half_lo)
@@ -2104,17 +2165,17 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
         # and residual under-coverage persists for EVERY construction tried
         # (plug-in, bootstrap, bootstrap-t, Wilson-union, Tango). Say so
         # rather than return a confidently wrong interval.
-        _n_disc = int(np.count_nonzero(rect_items))
         if _n_disc < _PPI_MIN_DISCORDANT:
             warnings.warn(
                 f"PPI binary CI: only {_n_disc} of {n_lab} labeled items disagree with "
-                f"the judge, below the {_PPI_MIN_DISCORDANT} needed for a reliable "
-                "interval. The correction is estimated from those disagreements alone, "
-                "so with this few the interval can under-cover (measured as low as 0.91 "
-                "against a nominal 0.95 at ~2 disagreements, and worse for a plain "
-                "normal interval). This is an information limit, not a method choice -- "
-                "no interval construction recovers it. Label more items, or treat this "
-                "interval as approximate.",
+                f"the judge, below the {_PPI_MIN_DISCORDANT} this interval needs to be "
+                "estimated sharply. The correction is derived from those disagreements "
+                "alone, so evalstats has widened the interval (continuity-corrected "
+                "score interval) rather than report a falsely precise one -- it is "
+                "conservative here, not tight. Note a MORE accurate judge makes this "
+                "MORE likely at a fixed label budget, since it produces fewer "
+                "disagreements to estimate the correction from. Label more items to "
+                "sharpen it.",
                 UserWarning,
                 stacklevel=3,
             )
