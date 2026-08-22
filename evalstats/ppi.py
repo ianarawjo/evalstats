@@ -1041,11 +1041,9 @@ def _pooled_two_group_lambda(
     # cases/pvalues.py's _method_rho2, which already centres per group before
     # pooling for the correlation, for the same reason.
     #
-    # NOTE: _pooled_k_group_lambda below has the identical defect and is NOT
-    # fixed here -- it has only been checked at the estimator-variance level
-    # (a judge whose per-condition bias reverses the condition ordering costs
-    # 3.77x against 8.84x achievable), never for Type-I/coverage the way this
-    # function now has been. Do that validation before changing it.
+    # _pooled_k_group_lambda below had the identical defect; it was fixed the
+    # same way on 2026-08-22 after the Type-I/coverage validation this NOTE
+    # used to ask for -- see that function's own comment for the numbers.
     def _c(x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float)
         return x - x.mean() if x.size else x
@@ -1133,9 +1131,55 @@ def _pooled_k_group_lambda(
     :func:`_pooled_two_group_lambda`, consumed the same way by
     :func:`_analytic_mean_point_se_given_lambda` per group plus a joint
     lambda-uncertainty term built from each group's own ``r_term``."""
-    Y_lab = np.concatenate(Y_lab_groups)
-    Y_hat_lab = np.concatenate(Y_hat_lab_groups)
-    Y_hat_unlab = np.concatenate(Y_hat_unlab_groups)
+    # Centre each group before pooling, for the same reason
+    # _pooled_two_group_lambda does (see its own comment). Concatenating
+    # UNCENTERED puts the between-group spread into every pooled moment, and
+    # because that component is near-perfectly correlated between Y_lab and
+    # Y_hat_lab (both carry the same group means) it inflates cov_lab_hatlab
+    # proportionally MORE than denom -- so lam_raw = cov/denom drifts upward
+    # with the effect size, away from the variance-minimising value power
+    # tuning exists to find. Measured, k=3 n=300 n_lab=60 judge rho=0.80,
+    # 300 reps, mean lambda by true effect:
+    #
+    #     effect   0.00    0.15    0.35    0.60    1.00    2.00
+    #     uncentred  .5218   .5269   .5472   .5845   .6388   .7257
+    #     centred    .5213   .5213   .5213   .5213   .5213   .5213
+    #
+    # i.e. a 39% drift, removed exactly. Note the drift is nearly absent at
+    # effect=0, which is why this survived a null-only validation: the
+    # original ground-truth sweep for this function was Type-I/coverage under
+    # the null, where centring is very nearly a no-op.
+    #
+    # Re-validated before changing: Type-I unmoved (largest delta +0.0125 at
+    # 1.1 MC SE, 400 reps, k in {3,4,5}), and power higher with centring in
+    # 10 of 12 cells and lower in none -- though by little (+0.005 median),
+    # since where the drift is largest the test is already saturated.
+    #
+    # PROVENANCE FOR EXISTING RESULTS. Measured in the harness's own effect
+    # units (scenarios.synthetic, continuous, k=3), the drift this removes is:
+    #
+    #     frac    0.00    0.15    0.30    0.50    0.80    1.20
+    #     drift  -.0076  +.0007  +.0098  +.0218  +.0365  +.0480
+    #
+    # so every NULL-anchored sweep (all Type-I work, frac=0.0) and the
+    # label-efficiency / n-formula grids (frac <= 0.35) are unaffected within
+    # Monte-Carlo noise. PPI_FACTORIAL_EFFECT_FRACS ("moderate" 0.5, "large"
+    # 0.8) and PPI_POWER_EFFECT_FRACS (up to 1.2) DO reach the affected range,
+    # so anova_ind power numbers generated there before 2026-08-22 used a
+    # lambda 2-5% above the variance-minimising value. That is SUBOPTIMAL, not
+    # invalid: PPI is unbiased for any fixed lambda in [0,1] and power tuning
+    # only picks the variance-minimising one, so those results are mildly
+    # CONSERVATIVE on power and unchanged on Type-I/coverage. Results already
+    # published against them stand; re-running would move anova_ind power
+    # slightly UP. anova_ind is the only consumer -- anova_rep, friedman,
+    # kruskal and every two-group test are untouched.
+    def _c(x: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, dtype=float)
+        return x - x.mean() if x.size else x
+
+    Y_lab = np.concatenate([_c(g) for g in Y_lab_groups])
+    Y_hat_lab = np.concatenate([_c(g) for g in Y_hat_lab_groups])
+    Y_hat_unlab = np.concatenate([_c(g) for g in Y_hat_unlab_groups])
     n_lab = len(Y_lab)
     n_all = len(Y_hat_unlab)
 
