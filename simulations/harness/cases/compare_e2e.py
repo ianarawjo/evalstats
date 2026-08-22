@@ -183,6 +183,13 @@ DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # actually engages -- see _aggregate_group, which uses k==2 rows for the
 # "pairwise, uncorrected" metric and k>2 rows for "family-wise, corrected".
 DEFAULT_K_VALUES = [2, 3, 5, 10]
+_K_NOTE = """Type-I error and family-wise coverage are k>2-ONLY metrics (see
+_aggregate_group), so a run passing --k-values 2 3 leaves them a single
+qualifying k value and every k=2 cell contributes nothing to either. Including
+k=5 doubles both denominators for ~1.6x runtime -- the cheapest precision
+available in this case, and it improves two of the four calibration metrics at
+once. Prefer adding a k over raising --reps when Type-I is the binding
+constraint."""
 DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800, 1000]
 """Items per arm. The top end exists for the N/N_lab axis specifically: with
 an absolute label budget (see _n_labeled_for) the ratio is N/n_lab, so
@@ -953,12 +960,21 @@ def run_simulation(
     cells: list[dict], n_reps: int, alpha: float, seed: int = 42,
     progress_mode: str = "bar", n_workers: int = 1,
     n_bootstrap: int = DEFAULT_BOOTSTRAP_N, reference_estimator_k: Optional[int] = REFERENCE_ESTIMATOR_K,
+    null_reps_mult: float = 1.0,
 ) -> list[CompareE2EResult]:
     global _CELLS
     _CELLS = cells
     ss = np.random.SeedSequence(seed)
     child_seeds = [seq.generate_state(4).tolist() for seq in ss.spawn(len(cells))]
-    args_list = [(i, n_reps, alpha, s, n_bootstrap, reference_estimator_k) for i, s in enumerate(child_seeds)]
+    # Null cells may run MORE reps than non-null ones (see --null-reps-mult).
+    # Type-I is a null-only quantity, so every non-null cell contributes
+    # nothing to it; scaling only the null side buys Type-I precision without
+    # paying for power precision that is already sufficient.
+    args_list = [
+        (i, int(round(n_reps * (null_reps_mult if cells[i]["is_null"] else 1))),
+         alpha, s, n_bootstrap, reference_estimator_k)
+        for i, s in enumerate(child_seeds)
+    ]
 
     reporter = _ProgressReporter(len(cells), mode=progress_mode, label="compare_e2e")
     results: list[CompareE2EResult] = []
@@ -1493,6 +1509,17 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Append a LaTeX booktabs key-summary table (the paper table) to the saved summary .log file.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
+    parser.add_argument("--null-reps-mult", type=float, default=1.0, metavar="M",
+                         help="Run null cells at M x --reps (default 1.0 = same as non-null). "
+                              "Type-I error is a NULL-ONLY quantity, so non-null cells contribute "
+                              "nothing to its precision, and it is by far the widest-banded metric "
+                              "in this case: one decision per replicate rather than k CIs, null "
+                              "cells only, and k>2 cells only, which together leave it a ~10x "
+                              "smaller denominator than marginal coverage (1400 vs 14000 at "
+                              "reps=200). Scaling only the null side buys that precision without "
+                              "paying for power precision that is already ample -- M=4 quarters "
+                              "the Type-I variance for ~2.5x runtime instead of the 4x a blanket "
+                              "--reps increase would cost.")
 
 
 def _parse_ppi_fracs(raw: list[str]) -> tuple[Optional[float], ...]:
@@ -1584,6 +1611,7 @@ def run(args: argparse.Namespace) -> CaseResult:
         reference_k = getattr(args, "reference_k", REFERENCE_ESTIMATOR_K)
         results = run_simulation(
             cells, n_reps=args.reps, alpha=args.alpha, seed=args.seed,
+            null_reps_mult=getattr(args, "null_reps_mult", 1.0),
             progress_mode=args.progress, n_workers=getattr(args, "workers", 1),
             n_bootstrap=getattr(args, "bootstrap_n", DEFAULT_BOOTSTRAP_N),
             reference_estimator_k=(None if reference_k == -1 else reference_k),
