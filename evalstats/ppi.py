@@ -1173,6 +1173,29 @@ def _pooled_k_group_lambda(
     # published against them stand; re-running would move anova_ind power
     # slightly UP. anova_ind is the only consumer -- anova_rep, friedman,
     # kruskal and every two-group test are untouched.
+    #
+    # ALL THREE EVAL TYPES CHECKED (the table above is continuous):
+    #
+    #     frac        0.00     0.30     0.80     1.20
+    #     continuous -.0073   +.0103   +.0371   +.0487
+    #     likert     -.0088   +.0070   +.0360   +.0583
+    #     binary     -.0386   -.0124   +.0378   +.0729
+    #
+    # Two things this adds. Centring makes lambda effect-INVARIANT only for
+    # continuous (flat at 0.8212); likert still drifts 0.823 -> 0.807 across
+    # the effect range and binary 0.822 -> 0.779. For binary that is almost
+    # certainly CORRECT rather than residual defect: Var(Y) = p(1-p) genuinely
+    # depends on the base rate, so as the effect pushes group means toward a
+    # boundary the variance-minimising lambda really does move, and forcing it
+    # constant would be wrong.
+    #
+    # And binary's NULL-case difference is -0.0386, five times continuous's
+    # -0.0073, so the "null-anchored sweeps are unaffected" argument could not
+    # be inherited from the continuous measurement and was re-checked
+    # directly. Binary ANOVA Type-I is unmoved: largest change +0.0033 against
+    # an MC SE of 0.0089 over 12 cells (base rate 0.30-0.90, flip 0.05-0.15,
+    # k=3/5, n=200/400, n_lab=60/80), 9 of them identical. See
+    # simulations/investigate_pooled_k_group_lambda_{all_eval_types,binary_typeI}.py
     def _c(x: np.ndarray) -> np.ndarray:
         x = np.asarray(x, dtype=float)
         return x - x.mean() if x.size else x
