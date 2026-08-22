@@ -1967,9 +1967,21 @@ def _linearize_kruskal(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     centering-then-pooling is supposed to preserve, and empirically came
     out suspiciously perfectly flat across effect sizes, unlike the note's
     documented "mild drift" -- a sign it wasn't computing the validated
-    recipe.) Drifts mildly optimistic at large effects per the note --
-    serviceable, treat as a ceiling rather than a point estimate for a
-    large expected effect."""
+    recipe.)
+
+    VALIDATED against the note's published figures: with its fixed judge
+    (within-condition rho^2 = 0.64) this returns 0.6151 where the note
+    reports 0.620 for the same recipe.
+
+    INHERITED CAVEAT, documented in the note and not fixed here: this
+    recipe is effect-invariant (flat at 0.6151 for d=0.5 and d=1.0) while
+    the TRUE implied rho^2 falls (0.606 -> 0.578 over that range), so it
+    runs mildly optimistic -- about 8% on N_eff at d=1.0 -- and more so
+    further out. Treat Kruskal-Wallis's number as a ceiling rather than a
+    point estimate when a large effect is expected. This is the same
+    rank-drift phenomenon that hits Friedman much harder, in mild form;
+    unlike Friedman (see :func:`_linearize_friedman`), no
+    doubly-centred/plug-in replacement for it has been validated."""
     from scipy.stats import rankdata
 
     judge_parts, human_parts = [], []
@@ -1997,7 +2009,15 @@ def _linearize_friedman(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
     while the truth falls), reaching +89% N_eff overstatement at k=5, d=1.0
     in the note's measurements. The row-wise rank transform substitutes for
     row-centering (ranks are already row-normalized by construction); only
-    the column (condition) mean needs explicit removal."""
+    the column (condition) mean needs explicit removal.
+
+    VALIDATED against the note's published figures: with its fixed judge
+    (within-condition rho^2 = 0.64, k=3) this returns 0.4106 / 0.3953 /
+    0.3628 at d = 0.0 / 0.5 / 1.0, against the note's 0.409 / 0.394 /
+    0.356 for the same recipe -- within 0.007 throughout, and correctly
+    FALLING with effect size, tracking the note's implied 0.422 / 0.388 /
+    0.348 rather than rising the way the naive average per-participant
+    Spearman does."""
     from scipy.stats import rankdata
 
     names = list(conditions.keys())
