@@ -4686,6 +4686,56 @@ def _classical_point_estimate_omnibus(groups: list[np.ndarray], method: str) -> 
     return float(np.mean(np.asarray(th, dtype=float) ** 2))
 
 
+def _ppi_omnibus_pvalue_and_estimate(
+    groups: list[np.ndarray], groups_lab: list[np.ndarray], method: str,
+    n_boot: int, seed: int, power_tune: bool = True,
+) -> tuple[float | None, float]:
+    """Both the corrected p-value and the matched point estimate from ONE
+    fit, for the omnibus methods.
+
+    Exists purely to avoid paying for the correction twice. The p-value and
+    the point estimate come from the same underlying object in every case --
+    the F-stat dict for anova_ind/anova_rep/friedman, the pairwise-Wald dict
+    for kruskal -- so calling _ppi_comparison_pvalue_omnibus and
+    _ppi_point_estimate_omnibus separately re-ran the whole correction. For
+    kruskal that meant running _ppi_kruskal_wallis_pairwise's n_boot-resample
+    bootstrap TWICE per replicate, which dominated the rho-drift sweep's
+    runtime (measured: >10 min for a 50-rep sweep that should take ~2).
+
+    Returns (p_value, point_estimate); either may be None/NaN when the
+    correction declines to fit, matching how each route treated that before."""
+    from evalstats.tests import (
+        _ppi_kruskal_wallis_pairwise, _ppi_kruskal_wallis_pairwise_mnar_experimental,
+    )
+    try:
+        if method in (KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name):
+            # The only genuinely expensive duplicate: this runs an
+            # n_boot-resample bootstrap. Call it ONCE and take both outputs
+            # from the same dict -- "wald_p" is exactly the field
+            # _ppi_comparison_pvalue_omnibus returns, so the p-value is
+            # bit-identical to the un-deduplicated path.
+            fn = (_ppi_kruskal_wallis_pairwise if method == KRUSKAL.name
+                  else _ppi_kruskal_wallis_pairwise_mnar_experimental)
+            pw = fn(groups, groups_lab, alpha=_ALPHA, n_boot=n_boot, rng=seed)
+            th = np.asarray(pw["theta_hat"], dtype=float)
+            est = float(np.mean(th ** 2)) if th.size else float("nan")
+            return pw["wald_p"], est
+
+        # anova_ind / anova_rep / friedman: keep calling the SHIPPED p-value
+        # function rather than re-deriving p from the f-stat dict. Those
+        # functions do more than F.sf on the raw statistic (see
+        # _ppi_anova_independent_p_value's docstring on the variance-inflation
+        # rescaling), and silently substituting an equivalent-looking formula
+        # would change simulation output. The extra _ppi_*_f_stat call this
+        # costs is closed-form with no bootstrap, so it is cheap.
+        p = _ppi_comparison_pvalue_omnibus(groups, groups_lab, method, n_boot, seed)
+        est = _ppi_point_estimate_omnibus(groups, groups_lab, method, n_boot, seed,
+                                          power_tune=power_tune)
+        return p, est
+    except Exception:
+        return None, float("nan")
+
+
 def _ppi_point_estimate_omnibus(
     groups: list[np.ndarray], groups_lab: list[np.ndarray], method: str,
     n_boot: int, seed: int, power_tune: bool = True,
@@ -4877,13 +4927,15 @@ def _run_ppi_comparison_cell(sc: JudgeBiasSource, n_reps: int, n_boot: int, seed
             try:
                 ppi_seed = int(rng.integers(0, 2 ** 31))
                 if is_omnibus:
-                    p_ppi = _ppi_comparison_pvalue_omnibus(llm_groups, lab_groups, method, n_boot, ppi_seed)
+                    # ONE call for both -- see _ppi_omnibus_pvalue_and_estimate
+                    # on why (kruskal's bootstrap was otherwise paid twice per
+                    # replicate).
+                    p_ppi, _e_ppi = _ppi_omnibus_pvalue_and_estimate(
+                        llm_groups, lab_groups, method, n_boot, ppi_seed, power_tune=power_tune)
                     rejects["ppi"] += int(p_ppi is not None and p_ppi < _ALPHA)
                     # Same replicate-pairing rule as the two-group branch
                     # below: both arms must come from the SAME replicate or
                     # the variance ratio is a ratio of nothing.
-                    _e_ppi = _ppi_point_estimate_omnibus(
-                        llm_groups, lab_groups, method, n_boot, ppi_seed, power_tune=power_tune)
                     if np.isfinite(_e_hs) and np.isfinite(_e_ppi):
                         _est_hs.append(_e_hs)
                         _est_ppi.append(_e_ppi)
@@ -7008,6 +7060,30 @@ def run_ppi_rho_drift_check(
         # plotted for them regardless, which is the comparison that matters.
         methods = (_COMPARISON_METHODS_BINARY if et == "binary"
                    else _COMPARISON_METHODS + _COMPARISON_METHODS_OMNIBUS)
+        # Stable per-method offset: hash() on str is salted per process
+        # (PYTHONHASHSEED), which would make this check irreproducible run to
+        # run. The SAME offset is used at every effect_frac on purpose --
+        # common random numbers across the sweep, so the drift is measured
+        # against a shared draw rather than against independent noise.
+        m_offs = {m: int(hashlib.sha256(m.encode()).hexdigest()[:8], 16) % 10_000
+                  for m in methods}
+        # Build EVERY (effect_frac, method) cell up front and fan the whole
+        # grid out at once, rather than one pool per effect_frac.
+        #
+        # Two bugs' worth of history here. n_workers used to be accepted and
+        # then never used at all, so --workers 15 ran on one core. Fixing that
+        # with a pool per effect_frac then hit a straggler problem: kruskal and
+        # friedman carry bootstraps the other seven methods don't, so each
+        # frac's pool sat blocked on those two while the rest idled --
+        # measured 2 of 9 workers busy, i.e. effective parallelism ~2 out of a
+        # possible 9. Pooling the full grid lets the slow cells from different
+        # fracs overlap each other.
+        #
+        # Seeding is unaffected: each cell's seed is seed + m_off, a pure
+        # function of the method name, and no RNG object is shared or advanced
+        # across iterations -- so this returns bit-identical results to the
+        # sequential loop (verified by diffing workers=1 against workers=8).
+        specs = []
         for frac in effect_fracs:
             # baseline already carries eval_type/n/label_frac/llm_noise --
             # override those four rather than passing them alongside it.
@@ -7017,16 +7093,19 @@ def run_ppi_rho_drift_check(
                 name=f"rho_drift.{et}.es={frac}", tag="rho_drift",
                 effect_size=_jb_effect_magnitude(et, frac), **kw,
             )
-            for method in methods:
-                # Stable per-method offset: hash() on str is salted per
-                # process (PYTHONHASHSEED), which would make this check
-                # irreproducible run to run. The SAME offset is used at every
-                # effect_frac on purpose -- common random numbers across the
-                # sweep, so the drift is measured against a shared draw rather
-                # than against independent noise.
-                m_off = int(hashlib.sha256(method.encode()).hexdigest()[:8], 16) % 10_000
-                r = _run_ppi_comparison_cell(sc, n_reps=n_reps, n_boot=n_boot,
-                                             seed=seed + m_off, method=method)
+            for m in methods:
+                specs.append((frac, sc, m))
+        cell_args = [(sc, n_reps, n_boot, seed + m_offs[m], m, True)
+                     for (_frac, sc, m) in specs]
+        if n_workers > 1 and len(cell_args) > 1:
+            ctx = _mp.get_context("fork")
+            with ctx.Pool(min(n_workers, len(cell_args))) as pool:
+                cell_results = pool.map(_run_ppi_comparison_cell_worker, cell_args)
+        else:
+            cell_results = [_run_ppi_comparison_cell_worker(a) for a in cell_args]
+
+        for (frac, sc, method), r in zip(specs, cell_results):
+                m_off = m_offs[method]
                 mult = (r.var_human_subset / r.var_ppi
                         if np.isfinite(r.var_human_subset) and r.var_ppi > 0
                         else float("nan"))
