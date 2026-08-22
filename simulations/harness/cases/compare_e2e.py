@@ -183,7 +183,13 @@ DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # actually engages -- see _aggregate_group, which uses k==2 rows for the
 # "pairwise, uncorrected" metric and k>2 rows for "family-wise, corrected".
 DEFAULT_K_VALUES = [2, 3, 5, 10]
-DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800]
+DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800, 1000]
+"""Items per arm. The top end exists for the N/N_lab axis specifically: with
+an absolute label budget (see _n_labeled_for) the ratio is N/n_lab, so
+reaching 1000 puts a 30-label budget at a ratio of ~33. That is the regime
+PPI is actually for -- gain comes from the UNLABELLED items -- and the trend
+is what a fraction-based grid cannot show at all, since a fraction pins the
+ratio to 1/frac for every N."""
 DEFAULT_ICC = 0.20
 """Item-level reliability of the TRUTH generator, matching
 scenarios.synthetic._ppi_power_baseline's own icc (the tier every PPI sweep
@@ -290,6 +296,24 @@ REFERENCE_ESTIMATOR_K = 3
 # are GUARANTEED to raise before wasting compute generating data for them.
 _PPI_MIN_N_LAB = 15
 _PPI_MIN_N_ALL = 50
+_PPI_MAX_LAB_SHARE = 0.60
+"""Upper bound on n_lab / n_items for a PPI cell.
+
+PPI's entire premise is that MOST items are unlabelled and the judge supplies
+the rest; labelling 60%+ of them is not a setting anyone would deploy, and at
+the limit n_lab == n_items it is degenerate rather than merely unusual -- with
+zero unlabelled items the rectifier has nothing to correct and the joint
+bootstrap has no unlabelled term at all (_ppi_bootstrap_t_joint_stats returns
+None on that branch). Those cells passed the n_lab>=15 / n_all>=50 floor while
+being statistically empty: measured Type-I fell to ~0.000 against a nominal
+0.05 at the first N where each fixed label budget became legal (n_lab == N),
+i.e. a test that essentially never rejects, which then read on the calibration
+plot as a large "conservative" excursion rather than as an excluded
+configuration.
+
+The fraction-based grid never exposed this because a fraction pins the share
+by construction; an absolute label budget (see _n_labeled_for) sweeps N past
+it, so the bound has to be stated explicitly."""
 
 # One big, one-off Monte-Carlo draw used to estimate each shape's true mean
 # numerically (works uniformly for "param" AND "custom" shapes, without
@@ -535,8 +559,10 @@ def _ppi_applicable(k: int, n_items: int, frac: float) -> bool:
     same ValueError deterministically."""
     n_lab = _n_labeled_for(n_items, frac)
     n_all = k * n_items
-    # An absolute label count can also exceed the items available.
-    return n_lab >= _PPI_MIN_N_LAB and n_all >= _PPI_MIN_N_ALL and n_lab <= n_items
+    # An absolute label count can also exceed the items available, and a
+    # too-LARGE labelled share is excluded as well -- see _PPI_MAX_LAB_SHARE.
+    return (n_lab >= _PPI_MIN_N_LAB and n_all >= _PPI_MIN_N_ALL
+            and n_lab <= n_items * _PPI_MAX_LAB_SHARE)
 
 
 def _build_dataframe(
