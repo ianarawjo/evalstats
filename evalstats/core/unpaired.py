@@ -483,10 +483,12 @@ def _compute_group_stats(
     ``lab_arrays``, when given (PPI alignment is active), makes this a PPI-
     corrected marginal mean per group instead of a raw one -- mirroring
     ``evalstats.api._run_alignment_ppi``'s own single-sample correction
-    exactly (same ``is_binary_scores``/``is_bounded_01_scores`` ->
-    ``resolve_ppi_auto_methods`` -> ``_ppi_robustness_dispatch`` chain, same
-    ``GRADIENT_CI_ALPHAS`` sweep for the gradient bands), just applied per
-    between-subjects group instead of per paired-path entity. Every group is
+    exactly (same ``resolve_auto_robustness_method`` -> data kind ->
+    ``resolve_ppi_auto_methods`` -> ``_ppi_robustness_dispatch`` chain, with
+    the resolved score range forwarded to the dispatch for the
+    scale-dependent methods, same ``GRADIENT_CI_ALPHAS`` sweep for the
+    gradient bands), just applied per between-subjects group instead of per
+    paired-path entity. Every group is
     guaranteed to have at least one label by this point -- the caller
     (``compare_unpaired``) already validates that and raises before this is
     ever reached otherwise -- so there is no paired-path-style "entity has
@@ -498,29 +500,39 @@ def _compute_group_stats(
     ppi_applied = lab_arrays is not None
     if ppi_applied:
         from evalstats.config import resolve_ppi_auto_methods, GRADIENT_CI_ALPHAS
-        from evalstats.core.resampling import is_binary_scores, is_bounded_01_scores
         # A single import here, not per-call to compare_unpaired -- avoids the
         # api.py <-> core/unpaired.py circular import (api.py imports
         # compare_unpaired from this module at module scope).
         from evalstats.api import _ppi_robustness_dispatch
 
-        pooled = np.concatenate(arrays)
-        if is_binary_scores(pooled):
-            data_kind = "binary"
-        elif is_bounded_01_scores(pooled):
-            data_kind = "bounded_01"
-        else:
-            data_kind = "unbounded"
+        # Resolve the data kind through the router -- the SAME resolution the
+        # non-PPI branch below already uses -- rather than a local
+        # binary/bounded_01/unbounded test. That local test had no "likert"
+        # branch and ignored score_range, so discrete/ordinal data on e.g. a
+        # 1-5 scale fell through to "unbounded" and silently took
+        # ppi_t_interval, leaving PPI_AUTO_METHOD_TABLE's "likert" row
+        # (ppi_logit_t) unreachable here. Resolved ONCE on the pooled scores,
+        # not per group, so every group gets the same method and the group
+        # CIs stay comparable to each other.
+        #
+        # ppi_score_range must then be forwarded to the dispatch: ppi_logit_t
+        # is scale-DEPENDENT, and defaulting its bounds to (0, 1) on, say, a
+        # 1-5 scale returns a CI on the wrong scale entirely (0% coverage,
+        # not a subtle miscalibration). See evalstats.api's matching fix.
+        pooled = np.concatenate(arrays).reshape(1, -1)
+        _, _, ppi_score_range, data_kind = resolve_auto_robustness_method(
+            pooled, score_range=score_range, stacklevel=4,
+        )
         _, ppi_robustness_method = resolve_ppi_auto_methods(data_kind)
 
     out = []
     for i, (label, arr) in enumerate(zip(labels, arrays)):
         if ppi_applied:
             lab_arr = lab_arrays[i]
-            res = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, alpha, n_bootstrap, rng)
+            res = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, alpha, n_bootstrap, rng, ppi_score_range)
             multi_ci = {}
             for a in GRADIENT_CI_ALPHAS:
-                g = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, a, n_bootstrap, rng)
+                g = _ppi_robustness_dispatch(ppi_robustness_method, arr, lab_arr, a, n_bootstrap, rng, ppi_score_range)
                 multi_ci[a] = (float(g.ci_low), float(g.ci_high))
             out.append(GroupStat(
                 label=label, n=int(arr.size), mean=float(res.estimate), std=float(np.std(arr)),

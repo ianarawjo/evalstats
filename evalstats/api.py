@@ -930,7 +930,8 @@ _PPI_PAIRWISE_SUPPORTED = ("tango", "t_interval", "bootstrap", "wilcoxon", "mann
 _PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t", "ppi_t_interval", "ppi_logit_t")
 
 
-def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng):
+def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot: int, rng,
+                           score_range: Optional[tuple[float, float]] = None):
     """Dispatch to the PPI-corrected pairwise implementation of *method*.
 
     Only methods with a validated PPI-corrected counterpart (see
@@ -961,7 +962,14 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
         # lo/hi default (0.0, 1.0): this dispatch path has no score_range
         # concept (see _run_alignment_ppi's is_bounded_01_scores check --
         # "bounded_01" always means raw scores are literally in [0, 1] here).
-        return _ppi_paired_logit_t(a, b, a_lab, b_lab, alpha)
+        # lo/hi MUST come from the resolved score_range, not the (0, 1)
+        # default: logit-t is scale-dependent, and this method is reachable
+        # for any bounded numeric scale (likert 1-5, grades 0-100), not just
+        # [0, 1]. Passing the wrong bounds returns a CI on the [0, 1] scale
+        # while the estimand lives on the real one -- 0% coverage, not a
+        # subtle miscalibration.
+        _lo, _hi = score_range if score_range is not None else (0.0, 1.0)
+        return _ppi_paired_logit_t(a, b, a_lab, b_lab, alpha, lo=_lo, hi=_hi)
     if method in ("t_interval", "bootstrap"):
         return _ppi_paired_arrays(a, b, a_lab, b_lab, np.mean, alpha, n_boot, rng, rectifier_func=np.mean)
     if method == "wilcoxon":
@@ -1001,6 +1009,13 @@ def _ppi_pairwise_unpaired_fallback(a, b, a_lab, b_lab, alpha: float, n_boot: in
     """
     from evalstats.tests import _ppi_two_sample
     return _ppi_two_sample(a, b, a_lab, b_lab, lambda ya, yb: float(ya.mean() - yb.mean()), alpha, n_boot, rng)
+
+
+_JOINT_BOOT_SE_REL_FLOOR = 0.20
+"""Relative floor on a bootstrap replicate's SE, as a fraction of the
+observed SE, inside :func:`_ppi_bootstrap_t_joint_stats`. See the comment at
+its use site for the failure mode this prevents and how 0.20 was calibrated.
+Set to 0.0 to reproduce the pre-fix behaviour exactly."""
 
 
 def _ppi_bootstrap_t_joint_stats(
@@ -1231,6 +1246,48 @@ def _ppi_bootstrap_t_joint_stats(
         boot_se[start:stop] = np.sqrt(var_b).T
         start = stop
 
+    # Floor each replicate's SE relative to the OBSERVED one before
+    # studentizing. T is a studentized statistic, so the meaningful scale
+    # for "this replicate's SE is degenerate" is obs_se, not an absolute
+    # constant -- and the previous guard was absolute (1e-12), which cannot
+    # catch a boot_se that is small-but-nonzero.
+    #
+    # Why it matters: when a pair is near-degenerate (a paired difference
+    # with almost no item-level spread -- e.g. two nearly identical arms, or
+    # a generator that shifts every item by the same constant), a resample
+    # can draw an almost-constant vector, collapsing boot_se far below
+    # obs_se and sending |T| to 60-2000. Because BOTH consumers of this
+    # joint resample reduce it with a MAX over pairs
+    # (_ppi_romano_wolf_pvalues_from_joint_stats' step-down suffix-max, and
+    # _M_b_from_T for max-T/"boot" CI widening), one such pair poisons every
+    # other pair in the family: measured on a k=3 cell, a degenerate pair
+    # with |T|max=66 drove the UNRELATED extreme pair's Romano-Wolf p from
+    # ~0 to 0.363 while its own CI still excluded 0 by a wide margin -- the
+    # p-value and the CI contradicting each other inside one bundle.
+    #
+    # Calibration of the 0.20 coefficient: under regularity boot_se/obs_se
+    # concentrates at 1 with sd ~ 1/sqrt(2*n_lab) (~0.11 at n_lab=40), so
+    # 0.20 sits many sd below anything a well-behaved resample produces.
+    # Measured binding rates (fraction of replicates floored): 0.0000% on
+    # every non-degenerate condition tested (k=3/5, N=100-400,
+    # n_lab=20-160, judge rho=0.80-0.99, including the small-n_lab +
+    # excellent-judge corner where boot_se is most variable), versus
+    # 12-19% on the degenerate cells this exists for. It is inert where the
+    # bootstrap is healthy and only engages where it has broken down.
+    # Validated for FWER, not just power. Note the ordinary nulls are
+    # UNINFORMATIVE for that: under them the paired truth difference is
+    # exactly constant (uniq==1), so boot_se never collapses and the floor
+    # is inert -- Type-I is then identical for trivial reasons. The real
+    # test is a null where the floor DOES bind, i.e. the near-identical-arms
+    # case above: arms sharing a base, each perturbing a small random subset
+    # of items by +/- delta with mean-zero signs, so the null holds exactly
+    # while d_true has several distinct values and tiny variance. With
+    # binding up to 12% of replicates under that null, FWER is unchanged
+    # (largest move +0.0025 at 0.28% binding, 0.23 MC SE, on 400 reps).
+    # Power on the degenerate alternative recovers 0.6425 -> 0.9975 (k=3
+    # N=100), 0.3850 -> 1.0000 (k=5) with FWER byte-identical.
+    # See simulations/investigate_joint_bootstrap_se_floor_*.py.
+    boot_se = np.maximum(boot_se, _JOINT_BOOT_SE_REL_FLOOR * obs_se[np.newaxis, :])
     se_boot_safe = np.where(boot_se > 1e-12, boot_se, 1.0)
     T = (boot_theta - point_ests[np.newaxis, :]) / se_boot_safe  # (n_boot, k)
 
@@ -1377,7 +1434,8 @@ def _ppi_alpha_eff_from_M_b(M_b: np.ndarray, ci: float) -> float:
     return min(max(alpha_eff, 1e-9), 1.0 - 1e-9)
 
 
-def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng):
+def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, rng,
+                             score_range: Optional[tuple[float, float]] = None):
     """Dispatch to the PPI-corrected single-sample implementation of *method*."""
     from evalstats.tests import (
         _ppi_single_wilson, _ppi_single_bootstrap_t, _ppi_single_t_interval, _ppi_single_logit_t,
@@ -1389,8 +1447,10 @@ def _ppi_robustness_dispatch(method: str, a, a_lab, alpha: float, n_boot: int, r
     if method == "ppi_t_interval":
         return _ppi_single_t_interval(a, a_lab, alpha)
     if method == "ppi_logit_t":
-        # lo/hi default (0.0, 1.0) -- see _ppi_pairwise_dispatch's matching note.
-        return _ppi_single_logit_t(a, a_lab, alpha)
+        # lo/hi from the resolved score_range -- see _ppi_pairwise_dispatch's
+        # matching note for why the (0, 1) default is wrong here.
+        _lo, _hi = score_range if score_range is not None else (0.0, 1.0)
+        return _ppi_single_logit_t(a, a_lab, alpha, lo=_lo, hi=_hi)
     if method == "bootstrap":
         from evalstats.ppi import correct as _ppi_correct
         mask = ~np.isnan(a_lab)
@@ -1625,13 +1685,27 @@ def _run_alignment_ppi(
     from evalstats.core.resampling import is_binary_scores, is_bounded_01_scores
     from evalstats.config import resolve_ppi_auto_methods
 
-    if is_binary_scores(scores_2d):
-        data_kind = "binary"
-    elif is_bounded_01_scores(scores_2d):
-        data_kind = "bounded_01"
-    else:
-        data_kind = "unbounded"
+    # Reuse the ONE data-kind decision method="auto"'s router already made
+    # (recorded on the bundle) rather than re-deriving it here. The previous
+    # local re-derivation was a binary/bounded_01/unbounded test with no
+    # "likert" branch that consulted neither score_range nor eval_type, so
+    # Likert data on e.g. a 1-5 scale fell through to "unbounded" and
+    # silently took ppi_t_interval -- making PPI_AUTO_METHOD_TABLE's
+    # "likert" row (ppi_logit_t) unreachable in every case it exists for.
+    # The local test remains as the fallback for non-"auto" callers, where
+    # the router records no resolution.
+    data_kind = getattr(bundle, "resolved_data_kind", None)
+    if data_kind is None:
+        if is_binary_scores(scores_2d):
+            data_kind = "binary"
+        elif is_bounded_01_scores(scores_2d):
+            data_kind = "bounded_01"
+        else:
+            data_kind = "unbounded"
 
+    # Bounds for the scale-dependent dispatches (ppi_logit_t). Prefer the
+    # router's resolved range; fall back to (0, 1) only when it recorded none.
+    ppi_score_range = getattr(bundle, "resolved_score_range", None)
     if method == "auto":
         pairwise_method, robustness_method = resolve_ppi_auto_methods(data_kind)
     else:
@@ -1653,13 +1727,13 @@ def _run_alignment_ppi(
         arr = scores_2d[i, valid]
         lab_arr = lab_matrix[i, valid]
 
-        res = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, alpha, n_boot, rng)
+        res = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, alpha, n_boot, rng, ppi_score_range)
         final_means[i] = res.estimate
         final_ci_low[i] = res.ci_low
         final_ci_high[i] = res.ci_high
         entity_rectifier[e] = res.rectifier
         for a in GRADIENT_CI_ALPHAS:
-            g = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, a, n_boot, rng)
+            g = _ppi_robustness_dispatch(robustness_method, arr, lab_arr, a, n_boot, rng, ppi_score_range)
             multi_ci_lo[a][i] = g.ci_low
             multi_ci_hi[a][i] = g.ci_high
 
@@ -1876,7 +1950,8 @@ def _run_alignment_ppi(
                 continue
 
             dispatch = lambda a_, n_boot_, rng_: _ppi_pairwise_dispatch(
-                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_
+                pairwise_method, a_arr, b_arr, a_lab_arr, b_lab_arr, a_, n_boot_, rng_,
+                ppi_score_range,
             )
         elif branch == "fallback":
             # Not enough items are labeled for *both* entities to run the

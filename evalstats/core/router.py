@@ -1004,6 +1004,9 @@ def _analyze_single(
     pairwise_method = method
     robustness_method = method
     resolved_score_range: Optional[tuple[float, float]] = None
+    # Only the "auto" branch resolves a data kind; stays None otherwise so
+    # the bundle records "no resolution happened" rather than a guess.
+    data_kind: Optional[str] = None
     if method == "auto":
         pairwise_method, robustness_method, resolved_score_range, data_kind = resolve_auto_robustness_method(
             run_scores, score_range=score_range, eval_type=eval_type, stacklevel=2,
@@ -1114,6 +1117,7 @@ def _analyze_single(
         resolved_method=pairwise_method,
         resolved_ci_method=robustness_method,
         resolved_score_range=resolved_score_range,
+        resolved_data_kind=data_kind,
         p_value_method=p_value_method,
     )
 

@@ -106,6 +106,20 @@ class AnalysisBundle:
         (user-declared via ``score_range``, or auto-detected/approximated —
         see ``analyze()``'s ``score_range`` parameter). ``None`` when
         logit-t wasn't used.
+    resolved_data_kind : str or None
+        The data kind (``"binary"``/``"bounded_01"``/``"likert"``/
+        ``"unbounded"``) the ``method="auto"`` router actually resolved for
+        this data -- see ``evalstats.core.router.resolve_auto_robustness_method``.
+        Recorded so downstream consumers reuse that ONE decision instead of
+        re-deriving it from the scores. ``evalstats.api._run_alignment_ppi``
+        does exactly that when routing PPI's own ``method="auto"``: it
+        previously re-derived the kind with a binary/bounded_01/unbounded
+        test of its own, which had no ``"likert"`` branch and consulted
+        neither ``score_range`` nor ``eval_type``, so Likert data on e.g. a
+        1-5 scale fell through to ``"unbounded"`` and silently took
+        ``ppi_t_interval`` -- leaving ``PPI_AUTO_METHOD_TABLE``'s ``likert``
+        row (``ppi_logit_t``) unreachable. ``None`` for non-``auto`` methods
+        and the LMM paths, where no such resolution happens.
     """
 
     benchmark: BenchmarkResult
@@ -119,6 +133,7 @@ class AnalysisBundle:
     resolved_method: Optional[str] = None
     resolved_ci_method: Optional[str] = None
     resolved_score_range: Optional[tuple[float, float]] = None
+    resolved_data_kind: Optional[str] = None
     p_value_method: Optional[str] = None
     ppi_applied: bool = False
     alignment_result: Optional["AlignmentResult"] = None
