@@ -25,6 +25,26 @@ of the above ever combine -- WITH PPI alignment correction layered on top of
 FWER control, at several human-label fractions, alongside a WITHOUT-PPI
 baseline for direct comparison.
 
+The two ppi_config levels answer DIFFERENT questions and are not a
+before/after of the same scenario:
+
+  ppi_config="none"    the TRUSTED-SCORES baseline. No judge bias, no PPI:
+                       the ordinary use where someone analyses judge scores
+                       they have no reason to distrust. Its estimand is
+                       E[llm_score], and it is what shows whether evalstats
+                       ITSELF is calibrated. Deliberately unbiased -- see
+                       _run_cell's judge_biases for why biasing this row
+                       makes its Type-I column measure judge bias rather
+                       than calibration, and read as a library failure.
+  ppi_config="frac=X"  the CORRECTION case. Differential judge bias IS
+                       applied (see DEFAULT_JUDGE_BIAS_TYPE) and PPI has to
+                       remove it. Its estimand is E[human label].
+
+So "none" is not a weaker version of the PPI rows; power is not comparable
+across the two (different judge, different estimand). The like-for-like
+power comparisons live WITHIN each PPI row, against its own oracle and
+subset-only reference arms (see CompareE2EResult's oracle_*/subset_*).
+
 Coarse/breadth-first by design (see this case's planning doc): the grid is
 large (eval_type x shape x k x N x ppi_config x null/effect), run at a
 modest ``reps`` per cell. The question this case answers is "does
@@ -76,8 +96,8 @@ from evalstats.core.stats_utils import interval_score
 from ..latex_tables import booktabs_table, escape_latex
 from ..scenarios import EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
-    BINARY_SHAPES, CONTINUOUS_SHAPES, LIKERT_SHAPES, ShapeSpec, _jb_effect_magnitude,
-    _jb_effect_magnitude_binary, _tier_shapes, sample_group_truth,
+    BINARY_SHAPES, CONTINUOUS_SHAPES, LIKERT_SHAPES, ShapeSpec, _jb_bias_magnitude,
+    _jb_effect_magnitude, _jb_effect_magnitude_binary, _tier_shapes, sample_group_truth,
 )
 from . import CaseResult
 
@@ -119,7 +139,35 @@ SHAPES_BY_EVAL_TYPE: dict[str, list[ShapeSpec]] = {
 # not _jb_effect_magnitude directly -- see that wrapper's docstring for why
 # (its Beta(icc=1.0) truth model clips near {0,1}, attenuating an
 # uncompensated shift to ~55-59% of its nominal value).
-DEFAULT_EFFECT_FRAC = 0.15
+EFFECT_FRAC_BY_EVAL_TYPE: dict[str, float] = {
+    "continuous": 0.95, "likert": 0.22, "binary": 0.10,
+}
+"""Per-eval-type non-null effect size, calibrated so the ORACLE arm (every
+item human-labelled -- the power ceiling) lands near 0.80 at the mid cell
+(k=3, N=100), measured against each eval type's first four shapes:
+
+    continuous 0.95 -> oracle 0.828
+    likert     0.22 -> oracle 0.828
+    binary     0.10 -> oracle 0.750
+
+Targeting the ORACLE (not PPI) is what makes the power rows readable: the
+ceiling sits mid-range, so the power-vs-N curve rises across the grid
+instead of pinning at 0 or 1, and PPI/subset-only have room to separate
+BELOW it. A ceiling at 1.000 hides every difference the plot exists to show.
+
+Replaces a single shared DEFAULT_EFFECT_FRAC=0.15, which was calibrated
+against the old icc=1.0 generator and did not survive the move to
+DEFAULT_ICC=0.20: at 0.15 the same nominal effect gave oracle power of 0.047
+on continuous (statistically null -- its "PPI beats subset-only" result was
+real but meaningless at that level) while giving 0.953 on binary (saturated).
+_jb_effect_magnitude standardizes to each eval type's own population SD,
+which equalizes the effect in SD units but NOT its detectability once the
+per-item noise this DGP now has is in play."""
+
+
+def _effect_frac_for(eval_type: str) -> float:
+    """Non-null effect size for *eval_type* -- see EFFECT_FRAC_BY_EVAL_TYPE."""
+    return EFFECT_FRAC_BY_EVAL_TYPE.get(eval_type, 0.50)
 
 
 def _effect_step_for(eval_type: str, frac: float) -> float:
@@ -136,7 +184,53 @@ DEFAULT_PPI_FRACS: tuple[Optional[float], ...] = (None, 0.10, 0.20, 0.40)
 # "pairwise, uncorrected" metric and k>2 rows for "family-wise, corrected".
 DEFAULT_K_VALUES = [2, 3, 5, 10]
 DEFAULT_SIZES = [15, 30, 60, 100, 200, 400, 800]
-DEFAULT_AGREEMENT_RATE = 0.85  # fixed judge quality -- matches this session's one-off investigations
+DEFAULT_ICC = 0.20
+"""Item-level reliability of the TRUTH generator, matching
+scenarios.synthetic._ppi_power_baseline's own icc (the tier every PPI sweep
+in cases/pvalues.py runs at).
+
+Was 1.0 -- "no noise at all, every observed difference is real" -- which
+made each arm share the SAME per-item truth, so an arm-vs-arm paired
+difference was a pure constant shift: measured sd 0.0013 with 68 distinct
+values across 4000 items. That is not a plausible model-comparison setup
+(different models produce different outputs, so their human scores differ
+per item), and it broke two things at once:
+
+  * it is the degenerate input that collapsed the PPI joint bootstrap's
+    per-replicate SE (see evalstats.api._JOINT_BOOT_SE_REL_FLOOR), and
+  * it inflated the subset-only reference arm to power 1.000 on 6 of 7
+    continuous shapes -- 20 noiseless human labels detect a constant
+    difference perfectly -- making "PPI must beat subset-only" an
+    unwinnable bar for reasons that had nothing to do with PPI.
+
+At 0.20 the paired truth difference has sd 0.377 across 3073 distinct
+values, i.e. a real per-item signal to estimate."""
+
+AGREEMENT_RATE_BY_EVAL_TYPE: dict[str, float] = {
+    "binary": 0.92, "continuous": 0.40, "likert": 0.60,
+}
+"""Per-eval-type judge quality, calibrated so each lands near rho^2 ~ 0.64 --
+the judge-alignment tier cases/pvalues.py's PPI sweeps use -- measured at
+DEFAULT_ICC against each eval type's first shape:
+
+    binary     0.92 -> rho^2 0.643      (flip probability 0.08)
+    continuous 0.40 -> rho^2 0.653
+    likert     0.60 -> rho^2 0.646
+
+A single shared rate cannot do this: the same nominal "agreement" maps to a
+very different rho per eval type, because _apply_judge_noise's noise is a
+fraction of scale span for numeric data but a flip probability for binary.
+The previous single 0.85 gave rho^2 0.972 (continuous) / 0.937 (likert) --
+a judge far better than any real one, which is exactly the regime where PPI
+has the least to prove."""
+
+DEFAULT_JUDGE_BIAS_TYPE = "differential"
+"""Judge bias applied across arms, mirroring _ppi_power_baseline's own
+bias_type: "differential" biases ONLY arm 0, so a relative/paired comparison
+sees a real judge-induced difference that PPI's rectifier has to remove.
+The previous model had NO bias at all (measured per-arm bias -0.0012 /
+-0.0015 / -0.0027), i.e. it never exercised the failure mode PPI exists to
+correct. "constant" biases every arm equally and "none" disables it."""
 
 # Oracle/subset-only reference estimators (see CompareE2EResult) feed TRUTH
 # values directly to compare(), with NO noise -- correct in principle (an
@@ -312,17 +406,66 @@ class CompareE2EResult:
     """Successful subset-only computations this cell -- see oracle_n_ok."""
 
 
+def _agreement_for(eval_type: str) -> float:
+    """Judge quality for *eval_type* -- see AGREEMENT_RATE_BY_EVAL_TYPE."""
+    return AGREEMENT_RATE_BY_EVAL_TYPE.get(eval_type, 0.60)
+
+
+def _judge_biases_for(eval_type: str, k: int, bias_type: str = DEFAULT_JUDGE_BIAS_TYPE) -> np.ndarray:
+    """Per-arm judge bias, mirroring scenarios.synthetic._jb_biases.
+
+    "differential" biases arm 0 only; "constant" biases every arm equally
+    (which a paired comparison should cancel out); "none" disables it.
+    Magnitude comes from the same standardized helpers the PPI sweeps use:
+    _jb_bias_magnitude for numeric scales (0.30 population SDs of the eval
+    type's own truth distribution), and PPI_BINARY_BIAS_MAGNITUDES'
+    "moderate" flip-probability skew for binary, whose bias is a
+    one-directional flip rather than an additive offset."""
+    mag = 0.10 if eval_type == "binary" else _jb_bias_magnitude(eval_type)
+    if bias_type == "none":
+        return np.zeros(k)
+    if bias_type == "constant":
+        return np.full(k, mag)
+    if bias_type == "differential":
+        b = np.zeros(k)
+        b[0] = mag
+        return b
+    raise ValueError(f"Unknown bias_type: {bias_type!r}")
+
+
 def _apply_judge_noise(
     truth: np.ndarray, eval_type: str, rng: np.random.Generator, agreement_rate: float,
+    biases: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Deliberately simple judge-noise model -- see module docstring."""
+    """Judge model: noise at *agreement_rate*, plus an optional per-arm
+    bias (see _judge_biases_for). Still far simpler than
+    scenarios.synthetic.generate_judge_bias_cell's full bias/noise family
+    (no slope miscalibration, no MNAR labeling), but no longer the
+    unbiased near-perfect judge this case started with -- see
+    AGREEMENT_RATE_BY_EVAL_TYPE and DEFAULT_JUDGE_BIAS_TYPE.
+
+    *biases* is one value per arm, matching ``truth``'s first axis. For
+    binary it is a one-directional flip probability (the biased arm's 0s
+    get pushed to 1), since an additive offset is meaningless on {0, 1};
+    for numeric scales it is an additive offset applied before the
+    scale's own clipping/rounding, so boundary effects still apply.
+    """
+    if biases is None:
+        biases = np.zeros(truth.shape[0])
+    biases = np.asarray(biases, dtype=float).reshape(-1, 1)
+
     if eval_type == "binary":
         flip = rng.random(truth.shape) >= agreement_rate
-        return np.where(flip, 1.0 - truth, truth)
+        out = np.where(flip, 1.0 - truth, truth)
+        # Differential bias: push this arm's 0s upward, the binary analogue
+        # of an additive offset (see _jb_llm_binary's flip-probability skew).
+        up = rng.random(truth.shape) < biases
+        return np.where(up, 1.0, out)
+
     lo, hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
     span = hi - lo
     noise_sd = 0.5 * (1.0 - agreement_rate) * span
-    noisy = truth + rng.normal(0.0, noise_sd, size=truth.shape)
+    noisy = truth + biases + rng.normal(0.0, noise_sd, size=truth.shape)
     noisy = np.clip(noisy, lo, hi)
     if eval_type == "likert":
         noisy = np.rint(noisy)
@@ -331,7 +474,7 @@ def _apply_judge_noise(
 
 def _reference_means_for(
     shape: ShapeSpec, eval_type: str, k: int, effects: np.ndarray, agreement_rate: float,
-    rng: np.random.Generator,
+    rng: np.random.Generator, icc: float = DEFAULT_ICC, biases: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Numerically estimate each arm's TWO possible ground-truth references
     via one large draw -- works uniformly for "param" and "custom" shapes
@@ -351,11 +494,38 @@ def _reference_means_for(
                      would be comparing compare()'s CI to the wrong target
                      entirely, not a real coverage failure.
     """
-    draw = sample_group_truth(shape, _TRUE_MEAN_MC_N, 1, k, 1.0, rng, effects=effects)[:, :, 0]  # (k, N)
+    # icc/biases MUST match the cells' own generator -- these means are the
+    # targets coverage is scored against, so a mismatch silently scores every
+    # CI against the wrong truth (icc alone moves the arm-1-vs-2 gap from
+    # -0.0180 at icc=1.0 to -0.0122 at icc=0.20).
+    draw = sample_group_truth(shape, _TRUE_MEAN_MC_N, 1, k, icc, rng, effects=effects)[:, :, 0]  # (k, N)
     truth_means = draw.mean(axis=1)
-    llm_draw = _apply_judge_noise(draw, eval_type, rng, agreement_rate)
+    llm_draw = _apply_judge_noise(draw, eval_type, rng, agreement_rate, biases)
     llm_means = llm_draw.mean(axis=1)
     return truth_means, llm_means
+
+
+def _n_labeled_for(n_items: int, frac: float) -> int:
+    """Labelled-item count for a PPI cell.
+
+    ``frac`` carries two meanings, disambiguated by magnitude:
+      < 1   a FRACTION of n_items (the original behaviour, e.g. 0.20)
+      >= 1  an ABSOLUTE label count (e.g. 30), held FIXED as n_items varies
+
+    The absolute form exists because PPI's whole value proposition is the
+    N/N_lab ratio -- gain comes from the UNLABELLED items -- and a
+    fraction-based grid cannot show that axis at all: it pins the ratio to
+    1/frac for every N, so sweeping N moves both arms together and the
+    comparison against the human-labels-only floor stays flat. Measured at
+    fixed n_lab=60, PPI's power advantage over that floor grows +0.144 ->
+    +0.300 as N/N_lab goes 2 -> 10, none of which is visible at a fixed
+    frac=0.40 (ratio 2.5).
+
+    It also lets the grid sit at label counts a practitioner would actually
+    collect: N_lab ~ 30 is the usual lower bound for a human-labelled
+    subset, and a fraction grid only hits it by coincidence at one N.
+    """
+    return int(round(frac)) if frac >= 1 else max(1, round(n_items * frac))
 
 
 def _ppi_applicable(k: int, n_items: int, frac: float) -> bool:
@@ -363,9 +533,10 @@ def _ppi_applicable(k: int, n_items: int, frac: float) -> bool:
     checks (n_lab >= 15, n_all >= 50) -- pre-filters cells GUARANTEED to
     raise, rather than generating data for them every rep only to hit the
     same ValueError deterministically."""
-    n_lab = max(1, round(n_items * frac))
+    n_lab = _n_labeled_for(n_items, frac)
     n_all = k * n_items
-    return n_lab >= _PPI_MIN_N_LAB and n_all >= _PPI_MIN_N_ALL
+    # An absolute label count can also exceed the items available.
+    return n_lab >= _PPI_MIN_N_LAB and n_all >= _PPI_MIN_N_ALL and n_lab <= n_items
 
 
 def _build_dataframe(
@@ -492,13 +663,41 @@ def _run_cell(
     representative k keeps that cost from applying to the WHOLE grid. Pass
     None to compute it for every k (more complete, much slower)."""
     rng = np.random.default_rng(seed)
-    ppi_config = "none" if ppi_frac is None else f"frac={ppi_frac:.2f}"
+    ppi_config = ("none" if ppi_frac is None else
+                  (f"nlab={int(round(ppi_frac))}" if ppi_frac >= 1 else f"frac={ppi_frac:.2f}"))
     compute_reference = reference_estimator_k is None or k == reference_estimator_k
 
-    effect_step = 0.0 if is_null else _effect_step_for(eval_type, DEFAULT_EFFECT_FRAC)
+    effect_step = 0.0 if is_null else _effect_step_for(eval_type, _effect_frac_for(eval_type))
     effects = np.arange(k, dtype=float) * effect_step
+    agreement_rate = _agreement_for(eval_type)
+    # Judge bias applies to the PPI cells ONLY. The no-PPI ("none") cells are
+    # this case's TRUSTED-SCORES baseline: the ordinary use where a user
+    # analyses judge scores they have no reason to distrust, which is what
+    # shows whether evalstats itself is calibrated. Biasing them instead
+    # measures something else entirely and mislabels it:
+    #
+    #   a no-PPI cell's estimand is E[llm_score] (see the true_means line
+    #   below). Under differential bias, arm 0's E[llm_score] genuinely
+    #   differs from the others' EVEN WHEN is_null=True, because the bias is
+    #   a real shift in the thing being estimated. The uncorrected test then
+    #   correctly rejects, and the "Type-I error" column reports that as
+    #   miscalibration -- it is not. It is power to detect judge bias, under
+    #   a null that is not null for that estimand. Measured before this fix:
+    #   likert "none" Type-I read 28.1% / 50.2% / 79.4% at N=50/100/200,
+    #   rising with N exactly as a real effect does, while marginal coverage
+    #   stayed at a healthy 95.5% -- the tell that nothing was actually
+    #   miscalibrated.
+    #
+    # So: "none" rows answer "is evalstats calibrated on trustworthy
+    # scores?", and the frac=X rows answer "does PPI recover calibration
+    # when the judge IS biased?". Both are needed, and conflating them makes
+    # the first unreadable.
+    judge_biases = (
+        _judge_biases_for(eval_type, k) if ppi_frac is not None else np.zeros(k)
+    )
     truth_means, llm_means = _reference_means_for(
-        shape, eval_type, k, effects, DEFAULT_AGREEMENT_RATE, rng,
+        shape, eval_type, k, effects, agreement_rate, rng,
+        icc=DEFAULT_ICC, biases=judge_biases,
     )
     # PPI cells estimate E[human label]; raw (no-PPI) cells can only ever
     # estimate E[llm_score] -- checking coverage against the wrong one of
@@ -506,7 +705,7 @@ def _run_cell(
     true_means = truth_means if ppi_frac is not None else llm_means
     extreme_true_gap = true_means[-1] - true_means[0]
 
-    n_labeled = max(1, round(n_items * ppi_frac)) if ppi_frac is not None else 0
+    n_labeled = _n_labeled_for(n_items, ppi_frac) if ppi_frac is not None else 0
     score_range = EVAL_TYPE_SCALE_BOUNDS[eval_type] if eval_type == "likert" else None
     # compare()'s own eval_type=("likert"|"continuous") kwarg -- narrower
     # than this file's own eval_type (which also has "binary"/"grades",
@@ -525,8 +724,8 @@ def _run_cell(
     )
 
     for _rep in range(n_reps):
-        truth = sample_group_truth(shape, n_items, 1, k, 1.0, rng, effects=effects)[:, :, 0]  # (k, n_items)
-        llm_scores = _apply_judge_noise(truth, eval_type, rng, DEFAULT_AGREEMENT_RATE)
+        truth = sample_group_truth(shape, n_items, 1, k, DEFAULT_ICC, rng, effects=effects)[:, :, 0]  # (k, n_items)
+        llm_scores = _apply_judge_noise(truth, eval_type, rng, agreement_rate, judge_biases)
 
         human_scores = None
         labeled_items = None
@@ -705,7 +904,9 @@ def build_cells(
                 for n_items in sizes:
                     for ppi_frac in ppi_fracs:
                         if ppi_frac is not None and not _ppi_applicable(k, n_items, ppi_frac):
-                            key = f"k={k},n={n_items},frac={ppi_frac:.2f}"
+                            key = (f"k={k},n={n_items},"
+                                   + (f"nlab={int(round(ppi_frac))}" if ppi_frac >= 1
+                                      else f"frac={ppi_frac:.2f}"))
                             skipped_ppi[key] = skipped_ppi.get(key, 0) + 1
                             continue
                         for is_null in (True, False):
@@ -1269,6 +1470,8 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _parse_ppi_fracs(raw: list[str]) -> tuple[Optional[float], ...]:
+    """"none", a fraction < 1 (e.g. 0.20), or an absolute label count >= 1
+    (e.g. 30) held fixed across n_items -- see _n_labeled_for."""
     out: list[Optional[float]] = []
     for s in raw:
         if s.lower() == "none":
