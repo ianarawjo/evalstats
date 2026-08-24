@@ -296,3 +296,74 @@ class TestPowerRankingGate:
             higher_is_better=True,
         )
         assert out == ["0.850", "\\textbf{0.780}", "\\underline{0.600}"]
+
+
+def test_co_plotted_methods_have_distinct_colors():
+    """Methods drawn on the same figure must not share a colour.
+
+    Each group below is a set the ci_paired case plots together. A shared
+    colour makes two lines indistinguishable in the paper's figures, which
+    is how bootstrap_diff_nested and mj_floor_mmnt silently collided.
+    """
+    import collections
+    from simulations.harness import methods as M
+
+    color = {}
+    for obj in vars(M).values():
+        if isinstance(obj, M.Method):
+            color.setdefault(obj.name, obj.color)
+
+    groups = {
+        "single-run binary": [
+            "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
+            "newcombe_mover", "mj_floor", "tango_scc", "bayes_indep_comp",
+            "bayes_paired_comp", "wald_indep", "tango_exact", "mj_unfloored",
+            "bonett_price",
+        ],
+        "nested binary": [
+            "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
+            "t_interval", "bayes_indep_comp", "bayes_paired_comp", "wald_indep",
+            "bootstrap_diff_nested", "bayes_diff_nested", "smooth_diff_nested",
+            "mj_floor_flat", "newcombe_flat", "mj_floor_er", "mj_floor_mmnt",
+        ],
+    }
+    for group, names in groups.items():
+        by_color = collections.defaultdict(list)
+        for name in names:
+            assert name in color, f"{name!r} is not a registered Method"
+            by_color[color[name]].append(name)
+        clashes = {c: v for c, v in by_color.items() if len(v) > 1}
+        assert not clashes, f"{group}: methods sharing a colour: {clashes}"
+
+        # Exact equality is not enough -- bonett_price and bayes_indep_comp
+        # were distinct hex values but only deltaE 9 apart, which reads as the
+        # same pale orange in a legend. Deliberately-related families
+        # (bayes_*/smooth_* variants) sit around deltaE 14-17, so the floor is
+        # set below those.
+        import itertools
+
+        for m1, m2 in itertools.combinations(names, 2):
+            de = _cielab_distance(color[m1], color[m2])
+            assert de >= 12.0, (
+                f"{group}: {m1} ({color[m1]}) and {m2} ({color[m2]}) are only "
+                f"deltaE={de:.1f} apart -- indistinguishable in a plot"
+            )
+
+
+def _cielab_distance(hex1, hex2):
+    """CIE76 colour difference between two hex colours."""
+    import numpy as np
+    from matplotlib.colors import to_rgb
+
+    def to_lab(hexc):
+        r, g, b = to_rgb(hexc)
+        lin = lambda u: u / 12.92 if u <= 0.04045 else ((u + 0.055) / 1.055) ** 2.4
+        r, g, b = lin(r), lin(g), lin(b)
+        x = r * 0.4124 + g * 0.3576 + b * 0.1805
+        y = r * 0.2126 + g * 0.7152 + b * 0.0722
+        z = r * 0.0193 + g * 0.1192 + b * 0.9505
+        pivot = lambda v: v ** (1 / 3) if v > 0.008856 else 7.787 * v + 16 / 116
+        fx, fy, fz = pivot(x / 0.95047), pivot(y / 1.0), pivot(z / 1.08883)
+        return np.array([116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz)])
+
+    return float(np.linalg.norm(to_lab(hex1) - to_lab(hex2)))

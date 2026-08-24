@@ -223,7 +223,8 @@ MJ_UNFLOORED = Method("mj_unfloored", "#c2a5cf")
 #: Bonett & Price (2012) Laplace-adjusted Wald -- the PRIME recommendation of
 #: Fagerland, Lydersen & Laake (2014) Table IX for a CI on the difference
 #: between paired proportions. Validated against their Table V.
-BONETT_PRICE = Method("bonett_price", "#fdae61")
+BONETT_PRICE = Method("bonett_price", "#556b2f")  # olive -- #fdae61 sat only
+#: deltaE 9 from bayes_indep_comp's #ffbb78, i.e. indistinguishable in a legend.
 #: Newcombe (1998) method 10, the square-and-add / MOVER-Wilson interval --
 #: also recommended by Fagerland et al. (2014) Table IX, and validated
 #: against their Table V. This is the ONLY Newcombe interval in evalstats;
@@ -287,7 +288,8 @@ NEWCOMBE_FLAT = Method("newcombe_flat", "#66a61e")
 BINARY_PAIR_FLAT_METHODS = [MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
 MJ_FLOOR_ER = Method("mj_floor_er", "#a6761d")
-MJ_FLOOR_MMNT = Method("mj_floor_mmnt", "#1b9e77")
+MJ_FLOOR_MMNT = Method("mj_floor_mmnt", "#000080")  # navy -- #1b9e77 was an exact
+#: collision with bootstrap_diff_nested, which shares every nested binary plot with it.
 BINARY_PAIR_NESTED_METHODS = [MJ_FLOOR_ER, MJ_FLOOR_MMNT]
 
 # ---------------------------------------------------------------------------
