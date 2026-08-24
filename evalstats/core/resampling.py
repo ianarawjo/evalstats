@@ -1827,10 +1827,56 @@ def tango_paired_ci(
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Tango score CI for the paired binary difference p(A=1) - p(B=1).
+    """Closed-form paired-binary CI for p(A=1) - p(B=1).
 
-    Implements the large-sample score interval proposed by Tango (1998) for
-    matched-pairs binary data. Let:
+    This is NOT Tango (1998)'s own interval, despite the name it carries
+    throughout the codebase and paper. Tango's interval inverts a score test
+    through the constrained MLE and is solved iteratively (secant method),
+    which is why it is not used as a fast default here.
+
+    What this actually computes is a Wilson-regularized Quesenberry-Hurst-style
+    interval. With m = n10 + n01 and d = n10 - n01::
+
+        d / (n + z^2)  +/-  z/(n + z^2) * sqrt( m - d^2/n + z^2/4 )
+
+    That is the centre of May & Johnson (1997), "Confidence intervals for
+    differences in correlated binary proportions" (Statistics in Medicine
+    16(18):2127-2136), equation 11 -- their adaptation of Quesenberry-Hurst --
+    with their variance term ``z^2 * m / n`` replaced by the constant
+    ``z^2 / 4`` from Wilson's one-sample score interval. Writing S_hat = m/n
+    for the observed discordance rate, their additive term is ``z^2 * S_hat``
+    and ours is ``z^2 / 4``, so they coincide exactly at S_hat = 1/4. Below
+    that this interval is the WIDER of the two (conservative), above it the
+    narrower. Paired eval comparisons sit well below 1/4 -- competing models
+    agree on most items -- so the substitution is conservative in the regime
+    it is used in.
+
+    Note ``1/4`` is not a max-variance bound here: Var(A_i - B_i) at delta=0
+    is S in [0, 1], so its maximum is 1, not 1/4. The constant amounts to
+    imputing a fixed 25% discordance rate in a term of order z^2, which only
+    matters when m is small.
+
+    That substitution is deliberate: the published Quesenberry-Hurst form
+    collapses to a ZERO-WIDTH interval when no pairs disagree (m = 0). Tango's
+    2000 letter to the editor (Statist. Med. 19(1):133-139) criticised exactly
+    that degeneracy, and the anticonservatism, of Quesenberry-Hurst. Sparse
+    discordance is common in small eval sets, so the constant is what makes
+    this usable here.
+
+    Note also that inverting the score test for this variance function returns
+    May & Johnson's interval exactly -- so this is NOT a score interval; it
+    freezes the variance at the observed d_hat rather than solving at the
+    hypothesised delta.
+
+    Consequence worth knowing: like the other closed-form members of this
+    family, this runs somewhat NARROWER than Tango's exact score interval --
+    by ~0.005-0.018 in absolute width at n=100-200, and it stays finite at
+    zero discordance where May-Johnson gives width 0. If you want the exact
+    interval in closed form, call :func:`tango_scc_paired_ci` with ``c=0.0``;
+    that implements Chang et al. (2024)'s quartic solution and agrees with a
+    direct numerical inversion of the score equation to ~5e-4.
+
+    Let:
 
     * ``n10`` be the count of pairs with ``A=1, B=0``
     * ``n01`` be the count of pairs with ``A=0, B=1``

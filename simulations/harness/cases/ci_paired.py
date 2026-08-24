@@ -97,7 +97,13 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, coverage_cell, mark_best_and_runnerup
+from ..latex_tables import (
+    booktabs_table,
+    coverage_cell,
+    escape_latex,
+    mark_best_and_runnerup,
+    report_eval_type_group,
+)
 from ..scenarios import CIPairSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -1331,20 +1337,9 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
-def _report_eval_type_group(et: str) -> str:
-    """Short per-eval-type group label for ci_paired.py's own summary/LaTeX
-    tables -- FINER than the shared latex_tables.eval_type_group (which only
-    splits binary vs. a single "numeric" bucket covering continuous+likert+
-    grades together). Likert and continuous were found (2026-08-11,
-    LOGIT_T_DITHER's investigation) to have materially different small-N
-    paired-diff behavior -- pooling them under one "numeric" Cov/Width/Score
-    number hides exactly the distinction that investigation surfaced (and
-    concretely mixes likert's 1-5-scale widths with grades' 0-100-scale
-    widths, an even more obviously incomparable pair). Local to this file
-    rather than changed in latex_tables.py, since that utility is shared
-    with cases/ci_single.py, which hasn't been checked for the same
-    per-numeric-type distinction and shouldn't be changed without that."""
-    return {"binary": "bin", "continuous": "cont", "likert": "lik", "grades": "grades"}.get(et, et)
+#: Fine-grained eval-type block label; see latex_tables for why the
+#: coarse `eval_type_group` isn't used for these tables.
+_report_eval_type_group = report_eval_type_group
 
 
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:

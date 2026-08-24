@@ -187,8 +187,27 @@ with warnings.catch_warnings():
     )
     from evalstats.core.mixed_effects import _fit_lmm_general, _get_fe_vcov_sm
 
-from ..latex_tables import booktabs_table, escape_latex, eval_type_label
+from ..latex_tables import (
+    booktabs_table,
+    coverage_cell,
+    error_rate_cell,
+    escape_latex,
+    eval_type_label,
+    mark_best_and_runnerup,
+    report_eval_type_group,
+    sort_groups,
+)
 from ..scenarios import CIPairSource, MultiArmSource, JudgeBiasSource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
+
+#: Eval types these modes sweep unless --eval-types says otherwise. "grades"
+#: is deliberately excluded: it is continuous rescaled onto a [0, 100] span
+#: (see scenarios/synthetic.py), so it adds no distinct regime, and the
+#: official tests have never reported it. Leaving it in the default was
+#: actively harmful for the pooled plots -- sidak/boot have no canonical CI
+#: for grades and so never ran there, while none/bonferroni/max_t did, which
+#: meant the two groups of curves were averaged over different eval-type
+#: mixes and their widths were not comparable at all.
+DEFAULT_EVAL_TYPES = ["binary", "continuous", "likert"]
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
     build_pair_sources,
@@ -407,6 +426,106 @@ class PairwiseResult:
     cohens_d: float = 0.0
 
 
+def _scenario_values(rows, numer, denom=lambda r: r.n_reps) -> list[float]:
+    """Collapse `rows` to one value per scenario -- sum(numer)/sum(denom)
+    within each (eval_type, label) -- so the bands treat the scenario as the
+    unit of replication, which is what it is. Pooling every rep into one
+    Bernoulli sample instead answers a much narrower question: how precisely
+    THIS suite's average is pinned down, not how the method behaves.
+    """
+    acc: dict[tuple, list[float]] = defaultdict(lambda: [0.0, 0.0])
+    for r in rows:
+        a = acc[(r.eval_type, r.label)]
+        a[0] += numer(r)
+        a[1] += denom(r)
+    return [n / d for n, d in acc.values() if d > 0]
+
+
+#: Which uncertainty band the line plots draw around each curve.
+#:   "spread" -- 10th-90th percentile across scenarios (default)
+#:   "ci"     -- 95% CI on the across-scenario mean
+#:   "both"   -- spread outside, CI inside
+#: One band by default: with a dozen methods on a panel, two translucent
+#: fills per method stack into an unreadable wash.
+#:
+#: "ci" is the default the paper figures use. With 4-10 methods per panel the
+#: percentile spread overlaps into mud, and the conditional detail it was
+#: compensating for is already carried by the tables' per-n/per-k columns and
+#: by the reliability violins. The CI band still widens honestly where
+#: scenarios disagree -- it is a scenario-level standard error, not a per-rep
+#: Monte Carlo one -- so a method that is unreliable at small n still shows a
+#: visibly uncertain mean. Switch to "spread" when the distribution itself is
+#: the point and no violin accompanies the figure.
+BAND_STYLE = "ci"
+
+
+def _scenario_bands(ax, xs, ys, per_scenario, *, color, z: float = 1.96,
+                    style: str | None = None) -> list[float]:
+    """Draw two bands around a curve of across-scenario averages.
+
+    Inner (darker): a 95% CI on the mean, ``+- z * sd / sqrt(n_scenarios)``,
+    with the scenario as the unit. It is inferential -- where the average
+    plausibly sits -- and widens exactly where scenarios disagree, so a
+    method that is unreliable at small n gets a visibly uncertain mean
+    instead of the falsely-tight interval a per-rep Monte Carlo error gives.
+    Centred on the plotted point rather than on the scenario mean: the two
+    coincide under a balanced suite, and pinning the band to the drawn line
+    avoids a visibly off-centre band that reads as a bug when they don't.
+
+    Outer (lighter): the 10th-90th percentile of the scenarios themselves.
+    This is descriptive, not inferential -- it makes no claim that the suite
+    is a random sample of anything, which matters because the suite is
+    purposively built to span regimes. It also does not shrink as reps or
+    scenarios accumulate, so it cannot lull a reader into reading a tight
+    mean as a consistent method. Percentiles rather than +-sd because these
+    quantities are bounded (coverage at 1.0, rates at 0) and skew hard
+    against the bound, where an sd band would run outside the range.
+
+    Returns the finite band endpoints so callers can fit axis limits.
+    """
+    inner_lo, inner_hi, outer_lo, outer_hi = [], [], [], []
+    for y, vals in zip(ys, per_scenario):
+        vals = [v for v in vals if np.isfinite(v)]
+        if len(vals) < 2 or not np.isfinite(y):
+            for acc in (inner_lo, inner_hi, outer_lo, outer_hi):
+                acc.append(float("nan"))
+            continue
+        half = z * float(np.std(vals, ddof=1)) / math.sqrt(len(vals))
+        inner_lo.append(y - half)
+        inner_hi.append(y + half)
+        outer_lo.append(float(np.percentile(vals, 10)))
+        outer_hi.append(float(np.percentile(vals, 90)))
+    style = style or BAND_STYLE
+    shown: list[float] = []
+    if style in ("spread", "both"):
+        ax.fill_between(xs, outer_lo, outer_hi, color=color,
+                        alpha=0.10 if style == "both" else 0.16,
+                        linewidth=0, zorder=1)
+        shown += outer_lo + outer_hi
+    if style in ("ci", "both"):
+        ax.fill_between(xs, inner_lo, inner_hi, color=color, alpha=0.22,
+                        linewidth=0, zorder=2)
+        shown += inner_lo + inner_hi
+    return [v for v in shown if np.isfinite(v)]
+
+
+def _width_scale(eval_type: str) -> float:
+    """Span of `eval_type`'s natural outcome scale, for turning an absolute
+    CI width into a fraction of that scale.
+
+    A width of 1.2 means something completely different on Likert (a 1-5
+    scale, so ~30% of the range) than on binary (0-1, so wider than the
+    entire range). Any plot that pools eval types onto one width axis has to
+    divide it out first, or the largest-scale type simply dominates the
+    average. Uses the same EVAL_TYPE_SCALE_BOUNDS the simulation already
+    applies to rescale data onto [0, 1] before calling CI methods, so the
+    normalization matches what the estimators themselves see.
+    """
+    lo, hi = EVAL_TYPE_SCALE_BOUNDS.get(eval_type, (0.0, 1.0))
+    span = hi - lo
+    return span if span > 0 else 1.0
+
+
 def _safe_wilcoxon_p(diffs: np.ndarray) -> float:
     """Wilcoxon signed-rank p-value via scipy's default method="auto".
 
@@ -583,6 +702,7 @@ def run_pairwise_simulation(
 
 
 def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
+    _, _bradley_hi = bradley_bounds(alpha)
     print(f"\n{'='*78}\n  PVALUES (PAIRWISE, NON-PPI) -- TYPE I ERROR + POWER\n  Nominal alpha: {alpha}\n{'='*78}")
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
@@ -642,7 +762,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
             ct = sum(r.n_reps for r in c_rows)
             power_cells.append(cr / ct if ct > 0 else float("nan"))
         mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
-        marker = "*" if np.isfinite(type1) and type1 > alpha + 0.02 else " "
+        marker = "*" if np.isfinite(type1) and type1 > _bradley_hi else " "
         per_label_t1 = defaultdict(lambda: [0, 0])
         for r in null_rows:
             acc = per_label_t1[(r.eval_type, r.label)]
@@ -650,7 +770,7 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
             acc[1] += r.n_reps
         label_rates = [c / t for c, t in per_label_t1.values() if t > 0]
         worst_t1 = max(label_rates) if label_rates else float("nan")
-        worst_str = f"{worst_t1:.3f}{'*' if np.isfinite(worst_t1) and worst_t1 > alpha + 0.02 else ' '}" if np.isfinite(worst_t1) else "-"
+        worst_str = f"{worst_t1:.3f}{'*' if np.isfinite(worst_t1) and worst_t1 > _bradley_hi else ' '}" if np.isfinite(worst_t1) else "-"
         n_type1 = ""
         for n in sizes_present:
             n_rows = [r for r in null_rows if r.n == n]
@@ -659,61 +779,153 @@ def print_pairwise_report(results: list[PairwiseResult], alpha: float) -> None:
             t1_n = c_n / t_n if t_n > 0 else float("nan")
             n_type1 += f"  {t1_n:>7.3f}" if np.isfinite(t1_n) else f"  {'  -':>7}"
         print(f"  {m:<20}  {type1:>5.3f}{marker}  {worst_str:>7}  {band:>13}  {mean_power:>8.3f}{n_type1}")
-    print(f"  (* = TypeI > alpha + 0.02)")
+    print(f"  (* = TypeI above Bradley's liberal band, i.e. > 1.5*alpha = {_bradley_hi:.3f})")
     print()
+
+
+def bradley_bounds(alpha: float) -> tuple[float, float]:
+    """Bradley's (1978) "liberal" robustness criterion: a test counts as
+    holding its nominal level when its empirical Type-I error / FWER falls
+    within [0.5*alpha, 1.5*alpha] -- [0.025, 0.075] at the usual alpha=0.05.
+
+    Used as the single definition of "acceptably calibrated" across this
+    module's plain-text reports, plots, and LaTeX tables, so all three views
+    of one run agree. It replaces an ad-hoc `alpha +- 0.02` band: numerically
+    near-identical at alpha=0.05, but citable, and it scales with alpha
+    instead of staying a fixed width that would be absurdly permissive at
+    alpha=0.001 and impossibly strict at alpha=0.20.
+
+    Bradley, J.V. (1978). Robustness? British Journal of Mathematical and
+    Statistical Psychology, 31(2), 144-152.
+
+    Rounded to kill binary-representation noise: `1.5 * 0.05` is
+    0.07500000000000001, so an empirical rate of exactly 0.075 would land
+    inside or outside the band depending on which side of that artifact it
+    fell -- an arbitrary distinction at a threshold readers will check by
+    hand.
+    """
+    return round(0.5 * alpha, 12), round(1.5 * alpha, 12)
+
+
+def _power_ranking_values(
+    powers: list[float], error_rates: list[float], alpha: float
+) -> list[float]:
+    """Blank out (as NaN) the power of any method that doesn't control its
+    error rate, so `mark_best_and_runnerup` skips it.
+
+    Power is only comparable between tests that hold their nominal level: an
+    uncorrected procedure sitting at FWER 0.22 will "win" any power contest
+    simply by rejecting more often, and bolding it in a paper table reads as
+    an endorsement. Excluded rows still print their power -- they're just
+    not eligible to be marked best.
+
+    Only the UPPER half of `bradley_bounds` gates here. An anti-conservative
+    test wins power by cheating, so it's disqualified; an over-conservative
+    one is handicapped instead, and if it still takes the top power that is
+    a real result worth marking rather than an artifact worth hiding.
+    """
+    _, upper = bradley_bounds(alpha)
+    return [
+        p if (np.isfinite(t1) and t1 <= upper) else float("nan")
+        for p, t1 in zip(powers, error_rates)
+    ]
 
 
 def latex_pairwise_overall_summary(results: list[PairwiseResult], alpha: float) -> str:
     """LaTeX booktabs overall summary: per-method Type-I error (with its 95%
-    MC band) + mean power, collapsed across eval types, plus one Type-I
-    column per sample size actually swept, appended to the right -- the
-    aggregate Type-I column collapses across n and can hide miscalibration
-    that only shows up at small or large sample sizes."""
+    MC band) + mean power, plus one Type-I column per sample size actually
+    swept, appended to the right -- the aggregate Type-I column collapses
+    across n and can hide miscalibration that only shows up at small or
+    large sample sizes.
+
+    Methods that ran on more than one eval type get one row per type --
+    "<method> (bin)"/"(cont)"/"(lik)" -- computed from only that type's own
+    data, with rows grouped into midrule-separated blocks. This matches
+    ci_single/ci_paired's layout so the whole paper reads one convention,
+    and it stops a pooled row from hiding a type-specific miscalibration:
+    a method can hold its nominal level on continuous data while running
+    badly inflated on Likert, and a single averaged Type-I number reports
+    neither. Power is ranked within a block, never across.
+    """
     present_methods = {r.method for r in results}
     method_labels = [m.name for m in order_present_methods(present_methods)]
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
     conditions = sorted({r.condition for r in results if r.condition != "null"})
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
 
+    method_groups: dict[str, set[str]] = defaultdict(set)
+    for r in results:
+        method_groups[r.method].add(report_eval_type_group(r.eval_type))
+    groups_present = sort_groups({g for gs in method_groups.values() for g in gs})
+
     rows = []
-    for m in method_labels:
-        m_rows = [r for r in results if r.method == m]
-        if not m_rows:
-            continue
-        covered = {r.eval_type for r in m_rows}
-        null_rows = [r for r in m_rows if r.condition == "null"]
-        c_tot = sum(r.rejects for r in null_rows)
-        t_tot = sum(r.n_reps for r in null_rows)
-        type1 = c_tot / t_tot if t_tot > 0 else float("nan")
-        _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
-        power_cells = []
-        for c in conditions:
-            c_rows = [r for r in m_rows if r.condition == c]
-            cr = sum(r.rejects for r in c_rows)
-            ct = sum(r.n_reps for r in c_rows)
-            power_cells.append(cr / ct if ct > 0 else float("nan"))
-        mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
-        row = [
-            escape_latex(m),
-            f"{type1:.3f}" if np.isfinite(type1) else "-",
-            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
-            f"{mean_power:.3f}" if np.isfinite(mean_power) else "-",
-            eval_type_label(covered, eval_types_present),
-        ]
-        for n in sizes_present:
-            n_rows = [r for r in null_rows if r.n == n]
-            c_n = sum(r.rejects for r in n_rows)
-            t_n = sum(r.n_reps for r in n_rows)
-            type1_n = c_n / t_n if t_n > 0 else float("nan")
-            row.append(f"{type1_n:.3f}" if np.isfinite(type1_n) else "-")
-        rows.append(row)
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        block_start = len(rows)
+        powers, type1s = [], []
+        for m in method_labels:
+            if g not in method_groups[m]:
+                continue
+            m_rows = [r for r in results
+                      if r.method == m and report_eval_type_group(r.eval_type) == g]
+            null_rows = [r for r in m_rows if r.condition == "null"]
+            c_tot = sum(r.rejects for r in null_rows)
+            t_tot = sum(r.n_reps for r in null_rows)
+            type1 = c_tot / t_tot if t_tot > 0 else float("nan")
+            _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
+            power_cells = []
+            for c in conditions:
+                c_rows = [r for r in m_rows if r.condition == c]
+                cr = sum(r.rejects for r in c_rows)
+                ct = sum(r.n_reps for r in c_rows)
+                power_cells.append(cr / ct if ct > 0 else float("nan"))
+            mean_power = float(np.mean([p for p in power_cells if np.isfinite(p)])) if power_cells else float("nan")
+            label = f"{escape_latex(m)} ({g})" if len(method_groups[m]) > 1 else escape_latex(m)
+            row = [
+                label,
+                error_rate_cell(type1, alpha),
+                f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
+                f"{mean_power:.3f}" if np.isfinite(mean_power) else "-",
+                g,
+            ]
+            for n in sizes_present:
+                n_rows = [r for r in null_rows if r.n == n]
+                c_n = sum(r.rejects for r in n_rows)
+                t_n = sum(r.n_reps for r in n_rows)
+                type1_n = c_n / t_n if t_n > 0 else float("nan")
+                row.append(error_rate_cell(type1_n, alpha))
+            rows.append(row)
+            powers.append(mean_power)
+            type1s.append(type1)
+
+        # Power is this table's "more is better, no nominal target" column,
+        # the role Score plays in the CI tables, so it gets the best/
+        # runner-up marks. Type-I error has a target and gets shading
+        # instead -- bolding the lowest Type-I would reward the most
+        # conservative method, not the best.
+        POWER_COL = 3
+        block = rows[block_start:]
+        marked = mark_best_and_runnerup(
+            [r[POWER_COL] for r in block],
+            _power_ranking_values(powers, type1s, alpha),
+            higher_is_better=True,
+        )
+        for row, cell in zip(block, marked):
+            row[POWER_COL] = cell
 
     return booktabs_table(
-        caption=f"pvalues (pairwise, non-PPI): Type-I error and mean power across conditions (nominal alpha={alpha}).",
+        caption=f"pvalues (pairwise, non-PPI): Type-I error and mean power across conditions (nominal alpha={alpha}). "
+                f"Methods tested on more than one eval type are reported as one row per type (bin/cont/lik), "
+                f"grouped into blocks, so no row averages across eval types. "
+                f"Type-I cells shade red when inflated above {alpha} and blue when conservative below it, "
+                f"on the same scale as the coverage tables; best and runner-up mean power are bold and "
+                f"underlined within each block, among methods holding their nominal level.",
         label="tab:pvalues_pairwise_overall",
-        columns=["Method", "Type-I error", "95\\% MC band", "Mean power", "Eval types"]
+        columns=["Method", "Type-I error", "95\\% MC band", "Mean power", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 
@@ -757,14 +969,14 @@ def _save_pairwise_typeI_power_plot_one(
     fig, axes = plt.subplots(nrows=1, ncols=2, figsize=(11.0, 4.2), squeeze=False)
     ax_t1, ax_pw = axes[0][0], axes[0][1]
     ax_t1.axhline(alpha, color="black", linewidth=1.0, linestyle="--")
-    ax_t1.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
+    ax_t1.axhspan(*bradley_bounds(alpha), color="#DDDDDD", alpha=0.4, zorder=0)
 
     for m in method_objs:
         m_rows = [r for r in et_rows if r.method == m.name]
         if not m_rows:
             continue
         null_rows = [r for r in m_rows if r.condition == "null"]
-        xs, ys = [], []
+        xs, ys, scen = [], [], []
         for n in sample_sizes:
             subset = [r for r in null_rows if r.n == n]
             if not subset:
@@ -773,11 +985,13 @@ def _save_pairwise_typeI_power_plot_one(
             t = sum(r.n_reps for r in subset)
             xs.append(n)
             ys.append(c / t if t > 0 else float("nan"))
+            scen.append(_scenario_values(subset, lambda r: r.rejects))
         if xs:
             ax_t1.plot(xs, ys, marker="o", color=m.color, markersize=4, linewidth=1.2, label=m.name, alpha=0.85)
+            _scenario_bands(ax_t1, xs, ys, scen, color=m.color)
 
         alt_rows = [r for r in m_rows if r.condition != "null"]
-        xs2, ys2 = [], []
+        xs2, ys2, scen2 = [], [], []
         for n in sample_sizes:
             subset = [r for r in alt_rows if r.n == n]
             if not subset:
@@ -786,8 +1000,10 @@ def _save_pairwise_typeI_power_plot_one(
             t = sum(r.n_reps for r in subset)
             xs2.append(n)
             ys2.append(c / t if t > 0 else float("nan"))
+            scen2.append(_scenario_values(subset, lambda r: r.rejects))
         if xs2:
             ax_pw.plot(xs2, ys2, marker="o", color=m.color, markersize=4, linewidth=1.2, label=m.name, alpha=0.85)
+            _scenario_bands(ax_pw, xs2, ys2, scen2, color=m.color)
 
     ax_t1.set_title(f"{eval_type}: Type-I error")
     ax_t1.set_xlabel("n")
@@ -797,7 +1013,14 @@ def _save_pairwise_typeI_power_plot_one(
     ax_pw.set_xlabel("n")
     ax_pw.set_ylabel("Rejection rate (alt)")
     ax_pw.set_xscale("log")
-    ax_t1.legend(fontsize=6.5, loc="upper right")
+    # Legend outside, to the right of the rightmost panel. In-axes it sat on
+    # top of the curves it was labelling -- with a dozen methods there is no
+    # empty corner to put it in, and the Type-I panel's interesting region
+    # (the inflated methods above alpha) is exactly where "upper right" lands.
+    # bbox_inches="tight" at savefig grows the canvas to include it.
+    _handles, _labels = ax_t1.get_legend_handles_labels()
+    ax_pw.legend(_handles, _labels, loc="center left", bbox_to_anchor=(1.02, 0.5),
+                 borderaxespad=0.0, fontsize=7)
     _loc = _ticker.FixedLocator(sample_sizes)
     _fmt = _ticker.FuncFormatter(lambda x, _: str(int(x)))
     _nul = _ticker.NullLocator()
@@ -1593,6 +1816,7 @@ def _time_stats_multiarm(results: list[MultiArmResult]) -> tuple[float, float]:
 
 
 def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
+    _, _bradley_hi = bradley_bounds(alpha)
     print(f"\n{'='*78}\n  PVALUES (MULTI-ARM, NON-PPI) -- FWER + BEST-ARM POWER\n  Nominal alpha: {alpha}\n{'='*78}")
     corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
@@ -1637,7 +1861,7 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
         avg_ms, se_ms = _time_stats_multiarm(null_rows)
         band = f"{lo:.3f}-{hi:.3f}" if np.isfinite(lo) else "-"
         time_str = f"{avg_ms:.1f}+-{se_ms:.1f}" if np.isfinite(avg_ms) else "-"
-        marker = "*" if np.isfinite(fwer) and fwer > alpha + 0.02 else " "
+        marker = "*" if np.isfinite(fwer) and fwer > _bradley_hi else " "
         per_label_fwer = defaultdict(lambda: [0, 0])
         for r in null_rows:
             acc = per_label_fwer[(r.eval_type, r.label)]
@@ -1645,7 +1869,7 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
             acc[1] += r.n_reps
         label_rates = [c / t for c, t in per_label_fwer.values() if t > 0]
         worst_fwer = max(label_rates) if label_rates else float("nan")
-        worst_str = f"{worst_fwer:.3f}{'*' if np.isfinite(worst_fwer) and worst_fwer > alpha + 0.02 else ' '}" if np.isfinite(worst_fwer) else "-"
+        worst_str = f"{worst_fwer:.3f}{'*' if np.isfinite(worst_fwer) and worst_fwer > _bradley_hi else ' '}" if np.isfinite(worst_fwer) else "-"
         n_fwer = ""
         for n in sizes_present:
             n_null = [r for r in null_rows if r.n == n]
@@ -1661,63 +1885,111 @@ def print_multiarm_report(results: list[MultiArmResult], alpha: float) -> None:
             kf = kc / kt if kt > 0 else float("nan")
             k_fwer += f"  {kf:>6.3f}" if np.isfinite(kf) else f"  {'  -':>6}"
         print(f"  {corr:<20}  {fwer:>5.3f}{marker}  {worst_str:>8}  {band:>13}  {power:>8.3f}  {time_str:>14}{n_fwer}{k_fwer}")
-    print(f"  (* = FWER > alpha + 0.02)")
+    print(f"  (* = FWER above Bradley's liberal band, i.e. > 1.5*alpha = {_bradley_hi:.3f})")
 
 
-def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float) -> str:
+def latex_multiarm_overall_summary(results: list[MultiArmResult], alpha: float, *,
+                                   include_uncorrected: bool = True) -> str:
     """LaTeX booktabs overall summary: per-correction FWER (with its 95% MC
-    band) + best-arm power, collapsed across eval types, plus one FWER
-    column per sample size and per k value actually swept."""
-    corrections = [m.name for m in MULTIARM_CORRECTION_METHODS if m.name in {r.correction for r in results}]
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+    band) + best-arm power, plus one FWER column per sample size and per k
+    value actually swept.
+
+    As in `latex_pairwise_overall_summary`, corrections that ran on more
+    than one eval type get one row per type in midrule-separated blocks
+    rather than a single pooled row, matching the ci_single/ci_paired
+    layout; power is ranked within a block.
+    """
+    # See latex_simultaneous_ci_overall_summary: `none` shades saturated red
+    # across the row and only restates that correction is needed; the plots
+    # already drop it (MULTIARM_PLOT_METHODS).
+    pool = MULTIARM_CORRECTION_METHODS if include_uncorrected else MULTIARM_PLOT_METHODS
+    corrections = [m.name for m in pool if m.name in {r.correction for r in results}]
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
     ks_present = sorted({r.k for r in results if r.condition == "null"})
 
+    corr_groups: dict[str, set[str]] = defaultdict(set)
+    for r in results:
+        if r.correction not in corrections:
+            continue
+        corr_groups[r.correction].add(report_eval_type_group(r.eval_type))
+    groups_present = sort_groups({g for gs in corr_groups.values() for g in gs})
+
     rows = []
-    for corr in corrections:
-        c_rows = [r for r in results if r.correction == corr]
-        covered = {r.eval_type for r in c_rows}
-        null_rows = [r for r in c_rows if r.condition == "null"]
-        alt_rows = [r for r in c_rows if r.condition == "alt"]
-        fwer_t = sum(r.n_reps for r in null_rows)
-        fwer_c = sum(r.any_reject for r in null_rows)
-        power_t = sum(r.n_reps for r in alt_rows)
-        power_c = sum(r.best_selected for r in alt_rows)
-        fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
-        power = power_c / power_t if power_t > 0 else float("nan")
-        _, _, lo, hi = _mc_proportion_stats(fwer_c, fwer_t)
-        avg_ms, se_ms = _time_stats_multiarm(null_rows)
-        time_str = f"${avg_ms:.1f} \\pm {se_ms:.1f}$" if np.isfinite(avg_ms) else "-"
-        row = [
-            escape_latex(corr),
-            f"{fwer:.3f}" if np.isfinite(fwer) else "-",
-            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
-            f"{power:.3f}" if np.isfinite(power) else "-",
-            time_str,
-            eval_type_label(covered, eval_types_present),
-        ]
-        for n in sizes_present:
-            n_rows = [r for r in null_rows if r.n == n]
-            c_n = sum(r.any_reject for r in n_rows)
-            t_n = sum(r.n_reps for r in n_rows)
-            fwer_n = c_n / t_n if t_n > 0 else float("nan")
-            row.append(f"{fwer_n:.3f}" if np.isfinite(fwer_n) else "-")
-        for k in ks_present:
-            k_rows = [r for r in null_rows if r.k == k]
-            c_k = sum(r.any_reject for r in k_rows)
-            t_k = sum(r.n_reps for r in k_rows)
-            fwer_k = c_k / t_k if t_k > 0 else float("nan")
-            row.append(f"{fwer_k:.3f}" if np.isfinite(fwer_k) else "-")
-        rows.append(row)
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        block_start = len(rows)
+        powers, fwers = [], []
+        for corr in corrections:
+            if g not in corr_groups[corr]:
+                continue
+            c_rows = [r for r in results
+                      if r.correction == corr and report_eval_type_group(r.eval_type) == g]
+            null_rows = [r for r in c_rows if r.condition == "null"]
+            alt_rows = [r for r in c_rows if r.condition == "alt"]
+            fwer_t = sum(r.n_reps for r in null_rows)
+            fwer_c = sum(r.any_reject for r in null_rows)
+            power_t = sum(r.n_reps for r in alt_rows)
+            power_c = sum(r.best_selected for r in alt_rows)
+            fwer = fwer_c / fwer_t if fwer_t > 0 else float("nan")
+            power = power_c / power_t if power_t > 0 else float("nan")
+            _, _, lo, hi = _mc_proportion_stats(fwer_c, fwer_t)
+            avg_ms, se_ms = _time_stats_multiarm(null_rows)
+            # No +- se: it is a fraction of a millisecond on every method and
+            # eats a column's width for nothing (the CI tables drop it too).
+            time_str = f"{avg_ms:.1f}" if np.isfinite(avg_ms) else "-"
+            label = f"{escape_latex(corr)} ({g})" if len(corr_groups[corr]) > 1 else escape_latex(corr)
+            row = [
+                label,
+                error_rate_cell(fwer, alpha),
+                f"{power:.3f}" if np.isfinite(power) else "-",
+                time_str,
+                g,
+            ]
+            for n in sizes_present:
+                n_rows = [r for r in null_rows if r.n == n]
+                c_n = sum(r.any_reject for r in n_rows)
+                t_n = sum(r.n_reps for r in n_rows)
+                fwer_n = c_n / t_n if t_n > 0 else float("nan")
+                row.append(error_rate_cell(fwer_n, alpha))
+            for k in ks_present:
+                k_rows = [r for r in null_rows if r.k == k]
+                c_k = sum(r.any_reject for r in k_rows)
+                t_k = sum(r.n_reps for r in k_rows)
+                fwer_k = c_k / t_k if t_k > 0 else float("nan")
+                row.append(error_rate_cell(fwer_k, alpha))
+            rows.append(row)
+            powers.append(power)
+            fwers.append(fwer)
+
+        # See the pairwise table: power is the marked column, FWER is
+        # shaded, and a correction that doesn't hold its FWER can't win on
+        # power.
+        POWER_COL = 2
+        block = rows[block_start:]
+        marked = mark_best_and_runnerup(
+            [r[POWER_COL] for r in block],
+            _power_ranking_values(powers, fwers, alpha),
+            higher_is_better=True,
+        )
+        for row, cell in zip(block, marked):
+            row[POWER_COL] = cell
 
     return booktabs_table(
         caption=f"pvalues (multi-arm, non-PPI): FWER and best-arm selection power (nominal alpha={alpha}). "
-                f"Per-$n$ and per-$k$ FWER columns are collapsed across the other dimension and across eval types.",
+                f"Corrections tested on more than one eval type are reported as one row per type "
+                f"(bin/cont/lik), grouped into blocks, so no row averages across eval types. "
+                f"Per-$n$ and per-$k$ FWER columns are collapsed across the other dimension only. "
+                f"FWER cells shade red when inflated above {alpha} and blue when conservative below it, "
+                f"on the same scale as the coverage tables; best and runner-up power are bold and "
+                f"underlined within each block, among corrections holding their nominal level.",
         label="tab:pvalues_multiarm_overall",
-        columns=["Correction", "FWER", "95\\% MC band", "Best-arm power", "Time (ms)", "Eval types"]
+        columns=["Correction", "FWER", "Best-arm power", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present]
                 + [f"k={k}" for k in ks_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 
@@ -1791,7 +2063,13 @@ def save_multiarm_fwer_power_plot(*, results: list[MultiArmResult], alpha: float
             ax.set_ylim(max(-0.02, pow_lo - pow_pad), min(1.02, pow_hi + pow_pad))
         else:
             ax.set_ylim(-0.02, 1.02)
-        ax.legend(fontsize=7, loc="lower right")
+    # One legend outside the rightmost facet rather than one per facet: every
+    # facet plots the same correction strategies, so per-facet legends were
+    # both redundant and sitting on top of the points they labelled.
+    _handles, _labels = axes[0][0].get_legend_handles_labels()
+    if _handles:
+        axes[0][-1].legend(_handles, _labels, loc="center left", bbox_to_anchor=(1.02, 0.5),
+                           borderaxespad=0.0, fontsize=7)
 
     fig.suptitle(f"Family-Wise Error Rate vs. Best-Arm Selection Power\nNominal alpha = {alpha}", fontsize=12)
     with warnings.catch_warnings():
@@ -1822,7 +2100,7 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
 
     fig, (ax_fwer, ax_pow) = plt.subplots(1, 2, figsize=(10.0, 4.5))
     ax_fwer.axhline(alpha, color="black", linewidth=1.0, linestyle="--", label=f"α={alpha}")
-    ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
+    ax_fwer.axhspan(*bradley_bounds(alpha), color="#DDDDDD", alpha=0.4, zorder=0)
 
     all_fwer_vals: list[float] = [alpha]
     all_pow_vals: list[float] = []
@@ -1831,6 +2109,7 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
         if not c_rows:
             continue
         xs, ys_fwer, ys_pow = [], [], []
+        scen_fwer, scen_pow = [], []
         for k in ks_present:
             k_rows = [r for r in c_rows if r.k == k]
             null_rows = [r for r in k_rows if r.condition == "null"]
@@ -1844,9 +2123,15 @@ def save_multiarm_fwer_vs_k_plot(*, results: list[MultiArmResult], alpha: float,
             xs.append(k)
             ys_fwer.append(fwer_c / fwer_t)
             ys_pow.append(power_c / power_t)
+            scen_fwer.append(_scenario_values(null_rows, lambda r: r.any_reject))
+            scen_pow.append(_scenario_values(alt_rows, lambda r: r.best_selected))
         if xs:
             ax_fwer.plot(xs, ys_fwer, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
             ax_pow.plot(xs, ys_pow, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            # Include the band endpoints in the y-limit inputs, not just
+            # the point estimates, so the zoom below doesn't clip the band.
+            all_fwer_vals.extend(_scenario_bands(ax_fwer, xs, ys_fwer, scen_fwer, color=m.color))
+            all_pow_vals.extend(_scenario_bands(ax_pow, xs, ys_pow, scen_pow, color=m.color))
             all_fwer_vals.extend(ys_fwer)
             all_pow_vals.extend(ys_pow)
 
@@ -1922,7 +2207,7 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
 
     fig, (ax_fwer, ax_pow) = plt.subplots(1, 2, figsize=(10.0, 4.5))
     ax_fwer.axhline(alpha, color="black", linewidth=1.0, linestyle="--", label=f"α={alpha}")
-    ax_fwer.axhspan(max(0.0, alpha - 0.02), alpha + 0.02, color="#DDDDDD", alpha=0.4, zorder=0)
+    ax_fwer.axhspan(*bradley_bounds(alpha), color="#DDDDDD", alpha=0.4, zorder=0)
 
     all_fwer_vals: list[float] = [alpha]
     all_pow_vals: list[float] = []
@@ -1931,6 +2216,7 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
         if not c_rows:
             continue
         xs, ys_fwer, ys_pow = [], [], []
+        scen_fwer, scen_pow = [], []
         for n in sizes_present:
             n_rows = [r for r in c_rows if r.n == n]
             null_rows = [r for r in n_rows if r.condition == "null"]
@@ -1944,9 +2230,15 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
             xs.append(n)
             ys_fwer.append(fwer_c / fwer_t)
             ys_pow.append(power_c / power_t)
+            scen_fwer.append(_scenario_values(null_rows, lambda r: r.any_reject))
+            scen_pow.append(_scenario_values(alt_rows, lambda r: r.best_selected))
         if xs:
             ax_fwer.plot(xs, ys_fwer, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
             ax_pow.plot(xs, ys_pow, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            # Include the band endpoints in the y-limit inputs, not just
+            # the point estimates, so the zoom below doesn't clip the band.
+            all_fwer_vals.extend(_scenario_bands(ax_fwer, xs, ys_fwer, scen_fwer, color=m.color))
+            all_pow_vals.extend(_scenario_bands(ax_pow, xs, ys_pow, scen_pow, color=m.color))
             all_fwer_vals.extend(ys_fwer)
             all_pow_vals.extend(ys_pow)
 
@@ -2133,6 +2425,119 @@ def save_multiarm_reliability_violin_plot(*, results: list[MultiArmResult], alph
 # ---------------------------------------------------------------------------
 
 
+def save_multiarm_violin_vs_n_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
+    """Grouped violin plots of FWER and best-arm power vs. sample size n,
+    one violin per correction at each n (dodged side by side), faceted by
+    eval type -- the multiarm analogue of
+    save_simultaneous_ci_violin_vs_n_plot.
+
+    save_multiarm_reliability_violin_plot already shows the per-scenario
+    spread, but collapses n away, so a correction that is badly calibrated
+    only at small n looks merely "wide" there. This plot separates the two:
+    a correction whose violins march upward with n is converging, while one
+    whose violins stay wide at every n is unreliable regardless of sample
+    size -- a distinction the pooled violin cannot draw.
+
+    Each violin pools every (scenario, k) cell at that n rather than
+    averaging k away, since the small-n/large-k interaction is exactly what
+    the FWER corrections differ on.
+
+    Drops `none` (see MULTIARM_PLOT_METHODS): uncorrected FWER runs so far
+    above nominal that it squashes the y-axis and hides the comparison
+    between the corrections this plot exists to make. It remains in the
+    report tables and the CSV.
+    """
+    import matplotlib.patches as mpatches
+    import matplotlib.pyplot as plt
+    import seaborn as sns
+
+    eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
+    corrections = [m.name for m in MULTIARM_PLOT_METHODS if m.name in {r.correction for r in results}]
+    palette = {m.name: m.color for m in MULTIARM_PLOT_METHODS}
+    plot_names = {m.name for m in MULTIARM_PLOT_METHODS}
+
+    rows = []
+    for r in results:
+        if r.n_reps <= 0 or r.correction not in plot_names:
+            continue
+        if r.condition == "null":
+            rows.append({"eval_type": r.eval_type, "n": r.n, "correction": r.correction,
+                         "metric": "fwer", "value": r.any_reject / r.n_reps})
+        elif r.condition == "alt":
+            rows.append({"eval_type": r.eval_type, "n": r.n, "correction": r.correction,
+                         "metric": "power", "value": r.best_selected / r.n_reps})
+    df = pd.DataFrame(rows)
+
+    n_cols = max(len(eval_types_present), 1)
+    if df.empty:
+        fig, axes = plt.subplots(2, n_cols, figsize=(5.5 * n_cols, 8.5), squeeze=False)
+        for ax_row in axes:
+            for ax in ax_row:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+        Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_path, dpi=150, bbox_inches="tight")
+        plt.close(fig)
+        return out_path
+
+    ns_present = sorted(df["n"].unique())
+    n_order = [str(n) for n in ns_present]
+    df["n_label"] = df["n"].astype(str)
+
+    # Width has to scale with the HUE count, not just the number of n groups:
+    # this case plots ~10 corrections per group where the simultaneous-CI
+    # analogue plots 4, and a fixed per-group width squeezes each violin into
+    # an unreadable sliver. 0.30in per (correction x n) reproduces the
+    # simultaneous-CI plot's proportions at its own 4-method width.
+    col_width = max(1.3, 0.30 * len(corrections)) * len(ns_present) + 2.5
+    fig, axes = plt.subplots(2, n_cols, figsize=(col_width * n_cols, 9.0), squeeze=False)
+    legend_handles = [mpatches.Patch(facecolor=palette[m], alpha=0.5, label=m) for m in corrections]
+
+    for col_idx, et in enumerate(eval_types_present):
+        et_df = df[df["eval_type"] == et]
+        for row_idx, (metric, ylabel, ref_line) in enumerate([
+            ("fwer", "FWER (null)", alpha),
+            ("power", "Best-arm selection power (alt)", None),
+        ]):
+            ax = axes[row_idx][col_idx]
+            m_df = et_df[et_df["metric"] == metric]
+            et_methods = [name for name in corrections if name in m_df["correction"].values]
+            if m_df.empty or not et_methods:
+                ax.text(0.5, 0.5, "No data", transform=ax.transAxes, ha="center", va="center")
+                continue
+            sns.violinplot(
+                data=m_df, x="n_label", y="value", order=n_order, hue="correction",
+                hue_order=et_methods, palette=palette, cut=0, inner="quartile",
+                linewidth=0.7, dodge=True, alpha=0.35, legend=False, ax=ax,
+            )
+            sns.stripplot(
+                data=m_df, x="n_label", y="value", order=n_order, hue="correction",
+                hue_order=et_methods, palette=palette, size=3, alpha=0.5, jitter=0.2,
+                dodge=True, linewidth=0.3, edgecolor="white", legend=False, ax=ax,
+            )
+            if ref_line is not None:
+                ax.axhline(ref_line, linestyle="--", color="tab:cyan", linewidth=1.2, zorder=0)
+            ax.set_xlabel("n" if row_idx == 1 else "")
+            ax.set_ylabel(ylabel if col_idx == 0 else "")
+            ax.set_title(et.upper() if row_idx == 0 else "")
+
+    axes[0][-1].legend(
+        handles=legend_handles, title="Correction", fontsize=8, title_fontsize=9,
+        loc="upper left", bbox_to_anchor=(1.01, 1.0), borderaxespad=0.0,
+    )
+    fig.suptitle(
+        "Family-Wise Error Rate and Best-Arm Power vs. Sample Size\n"
+        f"Nominal alpha = {alpha}; each violin pools all $k$ and scenarios at that $n$",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
 def _canonical_ci_func(eval_type: str):
     """The alpha-parameterized ci_func for evalstats' canonical pairwise CI
     at this eval type, or ``None`` if there isn't one wired up here.
@@ -2182,6 +2587,15 @@ class SimultaneousCIResult:
     """Sum, across reps, of that rep's MEAN CI width across all k(k-1)/2
     pairs -- dividing by n_reps gives the average per-comparison width,
     comparable across different k and n."""
+    total_width_sq: float = 0.0
+    """Sum of the SQUARES of the same per-rep mean widths, so the width
+    curves can carry a Monte Carlo band like the coverage curves do.
+    Coverage is a proportion and its MC error follows from the count alone;
+    a mean width does not, and no standard error is recoverable from
+    `total_width` by itself. Defaults to 0.0 so results CSVs written before
+    this field existed still load -- plots treat a zero sum as "no variance
+    recorded" and simply omit the band rather than drawing a zero-width
+    one, which would falsely read as a perfectly-determined mean."""
     total_score: float = 0.0
     """Sum, across reps, of that rep's FAMILY-WISE interval score: mean CI
     width across all k(k-1)/2 pairs, plus (2/alpha) * the WORST pair's miss
@@ -2252,6 +2666,7 @@ def _run_simultaneous_ci_cell(
     need = {m: (m in all_methods) for m in ("none", "bonferroni", "max_t", CORR_SIDAK.name, CORR_BOOT.name)}
     agg_covered: dict[tuple[str, str], int] = {(m, cond): 0 for m in all_methods for cond in ("null", "alt")}
     agg_width: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
+    agg_width_sq: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
     agg_score: dict[tuple[str, str], float] = {(m, cond): 0.0 for m in all_methods for cond in ("null", "alt")}
     # Per-(method, condition), not a single per-condition total -- each
     # construction's own wall-clock cost, so e.g. `boot`'s extra joint
@@ -2428,7 +2843,9 @@ def _run_simultaneous_ci_cell(
                     # buys family-wise coverage by widening every interval is no
                     # longer penalized as if it were miscalibrated per-pair.
                     family_score = float(np.mean(widths)) + (2.0 / alpha) * (max(miss_distances) if miss_distances else 0.0)
-                    agg_width[(method_name, condition)] += float(np.mean(widths)) if widths else 0.0
+                    _mean_width = float(np.mean(widths)) if widths else 0.0
+                    agg_width[(method_name, condition)] += _mean_width
+                    agg_width_sq[(method_name, condition)] += _mean_width ** 2
                     agg_score[(method_name, condition)] += family_score
                     if covered_all:
                         agg_covered[(method_name, condition)] += 1
@@ -2437,7 +2854,9 @@ def _run_simultaneous_ci_cell(
         SimultaneousCIResult(
             eval_type=source.eval_type, label=source.label, n=n, k=k_arms, ci_method=method_name,
             condition=condition, n_reps=n_reps, all_covered=agg_covered[(method_name, condition)],
-            total_width=agg_width[(method_name, condition)], total_score=agg_score[(method_name, condition)],
+            total_width=agg_width[(method_name, condition)],
+            total_width_sq=agg_width_sq[(method_name, condition)],
+            total_score=agg_score[(method_name, condition)],
             total_time=agg_time[(method_name, condition)],
         )
         for method_name in all_methods
@@ -2612,6 +3031,7 @@ def _print_simultaneous_overall_summary_table(
 def latex_simultaneous_ci_overall_summary(
     results: list[SimultaneousCIResult], alpha: float, *,
     label_suffix: str = "", caption_suffix: str = "",
+    condition: str | None = None, include_uncorrected: bool = True,
 ) -> str:
     """LaTeX booktabs overall summary: per-CI-method family-wise coverage
     (null, with its 95% MC band) + average width (null and alt), collapsed
@@ -2625,58 +3045,108 @@ def latex_simultaneous_ci_overall_summary(
     with *label_suffix*/*caption_suffix* set so multiple calls in one
     document don't collide on \\label{}."""
     target = 1.0 - alpha
-    ci_methods = [m.name for m in ALL_SIMULTANEOUS_CI_METHODS if m.name in {r.ci_method for r in results}]
-    eval_types_present = {et for et in EVAL_TYPES if any(r.eval_type == et for r in results)}
+    # `include_uncorrected=False` drops the `none` baseline, matching what the
+    # plots already do (SIMULTANEOUS_CI_PLOT_METHODS). It is so far below
+    # nominal that its row shades saturated red across every column, which
+    # dominates the table visually while only restating that some correction
+    # is needed. Kept by default so the raw run log still carries the
+    # baseline; the paper tables pass False.
+    pool = ALL_SIMULTANEOUS_CI_METHODS if include_uncorrected else SIMULTANEOUS_CI_PLOT_METHODS
+    ci_methods = [m.name for m in pool if m.name in {r.ci_method for r in results}]
     sizes_present = sorted({r.n for r in results if r.condition == "null"})
+    ks_present = sorted({r.k for r in results if r.condition == "null"})
+
+    method_groups: dict[str, set[str]] = defaultdict(set)
+    for r in results:
+        if r.ci_method not in ci_methods:
+            continue
+        method_groups[r.ci_method].add(report_eval_type_group(r.eval_type))
+    groups_present = sort_groups({g for gs in method_groups.values() for g in gs})
 
     rows = []
-    for cm in ci_methods:
-        c_rows = [r for r in results if r.ci_method == cm]
-        covered = {r.eval_type for r in c_rows}
-        null_rows = [r for r in c_rows if r.condition == "null"]
-        alt_rows = [r for r in c_rows if r.condition == "alt"]
-        t_null = sum(r.n_reps for r in null_rows)
-        c_null = sum(r.all_covered for r in null_rows)
-        w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
-        s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
-        t_alt = sum(r.n_reps for r in alt_rows)
-        c_alt = sum(r.all_covered for r in alt_rows)
-        w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
-        s_alt = sum(r.total_score for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
-        cov_null = c_null / t_null if t_null > 0 else float("nan")
-        cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
-        _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
-        row = [
-            escape_latex(cm),
-            f"{cov_null:.3f}" if np.isfinite(cov_null) else "-",
-            f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
-            f"{w_null:.4f}" if np.isfinite(w_null) else "-",
-            f"{s_null:.4f}" if np.isfinite(s_null) else "-",
-            f"{cov_alt:.3f}" if np.isfinite(cov_alt) else "-",
-            f"{w_alt:.4f}" if np.isfinite(w_alt) else "-",
-            f"{s_alt:.4f}" if np.isfinite(s_alt) else "-",
-            eval_type_label(covered, eval_types_present),
-        ]
-        for n in sizes_present:
-            n_rows = [r for r in null_rows if r.n == n]
-            c_n = sum(r.all_covered for r in n_rows)
-            t_n = sum(r.n_reps for r in n_rows)
-            cov_n = c_n / t_n if t_n > 0 else float("nan")
-            row.append(f"{cov_n:.3f}" if np.isfinite(cov_n) else "-")
-        rows.append(row)
+    rule_before = set()
+    for g in groups_present:
+        if rows:
+            rule_before.add(len(rows))
+        block_start = len(rows)
+        scores = []
+        for cm in ci_methods:
+            if g not in method_groups[cm]:
+                continue
+            c_rows = [r for r in results
+                      if r.ci_method == cm and report_eval_type_group(r.eval_type) == g]
+            null_rows = [r for r in c_rows if r.condition == "null"]
+            alt_rows = [r for r in c_rows if r.condition == "alt"]
+            t_null = sum(r.n_reps for r in null_rows)
+            c_null = sum(r.all_covered for r in null_rows)
+            w_null = sum(r.total_width for r in null_rows) / t_null if t_null > 0 else float("nan")
+            s_null = sum(r.total_score for r in null_rows) / t_null if t_null > 0 else float("nan")
+            t_alt = sum(r.n_reps for r in alt_rows)
+            c_alt = sum(r.all_covered for r in alt_rows)
+            w_alt = sum(r.total_width for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+            s_alt = sum(r.total_score for r in alt_rows) / t_alt if t_alt > 0 else float("nan")
+            cov_null = c_null / t_null if t_null > 0 else float("nan")
+            cov_alt = c_alt / t_alt if t_alt > 0 else float("nan")
+            _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
+            label = f"{escape_latex(cm)} ({g})" if len(method_groups[cm]) > 1 else escape_latex(cm)
+            row = [
+                label,
+                *( [coverage_cell(cov_null, target),
+                    f"{w_null:.4f}" if np.isfinite(w_null) else "-",
+                    f"{s_null:.4f}" if np.isfinite(s_null) else "-"]
+                   if condition in (None, "null") else [] ),
+                *( [coverage_cell(cov_alt, target),
+                    f"{w_alt:.4f}" if np.isfinite(w_alt) else "-",
+                    f"{s_alt:.4f}" if np.isfinite(s_alt) else "-"]
+                   if condition in (None, "alt") else [] ),
+                g,
+            ]
+            per_cond = alt_rows if condition == "alt" else null_rows
+            for n in sizes_present:
+                n_rows = [r for r in per_cond if r.n == n]
+                t_n = sum(r.n_reps for r in n_rows)
+                row.append(coverage_cell(
+                    sum(r.all_covered for r in n_rows) / t_n if t_n > 0 else float("nan"), target))
+            for k in ks_present:
+                k_rows = [r for r in per_cond if r.k == k]
+                t_k = sum(r.n_reps for r in k_rows)
+                row.append(coverage_cell(
+                    sum(r.all_covered for r in k_rows) / t_k if t_k > 0 else float("nan"), target))
+            rows.append(row)
+            scores.append(s_null)
+
+        # This family measures coverage and width, so it takes the CI tables'
+        # treatment wholesale: coverage shading plus best/runner-up on the
+        # interval score, which already trades the two off (Gneiting &
+        # Raftery). Ranked within the eval-type block, since widths and
+        # scores live on different scales per type.
+        SCORE_NULL_COL = 3 if condition is not None else 3
+        block = rows[block_start:]
+        marked = mark_best_and_runnerup([r[SCORE_NULL_COL] for r in block], scores)
+        for row, cell in zip(block, marked):
+            row[SCORE_NULL_COL] = cell
 
     return booktabs_table(
         caption=f"pvalues (simultaneous CI): family-wise coverage, average per-comparison width, "
-                f"and average per-comparison interval score -- none/bonferroni/max\\_t (generic, "
+                f"and average per-comparison interval score -- "
+                f"{'none/' if include_uncorrected else ''}bonferroni/max\\_t (generic, "
                 f"\\texttt{{--multiarm-method}}-based, bootstrap\\_t by default) vs. sidak/boot "
                 f"(Sidak- and joint-bootstrap-scaled widenings of evalstats' canonical per-eval-type "
                 f"CI: Tango for binary, Logit-t for continuous/likert){caption_suffix} "
-                f"(nominal coverage={target:.0%}).",
+                f"(nominal coverage={target:.0%}). Methods run on more than one eval type get one "
+                f"row per type (bin/cont/lik), grouped into blocks, so no row averages across "
+                f"types -- pooling hides that max\\_t's Cov(alt) is fine on continuous/likert but "
+                f"collapses on binary, where its symmetric studentized interval is the wrong shape "
+                f"for a difference of proportions with a real effect at small $n$.",
         label=f"tab:pvalues_simultaneous_ci_overall{label_suffix}",
-        columns=["CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Score(null)",
-                 "Cov(alt)", "Width(alt)", "Score(alt)", "Eval types"]
-                + [f"n={n}" for n in sizes_present],
+        columns=["CI method"]
+                + (["Cov(null)", "Width(null)", "Score(null)"] if condition in (None, "null") else [])
+                + (["Cov(alt)", "Width(alt)", "Score(alt)"] if condition in (None, "alt") else [])
+                + ["Type"]
+                + [f"n={n}" for n in sizes_present]
+                + [f"k={k}" for k in ks_present],
         rows=rows,
+        rule_before=rule_before,
     )
 
 
@@ -2694,9 +3164,14 @@ def latex_simultaneous_ci_by_eval_type_summary(results: list[SimultaneousCIResul
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in results)]
 
     rows = []
+    rule_before = set()
     for et in eval_types_present:
         et_results = [r for r in results if r.eval_type == et]
         et_methods = [cm for cm in ci_methods if any(r.ci_method == cm for r in et_results)]
+        if rows:
+            rule_before.add(len(rows))
+        block_start = len(rows)
+        block_scores = []
         for cm in et_methods:
             c_rows = [r for r in et_results if r.ci_method == cm]
             null_rows = [r for r in c_rows if r.condition == "null"]
@@ -2714,23 +3189,38 @@ def latex_simultaneous_ci_by_eval_type_summary(results: list[SimultaneousCIResul
             _, _, lo, hi = _mc_proportion_stats(c_null, t_null)
             rows.append([
                 escape_latex(et), escape_latex(cm),
-                f"{cov_null:.3f}" if np.isfinite(cov_null) else "-",
+                coverage_cell(cov_null, target),
                 f"${lo:.3f}\\text{{--}}{hi:.3f}$" if np.isfinite(lo) else "-",
                 f"{w_null:.4f}" if np.isfinite(w_null) else "-",
                 f"{s_null:.4f}" if np.isfinite(s_null) else "-",
-                f"{cov_alt:.3f}" if np.isfinite(cov_alt) else "-",
+                coverage_cell(cov_alt, target),
                 f"{w_alt:.4f}" if np.isfinite(w_alt) else "-",
                 f"{s_alt:.4f}" if np.isfinite(s_alt) else "-",
             ])
+            block_scores.append(s_null)
+
+        # Rank Score within each eval-type block, not across the whole
+        # table: widths and scores live on different scales per eval type
+        # (a Likert difference spans 4 points, a binary one spans 1), so a
+        # global "best score" would just pick whichever eval type has the
+        # narrowest scale.
+        SCORE_NULL_COL = 5
+        block = rows[block_start:]
+        marked = mark_best_and_runnerup([r[SCORE_NULL_COL] for r in block], block_scores)
+        for row, cell in zip(block, marked):
+            row[SCORE_NULL_COL] = cell
 
     return booktabs_table(
         caption=f"pvalues (simultaneous CI): family-wise coverage, average per-comparison width, "
                 f"and average per-comparison interval score, faceted by eval type "
-                f"(nominal coverage={target:.0%}).",
+                f"(nominal coverage={target:.0%}). Coverage cells shade red when below nominal and "
+                f"blue when over-conservative; best and runner-up Score(null) are marked within "
+                f"each eval-type block.",
         label="tab:pvalues_simultaneous_ci_by_eval_type",
         columns=["Eval type", "CI method", "Cov(null)", "95\\% MC band", "Width(null)", "Score(null)",
                  "Cov(alt)", "Width(alt)", "Score(alt)"],
         rows=rows,
+        rule_before=rule_before,
     )
 
 
@@ -2764,12 +3254,23 @@ def save_results_artifacts_simultaneous_ci(
     csv_path = out_base / f"{run_stem}_simultaneous_ci_results.csv"
     with csv_path.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["eval_type", "label", "n", "k", "ci_method", "condition", "n_reps", "all_covered", "coverage_rate", "avg_width", "avg_score", "total_time_s", "time_ms_per_rep"])
+        # width_sd is the per-rep SD behind avg_width. The other columns are
+        # per-rep averages, from which no spread is recoverable -- without
+        # this one, anything rebuilt from the CSV (rather than from the live
+        # result objects) could not draw the width plots' Monte Carlo band.
+        writer.writerow(["eval_type", "label", "n", "k", "ci_method", "condition", "n_reps", "all_covered", "coverage_rate", "avg_width", "width_sd", "avg_score", "total_time_s", "time_ms_per_rep"])
         for r in results:
             time_ms = (r.total_time * 1000.0 / r.n_reps) if r.n_reps > 0 and r.total_time > 0 else float("nan")
+            mean_w = r.total_width / r.n_reps if r.n_reps > 0 else float("nan")
+            width_sd = (
+                math.sqrt(max(r.total_width_sq / r.n_reps - mean_w ** 2, 0.0))
+                if r.n_reps > 0 and r.total_width_sq > 0 else float("nan")
+            )
             writer.writerow([
                 r.eval_type, r.label, r.n, r.k, r.ci_method, r.condition, r.n_reps, r.all_covered,
-                f"{r.all_covered / r.n_reps:.8f}", f"{r.total_width / r.n_reps:.8f}", f"{r.total_score / r.n_reps:.8f}",
+                f"{r.all_covered / r.n_reps:.8f}", f"{mean_w:.8f}",
+                f"{width_sd:.8f}" if width_sd == width_sd else "",
+                f"{r.total_score / r.n_reps:.8f}",
                 f"{r.total_time:.6f}", f"{time_ms:.4f}" if not (time_ms != time_ms) else "",
             ])
     summary_path = out_base / f"{run_stem}_simultaneous_ci_summary.log"
@@ -2852,7 +3353,11 @@ def save_simultaneous_ci_coverage_width_plot(*, results: list[SimultaneousCIResu
             ax.set_ylim(max(0.0, lo - pad), min(1.02, hi + pad))
         else:
             ax.set_ylim(0.0, 1.02)
-        ax.legend(fontsize=7, loc="lower right")
+    # One legend outside the rightmost facet (see save_multiarm_fwer_power_plot).
+    _handles, _labels = axes[0][0].get_legend_handles_labels()
+    if _handles:
+        axes[0][-1].legend(_handles, _labels, loc="center left", bbox_to_anchor=(1.02, 0.5),
+                           borderaxespad=0.0, fontsize=7)
 
     fig.suptitle(
         "Simultaneous Confidence Interval Calibration: Coverage vs. Width\n"
@@ -2898,20 +3403,30 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
         if not c_rows:
             continue
         xs, ys_cov, ys_width = [], [], []
+        scen_cov, scen_width = [], []
         for k in ks_present:
             k_rows = [r for r in c_rows if r.k == k]
             null_rows = [r for r in k_rows if r.condition == "null"]
             t_null = sum(r.n_reps for r in null_rows)
             c_null = sum(r.all_covered for r in null_rows)
-            w_null = sum(r.total_width for r in null_rows)
+            # Normalize each row's width by its own eval type's scale span
+            # before pooling -- see _width_scale. The squares divide by the
+            # square of that span, so the band stays on the same axis.
+            w_null = sum(r.total_width / _width_scale(r.eval_type) for r in null_rows)
             if t_null == 0:
                 continue
             xs.append(k)
             ys_cov.append(c_null / t_null)
             ys_width.append(w_null / t_null)
+            scen_cov.append(_scenario_values(null_rows, lambda r: r.all_covered))
+            scen_width.append(_scenario_values(
+                null_rows, lambda r: r.total_width / _width_scale(r.eval_type)))
         if xs:
             ax_cov.plot(xs, ys_cov, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
             ax_width.plot(xs, ys_width, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            # Band endpoints join the y-limit inputs so the zoom below fits them.
+            all_cov_vals.extend(_scenario_bands(ax_cov, xs, ys_cov, scen_cov, color=m.color))
+            _scenario_bands(ax_width, xs, ys_width, scen_width, color=m.color)
             all_cov_vals.extend(ys_cov)
 
     ax_cov.set_xlabel("k (number of arms)")
@@ -2928,7 +3443,7 @@ def save_simultaneous_ci_coverage_width_vs_k_plot(*, results: list[SimultaneousC
     ax_cov.set_xticks(ks_present)
 
     ax_width.set_xlabel("k (number of arms)")
-    ax_width.set_ylabel("Average per-comparison CI width (null)")
+    ax_width.set_ylabel("Avg per-comparison CI width (null),\nas a fraction of each eval type's scale")
     ax_width.set_title("Width vs. number of arms")
     ax_width.set_ylim(bottom=0.0)
     ax_width.set_xticks(ks_present)
@@ -2991,20 +3506,30 @@ def save_simultaneous_ci_coverage_width_vs_n_plot(*, results: list[SimultaneousC
         if not c_rows:
             continue
         xs, ys_cov, ys_width = [], [], []
+        scen_cov, scen_width = [], []
         for n in sizes_present:
             n_rows = [r for r in c_rows if r.n == n]
             null_rows = [r for r in n_rows if r.condition == "null"]
             t_null = sum(r.n_reps for r in null_rows)
             c_null = sum(r.all_covered for r in null_rows)
-            w_null = sum(r.total_width for r in null_rows)
+            # Normalize each row's width by its own eval type's scale span
+            # before pooling -- see _width_scale. The squares divide by the
+            # square of that span, so the band stays on the same axis.
+            w_null = sum(r.total_width / _width_scale(r.eval_type) for r in null_rows)
             if t_null == 0:
                 continue
             xs.append(n)
             ys_cov.append(c_null / t_null)
             ys_width.append(w_null / t_null)
+            scen_cov.append(_scenario_values(null_rows, lambda r: r.all_covered))
+            scen_width.append(_scenario_values(
+                null_rows, lambda r: r.total_width / _width_scale(r.eval_type)))
         if xs:
             ax_cov.plot(xs, ys_cov, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
             ax_width.plot(xs, ys_width, marker="o", color=m.color, markersize=5, linewidth=1.4, label=m.name, alpha=0.85)
+            # Band endpoints join the y-limit inputs so the zoom below fits them.
+            all_cov_vals.extend(_scenario_bands(ax_cov, xs, ys_cov, scen_cov, color=m.color))
+            _scenario_bands(ax_width, xs, ys_width, scen_width, color=m.color)
             all_cov_vals.extend(ys_cov)
 
     ax_cov.set_xlabel("n (sample size)")
@@ -3018,7 +3543,7 @@ def save_simultaneous_ci_coverage_width_vs_n_plot(*, results: list[SimultaneousC
     ax_cov.set_ylim(max(0.0, cov_lo - cov_pad), min(1.02, cov_hi + cov_pad))
 
     ax_width.set_xlabel("n (sample size)")
-    ax_width.set_ylabel("Average per-comparison CI width (null)")
+    ax_width.set_ylabel("Avg per-comparison CI width (null),\nas a fraction of each eval type's scale")
     ax_width.set_title("Width vs. sample size")
     ax_width.set_ylim(bottom=0.0)
 
@@ -3039,6 +3564,137 @@ def save_simultaneous_ci_coverage_width_vs_n_plot(*, results: list[SimultaneousC
     fig.suptitle(
         "Simultaneous Confidence Interval Calibration vs. Sample Size\n"
         f"Nominal coverage = {target:.0%}",
+        fontsize=12,
+    )
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", message=r".*tight_layout.*", category=UserWarning)
+        fig.tight_layout()
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    fig.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    return out_path
+
+
+def save_simultaneous_ci_null_vs_alt_coverage_plot(
+    *, results: list[SimultaneousCIResult], alpha: float, out_path: str,
+    omit: dict[str, list[str]] | None = None,
+    omit_note: dict[str, str] | None = None,
+) -> str:
+    """Family-wise coverage vs. n under the null (top row) and under the
+    alternative (bottom row), faceted by eval type, sharing a y-axis within
+    each column so the two conditions are directly comparable for that type.
+
+    Exists because the headline calibration figure
+    (save_simultaneous_ci_coverage_width_vs_n_plot) plots null coverage
+    only, and the overall table reports Cov(alt) collapsed across n -- so a
+    method whose alternative-condition coverage falls apart looks merely
+    slightly conservative in both.
+
+    Faceting by eval type is load-bearing, not cosmetic: the effect this
+    plot exists to show is binary-specific. max_t builds a symmetric
+    studentized bootstrap interval (theta_hat +- c*SE), while sidak/boot
+    widen the canonical per-type CI -- Tango, a score interval, for binary.
+    A difference of proportions with a real effect at small n is skewed and
+    boundary-constrained, exactly where symmetric Wald-type intervals lose
+    to score intervals. On continuous and likert, where no boundary problem
+    arises, max_t is fine. Pooling eval types averages the two and reports
+    neither.
+
+    ``omit`` maps an eval-type group to methods dropped from BOTH of that
+    group's panels (default: max_t on binary). Dropping it from the alt
+    panel alone does not work: the y-axis is shared down each column so the
+    two conditions stay comparable, and max_t's null-panel band on binary
+    reaches 0.72, which drags the alt panel's scale with it. Either way its
+    collapse leaves the remaining methods -- the ones a reader is choosing
+    between -- indistinguishable, which defeats the purpose of the panel.
+    The omission is annotated in-panel rather than silent, with ``omit_note``
+    supplying the text, so the number stays visible and the reader is
+    pointed at the table that carries it in full.
+    """
+    import matplotlib.pyplot as plt
+    import matplotlib.ticker as _ticker
+
+    if omit is None:
+        omit = {"bin": ["max_t"]}
+    if omit_note is None:
+        omit_note = {
+            "bin": ("max$\\_$t omitted: not built for binary data and severely\n"
+                    "undercovers here (Cov(alt) = 0.86 overall, and still below\n"
+                    "nominal at the largest $n$) -- see the accompanying table."),
+        }
+
+    target = 1.0 - alpha
+    sizes_present = sorted({r.n for r in results})
+    groups = sort_groups({report_eval_type_group(r.eval_type) for r in results})
+    n_cols = max(len(groups), 1)
+    fig, axes = plt.subplots(nrows=2, ncols=n_cols, figsize=(6.0 * n_cols, 8.4),
+                             squeeze=False, sharey="col")
+
+    for col, g in enumerate(groups):
+        g_rows = [r for r in results if report_eval_type_group(r.eval_type) == g]
+        for row, condition in enumerate(("null", "alt")):
+            ax = axes[row][col]
+            dropped = set(omit.get(g, []))
+            ax.axhline(target, color="black", linewidth=1.0, linestyle="--")
+            for m in SIMULTANEOUS_CI_PLOT_METHODS:
+                if m.name in dropped:
+                    continue
+                rows_m = [r for r in g_rows if r.ci_method == m.name and r.condition == condition]
+                if not rows_m:
+                    continue
+                xs, ys, scen = [], [], []
+                for n in sizes_present:
+                    n_rows = [r for r in rows_m if r.n == n]
+                    t_n = sum(r.n_reps for r in n_rows)
+                    if t_n == 0:
+                        continue
+                    xs.append(n)
+                    ys.append(sum(r.all_covered for r in n_rows) / t_n)
+                    scen.append(_scenario_values(n_rows, lambda r: r.all_covered))
+                if not xs:
+                    continue
+                ax.plot(xs, ys, marker="o", color=m.color, markersize=5, linewidth=1.4,
+                        alpha=0.85)
+                _scenario_bands(ax, xs, ys, scen, color=m.color)
+            if dropped and omit_note.get(g) and condition == "alt":
+                ax.text(0.02, 0.03, omit_note[g], transform=ax.transAxes, fontsize=7.5,
+                        va="bottom", ha="left", color="#444444", style="italic",
+                        bbox=dict(boxstyle="round,pad=0.35", facecolor="white",
+                                  edgecolor="#BBBBBB", linewidth=0.6, alpha=0.9))
+            ax.set_title(f"{g.upper()} -- {'null' if condition == 'null' else 'alternative'}",
+                         fontsize=10.5)
+            ax.set_xscale("log")
+            ax.set_xticks(sizes_present)
+            ax.get_xaxis().set_major_formatter(_ticker.FuncFormatter(lambda x, _: str(int(x))))
+            ax.get_xaxis().set_minor_locator(_ticker.NullLocator())
+            if row == 1:
+                ax.set_xlabel("n (sample size)")
+            if col == 0:
+                ax.set_ylabel("Family-wise coverage")
+
+    # Build the legend from every method drawn ANYWHERE in the figure, not
+    # from one panel's handles: the top-left panel is a group that may omit a
+    # method (see `omit`), which would silently drop it from the legend while
+    # it is still plotted in the other facets -- an unlabelled line.
+    from matplotlib.lines import Line2D
+    present = [m for m in SIMULTANEOUS_CI_PLOT_METHODS
+               if any(r.ci_method == m.name for r in results)]
+    handles = [Line2D([], [], color="black", linestyle="--", linewidth=1.0,
+                      label=f"nominal={target:.0%}")]
+    handles += [Line2D([], [], color=m.color, marker="o", markersize=5, linewidth=1.4,
+                       alpha=0.85, label=m.name) for m in present]
+    axes[0][-1].legend(handles=handles, loc="center left", bbox_to_anchor=(1.02, 0.5),
+                       borderaxespad=0.0, fontsize=8)
+    # Describe whatever band was actually drawn -- hardcoding one description
+    # mislabels the figure whenever BAND_STYLE is switched.
+    band_desc = {
+        "spread": "bands are the 10--90th percentile across scenarios",
+        "ci": "bands are 95% CIs on the across-scenario mean",
+        "both": "outer bands are the 10--90th percentile across scenarios, inner are 95% CIs on the mean",
+    }.get(BAND_STYLE, "bands show across-scenario uncertainty")
+    fig.suptitle(
+        "Simultaneous CI Coverage: Null vs. Alternative, by Eval Type\n"
+        f"Nominal = {target:.0%}; y-axis shared within each eval type; {band_desc}",
         fontsize=12,
     )
     with warnings.catch_warnings():
@@ -12016,8 +12672,9 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="pairwise/multiarm modes: 'synthetic' (default), or a real-data source: " + ", ".join(REAL_PAIR_SOURCES))
     parser.add_argument("--scenario-suite", choices=SCENARIO_SUITES, default="expanded",
                          help="pairwise mode: synthetic scenario breadth for build_pair_sources (ignored for real data sources)")
-    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE",
-                         help="pairwise/multiarm modes: restrict to these eval types")
+    parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=DEFAULT_EVAL_TYPES, metavar="TYPE",
+                         help="pairwise/multiarm/simultaneous_ci modes: restrict to these eval types "
+                              f"(default: {' '.join(DEFAULT_EVAL_TYPES)}; pass 'grades' explicitly to include it)")
     parser.add_argument("--sizes", type=int, nargs="+", default=[10, 20, 50, 100], metavar="N",
                          help="pairwise/multiarm modes: sample sizes to sweep")
     parser.add_argument("--runs", type=int, default=1, metavar="R",
@@ -12122,6 +12779,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                               "per (N, N_lab) cell plus one averaged summary plot per direction (see "
                               "save_ppi_power_nlab_grid_plots), plus one direction-comparison plot averaged "
                               "over the whole grid (save_ppi_power_nlab_grid_direction_plot).")
+    parser.add_argument("--label-efficiency-reps", type=int, default=None, metavar="N",
+                         help="ppi mode: reps for the label-efficiency check specifically. Defaults to "
+                              "--effect-reps. Separate from it because the label-efficiency multipliers "
+                              "feed a published rule of thumb and want more precision than the power/"
+                              "comparison stages that also read --effect-reps; the official presets pin "
+                              "this to 300.")
     parser.add_argument("--no-label-efficiency-check", action="store_true", default=False,
                          help="ppi mode: skip the label-efficiency check (run_ppi_label_efficiency_check) -- "
                               "for a fixed labeling budget, how many labels would a human-only classical test "
@@ -12315,10 +12978,10 @@ def official_args_multiarm(base_seed: int = 42) -> argparse.Namespace:
     from an O(k_pairs*n_bootstrap*n) gather to a counts/matmul formulation
     (~12-27x faster for the "bootstrap" mode max_t/romano_wolf/boot share,
     ~2.3x for westfall_young's "permutation" mode). Left at 2000 for
-    official_args()'s other consumers (pairwise, simultaneous_ci, ppi) --
-    this finding is specific to multiarm's resampling-based FWER
-    corrections, not verified to generalize to simultaneous_ci's CI coverage
-    calibration."""
+    official_args()'s other consumers (pairwise, ppi) -- this finding is
+    specific to resampling-based FWER corrections. simultaneous_ci sets its
+    own 5000 (see official_args_simultaneous_ci): its `boot` is the same
+    joint-bootstrap estimator, so the same argument carries."""
     args = official_args(base_seed)
     args.mode = "multiarm"
     args.sizes = [15, 30, 50, 100, 200, 500, 1000]
@@ -12370,6 +13033,12 @@ def official_args_ppi(base_seed: int = 42) -> argparse.Namespace:
     check's ~6798 -- so it defaults on for every official_args_ppi* preset."""
     args = official_args(base_seed)
     args.mode = "ppi"
+    # 300, not effect_reps' 200: the label-efficiency multipliers back a
+    # published rule of thumb, so the paper's runs have always used the
+    # higher rep count (see the Aug-2026 reps300 run the figures came
+    # from). Pinned here so --official-tests can't silently produce a
+    # noisier version than the one that was published.
+    args.label_efficiency_reps = 300
     args.factorial_check = True
     args.factorial_reps = args.effect_reps
     args.factorial_n_boot = args.ppi_n_boot
@@ -12606,11 +13275,21 @@ def official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespace:
       bootstrap, k(k-1)/2 marginal pairs plus the shared max-T resample,
       times the tango/sidak/boot rows on top for binary sources) is already
       the most expensive of the pvalues sub-modes.
+    - bootstrap_n=5000, overriding official_args()'s 2000, matching
+      official_args_multiarm and real_official_args_simultaneous_ci. `boot`
+      here IS the joint bootstrap whose FWER ran ~0.001-0.002 hot at
+      bootstrap_n=500-2000 in multiarm (see official_args_multiarm), from
+      Monte Carlo noise in the joint max-statistic's upper-tail quantile --
+      the same estimator, so the same fix applies. This variant was the last
+      resampling preset still at 2000, which left the synthetic
+      simultaneous-CI figures inconsistent with both their real-data
+      counterparts and the multi-arm figures they sit beside.
     """
     args = official_args(base_seed)
     args.mode = "simultaneous_ci"
     args.scenario_suite = "expanded"
     args.sizes = [15, 30, 50, 100, 200, 500]
+    args.bootstrap_n = 5000
     return args
 
 
@@ -12676,6 +13355,44 @@ def real_official_args_simultaneous_ci(base_seed: int = 42) -> argparse.Namespac
     return args
 
 
+
+def official_args_ppi_likert(base_seed: int = 42) -> argparse.Namespace:
+    """Likert-only variant of official_args_ppi.
+
+    Added 2026-08-24 alongside the judge-rounding fix in
+    scenarios.synthetic.generate_judge_bias_cell: Likert judge scores were
+    left on a continuous scale (only the ground truth was rounded), so the
+    judge used for inference was not the integer-reporting judge a Likert
+    rubric actually produces -- and not the judge
+    measure_judge_alignment reported agreement for. Only likert changed;
+    binary goes through _jb_llm_binary (already 0/1) and continuous is
+    genuinely continuous, and a label-efficiency A/B confirmed this
+    empirically (continuous rho^2 delta was exactly 0.0000 at every
+    alignment target, binary unchanged within MC noise).
+
+    So re-running the whole PPI suite would burn hours recomputing two
+    eval types whose numbers cannot have moved. This preset restricts the
+    sweep to likert, letting the existing binary/continuous results stand.
+    eval_types filters SOURCES before run_ppi_simulation (not results
+    afterwards), so the compute really is skipped.
+    """
+    args = official_args_ppi(base_seed)
+    args.eval_types = ["likert"]
+    args.factorial_check_binary = False   # binary unaffected by the fix
+    return args
+
+
+def official_args_ppi_factorial_likert(base_seed: int = 42) -> argparse.Namespace:
+    """Likert-only variant of official_args_ppi_factorial -- the factorial
+    plus judge-human alignment sweep on its own, for the same reason as
+    official_args_ppi_likert. This is the one that feeds the alignment
+    figure."""
+    args = official_args_ppi_factorial(base_seed)
+    args.eval_types = ["likert"]
+    args.factorial_check_binary = False
+    return args
+
+
 def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace]]:
     """All official-test variants for this case, as (label, args) pairs."""
     return [
@@ -12688,6 +13405,8 @@ def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace
         ("synthetic (ppi factorial only)", official_args_ppi_factorial(base_seed)),
         ("synthetic (ppi factorial only, likert 1-7)", official_args_ppi_factorial_likert7(base_seed)),
         ("synthetic (ppi factorial only, binary)", official_args_ppi_factorial_binary(base_seed)),
+        ("synthetic (ppi, LIKERT ONLY -- judge-rounding re-run)", official_args_ppi_likert(base_seed)),
+        ("synthetic (ppi factorial only, LIKERT ONLY)", official_args_ppi_factorial_likert(base_seed)),
         ("synthetic (ppi n-formula check only)", official_args_ppi_nformula(base_seed)),
         ("synthetic (ppi rho effect-size drift check only)", official_args_ppi_rho_drift(base_seed)),
         ("synthetic (simultaneous CI)", official_args_simultaneous_ci(base_seed)),
@@ -12876,6 +13595,12 @@ def run(args: argparse.Namespace) -> CaseResult:
                 )
                 output_paths.append(reliability_path)
                 print(f"Saved plot: {reliability_path}")
+                violin_n_path = save_multiarm_violin_vs_n_plot(
+                    results=ma_results, alpha=args.alpha,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_violin_vs_n.png"),
+                )
+                output_paths.append(violin_n_path)
+                print(f"Saved plot: {violin_n_path}")
 
             null_rows = [r for r in ma_results if r.condition == "null"]
             fwer = sum(r.any_reject for r in null_rows) / sum(r.n_reps for r in null_rows) if null_rows else float("nan")
@@ -13562,7 +14287,8 @@ def run(args: argparse.Namespace) -> CaseResult:
             # power_sources above), so it gets its own opt-out flag rather
             # than riding along with --no-comparison-check.
             if not getattr(args, "no_label_efficiency_check", False):
-                label_eff_reps = getattr(args, "effect_reps", 200)
+                label_eff_reps = (getattr(args, "label_efficiency_reps", None)
+                                  or getattr(args, "effect_reps", 200))
                 print(f"\npvalues simulation (PPI-corrected, label efficiency) -- "
                       f"reps={label_eff_reps}, n_boot={args.ppi_n_boot}")
                 label_eff_results, label_eff_raw, label_eff_calib_rows = run_ppi_label_efficiency_check(

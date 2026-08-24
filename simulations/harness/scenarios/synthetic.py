@@ -3733,7 +3733,10 @@ def _alignment_metric_dict(a: np.ndarray, b: np.ndarray, eval_type: str) -> dict
     out: dict[str, float] = {}
 
     if eval_type in ("binary", "likert"):
-        ai, bi = a.astype(int), b.astype(int)
+        # rint, NOT astype(int): astype truncates toward zero, so an
+        # unrounded caller would silently lose a sub-unit shift (a
+        # judge at truth+0.34 would read as perfectly agreeing).
+        ai, bi = np.rint(a).astype(int), np.rint(b).astype(int)
         out["percent_agreement"] = float(accuracy_score(ai, bi) * 100.0)
         # CAUTION when reading these two for likert: both are UNWEIGHTED
         # (nominal) coefficients, so a 1-vs-5 miss counts exactly as badly as
@@ -4208,6 +4211,34 @@ def generate_judge_bias_cell(
     llm_A_runs = np.column_stack(a_cols)
     llm_B_runs = np.column_stack(b_cols)
     llm_C_runs = np.column_stack(c_cols)
+
+    if scenario.eval_type == "likert":
+        # A Likert judge reports on the SAME integer grid the human labels
+        # use -- _jb_llm/_jb_llm_repeated build judge scores as an affine
+        # distortion of the (already rounded) truth plus continuous noise
+        # and never re-discretise, which left the judge on a continuous
+        # scale that no rubric-scored judge could actually emit.
+        #
+        # That gap was not cosmetic. It made the judge used for INFERENCE
+        # (continuous, carrying the full bias) a different object from the
+        # judge used to REPORT agreement (rounded by
+        # measure_judge_alignment, where a sub-half-step bias vanishes),
+        # so an alignment metric could read a perfect 1.000 for a judge
+        # the tests simultaneously showed producing ~80% false positives.
+        # Rounding here makes the two the same judge. It also means a bias
+        # smaller than half a scale point genuinely cannot move an integer
+        # judge's output, which is a property of ordinal reporting, not an
+        # artifact to be corrected away.
+        _lo, _hi = 1.0, float(scenario.likert_max)
+        _round = lambda a: np.clip(np.rint(a), _lo, _hi)
+        llm_a2, llm_b2 = _round(llm_a2), _round(llm_b2)
+        llm_x, llm_y = _round(llm_x), _round(llm_y)
+        llm_a3, llm_b3, llm_c3 = _round(llm_a3), _round(llm_b3), _round(llm_c3)
+        llm_A, llm_B, llm_C = _round(llm_A), _round(llm_B), _round(llm_C)
+        llm_W, llm_X = _round(llm_W), _round(llm_X)
+        llm_Y, llm_Z = _round(llm_Y), _round(llm_Z)
+        llm_A_runs, llm_B_runs, llm_C_runs = (
+            _round(llm_A_runs), _round(llm_B_runs), _round(llm_C_runs))
 
     return JudgeBiasCellData(
         llm_a2=llm_a2, llm_b2=llm_b2, lab_a2=lab_a2, lab_b2=lab_b2, truth_a2=truth_a2, truth_b2=truth_b2,

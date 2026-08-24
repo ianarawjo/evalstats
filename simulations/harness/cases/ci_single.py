@@ -71,7 +71,13 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
 
-from ..latex_tables import booktabs_table, escape_latex, coverage_cell, mark_best_and_runnerup
+from ..latex_tables import (
+    booktabs_table,
+    coverage_cell,
+    escape_latex,
+    mark_best_and_runnerup,
+    report_eval_type_group,
+)
 from ..scenarios import CISource, EVAL_TYPES, EVAL_TYPE_SCALE_BOUNDS
 from ..scenarios.synthetic import (
     SCENARIO_SUITES,
@@ -892,19 +898,9 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     print()
 
 
-def _report_eval_type_group(et: str) -> str:
-    """Short per-eval-type group label for ci_single.py's own LaTeX table --
-    FINER than the shared latex_tables.eval_type_group (which only splits
-    binary vs. a single "numeric" bucket covering continuous+likert+grades
-    together). Mirrors ci_paired.py's _report_eval_type_group: likert gets
-    its own block rather than being averaged into "numeric" alongside
-    continuous, since that average would mix two different scales/regimes
-    into a number that isn't comparable to either group-pure method's row.
-    Local to this file rather than folded into latex_tables.py, since that
-    utility is also used by csv_to_latex_summary.py,
-    csv_to_simultaneous_ci_summary.py, and pvalues.py, which still want the
-    coarser 2-way split."""
-    return {"binary": "bin", "continuous": "cont", "likert": "lik", "grades": "grades"}.get(et, et)
+#: Fine-grained eval-type block label; see latex_tables for why the
+#: coarse `eval_type_group` isn't used for these tables.
+_report_eval_type_group = report_eval_type_group
 
 
 def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -> str:
