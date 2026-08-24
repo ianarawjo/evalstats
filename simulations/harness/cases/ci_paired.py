@@ -168,6 +168,18 @@ class SimResult:
     total_width: float
     total_score: float = 0.0
     """Sum of interval_score() (see evalstats.core.stats_utils) across n_reps."""
+    total_pen_under: float = 0.0
+    """Sum of the (2/alpha)*(lo - y) penalty for y BELOW the interval.
+
+    Bracher, Ray, Gneiting & Reich (2021) decompose the interval score into
+    the interval width (sharpness) and the penalty for observations outside
+    the interval (calibration), splitting the latter into over- and
+    underprediction to expose systematic bias. Kept separate from
+    total_score because the mean score is ~90% width, so a method can
+    under-cover badly and still post the best score -- the penalty term is
+    what tracks calibration (it reproduces the MinCov ordering exactly)."""
+    total_pen_over: float = 0.0
+    """Sum of the (2/alpha)*(y - hi) penalty for y ABOVE the interval."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     is_null: bool = False
@@ -538,6 +550,8 @@ def _run_cell(
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
     total_score: dict = {m: 0.0 for m in active_methods}
+    total_pen_under: dict = {m: 0.0 for m in active_methods}
+    total_pen_over: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
     true_diff = source_obj.true_diff
@@ -547,6 +561,10 @@ def _run_cell(
             covered[method] += 1
         total_w[method] += ci_high - ci_low
         total_score[method] += interval_score(ci_low, ci_high, true_diff, alpha)
+        if true_diff < ci_low:
+            total_pen_under[method] += (2.0 / alpha) * (ci_low - true_diff)
+        elif true_diff > ci_high:
+            total_pen_over[method] += (2.0 / alpha) * (true_diff - ci_high)
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -738,6 +756,8 @@ def _run_cell(
             source=source_obj.source, label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
             total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=total_pen_under[method],
+            total_pen_over=total_pen_over[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, model_a=source_obj.model_a, model_b=source_obj.model_b,
             benchmark_id=source_obj.benchmark_id, corpus_size=source_obj.max_n,
@@ -889,6 +909,8 @@ def _run_nested_pairwise_cell(
     covered: dict = {m: 0 for m in active_methods}
     total_w: dict = {m: 0.0 for m in active_methods}
     total_score: dict = {m: 0.0 for m in active_methods}
+    total_pen_under: dict = {m: 0.0 for m in active_methods}
+    total_pen_over: dict = {m: 0.0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
 
@@ -897,6 +919,10 @@ def _run_nested_pairwise_cell(
             covered[method] += 1
         total_w[method] += ci_high - ci_low
         total_score[method] += interval_score(ci_low, ci_high, true_diff, alpha)
+        if true_diff < ci_low:
+            total_pen_under[method] += (2.0 / alpha) * (ci_low - true_diff)
+        elif true_diff > ci_high:
+            total_pen_over[method] += (2.0 / alpha) * (true_diff - ci_high)
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -1107,6 +1133,8 @@ def _run_nested_pairwise_cell(
             source="synthetic", label=source_obj.label, eval_type=source_obj.eval_type,
             n=n, method=method.name, n_reps=n_reps, covered=covered[method],
             total_width=total_w[method], total_score=total_score[method],
+            total_pen_under=total_pen_under[method],
+            total_pen_over=total_pen_over[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, run_noise_frac=source_obj.run_noise_frac, runs=runs,
         )
@@ -1180,10 +1208,10 @@ def _time_stats(subset: list[SimResult]) -> tuple[float, float]:
 
 
 def _headline_cov_width_score(
-    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]],
+    per_n_vals: dict[tuple[str, int], list[tuple[float, float, float, float]]],
     m: str,
     sizes_present: list[int],
-) -> tuple[float, float, float]:
+) -> tuple[float, float, float, float]:
     """Headline (Cov, Width, Score) for method `m`: average per n first (one
     number per n, unweighted across whatever sources contributed at that n),
     then average those per-n numbers across n -- rather than pooling every
@@ -1199,13 +1227,15 @@ def _headline_cov_width_score(
                 float(np.mean([v[0] for v in vals])),
                 float(np.mean([v[1] for v in vals])),
                 float(np.mean([v[2] for v in vals])),
+                float(np.mean([v[3] for v in vals])),
             ))
     if not per_n_means:
-        return float("nan"), float("nan"), float("nan")
+        return float("nan"), float("nan"), float("nan"), float("nan")
     return (
-        float(np.mean([c for c, _, _ in per_n_means])),
-        float(np.mean([w for _, w, _ in per_n_means])),
-        float(np.mean([s for _, _, s in per_n_means])),
+        float(np.mean([c for c, _, _, _ in per_n_means])),
+        float(np.mean([w for _, w, _, _ in per_n_means])),
+        float(np.mean([s for _, _, s, _ in per_n_means])),
+        float(np.mean([q for _, _, _, q in per_n_means])),
     )
 
 
@@ -1249,9 +1279,12 @@ def _print_overall_summary_table(
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
           f"  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
+    print(f"  Score = Width + Penalty. They are reported separately because Score is\n"
+          f"  ~90% Width, so a too-narrow method can post the best Score while\n"
+          f"  under-covering; Penalty is the part that tracks calibration.")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Penalty':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
     for m in method_labels:
-        mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
+        mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
         _, _, lo, hi = _mc_proportion_stats(c_tot, t_tot)
         avg_ms, se_ms = _time_stats(
@@ -1265,7 +1298,7 @@ def _print_overall_summary_table(
             c_n, t_n = per_n_counts.get((m, n), (0, 0))
             cov_n = c_n / t_n if t_n > 0 else float("nan")
             n_cols_vals += f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} " if np.isfinite(cov_n) else f"  {'  -':>7}"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {mp:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
 
 
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int, statistic: str) -> None:
@@ -1281,7 +1314,8 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(r.eval_type, r.method, r.n)].append((cov, width, score))
+        penalty = (r.total_pen_under + r.total_pen_over) / r.n_reps
+        agg[(r.eval_type, r.method, r.n)].append((cov, width, score, penalty))
         c_prev, t_prev = agg_counts[(r.eval_type, r.method, r.n)]
         agg_counts[(r.eval_type, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
@@ -1403,7 +1437,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         cov = r.covered / r.n_reps
         width = r.total_width / r.n_reps
         score = r.total_score / r.n_reps
-        agg[(g, r.method, r.n)].append((cov, width, score))
+        agg[(g, r.method, r.n)].append((cov, width, score, (r.total_pen_under + r.total_pen_over) / r.n_reps))
         c_prev, t_prev = agg_counts[(g, r.method, r.n)]
         agg_counts[(g, r.method, r.n)] = (c_prev + r.covered, t_prev + r.n_reps)
 
@@ -1424,11 +1458,12 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             rule_before.add(len(rows))
         group_start = len(rows)
         score_vals: list[float] = []
+        penalty_vals: list[float] = []
         for m in method_labels:
             if g not in method_groups[m]:
                 continue
             multi_group = len(method_groups[m]) > 1
-            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float]]] = defaultdict(list)
+            per_n_vals: dict[tuple[str, int], list[tuple[float, float, float, float]]] = defaultdict(list)
             all_counts: dict[str, tuple[int, int]] = defaultdict(lambda: (0, 0))
             per_n_counts: dict[tuple[str, int], tuple[int, int]] = defaultdict(lambda: (0, 0))
             for n in sizes_present:
@@ -1440,7 +1475,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 all_counts[m] = (c_prev + c, t_prev + t)
                 per_n_counts[(m, n)] = (c, t)
 
-            mc, mw, ms = _headline_cov_width_score(per_n_vals, m, sizes_present)
+            mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
             avg_ms, _ = _time_stats(
                 [r for r in non_null if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
@@ -1450,6 +1485,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 label,
                 coverage_cell(mc, target),
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
+                f"{mp:.4f}" if np.isfinite(mp) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
                 time_str,
                 g,
@@ -1460,22 +1496,26 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 row.append(coverage_cell(cov_n, target))
             rows.append(row)
             score_vals.append(ms)
+            penalty_vals.append(mp)
 
-        score_col = 3  # Method, Coverage, Width, Score
-        decorated = mark_best_and_runnerup([r[score_col] for r in rows[group_start:]], score_vals)
-        for i, cell in enumerate(decorated):
-            rows[group_start + i][score_col] = cell
+        # Mark the best/runner-up in BOTH Penalty and Score. Marking Score
+        # alone bolds whichever method is narrowest, which is how a
+        # badly-calibrated method ends up looking like the winner.
+        for col, vals in ((4, score_vals), (3, penalty_vals)):
+            decorated = mark_best_and_runnerup([r[col] for r in rows[group_start:]], vals)
+            for i, cell in enumerate(decorated):
+                rows[group_start + i][col] = cell
 
     return booktabs_table(
         caption=(
             f"ci\\_paired: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
-            "Score is the interval score (width + $\\frac{2}{\\alpha}\\times$miss-distance; lower is better). "
+            "Score is the interval score, decomposed as Width + Penalty, where Penalty is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so Penalty is the column that reflects calibration: ""a method can be narrowest, and so score best, while covering worst. "
             "Methods tested on more than one eval type are reported as one row per type "
             "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Cov", "Width", "Score $\\downarrow$", "Time (ms)", "Type"]
+        columns=["Method", "Cov", "Width", "Penalty $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
@@ -1495,6 +1535,7 @@ def save_results_artifacts(
         writer.writerow([
             "source", "model_a", "model_b", "benchmark_id", "label", "eval_type", "n", "method", "n_reps",
             "covered", "total_width", "coverage", "mean_width", "total_score", "mean_score",
+            "mean_penalty", "mean_pen_under", "mean_pen_over",
             "total_time", "total_time_sq", "mcse", "band95_low", "band95_high",
             "avg_time_ms", "se_time_ms", "is_null", "corpus_size", "true_diff", "run_noise_frac", "runs",
         ])
@@ -1502,12 +1543,16 @@ def save_results_artifacts(
             coverage = r.covered / r.n_reps
             mean_width = r.total_width / r.n_reps
             mean_score = r.total_score / r.n_reps
+            mean_pen_under = r.total_pen_under / r.n_reps
+            mean_pen_over = r.total_pen_over / r.n_reps
             _, mcse, lo, hi = _mc_proportion_stats(r.covered, r.n_reps)
             avg_ms, se_ms = _time_stats([r])
             writer.writerow([
                 r.source, r.model_a or "", r.model_b or "", r.benchmark_id or "", r.label, r.eval_type, r.n,
                 r.method, r.n_reps, r.covered, f"{r.total_width:.8f}", f"{coverage:.8f}", f"{mean_width:.8f}",
                 f"{r.total_score:.8f}", f"{mean_score:.8f}",
+                f"{mean_pen_under + mean_pen_over:.8f}",
+                f"{mean_pen_under:.8f}", f"{mean_pen_over:.8f}",
                 f"{r.total_time:.10f}", f"{r.total_time_sq:.10f}",
                 f"{mcse:.8f}", f"{lo:.8f}", f"{hi:.8f}",
                 f"{avg_ms:.6f}" if np.isfinite(avg_ms) else "",
