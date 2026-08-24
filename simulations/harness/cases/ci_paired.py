@@ -1279,9 +1279,14 @@ def _print_overall_summary_table(
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
           f"  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
-    print(f"  Score = Width + Penalty. They are reported separately because Score is\n"
-          f"  ~90% Width, so a too-narrow method can post the best Score while\n"
-          f"  under-covering; Penalty is the part that tracks calibration.")
+    print(f"  Score = Width + Penalty, reported separately because Score is ~90% Width,\n"
+          f"  so a too-narrow method can post the best Score while under-covering.\n"
+          f"  The two are one-sided in OPPOSITE directions: Width penalises intervals\n"
+          f"  that are too WIDE, Penalty ((2/alpha) x mean miss distance) those that are\n"
+          f"  too NARROW. Neither means 'calibration' on its own -- Penalty falls\n"
+          f"  monotonically to 0 as an interval is widened, and a perfectly calibrated\n"
+          f"  interval still carries a large Penalty (it misses alpha of the time by\n"
+          f"  construction). Read Width, Penalty and Cov/MinCov together.")
     print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Penalty':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
     for m in method_labels:
         mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
@@ -1476,6 +1481,10 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 per_n_counts[(m, n)] = (c, t)
 
             mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
+            # Worst single (scenario, n) coverage -- the tail that the headline
+            # Cov averages away. Same quantity as the printed table's MinCov.
+            _worst = [v[0] for vals in per_n_vals.values() for v in vals]
+            mmin = min(_worst) if _worst else float("nan")
             avg_ms, _ = _time_stats(
                 [r for r in non_null if r.method == m and _report_eval_type_group(r.eval_type) == g]
             )
@@ -1484,6 +1493,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
             row = [
                 label,
                 coverage_cell(mc, target),
+                coverage_cell(mmin, target) if np.isfinite(mmin) else "-",
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{mp:.4f}" if np.isfinite(mp) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
@@ -1501,7 +1511,7 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
         # Mark the best/runner-up in BOTH Penalty and Score. Marking Score
         # alone bolds whichever method is narrowest, which is how a
         # badly-calibrated method ends up looking like the winner.
-        for col, vals in ((4, score_vals), (3, penalty_vals)):
+        for col, vals in ((5, score_vals), (4, penalty_vals)):
             decorated = mark_best_and_runnerup([r[col] for r in rows[group_start:]], vals)
             for i, cell in enumerate(decorated):
                 rows[group_start + i][col] = cell
@@ -1509,13 +1519,13 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     return booktabs_table(
         caption=(
             f"ci\\_paired: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
-            "Score is the interval score, decomposed as Width + Penalty, where Penalty is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so Penalty is the column that reflects calibration: ""a method can be narrowest, and so score best, while covering worst. "
+            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Penalty, where Penalty is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow. ""Neither is a calibration measure on its own: Penalty decreases monotonically to ""zero as an interval is widened, and a perfectly calibrated interval still carries ""a substantial Penalty, since it misses $\\alpha$ of the time by construction. "
             "Methods tested on more than one eval type are reported as one row per type "
             "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Cov", "Width", "Penalty $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
+        columns=["Method", "Cov", "MinCov", "Width", "Penalty $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
