@@ -1,4 +1,4 @@
-"""One-off head-to-head: evalstats.tests._ppi_paired_tango's fixed-lambda=1
+"""One-off head-to-head: evalstats.tests._ppi_paired_mj_floor's fixed-lambda=1
 construction vs. its new power_tune=True (PPI++ closed-form lambda*) path.
 
 Both are fully closed-form (no bootstrap), so this can run at high rep
@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from evalstats.tests import _ppi_paired_tango
+from evalstats.tests import _ppi_paired_mj_floor
 from simulations.harness.scenarios import JudgeBiasSource
 from simulations.harness.scenarios.synthetic import (
     PPI_BINARY_BIAS_MAGNITUDES,
@@ -53,8 +53,8 @@ def run_cell(n_lab: int, noise_label: str, noise: float, effect_size: float, n_r
 
     for i in range(n_reps):
         cell = generate_judge_bias_cell(sc, rng)
-        r_old = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=False)
-        r_new = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=True)
+        r_old = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=False)
+        r_new = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, ALPHA, power_tune=True)
         rej_old += int(r_old.p_value < ALPHA)
         rej_new += int(r_new.p_value < ALPHA)
         width_old[i] = r_old.ci_high - r_old.ci_low

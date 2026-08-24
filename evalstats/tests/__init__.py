@@ -696,8 +696,10 @@ def _midrank_theta(x: np.ndarray, y: np.ndarray) -> float:
 # Non-PPI paired/binary p-value helpers
 #
 # These back evalstats.core.paired's binary and permutation pairwise-comparison
-# methods (newcombe, tango, bayes_binary, sign_test,
-# permutation), none of which have a PPI-corrected estimand designed yet.
+# methods (newcombe, mj_floor, tango, bayes_binary, sign_test,
+# permutation).  None of these *p-values* has a PPI-corrected form designed
+# yet -- mj_floor's interval does get a PPI correction (see
+# _ppi_paired_mj_floor below), but its McNemar p-value does not.
 # They live here — rather than being reimplemented in evalstats.core.paired —
 # so every scipy-backed p-value in evalstats has exactly one implementation.
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1726,7 +1728,7 @@ def _ppi_paired_bootstrap_t(
     )
 
 
-def _ppi_paired_tango(
+def _ppi_paired_mj_floor(
     a: np.ndarray,
     b: np.ndarray,
     a_lab: np.ndarray,
@@ -1736,7 +1738,7 @@ def _ppi_paired_tango(
     power_tune: bool = True,
 ):
     """PPI correction for the paired binary difference estimand
-    ``evalstats.core.resampling.tango_paired_ci`` targets: ``mean(a_i - b_i)``,
+    ``evalstats.core.resampling.mj_floor_paired_ci`` targets: ``mean(a_i - b_i)``,
     equivalently ``(n10 - n01) / n`` (the discordant-pair-rate difference).
 
     Tango's score interval has the Wilson-style form::
@@ -1777,7 +1779,7 @@ def _ppi_paired_tango(
     construction exactly (bit-for-bit -- the lambda=1 case of the general
     variance formula collapses back to ``Var(unlabeled diffs)/N +
     Var(rectifier residuals)/n_lab`` precisely); this is what
-    ``simulations.harness.methods.TANGO_FIXED_LAMBDA`` runs.
+    ``simulations.harness.methods.MJ_FLOOR_FIXED_LAMBDA`` runs.
 
     Uses sample variance (ddof=1) and a t(df=n_lab-1) critical value --
     not the classical Tango formula's own population variance (ddof=0) and
@@ -2114,7 +2116,7 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
     _rect_vals = np.unique(rect_items)
     _is_pm1 = bool(np.all(np.isin(_rect_vals, (-1.0, 0.0, 1.0))))
     if _is_pm1 and n_lab > 1:
-        from evalstats.core.resampling import tango_paired_ci_from_diffs
+        from evalstats.core.resampling import mj_floor_paired_ci_from_diffs
         from scipy.stats import norm as _norm_dist
 
         se_unlab = float(np.sqrt(sigma2_f / n_all)) if n_all > 1 else 0.0
@@ -2148,7 +2150,7 @@ def _ppi_single_wilson(a: np.ndarray, a_lab: np.ndarray, alpha: float):
                 values_lab_true, values_lab_llm, alpha, c=_PPI_SCC_CORRECTION,
             )
         else:
-            r_lo, r_hi = tango_paired_ci_from_diffs(rect_items, alpha)
+            r_lo, r_hi = mj_floor_paired_ci_from_diffs(rect_items, alpha)
         half_lo = float(np.sqrt(max(rectifier - r_lo, 0.0) ** 2 + (z_crit * se_unlab) ** 2))
         half_hi = float(np.sqrt(max(r_hi - rectifier, 0.0) ** 2 + (z_crit * se_unlab) ** 2))
         ci_low = max(0.0, estimate - half_lo)

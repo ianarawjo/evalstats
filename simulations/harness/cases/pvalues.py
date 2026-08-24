@@ -94,9 +94,9 @@ Known exceptions (see simulations/harness/README.md):
   PPI's two-term variance -- numeric (continuous/likert/grades) ONLY, not
   extended to binary, since its value is specifically for resampling-based
   CI estimation on numeric data at N>=50 (``ci_paired.py``), not pairwise
-  binary p-values. ``tango_score`` is the mirror image -- binary ONLY, not
-  numeric -- PPI-correcting ``evalstats.core.resampling.tango_paired_ci``'s
-  score interval (see ``evalstats.tests._ppi_paired_tango``): its variance
+  binary p-values. ``mj_floor`` is the mirror image -- binary ONLY, not
+  numeric -- PPI-correcting ``evalstats.core.resampling.mj_floor_paired_ci``'s
+  score interval (see ``evalstats.tests._ppi_paired_mj_floor``): its variance
   term ``(n10+n01)/n^2 - (n10-n01)^2/n^3`` is exactly
   ``Var(diffs, ddof=0) / n``, so it generalizes to PPI's two-term variance
   by substituting an effective n (``n_eff = Var(unlabeled diffs) /
@@ -153,7 +153,7 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import correct_pvalues, rescaled_ci
     from evalstats.core.resampling import (
-        bayes_bootstrap_means_1d, tango_paired_ci_mean, tango_paired_ci_from_diffs, logit_t_ci_1d,
+        bayes_bootstrap_means_1d, mj_floor_paired_ci_mean, mj_floor_paired_ci_from_diffs, logit_t_ci_1d,
     )
     from evalstats.tests import (
         _ppi_two_sample,
@@ -161,7 +161,7 @@ with warnings.catch_warnings():
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
-        _ppi_paired_tango,
+        _ppi_paired_mj_floor,
         _ppi_single_wilson,
         _ppi_single_bootstrap_t,
         _ppi_single_t_interval,
@@ -279,8 +279,8 @@ from ..methods import (
     BAYES_BINARY,
     WILCOXON,
     PAIRED_T,
-    TANGO,
-    TANGO_FIXED_LAMBDA,
+    MJ_FLOOR,
+    MJ_FLOOR_FIXED_LAMBDA,
     MULTIARM_CORRECTION_METHODS,
     SIMULTANEOUS_CI_METHODS,
     CORR_SIDAK,
@@ -2555,7 +2555,7 @@ def _canonical_ci_func(eval_type: str):
     canonical default is modeled for it here.
     """
     if eval_type == "binary":
-        return tango_paired_ci_from_diffs
+        return mj_floor_paired_ci_from_diffs
     if eval_type in ("continuous", "likert"):
         scale_lo, scale_hi = EVAL_TYPE_SCALE_BOUNDS[eval_type]
         diff_span = scale_hi - scale_lo
@@ -3802,7 +3802,7 @@ def save_simultaneous_ci_violin_vs_n_plot(*, results: list[SimultaneousCIResult]
     """Grouped violin plots of family-wise coverage and interval score vs.
     sample size n (null condition), one violin per CI method at each n
     (dodged side by side), faceted by eval type -- the Bonferroni/max-T
-    analogue of ci_paired.py's --violin-plot (tango_score vs. tango_scc vs.
+    analogue of ci_paired.py's --violin-plot (mj_floor vs. tango_scc vs.
     bayes_paired_comp vs. N).
 
     Each violin pools every (scenario, k) cell at that n rather than
@@ -4024,13 +4024,13 @@ def _uncorrected_bootstrap_t_paired_p_value(diffs: np.ndarray, n_boot: int, rng:
     return min(max(p, 0.0), 1.0)
 
 
-def _uncorrected_tango_paired_p_value(diffs: np.ndarray) -> float:
+def _uncorrected_mj_floor_paired_p_value(diffs: np.ndarray) -> float:
     """LLM-only (uncorrected) two-sided p-value for H0: mean(diffs) = 0,
     using the SAME per-item variance evalstats.core.resampling.
-    tango_paired_ci's score interval is built from (V_hat = Var(diffs,
+    mj_floor_paired_ci's score interval is built from (V_hat = Var(diffs,
     ddof=0) / n, i.e. (n10+n01)/n^2 - (n10-n01)^2/n^3 for binary diffs) --
     applied directly (no PPI correction) as the baseline
-    _ppi_paired_tango's corrected version is compared against. Closed-form,
+    _ppi_paired_mj_floor's corrected version is compared against. Closed-form,
     no bootstrap needed."""
     n = len(diffs)
     d_hat = float(np.mean(diffs))
@@ -4082,11 +4082,11 @@ _ALPHA = ALPHA_DEFAULT
 # doesn't hold up under binary's massive ties, and generate_judge_bias_cell
 # doesn't extend its additive noise/bias/slope judge model to a 0/1
 # judgment for those structures either. PPI_WILSON is the single-arm
-# analogue of TANGO here -- same binary-only Wilson-style effective-n trick,
+# analogue of MJ_FLOOR here -- same binary-only Wilson-style effective-n trick,
 # just for a one-sample (not paired) proportion.
 _PPI_BINARY_COMPATIBLE_TESTS = {
-    TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, TANGO.name,
-    TANGO_FIXED_LAMBDA.name, PPI_WILSON.name,
+    TTEST.name, TTEST_WELCH.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, MJ_FLOOR.name,
+    MJ_FLOOR_FIXED_LAMBDA.name, PPI_WILSON.name,
 }
 
 # The mirror-image restriction: tests whose estimand/formula is specific to
@@ -4096,12 +4096,12 @@ _PPI_BINARY_COMPATIBLE_TESTS = {
 # be excluded everywhere else, the same way BOOTSTRAP_T/BOOTSTRAP_T_SINGLE
 # (numeric-only, see their Method-registry comments) are excluded FROM binary
 # by simply never being added to _PPI_BINARY_COMPATIBLE_TESTS above.
-_PPI_BINARY_ONLY_TESTS = {TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name}
+_PPI_BINARY_ONLY_TESTS = {MJ_FLOOR.name, MJ_FLOOR_FIXED_LAMBDA.name, PPI_WILSON.name}
 
 # ppi_wilson/bootstrap_t_single/t_interval_single/logit_t_single are
 # single-ARM estimation methods (one group's mean, via cell.llm_a2/lab_a2)
 # with no two-group/paired rejection decision to compute a Type-I error
-# on -- unlike TANGO/BOOTSTRAP_T, which are also two-/paired-group
+# on -- unlike MJ_FLOOR/BOOTSTRAP_T, which are also two-/paired-group
 # PAIRWISE_METHODS entries with a real Type-I concept. Excluded from
 # _run_ppi_cell's Type-I sweep (see its use below) so they don't produce a
 # fake "0/0 rejections, perfectly calibrated" row -- they're swept only by
@@ -4262,23 +4262,23 @@ def _run_ppi_cell(
                 except Exception:
                     failed[BOOTSTRAP_T.name] += 1
 
-            if TANGO.name in active_tests:
+            if MJ_FLOOR.name in active_tests:
                 try:
-                    p_u = _uncorrected_tango_paired_p_value(cell.llm_x - cell.llm_y)
-                    uncorrected[TANGO.name] += int(p_u < _ALPHA)
-                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
-                    corrected[TANGO.name] += int(r.p_value < _ALPHA)
+                    p_u = _uncorrected_mj_floor_paired_p_value(cell.llm_x - cell.llm_y)
+                    uncorrected[MJ_FLOOR.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
+                    corrected[MJ_FLOOR.name] += int(r.p_value < _ALPHA)
                 except Exception:
-                    failed[TANGO.name] += 1
+                    failed[MJ_FLOOR.name] += 1
 
-            if TANGO_FIXED_LAMBDA.name in active_tests:
+            if MJ_FLOOR_FIXED_LAMBDA.name in active_tests:
                 try:
-                    p_u = _uncorrected_tango_paired_p_value(cell.llm_x - cell.llm_y)
-                    uncorrected[TANGO_FIXED_LAMBDA.name] += int(p_u < _ALPHA)
-                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
-                    corrected[TANGO_FIXED_LAMBDA.name] += int(r.p_value < _ALPHA)
+                    p_u = _uncorrected_mj_floor_paired_p_value(cell.llm_x - cell.llm_y)
+                    uncorrected[MJ_FLOOR_FIXED_LAMBDA.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
+                    corrected[MJ_FLOOR_FIXED_LAMBDA.name] += int(r.p_value < _ALPHA)
                 except Exception:
-                    failed[TANGO_FIXED_LAMBDA.name] += 1
+                    failed[MJ_FLOOR_FIXED_LAMBDA.name] += 1
 
             if PPI_T_INTERVAL.name in active_tests:
                 try:
@@ -4540,11 +4540,11 @@ def run_ppi_simulation(
 
 _PPI_EFFECT_TESTS = (
     TTEST.name, TTEST_WELCH.name, MWU.name, WILCOXON.name, PAIRED_T.name, BAYES_BOOTSTRAP.name,
-    BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
+    BOOTSTRAP_T.name, MJ_FLOOR.name, MJ_FLOOR_FIXED_LAMBDA.name, ANOVA_IND.name, ANOVA_REP.name, FRIEDMAN.name, KRUSKAL.name, KRUSKAL_MNAR_EXPERIMENTAL.name,
     PPI_WILSON.name, PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name, PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 )
 
-# bayes_bootstrap/bootstrap_t/tango_score/ppi_wilson/bootstrap_t_single/
+# bayes_bootstrap/bootstrap_t/mj_floor/ppi_wilson/bootstrap_t_single/
 # ppi_t_interval/ppi_logit_t are excluded from the main ppi Type-I/effect
 # plots and reported in a separate plot instead: they read differently to
 # reviewers than the rest of PPI_TEST_METHODS (which are all textbook tests
@@ -4552,9 +4552,9 @@ _PPI_EFFECT_TESTS = (
 # CI-based constructions (Bayesian bootstrap, studentized bootstrap, Tango's/
 # Wilson's score intervals, and now the closed-form logit-t/t-interval CIs)
 # that would read as unfamiliar or confusing mixed in with the standard-
-# methods plot -- tango_score/ppi_wilson specifically are fundamentally CI
+# methods plot -- mj_floor/ppi_wilson specifically are fundamentally CI
 # constructions for binary paired/single-arm proportions (see
-# evalstats.tests._ppi_paired_tango/_ppi_single_wilson), not p-value tests
+# evalstats.tests._ppi_paired_mj_floor/_ppi_single_wilson), not p-value tests
 # in their own right, and (along with bootstrap_t_single) are restricted to
 # a single binary scenario (_PPI_BINARY_ONLY_TESTS) rather than swept across
 # the full catalog, so they'd look sparse/broken next to tests with ~44x
@@ -4568,12 +4568,12 @@ _PPI_EFFECT_TESTS = (
 # purely on "reads like a CI construction, not a textbook test" grounds,
 # the same criterion already applied to tango/bootstrap_t.
 _PPI_NONSTANDARD_TESTS = {
-    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name, TANGO_FIXED_LAMBDA.name, PPI_WILSON.name,
+    BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, MJ_FLOOR.name, MJ_FLOOR_FIXED_LAMBDA.name, PPI_WILSON.name,
     PPI_BOOTSTRAP_T_SINGLE.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name,
     PPI_T_INTERVAL_SINGLE.name, PPI_LOGIT_T_SINGLE.name,
 }
 
-_PPI_CI_COMPARISON_TESTS = {TANGO.name, PPI_WILSON.name, PPI_LOGIT_T.name, PPI_T_INTERVAL.name}
+_PPI_CI_COMPARISON_TESTS = {MJ_FLOOR.name, PPI_WILSON.name, PPI_LOGIT_T.name, PPI_T_INTERVAL.name}
 """The curated CI-coverage/width comparison methods for save_ppi_effect_plot's
 ci_comparison=True figure -- replaces an older 5-method "nonstandard"
 comparison ({bayes_bootstrap, bootstrap_t, tango, ppi_wilson,
@@ -4720,17 +4720,17 @@ def _run_ppi_effect_cell(
                 except Exception:
                     pass
 
-            if TANGO.name in active_tests:
+            if MJ_FLOOR.name in active_tests:
                 try:
-                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
-                    out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    r = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA)
+                    out[MJ_FLOOR.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
-            if TANGO_FIXED_LAMBDA.name in active_tests:
+            if MJ_FLOOR_FIXED_LAMBDA.name in active_tests:
                 try:
-                    r = _ppi_paired_tango(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
-                    out[TANGO_FIXED_LAMBDA.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    r = _ppi_paired_mj_floor(cell.llm_x, cell.llm_y, cell.lab_x, cell.lab_y, _ALPHA, power_tune=False)
+                    out[MJ_FLOOR_FIXED_LAMBDA.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -5122,7 +5122,7 @@ here too -- same reasoning _COMPARISON_METHODS_OMNIBUS already applies to
 kruskal vs. kruskal_mnar_experimental. Deliberately excludes the
 omnibus/multi-group tests (anova_ind/anova_rep/friedman/kruskal/lmm*) and
 the non-standard bootstrap-CI constructions (bayes_bootstrap/bootstrap_t/
-tango_score) -- those answer different questions (multi-group omnibus
+mj_floor) -- those answer different questions (multi-group omnibus
 effects, CI-based constructions), so folding them into the same "pooled
 false-positive rate" would blend apples with oranges rather than checking
 robustness across reasonable alternatives, the same way
@@ -11597,8 +11597,8 @@ _PPI_PRETTY_TEST_NAMES: dict[str, str] = {
     TTEST.name: "t-test", TTEST_WELCH.name: "Welch's t-test",
     MWU.name: "Mann-Whitney U",
     WILCOXON.name: "Wilcoxon", PAIRED_T.name: "Paired t-test", BAYES_BOOTSTRAP.name: "Bayes bootstrap",
-    BOOTSTRAP_T.name: "Bootstrap-t", TANGO.name: "Tango score",
-    TANGO_FIXED_LAMBDA.name: "Tango score (fixed lambda)", ANOVA_IND.name: "ANOVA (indep.)",
+    BOOTSTRAP_T.name: "Bootstrap-t", MJ_FLOOR.name: "Tango score",
+    MJ_FLOOR_FIXED_LAMBDA.name: "Tango score (fixed lambda)", ANOVA_IND.name: "ANOVA (indep.)",
     ANOVA_REP.name: "ANOVA (repeated)", FRIEDMAN.name: "Friedman",
     KRUSKAL.name: "Kruskal-Wallis", KRUSKAL_MNAR_EXPERIMENTAL.name: "Kruskal-Wallis (MNAR, experimental)",
     LMM.name: "LMM", LMM_FACTORIAL.name: "LMM (factorial)", LMM_RUNS.name: "LMM (nested runs)",
@@ -11654,7 +11654,7 @@ def save_ppi_typeI_plot(*, results: list[PPIResult], alpha: float, out_path: str
 
     nonstandard : bool
         When False (default), plots only the standard/textbook tests
-        (excludes bayes_bootstrap/bootstrap_t/tango_score). When True,
+        (excludes bayes_bootstrap/bootstrap_t/mj_floor). When True,
         plots ONLY those three bootstrap/CI-based methods instead -- see
         _PPI_NONSTANDARD_TESTS for why they're kept out of the main plot.
     """
@@ -13452,7 +13452,7 @@ def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.
         bootstrap_n=200, icc_values=[0.20], cohens_d_values=[0.3],
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         k_arms=[3], multiarm_method=BOOTSTRAP_T.name, multiarm_icc=0.20, multiarm_cohens_d=0.3,
-        tests=[TTEST.name, MWU.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, TANGO.name], ppi_n_boot=200, latex=True,
+        tests=[TTEST.name, MWU.name, PAIRED_T.name, BAYES_BOOTSTRAP.name, BOOTSTRAP_T.name, MJ_FLOOR.name], ppi_n_boot=200, latex=True,
         effect_reps=5, effect_gold_mc=200, no_effect_check=False,
         factorial_check=True, factorial_reps=2, factorial_n_boot=50, factorial_alignment_mc=200,
         factorial_check_binary=True,

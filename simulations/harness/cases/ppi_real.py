@@ -162,7 +162,7 @@ with warnings.catch_warnings():
         _ppi_paired_arrays,
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
-        _ppi_paired_tango,
+        _ppi_paired_mj_floor,
         _ppi_paired_t_interval,
         _ppi_paired_logit_t,
         _p_x_gt_y_midrank,
@@ -174,7 +174,7 @@ with warnings.catch_warnings():
     )
 
 from ..methods import (
-    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
@@ -210,7 +210,7 @@ from .pvalues import (
     _uncorrected_bias_z,
     _uncorrected_bayes_bootstrap_paired_p_value,
     _uncorrected_bootstrap_t_paired_p_value,
-    _uncorrected_tango_paired_p_value,
+    _uncorrected_mj_floor_paired_p_value,
     _uncorrected_anova_independent_p_value,
     _uncorrected_anova_repeated_p_value,
     _uncorrected_friedman_p_value,
@@ -458,12 +458,12 @@ def _run_real_paired_cell(
                 except Exception:
                     pass
 
-            if TANGO.name in methods:
+            if MJ_FLOOR.name in methods:
                 try:
-                    p_u = _uncorrected_tango_paired_p_value(llm_x - llm_y)
-                    uncorrected[TANGO.name] += int(p_u < _ALPHA)
-                    r = _ppi_paired_tango(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    corrected[TANGO.name] += int(r.p_value < _ALPHA)
+                    p_u = _uncorrected_mj_floor_paired_p_value(llm_x - llm_y)
+                    uncorrected[MJ_FLOOR.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_mj_floor(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[MJ_FLOOR.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -781,7 +781,7 @@ PPI_T_INTERVAL_SINGLE/PPI_LOGIT_T_SINGLE Method identities (split from
 these paired ones in methods.py, the same way PPI_BOOTSTRAP_T_SINGLE is
 split from BOOTSTRAP_T), so there's no test-name collision in
 print_ppi_effect_report's by-test-name pooling -- see those Methods'
-docstrings in methods.py for the full reasoning. TANGO excluded for the
+docstrings in methods.py for the full reasoning. MJ_FLOOR excluded for the
 same eval_type restriction _paired_methods_for applies (this corpus is
 always eval_type="continuous_paired")."""
 
@@ -794,7 +794,7 @@ PPIEffectResult's bias/coverage stats) never mixes this check's
 would; every "ppi_logit_t" row across twogroup_power/paired power/
 omnibus power/this check already means the same thing (a paired- or
 independent-samples logit-t test), same as hypothesis_results already
-does for the Type-I null checks. TANGO still excluded, for the same
+does for the Type-I null checks. MJ_FLOOR still excluded, for the same
 eval_type restriction _paired_methods_for applies (this corpus is
 always eval_type="continuous_paired")."""
 
@@ -888,17 +888,17 @@ def _run_real_paired_bias_cell(
     generate_real_paired_null_cell (same items read through two DIFFERENT
     judges, so the true paired difference is EXACTLY 0 by construction -- no
     gold-reference estimation needed, unlike _run_real_wmt_paired_bias_
-    cell's genuine two-condition data). Exists because TANGO is a genuine
+    cell's genuine two-condition data). Exists because MJ_FLOOR is a genuine
     point-estimate/CI construction (a Wilson-style score interval for the
     paired binary discordant-pair-rate difference -- see
-    evalstats.tests._ppi_paired_tango's docstring) restricted to binary
+    evalstats.tests._ppi_paired_mj_floor's docstring) restricted to binary
     corpora by _paired_methods_for, but _run_real_paired_cell only ever
     reports corrected/uncorrected REJECTION COUNTS (a Type-I check) -- it
     never had anywhere to report (estimate, ci_low, ci_high, llm_estimate)
     tuples, so a binary corpus like arena had no path into the bias/
     coverage view (print_ppi_effect_report / ci_methods_comparison_real.png)
     even though it has exactly the paired binary data Tango needs. Currently
-    only TANGO uses this; null_value is always 0.0 for every test reachable
+    only MJ_FLOOR uses this; null_value is always 0.0 for every test reachable
     here (see run()'s _consume)."""
     rng = np.random.default_rng(seed)
     out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
@@ -908,10 +908,10 @@ def _run_real_paired_bias_cell(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-            if TANGO.name in methods:
+            if MJ_FLOOR.name in methods:
                 try:
-                    r = _ppi_paired_tango(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    out[TANGO.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    r = _ppi_paired_mj_floor(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    out[MJ_FLOOR.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -1059,7 +1059,7 @@ def _has_nonstandard_test(results: list) -> bool:
 
 def _paired_methods_for(eval_type: str) -> list[str]:
     # BAYES_BOOTSTRAP/BOOTSTRAP_T are not part of the official CI-comparison
-    # set -- see _single_methods_for's matching note. Binary keeps TANGO
+    # set -- see _single_methods_for's matching note. Binary keeps MJ_FLOOR
     # (PPI_AUTO_METHOD_TABLE's binary pairwise
     # method); non-binary gets PPI_T_INTERVAL and PPI_LOGIT_T
     # (PPI_AUTO_METHOD_TABLE's "unbounded"/"bounded_01" pairwise methods --
@@ -1071,7 +1071,7 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     # no test-name-collision risk between PPI_LOGIT_T here and the
     # single-sample check's own PPI_LOGIT_T branch.
     if eval_type == "binary":
-        return [PAIRED_T.name, TANGO.name]
+        return [PAIRED_T.name, MJ_FLOOR.name]
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
@@ -1147,7 +1147,7 @@ def save_ppi_real_labfrac_dataset_heatmap(
     should be visually distinct, not just "far from 0".
 
     `nonstandard` selects _PPI_NONSTANDARD_TESTS (bayes_bootstrap,
-    bootstrap_t, tango_score) instead of the hypothesis-test majority --
+    bootstrap_t, mj_floor) instead of the hypothesis-test majority --
     same split save_ppi_typeI_plot already draws between p-value tests and
     CI-based methods, kept here too rather than mixing both families into
     one grid of panels."""
@@ -1923,7 +1923,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                                 ))
 
                             # Binary-only bias/coverage sibling of the check
-                            # above: TANGO is a genuine point-estimate/CI
+                            # above: MJ_FLOOR is a genuine point-estimate/CI
                             # construction, but _run_real_paired_cell only
                             # ever reports corrected/uncorrected rejection
                             # COUNTS (a Type-I check), so Tango had no path
@@ -1936,7 +1936,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             if not args.no_paired_check and corpus.eval_type == "binary":
                                 seed_counter += 1
                                 work_items.append((
-                                    "paired_bias", corpus_idx, name, corpus.dataset, [TANGO.name],
+                                    "paired_bias", corpus_idx, name, corpus.dataset, [MJ_FLOOR.name],
                                     n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
                                 ))
 

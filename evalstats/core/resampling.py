@@ -177,7 +177,7 @@ def binary_routing_applies(
     Returns
     -------
     bool
-        True to use the binary methods (Wilson/Newcombe/Tango), False to fall
+        True to use the binary methods (Wilson/Newcombe/mj_floor), False to fall
         through to the bounds-aware continuous/Likert routing.
     """
     if not is_binary_scores(scores):
@@ -493,12 +493,12 @@ def clopper_pearson_ci(successes: int, n: int, alpha: float) -> tuple[float, flo
     return (lo, hi)
 
 
-def tango_paired_ci_flat(
+def mj_floor_paired_ci_flat(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Tango score CI treating multi-run data as a single-run flat baseline.
+    """Score CI treating multi-run data as a single-run flat baseline.
 
     When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
     only the **first run** (column 0) is used.  This is the honest
@@ -508,7 +508,7 @@ def tango_paired_ci_flat(
     this function avoids that by keeping the input as the unit of analysis.
 
     If 1-D arrays are passed the call is forwarded directly to
-    :func:`tango_paired_ci` unchanged.
+    :func:`mj_floor_paired_ci` unchanged.
 
     Parameters
     ----------
@@ -527,27 +527,27 @@ def tango_paired_ci_flat(
         a = a[:, 0]
     if b.ndim == 2:
         b = b[:, 0]
-    return tango_paired_ci(a, b, alpha)
+    return mj_floor_paired_ci(a, b, alpha)
 
 
-def tango_paired_ci_mean(
+def mj_floor_paired_ci_mean(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Heuristic Tango CI using per-item run means for multi-run inputs.
+    """Heuristic score CI using per-item run means for multi-run inputs.
 
     When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
     each item is first reduced to its run mean (shape ``(N,)``), then
-    :func:`tango_paired_ci` is applied.
+    :func:`mj_floor_paired_ci` is applied.
 
-    This is intentionally a pragmatic variant, not a strict Tango score
-    interval derivation: :func:`tango_paired_ci` was derived for paired
+    This is intentionally a pragmatic variant, not a strict score
+    interval derivation: :func:`mj_floor_paired_ci` was derived for paired
     Bernoulli observations, while run means live in ``[0, 1]`` and are
-    thresholded at 0.5 inside :func:`tango_paired_ci`.
+    thresholded at 0.5 inside :func:`mj_floor_paired_ci`.
 
     If 1-D arrays are passed the call is forwarded directly to
-    :func:`tango_paired_ci` unchanged.
+    :func:`mj_floor_paired_ci` unchanged.
 
     Parameters
     ----------
@@ -566,7 +566,7 @@ def tango_paired_ci_mean(
         a = np.mean(a, axis=1)
     if b.ndim == 2:
         b = np.mean(b, axis=1)
-    return tango_paired_ci(a, b, alpha)
+    return mj_floor_paired_ci(a, b, alpha)
 
 
 def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
@@ -1822,10 +1822,38 @@ def newcombe_paired_ci(
     )
 
 
-def tango_paired_ci(
+def _mj_discordance_floor(discordance_rate: float, floor: float = 0.25) -> float:
+    """Floored discordance term for the May & Johnson score interval.
+
+    The closed-form solution of the score inversion carries an additive
+    ``z^2 * S_hat`` inside the discriminant, where ``S_hat`` is the observed
+    discordance rate (n10+n01)/n. Left unfloored that term vanishes when no
+    pairs disagree, collapsing the interval to zero width -- the degeneracy
+    Tango's 2000 letter to the editor (Statist. Med. 19(1):133-139)
+    criticised in the Quesenberry-Hurst / May & Johnson construction, along
+    with its anticonservatism at low discordance.
+
+    Flooring ``S_hat`` at 1/4 removes that failure while never SHRINKING the
+    score interval's variance term, so the result is never narrower than the
+    published interval. Measured effect (see
+    simulations/papers/pairwise_binary_rerun_plan.md): at n=15 with 10%
+    discordance, unfloored May & Johnson covers 0.719 at its worst over the
+    true difference against a nominal 0.95 (0.787 at delta=0.04), while the
+    floored interval stays at or above 0.987. NOTE the coverage gap is
+    invisible exactly at delta=0, where the degenerate zero-width interval
+    still "contains" a true difference of zero.
+    On real eval corpora the floor lifts worst-case coverage
+    from 0.721 to 0.789 at n=10 (single-run) and 0.902 to 0.925 at n=50
+    (multi-run), while leaving low-asymmetry corpora untouched.
+    """
+    return max(float(discordance_rate), floor)
+
+
+def mj_floor_paired_ci(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
+    floor: float = 0.25,
 ) -> tuple[float, float]:
     """Closed-form paired-binary CI for p(A=1) - p(B=1).
 
@@ -1917,19 +1945,20 @@ def tango_paired_ci(
     values_a = np.asarray(values_a)
     values_b = np.asarray(values_b)
     if values_a.ndim != 1 or values_b.ndim != 1:
-        raise ValueError("tango_paired_ci expects 1-D input arrays.")
+        raise ValueError("mj_floor_paired_ci expects 1-D input arrays.")
     if values_a.shape != values_b.shape:
-        raise ValueError("tango_paired_ci expects arrays with equal shape.")
+        raise ValueError("mj_floor_paired_ci expects arrays with equal shape.")
 
     a_bin = (values_a >= 0.5).astype(int)
     b_bin = (values_b >= 0.5).astype(int)
-    return tango_paired_ci_from_diffs(a_bin - b_bin, alpha)
+    return mj_floor_paired_ci_from_diffs(a_bin - b_bin, alpha, floor)
 
 
-def tango_paired_ci_from_diffs(diffs: np.ndarray, alpha: float) -> tuple[float, float]:
-    """Tango score CI for the paired binary difference, from a-minus-b diffs.
+def mj_floor_paired_ci_from_diffs(diffs: np.ndarray, alpha: float, floor: float = 0.25) -> tuple[float, float]:
+    """Floored May & Johnson score CI for the paired binary difference,
+    from a-minus-b diffs.
 
-    Same closed-form score interval as :func:`tango_paired_ci`, but takes
+    Same closed-form score interval as :func:`mj_floor_paired_ci`, but takes
     the already-computed per-pair difference ``a_bin - b_bin`` (values in
     ``{-1, 0, 1}``) directly instead of the two raw ``values_a``/``values_b``
     arrays. Concordant pairs (``diff == 0``, whether both 1 or both 0) don't
@@ -1964,10 +1993,11 @@ def tango_paired_ci_from_diffs(diffs: np.ndarray, alpha: float) -> tuple[float, 
     z2 = z * z
     denom = 1.0 + z2 / n
 
+    s_hat = _mj_discordance_floor((n10 + n01) / n, floor)
     radicand = (
         (n10 + n01) / (n * n)
         - ((n10 - n01) ** 2) / (n**3)
-        + z2 / (4.0 * n * n)
+        + z2 * s_hat / (n * n)
     )
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -2003,6 +2033,23 @@ def _tango_scc_real_roots_in_range(coeffs: list[float]) -> np.ndarray:
     return np.sort(roots[(roots >= -1.0 - 1e-9) & (roots <= 1.0 + 1e-9)])
 
 
+def mj_unfloored_paired_ci(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float,
+) -> tuple[float, float]:
+    """May & Johnson (1997) eq. 11 as published, with NO discordance floor.
+
+    Provided as the comparison baseline that shows why the floor exists: this
+    is the literal published interval, which degenerates to zero width when
+    no pairs disagree and under-covers badly at low discordance (worst-case
+    0.719 against a nominal 0.95 at n=15, S=0.10, over the true difference).
+    Use :func:`mj_floor_paired_ci` in
+    practice.
+    """
+    return mj_floor_paired_ci(values_a, values_b, alpha, floor=0.0)
+
+
 def tango_scc_paired_ci(
     values_a: np.ndarray,
     values_b: np.ndarray,
@@ -2035,7 +2082,7 @@ def tango_scc_paired_ci(
     ``c=0.125`` is the paper's recommended "SCC-S" (small-correction)
     variant -- found in their simulations to best balance coverage and width
     against the plain (uncorrected) Tango score interval
-    (:func:`tango_paired_ci`, a separate, simpler large-sample approximation
+    (:func:`mj_floor_paired_ci`, a separate, simpler large-sample approximation
     that does not use this quartic's constrained-MLE derivation).
     ``c=0.25`` and ``c=0.5`` are their "SCC-M"/"SCC-L" variants.
 
@@ -2087,12 +2134,18 @@ def tango_scc_paired_ci(
     return (max(-1.0, min(ci_low, ci_high)), min(1.0, max(ci_low, ci_high)))
 
 
-def tango_paired_ci_multirun_cluster(
+def mj_floor_paired_ci_multirun_cluster(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
     """Cluster-robust Tango CI for paired binary difference.
+
+    The additive discordance term in the discriminant is floored at 1/4 (see
+    :func:`_mj_discordance_floor`); this is the multi-run analogue of the
+    single-run floor in :func:`mj_floor_paired_ci`, using the mean per-item
+    discordance mass as S_hat. NOTE: this method is NOT Tango's interval
+    despite the name it carried before 2026-08-24.
 
     Treats each item as the unit of analysis. Uses the variance of
     per-item paired differences directly, avoiding fragile within/between
@@ -2101,7 +2154,7 @@ def tango_paired_ci_multirun_cluster(
     This is the most robust multirun extension: runs are treated as
     internal noise already reflected in delta_i.
 
-    Reduces exactly to tango_paired_ci when n_runs == 1.
+    Reduces exactly to mj_floor_paired_ci when n_runs == 1.
     """
     values_a = np.asarray(values_a)
     values_b = np.asarray(values_b)
@@ -2116,7 +2169,7 @@ def tango_paired_ci_multirun_cluster(
         return (0.0, 0.0)
 
     if n_runs == 1:
-        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+        return mj_floor_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
     # --- binarize ---
     a_bin = (values_a >= 0.5).astype(int)
@@ -2143,7 +2196,8 @@ def tango_paired_ci_multirun_cluster(
     denom = 1.0 + z2 / n_items
 
     # --- variance (cluster-robust) ---
-    radicand = var_delta / n_items + z2 / (4.0 * n_items * n_items)
+    s_hat = _mj_discordance_floor(float(np.mean(d10_i + d01_i)))
+    radicand = var_delta / n_items + z2 * s_hat / (n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -2154,15 +2208,21 @@ def tango_paired_ci_multirun_cluster(
     return (lo, hi)
 
 
-def tango_paired_ci_multirun_effective(
+def mj_floor_paired_ci_multirun_effective(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Correlation-aware multirun Tango CI using effective sample size.
+    """Correlation-aware multi-run score CI using effective sample size.
 
-    This is "ER-Tango" in the paper's CI decision-tree figure and appendix:
-    the multi-run pairwise-binary method for N >= 50 (``method='tango'``
+    The additive discordance term in the discriminant is floored at 1/4 (see
+    :func:`_mj_discordance_floor`); this is the multi-run analogue of the
+    single-run floor in :func:`mj_floor_paired_ci`, using the mean per-item
+    discordance mass as S_hat. NOTE: this method is NOT Tango's interval
+    despite the name it carried before 2026-08-24.
+
+    This is ``mj_floor_er`` in the paper's CI decision-tree figure and appendix (called "ER-Tango" before the 2026-08-24 rename):
+    the multi-run pairwise-binary method for N >= 50 (``method='mj_floor'``
     dispatches here automatically when R >= 3 seeded runs are present -- see
     :func:`pairwise_differences`).
 
@@ -2184,7 +2244,7 @@ def tango_paired_ci_multirun_effective(
         return (0.0, 0.0)
 
     if n_runs == 1:
-        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+        return mj_floor_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
     # --- binarize ---
     a_bin = (values_a >= 0.5).astype(int)
@@ -2228,7 +2288,8 @@ def tango_paired_ci_multirun_effective(
     z2 = z * z
     denom = 1.0 + z2 / n_items
 
-    radicand = between + within + z2 / (4.0 * n_items * n_items)
+    s_hat = _mj_discordance_floor(float(np.mean(u_i)))
+    radicand = between + within + z2 * s_hat / (n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom
@@ -2239,15 +2300,21 @@ def tango_paired_ci_multirun_effective(
     return (lo, hi)
 
 
-def tango_paired_ci_multirun_moments(
+def mj_floor_paired_ci_multirun_moments(
     values_a: np.ndarray,
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
     """Multi-run Tango-style CI using a cluster moments decomposition.
 
-    Not the method ``pairwise_differences(method='tango')`` dispatches to
-    for multi-run data -- that's :func:`tango_paired_ci_multirun_effective`
+    The additive discordance term in the discriminant is floored at 1/4 (see
+    :func:`_mj_discordance_floor`); this is the multi-run analogue of the
+    single-run floor in :func:`mj_floor_paired_ci`, using the mean per-item
+    discordance mass as S_hat. NOTE: this method is NOT Tango's interval
+    despite the name it carried before 2026-08-24.
+
+    Not the method ``pairwise_differences(method='mj_floor')`` dispatches to
+    for multi-run data -- that's :func:`mj_floor_paired_ci_multirun_effective`
     ("ER-Tango" in the paper). This variant remains available as an
     alternative/comparison point (see ``simulations/harness``), not as a
     routed default.
@@ -2260,7 +2327,7 @@ def tango_paired_ci_multirun_moments(
 
     where ``delta_i`` is the per-item mean paired difference across runs and
     ``u_i`` is the per-item discordance mass. It remains score-shrunk using
-    Tango's denominator and reverts exactly to :func:`tango_paired_ci` when
+    the same denominator and reverts exactly to :func:`mj_floor_paired_ci` when
     ``n_runs == 1``.
 
     Parameters
@@ -2290,7 +2357,7 @@ def tango_paired_ci_multirun_moments(
 
     # Exact reduction to the original paired Tango interval for single-run data.
     if n_runs == 1:
-        return tango_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
+        return mj_floor_paired_ci(values_a[:, 0], values_b[:, 0], alpha)
 
     a_bin = (values_a >= 0.5).astype(int)
     b_bin = (values_b >= 0.5).astype(int)
@@ -2321,7 +2388,8 @@ def tango_paired_ci_multirun_moments(
     z2 = z * z
     denom = 1.0 + z2 / n_items
 
-    radicand = between + within + z2 / (4.0 * n_items * n_items)
+    s_hat = _mj_discordance_floor(float(np.mean(u_i)))
+    radicand = between + within + z2 * s_hat / (n_items * n_items)
 
     radius = (z / denom) * float(np.sqrt(max(radicand, 0.0)))
     center = d_hat / denom

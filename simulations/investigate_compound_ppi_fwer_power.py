@@ -1,6 +1,6 @@
 """Standalone measurement mirroring tests/test_compound_ppi_fwer.py's
 TestCompoundCalibration.test_compound_correction_power_cost_is_bounded,
-run before/after flipping evalstats.tests._ppi_paired_tango's power_tune
+run before/after flipping evalstats.tests._ppi_paired_mj_floor's power_tune
 default, to quantify whether PPI++ power-tuning improves the compound
 PPI+FWER path's detection power. Reuses the actual test module's data
 generator directly rather than reimplementing it.

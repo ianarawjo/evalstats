@@ -8,7 +8,7 @@ to silently fall back to bootstrap_t for bounded_01/unbounded numeric data
 because no PPI-corrected logit_t/t-interval existed).
 
 No pre-existing pytest coverage exists for _ppi_single_wilson/
-_ppi_paired_tango/_ppi_paired_bootstrap_t as standalone functions (confirmed
+_ppi_paired_mj_floor/_ppi_paired_bootstrap_t as standalone functions (confirmed
 by repo-wide grep before writing this file), so there's no established bar
 to match -- these tests are written from scratch, following this codebase's
 own stated testing principles (tests/test_ppi_corrections.py's module
@@ -251,7 +251,7 @@ class TestConfigRouting:
         assert resolve_ppi_auto_methods("unbounded") == ("ppi_t_interval", "ppi_t_interval")
 
     def test_binary_routing_unaffected(self):
-        assert resolve_ppi_auto_methods("binary") == ("tango", "wilson")
+        assert resolve_ppi_auto_methods("binary") == ("mj_floor", "wilson")
 
 
 class TestApiDispatch:

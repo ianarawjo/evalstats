@@ -17,7 +17,7 @@ import sys, warnings
 import numpy as np
 sys.path.insert(0, "/Users/ianarawjo/Documents/prompt-stats")
 warnings.filterwarnings("ignore")
-from evalstats.core.resampling import tango_scc_paired_ci, tango_paired_ci
+from evalstats.core.resampling import tango_scc_paired_ci, mj_floor_paired_ci
 
 ALPHA = 0.05
 
@@ -41,7 +41,7 @@ def cover(N, pa, pb, rho, reps=4000, seed=3):
         r = paired_binary(rng, N, pa, pb, rho)
         if r is None: return None
         a, b = r
-        lo, hi = tango_paired_ci(a, b, ALPHA); out["score"].append(lo <= tgt <= hi)
+        lo, hi = mj_floor_paired_ci(a, b, ALPHA); out["score"].append(lo <= tgt <= hi)
         for lbl, c in (("SCC-S",0.125), ("SCC-M",0.25), ("SCC-L",0.5)):
             lo, hi = tango_scc_paired_ci(a, b, ALPHA, c=c)
             out[lbl].append(lo <= tgt <= hi)

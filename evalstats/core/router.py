@@ -181,9 +181,15 @@ def analyze(
             ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
             Newcombe score intervals (+ exact McNemar p-values), while
             point-advantage CIs use Wilson score intervals.
+        * ``'mj_floor'`` — Binary-only frequentist mode. Pairwise
+            comparisons use the floored May & Johnson (1997) score interval
+            (+ exact McNemar p-values), while point-advantage CIs use Wilson
+            score intervals. This is what ``'auto'`` selects for binary
+            pairwise comparisons.
         * ``'tango'`` — Binary-only frequentist mode. Pairwise comparisons
-            use Tango score intervals (+ exact McNemar p-values), while
-            point-advantage CIs use Wilson score intervals.
+            use the exact Tango (1998) score interval (+ exact McNemar
+            p-values), while point-advantage CIs use Wilson score intervals.
+            Single-run data only; it has no multi-run form.
     backend : str
         LMM fitting backend (only used when ``method='lmm'``):
         ``'statsmodels'`` (default, pure Python, no R required) or
@@ -350,7 +356,7 @@ def analyze(
 
     include_multi_ci = ci_style == "gradient"
 
-    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "newcombe", "tango", "permutation", "sign_test", "t_interval", "logit_t"} and result.n_inputs < 15:
+    if method not in {"lmm", "bayes_bootstrap", "smooth_bootstrap", "auto", "bayes_binary", "wilson", "mj_floor", "newcombe", "tango", "permutation", "sign_test", "t_interval", "logit_t"} and result.n_inputs < 15:
         warnings.warn(
             f"Only M={result.n_inputs} benchmark input(s) detected. "
             "Bootstrap confidence intervals are unreliable with fewer than ~15 inputs. "
@@ -1022,7 +1028,7 @@ def _analyze_single(
         # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         robustness_method = "wilson"
-    elif method in {"wilson", "newcombe", "tango"}:
+    elif method in {"wilson", "newcombe", "tango", "mj_floor"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
             raise ValueError(
@@ -1030,8 +1036,8 @@ def _analyze_single(
                 "scores array contains non-binary values. Use is_binary_scores() "
                 "to check before calling, or choose a different method."
             )
-        if method == "tango":
-            pairwise_method = "tango"
+        if method in ("tango", "mj_floor"):
+            pairwise_method = method
         else:
             # In analyze(), explicit frequentist binary methods route to:
             #   - pairwise Newcombe + exact McNemar p-values
@@ -1196,7 +1202,7 @@ def _analyze_multi_model(
 ) -> MultiModelBundle:
     from .resampling import is_binary_scores
 
-    fallback_binary_methods = {"wilson", "newcombe", "tango"}
+    fallback_binary_methods = {"wilson", "newcombe", "tango", "mj_floor"}
 
     def _effective_method(sub_result: BenchmarkResult) -> CompareMethod:
         """Fallback only for frequentist binary methods on auxiliary non-binary views."""

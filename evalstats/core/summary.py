@@ -92,7 +92,7 @@ def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
 def _pairwise_p_value_label(test_method: str) -> str:
     """Return a human-readable p-value method label for pairwise summaries."""
     method = test_method.lower()
-    if "tango" in method:
+    if "mj_floor" in method or "tango" in method:
         return "McNemar"
     if "newcombe" in method:
         return "McNemar exact"
@@ -114,7 +114,8 @@ def _pairwise_display_pvalue(pair: PairedDiffResult) -> tuple[float, str]:
     """
     method = pair.test_method.lower()
     is_exact_path = (
-        "tango" in method
+        "mj_floor" in method
+        or "tango" in method
         or "newcombe" in method
         or "mcnemar" in method
         or "sign test" in method

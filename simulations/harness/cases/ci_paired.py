@@ -9,7 +9,7 @@ Methods compared
 -----------------
 bootstrap, bca, bayes_bootstrap, smooth_bootstrap, bootstrap_t (all eval
 types, statistic=mean or median); t_interval, logit_t, nig, el (non-binary,
-statistic=mean only); newcombe_score, tango_score, tango_scc, bayes_indep_comp,
+statistic=mean only); newcombe_score, mj_floor, tango_scc, bayes_indep_comp,
 bayes_paired_comp (binary, statistic=mean only). tango_scc is the
 continuity-corrected "SCC-S" (c=0.125) score interval from Chang et al.
 (2024, J. Applied Statistics 51(1):139-152) -- see
@@ -20,7 +20,7 @@ the paper's prose and its working equations.
 
 Two variants were tried and abandoned after simulation, kept here as notes
 so the same dead ends aren't re-explored:
-- tango_hybrid: plain tango_score, switching to tango_scc only when the
+- tango_hybrid: plain mj_floor, switching to tango_scc only when the
   observed discordant pairs looked imbalanced. Its worst-case coverage
   barely improved on plain tango's, because the residual failures were
   samples that *looked* balanced by chance despite a lopsided true
@@ -86,13 +86,14 @@ with warnings.catch_warnings():
         logit_t_ci_1d,
         nig_ci_1d,
         el_ci_1d,
-        tango_paired_ci,
+        mj_floor_paired_ci,
         tango_scc_paired_ci,
+        mj_unfloored_paired_ci,
         newcombe_paired_ci,
-        tango_paired_ci_flat,
-        tango_paired_ci_mean,
-        tango_paired_ci_multirun_effective,
-        tango_paired_ci_multirun_moments,
+        mj_floor_paired_ci_flat,
+        mj_floor_paired_ci_mean,
+        mj_floor_paired_ci_multirun_effective,
+        mj_floor_paired_ci_multirun_moments,
         bayes_paired_diff_ci,
     )
     from evalstats.core.stats_utils import interval_score, rescaled_ci
@@ -119,8 +120,10 @@ from ..methods import (
     NIG,
     EL,
     NEWCOMBE,
-    TANGO,
+    MJ_FLOOR,
     TANGO_SCC,
+    TANGO_EXACT,
+    MJ_UNFLOORED,
     BAYES_PAIR_INDEP,
     BAYES_PAIR_PAIRED,
     WALD_PAIR_INDEP,
@@ -133,11 +136,11 @@ from ..methods import (
     BAYES_DIFF_NESTED,
     SMOOTH_DIFF_NESTED,
     BINARY_PAIR_FLAT_METHODS,
-    TANGO_FLAT,
+    MJ_FLOOR_FLAT,
     NEWCOMBE_FLAT,
     BINARY_PAIR_NESTED_METHODS,
-    TANGO_MULTIRUN_EFFECTIVE,
-    TANGO_MULTIRUN_MOMENTS,
+    MJ_FLOOR_ER,
+    MJ_FLOOR_MMNT,
     get_method_color,
     order_present_methods,
 )
@@ -232,7 +235,7 @@ def _wald_indep_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, f
     textbook "wrong way" to compare matched/paired binary outcomes -- the
     frequentist analog of bayes_indep_comp's identical independence
     assumption (draw separate posteriors for p_A, p_B, subtract). Unlike
-    tango_score/newcombe_score (which use the discordant-pair structure)
+    mj_floor/newcombe_score (which use the discordant-pair structure)
     or even a plain paired t-interval on the per-item differences, it makes
     no use of which items overlap between A and B at all.
 
@@ -480,7 +483,7 @@ def _run_cell(
     """Run all reps for one (source, n) cell -- pairwise estimand.
 
     ``method_names``, if given, restricts computation (not just reporting) to
-    methods whose ``.name`` is in the set -- e.g. ``{"tango_score",
+    methods whose ``.name`` is in the set -- e.g. ``{"mj_floor",
     "tango_scc", "bayes_paired_comp"}`` skips the bootstrap family, newcombe,
     and bayes_indep_comp entirely, which matters because bayes_indep_comp/
     bayes_paired_comp (importance sampling) are ~40-70x slower per call than
@@ -514,8 +517,10 @@ def _run_cell(
         statistic == "mean" and source_obj.eval_type != "binary" and bool(active_dither_extras)
     )
     add_newcombe = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE.name)
-    add_tango = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO.name)
+    add_mj_floor = source_obj.eval_type == "binary" and statistic == "mean" and _want(MJ_FLOOR.name)
     add_tango_scc = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_SCC.name)
+    add_tango_exact = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_EXACT.name)
+    add_mj_unfloored = source_obj.eval_type == "binary" and statistic == "mean" and _want(MJ_UNFLOORED.name)
     add_bayes_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_INDEP.name)
     add_bayes_paired = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_PAIRED.name)
     add_wald_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(WALD_PAIR_INDEP.name)
@@ -527,10 +532,14 @@ def _run_cell(
         active_methods += active_dither_extras
     if add_newcombe:
         active_methods.append(NEWCOMBE)
-    if add_tango:
-        active_methods.append(TANGO)
+    if add_mj_floor:
+        active_methods.append(MJ_FLOOR)
     if add_tango_scc:
         active_methods.append(TANGO_SCC)
+    if add_tango_exact:
+        active_methods.append(TANGO_EXACT)
+    if add_mj_unfloored:
+        active_methods.append(MJ_UNFLOORED)
     if add_bayes_indep:
         active_methods.append(BAYES_PAIR_INDEP)
     if add_bayes_paired:
@@ -648,16 +657,16 @@ def _run_cell(
             total_t_sq[NEWCOMBE] += _el * _el
             _record(NEWCOMBE, ci_low, ci_high)
 
-        if add_tango:
+        if add_mj_floor:
             _t0 = time.perf_counter()
             try:
-                ci_low, ci_high = tango_paired_ci(a[:, 0], b[:, 0], alpha)
+                ci_low, ci_high = mj_floor_paired_ci(a[:, 0], b[:, 0], alpha)
             except Exception:
                 ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
             _el = time.perf_counter() - _t0
-            total_t[TANGO] += _el
-            total_t_sq[TANGO] += _el * _el
-            _record(TANGO, ci_low, ci_high)
+            total_t[MJ_FLOOR] += _el
+            total_t_sq[MJ_FLOOR] += _el * _el
+            _record(MJ_FLOOR, ci_low, ci_high)
 
         if add_tango_scc:
             _t0 = time.perf_counter()
@@ -669,6 +678,28 @@ def _run_cell(
             total_t[TANGO_SCC] += _el
             total_t_sq[TANGO_SCC] += _el * _el
             _record(TANGO_SCC, ci_low, ci_high)
+
+        if add_tango_exact:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = tango_scc_paired_ci(a[:, 0], b[:, 0], alpha, c=0.0)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[TANGO_EXACT] += _el
+            total_t_sq[TANGO_EXACT] += _el * _el
+            _record(TANGO_EXACT, ci_low, ci_high)
+
+        if add_mj_unfloored:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = mj_unfloored_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[MJ_UNFLOORED] += _el
+            total_t_sq[MJ_UNFLOORED] += _el * _el
+            _record(MJ_UNFLOORED, ci_low, ci_high)
 
         if add_bayes_indep:
             _t0 = time.perf_counter()
@@ -1001,16 +1032,16 @@ def _run_nested_pairwise_cell(
         if is_binary:
             a0, b0 = a[:, 0], b[:, 0]  # first run only (flat iid baseline)
 
-            if _want(TANGO_FLAT.name):
+            if _want(MJ_FLOOR_FLAT.name):
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = tango_paired_ci_flat(a, b, alpha)
+                    ci_low, ci_high = mj_floor_paired_ci_flat(a, b, alpha)
                 except Exception:
                     ci_low = ci_high = float(np.mean(a0 - b0))
                 _el = time.perf_counter() - _t0
-                total_t[TANGO_FLAT] += _el
-                total_t_sq[TANGO_FLAT] += _el * _el
-                _record(TANGO_FLAT, ci_low, ci_high)
+                total_t[MJ_FLOOR_FLAT] += _el
+                total_t_sq[MJ_FLOOR_FLAT] += _el * _el
+                _record(MJ_FLOOR_FLAT, ci_low, ci_high)
 
             if _want(NEWCOMBE_FLAT.name):
                 _t0 = time.perf_counter()
@@ -1057,8 +1088,8 @@ def _run_nested_pairwise_cell(
                 _record(WALD_PAIR_INDEP, ci_low, ci_high)
 
             for method, fn in [
-                (TANGO_MULTIRUN_EFFECTIVE, tango_paired_ci_multirun_effective),
-                (TANGO_MULTIRUN_MOMENTS, tango_paired_ci_multirun_moments),
+                (MJ_FLOOR_ER, mj_floor_paired_ci_multirun_effective),
+                (MJ_FLOOR_MMNT, mj_floor_paired_ci_multirun_moments),
             ]:
                 if not _want(method.name):
                     continue
@@ -1704,7 +1735,7 @@ def save_by_n_violin_plot(
     violin per method at each n within a column (dodged side by side); each
     dot is one scenario's (label) mean coverage/score at that n and method.
 
-    Originally built (and hardcoded) for comparing tango_score vs.
+    Originally built (and hardcoded) for comparing mj_floor vs.
     tango_scc vs. bayes_paired_comp across N on binary data only; generalized
     to any eval type/method combination so it also works for e.g. logit_t vs.
     another continuous/likert method (via --eval-types/--methods -- see
@@ -1982,7 +2013,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Synthetic scenario breadth (ignored for real data sources)")
     parser.add_argument("--eval-types", nargs="+", choices=EVAL_TYPES, default=None, metavar="TYPE")
     parser.add_argument("--methods", nargs="+", default=None, metavar="NAME",
-                         help="Restrict to these CI methods only, by Method.name (e.g. tango_score "
+                         help="Restrict to these CI methods only, by Method.name (e.g. mj_floor "
                               "tango_scc bayes_paired_comp). Skips *computing* (not just reporting) any "
                               "method not listed -- the way to cut runtime when bayes_indep_comp/"
                               "bayes_paired_comp (importance sampling, ~40-70x slower per call than "
@@ -2020,7 +2051,7 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--by-n-violin-plot", action="store_true", default=False,
                          help="Also save grouped violin plots of per-scenario coverage and interval "
                               "score vs. sample size -- one violin per method at each n (one column "
-                              "per eval type present). Originally built for comparing tango_score vs. "
+                              "per eval type present). Originally built for comparing mj_floor vs. "
                               "tango_scc vs. bayes_paired_comp across N on binary data (see "
                               "discordant_comparison_args() for that invocation), but works for any "
                               "eval type/method set, e.g. logit_t vs. another continuous method via "
@@ -2220,7 +2251,7 @@ def nested_official_args(base_seed: int = 44) -> argparse.Namespace:
 
 
 def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
-    """tango_score vs. tango_scc vs. bayes_paired_comp across N=10..125, for
+    """mj_floor vs. tango_scc vs. bayes_paired_comp across N=10..125, for
     the coverage/interval-score violin plots (--by-n-violin-plot). Not wired
     into --official-tests (this exists to make a specific method-choice
     argument visible in a figure, not as a general calibration check);
@@ -2228,7 +2259,7 @@ def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
 
     python -m simulations.harness.cli ci_paired --data-source synthetic
       --scenario-suite expanded --eval-types binary
-      --methods tango_score tango_scc bayes_paired_comp
+      --methods mj_floor tango_scc bayes_paired_comp
       --reps 300 --bootstrap-n 10000 --bayes-n 10000 --alpha 0.05
       --sizes 10 15 20 30 40 50 60 70 80 90 100 110 125
       --icc-values 0.05 0.20 0.40 0.60 0.80 --cohens-d-values 0.2 0.4
@@ -2246,7 +2277,7 @@ def discordant_comparison_args(base_seed: int = 46) -> argparse.Namespace:
         benchmarks=None, models=None, hf_token=None, cache_dir=None, min_pair_size=50, inspect_csv=None,
         runs=1, statistic="mean", reps=300, bootstrap_n=10000, bayes_n=10000, alpha=0.05,
         sizes=[10, 15, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 125],
-        methods=["tango_score", "tango_scc", "bayes_paired_comp"],
+        methods=["mj_floor", "tango_scc", "bayes_paired_comp"],
         seed=base_seed, icc_values=[0.05, 0.20, 0.40, 0.60, 0.80], cohens_d_values=[0.2, 0.4], include_null=True,
         progress="bar", plots="off", save_results="save", out_dir="simulations/out", plots_dir=None,
         nested_mode=False, runs_sweep=None, run_noise_fracs=RUN_NOISE_FRACS_DEFAULT, heteroscedastic=False,

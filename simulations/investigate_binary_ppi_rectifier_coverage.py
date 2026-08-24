@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, "/Users/ianarawjo/Documents/prompt-stats")
 warnings.filterwarnings("ignore")
 from scipy.stats import norm, t as _t
-from evalstats.core.resampling import tango_paired_ci_from_diffs
+from evalstats.core.resampling import mj_floor_paired_ci_from_diffs
 ALPHA = 0.05
 
 def one(rng, N, n_lab, p, flip):
@@ -26,7 +26,7 @@ def one(rng, N, n_lab, p, flip):
     v = s2f/len(unlab) + float(np.var(rect, ddof=1))/n_lab
     h = tc*np.sqrt(max(v,0.0))
     a_ok = max(0,est-h) <= p <= min(1,est+h)
-    r_lo, r_hi = tango_paired_ci_from_diffs(rect, ALPHA)
+    r_lo, r_hi = mj_floor_paired_ci_from_diffs(rect, ALPHA)
     hw_lo = np.sqrt(max(rhat-r_lo,0)**2 + (zc*se_f)**2)
     hw_hi = np.sqrt(max(r_hi-rhat,0)**2 + (zc*se_f)**2)
     t_ok = max(0.0,est-hw_lo) <= p <= min(1.0,est+hw_hi)

@@ -926,7 +926,7 @@ def _bridge_to_io(
 # PPI alignment correction
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PPI_PAIRWISE_SUPPORTED = ("tango", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
+_PPI_PAIRWISE_SUPPORTED = ("mj_floor", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
 _PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t", "ppi_t_interval", "ppi_logit_t")
 
 
@@ -946,12 +946,12 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     silently collide with that existing mapping.
     """
     from evalstats.tests import (
-        _ppi_paired_tango, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
+        _ppi_paired_mj_floor, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
         _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
         _ppi_paired_t_interval, _ppi_paired_logit_t,
     )
-    if method == "tango":
-        return _ppi_paired_tango(a, b, a_lab, b_lab, alpha)
+    if method == "mj_floor":
+        return _ppi_paired_mj_floor(a, b, a_lab, b_lab, alpha)
     if method == "bootstrap_t":
         return _ppi_paired_bootstrap_t(a, b, a_lab, b_lab, alpha, n_boot, rng)
     if method == "bayes_bootstrap":
@@ -986,6 +986,12 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
         # production stays aligned with what's actually been exercised by
         # that sanctioned pipeline until "ridge" gets its own official
         # pass.
+        # KNOWN, NOT FIXED (2026-08-24): conservative on likert. Mid-rank
+        # placement over a 5-level scale collapses the influence function
+        # (~22% tied pairs), giving corrected Type-I ~0.011 vs ~0.04 for the
+        # parametric tests. Unlike wilcoxon, this path never reaches
+        # correct()'s smoothed-bootstrap jitter (ppi._tie_jitter_scale) --
+        # the likeliest fix, but unvalidated here. Errs safe (under-rejects).
         return _ppi_two_sample(a, b, a_lab, b_lab, lambda xa, ya: _p_x_gt_y_midrank(xa, ya) - 0.5, alpha, n_boot, rng)
     raise ValueError(
         f"PPI alignment correction has no validated implementation for pairwise "
@@ -1055,7 +1061,7 @@ def _ppi_bootstrap_t_joint_stats(
     estimate/variance use the same closed-form variance-minimizing
     lambda* :func:`evalstats.ppi._analytic_mean_point_se` derives for
     ``ppi_t_interval``/``ppi_logit_t``/Tango (since evalstats.tests.
-    _ppi_paired_tango's own power-tuning flip), instead of the fixed
+    _ppi_paired_mj_floor's own power-tuning flip), instead of the fixed
     lambda=1 rectifier -- generalized here to a per-pair lambda*, computed
     once per pair (closed-form, not re-estimated per bootstrap replicate,
     avoiding the "double dipping" undercoverage a same-draw lambda/CI
@@ -1563,8 +1569,8 @@ def _run_alignment_ppi(
     For ``method="auto"`` the PPI-specific auto table
     (``evalstats.config.resolve_ppi_auto_methods``) picks a method validated
     for PPI use, which need not match the non-aligned auto default for the
-    same data (e.g. binary data defaults to ``bayes_binary``/``tango``
-    depending on N without alignment, but always ``tango`` once PPI
+    same data (e.g. binary data defaults to ``bayes_binary``/``mj_floor``
+    depending on N without alignment, but always ``mj_floor`` once PPI
     correction is in play, since ``bayes_binary`` has no PPI-corrected form).
     When the user passes an explicit ``method=``, that exact method's
     PPI-corrected counterpart is used, and a clear ``ValueError`` is raised if

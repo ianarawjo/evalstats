@@ -95,11 +95,11 @@ class AutoAnalyzeRule:
 # on marginal_method, so plain "wilson" / "logit_t" applied to that
 # already-collapsed array *is* the flat/run-means variant. Same story for
 # "Logit-t on run mean differences" in all_pairwise()'s "logit_t" path. And
-# "ER-Tango" is not a separate method name either -- pairwise_method="tango"
+# "mj_floor_er" is not a separate user-facing method name -- pairwise_method="mj_floor"
 # internally detects R >= 3 seeded runs and switches to the effective-N
-# multirun variant (tango_paired_ci_multirun_effective), which *is* ER-Tango.
-# (tango_paired_ci_multirun_moments is a related but distinct variant --
-# still available in core/resampling.py, but not what "tango" routes to.)
+# multirun variant (mj_floor_paired_ci_multirun_effective).
+# (mj_floor_paired_ci_multirun_moments is a related but distinct variant --
+# still available in core/resampling.py, but not what "mj_floor" routes to.)
 #
 # "bounded_01" (the data_kind label) no longer means the data is literally
 # valued in [0, 1] -- it means router.py._analyze_single could establish a
@@ -124,7 +124,7 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
         robustness_method_single_run="wilson",
         robustness_method_seeded="wilson",
         reason=(
-            "Real-data simulations show Tango under-covers in "
+            "Real-data simulations show mj_floor under-covers in "
             "dominated/jointly-sparse pairs at small N, regardless of run "
             "count, so small-N binary data uses the Bayesian paired model "
             "(citet{dontusetheclt}) instead. Cutoff N=50, per "
@@ -136,11 +136,11 @@ AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     ),
     AutoAnalyzeRule(
         data_kind="binary", max_n=None,
-        pairwise_method="tango",
+        pairwise_method="mj_floor",
         robustness_method_single_run="wilson",
         robustness_method_seeded="wilson",
         reason=(
-            "N >= 50 binary data: Tango pairwise (ER-Tango via the "
+            "N >= 50 binary data: mj_floor pairwise (effective-runs variant via the "
             "effective-N multirun variant when seeded), Wilson-flat marginal."
         ),
     ),
@@ -305,17 +305,17 @@ class PPIAutoMethodRule:
 PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
     PPIAutoMethodRule(
         data_kind="binary",
-        pairwise_method="tango",
+        pairwise_method="mj_floor",
         robustness_method="wilson",
         reason=(
-            "Binary data: Tango (pairwise) and Wilson (marginal) both have "
+            "Binary data: mj_floor (pairwise) and Wilson (marginal) both have "
             "closed-form PPI-corrected forms via an effective-n substitution "
-            "(see evalstats.tests._ppi_paired_tango / _ppi_single_wilson). "
+            "(see evalstats.tests._ppi_paired_mj_floor / _ppi_single_wilson). "
             "Wilson matches the non-aligned default's own marginal choice "
             "(AUTO_ANALYZE_METHOD_TABLE's marginal is 'wilson' at every N). "
-            "Pairwise is Tango even below the non-aligned default's N<50 "
+            "Pairwise is mj_floor even below the non-aligned default's N<50 "
             "cutoff for bayes_binary -- a forced deviation, not a choice: "
-            "bayes_binary has no PPI-corrected form, so Tango is used at "
+            "bayes_binary has no PPI-corrected form, so mj_floor is used at "
             "every N under PPI alignment rather than raising below N=50."
         ),
     ),
@@ -549,7 +549,7 @@ def resolve_auto_pvalue_correction_method(n: int, *, lopsided_binary: bool = Fal
 #   for a binary outcome -- using entirely existing, validated machinery.
 #   Known, accepted limitation: t-intervals on binary/bounded data can
 #   produce out-of-[0,1]/[-1,1] CIs at extreme proportions or small N (why
-#   the *paired* path uses Tango instead of a generic t-interval for binary
+#   the *paired* path uses mj_floor instead of a generic t-interval for binary
 #   data -- there is no between-subjects Tango equivalent today). A
 #   deliberate patch, not a clean solution.
 #

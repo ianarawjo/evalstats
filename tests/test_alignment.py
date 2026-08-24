@@ -946,7 +946,7 @@ class TestPPISampleSizeChecks:
         residual left for the LLM-only term (n_all=0 in the PPI variance
         decomposition Var(unlab)/n_all + Var(rectifier)/n_lab). This used to
         raise a bare ZeroDivisionError from deep inside
-        evalstats.tests._ppi_single_wilson/_ppi_paired_tango; it should now
+        evalstats.tests._ppi_single_wilson/_ppi_paired_mj_floor; it should now
         raise a clear, actionable ValueError instead."""
         rng = np.random.default_rng(7)
         n_items = 60

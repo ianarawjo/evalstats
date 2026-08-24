@@ -12,7 +12,7 @@ import numpy as np
 sys.path.insert(0, "/Users/ianarawjo/Documents/prompt-stats")
 warnings.filterwarnings("ignore")
 from scipy.stats import norm
-from evalstats.core.resampling import tango_paired_ci_from_diffs, tango_scc_paired_ci
+from evalstats.core.resampling import mj_floor_paired_ci_from_diffs, tango_scc_paired_ci
 
 ALPHA = 0.05; Z = norm.ppf(1 - ALPHA/2)
 
@@ -37,7 +37,7 @@ def run(N, n_lab, p, flip, reps=2500, seed=7):
         d = tl - ll; rect = float(np.mean(d)); est = fu + rect
         npl = int(np.sum(d > 0)); nmi = int(np.sum(d < 0)); nd = npl + nmi
         try:
-            t_lo, t_hi = tango_paired_ci_from_diffs(d, ALPHA)
+            t_lo, t_hi = mj_floor_paired_ci_from_diffs(d, ALPHA)
             s_lo, s_hi = tango_scc_paired_ci(tl, ll, ALPHA, c=0.125)
         except Exception:
             continue

@@ -40,9 +40,10 @@ from .resampling import (
     bootstrap_t_ci_nested,
     resolve_resampling_method,
     newcombe_paired_ci,
-    tango_paired_ci,
-    tango_paired_ci_from_diffs,
-    tango_paired_ci_multirun_effective,
+    mj_floor_paired_ci,
+    tango_scc_paired_ci,
+    mj_floor_paired_ci_from_diffs,
+    mj_floor_paired_ci_multirun_effective,
     t_interval_ci_1d,
     logit_t_ci_1d,
     nig_ci_1d,
@@ -457,7 +458,7 @@ def pairwise_differences(
     idx_b: int,
     label_a: str = "A",
     label_b: str = "B",
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "mj_floor", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     rng: Optional[np.random.Generator] = None,
@@ -485,8 +486,10 @@ def pairwise_differences(
         (smoothed bootstrap via Gaussian KDE), ``'bootstrap_t'``
         (studentized bootstrap-t CI), ``'newcombe'`` for paired
         binary (0/1) data using Newcombe CI + exact McNemar p-value,
-        ``'tango'`` for paired binary (0/1) data using Tango score CI +
-        exact McNemar p-value, or
+        ``'mj_floor'`` for paired binary (0/1) data using the floored
+        May & Johnson (1997) score CI + exact McNemar p-value,
+        ``'tango'`` for paired binary (0/1) data using the exact Tango
+        (1998) score CI + exact McNemar p-value (single-run only), or
         ``'bayes_binary'`` for paired binary (0/1) data using the
         Dirichlet-multinomial Bayesian model (Bowyer et al. 2025).
         Requires binary data; raises ValueError otherwise.
@@ -722,10 +725,10 @@ def pairwise_differences(
             multi_ci_dict=mci,
         )
 
-    if method == "tango":
+    if method == "mj_floor":
         multirun = scores.ndim == 3 and scores.shape[2] > 1
         if multirun:
-            # Multi-run: use the effective-N variant (tango_multirun_effective,
+            # Multi-run: use the effective-N variant (mj_floor_er,
             # "ER-Tango" in the paper's decision tree / appendix), which estimates
             # an effective number of runs to account for within-item correlation
             # and reduces exactly to the standard Tango CI when n_runs == 1.
@@ -741,14 +744,14 @@ def pairwise_differences(
         alpha_val = 1.0 - ci
 
         if multirun:
-            ci_low, ci_high = tango_paired_ci_multirun_effective(values_a_full, values_b_full, alpha_val)
+            ci_low, ci_high = mj_floor_paired_ci_multirun_effective(values_a_full, values_b_full, alpha_val)
             if multi_ci:
-                mci = {_a: tango_paired_ci_multirun_effective(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
+                mci = {_a: mj_floor_paired_ci_multirun_effective(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
             else:
                 mci = None
         else:
-            ci_low, ci_high = tango_paired_ci(values_a, values_b, alpha_val)
-            mci = {_a: tango_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
+            ci_low, ci_high = mj_floor_paired_ci(values_a, values_b, alpha_val)
+            mci = {_a: mj_floor_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         p_value = _mcnemar_p(values_a, values_b)
         return _build_result(
             diffs=diffs,
@@ -757,7 +760,44 @@ def pairwise_differences(
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_name="tango effective-run" if multirun else "tango",
+            test_name="mj_floor effective-run" if multirun else "mj_floor",
+            values_a=values_a,
+            values_b=values_b,
+            multi_ci_dict=mci,
+        )
+
+    if method == "tango":
+        # The genuine Tango (1998) asymptotic score interval, obtained in
+        # closed form via Chang et al. (2024)'s quartic with the continuity
+        # correction set to zero. Validated against the published limits in
+        # Fagerland, Lydersen & Laake (2014), Table V.
+        #
+        # NOTE: before 2026-08-24 this name dispatched to what is now
+        # ``mj_floor`` -- a May & Johnson construction that is NOT Tango's
+        # interval. See mj_floor_paired_ci's docstring.
+        if scores.ndim == 3 and scores.shape[2] > 1:
+            raise NotImplementedError(
+                "method='tango' (the exact Tango score interval) has no "
+                "multi-run form. Use method='mj_floor' for multi-run paired "
+                "binary data, which dispatches to the effective-runs variant."
+            )
+        flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+        values_a = flat[idx_a]
+        values_b = flat[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
+        alpha_val = 1.0 - ci
+        ci_low, ci_high = tango_scc_paired_ci(values_a, values_b, alpha_val, c=0.0)
+        mci = ({_a: tango_scc_paired_ci(values_a, values_b, _a, c=0.0)
+                for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
+        p_value = _mcnemar_p(values_a, values_b)
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_name="tango score (exact)",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
@@ -1383,7 +1423,7 @@ def _max_stat_simultaneous_cis(
         ``'bayes_bootstrap'``, ``'smooth_bootstrap'``, ``'bootstrap_t'``, ``'auto'``
         (treated as ``'smooth_bootstrap'``), ``'permutation'``,
         ``'sign_test'``.  Methods that do not use bootstrap resampling
-        for CIs (``'newcombe'``, ``'tango'``, ``'bayes_binary'``,
+        for CIs (``'newcombe'``, ``'mj_floor'``, ``'tango'``, ``'bayes_binary'``,
         ``'lmm'``) are not supported; an empty dict is returned for these.
         Ignored when *precomputed_boot_stats* is supplied.
     ci : float
@@ -1749,7 +1789,7 @@ def _bonferroni_simultaneous_cis(
     ``per_input_diffs`` already stored in each :class:`PairedDiffResult`.
     This makes the result independent of the original CI method, so it
     works as a universal fallback for non-bootstrap methods such as
-    ``'newcombe'``, ``'tango'``, and ``'bayes_binary'``.
+    ``'newcombe'``, ``'mj_floor'``, ``'tango'``, and ``'bayes_binary'``.
 
     It is also the *only* construction that runs for a **single pair**
     (k=1): :func:`_simultaneous_cis_router` gates Sidak/boot on
@@ -1820,7 +1860,7 @@ def _sidak_simultaneous_cis(
 
     This is agnostic to which CI construction it widens: *ci_func* is any
     callable ``(diffs, alpha) -> (ci_low, ci_high)`` -- e.g.
-    :func:`~evalstats.core.resampling.tango_paired_ci_from_diffs` for binary
+    :func:`~evalstats.core.resampling.mj_floor_paired_ci_from_diffs` for binary
     paired data, but equally ``newcombe_paired_ci``, ``t_interval_ci_1d``, or
     any other closed-form interval that accepts a significance level.
 
@@ -1937,7 +1977,7 @@ def _joint_bootstrap_scaled_simultaneous_cis(
     k(k-1)/2 pairs per replicate, and uses the resulting
     ``(1-alpha)``-quantile critical value *c* in place of the marginal
     normal quantile ``z_{alpha/2}`` inside *ci_func* (most closed-form score
-    intervals -- e.g. ``tango_paired_ci_from_diffs`` -- derive ``z`` from
+    intervals -- e.g. ``mj_floor_paired_ci_from_diffs`` -- derive ``z`` from
     ``alpha`` internally, so translating *c* back to an equivalent
     ``alpha_eff = 2*(1 - Phi(c))`` and evaluating *ci_func* at that level is
     equivalent to substituting *c* for *z* directly). This keeps the
@@ -2243,7 +2283,7 @@ def _simultaneous_cis_router(
             )
 
         if data_kind == "binary":
-            ci_func = tango_paired_ci_from_diffs
+            ci_func = mj_floor_paired_ci_from_diffs
         elif data_kind == "bounded_01":
             diff_lo, diff_hi = diff_bounds  # type: ignore[misc]
 
@@ -2299,7 +2339,7 @@ def _simultaneous_cis_router(
 def all_pairwise(
     scores: np.ndarray,
     labels: list[str],
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "mj_floor", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["auto", "holm", "bonferroni", "fdr_bh", "hochberg", "shaffer", "romano_wolf", "none"] = "auto",
@@ -2563,7 +2603,7 @@ def vs_baseline(
     scores: np.ndarray,
     labels: list[str],
     baseline: str,
-    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
+    method: Literal["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t", "auto", "newcombe", "mj_floor", "tango", "bayes_binary", "permutation", "sign_test", "t_interval", "logit_t", "nig"] = "auto",
     ci: float = 0.95,
     n_bootstrap: int = 10_000,
     correction: Literal["holm", "bonferroni", "fdr_bh", "none"] = "fdr_bh",

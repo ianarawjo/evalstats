@@ -20,9 +20,9 @@ Methods compared
         plus bootstrap variants and Bayesian paired baselines
 
     Optional (--multi-run-methods)
-        tango_multirun_cluster   Cluster-robust Tango
-        tango_multirun_effective Effective-N Tango
-        tango_multirun_mmnt      Moments-based Tango
+        mj_floor_cluster   Cluster-robust Tango
+        mj_floor_er Effective-N Tango
+        mj_floor_mmnt      Moments-based Tango
         *_nested diff bootstrap methods
 
 For R=1 (single-run real data), all multirun variants should match tango.
@@ -113,10 +113,10 @@ with warnings.catch_warnings():
         nig_ci_1d,
         nig_ci_nested,
         newcombe_paired_ci,
-        tango_paired_ci_flat,
-        tango_paired_ci_multirun_cluster,
-        tango_paired_ci_multirun_effective,
-        tango_paired_ci_multirun_moments,
+        mj_floor_paired_ci_flat,
+        mj_floor_paired_ci_multirun_cluster,
+        mj_floor_paired_ci_multirun_effective,
+        mj_floor_paired_ci_multirun_moments,
         bootstrap_diffs_nested,
         bayes_bootstrap_diffs_nested,
         smooth_bootstrap_diffs_nested,
@@ -128,11 +128,11 @@ with warnings.catch_warnings():
 # Constants
 # ---------------------------------------------------------------------------
 
-TANGO_FLAT_METHOD      = "tango"
+MJ_FLOOR_FLAT_METHOD      = "tango"
 NEWCOMBE_FLAT_METHOD   = "newcombe"
-TANGO_CLUSTER_METHOD   = "tango_multirun_cluster"
-TANGO_EFFECTIVE_METHOD = "tango_multirun_effective"
-TANGO_MOMENTS_METHOD   = "tango_multirun_mmnt"
+MJ_FLOOR_CLUSTER_METHOD   = "mj_floor_cluster"
+MJ_FLOOR_EFFECTIVE_METHOD = "mj_floor_er"
+MJ_FLOOR_MOMENTS_METHOD   = "mj_floor_mmnt"
 BOOTSTRAP_METHOD       = "bootstrap"
 BCA_METHOD             = "bca"
 BAYES_BOOTSTRAP_METHOD = "bayes_bootstrap"
@@ -147,11 +147,11 @@ BAYES_PAIR_PAIRED_METHOD     = "bayes_paired_comp"
 LMM_DIFF_METHOD              = "lmm_diff"
 
 ALL_METHODS = [
-    TANGO_FLAT_METHOD,
+    MJ_FLOOR_FLAT_METHOD,
     NEWCOMBE_FLAT_METHOD,
-    TANGO_CLUSTER_METHOD,
-    TANGO_EFFECTIVE_METHOD,
-    TANGO_MOMENTS_METHOD,
+    MJ_FLOOR_CLUSTER_METHOD,
+    MJ_FLOOR_EFFECTIVE_METHOD,
+    MJ_FLOOR_MOMENTS_METHOD,
     BOOTSTRAP_METHOD,
     BCA_METHOD,
     BAYES_BOOTSTRAP_METHOD,
@@ -167,7 +167,7 @@ ALL_METHODS = [
 ]
 
 SINGLE_RUN_METHODS = [
-    TANGO_FLAT_METHOD,
+    MJ_FLOOR_FLAT_METHOD,
     NEWCOMBE_FLAT_METHOD,
     BOOTSTRAP_METHOD,
     BCA_METHOD,
@@ -180,9 +180,9 @@ SINGLE_RUN_METHODS = [
 ]
 
 MULTI_RUN_ONLY_METHODS = [
-    TANGO_CLUSTER_METHOD,
-    TANGO_EFFECTIVE_METHOD,
-    TANGO_MOMENTS_METHOD,
+    MJ_FLOOR_CLUSTER_METHOD,
+    MJ_FLOOR_EFFECTIVE_METHOD,
+    MJ_FLOOR_MOMENTS_METHOD,
     BOOTSTRAP_DIFF_NESTED_METHOD,
     BAYES_DIFF_NESTED_METHOD,
     SMOOTH_DIFF_NESTED_METHOD,
@@ -190,11 +190,11 @@ MULTI_RUN_ONLY_METHODS = [
 ]
 
 _METHOD_COLORS: dict[str, str] = {
-    TANGO_FLAT_METHOD:           "#e7298a",
+    MJ_FLOOR_FLAT_METHOD:           "#e7298a",
     NEWCOMBE_FLAT_METHOD:        "#66a61e",
-    TANGO_CLUSTER_METHOD:        "#e6ab02",
-    TANGO_EFFECTIVE_METHOD:      "#a6761d",
-    TANGO_MOMENTS_METHOD:        "#1b9e77",
+    MJ_FLOOR_CLUSTER_METHOD:        "#e6ab02",
+    MJ_FLOOR_EFFECTIVE_METHOD:      "#a6761d",
+    MJ_FLOOR_MOMENTS_METHOD:        "#1b9e77",
     BOOTSTRAP_METHOD:            "#1f77b4",
     BCA_METHOD:                  "#2ca02c",
     BAYES_BOOTSTRAP_METHOD:      "#ff7f0e",
@@ -210,11 +210,11 @@ _METHOD_COLORS: dict[str, str] = {
 }
 
 _METHOD_LABELS: dict[str, str] = {
-    TANGO_FLAT_METHOD:           "tango",
+    MJ_FLOOR_FLAT_METHOD:           "tango",
     NEWCOMBE_FLAT_METHOD:        "newcombe",
-    TANGO_CLUSTER_METHOD:        "tango_cluster",
-    TANGO_EFFECTIVE_METHOD:      "tango_effective",
-    TANGO_MOMENTS_METHOD:        "tango_moments",
+    MJ_FLOOR_CLUSTER_METHOD:        "tango_cluster",
+    MJ_FLOOR_EFFECTIVE_METHOD:      "tango_effective",
+    MJ_FLOOR_MOMENTS_METHOD:        "tango_moments",
     BOOTSTRAP_METHOD:            "bootstrap",
     BCA_METHOD:                  "bca",
     BAYES_BOOTSTRAP_METHOD:      "bayes_bootstrap",
@@ -457,7 +457,7 @@ def _multirun_delta_variance_breakdown(
 ) -> dict[str, float] | None:
     """Decompose paired-difference variance into latent + inter-run noise terms.
 
-    Mirrors the moments decomposition used by tango_paired_ci_multirun_moments.
+    Mirrors the moments decomposition used by mj_floor_paired_ci_multirun_moments.
     Returns None for non-multirun inputs.
     """
     if scores_a.ndim != 2 or scores_b.ndim != 2:
@@ -1423,19 +1423,19 @@ def _run_pairwise_real_cell(
         diffs = a[:, 0] - b[:, 0]  # (n,) — run 0 only
         obs_diff = float(np.mean(diffs))
 
-        # ── tango_flat ──────────────────────────────────────────────
-        if TANGO_FLAT_METHOD in methods:
+        # ── mj_floor_flat ──────────────────────────────────────────────
+        if MJ_FLOOR_FLAT_METHOD in methods:
             _t = time.perf_counter()
             try:
-                ci_lo, ci_hi = tango_paired_ci_flat(a, b, alpha)
+                ci_lo, ci_hi = mj_floor_paired_ci_flat(a, b, alpha)
             except Exception:
                 ci_lo = ci_hi = obs_diff
             _el = time.perf_counter() - _t
-            total_t[TANGO_FLAT_METHOD] += _el
-            total_t_sq[TANGO_FLAT_METHOD] += _el * _el
+            total_t[MJ_FLOOR_FLAT_METHOD] += _el
+            total_t_sq[MJ_FLOOR_FLAT_METHOD] += _el * _el
             if ci_lo <= true_diff <= ci_hi:
-                covered[TANGO_FLAT_METHOD] += 1
-            total_w[TANGO_FLAT_METHOD] += ci_hi - ci_lo
+                covered[MJ_FLOOR_FLAT_METHOD] += 1
+            total_w[MJ_FLOOR_FLAT_METHOD] += ci_hi - ci_lo
 
         # ── newcombe_flat ────────────────────────────────────────────
         if NEWCOMBE_FLAT_METHOD in methods:
@@ -1451,47 +1451,47 @@ def _run_pairwise_real_cell(
                 covered[NEWCOMBE_FLAT_METHOD] += 1
             total_w[NEWCOMBE_FLAT_METHOD] += ci_hi - ci_lo
 
-        # ── tango_multirun_cluster ───────────────────────────────────
-        if TANGO_CLUSTER_METHOD in methods:
+        # ── mj_floor_cluster ───────────────────────────────────
+        if MJ_FLOOR_CLUSTER_METHOD in methods:
             _t = time.perf_counter()
             try:
-                ci_lo, ci_hi = tango_paired_ci_multirun_cluster(a, b, alpha)
+                ci_lo, ci_hi = mj_floor_paired_ci_multirun_cluster(a, b, alpha)
             except Exception:
                 ci_lo = ci_hi = obs_diff
             _el = time.perf_counter() - _t
-            total_t[TANGO_CLUSTER_METHOD] += _el
-            total_t_sq[TANGO_CLUSTER_METHOD] += _el * _el
+            total_t[MJ_FLOOR_CLUSTER_METHOD] += _el
+            total_t_sq[MJ_FLOOR_CLUSTER_METHOD] += _el * _el
             if ci_lo <= true_diff <= ci_hi:
-                covered[TANGO_CLUSTER_METHOD] += 1
-            total_w[TANGO_CLUSTER_METHOD] += ci_hi - ci_lo
+                covered[MJ_FLOOR_CLUSTER_METHOD] += 1
+            total_w[MJ_FLOOR_CLUSTER_METHOD] += ci_hi - ci_lo
 
-        # ── tango_multirun_effective ─────────────────────────────────
-        if TANGO_EFFECTIVE_METHOD in methods:
+        # ── mj_floor_er ─────────────────────────────────
+        if MJ_FLOOR_EFFECTIVE_METHOD in methods:
             _t = time.perf_counter()
             try:
-                ci_lo, ci_hi = tango_paired_ci_multirun_effective(a, b, alpha)
+                ci_lo, ci_hi = mj_floor_paired_ci_multirun_effective(a, b, alpha)
             except Exception:
                 ci_lo = ci_hi = obs_diff
             _el = time.perf_counter() - _t
-            total_t[TANGO_EFFECTIVE_METHOD] += _el
-            total_t_sq[TANGO_EFFECTIVE_METHOD] += _el * _el
+            total_t[MJ_FLOOR_EFFECTIVE_METHOD] += _el
+            total_t_sq[MJ_FLOOR_EFFECTIVE_METHOD] += _el * _el
             if ci_lo <= true_diff <= ci_hi:
-                covered[TANGO_EFFECTIVE_METHOD] += 1
-            total_w[TANGO_EFFECTIVE_METHOD] += ci_hi - ci_lo
+                covered[MJ_FLOOR_EFFECTIVE_METHOD] += 1
+            total_w[MJ_FLOOR_EFFECTIVE_METHOD] += ci_hi - ci_lo
 
-        # ── tango_multirun_mmnt ──────────────────────────────────────
-        if TANGO_MOMENTS_METHOD in methods:
+        # ── mj_floor_mmnt ──────────────────────────────────────
+        if MJ_FLOOR_MOMENTS_METHOD in methods:
             _t = time.perf_counter()
             try:
-                ci_lo, ci_hi = tango_paired_ci_multirun_moments(a, b, alpha)
+                ci_lo, ci_hi = mj_floor_paired_ci_multirun_moments(a, b, alpha)
             except Exception:
                 ci_lo = ci_hi = obs_diff
             _el = time.perf_counter() - _t
-            total_t[TANGO_MOMENTS_METHOD] += _el
-            total_t_sq[TANGO_MOMENTS_METHOD] += _el * _el
+            total_t[MJ_FLOOR_MOMENTS_METHOD] += _el
+            total_t_sq[MJ_FLOOR_MOMENTS_METHOD] += _el * _el
             if ci_lo <= true_diff <= ci_hi:
-                covered[TANGO_MOMENTS_METHOD] += 1
-            total_w[TANGO_MOMENTS_METHOD] += ci_hi - ci_lo
+                covered[MJ_FLOOR_MOMENTS_METHOD] += 1
+            total_w[MJ_FLOOR_MOMENTS_METHOD] += ci_hi - ci_lo
 
         # ── bootstrap family on paired diffs (cell-mean diffs, R=1) ──
         for _method in [

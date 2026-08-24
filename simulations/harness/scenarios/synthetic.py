@@ -4303,7 +4303,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
     quantity.
 
     "ppi_t_interval"/"ppi_logit_t" target the same paired mean-difference
-    estimand as "paired_t"/"tango_score" (both are closed-form PPI
+    estimand as "paired_t"/"mj_floor" (both are closed-form PPI
     corrections for mean(a_i - b_i), differing only in the CI's shape --
     raw vs. logit-transformed -- not the point estimate/null itself), so
     they reuse means_paired.mean() directly."""
@@ -4374,8 +4374,8 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "paired_t": float(means_paired.mean()),
         "bayes_bootstrap": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
-        "tango_score": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
-        "tango_fixed_lambda": float(means_paired.mean()),  # same estimand as tango_score, fixed lambda=1
+        "mj_floor": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
+        "mj_floor_fixed_lambda": float(means_paired.mean()),  # same estimand as mj_floor, fixed lambda=1
         "ppi_t_interval": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "ppi_logit_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,

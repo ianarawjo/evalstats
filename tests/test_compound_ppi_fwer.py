@@ -165,7 +165,7 @@ class TestCompoundStructuralPlumbing:
             assert 0.0 <= pr.p_value <= 1.0
 
     def test_bonferroni_pair_alpha_widens_ppi_cis_vs_non_simultaneous(self):
-        """Forcing a specific PPI method (deterministic, closed-form 'tango'),
+        """Forcing a specific PPI method (deterministic, closed-form 'mj_floor'),
         simultaneous_ci=True must divide alpha by n_pairs and thus produce
         strictly wider (or equal, in a degenerate case) CIs than
         simultaneous_ci=False on the identical data."""
@@ -176,12 +176,12 @@ class TestCompoundStructuralPlumbing:
 
             result_sim = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30, method="tango",
+                alignment={"llm_score": ar}, n_mc=30, method="mj_floor",
                 simultaneous_ci=True, correction="none",
             )
             result_nosim = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30, method="tango",
+                alignment={"llm_score": ar}, n_mc=30, method="mj_floor",
                 simultaneous_ci=False, correction="none",
             )
 
@@ -219,12 +219,12 @@ class TestCompoundStructuralPlumbing:
             # CIs differ for a reason unrelated to correction=.
             result_none = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30, method="tango",
+                alignment={"llm_score": ar}, n_mc=30, method="mj_floor",
                 simultaneous_ci=True, correction="none", rng=_rng(112),
             )
             result_shaffer = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30, method="tango",
+                alignment={"llm_score": ar}, n_mc=30, method="mj_floor",
                 simultaneous_ci=True, correction="shaffer", rng=_rng(112),
             )
 
@@ -426,12 +426,12 @@ class TestCompoundStructuralPlumbing:
             ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
             result_sim = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30, method="tango",
+                alignment={"llm_score": ar}, n_mc=30, method="mj_floor",
                 simultaneous_ci=True, correction="none",
             )
             result_nosim = es.compare(
                 evaldata, factors="model", metric="llm_score",
-                alignment={"llm_score": ar}, n_mc=30, method="tango",
+                alignment={"llm_score": ar}, n_mc=30, method="mj_floor",
                 simultaneous_ci=False, correction="none",
             )
         pw_sim = result_sim._primary_bundle().pairwise
@@ -686,7 +686,7 @@ class TestCompoundCalibration:
         no power-tuning) already costs real power on its own (observed
         ~50%) because its variance decomposes into two DISJOINT terms
         (Var(unlabeled diffs)/n_unlab + Var(rectifier)/n_lab -- see
-        evalstats.tests._ppi_paired_tango / _ppi_single_wilson) that can
+        evalstats.tests._ppi_paired_mj_floor / _ppi_single_wilson) that can
         each be noisy at moderate label fractions/judge agreement; stacking
         Bonferroni-widened simultaneous CIs + Shaffer p-value correction on
         top compounds that further (observed ~15-35%, seed-dependent).

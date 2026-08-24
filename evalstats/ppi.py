@@ -1705,9 +1705,9 @@ def correct(
         quadratic-form estimand, whose λ=0 endpoint is the raw,
         judge-biased estimate rather than a safe classical fallback the
         way a scalar mean's is -- see ``simulations/harness/README.md``'s
-        "PPI++ power-tuning" section. ``tango_score`` does NOT belong on
+        "PPI++ power-tuning" section. ``mj_floor`` does NOT belong on
         this list (a previous version of this docstring incorrectly
-        included it): ``evalstats.tests._ppi_paired_tango`` delegates its
+        included it): ``evalstats.tests._ppi_paired_mj_floor`` delegates its
         point estimate, variance, AND λ directly to
         :func:`_analytic_mean_point_se`, so it already gets the same
         adaptive-target shrinkage as every other caller of that function.

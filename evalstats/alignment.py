@@ -1922,7 +1922,13 @@ def _linearize_mannwhitney(conditions: dict) -> tuple[np.ndarray, np.ndarray]:
        exactly this reason.
 
     The raw-Spearman recipe this replaces drifts -13% by d=2
-    (notes/omnibus_label_efficiency.html)."""
+    (notes/omnibus_label_efficiency.html).
+
+    Coarse-scale caveat (likert): placement values take only ~k distinct
+    levels on a k-point scale, so the influence function loses most of its
+    spread and MWU/kruskal run conservative. Paired rank tests
+    (wilcoxon/friedman) are unaffected -- they score differences, not
+    cross-group comparisons. See api._ppi_pairwise's mannwhitney branch."""
     names = list(conditions.keys())
     if len(names) != 2:
         raise ValueError(f"mannwhitney needs exactly 2 conditions, got {len(names)}.")

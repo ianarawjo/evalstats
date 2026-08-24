@@ -132,14 +132,14 @@ variant, not a distinct recommended method)."""
 # Paired (pairwise-difference) extras -- for cases/ci_paired.py once ported
 # ---------------------------------------------------------------------------
 NEWCOMBE = Method("newcombe_score", "#aec7e8")
-TANGO = Method("tango_score")  # no color in the legacy palette; uses the default
-"""evalstats.tests._ppi_paired_tango's default construction -- PPI++ closed-
+MJ_FLOOR = Method("mj_floor")  # no color in the legacy palette; uses the default
+"""evalstats.tests._ppi_paired_mj_floor's default construction -- PPI++ closed-
 form power-tuned lambda* since the validation documented at
-TANGO_FIXED_LAMBDA (below); see that Method's docstring for the legacy
+MJ_FLOOR_FIXED_LAMBDA (below); see that Method's docstring for the legacy
 fixed-lambda=1 construction and the comparison it's kept for."""
 PPI_WILSON = Method("ppi_wilson", "#c49c94")
 """PPI-corrected single-sample Wilson score interval (evalstats.tests.
-_ppi_single_wilson) -- a binary-proportion analogue of TANGO's paired
+_ppi_single_wilson) -- a binary-proportion analogue of MJ_FLOOR's paired
 Wilson-style effective-n trick, for a single-sample (not two/paired-group)
 mean estimand. Deliberately not named "wilson" -- that name is already
 BINARY_SINGLE_EXTRA_METHODS' plain (non-PPI-corrected) Wilson CI for
@@ -210,6 +210,17 @@ robustness method -- the non-binary counterpart to PPI_WILSON's binary
 role; every real dataset ppi_real.py checks is already rescaled to [0, 1]
 (see RealJudgeBiasCorpus), so this applies uniformly there."""
 TANGO_SCC = Method("tango_scc", "#b15928")
+#: The GENUINE Tango (1998) asymptotic score interval, in closed form via
+#: Chang et al. (2024)'s quartic with the continuity correction set to zero.
+#: Validated against the published limits in Fagerland, Lydersen & Laake
+#: (2014) Table V. Added 2026-08-24 so the paper can compare the real Tango
+#: against MJ_FLOOR, which was previously (and wrongly) labelled "tango".
+TANGO_EXACT = Method("tango_exact", "#7b3294")
+#: May & Johnson (1997) eq. 11 exactly as published, with NO discordance
+#: floor. Included as the baseline that shows why MJ_FLOOR floors it: this
+#: degenerates to zero width at n10=n01=0 and under-covers at low
+#: discordance (0.787 vs nominal 0.95 at n=15, S=0.10).
+MJ_UNFLOORED = Method("mj_unfloored", "#c2a5cf")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
 WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
@@ -261,14 +272,14 @@ BAYES_DIFF_NESTED = Method("bayes_diff_nested", "#d95f02")
 SMOOTH_DIFF_NESTED = Method("smooth_diff_nested", "#7570b3")
 PAIR_DIFF_NESTED_METHODS = [BOOTSTRAP_DIFF_NESTED, BAYES_DIFF_NESTED, SMOOTH_DIFF_NESTED]
 
-TANGO_FLAT = Method("tango_flat", "#e7298a")
-TANGO_MEAN = Method("tango_mean", "#8c564b")
+MJ_FLOOR_FLAT = Method("mj_floor_flat", "#e7298a")
+MJ_FLOOR_MEAN = Method("mj_floor_mean", "#8c564b")
 NEWCOMBE_FLAT = Method("newcombe_flat", "#66a61e")
-BINARY_PAIR_FLAT_METHODS = [TANGO_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
+BINARY_PAIR_FLAT_METHODS = [MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
-TANGO_MULTIRUN_EFFECTIVE = Method("tango_multirun_effective", "#a6761d")
-TANGO_MULTIRUN_MOMENTS = Method("tango_multirun_mmnt", "#1b9e77")
-BINARY_PAIR_NESTED_METHODS = [TANGO_MULTIRUN_EFFECTIVE, TANGO_MULTIRUN_MOMENTS]
+MJ_FLOOR_ER = Method("mj_floor_er", "#a6761d")
+MJ_FLOOR_MMNT = Method("mj_floor_mmnt", "#1b9e77")
+BINARY_PAIR_NESTED_METHODS = [MJ_FLOOR_ER, MJ_FLOOR_MMNT]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- raw pairwise p-value/rejection procedures (non-PPI
@@ -430,17 +441,17 @@ CANONICAL_SIMULTANEOUS_CI_METHODS = [CORR_SIDAK, CORR_BOOT]
 # (continuous/likert/grades) only -- unlike PAIRED_T/BAYES_BOOTSTRAP, not
 # extended to binary, since bootstrap_t's value is specifically for
 # resampling-based CI estimation on numeric data at N>=50 (ci_paired.py).
-# TANGO (reusing ci_paired's existing "tango_score" Method instance) is the
+# MJ_FLOOR (reusing ci_paired's existing "mj_floor" Method instance) is the
 # mirror image: binary paired data ONLY, not numeric -- PPI-corrects
-# evalstats.core.resampling.tango_paired_ci's score interval by substituting
+# evalstats.core.resampling.mj_floor_paired_ci's score interval by substituting
 # an effective-n derived from PPI's two-term variance into its Wilson-style
-# shrinkage formula (see evalstats.tests._ppi_paired_tango); fully
+# shrinkage formula (see evalstats.tests._ppi_paired_mj_floor); fully
 # closed-form, no bootstrap resampling.
 # ---------------------------------------------------------------------------
 TTEST = Method("ttest", "#1f77b4")
 TTEST_WELCH = Method("ttest_welch", "#d62728")
-# TANGO_FIXED_LAMBDA (evalstats.tests._ppi_paired_tango(..., power_tune=False)):
-# the legacy fixed-lambda=1 rectifier TANGO itself used before PPI++'s
+# MJ_FLOOR_FIXED_LAMBDA (evalstats.tests._ppi_paired_mj_floor(..., power_tune=False)):
+# the legacy fixed-lambda=1 rectifier MJ_FLOOR itself used before PPI++'s
 # closed-form variance-minimizing lambda* became the default -- the same
 # derivation _analytic_mean_correct/_analytic_logit_t_correct already use
 # for ppi_t_interval/ppi_logit_t (this estimand, mean(a_i - b_i), is
@@ -454,7 +465,7 @@ TTEST_WELCH = Method("ttest_welch", "#d62728")
 # plus_plus*.py and simulations/investigate_compound_ppi_fwer_power.py
 # (the compound PPI+FWER path's own detection-power measurement) for the
 # validation behind the flip.
-TANGO_FIXED_LAMBDA = Method("tango_fixed_lambda", "#41b6c4")  # teal -- distinct from TANGO's default grey
+MJ_FLOOR_FIXED_LAMBDA = Method("mj_floor_fixed_lambda", "#41b6c4")  # teal -- distinct from MJ_FLOOR's default grey
 # MWU family: five PPI corrections for the same classical test (Mann-Whitney
 # U / independent two-group mid-rank estimand P_mid(A>B)-0.5), matching
 # MWU is evalstats.tests.mannwhitney's only PPI correction (the global
@@ -486,7 +497,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, TANGO, TANGO_FIXED_LAMBDA, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -497,7 +508,7 @@ PPI_OFFICIAL_TEST_METHODS = [
     m for m in PPI_TEST_METHODS
     if m not in (
         KRUSKAL_MNAR_EXPERIMENTAL,
-        LMM, LMM_FACTORIAL, LMM_RUNS, TANGO_FIXED_LAMBDA,
+        LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
     )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every
@@ -526,16 +537,17 @@ aren't validated only by cases/ppi_real.py's real-data check."""
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
-    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, TANGO, TANGO_SCC,
+    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, MJ_FLOOR, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
 ] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + DITHER_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
-    + [TANGO_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
+    + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
+    + [TANGO_EXACT, MJ_UNFLOORED]
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
-    TTEST, TTEST_WELCH, MWU, TANGO_FIXED_LAMBDA,
+    TTEST, TTEST_WELCH, MWU, MJ_FLOOR_FIXED_LAMBDA,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,
     LMM, LMM_FACTORIAL, LMM_RUNS,
 ]

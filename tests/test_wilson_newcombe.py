@@ -3,7 +3,7 @@
 Covers:
   - wilson_ci / wilson_ci_1d in resampling.py
   - newcombe_paired_ci in resampling.py
-    - tango_paired_ci in resampling.py
+    - mj_floor_paired_ci in resampling.py
   - _mcnemar_p in paired.py
   - pairwise_differences with method='wilson'
     - robustness_metrics with marginal_method='wilson'
@@ -26,10 +26,10 @@ from evalstats.core.resampling import (
     jeffreys_ci,
     jeffreys_ci_1d,
     newcombe_paired_ci,
-    tango_paired_ci,
+    mj_floor_paired_ci,
     tango_scc_paired_ci,
-    tango_paired_ci_multirun_cluster,
-    tango_paired_ci_multirun_moments,
+    mj_floor_paired_ci_multirun_cluster,
+    mj_floor_paired_ci_multirun_moments,
 )
 from evalstats.core.paired import (
     _mcnemar_p,
@@ -197,18 +197,24 @@ def test_newcombe_paired_ci_raises_for_non_1d_inputs():
         newcombe_paired_ci(a, b, alpha=0.05)
 
 
-def test_tango_paired_ci_matches_closed_form():
-    # Build a deterministic paired table with n10=8, n01=3 out of n=40.
+def test_mj_floor_paired_ci_matches_closed_form():
+    """May & Johnson eq. 11 with the discordance term floored at 1/4.
+
+    Here S_hat = 11/40 = 0.275 > 1/4, so the floor is NOT active and this
+    also pins the interval to plain May & Johnson (see the companion test
+    below for the floored branch).
+    """
     a, b = _make_pairs_from_counts(n10=8, n01=3, n11=14, n00=15)
     alpha = 0.05
-    lo, hi = tango_paired_ci(a, b, alpha)
+    lo, hi = mj_floor_paired_ci(a, b, alpha)
 
     n = len(a)
     z = float(stats.norm.ppf(1.0 - alpha / 2.0))
     z2 = z * z
     d_hat = (8 - 3) / n
     denom = 1.0 + z2 / n
-    radicand = (11 / (n * n)) - ((8 - 3) ** 2) / (n**3) + z2 / (4.0 * n * n)
+    s_hat = max(11 / n, 0.25)
+    radicand = (11 / (n * n)) - ((8 - 3) ** 2) / (n**3) + z2 * s_hat / (n * n)
     expected_lo = d_hat / denom - (z / denom) * np.sqrt(radicand)
     expected_hi = d_hat / denom + (z / denom) * np.sqrt(radicand)
 
@@ -216,11 +222,25 @@ def test_tango_paired_ci_matches_closed_form():
     np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
 
 
+def test_mj_floor_is_non_degenerate_where_unfloored_collapses():
+    """The whole point of the floor: at n10=n01=0 the published May & Johnson
+    interval has zero width (the degeneracy Tango's 2000 letter criticised),
+    while the floored version stays open."""
+    from evalstats.core.resampling import mj_unfloored_paired_ci
+    a, b = _make_pairs_from_counts(n10=0, n01=0, n11=15, n00=15)
+    lo_u, hi_u = mj_unfloored_paired_ci(a, b, 0.05)
+    lo_f, hi_f = mj_floor_paired_ci(a, b, 0.05)
+    assert hi_u - lo_u == 0.0
+    assert hi_f - lo_f > 0.05
+    # and the floored interval is never narrower than the published one
+    assert (hi_f - lo_f) >= (hi_u - lo_u)
+
+
 def test_tango_paired_ci_raises_for_shape_mismatch():
     a = np.array([1.0, 0.0, 1.0])
     b = np.array([1.0, 0.0])
     with pytest.raises(ValueError, match="equal shape"):
-        tango_paired_ci(a, b, alpha=0.05)
+        mj_floor_paired_ci(a, b, alpha=0.05)
 
 
 def test_tango_scc_paired_ci_raises_for_shape_mismatch():
@@ -232,7 +252,7 @@ def test_tango_scc_paired_ci_raises_for_shape_mismatch():
 
 def test_tango_scc_paired_ci_brackets_point_estimate_and_widens_with_c():
     # Lopsided discordant pairs (n10=15, n01=1 out of n=40) -- exactly the
-    # regime tango_paired_ci under-covers on (see simulations/harness/cases/
+    # regime mj_floor_paired_ci under-covers on (see simulations/harness/cases/
     # ci_paired.py's binary-onesided-* scenarios).
     a, b = _make_pairs_from_counts(n10=15, n01=1, n11=9, n00=15)
     alpha = 0.05
@@ -256,9 +276,9 @@ def test_tango_multirun_reduces_to_single_run_tango():
     b = rng.binomial(1, 0.55, size=(60, 1)).astype(float)
     alpha = 0.05
 
-    expected = tango_paired_ci(a[:, 0], b[:, 0], alpha)
-    got_discordance = tango_paired_ci_multirun_cluster(a, b, alpha)
-    got_moments = tango_paired_ci_multirun_moments(a, b, alpha)
+    expected = mj_floor_paired_ci(a[:, 0], b[:, 0], alpha)
+    got_discordance = mj_floor_paired_ci_multirun_cluster(a, b, alpha)
+    got_moments = mj_floor_paired_ci_multirun_moments(a, b, alpha)
 
     np.testing.assert_allclose(got_discordance, expected, atol=1e-12)
     np.testing.assert_allclose(got_moments, expected, atol=1e-12)
@@ -275,12 +295,12 @@ def test_tango_multirun_ci_narrows_with_more_runs_when_items_are_homogeneous():
     a = rng.binomial(1, 0.65, size=(n_items, n_runs)).astype(float)
     b = rng.binomial(1, 0.55, size=(n_items, n_runs)).astype(float)
 
-    lo1_d, hi1_d = tango_paired_ci_multirun_cluster(a[:, :1], b[:, :1], alpha)
-    lo8_d, hi8_d = tango_paired_ci_multirun_cluster(a, b, alpha)
+    lo1_d, hi1_d = mj_floor_paired_ci_multirun_cluster(a[:, :1], b[:, :1], alpha)
+    lo8_d, hi8_d = mj_floor_paired_ci_multirun_cluster(a, b, alpha)
     assert (hi8_d - lo8_d) < (hi1_d - lo1_d)
 
-    lo1_m, hi1_m = tango_paired_ci_multirun_moments(a[:, :1], b[:, :1], alpha)
-    lo8_m, hi8_m = tango_paired_ci_multirun_moments(a, b, alpha)
+    lo1_m, hi1_m = mj_floor_paired_ci_multirun_moments(a[:, :1], b[:, :1], alpha)
+    lo8_m, hi8_m = mj_floor_paired_ci_multirun_moments(a, b, alpha)
     assert (hi8_m - lo8_m) < (hi1_m - lo1_m)
 
 
@@ -370,19 +390,27 @@ def test_pairwise_differences_tango_uses_tango():
     scores[1] = rng.binomial(1, 0.5, 40)
 
     result = pairwise_differences(scores, 0, 1, "A", "B", method="tango", ci=0.95)
-    assert result.test_method == "tango"
+    assert result.test_method == "tango score (exact)"
     assert result.ci_low <= result.point_diff <= result.ci_high
     assert 0.0 <= result.p_value <= 1.0
 
 
-def test_pairwise_differences_tango_seeded_uses_cell_means():
+def test_pairwise_differences_mj_floor_seeded_uses_cell_means():
+    # method='tango' has no multi-run form (it is the exact score interval);
+    # multi-run paired binary dispatches through mj_floor -> effective runs.
     rng = np.random.default_rng(19)
     scores = rng.binomial(1, 0.7, size=(2, 20, 5)).astype(float)
     result = pairwise_differences(
-        scores, 0, 1, "A", "B", method="tango", ci=0.95,
+        scores, 0, 1, "A", "B", method="mj_floor", ci=0.95,
         rng=np.random.default_rng(19),
     )
-    assert "tango" in result.test_method
+    assert "mj_floor" in result.test_method
+
+
+def test_pairwise_differences_tango_rejects_multirun():
+    scores = np.random.default_rng(2).binomial(1, 0.7, size=(2, 20, 5)).astype(float)
+    with pytest.raises(NotImplementedError, match="no multi-run form"):
+        pairwise_differences(scores, 0, 1, "A", "B", method="tango", ci=0.95)
 
 
 def test_pairwise_differences_bayes_binary_warns_for_large_n():
@@ -513,8 +541,8 @@ def _make_benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
     )
 
 
-def test_analyze_auto_detects_binary_and_uses_tango():
-    """For binary data at the N=60 cutoff, auto should use tango pairwise."""
+def test_analyze_auto_detects_binary_and_uses_mj_floor():
+    """For binary data at the N=60 cutoff, auto should use mj_floor pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 3
     m_inputs = 60
@@ -526,12 +554,12 @@ def test_analyze_auto_detects_binary_and_uses_tango():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
     pair = bundle.pairwise.get("low", "mid")
-    assert "tango" in pair.test_method
+    assert "mj_floor" in pair.test_method
     assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_detects_binary_large_n_uses_tango():
-    """For binary data with N >= 100, auto should still use tango pairwise."""
+def test_analyze_auto_detects_binary_large_n_uses_mj_floor():
+    """For binary data with N >= 100, auto should still use mj_floor pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 2
     m_inputs = 120
@@ -543,7 +571,7 @@ def test_analyze_auto_detects_binary_large_n_uses_tango():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
     pair = bundle.pairwise.get("low", "high")
-    assert "tango" in pair.test_method
+    assert "mj_floor" in pair.test_method
     assert bundle.resolved_ci_method == "wilson"
 
 
@@ -755,7 +783,7 @@ def test_tango_paired_ci_empirical_coverage_is_reasonable():
     widths: list[float] = []
     for _ in range(n_rep):
         a, b = _sample_paired_binary_from_cell_probs(n_items, p10, p01, p11, rng)
-        lo, hi = tango_paired_ci(a, b, alpha=alpha)
+        lo, hi = mj_floor_paired_ci(a, b, alpha=alpha)
         widths.append(hi - lo)
         covered += int(lo <= true_diff <= hi)
 
@@ -767,7 +795,7 @@ def test_tango_paired_ci_empirical_coverage_is_reasonable():
     assert 0.0 < mean_width < 1.0
 
 
-def test_tango_scc_s_improves_on_tango_for_lopsided_discordant_pairs():
+def test_tango_scc_s_improves_on_mj_floor_for_lopsided_discordant_pairs():
     """Battle test: SCC-S should recover most of tango's under-coverage on
     highly imbalanced discordant pairs (n10 >> n01), the failure mode
     documented in tango_scc_paired_ci's docstring and in simulations/
@@ -780,22 +808,24 @@ def test_tango_scc_s_improves_on_tango_for_lopsided_discordant_pairs():
     p10, p01, p11 = 0.30, 0.02, 0.05  # highly imbalanced: n10 >> n01
     true_diff = p10 - p01
 
-    covered_tango = 0
+    covered_mj = 0
     covered_scc = 0
     for _ in range(n_rep):
         a, b = _sample_paired_binary_from_cell_probs(n_items, p10, p01, p11, rng)
-        lo_t, hi_t = tango_paired_ci(a, b, alpha=alpha)
+        lo_t, hi_t = mj_floor_paired_ci(a, b, alpha=alpha)
         lo_s, hi_s = tango_scc_paired_ci(a, b, alpha=alpha, c=0.125)
-        covered_tango += int(lo_t <= true_diff <= hi_t)
+        covered_mj += int(lo_t <= true_diff <= hi_t)
         covered_scc += int(lo_s <= true_diff <= hi_s)
 
-    cov_tango = covered_tango / n_rep
+    cov_mj = covered_mj / n_rep
     cov_scc = covered_scc / n_rep
 
-    # Plain tango under-covers noticeably below 95% in this regime; SCC-S
-    # should land closer to nominal.
-    assert cov_tango < 0.93, f"expected tango to under-cover here, got {cov_tango:.3f}"
-    assert cov_scc >= cov_tango, f"SCC-S ({cov_scc:.3f}) should not under-perform tango ({cov_tango:.3f})"
+    # mj_floor still under-covers in this lopsided regime, though less than
+    # it did before the discordance floor was added (S_hat = 0.32 here, so
+    # the floor is inactive and the term is the larger estimated one).
+    # SCC-S should land closer to nominal.
+    assert cov_mj < 0.95, f"expected mj_floor to under-cover here, got {cov_mj:.3f}"
+    assert cov_scc >= cov_mj, f"SCC-S ({cov_scc:.3f}) should not under-perform mj_floor ({cov_mj:.3f})"
     assert 0.90 <= cov_scc <= 1.0, f"unexpected SCC-S coverage={cov_scc:.3f}"
 
 
@@ -823,7 +853,7 @@ def test_tango_multirun_moments_empirical_coverage_is_reasonable():
         a = a.reshape(n_items, n_runs)
         b = b.reshape(n_items, n_runs)
 
-        lo, hi = tango_paired_ci_multirun_moments(a, b, alpha=alpha)
+        lo, hi = mj_floor_paired_ci_multirun_moments(a, b, alpha=alpha)
         widths.append(hi - lo)
         covered += int(lo <= true_diff <= hi)
 
@@ -858,3 +888,45 @@ def test_newcombe_invariant_to_pair_order_and_concordant_mix():
     np.testing.assert_allclose([lo1, hi1], [lo2, hi2], atol=1e-12)
     np.testing.assert_allclose([lo1, hi1], [lo3, hi3], atol=1e-12)
 
+
+
+# Yang, Sun & Hardin (2012), "A non-iterative implementation of Tango's score
+# confidence interval for a paired difference of proportions", Statistics in
+# Medicine 31(22):3009-3018, Table II.  Each row is (N, a+d, b, c, lower,
+# upper) for Tango's score-based 95% CI.  The published limits depend only on
+# (N, b, c), so the concordant total a+d is split arbitrarily into (1,1) pairs.
+_YANG_2012_TABLE_II = [
+    (44, 43, 0, 1, -0.11808, 0.05940),
+    (14, 10, 3, 1, -0.16697, 0.43266),
+    (32, 20, 9, 3, -0.02709, 0.38970),
+    (50, 36, 12, 2, 0.06111, 0.34471),
+    (50, 36, 14, 0, 0.17474, 0.41665),
+    (100, 2, 97, 1, 0.86984, 0.98659),
+    (30, 0, 29, 1, 0.66659, 0.98818),
+    (100, 2, 98, 0, 0.90675, 0.99450),
+    (30, 0, 30, 0, 0.77297, 1.00000),
+    (54, 54, 0, 0, -0.06641, 0.06641),
+    (350, 94, 254, 2, 0.66875, 0.76537),
+    (350, 50, 297, 3, 0.79391, 0.87620),
+    (605, 242, 290, 73, 0.30266, 0.41207),
+    (350, 29, 101, 220, -0.42991, -0.24309),
+]
+
+
+@pytest.mark.parametrize("n,conc,b,c,lower,upper", _YANG_2012_TABLE_II)
+def test_tango_scc_c0_reproduces_yang_2012_published_tango_cis(n, conc, b, c, lower, upper):
+    """tango_scc(c=0) IS Tango's exact score interval.
+
+    This is the load-bearing claim behind reporting ``tango_exact`` separately
+    from ``mj_floor``: Chang et al. (2024)'s quartic with the continuity
+    correction set to zero solves the same score equation Tango inverts
+    iteratively.  Checked against every published interval in Yang et al.
+    (2012) Table II, which tabulates Tango's CI directly.  Tolerance is the
+    published rounding precision (5 decimals).
+    """
+    assert conc + b + c == n
+    a_arr = np.array([1] * b + [0] * c + [1] * conc, dtype=float)
+    b_arr = np.array([0] * b + [1] * c + [1] * conc, dtype=float)
+    lo, hi = tango_scc_paired_ci(a_arr, b_arr, alpha=0.05, c=0.0)
+    assert lo == pytest.approx(lower, abs=1e-5)
+    assert hi == pytest.approx(upper, abs=1e-5)
