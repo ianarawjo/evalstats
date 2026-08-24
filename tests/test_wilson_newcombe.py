@@ -28,6 +28,8 @@ from evalstats.core.resampling import (
     newcombe_paired_ci,
     mj_floor_paired_ci,
     tango_scc_paired_ci,
+    bonett_price_paired_ci,
+    newcombe_mover_paired_ci,
     mj_floor_paired_ci_multirun_cluster,
     mj_floor_paired_ci_multirun_moments,
 )
@@ -930,3 +932,79 @@ def test_tango_scc_c0_reproduces_yang_2012_published_tango_cis(n, conc, b, c, lo
     lo, hi = tango_scc_paired_ci(a_arr, b_arr, alpha=0.05, c=0.0)
     assert lo == pytest.approx(lower, abs=1e-5)
     assert hi == pytest.approx(upper, abs=1e-5)
+
+
+# Fagerland, Lydersen & Laake (2014), "Recommended tests and confidence
+# intervals for paired binomial proportions", Statistics in Medicine
+# 33(16):2850-2875.  Table V gives 95% CIs for the difference between paired
+# proportions on the AHR-before/after-SCT data of their Table II
+# (n11=1, n12=1, n21=7, n22=12; N=21; delta_hat = -0.286).
+#
+# Their Table IX recommends exactly three closed-form intervals for this
+# estimand: Bonett-Price (their prime recommendation), Newcombe
+# square-and-add, and Tango asymptotic score.  All three are checked here.
+_FAGERLAND_TABLE_II = (1, 1, 7, 12)  # n11, n10, n01, n00
+
+
+def _fagerland_ahr_arrays():
+    n11, n10, n01, n00 = _FAGERLAND_TABLE_II
+    a = np.array([1] * n11 + [1] * n10 + [0] * n01 + [0] * n00, dtype=float)
+    b = np.array([1] * n11 + [0] * n10 + [1] * n01 + [0] * n00, dtype=float)
+    return a, b
+
+
+@pytest.mark.parametrize("method,lower,upper", [
+    ("bonett_price", -0.508, -0.013),
+    ("newcombe_mover", -0.507, -0.026),
+    ("tango_exact", -0.517, -0.026),
+])
+def test_fagerland_2014_table_v_recommended_intervals(method, lower, upper):
+    """The three intervals Fagerland et al. (2014) recommend, against Table V.
+
+    Tolerance is the published rounding precision (3 decimals).
+    """
+    a, b = _fagerland_ahr_arrays()
+    fns = {
+        "bonett_price": lambda: bonett_price_paired_ci(a, b, 0.05),
+        "newcombe_mover": lambda: newcombe_mover_paired_ci(a, b, 0.05),
+        "tango_exact": lambda: tango_scc_paired_ci(a, b, 0.05, c=0.0),
+    }
+    lo, hi = fns[method]()
+    assert lo == pytest.approx(lower, abs=5e-4)
+    assert hi == pytest.approx(upper, abs=5e-4)
+
+
+def test_newcombe_mover_is_not_the_discordant_pairs_newcombe():
+    """The two Newcombe formulations are genuinely different methods.
+
+    `newcombe_paired_ci` uses the discordant-pairs formulation; Fagerland
+    et al.'s recommendation is the square-and-add/MOVER interval. Guards
+    against the two being conflated again.
+    """
+    a, b = _fagerland_ahr_arrays()
+    lo_d, hi_d = newcombe_paired_ci(a, b, 0.05)
+    lo_m, hi_m = newcombe_mover_paired_ci(a, b, 0.05)
+    assert (hi_d - lo_d) < (hi_m - lo_m)          # discordant form is narrower
+    assert abs(lo_d - lo_m) > 0.10                 # and not a rounding difference
+
+
+def test_bonett_price_never_degenerates_on_perfect_agreement():
+    """Unlike the plain Wald interval, Bonett-Price has no zero-width case."""
+    a = np.ones(20, dtype=float)
+    b = np.ones(20, dtype=float)
+    lo, hi = bonett_price_paired_ci(a, b, 0.05)
+    assert hi > lo
+    assert lo <= 0.0 <= hi
+
+
+@pytest.mark.parametrize("n", [10, 25, 60])
+def test_recommended_paired_intervals_respect_bounds(n):
+    """All limits stay inside [-1, 1] across an exhaustive cell grid."""
+    for n10 in range(n + 1):
+        for n01 in range(n + 1 - n10):
+            rest = n - n10 - n01
+            a = np.array([1] * n10 + [0] * n01 + [1] * rest, dtype=float)
+            b = np.array([0] * n10 + [1] * n01 + [1] * rest, dtype=float)
+            for fn in (bonett_price_paired_ci, newcombe_mover_paired_ci):
+                lo, hi = fn(a, b, 0.05)
+                assert -1.0 <= lo <= hi <= 1.0, (fn.__name__, n10, n01)

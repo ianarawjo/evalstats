@@ -90,6 +90,8 @@ with warnings.catch_warnings():
         tango_scc_paired_ci,
         mj_unfloored_paired_ci,
         newcombe_paired_ci,
+        bonett_price_paired_ci,
+        newcombe_mover_paired_ci,
         mj_floor_paired_ci_flat,
         mj_floor_paired_ci_mean,
         mj_floor_paired_ci_multirun_effective,
@@ -124,6 +126,8 @@ from ..methods import (
     TANGO_SCC,
     TANGO_EXACT,
     MJ_UNFLOORED,
+    BONETT_PRICE,
+    NEWCOMBE_MOVER,
     BAYES_PAIR_INDEP,
     BAYES_PAIR_PAIRED,
     WALD_PAIR_INDEP,
@@ -521,6 +525,8 @@ def _run_cell(
     add_tango_scc = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_SCC.name)
     add_tango_exact = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_EXACT.name)
     add_mj_unfloored = source_obj.eval_type == "binary" and statistic == "mean" and _want(MJ_UNFLOORED.name)
+    add_bonett_price = source_obj.eval_type == "binary" and statistic == "mean" and _want(BONETT_PRICE.name)
+    add_newcombe_mover = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE_MOVER.name)
     add_bayes_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_INDEP.name)
     add_bayes_paired = source_obj.eval_type == "binary" and statistic == "mean" and _want(BAYES_PAIR_PAIRED.name)
     add_wald_indep = source_obj.eval_type == "binary" and statistic == "mean" and _want(WALD_PAIR_INDEP.name)
@@ -540,6 +546,10 @@ def _run_cell(
         active_methods.append(TANGO_EXACT)
     if add_mj_unfloored:
         active_methods.append(MJ_UNFLOORED)
+    if add_bonett_price:
+        active_methods.append(BONETT_PRICE)
+    if add_newcombe_mover:
+        active_methods.append(NEWCOMBE_MOVER)
     if add_bayes_indep:
         active_methods.append(BAYES_PAIR_INDEP)
     if add_bayes_paired:
@@ -700,6 +710,28 @@ def _run_cell(
             total_t[MJ_UNFLOORED] += _el
             total_t_sq[MJ_UNFLOORED] += _el * _el
             _record(MJ_UNFLOORED, ci_low, ci_high)
+
+        if add_bonett_price:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = bonett_price_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[BONETT_PRICE] += _el
+            total_t_sq[BONETT_PRICE] += _el * _el
+            _record(BONETT_PRICE, ci_low, ci_high)
+
+        if add_newcombe_mover:
+            _t0 = time.perf_counter()
+            try:
+                ci_low, ci_high = newcombe_mover_paired_ci(a[:, 0], b[:, 0], alpha)
+            except Exception:
+                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
+            _el = time.perf_counter() - _t0
+            total_t[NEWCOMBE_MOVER] += _el
+            total_t_sq[NEWCOMBE_MOVER] += _el * _el
+            _record(NEWCOMBE_MOVER, ci_low, ci_high)
 
         if add_bayes_indep:
             _t0 = time.perf_counter()

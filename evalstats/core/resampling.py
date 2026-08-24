@@ -1822,6 +1822,135 @@ def newcombe_paired_ci(
     )
 
 
+def _paired_binary_cells(values_a, values_b, fname: str) -> tuple[int, int, int, int]:
+    """Return the 2x2 paired-binary cell counts (n11, n10, n01, n00).
+
+    Shared input handling for the paired binary interval methods. Values are
+    thresholded at 0.5 (accommodates float representations).
+    """
+    values_a = np.asarray(values_a)
+    values_b = np.asarray(values_b)
+    if values_a.ndim != 1 or values_b.ndim != 1:
+        raise ValueError(f"{fname} expects 1-D input arrays.")
+    if values_a.shape != values_b.shape:
+        raise ValueError(f"{fname} expects arrays with equal shape.")
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    return (
+        int(np.sum((a_bin == 1) & (b_bin == 1))),
+        int(np.sum((a_bin == 1) & (b_bin == 0))),
+        int(np.sum((a_bin == 0) & (b_bin == 1))),
+        int(np.sum((a_bin == 0) & (b_bin == 0))),
+    )
+
+
+def bonett_price_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Bonett-Price Laplace-adjusted Wald CI for the paired binary difference.
+
+    Fagerland, Lydersen & Laake (2014) eq. (16) -- their *prime* recommendation
+    for a CI on the difference between paired proportions, on the grounds that
+    it is conservative, performs very well, and is trivial to compute.
+
+    Applies a Laplace (add-one) adjustment to the discordant cells before
+    forming a Wald interval::
+
+        p12 = (n10 + 1) / (n + 2),  p21 = (n01 + 1) / (n + 2)
+        (p12 - p21) +/- z * sqrt[ (p12 + p21 - (p12 - p21)^2) / (n + 2) ]
+
+    Unlike the plain Wald interval it never produces a zero-width interval,
+    since the add-one adjustment keeps the variance term strictly positive.
+    Limits are truncated to [-1, 1].
+
+    Reproduces Fagerland et al.'s Table V to the three decimals published.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1).
+    """
+    _, n10, n01, _ = _paired_binary_cells(values_a, values_b, "bonett_price_paired_ci")
+    n = len(np.asarray(values_a))
+    if n <= 0:
+        return (0.0, 0.0)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    p12 = (n10 + 1.0) / (n + 2.0)
+    p21 = (n01 + 1.0) / (n + 2.0)
+    diff = p12 - p21
+    se = float(np.sqrt(max(p12 + p21 - diff * diff, 0.0) / (n + 2.0)))
+    return (
+        float(np.clip(diff - z * se, -1.0, 1.0)),
+        float(np.clip(diff + z * se, -1.0, 1.0)),
+    )
+
+
+def newcombe_mover_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Newcombe square-and-add (MOVER Wilson score) CI for the paired difference.
+
+    Newcombe (1998) method 10, as presented in Fagerland, Lydersen & Laake
+    (2014) eqs. (19)-(22) -- one of their three recommended intervals.
+
+    This is the "square-and-add"/MOVER construction: separate Wilson score
+    intervals are computed for the two *marginal* proportions p(A=1) and
+    p(B=1), then combined with a correlation correction::
+
+        L = d - sqrt[ (pA - l1)^2 + (u2 - pB)^2 - 2*phi*(pA - l1)*(u2 - pB) ]
+        U = d + sqrt[ (pB - l2)^2 + (u1 - pA)^2 - 2*phi*(pB - l2)*(u1 - pA) ]
+
+    where phi is estimated from A = n11*n00 - n10*n01 as (A - n/2)/sqrt(...)
+    if A > n/2, 0 if 0 <= A <= n/2, and A/sqrt(...) if A < 0; phi is set to 0
+    when any marginal sum is zero.
+
+    NOTE this is a different method from :func:`newcombe_paired_ci`, which
+    uses Newcombe's discordant-pairs formulation (a Wilson interval on
+    n10/(n10+n01) rescaled to the difference scale). Fagerland et al.'s
+    recommendation refers to *this* square-and-add interval.
+
+    Reproduces Fagerland et al.'s Table V to the three decimals published.
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1).
+    """
+    n11, n10, n01, n00 = _paired_binary_cells(
+        values_a, values_b, "newcombe_mover_paired_ci"
+    )
+    n = n11 + n10 + n01 + n00
+    if n <= 0:
+        return (0.0, 0.0)
+    n_a = n11 + n10          # successes for A (row margin)
+    n_b = n11 + n01          # successes for B (column margin)
+    l1, u1 = wilson_ci(n_a, n, alpha)
+    l2, u2 = wilson_ci(n_b, n, alpha)
+    p_a = n_a / n
+    p_b = n_b / n
+
+    margins = (n_a, n - n_a, n_b, n - n_b)
+    if any(mg == 0 for mg in margins):
+        phi = 0.0
+    else:
+        det = n11 * n00 - n10 * n01
+        denom = float(np.sqrt(float(n_a) * (n - n_a) * n_b * (n - n_b)))
+        if det > n / 2.0:
+            phi = (det - n / 2.0) / denom
+        elif det < 0.0:
+            phi = det / denom
+        else:
+            phi = 0.0
+
+    d = p_a - p_b
+    lo_term = (p_a - l1) ** 2 + (u2 - p_b) ** 2 - 2.0 * phi * (p_a - l1) * (u2 - p_b)
+    hi_term = (p_b - l2) ** 2 + (u1 - p_a) ** 2 - 2.0 * phi * (p_b - l2) * (u1 - p_a)
+    return (
+        float(np.clip(d - np.sqrt(max(lo_term, 0.0)), -1.0, 1.0)),
+        float(np.clip(d + np.sqrt(max(hi_term, 0.0)), -1.0, 1.0)),
+    )
+
+
 def _mj_discordance_floor(discordance_rate: float, floor: float = 0.25) -> float:
     """Floored discordance term for the May & Johnson score interval.
 

@@ -221,6 +221,16 @@ TANGO_EXACT = Method("tango_exact", "#7b3294")
 #: degenerates to zero width at n10=n01=0 and under-covers at low
 #: discordance (0.787 vs nominal 0.95 at n=15, S=0.10).
 MJ_UNFLOORED = Method("mj_unfloored", "#c2a5cf")
+#: Bonett & Price (2012) Laplace-adjusted Wald -- the PRIME recommendation of
+#: Fagerland, Lydersen & Laake (2014) Table IX for a CI on the difference
+#: between paired proportions. Validated against their Table V.
+BONETT_PRICE = Method("bonett_price", "#fdae61")
+#: Newcombe (1998) method 10, the square-and-add / MOVER-Wilson interval --
+#: also recommended by Fagerland et al. (2014) Table IX, and validated
+#: against their Table V. NOTE this is a DIFFERENT method from NEWCOMBE
+#: above, which is the discordant-pairs formulation; Fagerland's
+#: "Newcombe square-and-add" recommendation refers to this one.
+NEWCOMBE_MOVER = Method("newcombe_mover", "#2c7fb8")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
 WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
@@ -542,7 +552,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
 ] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + DITHER_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
     + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
-    + [TANGO_EXACT, MJ_UNFLOORED]
+    + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE, NEWCOMBE_MOVER]
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
