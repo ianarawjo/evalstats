@@ -1519,13 +1519,13 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     return booktabs_table(
         caption=(
             f"ci\\_paired: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
-            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Penalty, where Penalty is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow. ""Neither is a calibration measure on its own: Penalty decreases monotonically to ""zero as an interval is widened, and a perfectly calibrated interval still carries ""a substantial Penalty, since it misses $\\alpha$ of the time by construction. "
+            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Pen(alty), where Pen is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow. ""Neither is a calibration measure on its own: Penalty decreases monotonically to ""zero as an interval is widened, and a perfectly calibrated interval still carries ""a substantial Penalty, since it misses $\\alpha$ of the time by construction. "
             "Methods tested on more than one eval type are reported as one row per type "
             "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Cov", "MinCov", "Width", "Penalty $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
+        columns=["Method", "Cov", "MinCov", "Width", "Pen $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
