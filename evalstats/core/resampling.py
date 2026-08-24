@@ -1758,70 +1758,6 @@ def wilson_nested_bb(
     return _wilson_neff(p_hat, n_eff, alpha)
 
 
-def newcombe_paired_ci(
-    values_a: np.ndarray,
-    values_b: np.ndarray,
-    alpha: float,
-) -> tuple[float, float]:
-    """Newcombe score CI for the paired binary difference p(A=1) − p(B=1).
-
-    Uses the discordant-pairs formulation (Newcombe 1998, *Stat Med*).
-    Let n10 = number of inputs where A=1, B=0, and n01 = A=0, B=1.
-    A Wilson score interval is computed for theta = n10 / (n10 + n01)
-    (proportion of discordant pairs where A wins), then transformed to
-    the difference scale::
-
-        d_low  = (m / n) * (2 * theta_low  − 1)
-        d_high = (m / n) * (2 * theta_high − 1)
-
-    where m = n10 + n01 is the number of discordant pairs and n is the
-    total number of paired inputs.
-
-    Returns (0.0, 0.0) when m == 0 (no discordant pairs, perfect agreement).
-
-    Parameters
-    ----------
-    values_a, values_b : np.ndarray
-        1-D arrays of equal length.  Values are thresholded at 0.5 to
-        determine binary membership (accommodates float representations).
-    alpha : float
-        Significance level (1 − confidence level).
-
-    Returns
-    -------
-    (ci_low, ci_high) : tuple[float, float]
-        CI on p(A=1) − p(B=1).
-
-    Raises
-    ------
-    ValueError
-        If inputs are not 1-D arrays of equal length.
-    """
-    values_a = np.asarray(values_a)
-    values_b = np.asarray(values_b)
-    if values_a.ndim != 1 or values_b.ndim != 1:
-        raise ValueError("newcombe_paired_ci expects 1-D input arrays.")
-    if values_a.shape != values_b.shape:
-        raise ValueError("newcombe_paired_ci expects arrays with equal shape.")
-
-    n = len(values_a)
-    if n <= 0:
-        return (0.0, 0.0)
-    a_bin = (values_a >= 0.5).astype(int)
-    b_bin = (values_b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    m = n10 + n01
-    if m == 0:
-        return (0.0, 0.0)
-    theta_low, theta_high = wilson_ci(n10, m, alpha)
-    scale = m / n
-    return (
-        float(scale * (2.0 * theta_low - 1.0)),
-        float(scale * (2.0 * theta_high - 1.0)),
-    )
-
-
 def _paired_binary_cells(values_a, values_b, fname: str) -> tuple[int, int, int, int]:
     """Return the 2x2 paired-binary cell counts (n11, n10, n01, n00).
 
@@ -1904,10 +1840,11 @@ def newcombe_mover_paired_ci(
     if A > n/2, 0 if 0 <= A <= n/2, and A/sqrt(...) if A < 0; phi is set to 0
     when any marginal sum is zero.
 
-    NOTE this is a different method from :func:`newcombe_paired_ci`, which
-    uses Newcombe's discordant-pairs formulation (a Wilson interval on
-    n10/(n10+n01) rescaled to the difference scale). Fagerland et al.'s
-    recommendation refers to *this* square-and-add interval.
+    This is the only Newcombe interval in evalstats. An earlier
+    discordant-pairs formulation (a Wilson interval on n10/(n10+n01)
+    rescaled to the difference scale) was removed on 2026-08-24: it is a
+    different, poorly-covering method that is NOT the one Fagerland et al.
+    recommend under the name "Newcombe".
 
     Reproduces Fagerland et al.'s Table V to the three decimals published.
 
@@ -2050,9 +1987,8 @@ def mj_floor_paired_ci(
             + z^2 / (4 n^2)
         )
 
-    This is a score-type interval for the paired risk difference; unlike
-    :func:`newcombe_paired_ci`, it remains non-degenerate even when there are
-    no discordant pairs.
+    This is a score-type interval for the paired risk difference; it
+    remains non-degenerate even when there are no discordant pairs.
 
     Parameters
     ----------
@@ -2260,7 +2196,22 @@ def tango_scc_paired_ci(
     ci_high = float(upper_roots[-1]) if len(upper_roots) else d_hat
     ci_low = float(lower_roots[0]) if len(lower_roots) else d_hat
 
-    return (max(-1.0, min(ci_low, ci_high)), min(1.0, max(ci_low, ci_high)))
+    ci_low, ci_high = (max(-1.0, min(ci_low, ci_high)), min(1.0, max(ci_low, ci_high)))
+
+    # Yang, Sun & Hardin (2012) Remark 1. When every pair is discordant in
+    # the same direction the score statistic is 0/0 at delta = +/-1, so the
+    # quartic loses the corresponding root and the interval comes back
+    # EXCLUDING the point estimate d_hat = +/-1. Tango's interval is defined
+    # to take the boundary there. Without this the interval is also
+    # asymmetric under swapping a and b, since the root is recovered in one
+    # orientation but not the other. Matches Fagerland et al.'s reference
+    # implementation (R package contingencytables).
+    if n21 == 0.0 and n12 == N:
+        ci_high = 1.0
+    elif n12 == 0.0 and n21 == N:
+        ci_low = -1.0
+
+    return (ci_low, ci_high)
 
 
 def mj_floor_paired_ci_multirun_cluster(

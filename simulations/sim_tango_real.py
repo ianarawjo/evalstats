@@ -112,7 +112,7 @@ with warnings.catch_warnings():
         wilson_nested_bb,
         nig_ci_1d,
         nig_ci_nested,
-        newcombe_paired_ci,
+        newcombe_mover_paired_ci,
         mj_floor_paired_ci_flat,
         mj_floor_paired_ci_multirun_cluster,
         mj_floor_paired_ci_multirun_effective,
@@ -1441,7 +1441,7 @@ def _run_pairwise_real_cell(
         if NEWCOMBE_FLAT_METHOD in methods:
             _t = time.perf_counter()
             try:
-                ci_lo, ci_hi = newcombe_paired_ci(a[:, 0], b[:, 0], alpha)
+                ci_lo, ci_hi = newcombe_mover_paired_ci(a[:, 0], b[:, 0], alpha)
             except Exception:
                 ci_lo = ci_hi = obs_diff
             _el = time.perf_counter() - _t

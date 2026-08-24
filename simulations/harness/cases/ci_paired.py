@@ -9,7 +9,7 @@ Methods compared
 -----------------
 bootstrap, bca, bayes_bootstrap, smooth_bootstrap, bootstrap_t (all eval
 types, statistic=mean or median); t_interval, logit_t, nig, el (non-binary,
-statistic=mean only); newcombe_score, mj_floor, tango_scc, bayes_indep_comp,
+statistic=mean only); newcombe_mover, mj_floor, tango_scc, bayes_indep_comp,
 bayes_paired_comp (binary, statistic=mean only). tango_scc is the
 continuity-corrected "SCC-S" (c=0.125) score interval from Chang et al.
 (2024, J. Applied Statistics 51(1):139-152) -- see
@@ -89,9 +89,8 @@ with warnings.catch_warnings():
         mj_floor_paired_ci,
         tango_scc_paired_ci,
         mj_unfloored_paired_ci,
-        newcombe_paired_ci,
-        bonett_price_paired_ci,
         newcombe_mover_paired_ci,
+        bonett_price_paired_ci,
         mj_floor_paired_ci_flat,
         mj_floor_paired_ci_mean,
         mj_floor_paired_ci_multirun_effective,
@@ -121,7 +120,6 @@ from ..methods import (
     LOGIT_T,
     NIG,
     EL,
-    NEWCOMBE,
     MJ_FLOOR,
     TANGO_SCC,
     TANGO_EXACT,
@@ -202,23 +200,6 @@ def _wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
     return max(0.0, float(center - radius)), min(1.0, float(center + radius))
 
 
-def _newcombe_paired_score_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
-    """Newcombe score CI for paired binary difference p(A=1) - p(B=1)."""
-    n = int(a.shape[0])
-    if n <= 0:
-        return (0.0, 0.0)
-    a_bin = (a >= 0.5).astype(int)
-    b_bin = (b >= 0.5).astype(int)
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    m = n10 + n01
-    if m == 0:
-        return (0.0, 0.0)
-    theta_low, theta_high = _wilson_ci(successes=n10, n=m, alpha=alpha)
-    scale = m / n
-    return float(scale * (2.0 * theta_low - 1.0)), float(scale * (2.0 * theta_high - 1.0))
-
-
 def _bayes_indep_comp_ci(a: np.ndarray, b: np.ndarray, alpha: float, num_samples: int, rng: np.random.Generator) -> tuple[float, float]:
     """Independent Beta-posteriors CI for paired binary difference p(A=1)-p(B=1)."""
     a_bin = (a >= 0.5).astype(float)
@@ -239,7 +220,7 @@ def _wald_indep_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, f
     textbook "wrong way" to compare matched/paired binary outcomes -- the
     frequentist analog of bayes_indep_comp's identical independence
     assumption (draw separate posteriors for p_A, p_B, subtract). Unlike
-    mj_floor/newcombe_score (which use the discordant-pair structure)
+    mj_floor (which uses the discordant-pair structure)
     or even a plain paired t-interval on the per-item differences, it makes
     no use of which items overlap between A and B at all.
 
@@ -520,7 +501,6 @@ def _run_cell(
     add_dither_extras = (
         statistic == "mean" and source_obj.eval_type != "binary" and bool(active_dither_extras)
     )
-    add_newcombe = source_obj.eval_type == "binary" and statistic == "mean" and _want(NEWCOMBE.name)
     add_mj_floor = source_obj.eval_type == "binary" and statistic == "mean" and _want(MJ_FLOOR.name)
     add_tango_scc = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_SCC.name)
     add_tango_exact = source_obj.eval_type == "binary" and statistic == "mean" and _want(TANGO_EXACT.name)
@@ -536,8 +516,6 @@ def _run_cell(
         active_methods += active_pairwise_extras
     if add_dither_extras:
         active_methods += active_dither_extras
-    if add_newcombe:
-        active_methods.append(NEWCOMBE)
     if add_mj_floor:
         active_methods.append(MJ_FLOOR)
     if add_tango_scc:
@@ -655,17 +633,6 @@ def _run_cell(
                 total_t[method] += _el
                 total_t_sq[method] += _el * _el
                 _record(method, ci_low, ci_high)
-
-        if add_newcombe:
-            _t0 = time.perf_counter()
-            try:
-                ci_low, ci_high = _newcombe_paired_score_ci(a[:, 0], b[:, 0], alpha)
-            except Exception:
-                ci_low = ci_high = float(np.mean(a[:, 0] - b[:, 0]))
-            _el = time.perf_counter() - _t0
-            total_t[NEWCOMBE] += _el
-            total_t_sq[NEWCOMBE] += _el * _el
-            _record(NEWCOMBE, ci_low, ci_high)
 
         if add_mj_floor:
             _t0 = time.perf_counter()
@@ -1078,7 +1045,7 @@ def _run_nested_pairwise_cell(
             if _want(NEWCOMBE_FLAT.name):
                 _t0 = time.perf_counter()
                 try:
-                    ci_low, ci_high = newcombe_paired_ci(a0, b0, alpha)
+                    ci_low, ci_high = newcombe_mover_paired_ci(a0, b0, alpha)
                 except Exception:
                     ci_low = ci_high = float(np.mean(a0 - b0))
                 _el = time.perf_counter() - _t0

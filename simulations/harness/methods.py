@@ -131,7 +131,6 @@ variant, not a distinct recommended method)."""
 # ---------------------------------------------------------------------------
 # Paired (pairwise-difference) extras -- for cases/ci_paired.py once ported
 # ---------------------------------------------------------------------------
-NEWCOMBE = Method("newcombe_score", "#aec7e8")
 MJ_FLOOR = Method("mj_floor")  # no color in the legacy palette; uses the default
 """evalstats.tests._ppi_paired_mj_floor's default construction -- PPI++ closed-
 form power-tuned lambda* since the validation documented at
@@ -227,10 +226,10 @@ MJ_UNFLOORED = Method("mj_unfloored", "#c2a5cf")
 BONETT_PRICE = Method("bonett_price", "#fdae61")
 #: Newcombe (1998) method 10, the square-and-add / MOVER-Wilson interval --
 #: also recommended by Fagerland et al. (2014) Table IX, and validated
-#: against their Table V. NOTE this is a DIFFERENT method from NEWCOMBE
-#: above, which is the discordant-pairs formulation; Fagerland's
-#: "Newcombe square-and-add" recommendation refers to this one.
-NEWCOMBE_MOVER = Method("newcombe_mover", "#2c7fb8")
+#: against their Table V. This is the ONLY Newcombe interval in evalstats;
+#: the previous discordant-pairs "newcombe_score" was removed 2026-08-24
+#: because it is a different method and covers poorly.
+NEWCOMBE_MOVER = Method("newcombe_mover", "#aec7e8")
 BAYES_PAIR_INDEP = Method("bayes_indep_comp", "#ffbb78")
 BAYES_PAIR_PAIRED = Method("bayes_paired_comp", "#98df8a")
 WALD_PAIR_INDEP = Method("wald_indep", "#7f7f7f")  # same grey as ci_single's WALD -- both are the naive baseline
@@ -246,7 +245,7 @@ same default-inclusion behavior as PAIRWISE_EXTRA_METHODS itself
 unset), NOT the hidden opt-in-only precedent LOGIT_T_2ND uses. Pass
 --methods without these two names to exclude them if only comparing the
 pre-existing battery."""
-BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
+BINARY_PAIRWISE_EXTRA_METHODS = [NEWCOMBE_MOVER, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
 
 # ---------------------------------------------------------------------------
 # Nested-mode methods -- for ci_single.py's/ci_paired.py's --nested-mode,
@@ -298,7 +297,7 @@ BINARY_PAIR_NESTED_METHODS = [MJ_FLOOR_ER, MJ_FLOOR_MMNT]
 # not a CI -- distinct from the CI-coverage methods above even where a name
 # overlaps conceptually (e.g. BOOTSTRAP/BCA/BAYES_BOOTSTRAP/SMOOTH_BOOTSTRAP
 # are reused as-is; "newcombe"/"bayes_binary" are NOT the same underlying
-# computation as ci_paired's "newcombe_score"/"bayes_indep_comp", so they get
+# computation as ci_paired's "newcombe_mover"/"bayes_indep_comp", so they get
 # distinct Method instances despite the conceptual overlap).
 # ---------------------------------------------------------------------------
 MCNEMAR = Method("mcnemar", "#393b79")
@@ -547,12 +546,12 @@ aren't validated only by cases/ppi_real.py's real-data check."""
 # Registry -- canonical ordering for tables/legends, and name -> Method lookup
 # ---------------------------------------------------------------------------
 REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
-    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE, MJ_FLOOR, TANGO_SCC,
+    T_INTERVAL, WILSON, JEFFREYS, NEWCOMBE_MOVER, MJ_FLOOR, TANGO_SCC,
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
 ] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + DITHER_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
     + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
-    + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE, NEWCOMBE_MOVER]
+    + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE]
 ) + [
     MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,

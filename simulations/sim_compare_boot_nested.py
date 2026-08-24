@@ -118,7 +118,7 @@ with warnings.catch_warnings():
         bootstrap_diffs_nested,
         bayes_bootstrap_diffs_nested,
         smooth_bootstrap_diffs_nested,
-        newcombe_paired_ci,
+        newcombe_mover_paired_ci,
         mj_floor_paired_ci,
         mj_floor_paired_ci_flat,
         mj_floor_paired_ci_multirun_cluster,
@@ -1741,7 +1741,7 @@ def _run_pairwise_multirun_cell(args: tuple) -> list[SimResult]:
 
             t0 = time.perf_counter()
             try:
-                ci_low, ci_high = newcombe_paired_ci(a0, b0, alpha)
+                ci_low, ci_high = newcombe_mover_paired_ci(a0, b0, alpha)
             except Exception:
                 ci_low = ci_high = float(np.mean(a0 - b0))
             el = time.perf_counter() - t0

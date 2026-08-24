@@ -2,7 +2,7 @@
 
 Covers:
   - wilson_ci / wilson_ci_1d in resampling.py
-  - newcombe_paired_ci in resampling.py
+  - newcombe_mover_paired_ci in resampling.py
     - mj_floor_paired_ci in resampling.py
   - _mcnemar_p in paired.py
   - pairwise_differences with method='wilson'
@@ -25,7 +25,6 @@ from evalstats.core.resampling import (
     wilson_ci_1d,
     jeffreys_ci,
     jeffreys_ci_1d,
-    newcombe_paired_ci,
     mj_floor_paired_ci,
     tango_scc_paired_ci,
     bonett_price_paired_ci,
@@ -141,62 +140,53 @@ def test_jeffreys_ci_1d_matches_jeffreys_ci():
 
 
 # ---------------------------------------------------------------------------
-# newcombe_paired_ci
+# newcombe_mover_paired_ci
 # ---------------------------------------------------------------------------
 
-def test_newcombe_paired_ci_no_discordant_pairs():
-    # Identical arrays → m = 0 → (0.0, 0.0)
-    a = np.array([1.0, 1.0, 0.0, 1.0])
-    b = np.array([1.0, 1.0, 0.0, 1.0])
-    lo, hi = newcombe_paired_ci(a, b, alpha=0.05)
-    assert lo == 0.0
-    assert hi == 0.0
-
-
-def test_newcombe_paired_ci_all_discordant_a_wins():
+def test_newcombe_mover_all_discordant_a_wins():
     # A always wins discordant pairs → CI should be positive
     a = np.array([1.0, 1.0, 1.0, 1.0])
     b = np.array([0.0, 0.0, 0.0, 0.0])
-    lo, hi = newcombe_paired_ci(a, b, alpha=0.05)
+    lo, hi = newcombe_mover_paired_ci(a, b, alpha=0.05)
     # Difference = 1.0 exactly; CI should be entirely positive
     assert lo > 0.0
     assert hi <= 1.0
 
 
-def test_newcombe_paired_ci_symmetric():
+def test_newcombe_mover_symmetric():
     # CI(A - B) = -CI(B - A) (reversed endpoints)
     a = np.array([1.0, 1.0, 0.0, 1.0, 0.0])
     b = np.array([0.0, 1.0, 1.0, 0.0, 0.0])
     alpha = 0.05
-    lo_ab, hi_ab = newcombe_paired_ci(a, b, alpha)
-    lo_ba, hi_ba = newcombe_paired_ci(b, a, alpha)
+    lo_ab, hi_ab = newcombe_mover_paired_ci(a, b, alpha)
+    lo_ba, hi_ba = newcombe_mover_paired_ci(b, a, alpha)
     np.testing.assert_allclose(lo_ab, -hi_ba, atol=1e-10)
     np.testing.assert_allclose(hi_ab, -lo_ba, atol=1e-10)
 
 
-def test_newcombe_paired_ci_covers_true_diff():
+def test_newcombe_mover_covers_true_diff():
     # p_a = 0.8, p_b = 0.5, true diff = 0.3
     rng = np.random.default_rng(42)
     n = 100
     a = rng.binomial(1, 0.8, size=n).astype(float)
     b = rng.binomial(1, 0.5, size=n).astype(float)
-    lo, hi = newcombe_paired_ci(a, b, alpha=0.05)
+    lo, hi = newcombe_mover_paired_ci(a, b, alpha=0.05)
     true_diff = 0.3
     assert lo < true_diff < hi, f"95% CI [{lo:.3f}, {hi:.3f}] did not cover true diff {true_diff}"
 
 
-def test_newcombe_paired_ci_raises_for_shape_mismatch():
+def test_newcombe_mover_raises_for_shape_mismatch():
     a = np.array([1.0, 0.0, 1.0])
     b = np.array([1.0, 0.0])
     with pytest.raises(ValueError, match="equal shape"):
-        newcombe_paired_ci(a, b, alpha=0.05)
+        newcombe_mover_paired_ci(a, b, alpha=0.05)
 
 
-def test_newcombe_paired_ci_raises_for_non_1d_inputs():
+def test_newcombe_mover_raises_for_non_1d_inputs():
     a = np.array([[1.0, 0.0], [1.0, 1.0]])
     b = np.array([[1.0, 0.0], [0.0, 1.0]])
     with pytest.raises(ValueError, match="1-D"):
-        newcombe_paired_ci(a, b, alpha=0.05)
+        newcombe_mover_paired_ci(a, b, alpha=0.05)
 
 
 def test_mj_floor_paired_ci_matches_closed_form():
@@ -361,14 +351,16 @@ def test_pairwise_differences_newcombe_uses_newcombe():
 
 
 def test_pairwise_differences_newcombe_no_difference():
-    # Identical templates → CI should contain 0, p should be 1.0
+    # Identical templates → point estimate 0, p = 1.0, and a real interval
+    # around 0. The MOVER interval is built from Wilson intervals on the two
+    # marginals, so unlike the removed discordant-pairs Newcombe it does NOT
+    # collapse to (0, 0) when every pair agrees.
     a = np.array([1., 0., 1., 1., 0., 0., 1., 0.])
     b = a.copy()
     scores = np.stack([a, b])
     result = pairwise_differences(scores, 0, 1, "A", "B", method="newcombe", ci=0.95)
     assert result.point_diff == 0.0
-    assert result.ci_low == 0.0
-    assert result.ci_high == 0.0
+    assert result.ci_low < 0.0 < result.ci_high
     assert result.p_value == 1.0
 
 
@@ -697,60 +689,6 @@ def test_wilson_ci_interval_width_monotone_in_confidence():
             assert width_99 >= width_95
 
 
-def test_newcombe_matches_count_formula_exhaustive_small_n():
-    # Exhaustive over all discordant-count combinations for small n.
-    alpha = 0.05
-    for n in range(1, 16):
-        for n10 in range(n + 1):
-            for n01 in range(n + 1 - n10):
-                m = n10 + n01
-                concordant = n - m
-                n11 = concordant // 2
-                n00 = concordant - n11
-
-                a, b = _make_pairs_from_counts(n10, n01, n11, n00)
-                lo, hi = newcombe_paired_ci(a, b, alpha=alpha)
-
-                if m == 0:
-                    assert (lo, hi) == (0.0, 0.0)
-                    continue
-
-                t_lo, t_hi = wilson_ci(n10, m, alpha)
-                expected_lo = (m / n) * (2.0 * t_lo - 1.0)
-                expected_hi = (m / n) * (2.0 * t_hi - 1.0)
-                np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
-                np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
-
-
-def test_newcombe_matches_scipy_wilson_baseline_exhaustive_small_n():
-    # Baseline: use SciPy's Wilson CI for theta on discordant pairs,
-    # then transform to paired-difference scale per Newcombe 1998.
-    alpha = 0.05
-    for n in range(1, 16):
-        for n10 in range(n + 1):
-            for n01 in range(n + 1 - n10):
-                m = n10 + n01
-                concordant = n - m
-                n11 = concordant // 2
-                n00 = concordant - n11
-
-                a, b = _make_pairs_from_counts(n10, n01, n11, n00)
-                lo, hi = newcombe_paired_ci(a, b, alpha=alpha)
-
-                if m == 0:
-                    assert (lo, hi) == (0.0, 0.0)
-                    continue
-
-                ref = stats.binomtest(n10, m).proportion_ci(
-                    confidence_level=1.0 - alpha,
-                    method="wilson",
-                )
-                expected_lo = (m / n) * (2.0 * ref.low - 1.0)
-                expected_hi = (m / n) * (2.0 * ref.high - 1.0)
-                np.testing.assert_allclose(lo, expected_lo, atol=1e-12)
-                np.testing.assert_allclose(hi, expected_hi, atol=1e-12)
-
-
 def _sample_paired_binary_from_cell_probs(
     n: int,
     p10: float,
@@ -866,32 +804,6 @@ def test_tango_multirun_moments_empirical_coverage_is_reasonable():
     assert 0.0 < mean_width < 1.0
 
 
-def test_newcombe_invariant_to_pair_order_and_concordant_mix():
-    # CI should depend only on n10, n01, and n (not order or n11/n00 split).
-    n10, n01, n11, n00 = 9, 5, 7, 11
-    alpha = 0.05
-
-    a1, b1 = _make_pairs_from_counts(n10, n01, n11, n00)
-    rng = np.random.default_rng(2026)
-    perm = rng.permutation(len(a1))
-    a2 = a1[perm]
-    b2 = b1[perm]
-
-    # Alternate concordant allocation with same n and discordant counts.
-    n = n10 + n01 + n11 + n00
-    n11_alt = 0
-    n00_alt = n - (n10 + n01)
-    a3, b3 = _make_pairs_from_counts(n10, n01, n11_alt, n00_alt)
-
-    lo1, hi1 = newcombe_paired_ci(a1, b1, alpha)
-    lo2, hi2 = newcombe_paired_ci(a2, b2, alpha)
-    lo3, hi3 = newcombe_paired_ci(a3, b3, alpha)
-
-    np.testing.assert_allclose([lo1, hi1], [lo2, hi2], atol=1e-12)
-    np.testing.assert_allclose([lo1, hi1], [lo3, hi3], atol=1e-12)
-
-
-
 # Yang, Sun & Hardin (2012), "A non-iterative implementation of Tango's score
 # confidence interval for a paired difference of proportions", Statistics in
 # Medicine 31(22):3009-3018, Table II.  Each row is (N, a+d, b, c, lower,
@@ -974,20 +886,6 @@ def test_fagerland_2014_table_v_recommended_intervals(method, lower, upper):
     assert hi == pytest.approx(upper, abs=5e-4)
 
 
-def test_newcombe_mover_is_not_the_discordant_pairs_newcombe():
-    """The two Newcombe formulations are genuinely different methods.
-
-    `newcombe_paired_ci` uses the discordant-pairs formulation; Fagerland
-    et al.'s recommendation is the square-and-add/MOVER interval. Guards
-    against the two being conflated again.
-    """
-    a, b = _fagerland_ahr_arrays()
-    lo_d, hi_d = newcombe_paired_ci(a, b, 0.05)
-    lo_m, hi_m = newcombe_mover_paired_ci(a, b, 0.05)
-    assert (hi_d - lo_d) < (hi_m - lo_m)          # discordant form is narrower
-    assert abs(lo_d - lo_m) > 0.10                 # and not a rounding difference
-
-
 def test_bonett_price_never_degenerates_on_perfect_agreement():
     """Unlike the plain Wald interval, Bonett-Price has no zero-width case."""
     a = np.ones(20, dtype=float)
@@ -1008,3 +906,96 @@ def test_recommended_paired_intervals_respect_bounds(n):
             for fn in (bonett_price_paired_ci, newcombe_mover_paired_ci):
                 lo, hi = fn(a, b, 0.05)
                 assert -1.0 <= lo <= hi <= 1.0, (fn.__name__, n10, n01)
+
+
+def test_newcombe_mover_is_non_degenerate_on_perfect_agreement():
+    """Identical arrays give a real interval, not the (0, 0) the removed
+    discordant-pairs Newcombe returned.
+
+    The MOVER interval is built from Wilson intervals on the two marginals,
+    so it retains width even when no pairs disagree.
+    """
+    a = np.array([1.0, 1.0, 0.0, 1.0, 0.0, 1.0])
+    b = a.copy()
+    lo, hi = newcombe_mover_paired_ci(a, b, alpha=0.05)
+    assert lo < 0.0 < hi
+
+
+# ---------------------------------------------------------------------------
+# Parity with Fagerland, Lydersen & Laake's own reference implementation
+# ---------------------------------------------------------------------------
+# Values produced by the authors' companion R package `contingencytables`
+# (Wald_CI_BonettPrice_paired_2x2 and Newcombe_square_and_add_CI_paired_2x2),
+# at alpha = 0.05.  Rows are (n11, n10, n01, n00, bp_lo, bp_hi, nc_lo, nc_hi),
+# sampled across sparse, balanced, small and large tables.  Our closed forms
+# agreed with the package to 7.8e-16 over 1219 tables; this pins a spread of
+# that check into the suite so it survives without an R dependency.
+_CONTINGENCYTABLES_REFERENCE = [
+    (0, 0, 2, 0, -1.0000000000, 0.3486893006, -1.0000000000, -0.0699851989),
+    (3, 0, 0, 2, -0.3959725212, 0.3959725212, -0.3073231092, 0.3073231092),
+    (0, 7, 1, 0, 0.1041639742, 1.0000000000, 0.0582236356, 0.9551650171),
+    (2, 3, 3, 0, -0.5543615297, 0.5543615297, -0.4998831768, 0.4998831768),
+    (0, 0, 9, 0, -1.0000000000, -0.4784086663, -1.0000000000, -0.5769450154),
+    (1, 2, 4, 5, -0.5316944397, 0.2459801539, -0.4889013436, 0.2100513592),
+    (3, 1, 7, 1, -0.8101400976, -0.0470027595, -0.7445936654, -0.0758213431),
+    (6, 2, 3, 1, -0.4399323154, 0.2970751726, -0.4029274433, 0.2598932858),
+    (0, 0, 26, 0, -1.0000000000, -0.7910966839, -1.0000000000, -0.8179498128),
+    (0, 34, 0, 0, 0.8370805250, 1.0000000000, 0.8564367407, 1.0000000000),
+    (0, 24, 13, 9, -0.0174539095, 0.4757872428, -0.0185716055, 0.4635865854),
+    (33, 17, 5, 22, 0.0350633193, 0.2687341490, 0.0376195594, 0.2665487616),
+    (14, 0, 21, 86, -0.2409430996, -0.1005203150, -0.2462652135, -0.1050142663),
+    (7, 9, 50, 118, -0.2963891714, -0.1444710436, -0.2982822882, -0.1456824549),
+    (68, 8, 40, 149, -0.1697262636, -0.0699741110, -0.1698683669, -0.0708053193),
+    (27, 226, 51, 20, 0.4550227263, 0.6185969056, 0.4530456843, 0.6159113461),
+]
+
+
+@pytest.mark.parametrize(
+    "n11,n10,n01,n00,bp_lo,bp_hi,nc_lo,nc_hi", _CONTINGENCYTABLES_REFERENCE
+)
+def test_matches_contingencytables_reference(n11, n10, n01, n00, bp_lo, bp_hi, nc_lo, nc_hi):
+    """Bonett-Price and Newcombe square-and-add vs the authors' own R package."""
+    a = np.array([1] * n11 + [1] * n10 + [0] * n01 + [0] * n00, dtype=float)
+    b = np.array([1] * n11 + [0] * n10 + [1] * n01 + [0] * n00, dtype=float)
+    lo, hi = bonett_price_paired_ci(a, b, 0.05)
+    assert lo == pytest.approx(bp_lo, abs=1e-9)
+    assert hi == pytest.approx(bp_hi, abs=1e-9)
+    lo, hi = newcombe_mover_paired_ci(a, b, 0.05)
+    assert lo == pytest.approx(nc_lo, abs=1e-9)
+    assert hi == pytest.approx(nc_hi, abs=1e-9)
+
+
+@pytest.mark.parametrize("n", [2, 3, 5, 8, 12, 25, 40])
+def test_tango_takes_the_boundary_when_all_pairs_are_discordant(n):
+    """Yang et al. (2012) Remark 1.
+
+    With every pair discordant in one direction the score statistic is 0/0
+    at delta = +/-1, so the quartic loses that root and the raw interval
+    comes back excluding the point estimate. Tango's interval takes the
+    boundary there instead.
+    """
+    a = np.array([1.0] * n)
+    b = np.array([0.0] * n)
+    lo, hi = tango_scc_paired_ci(a, b, 0.05, c=0.0)
+    assert hi == 1.0
+    assert lo <= 1.0
+    # mirrored orientation
+    lo, hi = tango_scc_paired_ci(b, a, 0.05, c=0.0)
+    assert lo == -1.0
+    assert hi >= -1.0
+
+
+@pytest.mark.parametrize("n", [4, 9, 17])
+def test_tango_is_symmetric_and_contains_its_point_estimate(n):
+    """CI(A,B) must be the mirror of CI(B,A), and must contain d_hat."""
+    for n10 in range(n + 1):
+        for n01 in range(n + 1 - n10):
+            rest = n - n10 - n01
+            a = np.array([1] * n10 + [0] * n01 + [1] * rest, dtype=float)
+            b = np.array([0] * n10 + [1] * n01 + [1] * rest, dtype=float)
+            lo1, hi1 = tango_scc_paired_ci(a, b, 0.05, c=0.0)
+            lo2, hi2 = tango_scc_paired_ci(b, a, 0.05, c=0.0)
+            assert lo1 == pytest.approx(-hi2, abs=1e-9), (n10, n01)
+            assert hi1 == pytest.approx(-lo2, abs=1e-9), (n10, n01)
+            d_hat = (n10 - n01) / n
+            assert lo1 - 1e-9 <= d_hat <= hi1 + 1e-9, (n10, n01)

@@ -13,7 +13,7 @@ Methods:
   bootstrap_t      Studentized (bootstrap-t) bootstrap
     wilson           Wilson score CI for single-sample binary means
     jeffreys        Jeffreys interval for single-sample binary means
-    newcombe_score   Newcombe score CI for paired binary differences
+    newcombe_mover   Newcombe square-and-add (MOVER) CI for paired binary differences
     mj_floor      Tango score CI for paired binary differences
     bayes_indep      Beta-conjugate Bayesian interval for binary means
     bayes_indep_comp Independent Beta-posteriors interval for paired binaries
@@ -111,7 +111,7 @@ with warnings.catch_warnings():
 METHODS = ["bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t"]
 WILSON_METHOD = "wilson"
 JEFFREYS_METHOD = "jeffreys"
-NEWCOMBE_METHOD = "newcombe_score"
+NEWCOMBE_METHOD = "newcombe_mover"
 MJ_FLOOR_METHOD = "mj_floor"
 BAYES_SINGLE_METHOD = "bayes_indep"
 BAYES_PAIR_INDEP_METHOD = "bayes_indep_comp"
@@ -906,37 +906,15 @@ def _wilson_ci(successes: int, n: int, alpha: float) -> tuple[float, float]:
 
 
 def _newcombe_paired_score_ci(a: np.ndarray, b: np.ndarray, alpha: float) -> tuple[float, float]:
+    """Newcombe square-and-add (MOVER-Wilson) CI for p(A=1) - p(B=1).
+
+    Delegates to evalstats. The previous local discordant-pairs
+    implementation was removed on 2026-08-24 -- it is a different method
+    from the one Fagerland et al. (2014) recommend under Newcombe's name,
+    and it covers poorly.
     """
-    Newcombe score CI for paired binary difference p(A=1) - p(B=1).
-
-    Uses the discordant-pairs formulation:
-      d = (n10 - n01) / n = (m / n) * (2*theta - 1),
-    where m = n10 + n01 and theta = n10 / m.
-    A Wilson score interval is computed for theta and then transformed back
-    to the difference scale.
-    """
-    if a.ndim != 1 or b.ndim != 1 or a.shape != b.shape:
-        raise ValueError("Newcombe paired score CI expects two 1D arrays with equal shape.")
-
-    n = int(a.shape[0])
-    if n <= 0:
-        return (0.0, 0.0)
-
-    a_bin = (a >= 0.5).astype(int)
-    b_bin = (b >= 0.5).astype(int)
-
-    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
-    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
-    m = n10 + n01
-
-    if m == 0:
-        return (0.0, 0.0)
-
-    theta_low, theta_high = _wilson_ci(successes=n10, n=m, alpha=alpha)
-    scale = m / n
-    low = scale * (2.0 * theta_low - 1.0)
-    high = scale * (2.0 * theta_high - 1.0)
-    return float(low), float(high)
+    from evalstats.core.resampling import newcombe_mover_paired_ci
+    return newcombe_mover_paired_ci(a, b, alpha)
 
 
 def _bayes_indep_ci(values: np.ndarray, alpha: float) -> tuple[float, float]:
@@ -1443,7 +1421,7 @@ def run_pairwise_simulation(
     if runs > 1 and statistic == "mean" and any(sc.eval_type == "binary" for sc in scenarios):
         print(
             "\nNote: binary pairwise-only methods "
-            "(newcombe_score, bayes_indep_comp, bayes_paired_comp) "
+            "(newcombe_mover, bayes_indep_comp, bayes_paired_comp) "
             "use run index 0 when runs>1."
         )
 
@@ -2013,7 +1991,7 @@ _METHOD_COLORS: dict[str, str] = {
     "wald":               "#7f7f7f",
     "clopper_pearson":    "#bcbd22",
     "bayes_indep":        "#17becf",
-    "newcombe_score":     "#aec7e8",
+    "newcombe_mover":     "#aec7e8",
     "bayes_indep_comp":   "#ffbb78",
     "bayes_paired_comp":  "#98df8a",
     "beta":               "#f0027f",

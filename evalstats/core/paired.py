@@ -39,7 +39,7 @@ from .resampling import (
     bootstrap_t_ci_1d,
     bootstrap_t_ci_nested,
     resolve_resampling_method,
-    newcombe_paired_ci,
+    newcombe_mover_paired_ci,
     mj_floor_paired_ci,
     tango_scc_paired_ci,
     mj_floor_paired_ci_from_diffs,
@@ -709,9 +709,9 @@ def pairwise_differences(
         values_b = flat[idx_b]
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
-        ci_low, ci_high = newcombe_paired_ci(values_a, values_b, alpha_val)
+        ci_low, ci_high = newcombe_mover_paired_ci(values_a, values_b, alpha_val)
         p_value = _mcnemar_p(values_a, values_b)
-        mci = {_a: newcombe_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
+        mci = {_a: newcombe_mover_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -1861,7 +1861,7 @@ def _sidak_simultaneous_cis(
     This is agnostic to which CI construction it widens: *ci_func* is any
     callable ``(diffs, alpha) -> (ci_low, ci_high)`` -- e.g.
     :func:`~evalstats.core.resampling.mj_floor_paired_ci_from_diffs` for binary
-    paired data, but equally ``newcombe_paired_ci``, ``t_interval_ci_1d``, or
+    paired data, but equally ``newcombe_mover_paired_ci``, ``t_interval_ci_1d``, or
     any other closed-form interval that accepts a significance level.
 
     Each pair's CI is *ci_func* evaluated at the Sidak-adjusted per-

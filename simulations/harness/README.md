@@ -200,7 +200,7 @@ exist as code yet. `pvalues` added `PAIRWISE_PVALUE_METHODS`,
 `cases/pvalues.py` was actually ported. Note some names overlap by concept
 but not by computation across groupings and intentionally get distinct
 `Method` instances (e.g. `newcombe` for `pairwise_differences(method=
-"newcombe")` vs. `ci_paired`'s `newcombe_score` for the older
+"newcombe")` vs. `ci_paired`'s `newcombe_mover` for the older
 `_newcombe_paired_score_ci` helper); `WILCOXON` ("wilcoxon") is the one
 exception that's genuinely shared (same paired-difference test) and is
 reused as-is across the pairwise-pvalue and PPI-test-name groupings.
