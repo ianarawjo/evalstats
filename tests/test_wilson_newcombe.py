@@ -34,6 +34,7 @@ from evalstats.core.resampling import (
 )
 from evalstats.core.paired import (
     _mcnemar_p,
+    _mcnemar_midp_p,
     pairwise_differences,
     all_pairwise,
 )
@@ -999,3 +1000,51 @@ def test_tango_is_symmetric_and_contains_its_point_estimate(n):
             assert hi1 == pytest.approx(-lo2, abs=1e-9), (n10, n01)
             d_hat = (n10 - n01) / n
             assert lo1 - 1e-9 <= d_hat <= hi1 + 1e-9, (n10, n01)
+
+
+# ---------------------------------------------------------------------------
+# McNemar mid-p
+# ---------------------------------------------------------------------------
+# Fagerland, Lydersen & Laake (2014) sec. 9.1 recommend the asymptotic and
+# mid-p McNemar tests, and recommend against the exact conditional test as
+# markedly conservative.
+
+@pytest.mark.parametrize("n10,n01,expected", [
+    (4, 0, 0.0625),
+    (5, 0, 0.03125),
+    (6, 0, 0.015625),
+    (7, 1, 0.0390625),
+    (10, 2, 0.02246094),
+])
+def test_mcnemar_midp_matches_closed_form(n10, n01, expected):
+    """mid-p = 2 * [P(X < k) + 0.5 * P(X = k)], k = min(n10, n01)."""
+    n = 30
+    rest = n - n10 - n01
+    a = np.array([1] * n10 + [0] * n01 + [1] * rest, dtype=float)
+    b = np.array([0] * n10 + [1] * n01 + [1] * rest, dtype=float)
+    assert _mcnemar_midp_p(a, b) == pytest.approx(expected, abs=1e-6)
+
+
+def test_mcnemar_midp_is_never_larger_than_exact():
+    """The mid-p correction removes half the observed point mass, so it can
+    only ever be smaller than (or equal to) the exact conditional p-value."""
+    n = 24
+    for n10 in range(n + 1):
+        for n01 in range(n + 1 - n10):
+            rest = n - n10 - n01
+            a = np.array([1] * n10 + [0] * n01 + [1] * rest, dtype=float)
+            b = np.array([0] * n10 + [1] * n01 + [1] * rest, dtype=float)
+            exact = _mcnemar_p(a, b)
+            midp = _mcnemar_midp_p(a, b)
+            assert 0.0 <= midp <= exact + 1e-12, (n10, n01, midp, exact)
+
+
+def test_mcnemar_midp_no_discordant_pairs():
+    a = np.array([1.0, 0.0, 1.0, 1.0])
+    assert _mcnemar_midp_p(a, a.copy()) == 1.0
+
+
+def test_mcnemar_midp_symmetric_under_swap():
+    a = np.array([1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0])
+    b = np.array([0.0, 1.0, 1.0, 0.0, 0.0, 1.0, 0.0, 0.0])
+    assert _mcnemar_midp_p(a, b) == pytest.approx(_mcnemar_midp_p(b, a), abs=1e-12)

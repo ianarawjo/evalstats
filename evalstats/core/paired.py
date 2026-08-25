@@ -25,6 +25,7 @@ from ..tests import (
     wilcoxon as _es_wilcoxon,
     friedman as _es_friedman,
     _mcnemar_p,
+    _mcnemar_midp_p,
     _paired_sign_test_p,
     _paired_signflip_pvalue,
 )

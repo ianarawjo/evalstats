@@ -180,6 +180,16 @@ class SimResult:
     what tracks calibration (it reproduces the MinCov ordering exactly)."""
     total_pen_over: float = 0.0
     """Sum of the (2/alpha)*(y - hi) penalty for y ABOVE the interval."""
+    rejects: int = 0
+    """Count of reps whose CI EXCLUDED zero, i.e. the decision "these differ".
+
+    On null rows (delta = 0) this is the Type I error count -- identical to
+    n_reps - covered there, kept as its own counter so the same field also
+    gives POWER on the non-null rows, where coverage is about containing the
+    true delta rather than excluding zero. evalstats' users act on this
+    decision (directly, and through the simultaneous-CI/FWER path, which
+    widens these intervals and decides from them), so it is reported
+    alongside coverage rather than left implicit."""
     total_time: float = 0.0
     total_time_sq: float = 0.0
     is_null: bool = False
@@ -552,6 +562,7 @@ def _run_cell(
     total_score: dict = {m: 0.0 for m in active_methods}
     total_pen_under: dict = {m: 0.0 for m in active_methods}
     total_pen_over: dict = {m: 0.0 for m in active_methods}
+    rejects: dict = {m: 0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
     true_diff = source_obj.true_diff
@@ -565,6 +576,8 @@ def _run_cell(
             total_pen_under[method] += (2.0 / alpha) * (ci_low - true_diff)
         elif true_diff > ci_high:
             total_pen_over[method] += (2.0 / alpha) * (true_diff - ci_high)
+        if ci_low > 0.0 or ci_high < 0.0:
+            rejects[method] += 1
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -758,6 +771,7 @@ def _run_cell(
             total_width=total_w[method], total_score=total_score[method],
             total_pen_under=total_pen_under[method],
             total_pen_over=total_pen_over[method],
+            rejects=rejects[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, model_a=source_obj.model_a, model_b=source_obj.model_b,
             benchmark_id=source_obj.benchmark_id, corpus_size=source_obj.max_n,
@@ -911,6 +925,7 @@ def _run_nested_pairwise_cell(
     total_score: dict = {m: 0.0 for m in active_methods}
     total_pen_under: dict = {m: 0.0 for m in active_methods}
     total_pen_over: dict = {m: 0.0 for m in active_methods}
+    rejects: dict = {m: 0 for m in active_methods}
     total_t: dict = {m: 0.0 for m in active_methods}
     total_t_sq: dict = {m: 0.0 for m in active_methods}
 
@@ -923,6 +938,8 @@ def _run_nested_pairwise_cell(
             total_pen_under[method] += (2.0 / alpha) * (ci_low - true_diff)
         elif true_diff > ci_high:
             total_pen_over[method] += (2.0 / alpha) * (true_diff - ci_high)
+        if ci_low > 0.0 or ci_high < 0.0:
+            rejects[method] += 1
 
     for _rep in range(n_reps):
         a, b = source_obj.generate_pair(rng, n, runs)
@@ -1135,6 +1152,7 @@ def _run_nested_pairwise_cell(
             total_width=total_w[method], total_score=total_score[method],
             total_pen_under=total_pen_under[method],
             total_pen_over=total_pen_over[method],
+            rejects=rejects[method],
             total_time=total_t[method], total_time_sq=total_t_sq[method],
             is_null=source_obj.is_null, run_noise_frac=source_obj.run_noise_frac, runs=runs,
         )
@@ -1239,6 +1257,34 @@ def _headline_cov_width_score(
     )
 
 
+def _decision_rates(results: list[SimResult]) -> tuple[dict, dict]:
+    """(type1, power) keyed by (eval_type, method).
+
+    Type I is the reject rate on null rows (delta = 0); power is the reject
+    rate on the alternative rows, averaged per scenario first so the two
+    swept effect sizes (d=0.20, d=0.40) and every p/icc combination weigh
+    equally rather than by how many cells each happens to contribute.
+    """
+    t1_acc: dict = defaultdict(lambda: [0, 0])
+    pw_cells: dict = defaultdict(list)
+    for r in results:
+        key = (r.eval_type, r.method)
+        if r.is_null:
+            acc = t1_acc[key]
+            acc[0] += r.rejects
+            acc[1] += r.n_reps
+        else:
+            pw_cells[(r.eval_type, r.method, r.label)].append((r.rejects, r.n_reps))
+    type1 = {k: (v[0] / v[1]) if v[1] else float("nan") for k, v in t1_acc.items()}
+    by_method: dict = defaultdict(list)
+    for (et, m, _label), cells in pw_cells.items():
+        c = sum(x[0] for x in cells); n = sum(x[1] for x in cells)
+        if n:
+            by_method[(et, m)].append(c / n)
+    power = {k: float(np.mean(v)) for k, v in by_method.items() if v}
+    return type1, power
+
+
 def _print_overall_summary_table(
     title: str,
     eval_types: list[str],
@@ -1247,6 +1293,8 @@ def _print_overall_summary_table(
     agg_counts: dict[tuple, tuple[int, int]],
     target: float,
     sizes_present: list[int],
+    type1: dict | None = None,
+    power: dict | None = None,
 ) -> None:
     """Print one OVERALL SUMMARY table, aggregated only over `eval_types`.
 
@@ -1279,6 +1327,9 @@ def _print_overall_summary_table(
     print(f"\n{'-'*72}\n  {title}\n{'-'*72}")
     print(f"  MinCov = worst per-scenario coverage seen for that method (not an average) --\n"
           f"  flags methods whose good mean coverage hides an unreliable scenario/n cell.")
+    print(f"  TypeI = P(CI excludes 0) on null cells (target alpha); Power = the same rate\n"
+          f"  on the alternative cells, averaged over scenarios. evalstats users act on this\n"
+          f"  decision, directly and through the simultaneous-CI/FWER path.")
     print(f"  Score = Width + Penalty, reported separately because Score is ~90% Width,\n"
           f"  so a too-narrow method can post the best Score while under-covering.\n"
           f"  The two are one-sided in OPPOSITE directions: Width penalises intervals\n"
@@ -1287,7 +1338,8 @@ def _print_overall_summary_table(
           f"  monotonically to 0 as an interval is widened, and a perfectly calibrated\n"
           f"  interval still carries a large Penalty (it misses alpha of the time by\n"
           f"  construction). Read Width, Penalty and Cov/MinCov together.")
-    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Penalty':>8}  {'Score':>8}  {'Time(ms)':>14}{n_cols_hdr}")
+    print(f"\n  {'Method':<20}  {'Cov':>6}  {'MinCov':>7}  {'Band95':>13}  {'Width':>8}  {'Penalty':>8}  {'Score':>8}  {'TypeI':>7}  {'Power':>7}  {'Time(ms)':>14}{n_cols_hdr}")
+    _et_key = eval_types[0] if len(eval_types) == 1 else None
     for m in method_labels:
         mc, mw, ms, mp = _headline_cov_width_score(per_n_vals, m, sizes_present)
         c_tot, t_tot = all_counts[m]
@@ -1303,11 +1355,14 @@ def _print_overall_summary_table(
             c_n, t_n = per_n_counts.get((m, n), (0, 0))
             cov_n = c_n / t_n if t_n > 0 else float("nan")
             n_cols_vals += f"  {cov_n:>5.3f}{_cov_marker(cov_n, target)} " if np.isfinite(cov_n) else f"  {'  -':>7}"
-        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {mp:>8.4f}  {ms:>8.4f}  {time_str:>14}{n_cols_vals}")
+        t1s = f"{type1[(_et_key, m)]:.3f}" if type1 and (_et_key, m) in type1 else "-"
+        pws = f"{power[(_et_key, m)]:.3f}" if power and (_et_key, m) in power else "-"
+        print(f"  {m:<20}  {mc:>5.3f}{_cov_marker(mc, target)}  {worst_str:>7}  {f'{lo:.3f}-{hi:.3f}':>13}  {mw:>8.4f}  {mp:>8.4f}  {ms:>8.4f}  {t1s:>7}  {pws:>7}  {time_str:>14}{n_cols_vals}")
 
 
 def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float, n_reps: int, statistic: str) -> None:
     target = 1.0 - alpha
+    type1_map, power_map = _decision_rates(results)
     non_null = [r for r in results if not r.is_null]
     eval_types_present = [et for et in EVAL_TYPES if any(r.eval_type == et for r in non_null)]
     present_methods = {r.method for r in non_null}
@@ -1362,19 +1417,19 @@ def print_report(results: list[SimResult], sample_sizes: list[int], alpha: float
     sizes_present = sorted({r.n for r in non_null})
     _print_overall_summary_table(
         "OVERALL SUMMARY -- BINARY (averaged across sources)",
-        ["binary"], non_null, agg, agg_counts, target, sizes_present,
+        ["binary"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
     _print_overall_summary_table(
         "OVERALL SUMMARY -- CONTINUOUS [0,1] (averaged across sources)",
-        ["continuous"], non_null, agg, agg_counts, target, sizes_present,
+        ["continuous"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
     _print_overall_summary_table(
         "OVERALL SUMMARY -- LIKERT (averaged across sources)",
-        ["likert"], non_null, agg, agg_counts, target, sizes_present,
+        ["likert"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
     _print_overall_summary_table(
         "OVERALL SUMMARY -- GRADES (averaged across sources)",
-        ["grades"], non_null, agg, agg_counts, target, sizes_present,
+        ["grades"], non_null, agg, agg_counts, target, sizes_present, type1_map, power_map,
     )
 
     null_results = [r for r in results if r.is_null]
@@ -1434,6 +1489,13 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     non_null = [r for r in results if not r.is_null]
     method_labels = [m.name for m in order_present_methods({r.method for r in non_null})]
     sizes_present = sorted({r.n for r in non_null})
+
+    # Decision rates, keyed by (report group, method) to match the row blocks.
+    _grouped = [
+        SimResult(**{**vars(r), "eval_type": _report_eval_type_group(r.eval_type)})
+        for r in results
+    ]
+    g_type1, g_power = _decision_rates(_grouped)
 
     agg: dict[tuple, list[tuple[float, float, float]]] = defaultdict(list)
     agg_counts: dict[tuple, tuple[int, int]] = defaultdict(lambda: (0, 0))
@@ -1497,6 +1559,8 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
                 f"{mw:.4f}" if np.isfinite(mw) else "-",
                 f"{mp:.4f}" if np.isfinite(mp) else "-",
                 f"{ms:.4f}" if np.isfinite(ms) else "-",
+                f"{g_type1[(g, m)]:.3f}" if (g, m) in g_type1 else "-",
+                f"{g_power[(g, m)]:.3f}" if (g, m) in g_power else "-",
                 time_str,
                 g,
             ]
@@ -1519,13 +1583,14 @@ def latex_overall_summary(results: list[SimResult], alpha: float, n_reps: int) -
     return booktabs_table(
         caption=(
             f"ci\\_paired: overall CI coverage summary (nominal {target*100:.0f}\\%, reps/cell={n_reps}). "
-            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Pen(alty), where Pen is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow. ""Neither is a calibration measure on its own: Penalty decreases monotonically to ""zero as an interval is widened, and a perfectly calibrated interval still carries ""a substantial Penalty, since it misses $\\alpha$ of the time by construction. "
+            "MinCov is the worst coverage over any single (scenario, $n$) cell -- the tail the ""headline Cov averages away. ""Score is the interval score, decomposed as Width + Pen(alty), where Pen is ""$\\frac{2}{\\alpha}\\times$the mean miss-distance \\citep{bracher2021evaluating}. ""Score is dominated by Width, so a method can be narrowest -- and so score best -- ""while covering worst. The two components are one-sided in opposite directions: ""Width penalises intervals that are too wide, Penalty those that are too narrow. ""Neither is a calibration measure on its own: Penalty decreases monotonically to ""zero as an interval is widened, and a perfectly calibrated interval still carries ""a substantial Penalty, since it misses $\\alpha$ of the time by construction. ""Type-I is the rate at which the interval excludes zero on the null scenarios ""(target $\\alpha$); Power is that rate on the alternative scenarios, averaged over ""scenarios. These are the decisions users act on, directly and through the ""simultaneous-CI/FWER path, which widens these same intervals. "
             "Methods tested on more than one eval type are reported as one row per type "
             "(bin/cont/lik), so no row averages across incomparable scales. Rows are grouped by "
             "eval type (all bin, then all cont, then all lik) so methods are comparable within a block."
         ),
         label="tab:ci_paired_overall",
-        columns=["Method", "Cov", "MinCov", "Width", "Pen $\\downarrow$", "Score $\\downarrow$", "Time (ms)", "Type"]
+        columns=["Method", "Cov", "MinCov", "Width", "Pen $\\downarrow$", "Score $\\downarrow$",
+                 "Type-I", "Power $\\uparrow$", "Time (ms)", "Type"]
                 + [f"n={n}" for n in sizes_present],
         rows=rows,
         rule_before=rule_before,
@@ -1546,6 +1611,7 @@ def save_results_artifacts(
             "source", "model_a", "model_b", "benchmark_id", "label", "eval_type", "n", "method", "n_reps",
             "covered", "total_width", "coverage", "mean_width", "total_score", "mean_score",
             "mean_penalty", "mean_pen_under", "mean_pen_over",
+            "rejects", "reject_rate",
             "total_time", "total_time_sq", "mcse", "band95_low", "band95_high",
             "avg_time_ms", "se_time_ms", "is_null", "corpus_size", "true_diff", "run_noise_frac", "runs",
         ])
@@ -1563,6 +1629,7 @@ def save_results_artifacts(
                 f"{r.total_score:.8f}", f"{mean_score:.8f}",
                 f"{mean_pen_under + mean_pen_over:.8f}",
                 f"{mean_pen_under:.8f}", f"{mean_pen_over:.8f}",
+                r.rejects, f"{r.rejects / r.n_reps:.8f}",
                 f"{r.total_time:.10f}", f"{r.total_time_sq:.10f}",
                 f"{mcse:.8f}", f"{lo:.8f}", f"{hi:.8f}",
                 f"{avg_ms:.6f}" if np.isfinite(avg_ms) else "",

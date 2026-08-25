@@ -184,6 +184,7 @@ with warnings.catch_warnings():
         _ppi_lmm_p_value,
         _kw_pairwise_thetas,
         _mcnemar_p,
+        _mcnemar_midp_p,
     )
     from evalstats.core.mixed_effects import _fit_lmm_general, _get_fe_vcov_sm
 
@@ -268,6 +269,7 @@ from ..scenarios.real_data import (
 from ..methods import (
     PAIRWISE_PVALUE_METHODS,
     MCNEMAR,
+    MCNEMAR_MIDP,
     BOOTSTRAP,
     BOOTSTRAP_T,
     BCA,
@@ -320,7 +322,7 @@ PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
 ALPHA_DEFAULT = 0.05
 
-_BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name}
+_BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name, MCNEMAR_MIDP.name}
 
 # Multiarm analogue of SIMULTANEOUS_CI_PLOT_METHODS below: `none`'s FWER is
 # so far above nominal alpha (no correction at all) that plotting it on the
@@ -582,6 +584,8 @@ def _pairwise_pvalue(a: np.ndarray, b: np.ndarray, method: str, n_bootstrap: int
         bb = (b.mean(axis=1) >= 0.5).astype(float)
         if method == MCNEMAR.name:
             return _mcnemar_p(aa, bb)
+        if method == MCNEMAR_MIDP.name:
+            return _mcnemar_midp_p(aa, bb)
         scores = np.stack([aa, bb], axis=0)
     else:
         scores = np.stack([a[:, 0], b[:, 0]], axis=0) if a.shape[1] == 1 else np.stack([a, b], axis=0)
@@ -10265,6 +10269,22 @@ def print_ppi_factorial_report(
     the omnibus family)."""
     if not results:
         print("\n  (no PPI factorial results)")
+        return
+    # The regression is a CROSS-eval-type contrast (et is a Treatment()
+    # factor against a "continuous" reference, see
+    # _PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS), so it is not merely
+    # unfittable but meaningless when the run covers one eval type -- as
+    # an --eval-types-restricted re-run does. Skip it and carry on to the
+    # rest of the report rather than raising: the 2026-08-24 likert-only
+    # re-run lost its alignment sweep to this, after the 11.7h factorial
+    # it depends on had already finished and been written to disk.
+    present_ets = {getattr(r, "eval_type", None) for r in results}
+    ref_et = _PPI_FACTORIAL_FORMULA_REFERENCE_LEVELS["et"]
+    if ref_et not in present_ets:
+        print(f"\n  (skipping the factorial regression: it contrasts eval types against "
+              f"'{ref_et}', which this run does not cover -- present: "
+              f"{'/'.join(sorted(str(e) for e in present_ets))}. Per-cell results, the "
+              f"alignment sweep and all plots are unaffected.)")
         return
     summary_text, df = fit_ppi_factorial_model(results)
     eval_types = sorted(df["et"].unique())

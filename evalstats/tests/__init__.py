@@ -727,6 +727,45 @@ def _mcnemar_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
     return min(p, 1.0)
 
 
+def _mcnemar_midp_p(values_a: np.ndarray, values_b: np.ndarray) -> float:
+    """Two-sided McNemar MID-P p-value for paired binary data.
+
+    Same conditional binomial reference as :func:`_mcnemar_p`, but counting
+    only HALF the probability of the observed outcome::
+
+        mid-p = 2 * [ P(X < k) + 0.5 * P(X = k) ],   k = min(n10, n01)
+
+    The exact conditional test is markedly conservative because the discrete
+    binomial rarely puts exactly alpha in the tail; the mid-p correction
+    recovers most of the lost power while, in practice, keeping the Type I
+    error at or under nominal. Fagerland, Lydersen & Laake (2014) recommend
+    the asymptotic and mid-p McNemar tests and explicitly recommend AGAINST
+    the exact conditional test on those grounds (their section 9.1: its
+    maximum Type I error over ~10,000 scenarios was 4.95% at a nominal 5%).
+
+    This matters for agreement with the paired binary CIs: the exact test
+    disagrees with every interval method on 3-7% of possible tables, always
+    in the same direction (the CI excludes zero while the exact p-value does
+    not), because the intervals are calibrated to nominal and the exact test
+    is not.
+
+    Returns 1.0 when m == 0 (perfect agreement, no discordant pairs).
+    """
+    from scipy.stats import binom
+
+    a_bin = (values_a >= 0.5).astype(int)
+    b_bin = (values_b >= 0.5).astype(int)
+    n10 = int(np.sum((a_bin == 1) & (b_bin == 0)))
+    n01 = int(np.sum((a_bin == 0) & (b_bin == 1)))
+    m = n10 + n01
+    if m == 0:
+        return 1.0
+    k = min(n10, n01)
+    below = float(binom.cdf(k - 1, m, 0.5)) if k > 0 else 0.0
+    p = 2.0 * (below + 0.5 * float(binom.pmf(k, m, 0.5)))
+    return min(max(p, 0.0), 1.0)
+
+
 def _paired_sign_test_p(diffs: np.ndarray) -> float:
     """Exact two-sided paired sign-test p-value on non-zero differences.
 

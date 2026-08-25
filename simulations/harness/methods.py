@@ -303,6 +303,12 @@ BINARY_PAIR_NESTED_METHODS = [MJ_FLOOR_ER, MJ_FLOOR_MMNT]
 # distinct Method instances despite the conceptual overlap).
 # ---------------------------------------------------------------------------
 MCNEMAR = Method("mcnemar", "#393b79")
+#: McNemar MID-P. Fagerland, Lydersen & Laake (2014) sec. 9.1 recommend the
+#: asymptotic and mid-p McNemar tests and recommend AGAINST the exact
+#: conditional test (MCNEMAR above) as markedly conservative. Added
+#: 2026-08-25 so the sweep compares the recommended test, not only the
+#: one evalstats currently reports alongside its binary paired CIs.
+MCNEMAR_MIDP = Method("mcnemar_midp", "#00868b")
 PERMUTATION = Method("permutation", "#8c6d31")
 SIGN_TEST = Method("sign_test", "#843c39")
 NEWCOMBE_PVAL = Method("newcombe", "#7b4173")
@@ -310,7 +316,7 @@ BAYES_BINARY = Method("bayes_binary", "#5254a3")
 WILCOXON = Method("wilcoxon", "#8ca252")
 PAIRED_T = Method("paired_t", "#bd9e39")
 PAIRWISE_PVALUE_METHODS = [
-    MCNEMAR, BOOTSTRAP, BCA, BAYES_BOOTSTRAP, SMOOTH_BOOTSTRAP, BOOTSTRAP_T,
+    MCNEMAR, MCNEMAR_MIDP, BOOTSTRAP, BCA, BAYES_BOOTSTRAP, SMOOTH_BOOTSTRAP, BOOTSTRAP_T,
     PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
 ]
 
@@ -555,7 +561,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
     + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE]
 ) + [
-    MCNEMAR, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
+    MCNEMAR, MCNEMAR_MIDP, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
     PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
     TTEST, TTEST_WELCH, MWU, MJ_FLOOR_FIXED_LAMBDA,

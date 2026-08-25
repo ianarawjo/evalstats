@@ -196,14 +196,18 @@ under-covering across several $n$, an inflated Type I error rate we optimize aga
 On real binary data Wilson flat is strongest, at conservative coverage, while NIG under-covers.""",
 
  "ci_paired_single": r"""CI methods for pairwise comparisons, single-run (nominal 95\%, 300 MC
-reps per cell). Tango is clearly optimal for binary data, and the fastest method considered;
-it holds nominal coverage on real data at $n\ge15$. \texttt{logit\_t} remains well-calibrated
-for continuous data. For Likert, \texttt{nig} reaches a better interval score at comparable
-calibration, reflecting a paired-difference rounding-cancellation failure mode logit-t is
-vulnerable to at small $n$ with extreme ties.""",
+reps per cell). For binary data \texttt{mj\_floor} attains the lowest interval score, but does so
+entirely on width: it carries the largest penalty term of the closed-form methods and much the
+worst coverage tail (MinCov .800 synthetic, .803 real; 237 of 1980 synthetic cells fall below
+.93, against 14 for \texttt{bonett\_price}). \texttt{bonett\_price}, \texttt{newcombe\_mover}
+and \texttt{tango\_scc} never fall below .90 in any cell, on either data source.
+\texttt{logit\_t} is the best-calibrated choice for continuous data, with \texttt{nig}
+marginally ahead on interval score on real data. For Likert the same trade recurs:
+\texttt{nig} reaches the lower interval score while \texttt{logit\_t} holds the better
+worst-case coverage.""",
 
  "ci_paired_nested": r"""CI methods for pairwise comparisons, multi-run (nominal 95\%, 300 MC
-reps per cell, runs=5). The multi-run Tango variants achieve the tightest binary calibration
+reps per cell, runs=5). The multi-run \texttt{mj\_floor} variants achieve the tightest binary calibration
 and retain it on real data; logit-t remains best-calibrated for continuous data (\texttt{nig}
 attains the lowest interval score), and NIG for Likert. Wald and the t-interval, the most
 common practitioner approximations, both perform poorly: t-interval under-covers at small $n$,
