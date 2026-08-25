@@ -277,7 +277,6 @@ from ..methods import (
     SMOOTH_BOOTSTRAP,
     PERMUTATION,
     SIGN_TEST,
-    NEWCOMBE_PVAL,
     BAYES_BINARY,
     WILCOXON,
     PAIRED_T,
@@ -322,7 +321,13 @@ PLOT_MODES = ["save", "off"]
 RESULTS_MODES = ["save", "off"]
 ALPHA_DEFAULT = 0.05
 
-_BINARY_ONLY_PVAL_METHODS = {NEWCOMBE_PVAL.name, BAYES_BINARY.name, MCNEMAR.name, MCNEMAR_MIDP.name}
+_BINARY_ONLY_PVAL_METHODS = {BAYES_BINARY.name, MCNEMAR.name, MCNEMAR_MIDP.name}
+# NOTE on binary paired data sign_test and permutation are not merely similar
+# to mcnemar (exact) -- they ARE it. The sign test drops ties, and on 0/1 data
+# the non-tied differences are exactly the discordant pairs, giving the same
+# Binomial(m, 1/2) reference; the sign-flip permutation test has the same
+# reference up to Monte Carlo error. They are kept in the sweep because they
+# are genuinely distinct on continuous/Likert data.
 
 # Multiarm analogue of SIMULTANEOUS_CI_PLOT_METHODS below: `none`'s FWER is
 # so far above nominal alpha (no correction at all) that plotting it on the

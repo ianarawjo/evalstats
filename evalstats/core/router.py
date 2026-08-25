@@ -176,18 +176,18 @@ def analyze(
           The backend is controlled by the ``backend`` parameter.
         * ``'wilson'`` — Binary-only frequentist mode. Uses Wilson score
             intervals for point-advantage CIs and Newcombe score intervals
-            (+ exact McNemar p-values) for pairwise comparisons.
+            (+ McNemar mid-p p-values) for pairwise comparisons.
         * ``'newcombe'`` — Binary-only frequentist mode. Alias of
             ``'wilson'`` routing in ``analyze()``: pairwise comparisons use
-            Newcombe score intervals (+ exact McNemar p-values), while
+            Newcombe score intervals (+ McNemar mid-p p-values), while
             point-advantage CIs use Wilson score intervals.
         * ``'mj_floor'`` — Binary-only frequentist mode. Pairwise
             comparisons use the floored May & Johnson (1997) score interval
-            (+ exact McNemar p-values), while point-advantage CIs use Wilson
+            (+ McNemar mid-p p-values), while point-advantage CIs use Wilson
             score intervals. This is what ``'auto'`` selects for binary
             pairwise comparisons.
         * ``'tango'`` — Binary-only frequentist mode. Pairwise comparisons
-            use the exact Tango (1998) score interval (+ exact McNemar
+            use the exact Tango (1998) score interval (+ McNemar mid-p
             p-values), while point-advantage CIs use Wilson score intervals.
             Single-run data only; it has no multi-run form.
     backend : str
@@ -1040,7 +1040,7 @@ def _analyze_single(
             pairwise_method = method
         else:
             # In analyze(), explicit frequentist binary methods route to:
-            #   - pairwise Newcombe + exact McNemar p-values
+            #   - pairwise Newcombe + McNemar mid-p p-values
             #   - single-sample marginal Wilson score CIs
             pairwise_method = "newcombe"
         robustness_method = "wilson"

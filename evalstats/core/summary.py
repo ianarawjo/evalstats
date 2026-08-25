@@ -92,10 +92,11 @@ def _uses_wilson_ci(bundle: "AnalysisBundle") -> bool:
 def _pairwise_p_value_label(test_method: str) -> str:
     """Return a human-readable p-value method label for pairwise summaries."""
     method = test_method.lower()
-    if "mj_floor" in method or "tango" in method:
-        return "McNemar"
-    if "newcombe" in method:
-        return "McNemar exact"
+    # All three binary paired CI methods report the same p-value, McNemar's
+    # mid-p (see core.paired). Fagerland et al. (2014) sec. 9.1 recommend it
+    # over the exact conditional test, which is markedly conservative.
+    if "mj_floor" in method or "tango" in method or "newcombe" in method:
+        return "McNemar mid-p"
     if "sign test" in method:
         return "paired sign test"
     if "wilcoxon" in method:
@@ -1212,7 +1213,7 @@ def _prepare_paired_pairwise_rows(
             if is_romano_wolf_active and eff_p_source == "boot":
                 p_value_method_label = "Romano-Wolf step-down"
             elif is_newcombe_pairwise:
-                p_value_method_label = "McNemar exact test"
+                p_value_method_label = "McNemar mid-p test"
             elif is_sign_pairwise:
                 p_value_method_label = "Paired sign test"
             elif eff_p_source == "max_t":
@@ -1247,7 +1248,7 @@ def _prepare_paired_pairwise_rows(
             if is_romano_wolf_active and eff_p_source == "boot":
                 print(f"{_DIM}  {p_col_header} = Romano-Wolf step-down (FWER-controlled){_RESET}")
             elif is_newcombe_pairwise:
-                print(f"{_DIM}  {p_col_header} = McNemar exact test (two-sided, uncorrected){_RESET}")
+                print(f"{_DIM}  {p_col_header} = McNemar mid-p test (two-sided, uncorrected){_RESET}")
             elif is_sign_pairwise:
                 print(f"{_DIM}  {p_col_header} = paired sign test (two-sided exact, ties dropped, uncorrected){_RESET}")
             elif eff_p_source == "max_t":

@@ -323,7 +323,7 @@ def test_print_pairwise_summary_prefers_wilcoxon_pvalue_for_non_exact_methods(ca
     assert "p (Wilcoxon signed-rank) = 0.03125" in out
 
 
-def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
+def test_print_pairwise_summary_keeps_mcnemar_pvalue_for_newcombe(capsys):
     pair = PairedDiffResult(
         template_a="Prompt A",
         template_b="Prompt B",
@@ -343,8 +343,8 @@ def test_print_pairwise_summary_keeps_exact_test_pvalue_for_newcombe(capsys):
     print_pairwise_summary(pair, alpha=0.05)
     out = capsys.readouterr().out
 
-    assert "p (McNemar exact) =" in out
-    assert "p (McNemar exact) = 0.04" in out
+    assert "p (McNemar mid-p) =" in out
+    assert "p (McNemar mid-p) = 0.04" in out
 
 
 def test_print_pairwise_summary_axis_line_includes_pair_labels(capsys):

@@ -346,7 +346,7 @@ def test_pairwise_differences_newcombe_uses_newcombe():
     result = pairwise_differences(
         scores, 0, 1, "A", "B", method="newcombe", ci=0.95,
     )
-    assert result.test_method == "newcombe (mcnemar p-value)"
+    assert result.test_method == "newcombe (mcnemar_midp p-value)"
     assert result.ci_low <= result.point_diff <= result.ci_high
     assert 0.0 <= result.p_value <= 1.0
 

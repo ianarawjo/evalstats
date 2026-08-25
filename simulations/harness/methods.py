@@ -311,13 +311,18 @@ MCNEMAR = Method("mcnemar", "#393b79")
 MCNEMAR_MIDP = Method("mcnemar_midp", "#00868b")
 PERMUTATION = Method("permutation", "#8c6d31")
 SIGN_TEST = Method("sign_test", "#843c39")
+#: REMOVED from the p-value sweep 2026-08-25. "newcombe" is a CI method,
+#: not a test: evalstats returns McNemar alongside the Newcombe interval,
+#: so as a p-value row it reproduced mcnemar exactly (and now reproduces
+#: mcnemar_midp exactly). Kept defined because summary labels still refer
+#: to it, but no longer swept as if it were a distinct test.
 NEWCOMBE_PVAL = Method("newcombe", "#7b4173")
 BAYES_BINARY = Method("bayes_binary", "#5254a3")
 WILCOXON = Method("wilcoxon", "#8ca252")
 PAIRED_T = Method("paired_t", "#bd9e39")
 PAIRWISE_PVALUE_METHODS = [
     MCNEMAR, MCNEMAR_MIDP, BOOTSTRAP, BCA, BAYES_BOOTSTRAP, SMOOTH_BOOTSTRAP, BOOTSTRAP_T,
-    PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T,
+    PERMUTATION, SIGN_TEST, BAYES_BINARY, WILCOXON, PAIRED_T,
 ]
 
 # ---------------------------------------------------------------------------

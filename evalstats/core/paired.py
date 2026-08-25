@@ -486,11 +486,11 @@ def pairwise_differences(
         ``'bayes_bootstrap'`` (Bayesian bootstrap), ``'smooth_bootstrap'``
         (smoothed bootstrap via Gaussian KDE), ``'bootstrap_t'``
         (studentized bootstrap-t CI), ``'newcombe'`` for paired
-        binary (0/1) data using Newcombe CI + exact McNemar p-value,
+        binary (0/1) data using Newcombe CI + McNemar mid-p p-value,
         ``'mj_floor'`` for paired binary (0/1) data using the floored
-        May & Johnson (1997) score CI + exact McNemar p-value,
+        May & Johnson (1997) score CI + McNemar mid-p p-value,
         ``'tango'`` for paired binary (0/1) data using the exact Tango
-        (1998) score CI + exact McNemar p-value (single-run only), or
+        (1998) score CI + McNemar mid-p p-value (single-run only), or
         ``'bayes_binary'`` for paired binary (0/1) data using the
         Dirichlet-multinomial Bayesian model (Bowyer et al. 2025).
         Requires binary data; raises ValueError otherwise.
@@ -711,7 +711,7 @@ def pairwise_differences(
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         ci_low, ci_high = newcombe_mover_paired_ci(values_a, values_b, alpha_val)
-        p_value = _mcnemar_p(values_a, values_b)
+        p_value = _mcnemar_midp_p(values_a, values_b)
         mci = {_a: newcombe_mover_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
         return _build_result(
             diffs=diffs,
@@ -720,7 +720,7 @@ def pairwise_differences(
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_name="newcombe (mcnemar p-value)",
+            test_name="newcombe (mcnemar_midp p-value)",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,
@@ -753,7 +753,7 @@ def pairwise_differences(
         else:
             ci_low, ci_high = mj_floor_paired_ci(values_a, values_b, alpha_val)
             mci = {_a: mj_floor_paired_ci(values_a, values_b, _a) for _a in GRADIENT_CI_ALPHAS} if multi_ci else None
-        p_value = _mcnemar_p(values_a, values_b)
+        p_value = _mcnemar_midp_p(values_a, values_b)
         return _build_result(
             diffs=diffs,
             point_d=point_d,
@@ -790,7 +790,7 @@ def pairwise_differences(
         ci_low, ci_high = tango_scc_paired_ci(values_a, values_b, alpha_val, c=0.0)
         mci = ({_a: tango_scc_paired_ci(values_a, values_b, _a, c=0.0)
                 for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
-        p_value = _mcnemar_p(values_a, values_b)
+        p_value = _mcnemar_midp_p(values_a, values_b)
         return _build_result(
             diffs=diffs,
             point_d=point_d,
