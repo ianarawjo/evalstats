@@ -3,8 +3,6 @@
 Covers, in evalstats/core/resampling.py:
   - bonett_price_paired_ci_flat / _mean          (multi-run baselines)
   - bonett_price_paired_ci_multirun_cluster      (the derivation, no floor)
-  - bonett_price_paired_ci_multirun_moments      (floor at w~/R)
-  - bonett_price_paired_ci_multirun_effective    (floor at w~/R_eff)
 
 The derivation these all rest on is spelled out in the comment block above
 ``_bp_item_moments`` in resampling.py. Two of its steps are *claims about
@@ -28,16 +26,12 @@ from evalstats.core.resampling import (
     bonett_price_paired_ci_flat,
     bonett_price_paired_ci_mean,
     bonett_price_paired_ci_multirun_cluster,
-    bonett_price_paired_ci_multirun_effective,
-    bonett_price_paired_ci_multirun_moments,
 )
 
 MULTIRUN_VARIANTS = [
     bonett_price_paired_ci_multirun_cluster,
-    bonett_price_paired_ci_multirun_moments,
-    bonett_price_paired_ci_multirun_effective,
 ]
-VARIANT_IDS = ["cluster", "moments", "effective"]
+VARIANT_IDS = ["cluster"]
 
 
 def _pairs_from_cells(n11: int, n10: int, n01: int, n00: int):
@@ -264,17 +258,6 @@ def test_duplicated_runs_buy_no_information(fn):
             np.testing.assert_allclose(
                 fn(a, b, alpha), bonett_price_paired_ci(a1, b1, alpha), atol=1e-14
             )
-
-
-def test_widths_order_cluster_then_moments_then_effective():
-    """The three variants differ only by the floor they put on V~."""
-    rng = np.random.default_rng(19)
-    for label, a, b in _multirun_corpus(rng, n_cells=150):
-        wc, wm, we = (
-            float(np.diff(fn(a, b, 0.05))[0]) for fn in MULTIRUN_VARIANTS
-        )
-        assert wc <= wm + 1e-12, label
-        assert wm <= we + 1e-12, label
 
 
 def test_cluster_narrows_monotonically_with_more_runs():

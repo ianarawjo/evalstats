@@ -320,30 +320,28 @@ MJ_FLOOR_CLUSTER = Method("mj_floor_cluster", "#a6761d")
 #: item-level variance already absorbs between-run correlation, and a
 #: correctly-specified Kish design effect provably reduces to it.
 BONETT_PRICE_CLUSTER = Method("bonett_price_cluster", "#3585f7")
-#: Floors the item-level variance at w~/R_eff with mj_floor_er's own
-#: heuristic rho, purely so there is a like-for-like opponent for
-#: MJ_FLOOR_ER. Measured to be a straight loss for Bonett-Price: same or
-#: worse coverage, up to 50% wider, and it costs power.
-BONETT_PRICE_ER = Method("bonett_price_er", "#43b6cc")
-#: Floors at w~/R, mirroring MJ_FLOOR_MMNT. Expected to plot exactly on top
-#: of BONETT_PRICE_CLUSTER: the Laplace pseudo-items already dominate this
-#: floor, so it fired in 0 of 1100 measured cells.
-BONETT_PRICE_MMNT = Method("bonett_price_mmnt", "#da95b1")
+#: RETIRED 2026-08-25: _er and _mmnt only add a floor to the item-level
+#: variance, and neither floor ever fires -- the Laplace pseudo-items already
+#: dominate it. On the real-data nested sweep all three agreed to four
+#: decimals, so they were three rows of the same interval. CLUSTER is kept
+#: because it is the one with no floor at all, and so the only one that
+#: describes in a sentence: the single-run construction with the item as the
+#: unit of analysis.
 #: Yang, Sun & Hardin (2012) X^2_Score: Tango's score statistic with the
 #: Eliasziw-Donner variance inflation, inverted through the same quartic as the
 #: unclustered case. THE published competitor for clustered matched-pair CIs --
 #: reproduces their worked example exactly and reduces to tango_scc(c=0) when
 #: there is no clustering.
 CLUSTERED_SCORE = Method("clustered_score", "#4a148c")
-#: Yang et al. (2010) modified Obuchowski: cluster-level, estimates no ICC at
-#: all. Yang et al. (2012) prefer it among the assumption-free alternatives on
-#: power grounds. Its X^2 statistic reproduces the reference R implementation
-#: (clust.bin.pair) exactly.
-MODIFIED_OBUCHOWSKI = Method("modified_obuchowski", "#004d40")
+#: NOT SWEPT. Yang et al. (2010) modified Obuchowski is cluster-level and
+#: estimates no ICC, but it carries no small-sample adjustment: at R=1 it is
+#: bit-identical to the unregularised Wald on item differences, and it returns
+#: a zero-width interval at zero discordance. Measured MinCov .613 with 231 of
+#: 10140 real-data cells below .93 -- far worse than anything else credible.
+#: The implementation and its validation against clust.bin.pair are retained
+#: in evalstats.core.resampling as a citable negative result.
 BINARY_PAIR_NESTED_METHODS = [
-    MJ_FLOOR_CLUSTER,
-    BONETT_PRICE_CLUSTER, BONETT_PRICE_ER, BONETT_PRICE_MMNT,
-    CLUSTERED_SCORE, MODIFIED_OBUCHOWSKI,
+    MJ_FLOOR_CLUSTER, BONETT_PRICE_CLUSTER, CLUSTERED_SCORE,
 ]
 
 # ---------------------------------------------------------------------------
