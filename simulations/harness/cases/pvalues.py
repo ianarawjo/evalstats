@@ -267,6 +267,7 @@ from ..scenarios.real_data import (
     DEFAULT_INSPECT_CSV, PAIR_SOURCES as REAL_PAIR_SOURCES, build_real_pair_sources, build_real_multiarm_sources,
 )
 from ..methods import (
+    METHODS_BY_NAME,
     PAIRWISE_PVALUE_METHODS,
     MCNEMAR,
     MCNEMAR_MIDP,
@@ -2293,6 +2294,155 @@ def save_multiarm_fwer_vs_n_plot(*, results: list[MultiArmResult], alpha: float,
     fig.savefig(out_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     return out_path
+
+
+def _fwer_panel_axis(ax, xs, series, *, hline=None, band=None, ylabel="", xlabel=""):
+    """One panel of the compact 1x4 FWER figures.
+
+    Shared by save_multiarm_fwer_panels_plot and
+    save_simultaneous_ci_panels_plot. `series` maps method name -> (y, sem).
+    """
+    import matplotlib.ticker as mticker
+    for name, (y, e) in series.items():
+        color = METHODS_BY_NAME[name].color if name in METHODS_BY_NAME else None
+        ax.plot(xs, y, "-o", color=color, label=name)
+        if e is not None:
+            ax.fill_between(xs, np.asarray(y) - np.asarray(e), np.asarray(y) + np.asarray(e),
+                            color=color, alpha=0.18, linewidth=0)
+    if band is not None:
+        ax.axhspan(*band, color="0.90", zorder=0)
+    if hline is not None:
+        ax.axhline(hline, ls="--", lw=0.8, color="black")
+    ax.set_xscale("log")
+    ax.set_xticks(list(xs))
+    # 1000 -> "1k": at four panels across the text width, 500 and 1000 collide.
+    ax.get_xaxis().set_major_formatter(
+        mticker.FuncFormatter(lambda v, _: (f"{v/1000:g}k" if v >= 1000 else f"{v:g}")))
+    ax.get_xaxis().set_minor_locator(mticker.NullLocator())
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel(xlabel)
+    ax.tick_params(length=2, pad=1.5)
+    for sp in ("top", "right"):
+        ax.spines[sp].set_visible(False)
+
+
+def _fwer_panels_figure(panels, methods, out_path):
+    r"""Render a 1x4 panel row at ACM \textwidth with print-sized fonts.
+
+    Drawn at its FINAL printed width (7in) so nothing is downscaled on
+    \includegraphics -- the older two-panel plots were ~14.5in wide and shrank
+    to ~0.38x in the paper, which is what made their labels unreadable.
+    """
+    import matplotlib.pyplot as plt
+    with plt.rc_context({
+        "font.size": 7.0, "axes.labelsize": 7.0, "axes.titlesize": 7.5,
+        "xtick.labelsize": 6.5, "ytick.labelsize": 6.5, "legend.fontsize": 6.5,
+        "axes.linewidth": 0.6, "xtick.major.width": 0.6, "ytick.major.width": 0.6,
+        "lines.linewidth": 1.1, "lines.markersize": 2.6,
+    }):
+        fig, axes = plt.subplots(1, 4, figsize=(7.0, 1.75))
+        for ax, kw in zip(axes, panels):
+            _fwer_panel_axis(ax, **kw)
+        handles, labels = axes[0].get_legend_handles_labels()
+        ncol = 5
+        nrows = -(-len(labels) // ncol)
+        fig.tight_layout(rect=[0, 0.03 + 0.085 * nrows, 1, 1], w_pad=0.8)
+        fig.legend(handles, labels, loc="lower center", ncol=ncol, frameon=False,
+                   handlelength=1.3, columnspacing=1.0, handletextpad=0.4,
+                   borderaxespad=0.1, bbox_to_anchor=(0.5, 0.0))
+        fig.savefig(out_path, dpi=200, bbox_inches="tight", pad_inches=0.02)
+        plt.close(fig)
+    return out_path
+
+
+def save_multiarm_fwer_panels_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
+    """Compact 1x4 replacement for save_multiarm_fwer_vs_{n,k}_plot.
+
+    FWER and best-arm power, each against n and against k, in one row with a
+    single shared legend. This is the version the paper prints: the two
+    separate two-panel plots carried three copies of the same legend between
+    them and cost ~0.58 pages each; this costs ~0.20.
+
+    "none" (uncorrected) is excluded: it runs at FWER ~0.45 and compresses
+    every corrected method into an unreadable band -- the same reason the
+    vs_n/vs_k plots drop it (see their note above).
+    """
+    rows = [r for r in results if r.correction != "none"]
+    if not rows:
+        return out_path
+    methods = sorted({r.correction for r in rows})
+
+    def agg(xattr, cond, num, den):
+        xs = sorted({getattr(r, xattr) for r in rows})
+        series = {}
+        for m in methods:
+            ys, es = [], []
+            for x in xs:
+                sel = [r for r in rows
+                       if r.correction == m and getattr(r, xattr) == x and r.condition == cond]
+                tot = sum(getattr(r, den) for r in sel)
+                hit = sum(getattr(r, num) for r in sel)
+                pr = hit / tot if tot else float("nan")
+                ys.append(pr)
+                es.append(math.sqrt(max(pr * (1 - pr), 0.0) / tot) if tot else 0.0)
+            series[m] = (ys, es)
+        return xs, series
+
+    xs_n, s_n = agg("n", "null", "any_reject", "n_reps")
+    xk_n, sk_n = agg("k", "null", "any_reject", "n_reps")
+    xs_p, s_p = agg("n", "alt", "best_selected", "n_reps")
+    xk_p, sk_p = agg("k", "alt", "best_selected", "n_reps")
+    panels = [
+        dict(xs=xs_n, series=s_n, hline=alpha, band=(alpha / 2, alpha * 1.5),
+             ylabel="FWER (null)", xlabel="n (sample size)"),
+        dict(xs=xk_n, series=sk_n, hline=alpha, band=(alpha / 2, alpha * 1.5),
+             ylabel="FWER (null)", xlabel="k (arms)"),
+        dict(xs=xs_p, series=s_p, ylabel="Best-arm power", xlabel="n (sample size)"),
+        dict(xs=xk_p, series=sk_p, ylabel="Best-arm power", xlabel="k (arms)"),
+    ]
+    return _fwer_panels_figure(panels, methods, out_path)
+
+
+def save_simultaneous_ci_panels_plot(*, results: list[SimultaneousCIResult], alpha: float, out_path: str) -> str:
+    """Compact 1x4 replacement for save_simultaneous_ci_coverage_width_vs_{n,k}_plot."""
+    rows = [r for r in results if r.ci_method != "none" and r.condition == "alt"]
+    if not rows:
+        return out_path
+    methods = sorted({r.ci_method for r in rows})
+
+    def agg(xattr, kind):
+        xs = sorted({getattr(r, xattr) for r in rows})
+        series = {}
+        for m in methods:
+            ys, es = [], []
+            for x in xs:
+                sel = [r for r in rows if r.ci_method == m and getattr(r, xattr) == x]
+                tot = sum(r.n_reps for r in sel)
+                if kind == "cov":
+                    hit = sum(r.all_covered for r in sel)
+                    pr = hit / tot if tot else float("nan")
+                    ys.append(pr)
+                    es.append(math.sqrt(max(pr * (1 - pr), 0.0) / tot) if tot else 0.0)
+                else:
+                    ys.append(sum(r.total_width for r in sel) / tot if tot else float("nan"))
+                    es.append(0.0)
+            series[m] = (ys, es)
+        return xs, series
+
+    xs_c, s_c = agg("n", "cov")
+    xk_c, sk_c = agg("k", "cov")
+    xs_w, s_w = agg("n", "width")
+    xk_w, sk_w = agg("k", "width")
+    tgt = 1 - alpha
+    panels = [
+        dict(xs=xs_c, series=s_c, hline=tgt, band=(tgt - 0.025, tgt + 0.025),
+             ylabel="FW coverage", xlabel="n (sample size)"),
+        dict(xs=xk_c, series=sk_c, hline=tgt, band=(tgt - 0.025, tgt + 0.025),
+             ylabel="FW coverage", xlabel="k (arms)"),
+        dict(xs=xs_w, series=s_w, ylabel="Avg. width", xlabel="n (sample size)"),
+        dict(xs=xk_w, series=sk_w, ylabel="Avg. width", xlabel="k (arms)"),
+    ]
+    return _fwer_panels_figure(panels, methods, out_path)
 
 
 def save_multiarm_reliability_violin_plot(*, results: list[MultiArmResult], alpha: float, out_path: str) -> str:
@@ -13615,6 +13765,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if Path(vs_n_path).exists():
                     output_paths.append(vs_n_path)
                     print(f"Saved plot: {vs_n_path}")
+                # Compact 1x4 version -- this is the one the paper prints.
+                panels_path = save_multiarm_fwer_panels_plot(
+                    results=ma_results, alpha=args.alpha,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_fwer_panels.png"),
+                )
+                if Path(panels_path).exists():
+                    output_paths.append(panels_path)
+                    print(f"Saved plot: {panels_path}")
                 reliability_path = save_multiarm_reliability_violin_plot(
                     results=ma_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
                 )
@@ -13666,6 +13824,14 @@ def run(args: argparse.Namespace) -> CaseResult:
                 if Path(vs_n_path).exists():
                     output_paths.append(vs_n_path)
                     print(f"Saved plot: {vs_n_path}")
+                # Compact 1x4 version -- this is the one the paper prints.
+                sc_panels_path = save_simultaneous_ci_panels_plot(
+                    results=sci_results, alpha=args.alpha,
+                    out_path=str(Path(plots_dir) / f"{run_stem}_ci_panels.png"),
+                )
+                if Path(sc_panels_path).exists():
+                    output_paths.append(sc_panels_path)
+                    print(f"Saved plot: {sc_panels_path}")
                 reliability_path = save_simultaneous_ci_reliability_violin_plot(
                     results=sci_results, alpha=args.alpha, out_path=str(Path(plots_dir) / f"{run_stem}_reliability_violin.png"),
                 )
