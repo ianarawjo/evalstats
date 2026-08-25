@@ -1028,7 +1028,7 @@ def _analyze_single(
         # Single-sample marginal CIs use Wilson; pairwise uses the Bayesian model.
         pairwise_method = "bayes_binary"
         robustness_method = "wilson"
-    elif method in {"wilson", "newcombe", "tango", "mj_floor"}:
+    elif method in {"wilson", "newcombe", "tango", "mj_floor", "bonett_price"}:
         from .resampling import is_binary_scores
         if not is_binary_scores(run_scores):
             raise ValueError(
@@ -1036,7 +1036,7 @@ def _analyze_single(
                 "scores array contains non-binary values. Use is_binary_scores() "
                 "to check before calling, or choose a different method."
             )
-        if method in ("tango", "mj_floor"):
+        if method in ("tango", "mj_floor", "bonett_price"):
             pairwise_method = method
         else:
             # In analyze(), explicit frequentist binary methods route to:
@@ -1202,7 +1202,7 @@ def _analyze_multi_model(
 ) -> MultiModelBundle:
     from .resampling import is_binary_scores
 
-    fallback_binary_methods = {"wilson", "newcombe", "tango", "mj_floor"}
+    fallback_binary_methods = {"wilson", "newcombe", "tango", "mj_floor", "bonett_price"}
 
     def _effective_method(sub_result: BenchmarkResult) -> CompareMethod:
         """Fallback only for frequentist binary methods on auxiliary non-binary views."""

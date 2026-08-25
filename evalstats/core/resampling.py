@@ -535,7 +535,20 @@ def mj_floor_paired_ci_mean(
     values_b: np.ndarray,
     alpha: float,
 ) -> tuple[float, float]:
-    """Heuristic score CI using per-item run means for multi-run inputs.
+    """DO NOT USE for multi-run coverage. Kept for reference only.
+
+    Thresholding the run mean at 0.5 changes the estimand: it targets
+    E[1{mean_a >= 0.5}] - E[1{mean_b >= 0.5}], a majority-vote difference,
+    not the run-and-item-averaged difference E[a] - E[b] the other paired
+    methods estimate. Measured consequence on multi-run data: mean coverage
+    .843, MinCov 0.000, 1550 of 4536 cells below .90, and it gets WORSE with
+    more runs (.877 at R=2 down to .803 at R=20). The same pathology holds
+    for the Newcombe and Bonett-Price analogues, so it is the reduction that
+    is broken, not the interval. Use
+    :func:`bonett_price_paired_ci_multirun_cluster` for multi-run data.
+
+    Original description follows.
+Heuristic score CI using per-item run means for multi-run inputs.
 
     When ``values_a`` / ``values_b`` are 2-D arrays of shape ``(N, R)``,
     each item is first reduced to its run mean (shape ``(N,)``), then
@@ -567,6 +580,72 @@ def mj_floor_paired_ci_mean(
     if b.ndim == 2:
         b = np.mean(b, axis=1)
     return mj_floor_paired_ci(a, b, alpha)
+
+
+def bonett_price_paired_ci_flat(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Bonett-Price CI treating multi-run data as a single-run flat baseline.
+
+    The Bonett-Price counterpart of :func:`mj_floor_paired_ci_flat`, and the
+    honest single-run reference the multi-run variants have to beat: when
+    ``values_a`` / ``values_b`` are 2-D ``(N, R)`` arrays only the **first
+    run** (column 0) is used, i.e. exactly the data you would have had if
+    each input were run once. Flattening all ``N*R`` observations into one
+    long vector of "independent" pairs instead would inflate ``n`` to ``N*R``
+    while the real information stays at the item scale, and under-cover badly.
+
+    If 1-D arrays are passed the call is forwarded to
+    :func:`bonett_price_paired_ci` unchanged.
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = a[:, 0]
+    if b.ndim == 2:
+        b = b[:, 0]
+    return bonett_price_paired_ci(a, b, alpha)
+
+
+def bonett_price_paired_ci_mean(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Heuristic Bonett-Price CI using per-item run means for multi-run inputs.
+
+    The Bonett-Price counterpart of :func:`mj_floor_paired_ci_mean`: each item
+    is reduced to its run mean (shape ``(N,)``) and then thresholded at 0.5
+    inside :func:`bonett_price_paired_ci`, i.e. every item is scored by
+    majority vote across its runs.
+
+    Deliberately a pragmatic baseline, not a derivation. Two things are wrong
+    with it and both are worth stating, because they are the reason the
+    ``multirun`` variants below exist:
+
+    1. It changes the ESTIMAND. Thresholding the run means estimates
+       ``p(majority-vote A = 1) - p(majority-vote B = 1)``, not the
+       run-and-item-averaged ``p(A=1) - p(B=1)`` that the multi-run variants
+       (and the harness's ``true_diff``) target. Majority voting is a
+       different, less noisy system than the one being evaluated, so the two
+       estimands only coincide when the per-item run distributions are
+       symmetric about the threshold.
+    2. It discards the within-item run spread entirely, so a knife-edge item
+       (half its runs 1, half 0) is recorded with the same confidence as a
+       deterministic one.
+
+    If 1-D arrays are passed the call is forwarded to
+    :func:`bonett_price_paired_ci` unchanged.
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.ndim == 2:
+        a = np.mean(a, axis=1)
+    if b.ndim == 2:
+        b = np.mean(b, axis=1)
+    return bonett_price_paired_ci(a, b, alpha)
 
 
 def clopper_pearson_ci_1d(values: np.ndarray, alpha: float) -> tuple[float, float]:
@@ -2477,6 +2556,316 @@ def mj_floor_paired_ci_multirun_moments(
     lo = max(-1.0, float(center - radius))
     hi = min(1.0, float(center + radius))
     return (lo, hi)
+
+
+# ---------------------------------------------------------------------------
+# Multi-run Bonett-Price
+#
+# THE DERIVATION, once, so the three variants below can just cite it.
+#
+# Write D_i = A_i - B_i in {-1, 0, +1} for the single-run per-item difference.
+# Then sum_i D_i = n10 - n01 and sum_i D_i^2 = n10 + n01 (squaring a value in
+# {-1,0,1} is the same as taking its absolute value), so the published
+# Bonett & Price (2012) limits
+#
+#     p12 = (n10 + 1)/(n + 2),  p21 = (n01 + 1)/(n + 2)
+#     (p12 - p21) +/- z * sqrt[ (p12 + p21 - (p12 - p21)^2) / (n + 2) ]
+#
+# can be rewritten with no reference to the 2x2 table at all:
+#
+#     p12 - p21           = (sum_i D_i) / (n + 2)
+#     p12 + p21           = (sum_i D_i^2 + 2) / (n + 2)
+#     variance term       = mean(D^2) - mean(D)^2, both means over n + 2
+#
+# i.e. BONETT-PRICE IS THE PLAIN WALD INTERVAL ON THE MEAN OF D, COMPUTED ON
+# THE SAMPLE AUGMENTED BY TWO PSEUDO-ITEMS, ONE WITH D = +1 AND ONE WITH
+# D = -1 -- with the ddof=0 plug-in variance and the divisor n + 2 used
+# consistently for the mean, the variance and the standard error. (Verified
+# numerically against :func:`bonett_price_paired_ci` to 2e-16 over a grid of
+# n and alpha; see tests/test_bonett_price_multirun.py.) The Laplace
+# adjustment is the two pseudo-items: they cancel in the numerator of the
+# point estimate, shrinking it toward 0 by n/(n+2), and they contribute 2 to
+# the second moment, which is what keeps the variance term strictly positive
+# when no pairs disagree.
+#
+# That reading is what makes the multi-run generalisation obvious, and it
+# settles the question the "+1/+2" naturally raises -- whether the
+# pseudo-counts should be scaled by the number of runs R. They should NOT.
+# The pseudo-observations are ITEMS, not runs: two extra items, each of which
+# happens to be perfectly concordant across all R of its own runs (delta = +1
+# and -1, so within-item variance 0). Scaling them to R pseudo-runs
+# (equivalently, using pseudo-items with delta = +-1/R) makes the whole
+# regularisation vanish as R grows, so at zero observed discordance the
+# interval would collapse toward zero width -- exactly the degeneracy the
+# Laplace adjustment exists to prevent. Item-level heterogeneity is bounded
+# by N, not by N*R: more runs per item tell you nothing about items you never
+# sampled. That variant was implemented and measured, and it does fail this
+# way; the numbers are in tests/test_bonett_price_multirun.py
+# (``test_per_run_laplace_scaling_degenerates``), kept as a regression guard
+# so nobody re-derives it.
+#
+# So, for (N, R) data, work at the item scale throughout:
+#
+#     delta_i = mean_r (A_ir - B_ir)   in [-1, 1]   per-item mean difference
+#     u_i     = mean_r |A_ir - B_ir|   in [0, 1]    per-item discordance mass
+#     w_i     = u_i - delta_i^2        >= 0         per-item within-run variance
+#
+# augment with delta = +1 and delta = -1 (both with u = 1, hence w = 0), and
+# the three augmented moments are
+#
+#     delta~ = (sum_i delta_i) / (N + 2)
+#     m2~    = (sum_i delta_i^2 + 2) / (N + 2)
+#     V~     = m2~ - delta~^2          item-level total variance
+#     w~     = (sum_i w_i) / (N + 2)   mean within-item variance
+#
+# with the interval delta~ +/- z * sqrt(V~ / (N + 2)). At R = 1 every
+# delta_i is in {-1,0,1} so delta_i^2 = u_i, giving m2~ = p12 + p21 and
+# w_i = 0 -- every variant below reduces to :func:`bonett_price_paired_ci`
+# EXACTLY, not just asymptotically, and no special-casing of R == 1 is
+# needed anywhere.
+#
+# WHY NO EXPLICIT BETWEEN-RUN CORRELATION TERM. V~ is already the right
+# quantity. Items are the sampling unit and are iid; whatever correlation
+# the R runs of item i have with each other only affects Var(delta_i), and
+# Var(delta_i) is exactly what the item-level spread measures. Concretely,
+# under the usual one-way random-effects decomposition
+#
+#     Var(delta_i) = sigma_B^2 + sigma_W^2/R * (1 + (R-1)*rho)
+#
+# the design-effect factor is *inside* the quantity being estimated, so
+# estimating Var(delta_i) directly needs no rho at all. This is not a hand
+# wave: applying Kish's R_eff = R/(1 + (R-1)*rho) the way it is meant to be
+# applied -- pool all N*R runs for a run-level variance B~ = u~ - delta~^2,
+# estimate the run-level ICC rho = 1 - sigma_W^2/B~ with the UNBIASED within
+# estimate sigma_W^2 = R/(R-1) * w~, then inflate by the design effect --
+# gives B~ * (1 + (R-1)*rho) / R == V~ IDENTICALLY, to machine precision and
+# for every input, not merely in expectation. The design-effect correction
+# and the item-level variance are the same estimator written two ways. (Also
+# verified in tests/test_bonett_price_multirun.py.)
+#
+# So the three variants below differ ONLY in a floor applied to V~, mirroring
+# what mj_floor's three multi-run variants turn out to differ by (their
+# ``max(var - w/R', 0) + w/R'`` construction is algebraically
+# ``max(var, w/R')``):
+#
+#     cluster    V~                      no floor -- the derivation as-is
+#     moments    max(V~, w~/R)           floor at the within-item term alone
+#     effective  max(V~, w~/R_eff)       same, with Kish's R_eff <= R
+#
+# ---------------------------------------------------------------------------
+
+
+def _bp_item_moments(
+    values_a: np.ndarray, values_b: np.ndarray, fname: str
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-item ``(delta_i, u_i)`` from ``(n_items, n_runs)`` binary matrices.
+
+    ``delta_i`` is the per-item mean of ``A_ir - B_ir`` and ``u_i`` the
+    per-item mean of ``|A_ir - B_ir|`` (the discordance mass). Values are
+    thresholded at 0.5. See the derivation block above.
+    """
+    a = np.asarray(values_a)
+    b = np.asarray(values_b)
+    if a.shape != b.shape:
+        raise ValueError(f"{fname} expects arrays with equal shape (n_items, n_runs).")
+    if a.ndim != 2:
+        raise ValueError(f"{fname} expects 2-D arrays (n_items, n_runs).")
+    if a.shape[1] < 1:
+        # Caught explicitly: the per-item means below would be all-NaN and the
+        # w~/R floors would divide by zero, so an item with no runs at all
+        # would surface as a ZeroDivisionError from deep inside the variance
+        # rather than as the input error it is.
+        raise ValueError(f"{fname} expects at least one run per item.")
+    d = (a >= 0.5).astype(np.int8) - (b >= 0.5).astype(np.int8)
+    return np.mean(d, axis=1, dtype=float), np.mean(np.abs(d), axis=1, dtype=float)
+
+
+def _bonett_price_augmented_interval(
+    delta_i: np.ndarray, alpha: float, var_floor: float = 0.0
+) -> tuple[float, float]:
+    """Wald interval on ``mean(delta_i)`` over the ``+/-1``-augmented item sample.
+
+    The shared core of every Bonett-Price variant in this module, single-run
+    included: see the derivation block above for why the two pseudo-items are
+    the Laplace adjustment. ``var_floor`` is a lower bound on the augmented
+    item-level variance ``V~``, used by the ``moments`` and ``effective``
+    variants; leave it at 0 for the plain (``cluster``) interval.
+    """
+    n = int(np.asarray(delta_i).shape[0])
+    if n <= 0:
+        return (0.0, 0.0)
+    delta_i = np.asarray(delta_i, dtype=float)
+    n_aug = n + 2.0
+    delta_t = float(np.sum(delta_i)) / n_aug        # pseudo-items cancel: +1 - 1 = 0
+    m2_t = (float(np.sum(delta_i * delta_i)) + 2.0) / n_aug   # pseudo-items add 1 + 1
+    var_t = max(m2_t - delta_t * delta_t, float(var_floor), 0.0)
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    se = float(np.sqrt(var_t / n_aug))
+    return (
+        float(np.clip(delta_t - z * se, -1.0, 1.0)),
+        float(np.clip(delta_t + z * se, -1.0, 1.0)),
+    )
+
+
+def bonett_price_paired_ci_multirun_cluster(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Multi-run Bonett-Price CI, item-clustered -- the derivation with no floor.
+
+    The Bonett-Price counterpart of
+    :func:`mj_floor_paired_ci_multirun_cluster`, and the most defensible of
+    the three: it is the single-run interval's own construction carried over
+    unchanged, with the item as the unit of analysis and no extra modelling.
+
+        delta~ = (sum_i delta_i) / (N + 2)
+        V~     = (sum_i delta_i^2 + 2) / (N + 2) - delta~^2
+        CI     = delta~ +/- z * sqrt( V~ / (N + 2) )
+
+    where ``delta_i = mean_r (A_ir - B_ir)``. See the derivation block above
+    the private helpers in this module for the full argument, in particular
+    for why the ``+1/+2`` pseudo-counts stay on the ITEM scale and why no
+    between-run correlation term is needed (``V~`` already contains it, and
+    a correctly-specified Kish design effect provably reduces to ``V~``).
+
+    Reduces to :func:`bonett_price_paired_ci` EXACTLY at ``n_runs == 1``, by
+    construction rather than by a special case: at R = 1 each ``delta_i`` is
+    in ``{-1, 0, 1}``, so ``sum_i delta_i = n10 - n01`` and
+    ``sum_i delta_i^2 = n10 + n01``.
+
+    Parameters
+    ----------
+    values_a, values_b : np.ndarray
+        Arrays of shape ``(n_items, n_runs)``, thresholded at 0.5. Runs are
+        assumed paired across A and B.
+    alpha : float
+        Significance level (1 - confidence level).
+
+    Returns
+    -------
+    (ci_low, ci_high) : tuple[float, float]
+        CI on p(A=1) - p(B=1), clamped to [-1, 1].
+    """
+    delta_i, _ = _bp_item_moments(
+        values_a, values_b, "bonett_price_paired_ci_multirun_cluster"
+    )
+    return _bonett_price_augmented_interval(delta_i, alpha)
+
+
+def bonett_price_paired_ci_multirun_moments(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Multi-run Bonett-Price CI with the item-level variance floored at ``w~/R``.
+
+    The Bonett-Price counterpart of
+    :func:`mj_floor_paired_ci_multirun_moments`. Identical to
+    :func:`bonett_price_paired_ci_multirun_cluster` except that the augmented
+    item-level variance is floored at the within-item term on its own::
+
+        w~   = (sum_i (u_i - delta_i^2)) / (N + 2)
+        V~'  = max(V~, w~ / R)
+
+    Mirrors mj_floor's variant, whose ``max(var - w/R, 0) + w/R``
+    decomposition is algebraically the same ``max(var, w/R)`` floor.
+
+    HOW OFTEN THIS ACTUALLY CHANGES ANYTHING: almost never, and the reason
+    is worth recording. ``V~`` estimates ``sigma_B^2 + sigma_W^2/R``, so in
+    expectation it already exceeds the pure within-item term ``w~/R`` --
+    working through the moments, the floor condition
+    ``sum_i w_i > R * (sum_i delta_i^2 + 2 - (N+2)*delta~^2)`` cannot hold in
+    expectation under ANY generating process, because the two Laplace
+    pseudo-items contribute ``2R`` to the right-hand side on their own. So
+    the floor only fires on a sampling excursion big enough to clear that,
+    which needs ``N`` well above ``2R`` AND an item-level variance far below
+    its expectation. Measured: over the four multi-run scenarios in the
+    harness sweep it fired in 0 of 1100 cells, and even in the regime built
+    to favour it (pure run noise at p = 0.5, zero item heterogeneity, zero
+    effect, N/R up to 50) it fired in 0.1%-0.35% of draws and not at all
+    once N reached 500. It fires reliably only on the adversarial
+    construction where every item's runs split exactly half +1 / half -1, so
+    every ``delta_i`` is 0 while every ``u_i`` is 1 (there, at N=50, R=4, it
+    widens 0.107 to 0.267).
+
+    In other words the Laplace pseudo-items already do the job this floor
+    was invented for in the mj_floor family, which has no such regulariser.
+    Kept anyway as the like-for-like counterpart of
+    :func:`mj_floor_paired_ci_multirun_moments` for the harness sweep, and
+    because the pathology it guards against is real; do not expect it to
+    separate from :func:`bonett_price_paired_ci_multirun_cluster` on eval
+    data.
+
+    Reduces to :func:`bonett_price_paired_ci` exactly at ``n_runs == 1``:
+    there ``delta_i^2 = u_i`` for every item, so ``w~ = 0`` and the floor is
+    inactive.
+    """
+    delta_i, u_i = _bp_item_moments(
+        values_a, values_b, "bonett_price_paired_ci_multirun_moments"
+    )
+    n_runs = int(np.asarray(values_a).shape[1])
+    n_aug = float(delta_i.shape[0]) + 2.0
+    w_t = float(np.sum(np.maximum(u_i - delta_i * delta_i, 0.0))) / n_aug
+    return _bonett_price_augmented_interval(delta_i, alpha, var_floor=w_t / n_runs)
+
+
+def bonett_price_paired_ci_multirun_effective(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Multi-run Bonett-Price CI with an effective-number-of-runs variance floor.
+
+    The Bonett-Price counterpart of
+    :func:`mj_floor_paired_ci_multirun_effective` (``mj_floor_er``, the
+    method ``pairwise_differences(method='mj_floor')`` dispatches to for
+    multi-run binary data), built to be swept head-to-head against it.
+    Identical to :func:`bonett_price_paired_ci_multirun_moments` except that
+    the within-item floor is computed at Kish's effective number of runs
+    rather than at R::
+
+        rho   = clip(1 - w~ / (V~ * R), 0, 1)
+        R_eff = R / (1 + (R - 1) * rho)
+        V~'   = max(V~, w~ / R_eff)
+
+    Since ``R_eff <= R`` this floor is at least as high as the ``moments``
+    one, so the ordering of the three variants' widths is always
+    ``cluster <= moments <= effective``.
+
+    A caveat that belongs in the docstring rather than a footnote. This
+    mirrors mj_floor_er's ``rho``, which is NOT the between-run correlation
+    Kish's formula is written for: it is the share of the item-level variance
+    attributable to between-item signal (an ICC on the item scale). Feeding
+    an item-scale ICC into a run-scale design effect is a heuristic. The
+    principled reading of Kish's formula -- pool the N*R runs, estimate the
+    run-level ICC with the unbiased within-item variance, inflate by
+    ``1 + (R-1)*rho`` -- provably returns ``V~`` itself, i.e. exactly
+    :func:`bonett_price_paired_ci_multirun_cluster`, so it cannot be what
+    this variant is doing. What the heuristic buys is extra conservatism at
+    small N in a regime where the floor bites (roughly when
+    ``w~ * (R - 2) / R > sigma_B^2``, so only for R >= 3 and near-zero
+    between-item variance); whether that is worth its width is an empirical
+    question for the harness, not a theoretical one.
+
+    Reduces to :func:`bonett_price_paired_ci` exactly at ``n_runs == 1``,
+    where ``w~ = 0`` makes the floor inactive regardless of ``rho``.
+    """
+    delta_i, u_i = _bp_item_moments(
+        values_a, values_b, "bonett_price_paired_ci_multirun_effective"
+    )
+    n_runs = int(np.asarray(values_a).shape[1])
+    n = int(delta_i.shape[0])
+    if n <= 0:
+        return (0.0, 0.0)
+    n_aug = float(n) + 2.0
+    delta_t = float(np.sum(delta_i)) / n_aug
+    var_t = max((float(np.sum(delta_i * delta_i)) + 2.0) / n_aug - delta_t * delta_t, 0.0)
+    w_t = float(np.sum(np.maximum(u_i - delta_i * delta_i, 0.0))) / n_aug
+
+    rho = min(1.0, max(0.0, 1.0 - w_t / (var_t * n_runs + 1e-12)))
+    r_eff = n_runs / (1.0 + (n_runs - 1.0) * rho)
+    return _bonett_price_augmented_interval(delta_i, alpha, var_floor=w_t / r_eff)
 
 
 def resolve_resampling_method(

@@ -153,7 +153,7 @@ with warnings.catch_warnings():
     )
     from evalstats.core.stats_utils import correct_pvalues, rescaled_ci
     from evalstats.core.resampling import (
-        bayes_bootstrap_means_1d, mj_floor_paired_ci_mean, mj_floor_paired_ci_from_diffs, logit_t_ci_1d,
+        bayes_bootstrap_means_1d, mj_floor_paired_ci_from_diffs, logit_t_ci_1d,
     )
     from evalstats.tests import (
         _ppi_two_sample,

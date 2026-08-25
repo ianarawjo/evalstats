@@ -45,6 +45,9 @@ from .resampling import (
     tango_scc_paired_ci,
     mj_floor_paired_ci_from_diffs,
     mj_floor_paired_ci_multirun_effective,
+    mj_floor_paired_ci_multirun_cluster,
+    bonett_price_paired_ci,
+    bonett_price_paired_ci_multirun_cluster,
     t_interval_ci_1d,
     logit_t_ci_1d,
     nig_ci_1d,
@@ -745,9 +748,13 @@ def pairwise_differences(
         alpha_val = 1.0 - ci
 
         if multirun:
-            ci_low, ci_high = mj_floor_paired_ci_multirun_effective(values_a_full, values_b_full, alpha_val)
+            # Cluster (plain item-level variance), NOT the effective-runs variant:
+            # its Kish R_eff term cancels exactly when the max() does not clamp and
+            # inflates variance up to 2.8x when it does, so it was inert in the
+            # high-ICC regime real eval data occupies and conservative elsewhere.
+            ci_low, ci_high = mj_floor_paired_ci_multirun_cluster(values_a_full, values_b_full, alpha_val)
             if multi_ci:
-                mci = {_a: mj_floor_paired_ci_multirun_effective(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
+                mci = {_a: mj_floor_paired_ci_multirun_cluster(values_a_full, values_b_full, _a) for _a in GRADIENT_CI_ALPHAS}
             else:
                 mci = None
         else:
@@ -761,7 +768,54 @@ def pairwise_differences(
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_name="mj_floor effective-run" if multirun else "mj_floor",
+            test_name="mj_floor cluster" if multirun else "mj_floor",
+            values_a=values_a,
+            values_b=values_b,
+            multi_ci_dict=mci,
+        )
+
+    # ------------------------------------------------------------------ #
+    # Bonett-Price path for paired binary (0/1) data                       #
+    # ------------------------------------------------------------------ #
+    if method == "bonett_price":
+        multirun = scores.ndim == 3 and scores.shape[2] >= 3
+        _flat_check = scores.mean(axis=2) if scores.ndim == 3 else scores
+        if not is_binary_scores(scores if multirun else _flat_check):
+            raise ValueError(
+                "method='bonett_price' requires binary (0/1) data, but the scores "
+                "array contains non-binary values. Use is_binary_scores() to check "
+                "before calling, or choose a different method."
+            )
+        if multirun:
+            values_a_full = scores[idx_a]
+            values_b_full = scores[idx_b]
+            values_a = values_a_full[:, 0]
+            values_b = values_b_full[:, 0]
+        else:
+            flat = scores.mean(axis=2) if scores.ndim == 3 else scores
+            values_a = flat[idx_a]
+            values_b = flat[idx_b]
+        diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
+        alpha_val = 1.0 - ci
+        if multirun:
+            ci_low, ci_high = bonett_price_paired_ci_multirun_cluster(
+                values_a_full, values_b_full, alpha_val
+            )
+            mci = ({_a: bonett_price_paired_ci_multirun_cluster(values_a_full, values_b_full, _a)
+                    for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
+        else:
+            ci_low, ci_high = bonett_price_paired_ci(values_a, values_b, alpha_val)
+            mci = ({_a: bonett_price_paired_ci(values_a, values_b, _a)
+                    for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
+        p_value = _mcnemar_midp_p(values_a, values_b)
+        return _build_result(
+            diffs=diffs,
+            point_d=point_d,
+            std_d=std_d,
+            ci_low=ci_low,
+            ci_high=ci_high,
+            p_value=p_value,
+            test_name="bonett_price cluster" if multirun else "bonett_price",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,

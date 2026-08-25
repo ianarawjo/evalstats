@@ -285,12 +285,54 @@ PAIR_DIFF_NESTED_METHODS = [BOOTSTRAP_DIFF_NESTED, BAYES_DIFF_NESTED, SMOOTH_DIF
 MJ_FLOOR_FLAT = Method("mj_floor_flat", "#e7298a")
 MJ_FLOOR_MEAN = Method("mj_floor_mean", "#8c564b")
 NEWCOMBE_FLAT = Method("newcombe_flat", "#66a61e")
-BINARY_PAIR_FLAT_METHODS = [MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP]
+#: Bonett-Price on run 0 only -- the single-run reference the multi-run
+#: variants have to beat, and the direct counterpart of MJ_FLOOR_FLAT.
+#: Muted olive, deliberately in the same family as BONETT_PRICE's #556b2f
+#: (deltaE 26, so still distinguishable) since it IS that method, on one run.
+BONETT_PRICE_FLAT = Method("bonett_price_flat", "#a0a871")
+BINARY_PAIR_FLAT_METHODS = [
+    MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BONETT_PRICE_FLAT,
+    BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
+]
 
-MJ_FLOOR_ER = Method("mj_floor_er", "#a6761d")
-MJ_FLOOR_MMNT = Method("mj_floor_mmnt", "#000080")  # navy -- #1b9e77 was an exact
-#: collision with bootstrap_diff_nested, which shares every nested binary plot with it.
-BINARY_PAIR_NESTED_METHODS = [MJ_FLOOR_ER, MJ_FLOOR_MMNT]
+#: RETIRED 2026-08-25. mj_floor_er's Kish effective-runs term cancels exactly
+#: when its max() does not clamp and inflates variance up to 2.8x when it
+#: does, making it inert in the high-ICC regime real eval data occupies and
+#: conservative elsewhere; mj_floor_mmnt is algebraically the same interval as
+#: the cluster variant whenever its floor does not clip. Neither is swept any
+#: more. MJ_FLOOR_CLUSTER is retained as the one multi-run mj_floor comparator:
+#: plain item-level variance, no R_eff, nothing to go wrong in the variance.
+#: NOTE it still carries the family's centre shrinkage d_hat/(1 + z^2/n), which
+#: uses the ITEM count only and is therefore untouched by R -- so it inherits
+#: the same lopsided-scenario coverage tail. It is a comparator, not a fallback.
+MJ_FLOOR_CLUSTER = Method("mj_floor_cluster", "#a6761d")
+
+# Multi-run Bonett-Price (evalstats.core.resampling, added 2026-08-25 so the
+# single-run winner has a multi-run entry to run against MJ_FLOOR_ER). All
+# three are one estimator -- a Wald interval on the per-item mean difference
+# over the sample augmented by two Laplace pseudo-items at delta = +1 and -1
+# -- separated only by the floor they put on the item-level variance, so
+# their widths always order CLUSTER <= MMNT <= ER. Each reduces EXACTLY to
+# BONETT_PRICE at runs == 1. See the derivation block above
+# _bp_item_moments in evalstats/core/resampling.py.
+#: No floor: the single-run construction carried over unchanged, with the
+#: item as the unit of analysis. The most principled of the three -- the
+#: item-level variance already absorbs between-run correlation, and a
+#: correctly-specified Kish design effect provably reduces to it.
+BONETT_PRICE_CLUSTER = Method("bonett_price_cluster", "#3585f7")
+#: Floors the item-level variance at w~/R_eff with mj_floor_er's own
+#: heuristic rho, purely so there is a like-for-like opponent for
+#: MJ_FLOOR_ER. Measured to be a straight loss for Bonett-Price: same or
+#: worse coverage, up to 50% wider, and it costs power.
+BONETT_PRICE_ER = Method("bonett_price_er", "#43b6cc")
+#: Floors at w~/R, mirroring MJ_FLOOR_MMNT. Expected to plot exactly on top
+#: of BONETT_PRICE_CLUSTER: the Laplace pseudo-items already dominate this
+#: floor, so it fired in 0 of 1100 measured cells.
+BONETT_PRICE_MMNT = Method("bonett_price_mmnt", "#da95b1")
+BINARY_PAIR_NESTED_METHODS = [
+    MJ_FLOOR_CLUSTER,
+    BONETT_PRICE_CLUSTER, BONETT_PRICE_ER, BONETT_PRICE_MMNT,
+]
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- raw pairwise p-value/rejection procedures (non-PPI
@@ -563,7 +605,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     WALD, CLOPPER_PEARSON, BAYES_SINGLE, BAYES_PAIR_INDEP, BAYES_PAIR_PAIRED, WALD_PAIR_INDEP,
 ] + CONTINUOUS_EXTRA_METHODS + [LOGIT_T_2ND] + DITHER_EXTRA_METHODS + NESTED_METHODS + BINARY_FLAT_METHODS + BINARY_NESTED_METHODS + (
     PAIR_DIFF_NESTED_METHODS
-    + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT] + BINARY_PAIR_NESTED_METHODS
+    + [MJ_FLOOR_FLAT, NEWCOMBE_FLAT, BONETT_PRICE_FLAT] + BINARY_PAIR_NESTED_METHODS
     + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE]
 ) + [
     MCNEMAR, MCNEMAR_MIDP, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
@@ -587,5 +629,21 @@ def get_method_color(name: str) -> str:
 
 
 def order_present_methods(present_names: set[str]) -> list[Method]:
-    """Filter REPORT_METHOD_ORDER down to methods actually present, preserving canonical order."""
+    """Filter REPORT_METHOD_ORDER down to methods actually present, preserving canonical order.
+
+    Raises on a method that was computed but never registered in
+    REPORT_METHOD_ORDER. Previously such a method was silently dropped, so it
+    would burn simulation time and then produce zero rows in every table and
+    plot with no diagnostic -- a failure that looks like "the sweep skipped my
+    method" rather than "the registry is missing an entry".
+    """
+    known = {m.name for m in REPORT_METHOD_ORDER}
+    unregistered = sorted(present_names - known)
+    if unregistered:
+        raise KeyError(
+            f"methods present in results but absent from REPORT_METHOD_ORDER: "
+            f"{unregistered}. Add them to REPORT_METHOD_ORDER in "
+            f"simulations/harness/methods.py, or they will not appear in any "
+            f"table or plot."
+        )
     return [m for m in REPORT_METHOD_ORDER if m.name in present_names]

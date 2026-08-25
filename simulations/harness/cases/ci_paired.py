@@ -91,9 +91,13 @@ with warnings.catch_warnings():
         mj_unfloored_paired_ci,
         newcombe_mover_paired_ci,
         bonett_price_paired_ci,
+        bonett_price_paired_ci_flat,
+        bonett_price_paired_ci_multirun_cluster,
+        bonett_price_paired_ci_multirun_effective,
+        bonett_price_paired_ci_multirun_moments,
         mj_floor_paired_ci_flat,
-        mj_floor_paired_ci_mean,
         mj_floor_paired_ci_multirun_effective,
+        mj_floor_paired_ci_multirun_cluster,
         mj_floor_paired_ci_multirun_moments,
         bayes_paired_diff_ci,
     )
@@ -140,9 +144,12 @@ from ..methods import (
     BINARY_PAIR_FLAT_METHODS,
     MJ_FLOOR_FLAT,
     NEWCOMBE_FLAT,
+    BONETT_PRICE_FLAT,
     BINARY_PAIR_NESTED_METHODS,
-    MJ_FLOOR_ER,
-    MJ_FLOOR_MMNT,
+    MJ_FLOOR_CLUSTER,
+    BONETT_PRICE_CLUSTER,
+    BONETT_PRICE_ER,
+    BONETT_PRICE_MMNT,
     get_method_color,
     order_present_methods,
 )
@@ -1096,6 +1103,17 @@ def _run_nested_pairwise_cell(
                 total_t_sq[NEWCOMBE_FLAT] += _el * _el
                 _record(NEWCOMBE_FLAT, ci_low, ci_high)
 
+            if _want(BONETT_PRICE_FLAT.name):
+                _t0 = time.perf_counter()
+                try:
+                    ci_low, ci_high = bonett_price_paired_ci_flat(a, b, alpha)
+                except Exception:
+                    ci_low = ci_high = float(np.mean(a0 - b0))
+                _el = time.perf_counter() - _t0
+                total_t[BONETT_PRICE_FLAT] += _el
+                total_t_sq[BONETT_PRICE_FLAT] += _el * _el
+                _record(BONETT_PRICE_FLAT, ci_low, ci_high)
+
             if _want(BAYES_PAIR_INDEP.name):
                 _t0 = time.perf_counter()
                 try:
@@ -1130,8 +1148,10 @@ def _run_nested_pairwise_cell(
                 _record(WALD_PAIR_INDEP, ci_low, ci_high)
 
             for method, fn in [
-                (MJ_FLOOR_ER, mj_floor_paired_ci_multirun_effective),
-                (MJ_FLOOR_MMNT, mj_floor_paired_ci_multirun_moments),
+                (MJ_FLOOR_CLUSTER, mj_floor_paired_ci_multirun_cluster),
+                (BONETT_PRICE_CLUSTER, bonett_price_paired_ci_multirun_cluster),
+                (BONETT_PRICE_ER, bonett_price_paired_ci_multirun_effective),
+                (BONETT_PRICE_MMNT, bonett_price_paired_ci_multirun_moments),
             ]:
                 if not _want(method.name):
                     continue

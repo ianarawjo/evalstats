@@ -305,6 +305,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "newcombe",
             "tango",
             "mj_floor",
+            "bonett_price",
         ],
         default="auto",
         metavar="METHOD",

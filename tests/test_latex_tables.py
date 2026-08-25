@@ -303,7 +303,7 @@ def test_co_plotted_methods_have_distinct_colors():
 
     Each group below is a set the ci_paired case plots together. A shared
     colour makes two lines indistinguishable in the paper's figures, which
-    is how bootstrap_diff_nested and mj_floor_mmnt silently collided.
+    is how bootstrap_diff_nested and the multi-run mj_floor variant silently collided.
     """
     import collections
     from simulations.harness import methods as M
@@ -324,7 +324,9 @@ def test_co_plotted_methods_have_distinct_colors():
             "bootstrap", "bca", "bayes_bootstrap", "smooth_bootstrap", "bootstrap_t",
             "t_interval", "bayes_indep_comp", "bayes_paired_comp", "wald_indep",
             "bootstrap_diff_nested", "bayes_diff_nested", "smooth_diff_nested",
-            "mj_floor_flat", "newcombe_flat", "mj_floor_er", "mj_floor_mmnt",
+            "mj_floor_flat", "newcombe_flat", "mj_floor_cluster",
+            "bonett_price_flat", "bonett_price_cluster", "bonett_price_er",
+            "bonett_price_mmnt",
         ],
     }
     for group, names in groups.items():
