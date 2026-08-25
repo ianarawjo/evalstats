@@ -325,6 +325,7 @@ def test_co_plotted_methods_have_distinct_colors():
             "t_interval", "bayes_indep_comp", "bayes_paired_comp", "wald_indep",
             "bootstrap_diff_nested", "bayes_diff_nested", "smooth_diff_nested",
             "mj_floor_flat", "newcombe_flat", "mj_floor_cluster",
+            "clustered_score", "modified_obuchowski",
             "bonett_price_flat", "bonett_price_cluster", "bonett_price_er",
             "bonett_price_mmnt",
         ],

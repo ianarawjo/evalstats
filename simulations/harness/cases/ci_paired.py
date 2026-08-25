@@ -98,6 +98,8 @@ with warnings.catch_warnings():
         mj_floor_paired_ci_flat,
         mj_floor_paired_ci_multirun_effective,
         mj_floor_paired_ci_multirun_cluster,
+        clustered_score_paired_ci,
+        modified_obuchowski_paired_ci,
         mj_floor_paired_ci_multirun_moments,
         bayes_paired_diff_ci,
     )
@@ -147,6 +149,8 @@ from ..methods import (
     BONETT_PRICE_FLAT,
     BINARY_PAIR_NESTED_METHODS,
     MJ_FLOOR_CLUSTER,
+    CLUSTERED_SCORE,
+    MODIFIED_OBUCHOWSKI,
     BONETT_PRICE_CLUSTER,
     BONETT_PRICE_ER,
     BONETT_PRICE_MMNT,
@@ -1149,6 +1153,8 @@ def _run_nested_pairwise_cell(
 
             for method, fn in [
                 (MJ_FLOOR_CLUSTER, mj_floor_paired_ci_multirun_cluster),
+                (CLUSTERED_SCORE, clustered_score_paired_ci),
+                (MODIFIED_OBUCHOWSKI, modified_obuchowski_paired_ci),
                 (BONETT_PRICE_CLUSTER, bonett_price_paired_ci_multirun_cluster),
                 (BONETT_PRICE_ER, bonett_price_paired_ci_multirun_effective),
                 (BONETT_PRICE_MMNT, bonett_price_paired_ci_multirun_moments),

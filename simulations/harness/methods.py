@@ -329,9 +329,21 @@ BONETT_PRICE_ER = Method("bonett_price_er", "#43b6cc")
 #: of BONETT_PRICE_CLUSTER: the Laplace pseudo-items already dominate this
 #: floor, so it fired in 0 of 1100 measured cells.
 BONETT_PRICE_MMNT = Method("bonett_price_mmnt", "#da95b1")
+#: Yang, Sun & Hardin (2012) X^2_Score: Tango's score statistic with the
+#: Eliasziw-Donner variance inflation, inverted through the same quartic as the
+#: unclustered case. THE published competitor for clustered matched-pair CIs --
+#: reproduces their worked example exactly and reduces to tango_scc(c=0) when
+#: there is no clustering.
+CLUSTERED_SCORE = Method("clustered_score", "#4a148c")
+#: Yang et al. (2010) modified Obuchowski: cluster-level, estimates no ICC at
+#: all. Yang et al. (2012) prefer it among the assumption-free alternatives on
+#: power grounds. Its X^2 statistic reproduces the reference R implementation
+#: (clust.bin.pair) exactly.
+MODIFIED_OBUCHOWSKI = Method("modified_obuchowski", "#004d40")
 BINARY_PAIR_NESTED_METHODS = [
     MJ_FLOOR_CLUSTER,
     BONETT_PRICE_CLUSTER, BONETT_PRICE_ER, BONETT_PRICE_MMNT,
+    CLUSTERED_SCORE, MODIFIED_OBUCHOWSKI,
 ]
 
 # ---------------------------------------------------------------------------

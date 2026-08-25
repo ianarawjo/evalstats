@@ -1967,6 +1967,154 @@ def newcombe_mover_paired_ci(
     )
 
 
+def _clustered_paired_cells(values_a, values_b, fname):
+    """Per-item 2x2 cell counts (a_k, b_k, c_k, d_k) for (n_items, n_runs) data.
+
+    Maps the clustered matched-pair layout of Yang, Sun & Hardin (2012) onto an
+    eval sweep: the ITEM is the cluster and each RUN is a unit within it, so
+    cluster sizes are equal (n_k = R for every k). That equality matters --
+    Eliasziw & Donner's n_c and Yang's differ for unequal clusters but both
+    collapse to exactly R here, so the estimator is unambiguous for our design.
+    """
+    va = np.asarray(values_a)
+    vb = np.asarray(values_b)
+    if va.shape != vb.shape:
+        raise ValueError(f"{fname} expects arrays with equal shape (n_items, n_runs).")
+    if va.ndim != 2:
+        raise ValueError(f"{fname} expects 2-D arrays (n_items, n_runs).")
+    a_bin = (va >= 0.5).astype(int)
+    b_bin = (vb >= 0.5).astype(int)
+    a_k = np.sum((a_bin == 1) & (b_bin == 1), axis=1).astype(float)
+    b_k = np.sum((a_bin == 1) & (b_bin == 0), axis=1).astype(float)
+    c_k = np.sum((a_bin == 0) & (b_bin == 1), axis=1).astype(float)
+    d_k = np.sum((a_bin == 0) & (b_bin == 0), axis=1).astype(float)
+    return a_k, b_k, c_k, d_k
+
+
+def _eliasziw_inflation_factor(a_k, b_k, c_k, d_k):
+    """Variance inflation factor 1 + (n_c - 1) * rho_hat.
+
+    Eliasziw & Donner (1991), as presented in Yang, Sun & Hardin (2012) sec 2.1:
+    rho_tilde comes from an ANOVA decomposition into between- and within-cluster
+    mean squares, then rho_hat rescales it using the discordant probabilities.
+    With equal cluster sizes n_c = R exactly.
+
+    Returns 1.0 (no inflation) when the estimate is degenerate, following the
+    paper's Remark 1: if rho falls outside [-1, 1] or cannot be computed
+    because only one type of discordant pair is present, the factor is set to 1.
+    """
+    n_k = a_k + b_k + c_k + d_k
+    K = len(n_k)
+    N = float(n_k.sum())
+    if K < 2 or N <= 0:
+        return 1.0
+    n_bar = N / K
+    n_c = float((n_k ** 2).sum() / N)
+    p = np.array([a_k.sum(), b_k.sum(), c_k.sum(), d_k.sum()], dtype=float) / N
+    cells = np.stack([a_k, b_k, c_k, d_k], axis=1)
+    expect = np.outer(n_k, p)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        bms = float((((cells - expect) ** 2).sum(axis=1) / n_k).sum() / K)
+        wms_num = (cells * (n_k[:, None] - cells)).sum(axis=1) / n_k
+    if n_bar <= 1.0:
+        return 1.0
+    wms = float(wms_num.sum() / (K * (n_bar - 1.0)))
+    n_0 = n_bar - float(((n_k - n_bar) ** 2).sum()) / (K * (K - 1) * n_bar)
+    denom = bms + (n_0 - 1.0) * wms
+    if not np.isfinite(denom) or denom == 0.0:
+        return 1.0
+    rho_tilde = (bms - wms) / denom
+    if not np.isfinite(rho_tilde) or rho_tilde <= 0.0:
+        return 1.0
+    q = (1.0 - rho_tilde) / rho_tilde
+    rho_hat = 1.0 / (1.0 + p[1] * q + p[2] * q)
+    if not np.isfinite(rho_hat) or not (-1.0 <= rho_hat <= 1.0):
+        return 1.0
+    factor = 1.0 + (n_c - 1.0) * rho_hat
+    return float(factor) if np.isfinite(factor) and factor > 0 else 1.0
+
+
+def clustered_score_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Yang, Sun & Hardin (2012) score CI for clustered matched-pair binary data.
+
+    Their X^2_Score: Tango's score statistic with the variance multiplied by the
+    Eliasziw-Donner inflation factor, inverted by solving the same quartic used
+    for the unclustered case. Concretely it is :func:`tango_scc_paired_ci` with
+    ``z^2`` replaced by ``z^2 * (1 + (n_c - 1) * rho_hat)``, which is why no new
+    solver is needed.
+
+    Validated against Yang et al.'s published worked example (their Table II,
+    PET/SPECT data): reproduces the reported CI (-0.03829, 0.29140) exactly, and
+    reduces exactly to ``tango_scc_paired_ci(..., c=0)`` when the inflation
+    factor is 1.
+
+    Unlike our earlier effective-runs correction, the design effect here
+    multiplies a variance built from POOLED run-level counts, which genuinely
+    understates uncertainty under clustering -- the level at which the
+    correction is meant to act.
+    """
+    a_k, b_k, c_k, d_k = _clustered_paired_cells(
+        values_a, values_b, "clustered_score_paired_ci"
+    )
+    n_total = float((a_k + b_k + c_k + d_k).sum())
+    if n_total <= 0:
+        return (0.0, 0.0)
+    z2 = float(stats.norm.ppf(1.0 - alpha / 2.0)) ** 2
+    z2_eff = z2 * _eliasziw_inflation_factor(a_k, b_k, c_k, d_k)
+    b_tot, c_tot = float(b_k.sum()), float(c_k.sum())
+    upper = _tango_scc_real_roots_in_range(
+        _tango_scc_quartic_coeffs(b_tot, c_tot, n_total, z2_eff, 0.0)
+    )
+    d_hat = (b_tot - c_tot) / n_total
+    hi = float(upper[-1]) if len(upper) else d_hat
+    lo = float(upper[0]) if len(upper) else d_hat
+    lo, hi = (max(-1.0, min(lo, hi)), min(1.0, max(lo, hi)))
+    if c_tot == 0.0 and b_tot == n_total:
+        hi = 1.0
+    elif b_tot == 0.0 and c_tot == n_total:
+        lo = -1.0
+    return (lo, hi)
+
+
+def modified_obuchowski_paired_ci(
+    values_a: np.ndarray, values_b: np.ndarray, alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Yang et al. (2010) modified-Obuchowski CI for clustered matched-pair data.
+
+    As given in Yang, Sun & Hardin (2012) sec 2.4::
+
+        (1/N) sum(b_k - c_k)  +/-  z * (1/N) * sqrt(
+            K / (2 (K-1)) * sum[ ((b_k-c_k) - mean_k(b-c))^2
+                               + ((b_k-c_k) - (n_k/N) sum(b-c))^2 ] )
+
+    Cluster-level and assumption-free about the within-cluster correlation
+    structure: no ICC is estimated at all. Yang et al. (2012) recommend this
+    over Obuchowski's and Durkalski's variants on power grounds for larger
+    numbers of clusters. The underlying X^2_MO statistic in this module's
+    tests reproduces the reference R implementation (clust.bin.pair) exactly.
+    """
+    a_k, b_k, c_k, d_k = _clustered_paired_cells(
+        values_a, values_b, "modified_obuchowski_paired_ci"
+    )
+    n_k = a_k + b_k + c_k + d_k
+    K = len(n_k)
+    N = float(n_k.sum())
+    if N <= 0:
+        return (0.0, 0.0)
+    s_k = b_k - c_k
+    s_tot = float(s_k.sum())
+    d_hat = s_tot / N
+    if K < 2:
+        return (max(-1.0, d_hat), min(1.0, d_hat))
+    z = float(stats.norm.ppf(1.0 - alpha / 2.0))
+    term = ((s_k - s_tot / K) ** 2 + (s_k - (n_k / N) * s_tot) ** 2).sum()
+    var = (K / (2.0 * (K - 1.0))) * float(term)
+    radius = z * np.sqrt(max(var, 0.0)) / N
+    return (max(-1.0, d_hat - radius), min(1.0, d_hat + radius))
+
+
 def _mj_discordance_floor(discordance_rate: float, floor: float = 0.25) -> float:
     """Floored discordance term for the May & Johnson score interval.
 
