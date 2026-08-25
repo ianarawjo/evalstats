@@ -647,9 +647,22 @@ def _score_bundle(bundle, true_means: np.ndarray, k: int, alpha: float, is_null:
     )
 
 
+#: compare() kwargs for the rank-based pathway the PAPER reports: Friedman
+#: omnibus, then Wilcoxon signed-rank pairwise (already ``pairwise_test="auto"``'s
+#: pick for any k), then Shaffer as the FWER post-hoc. compare()'s own default
+#: resolves ``correction="auto"`` to Romano-Wolf, which is the better method and
+#: stays the default here -- but it is NOT the pathway the paper validates and
+#: reports, so a reviewer cannot check the reported path against the oracle and
+#: human-subset arms without this. Opt in with --classical-rank-path.
+#:
+#: Applied to EVERY arm (PPI, oracle, human-subset) or the comparison would be
+#: apples-to-oranges: the reference arms would still be Romano-Wolf.
+CLASSICAL_RANK_KWARGS = {"omnibus": True, "correction": "shaffer"}
+
+
 def _run_truth_only_compare(
     scores: np.ndarray, rng: np.random.Generator, score_range, n_bootstrap: int,
-    es_eval_type: Optional[str] = None,
+    es_eval_type: Optional[str] = None, classical_rank: bool = False,
 ):
     """Run compare() directly on TRUTH values as the score (no judge noise,
     no alignment= needed -- there's no judge bias to correct when every
@@ -665,6 +678,8 @@ def _run_truth_only_compare(
     df = _build_dataframe(scores, None)
     evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
     kwargs = {"n_bootstrap": n_bootstrap}
+    if classical_rank:
+        kwargs.update(CLASSICAL_RANK_KWARGS)
     if score_range is not None:
         kwargs["score_range"] = score_range
     if es_eval_type is not None:
@@ -687,6 +702,7 @@ def _run_cell(
     seed,
     n_bootstrap: int = DEFAULT_BOOTSTRAP_N,
     reference_estimator_k: Optional[int] = REFERENCE_ESTIMATOR_K,
+    classical_rank: bool = False,
 ) -> CompareE2EResult:
     """Run all reps for one cell, aggregating coverage/Type-I/power counts.
 
@@ -777,6 +793,8 @@ def _run_cell(
                     warnings.simplefilter("ignore")
                     ar = judge_alignment(evaldata, llm_metric="score", human_groundtruth="human_score")
                     kwargs["alignment"] = {"score": ar}
+            if classical_rank:
+                kwargs.update(CLASSICAL_RANK_KWARGS)
             if score_range is not None:
                 kwargs["score_range"] = score_range
             if es_eval_type is not None:
@@ -824,7 +842,7 @@ def _run_cell(
                     _apply_judge_noise(truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
                     if eval_type == "continuous" else truth
                 )
-                oracle_bundle = _run_truth_only_compare(oracle_scores, rng, score_range, n_bootstrap, es_eval_type)
+                oracle_bundle = _run_truth_only_compare(oracle_scores, rng, score_range, n_bootstrap, es_eval_type, classical_rank)
                 if oracle_bundle is not None:
                     osc = _score_bundle(oracle_bundle, truth_means, k, alpha, is_null)
                     result.oracle_marginal_covered += osc["marginal_covered"]
@@ -845,7 +863,7 @@ def _run_cell(
                     _apply_judge_noise(subset_truth, eval_type, rng, ORACLE_NOISE_AGREEMENT_RATE)
                     if eval_type == "continuous" else subset_truth
                 )
-                subset_bundle = _run_truth_only_compare(subset_scores, rng, score_range, n_bootstrap, es_eval_type)
+                subset_bundle = _run_truth_only_compare(subset_scores, rng, score_range, n_bootstrap, es_eval_type, classical_rank)
                 if subset_bundle is not None:
                     ssc = _score_bundle(subset_bundle, truth_means, k, alpha, is_null)
                     result.subset_marginal_covered += ssc["marginal_covered"]
@@ -871,11 +889,12 @@ _CELLS: list[dict] = []  # fork-inherited worker state for run_simulation
 
 
 def _run_cell_worker(args: tuple) -> CompareE2EResult:
-    idx, n_reps, alpha, seed, n_bootstrap, reference_estimator_k = args
+    idx, n_reps, alpha, seed, n_bootstrap, reference_estimator_k, classical_rank = args
     cell = _CELLS[idx]
     return _run_cell(
         cell["eval_type"], cell["shape"], cell["k"], cell["n_items"], cell["ppi_frac"], cell["is_null"],
         n_reps, alpha, seed, n_bootstrap=n_bootstrap, reference_estimator_k=reference_estimator_k,
+        classical_rank=classical_rank,
     )
 
 
@@ -960,7 +979,7 @@ def run_simulation(
     cells: list[dict], n_reps: int, alpha: float, seed: int = 42,
     progress_mode: str = "bar", n_workers: int = 1,
     n_bootstrap: int = DEFAULT_BOOTSTRAP_N, reference_estimator_k: Optional[int] = REFERENCE_ESTIMATOR_K,
-    null_reps_mult: float = 1.0,
+    null_reps_mult: float = 1.0, classical_rank: bool = False,
 ) -> list[CompareE2EResult]:
     global _CELLS
     _CELLS = cells
@@ -972,7 +991,7 @@ def run_simulation(
     # paying for power precision that is already sufficient.
     args_list = [
         (i, int(round(n_reps * (null_reps_mult if cells[i]["is_null"] else 1))),
-         alpha, s, n_bootstrap, reference_estimator_k)
+         alpha, s, n_bootstrap, reference_estimator_k, classical_rank)
         for i, s in enumerate(child_seeds)
     ]
 
@@ -1509,6 +1528,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                          help="Append a LaTeX booktabs key-summary table (the paper table) to the saved summary .log file.")
     parser.add_argument("--workers", type=int, default=max(1, (os.cpu_count() or 2) - 1), metavar="N",
                          help="Parallel worker processes (default: cpu_count-1; 1=sequential).")
+    parser.add_argument("--classical-rank-path", action="store_true", default=False,
+                         help="Drive compare() down the rank-based pathway the paper reports "
+                              "(Friedman omnibus + Wilcoxon pairwise + Shaffer FWER) instead of "
+                              "letting correction=auto resolve to Romano-Wolf. Applied to the PPI, "
+                              "oracle and human-subset arms alike so the comparison stays "
+                              "like-for-like. Off by default: Romano-Wolf is the better method and "
+                              "remains what compare() recommends.")
     parser.add_argument("--null-reps-mult", type=float, default=1.0, metavar="M",
                          help="Run null cells at M x --reps (default 1.0 = same as non-null). "
                               "Type-I error is a NULL-ONLY quantity, so non-null cells contribute "
@@ -1570,8 +1596,29 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
     )
 
 
+def official_args_classical_rank(base_seed: int = 42) -> argparse.Namespace:
+    """official_args, but down the rank-based pathway the paper reports
+    (see CLASSICAL_RANK_KWARGS): Friedman omnibus, Wilcoxon pairwise,
+    Shaffer FWER, on the PPI, oracle and human-subset arms alike.
+
+    This is the official arm, not the plain one, because the paper
+    validates and reports the rank-based tests -- so this is the
+    configuration a reviewer can actually check against the oracle and
+    human-subset references. compare()'s own recommendation is still
+    Romano-Wolf (correction="auto"), which official_args below keeps
+    available; the discrepancy is discussed in the paper rather than
+    hidden."""
+    args = official_args(base_seed)
+    args.classical_rank_path = True
+    return args
+
+
 def official_variants(base_seed: int = 42) -> list[tuple[str, argparse.Namespace]]:
-    return [("synthetic", official_args(base_seed))]
+    return [
+        ("synthetic (Friedman/Wilcoxon/Shaffer -- the reported path)",
+         official_args_classical_rank(base_seed)),
+        ("synthetic (Romano-Wolf -- compare()'s own default)", official_args(base_seed)),
+    ]
 
 
 def quick_args(base_seed: int = 43, data_source: str = "synthetic") -> argparse.Namespace:
@@ -1615,6 +1662,7 @@ def run(args: argparse.Namespace) -> CaseResult:
             progress_mode=args.progress, n_workers=getattr(args, "workers", 1),
             n_bootstrap=getattr(args, "bootstrap_n", DEFAULT_BOOTSTRAP_N),
             reference_estimator_k=(None if reference_k == -1 else reference_k),
+            classical_rank=getattr(args, "classical_rank_path", False),
         )
         print_report(results, alpha=args.alpha)
         print_key_summary(overall_summary_rows(results), alpha=args.alpha)
