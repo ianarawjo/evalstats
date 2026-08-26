@@ -136,7 +136,7 @@ MJ_FLOOR = Method("mj_floor")  # no color in the legacy palette; uses the defaul
 form power-tuned lambda* since the validation documented at
 MJ_FLOOR_FIXED_LAMBDA (below); see that Method's docstring for the legacy
 fixed-lambda=1 construction and the comparison it's kept for."""
-PPI_WILSON = Method("ppi_wilson", "#c49c94")
+PPI_WILSON = Method("ppi_wilson", "#e377c2")
 """PPI-corrected single-sample Wilson score interval (evalstats.tests.
 _ppi_single_wilson) -- a binary-proportion analogue of MJ_FLOOR's paired
 Wilson-style effective-n trick, for a single-sample (not two/paired-group)
@@ -156,7 +156,20 @@ TABLE routes non-binary robustness CIs to. Deliberately distinct from
 BOOTSTRAP_T (the paired/two-sample PPI method of the same underlying
 construction) -- same reason PPI_WILSON isn't named "wilson": different
 estimand, would silently collide if given the same Method name."""
-PPI_T_INTERVAL = Method("ppi_t_interval", "#08519c")
+PPI_BONETT_PRICE = Method("ppi_bonett_price", "#556b2f")
+"""PPI-corrected Bonett-Price adjusted-Wald interval for the paired BINARY
+difference (evalstats.tests._ppi_paired_bonett_price). Deliberately distinct
+from BONETT_PRICE, the non-PPI ci_paired entry of the same underlying
+construction: the two are reported in different sweeps, and sharing a Method
+name would make a `bonett_price` row ambiguous between the corrected and
+uncorrected estimand -- the same reason PPI_WILSON is not named "wilson".
+Deliberately SHARES BONETT_PRICE's colour (#556b2f) so the method reads the
+same across the ci_paired and PPI figures. Safe because the colour test
+enforces distinctness only within co-plotted groups, and no figure draws a
+PPI method beside its non-PPI namesake; against its actual figure-mates
+(ppi_wilson/ppi_t_interval/ppi_logit_t) it sits at dE 46/82/50.
+Replaced MJ_FLOOR in the official PPI set on 2026-08-26."""
+PPI_T_INTERVAL = Method("ppi_t_interval", "#8c564b")
 """PPI-corrected closed-form (no-bootstrap) t-interval for an unbounded
 numeric mean/mean-difference estimand (evalstats.tests._ppi_single_t_interval
 / _ppi_paired_t_interval, both thin wrappers around evalstats.ppi.
@@ -185,7 +198,7 @@ _ppi_single_t_interval), split out for the same reason
 PPI_BOOTSTRAP_T_SINGLE is split from BOOTSTRAP_T -- see PPI_T_INTERVAL's
 docstring. Targets an unbounded numeric single-sample mean estimand, the
 non-binary/non-[0,1]-bounded counterpart to PPI_WILSON's role."""
-PPI_LOGIT_T = Method("ppi_logit_t", "#8dd3c7")
+PPI_LOGIT_T = Method("ppi_logit_t", "#a6761d")
 """PPI-corrected closed-form (no-bootstrap) logit-t CI for a [lo, hi]-bounded
 numeric mean/mean-difference estimand (evalstats.tests._ppi_single_logit_t /
 _ppi_paired_logit_t, wrapping evalstats.ppi._analytic_logit_t_correct -- the
@@ -590,7 +603,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, BONETT_PRICE, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, PPI_BONETT_PRICE, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -602,7 +615,7 @@ PPI_OFFICIAL_TEST_METHODS = [
     if m not in (
         KRUSKAL_MNAR_EXPERIMENTAL,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
-        # The paired-binary PPI slot is BONETT_PRICE. MJ_FLOOR (and its
+        # The paired-binary PPI slot is PPI_BONETT_PRICE. MJ_FLOOR (and its
         # fixed-lambda sibling) remain implemented and selectable via
         # --tests, but are no longer part of the official sweep.
         MJ_FLOOR,
@@ -642,7 +655,7 @@ REPORT_METHOD_ORDER: list[Method] = BOOTSTRAP_METHODS + [
     + [TANGO_EXACT, MJ_UNFLOORED, BONETT_PRICE]
 ) + [
     MCNEMAR, MCNEMAR_MIDP, PERMUTATION, SIGN_TEST, NEWCOMBE_PVAL, BAYES_BINARY, WILCOXON, PAIRED_T, PPI_T_INTERVAL, PPI_LOGIT_T,
-    PPI_WILSON, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
+    PPI_WILSON, PPI_BONETT_PRICE, PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ] + MULTIARM_CORRECTION_METHODS + CANONICAL_SIMULTANEOUS_CI_METHODS + [
     TTEST, TTEST_WELCH, MWU, MJ_FLOOR_FIXED_LAMBDA,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL,

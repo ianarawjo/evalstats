@@ -176,7 +176,7 @@ with warnings.catch_warnings():
 
 from ..methods import (
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR,
-    BONETT_PRICE,
+    PPI_BONETT_PRICE,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
@@ -470,12 +470,12 @@ def _run_real_paired_cell(
                 except Exception:
                     pass
 
-            if BONETT_PRICE.name in methods:
+            if PPI_BONETT_PRICE.name in methods:
                 try:
                     p_u = _uncorrected_bonett_price_paired_p_value(llm_x - llm_y)
-                    uncorrected[BONETT_PRICE.name] += int(p_u < _ALPHA)
+                    uncorrected[PPI_BONETT_PRICE.name] += int(p_u < _ALPHA)
                     r = _ppi_paired_bonett_price(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    corrected[BONETT_PRICE.name] += int(r.p_value < _ALPHA)
+                    corrected[PPI_BONETT_PRICE.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -900,17 +900,17 @@ def _run_real_paired_bias_cell(
     generate_real_paired_null_cell (same items read through two DIFFERENT
     judges, so the true paired difference is EXACTLY 0 by construction -- no
     gold-reference estimation needed, unlike _run_real_wmt_paired_bias_
-    cell's genuine two-condition data). Exists because MJ_FLOOR is a genuine
+    cell's genuine two-condition data). Exists because the paired binary CI is a genuine
     point-estimate/CI construction (a Wilson-style score interval for the
     paired binary discordant-pair-rate difference -- see
-    evalstats.tests._ppi_paired_mj_floor's docstring) restricted to binary
+    evalstats.tests._ppi_paired_bonett_price's docstring) restricted to binary
     corpora by _paired_methods_for, but _run_real_paired_cell only ever
     reports corrected/uncorrected REJECTION COUNTS (a Type-I check) -- it
     never had anywhere to report (estimate, ci_low, ci_high, llm_estimate)
     tuples, so a binary corpus like arena had no path into the bias/
     coverage view (print_ppi_effect_report / ci_methods_comparison_real.png)
-    even though it has exactly the paired binary data Tango needs. Currently
-    only MJ_FLOOR uses this; null_value is always 0.0 for every test reachable
+    even though it has exactly the paired binary data the method needs. Currently
+    only PPI_BONETT_PRICE uses this; null_value is always 0.0 for every test reachable
     here (see run()'s _consume)."""
     rng = np.random.default_rng(seed)
     out: dict[str, list[tuple[float, float, float, float]]] = defaultdict(list)
@@ -920,17 +920,11 @@ def _run_real_paired_bias_cell(
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
 
-            if MJ_FLOOR.name in methods:
-                try:
-                    r = _ppi_paired_mj_floor(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    out[MJ_FLOOR.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
-                except Exception:
-                    pass
 
-            if BONETT_PRICE.name in methods:
+            if PPI_BONETT_PRICE.name in methods:
                 try:
                     r = _ppi_paired_bonett_price(llm_x, llm_y, lab_x, lab_y, _ALPHA)
-                    out[BONETT_PRICE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                    out[PPI_BONETT_PRICE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
                 except Exception:
                     pass
 
@@ -1079,7 +1073,7 @@ def _has_nonstandard_test(results: list) -> bool:
 def _paired_methods_for(eval_type: str) -> list[str]:
     # BAYES_BOOTSTRAP/BOOTSTRAP_T are not part of the official CI-comparison
     # set -- see _single_methods_for's matching note. Binary uses
-    # BONETT_PRICE (PPI_AUTO_METHOD_TABLE's binary pairwise
+    # PPI_BONETT_PRICE (PPI_AUTO_METHOD_TABLE's binary pairwise
     # method); non-binary gets PPI_T_INTERVAL and PPI_LOGIT_T
     # (PPI_AUTO_METHOD_TABLE's "unbounded"/"bounded_01" pairwise methods --
     # both tested, not just the "correct" one per data_kind, since this is
@@ -1090,7 +1084,7 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     # no test-name-collision risk between PPI_LOGIT_T here and the
     # single-sample check's own PPI_LOGIT_T branch.
     if eval_type == "binary":
-        return [PAIRED_T.name, BONETT_PRICE.name]
+        return [PAIRED_T.name, PPI_BONETT_PRICE.name]
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
@@ -1955,7 +1949,7 @@ def run(args: argparse.Namespace) -> CaseResult:
                             if not args.no_paired_check and corpus.eval_type == "binary":
                                 seed_counter += 1
                                 work_items.append((
-                                    "paired_bias", corpus_idx, name, corpus.dataset, [MJ_FLOOR.name],
+                                    "paired_bias", corpus_idx, name, corpus.dataset, [PPI_BONETT_PRICE.name],
                                     n, label_frac, (judge_a, judge_b), args.reps, args.ppi_n_boot, seed_counter,
                                 ))
 
