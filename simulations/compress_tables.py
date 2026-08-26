@@ -214,17 +214,19 @@ continuous data, with \texttt{nig} marginally ahead on interval score on real da
 the same trade recurs: \texttt{nig} reaches the lower interval score while \texttt{logit\_t}
 holds the better worst-case coverage.""",
 
- "ci_paired_nested": r"""CI methods for pairwise comparisons, multi-run (nominal 95\%, 300 MC
-reps per cell, runs=5). \texttt{bonett\_price\_cluster} carries the single-run construction over
-with the item as the unit of analysis; it is the only method without a failure regime, with 1 of
-1512 synthetic cells below .93 coverage and none on real data. \texttt{mj\_floor\_cluster} is
-narrower and so attains the lower interval score, but keeps the family's centre shrinkage
-$\hat\delta/(1+z^2/n)$, whose denominator involves the item count only and is therefore untouched
-by the number of runs: 177 cells below .93. \texttt{clustered\_score} is the published clustered
-competitor \citep{yang2012clustered}; it degrades precisely at high intra-item correlation, the
-regime real evals occupy (measured median ICC .748). Wald and the t-interval, the most common
-practitioner approximations, both perform poorly: t-interval under-covers at small $n$, and Wald
-is far too wide.""",
+ "ci_paired_nested": r"""CI methods for pairwise comparisons, multi-run (nominal 95\%, 600 MC
+reps per cell synthetic / 1000 real, runs=5). \texttt{bonett\_price\_shrunk} carries the
+single-run construction over with the item as the unit of analysis, shrinking the pseudo-item
+magnitude toward its single-run value so the adjustment does not outweigh the data as runs
+accumulate; it attains the lowest interval score of any method holding worst-case coverage above
+.92, and the highest worst-case coverage of any method on real data. \texttt{mj\_floor\_cluster}
+is narrower and so attains the lower interval score outright, but keeps the family's centre
+shrinkage $\hat\delta/(1+z^2/n)$, whose denominator involves the item count only and is therefore
+untouched by the number of runs, leaving a coverage tail no number of runs can remove.
+\texttt{clustered\_score} is the published clustered competitor \citep{yang2012clustered}; it is
+competitive on coverage but wider, and two orders of magnitude slower. Wald and the t-interval,
+the most common practitioner approximations, both perform poorly: t-interval under-covers at
+small $n$, and Wald is far too wide.""",
 }
 
 

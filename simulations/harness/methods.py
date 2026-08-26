@@ -350,6 +350,18 @@ BONETT_PRICE_SHRUNK = Method("bonett_price_shrunk", "#c2185b")
 BINARY_PAIR_NESTED_METHODS = [
     MJ_FLOOR_CLUSTER, BONETT_PRICE_CLUSTER, BONETT_PRICE_SHRUNK, CLUSTERED_SCORE,
 ]
+"""Every multi-run binary pairwise CI the harness can run, selectable by name
+via --methods. NOT what runs by default -- see BINARY_PAIR_NESTED_OFFICIAL."""
+
+BINARY_PAIR_NESTED_OFFICIAL = [
+    m for m in BINARY_PAIR_NESTED_METHODS if m is not BONETT_PRICE_CLUSTER
+]
+"""The default (--methods unset) multi-run binary set. BONETT_PRICE_CLUSTER is
+excluded: it is the same estimator as BONETT_PRICE_SHRUNK with the pseudo-item
+magnitude pinned at 1 instead of shrunk, so reporting both invites readers to
+treat a parameter setting as a competing method. It stays implemented and
+selectable (--methods bonett_price_cluster) as the ablation showing what the
+magnitude shrinkage buys."""
 
 # ---------------------------------------------------------------------------
 # cases/pvalues.py -- raw pairwise p-value/rejection procedures (non-PPI

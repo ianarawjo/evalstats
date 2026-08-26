@@ -146,6 +146,7 @@ from ..methods import (
     NEWCOMBE_FLAT,
     BONETT_PRICE_FLAT,
     BINARY_PAIR_NESTED_METHODS,
+    BINARY_PAIR_NESTED_OFFICIAL,
     MJ_FLOOR_CLUSTER,
     CLUSTERED_SCORE,
     BONETT_PRICE_CLUSTER,
@@ -922,7 +923,11 @@ def _run_nested_pairwise_cell(
         active_methods += [m for m in PAIR_DIFF_NESTED_METHODS if _want(m.name)]
     if is_binary:
         active_methods += [m for m in BINARY_PAIR_FLAT_METHODS if _want(m.name)]
-        active_methods += [m for m in BINARY_PAIR_NESTED_METHODS if _want(m.name)]
+        # Default to the official subset; an explicit --methods can still name
+        # anything in the full list (e.g. bonett_price_cluster as an ablation).
+        _nested_pool = (BINARY_PAIR_NESTED_METHODS if method_names is not None
+                        else BINARY_PAIR_NESTED_OFFICIAL)
+        active_methods += [m for m in _nested_pool if _want(m.name)]
     else:
         active_methods += [m for m in (LOGIT_T, NIG, EL) if _want(m.name)]
         active_methods += [m for m in DITHER_EXTRA_METHODS if _want(m.name)]
@@ -1153,7 +1158,10 @@ def _run_nested_pairwise_cell(
                 (BONETT_PRICE_CLUSTER, bonett_price_paired_ci_multirun_cluster),
                 (BONETT_PRICE_SHRUNK, bonett_price_paired_ci_multirun_shrunk),
             ]:
-                if not _want(method.name):
+                # `covered` is keyed by active_methods, which defaults to
+                # BINARY_PAIR_NESTED_OFFICIAL -- so this also skips methods that
+                # are selectable but not in the default set.
+                if not _want(method.name) or method not in covered:
                     continue
                 _t0 = time.perf_counter()
                 try:
