@@ -340,8 +340,15 @@ CLUSTERED_SCORE = Method("clustered_score", "#4a148c")
 #: 10140 real-data cells below .93 -- far worse than anything else credible.
 #: The implementation and its validation against clust.bin.pair are retained
 #: in evalstats.core.resampling as a citable negative result.
+#: Pseudo-item MAGNITUDE Laplace-shrunk toward the R=1 reference of 1, with
+#: BP's own weight of two pseudo-items:
+#: m2 = (sum delta^2 + 2)/(sum u + 2). Reduces to BONETT_PRICE at R=1 by the
+#: identity sum(delta^2) == sum(u) there. See
+#: evalstats.core.resampling.bonett_price_paired_ci_multirun_shrunk.
+BONETT_PRICE_SHRUNK = Method("bonett_price_shrunk", "#c2185b")
+
 BINARY_PAIR_NESTED_METHODS = [
-    MJ_FLOOR_CLUSTER, BONETT_PRICE_CLUSTER, CLUSTERED_SCORE,
+    MJ_FLOOR_CLUSTER, BONETT_PRICE_CLUSTER, BONETT_PRICE_SHRUNK, CLUSTERED_SCORE,
 ]
 
 # ---------------------------------------------------------------------------
@@ -571,7 +578,7 @@ LMM = Method("lmm", "#74c476")
 LMM_FACTORIAL = Method("lmm_factorial", "#a1d99b")
 LMM_RUNS = Method("lmm_runs", "#c7e9c0")
 PPI_TEST_METHODS = [
-    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, ANOVA_IND,
+    TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR, MJ_FLOOR_FIXED_LAMBDA, BONETT_PRICE, ANOVA_IND,
     ANOVA_REP, FRIEDMAN, KRUSKAL, KRUSKAL_MNAR_EXPERIMENTAL, LMM, LMM_FACTORIAL, LMM_RUNS, PPI_WILSON,
     PPI_BOOTSTRAP_T_SINGLE, PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
 ]
@@ -583,6 +590,10 @@ PPI_OFFICIAL_TEST_METHODS = [
     if m not in (
         KRUSKAL_MNAR_EXPERIMENTAL,
         LMM, LMM_FACTORIAL, LMM_RUNS, MJ_FLOOR_FIXED_LAMBDA,
+        # The paired-binary PPI slot is BONETT_PRICE. MJ_FLOOR (and its
+        # fixed-lambda sibling) remain implemented and selectable via
+        # --tests, but are no longer part of the official sweep.
+        MJ_FLOOR,
     )
 ]
 """The default (--tests unset) active-test set for --mode ppi -- every

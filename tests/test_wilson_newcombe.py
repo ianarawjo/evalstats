@@ -536,8 +536,8 @@ def _make_benchmark(scores: np.ndarray, labels: list[str]) -> BenchmarkResult:
     )
 
 
-def test_analyze_auto_detects_binary_and_uses_mj_floor():
-    """For binary data at the N=60 cutoff, auto should use mj_floor pairwise."""
+def test_analyze_auto_detects_binary_and_uses_bonett_price():
+    """For binary data at the N=60, auto should use mj_floor pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 3
     m_inputs = 60
@@ -549,11 +549,11 @@ def test_analyze_auto_detects_binary_and_uses_mj_floor():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
     pair = bundle.pairwise.get("low", "mid")
-    assert "mj_floor" in pair.test_method
+    assert "bonett_price" in pair.test_method
     assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_detects_binary_large_n_uses_mj_floor():
+def test_analyze_auto_detects_binary_large_n_uses_bonett_price():
     """For binary data with N >= 100, auto should still use mj_floor pairwise."""
     rng = np.random.default_rng(42)
     n_templates = 2
@@ -566,7 +566,7 @@ def test_analyze_auto_detects_binary_large_n_uses_mj_floor():
     bundle = analyze(result_obj, method="auto", rng=np.random.default_rng(42))
 
     pair = bundle.pairwise.get("low", "high")
-    assert "mj_floor" in pair.test_method
+    assert "bonett_price" in pair.test_method
     assert bundle.resolved_ci_method == "wilson"
 
 

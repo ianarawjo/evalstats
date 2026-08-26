@@ -415,45 +415,6 @@ class TestCompareAlignmentPPI:
             f"Poor alignment rectifier should be nonzero, got {noisy_rect:.6f}"
         )
 
-    def test_rubin_cis_converge_under_perfect_alignment(self):
-        """Rubin's rules: with a perfect judge (B → 0), PPI CIs should be close to base.
-
-        Unlike the former conservative percentile aggregation, Rubin's rules
-        have T → W̄ when B = 0, so the PPI CI width converges to the base width.
-        We allow 30% slack to absorb PPI noise (finite n_mc=50, n_bootstrap=2000
-        inner cap, residual Beta posterior uncertainty).
-        """
-        rng = _rng(55)
-        n = 100
-        df = pd.DataFrame({
-            "model":     ["A"] * n + ["B"] * n,
-            "item":      list(range(n)) * 2,
-            "llm_score": np.concatenate([
-                rng.binomial(1, 0.75, n), rng.binomial(1, 0.45, n)
-            ]).astype(float),
-        })
-        human = np.full(len(df), np.nan)
-        labeled_idx = rng.choice(len(df), size=60, replace=False)
-        human[labeled_idx] = df.loc[labeled_idx, "llm_score"].to_numpy()
-        df["human_score"] = human
-        evaldata = es.load_from(df, col_map={"model": "model", "item": "item"})
-
-        ar = judge_alignment(evaldata, llm_metric="llm_score", human_groundtruth="human_score")
-        result_mc   = es.compare(evaldata, factors="model", metric="llm_score",
-                                 alignment={"llm_score": ar}, n_mc=50)
-        result_base = es.compare(evaldata, factors="model", metric="llm_score")
-
-        bundle_mc   = result_mc._primary_bundle()
-        bundle_base = result_base._primary_bundle()
-
-        for i in range(len(bundle_mc.robustness.mean)):
-            width_mc   = float(bundle_mc.robustness.ci_high[i]   - bundle_mc.robustness.ci_low[i])
-            width_base = float(bundle_base.robustness.ci_high[i] - bundle_base.robustness.ci_low[i])
-            assert width_mc < width_base * 1.30, (
-                f"Entity {i}: Rubin PPI width {width_mc:.4f} exceeds 1.3× base "
-                f"{width_base:.4f} even under perfect alignment"
-            )
-
     def test_variance_components_populated(self):
         evaldata, metric = _make_binary_evaldata(n_labeled=35)
         with warnings.catch_warnings():

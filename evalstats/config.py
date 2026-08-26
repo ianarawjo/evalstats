@@ -95,11 +95,12 @@ class AutoAnalyzeRule:
 # on marginal_method, so plain "wilson" / "logit_t" applied to that
 # already-collapsed array *is* the flat/run-means variant. Same story for
 # "Logit-t on run mean differences" in all_pairwise()'s "logit_t" path. And
-# "mj_floor_er" is not a separate user-facing method name -- pairwise_method="mj_floor"
-# internally detects R >= 3 seeded runs and switches to the effective-N
-# multirun variant (mj_floor_paired_ci_multirun_effective).
-# (mj_floor_paired_ci_multirun_moments is a related but distinct variant --
-# still available in core/resampling.py, but not what "mj_floor" routes to.)
+# the binary pairwise multirun variant is not a separate user-facing method
+# name -- pairwise_method="bonett_price" internally detects R >= 3 seeded runs
+# and switches to the clustered multirun variant
+# (bonett_price_paired_ci_multirun_cluster). mj_floor and its own multirun
+# variants remain available in core/resampling.py and callable by name, but
+# are no longer what "auto" routes to for binary data.
 #
 # "bounded_01" (the data_kind label) no longer means the data is literally
 # valued in [0, 1] -- it means router.py._analyze_single could establish a
@@ -119,29 +120,24 @@ class AutoAnalyzeRule:
 # recurring source of confusion between the package and the harness.
 AUTO_ANALYZE_METHOD_TABLE: tuple[AutoAnalyzeRule, ...] = (
     AutoAnalyzeRule(
-        data_kind="binary", max_n=50,
-        pairwise_method="bayes_binary",
-        robustness_method_single_run="wilson",
-        robustness_method_seeded="wilson",
-        reason=(
-            "Real-data simulations show mj_floor under-covers in "
-            "dominated/jointly-sparse pairs at small N, regardless of run "
-            "count, so small-N binary data uses the Bayesian paired model "
-            "(citet{dontusetheclt}) instead. Cutoff N=50, per "
-            "fig:ci-decision-tree. Marginal CIs use plain Wilson regardless "
-            "of seeding ('Wilson flat' in the figure) -- NIG-nested was "
-            "tried and dropped in favor of this simpler, better-calibrated "
-            "choice."
-        ),
-    ),
-    AutoAnalyzeRule(
         data_kind="binary", max_n=None,
-        pairwise_method="mj_floor",
+        pairwise_method="bonett_price",
         robustness_method_single_run="wilson",
         robustness_method_seeded="wilson",
         reason=(
-            "N >= 50 binary data: mj_floor pairwise (effective-runs variant via the "
-            "effective-N multirun variant when seeded), Wilson-flat marginal."
+            "Binary data at every N: Bonett & Price (2012) adjusted-Wald "
+            "pairwise, Wilson-flat marginal. This is a SINGLE row where there "
+            "used to be two (Bayesian paired below N=50, mj_floor above) -- "
+            "bonett_price is best-calibrated across the whole range, so the "
+            "decision tree loses the split rather than just swapping a name. "
+            "Its Laplace adjustment (two pseudo-items) keeps the interval "
+            "well-behaved in the dominated/jointly-sparse pairs where the "
+            "score-interval form under-covers, which is what motivated the "
+            "old small-N branch in the first place. Seeded (R >= 3) data "
+            "dispatches to the clustered multirun variant automatically -- "
+            "see core/paired.py's bonett_price branch. Marginal CIs use plain "
+            "Wilson regardless of seeding ('Wilson flat' in "
+            "fig:ci-decision-tree)."
         ),
     ),
     AutoAnalyzeRule(
@@ -305,18 +301,22 @@ class PPIAutoMethodRule:
 PPI_AUTO_METHOD_TABLE: tuple[PPIAutoMethodRule, ...] = (
     PPIAutoMethodRule(
         data_kind="binary",
-        pairwise_method="mj_floor",
+        pairwise_method="bonett_price",
         robustness_method="wilson",
         reason=(
-            "Binary data: mj_floor (pairwise) and Wilson (marginal) both have "
-            "closed-form PPI-corrected forms via an effective-n substitution "
-            "(see evalstats.tests._ppi_paired_mj_floor / _ppi_single_wilson). "
+            "Binary data: bonett_price (pairwise) and Wilson (marginal) both "
+            "have closed-form PPI-corrected forms via an effective-n "
+            "substitution (see evalstats.tests._ppi_paired_bonett_price / "
+            "_ppi_single_wilson). Bonett-Price's Laplace adjustment keeps the "
+            "interval well-behaved when the labeled subset carries little "
+            "discordance information, where the score-interval form collapses "
+            "toward zero width. "
             "Wilson matches the non-aligned default's own marginal choice "
             "(AUTO_ANALYZE_METHOD_TABLE's marginal is 'wilson' at every N). "
-            "Pairwise is mj_floor even below the non-aligned default's N<50 "
-            "cutoff for bayes_binary -- a forced deviation, not a choice: "
-            "bayes_binary has no PPI-corrected form, so mj_floor is used at "
-            "every N under PPI alignment rather than raising below N=50."
+            "Pairwise is bonett_price even below the non-aligned default's "
+            "N<50 cutoff for bayes_binary -- a forced deviation, not a choice: "
+            "bayes_binary has no PPI-corrected form, so bonett_price is used "
+            "at every N under PPI alignment rather than raising below N=50."
         ),
     ),
     PPIAutoMethodRule(

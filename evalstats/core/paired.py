@@ -48,6 +48,7 @@ from .resampling import (
     mj_floor_paired_ci_multirun_cluster,
     bonett_price_paired_ci,
     bonett_price_paired_ci_multirun_cluster,
+    bonett_price_paired_ci_multirun_shrunk,
     t_interval_ci_1d,
     logit_t_ci_1d,
     nig_ci_1d,
@@ -798,10 +799,15 @@ def pairwise_differences(
         diffs, _, point_d, std_d = _paired_stats(values_a, values_b)
         alpha_val = 1.0 - ci
         if multirun:
-            ci_low, ci_high = bonett_price_paired_ci_multirun_cluster(
+            # Multi-run default is the Laplace-shrunk-magnitude variant: the
+            # +/-1 pseudo-items of the _cluster form are the largest possible
+            # item-level discordance, which is right at R=1 but several times
+            # heavier than a real discordant item once runs are averaged.
+            # _shrunk reduces to bonett_price_paired_ci at R=1 bit-for-bit.
+            ci_low, ci_high = bonett_price_paired_ci_multirun_shrunk(
                 values_a_full, values_b_full, alpha_val
             )
-            mci = ({_a: bonett_price_paired_ci_multirun_cluster(values_a_full, values_b_full, _a)
+            mci = ({_a: bonett_price_paired_ci_multirun_shrunk(values_a_full, values_b_full, _a)
                     for _a in GRADIENT_CI_ALPHAS} if multi_ci else None)
         else:
             ci_low, ci_high = bonett_price_paired_ci(values_a, values_b, alpha_val)
@@ -815,7 +821,7 @@ def pairwise_differences(
             ci_low=ci_low,
             ci_high=ci_high,
             p_value=p_value,
-            test_name="bonett_price cluster" if multirun else "bonett_price",
+            test_name="bonett_price shrunk" if multirun else "bonett_price",
             values_a=values_a,
             values_b=values_b,
             multi_ci_dict=mci,

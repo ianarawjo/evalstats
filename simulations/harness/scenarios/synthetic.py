@@ -4376,6 +4376,7 @@ def estimate_judge_bias_gold_null_values(scenario: JudgeBiasSource, *, n_mc: int
         "bootstrap_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "mj_floor": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "mj_floor_fixed_lambda": float(means_paired.mean()),  # same estimand as mj_floor, fixed lambda=1
+        "bonett_price": float(means_paired.mean()),  # same estimand as mj_floor, Laplace-adjusted interval
         "ppi_t_interval": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "ppi_logit_t": float(means_paired.mean()),  # same estimand (paired mean diff) as paired_t
         "anova_ind": bv_gold,

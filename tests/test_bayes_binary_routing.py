@@ -285,13 +285,13 @@ def test_vs_baseline_bayes_binary_raises_for_non_binary():
 # analyze() — auto routing for binary data
 # ---------------------------------------------------------------------------
 
-def test_analyze_auto_binary_small_n_pairwise_uses_mj_floor():
-    """Binary data at the N=60 cutoff → auto should use mj_floor for pairwise comparisons."""
+def test_analyze_auto_binary_small_n_pairwise_uses_bonett_price():
+    """Binary data at the N=60 → auto should use mj_floor for pairwise comparisons."""
     scores = _binary_scores(2, 60, [0.7, 0.5], seed=30)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(30))
     pair = bundle.pairwise.get("A", "B")
-    assert "mj_floor" in pair.test_method.lower()
+    assert "bonett_price" in pair.test_method.lower()
 
 
 def test_analyze_auto_binary_small_n_advantage_uses_wilson():
@@ -302,13 +302,13 @@ def test_analyze_auto_binary_small_n_advantage_uses_wilson():
     assert bundle.resolved_ci_method == "wilson"
 
 
-def test_analyze_auto_binary_large_n_pairwise_uses_mj_floor():
+def test_analyze_auto_binary_large_n_pairwise_uses_bonett_price():
     """Binary N=120 → pairwise should still use mj_floor."""
     scores = _binary_scores(2, 120, [0.7, 0.5], seed=32)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(32))
     pair = bundle.pairwise.get("A", "B")
-    assert "mj_floor" in pair.test_method.lower()
+    assert "bonett_price" in pair.test_method.lower()
 
 
 def test_analyze_auto_binary_large_n_advantage_uses_wilson():
@@ -330,42 +330,42 @@ def test_analyze_auto_non_binary_bounded_uses_logit_t():
     assert bundle.resolved_ci_method not in {"wilson", "newcombe", "bayes_binary"}
 
 
-def test_analyze_auto_binary_resolved_method_is_mj_floor():
-    """resolved_method on the bundle should be 'mj_floor' for binary data at the N=60 cutoff."""
+def test_analyze_auto_binary_resolved_method_is_bonett_price():
+    """resolved_method on the bundle should be 'bonett_price' for binary data at the N=60."""
     scores = _binary_scores(2, 60, [0.7, 0.5], seed=35)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(35))
-    assert bundle.resolved_method == "mj_floor"
+    assert bundle.resolved_method == "bonett_price"
 
 
-def test_analyze_auto_binary_resolved_method_is_mj_floor_for_large_n():
-    """resolved_method on the bundle should be 'mj_floor' for binary N >= 100."""
+def test_analyze_auto_binary_resolved_method_is_bonett_price_for_large_n():
+    """resolved_method on the bundle should be 'bonett_price' for binary N >= 100."""
     scores = _binary_scores(2, 100, [0.7, 0.5], seed=36)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(36))
-    assert bundle.resolved_method == "mj_floor"
+    assert bundle.resolved_method == "bonett_price"
 
 
 # ---------------------------------------------------------------------------
 # analyze() — boundary at N=99 vs N=100
 # ---------------------------------------------------------------------------
 
-def test_analyze_auto_boundary_99_uses_mj_floor():
+def test_analyze_auto_boundary_99_uses_bonett_price():
     scores = _binary_scores(2, 99, [0.6, 0.4], seed=40)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(40))
     pair = bundle.pairwise.get("A", "B")
-    assert "mj_floor" in pair.test_method.lower()
-    assert bundle.resolved_method == "mj_floor"
+    assert "bonett_price" in pair.test_method.lower()
+    assert bundle.resolved_method == "bonett_price"
 
 
-def test_analyze_auto_boundary_100_uses_mj_floor():
+def test_analyze_auto_boundary_100_uses_bonett_price():
     scores = _binary_scores(2, 100, [0.6, 0.4], seed=41)
     bundle = analyze(_benchmark(scores, ["A", "B"]),
                      method="auto", rng=_rng(41))
     pair = bundle.pairwise.get("A", "B")
-    assert "mj_floor" in pair.test_method.lower()
-    assert bundle.resolved_method == "mj_floor"
+    assert "bonett_price" in pair.test_method.lower()
+    assert bundle.resolved_method == "bonett_price"
 
 
 # ---------------------------------------------------------------------------
@@ -418,8 +418,8 @@ def test_analyze_explicit_bayes_binary_three_way_all_pairs():
 # compare_prompts routing
 # ---------------------------------------------------------------------------
 
-def test_compare_prompts_auto_binary_small_n_pairwise_mj_floor():
-    """compare_prompts auto with binary data at the N=60 cutoff → pairwise uses mj_floor."""
+def test_compare_prompts_auto_binary_small_n_pairwise_bonett_price():
+    """compare_prompts auto with binary data at the N=60 → pairwise uses mj_floor."""
     rng = np.random.default_rng(60)
     scores = {
         "A": rng.binomial(1, 0.7, 60).astype(float).tolist(),
@@ -427,7 +427,7 @@ def test_compare_prompts_auto_binary_small_n_pairwise_mj_floor():
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(60))
     pair = report.pairwise.get("A", "B")
-    assert "mj_floor" in pair.test_method.lower()
+    assert "bonett_price" in pair.test_method.lower()
 
 
 def test_compare_prompts_auto_binary_small_n_advantage_is_wilson():
@@ -462,7 +462,7 @@ def test_compare_prompts_auto_binary_small_n_entity_stats_match_wilson():
     )
 
 
-def test_compare_prompts_auto_binary_large_n_pairwise_mj_floor():
+def test_compare_prompts_auto_binary_large_n_pairwise_bonett_price():
     """compare_prompts auto with binary N>=100 → pairwise still uses mj_floor."""
     rng = np.random.default_rng(63)
     scores = {
@@ -471,7 +471,7 @@ def test_compare_prompts_auto_binary_large_n_pairwise_mj_floor():
     }
     report = es.compare_prompts(scores, method="auto", rng=_rng(63))
     pair = report.pairwise.get("A", "B")
-    assert "mj_floor" in pair.test_method.lower()
+    assert "bonett_price" in pair.test_method.lower()
 
 
 def test_compare_prompts_auto_binary_large_n_advantage_is_wilson():
@@ -523,8 +523,8 @@ def test_compare_prompts_auto_non_binary_bounded_uses_logit_t():
 # compare_models routing
 # ---------------------------------------------------------------------------
 
-def test_compare_models_auto_binary_small_n_pairwise_mj_floor():
-    """compare_models auto with binary data at the N=60 cutoff → pairwise uses mj_floor."""
+def test_compare_models_auto_binary_small_n_pairwise_bonett_price():
+    """compare_models auto with binary data at the N=60 → pairwise uses mj_floor."""
     rng = np.random.default_rng(70)
     scores = {
         "model_a": rng.binomial(1, 0.7, 60).astype(float).tolist(),
@@ -532,7 +532,7 @@ def test_compare_models_auto_binary_small_n_pairwise_mj_floor():
     }
     report = es.compare_models(scores, method="auto", rng=_rng(70))
     pair = report.pairwise.get("model_a", "model_b")
-    assert "mj_floor" in pair.test_method.lower()
+    assert "bonett_price" in pair.test_method.lower()
 
 
 def test_compare_models_auto_binary_small_n_advantage_is_wilson():
@@ -546,7 +546,7 @@ def test_compare_models_auto_binary_small_n_advantage_is_wilson():
     assert report.full_analysis.resolved_ci_method == "wilson"
 
 
-def test_compare_models_auto_binary_large_n_pairwise_mj_floor():
+def test_compare_models_auto_binary_large_n_pairwise_bonett_price():
     """compare_models auto with binary N>=100 → pairwise still uses mj_floor."""
     rng = np.random.default_rng(72)
     scores = {
@@ -555,7 +555,7 @@ def test_compare_models_auto_binary_large_n_pairwise_mj_floor():
     }
     report = es.compare_models(scores, method="auto", rng=_rng(72))
     pair = report.pairwise.get("model_a", "model_b")
-    assert "mj_floor" in pair.test_method.lower()
+    assert "bonett_price" in pair.test_method.lower()
 
 
 def test_compare_models_auto_binary_entity_stats_match_wilson():

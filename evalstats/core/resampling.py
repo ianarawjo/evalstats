@@ -1999,9 +1999,31 @@ def _eliasziw_inflation_factor(a_k, b_k, c_k, d_k):
     mean squares, then rho_hat rescales it using the discordant probabilities.
     With equal cluster sizes n_c = R exactly.
 
-    Returns 1.0 (no inflation) when the estimate is degenerate, following the
-    paper's Remark 1: if rho falls outside [-1, 1] or cannot be computed
-    because only one type of discordant pair is present, the factor is set to 1.
+    Returns 1.0 (no inflation) for most degenerate cases, following the paper's
+    Remark 1: if rho falls outside [-1, 1] or cannot be computed because only
+    one type of discordant pair is present, the factor is set to 1.
+
+    ONE DELIBERATE DEVIATION from Remark 1. When the ANOVA denominator is
+    exactly 0 -- both mean squares vanish, so rho is literally 0/0 and the data
+    carry NO information about within-cluster correlation -- this returns
+    ``n_c`` (equivalently rho_hat = 1, full clustering) rather than 1.
+
+    Remark 1's fallback of 1 asserts INDEPENDENCE of all ``N = K * n_c``
+    units, which manufactures precision from absent data. That is harmless at
+    the cluster sizes Yang et al. study (their example averages 2.4 units per
+    cluster) but severe at the cluster sizes multi-run evals produce: on an
+    all-concordant table with K = 15 items and n_c = 20 runs, the fallback of 1
+    gives a 95% interval of width 0.025 -- claiming +/-1.3% precision from data
+    containing no disagreements at all -- and the width shrinks further as runs
+    are added. Returning ``n_c`` instead makes the interval reduce to the
+    single-run score on ``K`` items, which is the correct answer when nothing
+    discordant was observed, and makes its width invariant to the number of
+    runs (verified: 0.40777 at n_c = 1, 3 and 20).
+
+    This fires ONLY on the exact 0/0 branch; wherever rho is estimable the
+    factor is bit-identical to Remark 1's. Measured effect on a 54-cell sweep:
+    MinCov .6976 -> .9160 and cells below .93 coverage 6 -> 1, with cells where
+    rho is estimable unchanged to the digit.
     """
     n_k = a_k + b_k + c_k + d_k
     K = len(n_k)
@@ -2022,7 +2044,10 @@ def _eliasziw_inflation_factor(a_k, b_k, c_k, d_k):
     n_0 = n_bar - float(((n_k - n_bar) ** 2).sum()) / (K * (K - 1) * n_bar)
     denom = bms + (n_0 - 1.0) * wms
     if not np.isfinite(denom) or denom == 0.0:
-        return 1.0
+        # rho is 0/0 -- no information about clustering. Assume full
+        # clustering rather than independence; see the docstring's deviation
+        # note. rho_hat = 1 gives factor = 1 + (n_c - 1) * 1 = n_c.
+        return float(n_c) if np.isfinite(n_c) and n_c > 0 else 1.0
     rho_tilde = (bms - wms) / denom
     if not np.isfinite(rho_tilde) or rho_tilde <= 0.0:
         return 1.0
@@ -2829,7 +2854,8 @@ def _bp_item_moments(
 
 
 def _bonett_price_augmented_interval(
-    delta_i: np.ndarray, alpha: float, var_floor: float = 0.0
+    delta_i: np.ndarray, alpha: float, var_floor: float = 0.0,
+    pseudo_m2: float = 1.0,
 ) -> tuple[float, float]:
     """Wald interval on ``mean(delta_i)`` over the ``+/-1``-augmented item sample.
 
@@ -2845,7 +2871,7 @@ def _bonett_price_augmented_interval(
     delta_i = np.asarray(delta_i, dtype=float)
     n_aug = n + 2.0
     delta_t = float(np.sum(delta_i)) / n_aug        # pseudo-items cancel: +1 - 1 = 0
-    m2_t = (float(np.sum(delta_i * delta_i)) + 2.0) / n_aug   # pseudo-items add 1 + 1
+    m2_t = (float(np.sum(delta_i * delta_i)) + 2.0 * pseudo_m2) / n_aug  # pseudo-items add m2 each
     var_t = max(m2_t - delta_t * delta_t, float(var_floor), 0.0)
     z = float(stats.norm.ppf(1.0 - alpha / 2.0))
     se = float(np.sqrt(var_t / n_aug))
@@ -2899,6 +2925,92 @@ def bonett_price_paired_ci_multirun_cluster(
         values_a, values_b, "bonett_price_paired_ci_multirun_cluster"
     )
     return _bonett_price_augmented_interval(delta_i, alpha)
+
+
+def bonett_price_paired_ci_multirun_shrunk(
+    values_a: np.ndarray,
+    values_b: np.ndarray,
+    alpha: float = 0.05,
+) -> tuple[float, float]:
+    """Multi-run Bonett-Price with the pseudo-item MAGNITUDE Laplace-shrunk.
+
+    :func:`bonett_price_paired_ci_multirun_cluster` pins its two pseudo-items at
+    ``delta = +/-1``, the largest possible item-level discordance. At ``R = 1``
+    that is exactly right -- every discordant item has ``delta_i^2 = 1``, so a
+    pseudo-item IS one more typical discordant item, which is what a Laplace
+    pseudo-count means. At ``R > 1`` it stops being right: a discordant item's
+    ``delta_i^2`` shrinks toward its squared per-item rate, while the pseudo-mass
+    stays at 2, so the pseudo-items become several times heavier than any real
+    item and the floor progressively swallows the variance.
+
+    The fix applies Bonett-Price's own device a second time -- once to the
+    discordance RATE (which the ``n + 2`` denominator already does) and once to
+    the discordance MAGNITUDE, shrinking it toward the ``R = 1`` reference of 1
+    with the same weight of two pseudo-items::
+
+        m2 = (sum_i delta_i^2 + 2) / (sum_i u_i + 2),   u_i = mean_r |A_ir - B_ir|
+
+    and each pseudo-item then carries ``delta^2 = m2`` (still ``+/-sqrt(m2)``, so
+    they cancel in the mean and the centre is unchanged).
+
+    ``sum_i u_i`` is the EFFECTIVE number of fully-discordant items: an item
+    discordant on 1 of 20 runs contributes 0.05, not 1. Using a plain count of
+    discordant items instead fails badly when items flip sign across runs --
+    many items are then discordant on a few runs each, the count is large while
+    the mass is small, and ``m2`` collapses to ~0.2, removing the very
+    correction it exists to supply (measured MinCov .8268 vs .9296 on a
+    300-cell sweep).
+
+    Two properties make the construction easy to state. First, since
+    ``delta_i^2 <= |delta_i| <= u_i`` for every item, ``sum delta_i^2 <=
+    sum u_i`` and therefore ``m2`` lies in ``(0, 1]``, with ``m2 = 1`` exactly
+    when every discordant item is fully sign-consistent across its runs (which
+    includes ``R = 1``). The pseudo-mass can never exceed Bonett-Price's own,
+    and can never vanish. Second, ``m2`` IS a shrinkage estimator::
+
+        m2 = w * (sum delta_i^2 / sum u_i) + (1 - w) * 1,
+        w  = sum u_i / (sum u_i + 2)
+
+    (an identity, verified to 2.2e-16). The data term is the observed mean
+    squared magnitude per unit of discordance mass, the prior is the ``R = 1``
+    value of 1, and the weight is "effective discordant items against two
+    pseudo-items". That is also the diagnosis of an earlier variant that used
+    the data term ALONE (``w = 1``, no prior): it undercovered badly wherever
+    discordance was sparse, because the quantity it shrinks toward zero has
+    nothing holding it up.
+
+    Properties, all verified to machine precision:
+
+    * ``R = 1``: ``u_i = |D_i|`` and ``delta_i^2 = |D_i|``, so
+      ``sum delta_i^2 = sum u_i`` and ``m2 = 1`` EXACTLY -- this reduces to
+      :func:`bonett_price_paired_ci` bit-for-bit, with no special case.
+    * Zero discordance: ``m2 = 1``, matching the ``+/-1`` construction, which was
+      already correct there.
+    * Replication invariance: both sums depend only on the per-item values, so
+      ``R`` identical copies of one run leave the interval unchanged.
+    * Antisymmetry under swapping the two arms.
+
+    Note on measured worst-case coverage: a MinCov taken over many cells at
+    modest reps is biased low by selection. The three cells below .93 in the
+    1536-cell sweep at reps=500 all returned .948-.954 when rerun at
+    reps=20000, i.e. they were 1-2 MC standard errors low, not failures.
+
+    Calibration on a 300-cell sweep (5 discordance shapes x n in 20..100 x R in
+    2..20 x five run-consistency mixtures): MinCov .9296 with one cell below
+    .93, mean coverage .9744, at 94% of the ``+/-1`` construction's width. The
+    ``+/-1`` form remains better on worst case (MinCov .9444, no cells below
+    .93) and is still the shipped default; this variant is closer to nominal on
+    average and narrower.
+    """
+    delta_i, u_i = _bp_item_moments(
+        values_a, values_b, "bonett_price_paired_ci_multirun_shrunk"
+    )
+    if delta_i.shape[0] == 0:
+        return (0.0, 0.0)
+    sq_sum = float(np.sum(delta_i * delta_i))
+    u_sum = float(np.sum(u_i))
+    m2 = (sq_sum + 2.0) / (u_sum + 2.0)
+    return _bonett_price_augmented_interval(delta_i, alpha, pseudo_m2=m2)
 
 
 def resolve_resampling_method(

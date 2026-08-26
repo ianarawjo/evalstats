@@ -93,6 +93,7 @@ with warnings.catch_warnings():
         bonett_price_paired_ci,
         bonett_price_paired_ci_flat,
         bonett_price_paired_ci_multirun_cluster,
+        bonett_price_paired_ci_multirun_shrunk,
         mj_floor_paired_ci_flat,
         mj_floor_paired_ci_multirun_effective,
         mj_floor_paired_ci_multirun_cluster,
@@ -148,6 +149,7 @@ from ..methods import (
     MJ_FLOOR_CLUSTER,
     CLUSTERED_SCORE,
     BONETT_PRICE_CLUSTER,
+    BONETT_PRICE_SHRUNK,
     get_method_color,
     order_present_methods,
 )
@@ -1149,6 +1151,7 @@ def _run_nested_pairwise_cell(
                 (MJ_FLOOR_CLUSTER, mj_floor_paired_ci_multirun_cluster),
                 (CLUSTERED_SCORE, clustered_score_paired_ci),
                 (BONETT_PRICE_CLUSTER, bonett_price_paired_ci_multirun_cluster),
+                (BONETT_PRICE_SHRUNK, bonett_price_paired_ci_multirun_shrunk),
             ]:
                 if not _want(method.name):
                     continue

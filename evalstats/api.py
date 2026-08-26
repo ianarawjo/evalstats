@@ -926,7 +926,7 @@ def _bridge_to_io(
 # PPI alignment correction
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PPI_PAIRWISE_SUPPORTED = ("mj_floor", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
+_PPI_PAIRWISE_SUPPORTED = ("bonett_price", "mj_floor", "t_interval", "bootstrap", "wilcoxon", "mannwhitney", "bootstrap_t", "bayes_bootstrap", "ppi_t_interval", "ppi_logit_t")
 _PPI_ROBUSTNESS_SUPPORTED = ("wilson", "bootstrap", "bootstrap_t", "ppi_t_interval", "ppi_logit_t")
 
 
@@ -946,10 +946,13 @@ def _ppi_pairwise_dispatch(method: str, a, b, a_lab, b_lab, alpha: float, n_boot
     silently collide with that existing mapping.
     """
     from evalstats.tests import (
-        _ppi_paired_mj_floor, _ppi_paired_bootstrap_t, _ppi_paired_bayes_bootstrap,
+        _ppi_paired_mj_floor, _ppi_paired_bonett_price, _ppi_paired_bootstrap_t,
+        _ppi_paired_bayes_bootstrap,
         _ppi_paired_arrays, _ppi_two_sample, _p_x_gt_y_midrank,
         _ppi_paired_t_interval, _ppi_paired_logit_t,
     )
+    if method == "bonett_price":
+        return _ppi_paired_bonett_price(a, b, a_lab, b_lab, alpha)
     if method == "mj_floor":
         return _ppi_paired_mj_floor(a, b, a_lab, b_lab, alpha)
     if method == "bootstrap_t":

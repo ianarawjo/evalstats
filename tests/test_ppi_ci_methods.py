@@ -250,8 +250,13 @@ class TestConfigRouting:
     def test_unbounded_routes_to_ppi_t_interval(self):
         assert resolve_ppi_auto_methods("unbounded") == ("ppi_t_interval", "ppi_t_interval")
 
-    def test_binary_routing_unaffected(self):
-        assert resolve_ppi_auto_methods("binary") == ("mj_floor", "wilson")
+    def test_binary_routes_to_bonett_price(self):
+        """Paired binary PPI routes to bonett_price, whose Laplace adjustment
+        keeps the interval from collapsing toward zero width when the labeled
+        subset carries little discordance information. mj_floor remains
+        implemented (evalstats.tests._ppi_paired_mj_floor) and directly
+        callable, but is no longer the auto-routed default."""
+        assert resolve_ppi_auto_methods("binary") == ("bonett_price", "wilson")
 
 
 class TestApiDispatch:

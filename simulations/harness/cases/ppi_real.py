@@ -163,6 +163,7 @@ with warnings.catch_warnings():
         _ppi_paired_bayes_bootstrap,
         _ppi_paired_bootstrap_t,
         _ppi_paired_mj_floor,
+        _ppi_paired_bonett_price,
         _ppi_paired_t_interval,
         _ppi_paired_logit_t,
         _p_x_gt_y_midrank,
@@ -175,6 +176,7 @@ with warnings.catch_warnings():
 
 from ..methods import (
     TTEST, TTEST_WELCH, MWU, WILCOXON, PAIRED_T, BAYES_BOOTSTRAP, BOOTSTRAP_T, MJ_FLOOR,
+    BONETT_PRICE,
     PPI_T_INTERVAL, PPI_LOGIT_T, PPI_T_INTERVAL_SINGLE, PPI_LOGIT_T_SINGLE,
     ANOVA_IND, ANOVA_REP, FRIEDMAN, KRUSKAL, PPI_TEST_METHODS, get_method_color,
 )
@@ -211,6 +213,7 @@ from .pvalues import (
     _uncorrected_bayes_bootstrap_paired_p_value,
     _uncorrected_bootstrap_t_paired_p_value,
     _uncorrected_mj_floor_paired_p_value,
+    _uncorrected_bonett_price_paired_p_value,
     _uncorrected_anova_independent_p_value,
     _uncorrected_anova_repeated_p_value,
     _uncorrected_friedman_p_value,
@@ -464,6 +467,15 @@ def _run_real_paired_cell(
                     uncorrected[MJ_FLOOR.name] += int(p_u < _ALPHA)
                     r = _ppi_paired_mj_floor(llm_x, llm_y, lab_x, lab_y, _ALPHA)
                     corrected[MJ_FLOOR.name] += int(r.p_value < _ALPHA)
+                except Exception:
+                    pass
+
+            if BONETT_PRICE.name in methods:
+                try:
+                    p_u = _uncorrected_bonett_price_paired_p_value(llm_x - llm_y)
+                    uncorrected[BONETT_PRICE.name] += int(p_u < _ALPHA)
+                    r = _ppi_paired_bonett_price(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    corrected[BONETT_PRICE.name] += int(r.p_value < _ALPHA)
                 except Exception:
                     pass
 
@@ -915,6 +927,13 @@ def _run_real_paired_bias_cell(
                 except Exception:
                     pass
 
+            if BONETT_PRICE.name in methods:
+                try:
+                    r = _ppi_paired_bonett_price(llm_x, llm_y, lab_x, lab_y, _ALPHA)
+                    out[BONETT_PRICE.name].append((r.estimate, r.ci_low, r.ci_high, r.llm_estimate))
+                except Exception:
+                    pass
+
     return dict(out)
 
 
@@ -1059,8 +1078,8 @@ def _has_nonstandard_test(results: list) -> bool:
 
 def _paired_methods_for(eval_type: str) -> list[str]:
     # BAYES_BOOTSTRAP/BOOTSTRAP_T are not part of the official CI-comparison
-    # set -- see _single_methods_for's matching note. Binary keeps MJ_FLOOR
-    # (PPI_AUTO_METHOD_TABLE's binary pairwise
+    # set -- see _single_methods_for's matching note. Binary uses
+    # BONETT_PRICE (PPI_AUTO_METHOD_TABLE's binary pairwise
     # method); non-binary gets PPI_T_INTERVAL and PPI_LOGIT_T
     # (PPI_AUTO_METHOD_TABLE's "unbounded"/"bounded_01" pairwise methods --
     # both tested, not just the "correct" one per data_kind, since this is
@@ -1071,7 +1090,7 @@ def _paired_methods_for(eval_type: str) -> list[str]:
     # no test-name-collision risk between PPI_LOGIT_T here and the
     # single-sample check's own PPI_LOGIT_T branch.
     if eval_type == "binary":
-        return [PAIRED_T.name, MJ_FLOOR.name]
+        return [PAIRED_T.name, BONETT_PRICE.name]
     return [WILCOXON.name, PAIRED_T.name, PPI_T_INTERVAL.name, PPI_LOGIT_T.name]
 
 
