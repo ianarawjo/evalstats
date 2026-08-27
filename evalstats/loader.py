@@ -8,7 +8,9 @@ Provides the high-level data-loading API described in the evalstats spec:
 
 from __future__ import annotations
 
+import os
 import warnings
+from pathlib import Path
 from typing import Dict, List, Literal, Optional, Union
 
 import numpy as np
@@ -528,7 +530,7 @@ def _scores_dict_to_df(
 # ─────────────────────────────────────────────────────────────────────────────
 
 def load_from(
-    data: Union[pd.DataFrame, list[dict]],
+    data: Union[pd.DataFrame, list[dict], str, "os.PathLike[str]"],
     *,
     metric_cols: Optional[Union[str, list[str], dict[str, str]]] = None,
     col_map: Optional[dict[str, str]] = None,
@@ -537,9 +539,11 @@ def load_from(
 
     Parameters
     ----------
-    data : pd.DataFrame or list[dict]
+    data : pd.DataFrame, list[dict], str, or os.PathLike
         Eval results in long format — one row per (model, prompt, item, score)
-        observation.
+        observation. A path to a ``.csv``, ``.tsv``, ``.json``, ``.jsonl``, or
+        ``.parquet`` file is read with pandas first; the extension selects the
+        reader, and an unrecognised extension is read as CSV.
     metric_cols : str, list[str], or dict[str, str], optional
         Metric column(s) to use.
 
@@ -572,12 +576,37 @@ def load_from(
     >>> evaldata = es.load_from(df, col_map={"llm": "model", "template": "prompt"})
     >>> evaldata.summary()
 
+    >>> # Straight from a file, without reading it yourself
+    >>> evaldata = es.load_from("results.csv")
+
     >>> # From a list of dicts (JSONL-style)
     >>> records = [{"model": "gpt-4", "prompt": "p1", "item": "q1", "score": 1}, ...]
     >>> evaldata = es.load_from(records)
     """
     # ── coerce input ─────────────────────────────────────────────────────────
-    if isinstance(data, list):
+    if isinstance(data, (str, os.PathLike)):
+        path = Path(data)
+        if not path.exists():
+            raise EvalLoadError(f"No such file: {path}")
+        suffix = path.suffix.lower()
+        try:
+            if suffix in (".tsv", ".tab"):
+                df = pd.read_csv(path, sep="\t")
+            elif suffix == ".jsonl":
+                df = pd.read_json(path, lines=True)
+            elif suffix == ".json":
+                df = pd.read_json(path)
+            elif suffix == ".parquet":
+                df = pd.read_parquet(path)
+            else:
+                # .csv and anything unrecognised: CSV is the common case, and a
+                # pandas parse error names the real problem better than a guess.
+                df = pd.read_csv(path)
+        except EvalLoadError:
+            raise
+        except Exception as exc:
+            raise EvalLoadError(f"Could not read {path}: {exc}") from exc
+    elif isinstance(data, list):
         if not data:
             raise EvalLoadError("data is an empty list.")
         try:
@@ -588,7 +617,8 @@ def load_from(
         df = data.copy()
     else:
         raise EvalLoadError(
-            f"data must be a pandas DataFrame or list[dict]; got {type(data).__name__}."
+            f"data must be a pandas DataFrame, list[dict], or a path to a "
+            f"csv/tsv/json/jsonl/parquet file; got {type(data).__name__}."
         )
 
     if df.empty:
