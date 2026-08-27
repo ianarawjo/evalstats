@@ -108,3 +108,21 @@ def test_float_columns_are_written_as_plain_numbers():
     assert row, "could not locate the results CSV row writer"
     bare = re.findall(r"repr\(r\.[a-z_]+\)", row.group(1))
     assert not bare, f"repr() on a possibly-numpy field: {bare}; wrap in float()"
+
+
+def test_cli_default_and_official_preset_agree_on_icc_sweep():
+    """A bare CLI run and the official preset must sweep the same icc values.
+
+    They briefly disagreed: official_args carried the sweep while the
+    argparse default was None, so a full-grid CLI run silently produced a
+    single-icc grid -- valid numbers, but missing the robustness check the
+    sweep exists for, and with nothing in the output saying so.
+    """
+    import argparse
+    from simulations.harness.cases import compare_e2e as ce
+
+    parser = argparse.ArgumentParser()
+    ce.add_arguments(parser)
+    cli = parser.parse_args([])
+    preset = ce.official_args(42)
+    assert list(cli.icc_values) == list(preset.icc_values) == list(ce.DEFAULT_ICC_VALUES)

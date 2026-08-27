@@ -198,6 +198,19 @@ PPI is actually for -- gain comes from the UNLABELLED items -- and the trend
 is what a fraction-based grid cannot show at all, since a fraction pins the
 ratio to 1/frac for every N."""
 DEFAULT_ICC = 0.20
+
+DEFAULT_ICC_VALUES: tuple[float, ...] = (0.05, 0.20, 0.60)
+"""icc values swept on the no-PPI arm. ONE definition, read by both
+official_args and the --icc-values argparse default, so a CLI run and the
+official preset cannot disagree about what the sweep is -- they did briefly,
+and a full-grid run silently produced a single-icc grid.
+
+0.20 is the realistic point: cross-model correlation measured on the real
+corpora is 0.146 mean / 0.103 median, and icc=0.20 reproduces r=0.170. 0.05
+is a stress point below that and 0.60 a robustness point above (higher than
+any real corpus). Note this is the CROSS-ARM correlation -- different models
+on shared items -- not the multi-run ICC (~0.68), which is a different axis
+and is not exercised at runs=1."""
 """Item-level reliability of the TRUTH generator, matching
 scenarios.synthetic._ppi_power_baseline's own icc (the tier every PPI sweep
 in cases/pvalues.py runs at).
@@ -1572,12 +1585,13 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sizes", type=int, nargs="+", default=DEFAULT_SIZES, metavar="N")
     parser.add_argument("--ppi-fracs", type=str, nargs="+", default=["none", "0.10", "0.20", "0.40"], metavar="FRAC",
                          help="'none' (no PPI) or a label fraction in (0, 1].")
-    parser.add_argument("--icc-values", type=float, nargs="+", default=None, metavar="ICC",
+    parser.add_argument("--icc-values", type=float, nargs="+", default=list(DEFAULT_ICC_VALUES),
+                         metavar="ICC",
                          help="Sweep sample_group_truth's signal/noise split on the NO-PPI arm "
                               "(PPI cells stay at the default, where judge noise dominates). "
-                              f"Default: a single value, {DEFAULT_ICC}. ci_paired's official sweep "
-                              "uses 0.05/0.20/0.40/0.60/0.80; 0.05 0.20 0.60 spans that range at "
-                              "+70%% cells rather than +139%%.")
+                              f"Default {list(DEFAULT_ICC_VALUES)}, matching official_args -- pass a "
+                              f"single value (e.g. --icc-values {DEFAULT_ICC}) for the cheaper grid. "
+                              "ci_paired's official sweep uses 0.05/0.20/0.40/0.60/0.80.")
     parser.add_argument("--reps", type=int, default=100, metavar="N")
     parser.add_argument("--bootstrap-n", type=int, default=DEFAULT_BOOTSTRAP_N, metavar="N",
                          help=f"n_bootstrap passed to every compare() call (default {DEFAULT_BOOTSTRAP_N}, vs. "
@@ -1667,7 +1681,7 @@ def official_args(base_seed: int = 42) -> argparse.Namespace:
         # low/mid/high (its official sweep is 0.05-0.80). A single icc is what
         # let the Likert NIG interval's dispersion sensitivity go unseen; three
         # points cost +70% cells against +139% for the full five.
-        icc_values=[0.05, 0.20, 0.60],
+        icc_values=list(DEFAULT_ICC_VALUES),
         reps=100, alpha=0.05, seed=base_seed, progress="bar", save_results="save",
         out_dir="simulations/out", plots="save", plots_dir=None, latex=True,
         workers=max(1, (os.cpu_count() or 2) - 1),
